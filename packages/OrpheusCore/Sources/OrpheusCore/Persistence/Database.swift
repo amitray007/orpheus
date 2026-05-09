@@ -90,6 +90,11 @@ public actor Database {
     private static func makePool(path: String) throws -> DatabasePool {
         var config = baseConfiguration()
         config.label = "com.orpheus.core.persistence"
+        // Brief required `minimumActiveReadConnections = 1`. GRDB 6.x exposes
+        // this idea as `persistentReadOnlyConnections`: when true, reader
+        // connections are kept alive across `releaseMemory()` calls, avoiding
+        // the first-read latency hiccup on idle pools.
+        config.persistentReadOnlyConnections = true
         do {
             return try DatabasePool(path: path, configuration: config)
         } catch {

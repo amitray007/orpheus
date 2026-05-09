@@ -5,8 +5,8 @@ import os.log
 /// Each subsystem category maps to a logical layer of the package.
 /// Other groups add their own `static let` properties here rather
 /// than creating ad-hoc Logger instances.
-public enum OrpheusLogger {
-    public static let persistence = Logger(
+internal enum OrpheusLogger {
+    internal static let persistence = Logger(
         subsystem: "com.orpheus.core",
         category: "persistence"
     )

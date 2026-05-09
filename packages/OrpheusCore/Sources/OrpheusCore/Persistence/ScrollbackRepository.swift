@@ -56,7 +56,7 @@ public actor ScrollbackRepository {
                     "ScrollbackRepository: deferred-flush error for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
             } catch {
-                lastFlushError = .migrationFailed(reason: error.localizedDescription)
+                lastFlushError = .persistenceFailed(reason: error.localizedDescription)
                 OrpheusLogger.persistence.error(
                     "ScrollbackRepository: deferred-flush error for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
@@ -125,10 +125,6 @@ public actor ScrollbackRepository {
         flushTasks[key] = nil
     }
 
-    private func clearFlushTask(for key: String) {
-        flushTasks[key] = nil
-    }
-
     /// Deferred-flush entry point — has no caller to throw to, so it captures
     /// any error into `lastFlushError` and logs.
     private func deferredFlush(for terminalID: TerminalID) async {
@@ -141,12 +137,12 @@ public actor ScrollbackRepository {
                 "ScrollbackRepository: deferred-flush error for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         } catch {
-            lastFlushError = .migrationFailed(reason: error.localizedDescription)
+            lastFlushError = .persistenceFailed(reason: error.localizedDescription)
             OrpheusLogger.persistence.error(
                 "ScrollbackRepository: deferred-flush error for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         }
-        clearFlushTask(for: key)
+        cancelFlushTask(for: key)
     }
 
     private func flushBuffer(for terminalID: TerminalID) async throws {

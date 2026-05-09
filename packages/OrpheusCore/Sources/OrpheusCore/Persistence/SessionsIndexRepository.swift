@@ -66,7 +66,7 @@ public actor SessionsIndexRepository {
     /// search string is matched as a phrase prefix, which handles spaces and
     /// hyphens safely.
     public func search(query: String, limit: Int = 20) async throws -> [SessionIndexEntry] {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         // Build a safe FTS5 query: escape double-quotes inside the term,
         // then wrap in double-quotes for a phrase search with a prefix wildcard.

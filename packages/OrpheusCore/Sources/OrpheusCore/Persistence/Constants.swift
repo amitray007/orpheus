@@ -1,3 +1,5 @@
+import Foundation
+
 /// Scrollback ring-buffer constants.
 ///
 /// These values establish an upper bound on how much terminal output is
@@ -13,7 +15,7 @@ public enum ScrollbackConstants {
     /// evicted when this limit is exceeded.
     public static let scrollbackRingLimit: Int = 256
 
-    /// Maximum interval (in seconds) between automatic flushes of pending
-    /// scrollback bytes, regardless of buffer fill level.
-    public static let scrollbackFlushInterval: Double = 0.250  // 250 ms
+    /// Maximum interval between automatic flushes of pending scrollback
+    /// bytes, regardless of buffer fill level.
+    public static let scrollbackFlushInterval: TimeInterval = 0.250  // 250 ms
 }

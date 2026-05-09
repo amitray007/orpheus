@@ -155,7 +155,7 @@ private extension Terminal {
             let status = TerminalStatus(rawValue: statusRaw),
             let createdAtInterval = row["created_at"] as? Double
         else {
-            throw OrpheusCoreError.migrationFailed(reason: "Corrupt terminal row")
+            throw OrpheusCoreError.persistenceFailed(reason: "Corrupt terminal row")
         }
         let command: String? = row["command"]
         let ccSessionIDStr: String? = row["cc_session_id"]

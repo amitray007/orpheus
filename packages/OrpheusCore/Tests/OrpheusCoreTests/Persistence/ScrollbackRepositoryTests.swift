@@ -80,12 +80,10 @@ final class ScrollbackRepositoryTests: XCTestCase {
     func testBufferOverChunkSizeFlushesImmediately() async throws {
         // Fill buffer to just over the chunk-size limit.
         let bigData = Data(repeating: 0xAB, count: ScrollbackConstants.scrollbackChunkSize + 1)
+        // The overflow path inside append() awaits the flush synchronously, so
+        // by the time append returns the chunk has already landed in SQLite.
         await repo.append(terminalID: termID, bytes: bigData)
-        // No explicit flush needed — the overflow should trigger an automatic flush.
-        // Give any background work a moment to complete.
-        try await Task.sleep(nanoseconds: 50_000_000)  // 50 ms
         let chunks = try await repo.chunks(terminalID: termID)
-        // At least one chunk should have landed.
         XCTAssertFalse(chunks.isEmpty)
     }
 

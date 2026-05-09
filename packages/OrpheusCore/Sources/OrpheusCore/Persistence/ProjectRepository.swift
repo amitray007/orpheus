@@ -122,7 +122,7 @@ private extension Project {
             let createdAtInterval = row["created_at"] as? Double,
             let updatedAtInterval = row["updated_at"] as? Double
         else {
-            throw OrpheusCoreError.migrationFailed(reason: "Corrupt project row")
+            throw OrpheusCoreError.persistenceFailed(reason: "Corrupt project row")
         }
         let tags = (try? JSONDecoder().decode([String].self, from: Data(tagsJSON.utf8))) ?? []
         self.init(

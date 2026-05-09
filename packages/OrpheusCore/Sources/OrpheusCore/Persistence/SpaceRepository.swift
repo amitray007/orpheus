@@ -160,11 +160,11 @@ private extension Space {
             let lifecycleRaw = row["lifecycle_state"] as? String,
             let lifecycleState = LifecycleState(rawValue: lifecycleRaw)
         else {
-            throw OrpheusCoreError.migrationFailed(reason: "Corrupt space row")
+            throw OrpheusCoreError.persistenceFailed(reason: "Corrupt space row")
         }
         let ordValue: DatabaseValue = row["ord"]
         guard let ord = Int.fromDatabaseValue(ordValue) else {
-            throw OrpheusCoreError.migrationFailed(reason: "Corrupt space row: invalid ord")
+            throw OrpheusCoreError.persistenceFailed(reason: "Corrupt space row: invalid ord")
         }
         let createdAtValue: DatabaseValue = row["created_at"]
         let updatedAtValue: DatabaseValue = row["updated_at"]
@@ -172,7 +172,7 @@ private extension Space {
             let createdAtInterval = Double.fromDatabaseValue(createdAtValue),
             let updatedAtInterval = Double.fromDatabaseValue(updatedAtValue)
         else {
-            throw OrpheusCoreError.migrationFailed(reason: "Corrupt space row: invalid dates")
+            throw OrpheusCoreError.persistenceFailed(reason: "Corrupt space row: invalid dates")
         }
         let layoutSpec = try JSONDecoder().decode(
             LayoutSpec.self,

@@ -4,6 +4,7 @@ public enum OrpheusCoreError: Error, Sendable, Equatable {
     case notFound(id: String, kind: String)
     case invalidParent(child: String, parent: String)
     case migrationFailed(reason: String)
+    case persistenceFailed(reason: String)
     case subprocessSpawn(reason: String)
     case corruptJSONL(path: String, line: Int)
     case settingsMergeConflict(key: String)
@@ -18,6 +19,8 @@ extension OrpheusCoreError: LocalizedError {
             return "'\(child)' has an invalid parent: '\(parent)'."
         case .migrationFailed(let reason):
             return "Database migration failed: \(reason)"
+        case .persistenceFailed(let reason):
+            return "Persistence failure: \(reason)"
         case .subprocessSpawn(let reason):
             return "Failed to spawn subprocess: \(reason)"
         case .corruptJSONL(let path, let line):

@@ -7,6 +7,7 @@ final class OrpheusCoreErrorTests: XCTestCase {
         .notFound(id: "proj-1", kind: "Project"),
         .invalidParent(child: "space-1", parent: "proj-missing"),
         .migrationFailed(reason: "column already exists"),
+        .persistenceFailed(reason: "FK constraint violated"),
         .subprocessSpawn(reason: "binary not found"),
         .corruptJSONL(path: "/tmp/sess.jsonl", line: 42),
         .settingsMergeConflict(key: "terminal.shell"),
@@ -35,6 +36,13 @@ final class OrpheusCoreErrorTests: XCTestCase {
     func testMigrationFailedDescription() {
         let error = OrpheusCoreError.migrationFailed(reason: "schema mismatch")
         XCTAssertTrue(error.errorDescription?.contains("schema mismatch") ?? false)
+    }
+
+    func testPersistenceFailedDescription() {
+        let error = OrpheusCoreError.persistenceFailed(reason: "FK violation")
+        let desc = error.errorDescription ?? ""
+        XCTAssertFalse(desc.isEmpty)
+        XCTAssertTrue(desc.contains("FK violation"))
     }
 
     func testSubprocessSpawnDescription() {

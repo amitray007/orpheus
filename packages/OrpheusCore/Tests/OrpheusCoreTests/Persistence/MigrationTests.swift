@@ -6,13 +6,6 @@ import GRDB
 /// Tests every migration individually: prior state → apply → assert.
 final class MigrationTests: XCTestCase {
 
-    // MARK: - Helpers
-
-    /// Open a bare in-memory DatabaseQueue and apply only migrations up to
-    /// (but not including) the one under test.  Returns the queue.
-    // Helper kept for potential future per-migration isolation tests.
-    // Not currently called; individual tests use makeMigrator().migrate(q, upTo:) directly.
-
     // MARK: - Individual migration tests
 
     func testCreateProjects() throws {
