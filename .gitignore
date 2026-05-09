@@ -1,0 +1,52 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# Swift / Xcode
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+Package.resolved
+*.xcuserstate
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SwiftPM
+.swiftpm/
+Package.pins
+# (Note: do NOT ignore `Packages/` — our local Swift Packages live under
+# `packages/` and macOS case-insensitive FS would otherwise hide them.)
+
+# AppKit / macOS app
+*.app/
+
+# Build outputs
+build/
+out/
+dist/
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+*~
+.cursor/
+
+# Local secrets / state
+*.local
+.env
+.env.*
+
+# Orpheus runtime state (see architecture.md)
+~/.orpheus/
+.orpheus/
