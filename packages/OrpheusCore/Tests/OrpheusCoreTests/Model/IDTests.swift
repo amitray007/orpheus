@@ -124,4 +124,30 @@ final class IDTests: XCTestCase {
         XCTAssertEqual(proj.rawValue, space.rawValue)
         // They are different Swift types — the compiler enforces this; no runtime assertion needed.
     }
+
+    // MARK: - Wire format (bare-string encoding)
+
+    func testProjectIDEncodesAsBareString() throws {
+        let id = ProjectID(rawValue: "test-123")
+        let data = try JSONEncoder().encode(id)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "\"test-123\"")
+    }
+
+    func testSpaceIDEncodesAsBareString() throws {
+        let id = SpaceID(rawValue: "space-xyz")
+        let data = try JSONEncoder().encode(id)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "\"space-xyz\"")
+    }
+
+    func testTerminalIDEncodesAsBareString() throws {
+        let id = TerminalID(rawValue: "term-abc")
+        let data = try JSONEncoder().encode(id)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "\"term-abc\"")
+    }
+
+    func testSessionIDEncodesAsBareString() throws {
+        let id = SessionID(rawValue: "sess-1")
+        let data = try JSONEncoder().encode(id)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "\"sess-1\"")
+    }
 }
