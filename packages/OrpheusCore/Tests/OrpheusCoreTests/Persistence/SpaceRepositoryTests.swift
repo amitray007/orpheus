@@ -155,4 +155,21 @@ final class SpaceRepositoryTests: XCTestCase {
         let second = await iterator.next()
         XCTAssertEqual(second?.first?.name, "Changed")
     }
+
+    func testObserveAllEmitsOnChange() async throws {
+        var space = makeSpace()
+        try await repo.create(space)
+
+        let stream = await repo.observeAll()
+        var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.count, 1)
+
+        space.name = "AllChanged"
+        space.updatedAt = Date()
+        try await repo.update(space)
+
+        let second = await iterator.next()
+        XCTAssertEqual(second?.first?.name, "AllChanged")
+    }
 }

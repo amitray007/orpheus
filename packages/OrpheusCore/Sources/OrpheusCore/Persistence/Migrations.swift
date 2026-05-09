@@ -70,10 +70,16 @@ enum Migrations {
 
         // ── 2026-05-10-create-sessions-index ────────────────────────────────
         // FTS5 virtual table for cross-project session search.
-        // `last_updated UNINDEXED` stores an ISO 8601 timestamp without
-        // tokenising it, keeping the index lean.
+        //
+        // `session_id` is UNINDEXED — it is the row's identity for upsert/delete
+        // and is matched only by exact equality, never tokenised.
+        // `cwd`, `name`, `git_branch` are indexed (tokenised) so they answer
+        // full-text MATCH queries.
+        // `last_updated UNINDEXED` stores a timestamp without tokenising it,
+        // keeping the index lean.
         migrator.registerMigration("2026-05-10-create-sessions-index") { db in
             try db.create(virtualTable: "sessions_index", using: FTS5()) { t in
+                t.column("session_id").notIndexed()
                 t.column("cwd")
                 t.column("name")
                 t.column("git_branch")

@@ -158,4 +158,19 @@ final class TerminalRepositoryTests: XCTestCase {
         let second = await iterator.next()
         XCTAssertEqual(second?.first?.status, .crashed)
     }
+
+    func testObserveAllEmitsOnChange() async throws {
+        var t = makeTerm()
+        try await repo.create(t)
+
+        let stream = await repo.observeAll()
+        var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.count, 1)
+
+        t.status = .running
+        try await repo.update(t)
+        let second = await iterator.next()
+        XCTAssertEqual(second?.first?.status, .running)
+    }
 }

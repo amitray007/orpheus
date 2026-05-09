@@ -129,4 +129,51 @@ final class ScrollbackRepositoryTests: XCTestCase {
         XCTAssertEqual(chunks1.first, Data("for-t1".utf8))
         XCTAssertEqual(chunks2.first, Data("for-t2".utf8))
     }
+
+    // MARK: - Error propagation
+
+    /// When the parent terminal row no longer exists, the FK constraint on
+    /// `terminal_scrollback.terminal_id` causes the write to fail.  The
+    /// synchronous `flush()` path must propagate this error.
+    func testFlushPropagatesWriteError() async throws {
+        // Append before deleting so there is buffered data to flush.
+        await repo.append(terminalID: termID, bytes: Data("hello".utf8))
+        // Delete the parent terminal (cascades to scrollback, but the
+        // pending in-memory buffer remains — the FK violation will fire
+        // when the deferred write tries to insert).
+        try await termRepo.delete(id: termID)
+
+        await XCTAssertThrowsErrorAsync {
+            try await self.repo.flush(terminalID: self.termID)
+        }
+    }
+
+    /// A flush that completes successfully clears any previously stored
+    /// deferred-flush error.  Following pattern: cause an error, surface it,
+    /// then verify the next flush is clean.
+    func testStoredErrorIsClearedOnNextFlush() async throws {
+        // Cause an error: append, delete parent, attempt flush — throws.
+        await repo.append(terminalID: termID, bytes: Data("first".utf8))
+        try await termRepo.delete(id: termID)
+        await XCTAssertThrowsErrorAsync {
+            try await self.repo.flush(terminalID: self.termID)
+        }
+
+        // A subsequent flush against an unrelated, valid terminal should now
+        // succeed (lastFlushError, if any, was cleared by the previous throw).
+        let projRepo = ProjectRepository(database: db)
+        let spaceRepo = SpaceRepository(database: db)
+        let p = Project(name: "P3", rootPath: "/tmp3")
+        try await projRepo.create(p)
+        let s = Space(projectID: p.id, name: "S3", layoutSpec: .canvas([]), ord: 0)
+        try await spaceRepo.create(s)
+        let term3 = Terminal(spaceID: s.id, cwd: "/tmp3")
+        try await termRepo.create(term3)
+
+        await repo.append(terminalID: term3.id, bytes: Data("ok".utf8))
+        // Must not throw.
+        try await repo.flush(terminalID: term3.id)
+        let chunks = try await repo.chunks(terminalID: term3.id)
+        XCTAssertEqual(chunks.first, Data("ok".utf8))
+    }
 }

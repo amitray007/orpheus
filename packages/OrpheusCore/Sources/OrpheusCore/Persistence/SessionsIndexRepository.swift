@@ -5,12 +5,11 @@ import GRDB
 ///
 /// This repository is called exclusively by Group 5 (Sessions), which parses
 /// JSONL metadata and hands `SessionIndexEntry` values here for indexing.
-/// The FTS5 table is keyed by `cwd` (which equals the session's `sessionID`
-/// in the rowid-less FTS5 scheme); we store the session ID inside the `cwd`
-/// column and use a separate lookup for targeted delete/upsert.
 ///
-/// Because FTS5 does not support a user-defined primary key in the same way
-/// as a regular table, upsert is implemented as DELETE + INSERT.
+/// The FTS5 table has a dedicated `session_id` UNINDEXED column for identity,
+/// distinct from the searchable `cwd` column.  Upsert is implemented as
+/// DELETE + INSERT keyed on `session_id` because FTS5 does not support
+/// `ON CONFLICT`.
 public actor SessionsIndexRepository {
 
     private let database: Database
@@ -22,34 +21,38 @@ public actor SessionsIndexRepository {
     // MARK: - Public interface
 
     /// Insert or replace an entry for the given session.
+    ///
+    /// Implementation: DELETE existing row(s) for `entry.sessionID`, then INSERT.
+    /// All five columns are populated; `nil` `name` and `gitBranch` are stored
+    /// as empty strings so FTS5 has well-formed text to tokenise.
     public func upsert(_ entry: SessionIndexEntry) async throws {
         try await database.write { db in
-            // FTS5 DELETE + INSERT is the canonical upsert pattern.
             try db.execute(
-                sql: "DELETE FROM sessions_index WHERE cwd = ?",
+                sql: "DELETE FROM sessions_index WHERE session_id = ?",
                 arguments: [entry.sessionID.rawValue]
             )
-            let iso8601 = ISO8601DateFormatter().string(from: entry.lastUpdated)
             try db.execute(
                 sql: """
-                    INSERT INTO sessions_index (cwd, name, git_branch, last_updated)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions_index
+                    (session_id, cwd, name, git_branch, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     entry.sessionID.rawValue,
-                    entry.name,
-                    entry.gitBranch,
-                    iso8601,
+                    entry.cwd,
+                    entry.name ?? "",
+                    entry.gitBranch ?? "",
+                    entry.lastUpdated.timeIntervalSinceReferenceDate,
                 ]
             )
         }
     }
 
-    /// Remove all FTS5 rows whose `cwd` equals the given session ID.
+    /// Remove the FTS5 row whose `session_id` equals the given session ID.
     public func delete(sessionID: SessionID) async throws {
         try await database.write { db in
             try db.execute(
-                sql: "DELETE FROM sessions_index WHERE cwd = ?",
+                sql: "DELETE FROM sessions_index WHERE session_id = ?",
                 arguments: [sessionID.rawValue]
             )
         }
@@ -73,7 +76,7 @@ public actor SessionsIndexRepository {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT cwd, name, git_branch, last_updated
+                    SELECT session_id, cwd, name, git_branch, last_updated
                     FROM sessions_index
                     WHERE sessions_index MATCH ?
                     ORDER BY rank
@@ -81,16 +84,22 @@ public actor SessionsIndexRepository {
                     """,
                 arguments: [ftsQuery, limit]
             )
-            let formatter = ISO8601DateFormatter()
             return rows.compactMap { row -> SessionIndexEntry? in
-                guard let sessionIDStr = row["cwd"] as? String else { return nil }
-                let lastUpdatedStr = row["last_updated"] as? String ?? ""
-                let lastUpdated = formatter.date(from: lastUpdatedStr) ?? Date()
+                guard
+                    let sessionIDStr = row["session_id"] as? String,
+                    let cwd = row["cwd"] as? String
+                else { return nil }
+                let name = row["name"] as? String
+                let gitBranch = row["git_branch"] as? String
+                // last_updated stored as REAL (timeIntervalSinceReferenceDate).
+                let lastUpdatedValue: DatabaseValue = row["last_updated"]
+                let interval = Double.fromDatabaseValue(lastUpdatedValue) ?? 0
+                let lastUpdated = Date(timeIntervalSinceReferenceDate: interval)
                 return SessionIndexEntry(
                     sessionID: SessionID(rawValue: sessionIDStr),
-                    cwd: sessionIDStr,
-                    name: row["name"],
-                    gitBranch: row["git_branch"],
+                    cwd: cwd,
+                    name: (name?.isEmpty ?? true) ? nil : name,
+                    gitBranch: (gitBranch?.isEmpty ?? true) ? nil : gitBranch,
                     lastUpdated: lastUpdated
                 )
             }

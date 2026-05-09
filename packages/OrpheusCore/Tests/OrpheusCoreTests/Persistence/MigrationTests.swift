@@ -131,8 +131,9 @@ final class MigrationTests: XCTestCase {
         try q.inDatabase { db in
             try db.execute(
                 sql: """
-                    INSERT INTO sessions_index (cwd, name, git_branch, last_updated)
-                    VALUES ('session-1', 'My Session', 'main', '2026-05-10T00:00:00Z')
+                    INSERT INTO sessions_index
+                    (session_id, cwd, name, git_branch, last_updated)
+                    VALUES ('session-1', '/tmp/proj', 'My Session', 'main', 0.0)
                     """
             )
             let count = try Int.fetchOne(
@@ -145,7 +146,7 @@ final class MigrationTests: XCTestCase {
     func testCreateAppState() throws {
         let q = try DatabaseQueue(configuration: makeConfig())
         let migrator = Migrations.makeMigrator()
-        try migrator.migrate(q)
+        try migrator.migrate(q, upTo: "2026-05-10-create-app-state")
 
         try q.inDatabase { db in
             try db.execute(
