@@ -1,6 +1,6 @@
 # Component conventions for OrpheusDesign
 
-These rules apply to every component file in `Sources/OrpheusDesign/Components/`. They make the package legible across many contributors and enforce the LOCKED design discipline (`extras/specs/design-principles.md` in the planning repo).
+These rules apply to every component file in `Sources/OrpheusDesign/Components/`. They make the package legible across many contributors and enforce the LOCKED design discipline (`docs/specs/design-principles.md` at the repo root).
 
 ## File layout
 
@@ -12,7 +12,7 @@ These rules apply to every component file in `Sources/OrpheusDesign/Components/`
 
 ## What's banned
 
-The discipline rules in `extras/specs/design-principles.md` and the `discipline.md` brief forbid stock SwiftUI controls in user-facing chrome. Concretely:
+The discipline rules in `docs/specs/design-principles.md` and the `discipline.md` brief forbid stock SwiftUI controls in user-facing chrome. Concretely:
 
 - **No `Button {}`** as visible chrome. You may use it as an internal tap target if you wrap the visible body yourself and apply `.buttonStyle(.plain)` so no system styling is rendered.
 - **No `Toggle {}`** at all in components — implement the switch yourself with `RoundedRectangle` + `Circle` + `.onTapGesture`.
