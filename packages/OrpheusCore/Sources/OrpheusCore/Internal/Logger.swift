@@ -1,0 +1,13 @@
+import os.log
+
+/// Centralised `os.Logger` instances for OrpheusCore.
+///
+/// Each subsystem category maps to a logical layer of the package.
+/// Other groups add their own `static let` properties here rather
+/// than creating ad-hoc Logger instances.
+public enum OrpheusLogger {
+    public static let persistence = Logger(
+        subsystem: "com.orpheus.core",
+        category: "persistence"
+    )
+}
