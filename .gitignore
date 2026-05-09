@@ -14,7 +14,6 @@ Icon
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
-Package.resolved
 *.xcuserstate
 *.hmap
 *.ipa
@@ -23,9 +22,10 @@ Package.resolved
 
 # SwiftPM
 .swiftpm/
-Package.pins
 # (Note: do NOT ignore `Packages/` — our local Swift Packages live under
-# `packages/` and macOS case-insensitive FS would otherwise hide them.)
+# `packages/` and macOS case-insensitive FS would otherwise hide them.
+# Also do NOT ignore `Package.resolved` — pinning the GRDB version
+# across machines is the whole point of committing it.)
 
 # AppKit / macOS app
 *.app/

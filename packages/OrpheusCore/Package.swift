@@ -1,5 +1,4 @@
 // swift-tools-version: 5.9
-// Phase 1 — headless data + plumbing layer. External dependency: GRDB.swift only.
 
 import PackageDescription
 
