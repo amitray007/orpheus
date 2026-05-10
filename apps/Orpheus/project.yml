@@ -39,6 +39,17 @@ targets:
       - path: Orpheus/Resources/Assets.xcassets
     info:
       path: Orpheus/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Orpheus
+        LSApplicationCategoryType: public.app-category.developer-tools
+        # NSPrincipalClass is intentionally omitted: SwiftUI @main apps already
+        # call NSApplicationMain (defaulting to NSApplication) via the @main
+        # macro. Setting NSPrincipalClass = NSApplication explicitly is
+        # redundant on launch and triggers a "More than one NSApplication
+        # instance was created" crash inside the xcodebuild test host because
+        # the test agent's NSApplication conflicts with the bundle's principal-
+        # class lookup. Apple's own macOS App.xctemplate does not include this
+        # key. See `apps/Orpheus/AGENTS.md` for the discipline note.
     settings:
       base:
         PRODUCT_NAME: Orpheus

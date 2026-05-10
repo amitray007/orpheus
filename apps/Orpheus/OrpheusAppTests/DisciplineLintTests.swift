@@ -39,15 +39,26 @@ final class DisciplineLintTests: XCTestCase {
     }
 
     /// Stock SwiftUI controls are forbidden in `Views/`.
-    /// `Button(` (non-`.plain`), `List(`, `Toggle(`, `TextField(`,
-    /// `NavigationStack`, `NavigationSplitView`, `TabView`, `DisclosureGroup`, `Form(`
+    /// `List(`, `Toggle(`, `TextField(`, `Menu(`, `Form(`,
+    /// `NavigationStack`, `NavigationSplitView`, `TabView`, `DisclosureGroup`
     /// — all must use OrpheusDesign equivalents.
+    ///
+    /// `Button(` is intentionally NOT in the array — SwiftUI APIs like
+    /// `.alert { Button(...) }` legitimately require it. The
+    /// `// orpheus-allow:stock-control` marker is honored on every line so
+    /// tap-target-only `Button(action:) { }.buttonStyle(.plain)` wrappers can
+    /// opt out per the discipline rules.
     func testNoStockSwiftUIControls() throws {
         let forbidden = [
             "NavigationStack",
             "NavigationSplitView",
             "TabView",
             "DisclosureGroup",
+            "List {", "List(",
+            "Toggle(",
+            "TextField(",
+            "Menu(",
+            "Form(",
         ]
         var violations: [String] = []
 

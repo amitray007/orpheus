@@ -42,6 +42,20 @@ final class AppState {
 
     var currentScreen: Screen = .dashboard
 
+    // MARK: - Settings (hot-reload via SettingsWatcher)
+
+    /// The merged `OrpheusSettings` (global + project) currently in effect.
+    /// Updated reactively from the `SettingsWatcher` stream when the underlying
+    /// config files change. No view in Phase 2B reads this yet — Phase 2C+
+    /// (settings UI, theme application, default-shell selection) will.
+    private(set) var settings: OrpheusSettings = .defaultValue
+
+    @ObservationIgnored
+    private var settingsWatcher: SettingsWatcher?
+
+    @ObservationIgnored
+    private var settingsTask: Task<Void, Never>?
+
     // MARK: - Init (normal launch)
 
     init(
@@ -120,6 +134,40 @@ final class AppState {
         // Start sidebar and dashboard observation
         sidebarViewModel.start()
         dashboardViewModel.start()
+
+        // Start the settings watcher (global config only in Phase 2B;
+        // per-project config wiring lands in Phase 2C / 4 alongside settings UI).
+        startSettingsWatcher()
+    }
+
+    /// Construct + start the global `SettingsWatcher` and forward emissions
+    /// into `self.settings`. Idempotent: cancels any existing task first.
+    private func startSettingsWatcher() {
+        let globalURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".orpheus/config.json")
+        let watcher = SettingsWatcher(globalURL: globalURL, projectURL: nil)
+        self.settingsWatcher = watcher
+
+        settingsTask?.cancel()
+        settingsTask = Task { [weak self] in
+            guard let self else { return }
+            let stream = await watcher.start()
+            for await merged in stream {
+                guard !Task.isCancelled else { return }
+                self.settings = merged
+            }
+        }
+    }
+
+    /// Cancel background tasks. Owner must call this before releasing the
+    /// AppState — `deinit` cannot access `@MainActor` properties.
+    func cleanup() async {
+        settingsTask?.cancel()
+        settingsTask = nil
+        if let watcher = settingsWatcher {
+            await watcher.stop()
+        }
+        settingsWatcher = nil
     }
 }
 

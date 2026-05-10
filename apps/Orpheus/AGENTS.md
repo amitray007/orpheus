@@ -106,6 +106,10 @@ Always wrap in `await withCheckedContinuation { ... }` from a `Task { @MainActor
 
 Create sub-view-models eagerly in `init`. They should be fast (no async, no I/O) — defer subscriptions to `start()` / `.task { }`.
 
+### `NSPrincipalClass` is intentionally absent from Info.plist
+
+SwiftUI `@main` apps already invoke `NSApplicationMain` (defaulting to `NSApplication`) via the macro-generated entry point. Setting `NSPrincipalClass = NSApplication` explicitly is redundant on launch AND triggers a "More than one NSApplication instance was created" crash inside the `xcodebuild test` host because the test agent's NSApplication conflicts with the bundle's principal-class lookup. Apple's own macOS App.xctemplate omits this key. Do not add it back. (See `project.yml` `info.properties` block for the rationale comment.)
+
 ---
 
 ## No-goes
