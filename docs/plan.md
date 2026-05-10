@@ -246,6 +246,8 @@ Can be built alongside Phase 0 since nothing here is user-visible.
 
 **Phase 2A (libghostty FFI) status as of 2026-05-10:** ✅ DONE. See `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-1801-review-phase-2a-libghostty-ffi-build.md`.
 
+**Phase 2B (app shell + sidebar) status as of 2026-05-10:** ✅ DONE. See `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-1930-review-phase-2b-app-shell-build.md`.
+
 ### Goal
 Orpheus is an application you launch. You see a window styled by OrpheusDesign. You click to open a project. A terminal opens inside the window running `claude`. The terminal is smooth, fast, libghostty-quality. The full Project ▸ Space ▸ Terminal hierarchy is wired end-to-end. On force-close + relaunch, everything comes back exactly as it was.
 

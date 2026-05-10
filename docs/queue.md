@@ -4,15 +4,15 @@ _Last updated: 2026-05-10 IST_
 
 ## Now
 
-- Phase 2B — app shell + sidebar (W1, W2, W3, W18, W19). Orpheus.app target with main window chrome, sidebar populated from `OrpheusCore`'s `ProjectRepository`/`SpaceRepository`/`TerminalRepository` observers, onboarding flow, empty/loading/error states. No terminal hosting yet — that lands in 2C.
+- Phase 2C — terminal hosting + splits + auto-restore (W6, W7, W8, W10, W11). `OrpheusTerminalView` wrapping 2A's bindings. H/V splits per space. New-project + new-space modals. Auto-restore on launch from `OrpheusCore` persistence; force-close survival.
 
 ## Next
-- Phase 2C — terminal hosting + splits + auto-restore (W6, W7, W8, W10, W11). `OrpheusTerminalView` wrapping 2A's bindings. H/V splits per space. New-project + new-space modals. Auto-restore on launch from `OrpheusCore` persistence; force-close survival.
 - Phase 2D — canvas + drag polish (W17). Free-arranged terminals, terminal-drag UX across splits, final wireframe-fidelity touches. Can slip to Phase 7 if tight.
 - Phase 3 build — Self-Drive CLI + Rich Content. Adds the chat viewer (W4), diff viewer (W21), code viewer with syntax highlighting. Depends on Phase 1 (core) + Phase 2 (terminal host).
 
 ## Done
 
+- ✅ **Phase 2B — app shell + sidebar, `Orpheus.app`** (2026-05-10) — `apps/Orpheus/Orpheus.xcodeproj`. W1/W2 (dashboard), W3 (empty space), W18 (onboarding), W19 (state patterns). Sidebar reactive to DB via OrpheusCore observers. 19 tests, 0 failures, zero warnings in Release. Review session: `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-1930-review-phase-2b-app-shell-build.md`.
 - ✅ **Phase 2A — libghostty FFI, `OrpheusTerminal`** (2026-05-10) — Swift Package at `packages/OrpheusTerminal/`. Thin wrapper around `Lakr233/libghostty-spm` (tag `1.0.1777879537`). Audit PASS: ShellCraftKit opt-in only, exec backend unsandboxed, Metal layer embeddable. 22 tests, 0 failures. `swift run OrpheusTerminalSmoke` opens 720×440 window with live zsh terminal. Review session: `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-1801-review-phase-2a-libghostty-ffi-build.md`.
 - ✅ **Phase 1 — Core Foundation, `OrpheusCore`** (2026-05-10) — Swift Package shipped at `packages/OrpheusCore/`. Headless data + plumbing: typed model, GRDB persistence with FTS5, settings loader/merger/hot-reload, session registry + JSONL watcher, subprocess manager, smoke executable. 291 tests passing (2 documented skips), 0 failures. Review session: `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-0654-review-phase-1-core-foundation-build.md`.
 - ✅ **Phase 0.5 — Wireframes & Flows** (2026-04-19) — 22 active v0 wireframes locked across 13 iterations + 4 archived post-v0. See `docs/wireframes/wireframes-v0.5.md` and `docs/agent-briefs/v0.5/lore.md`.
