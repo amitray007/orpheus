@@ -14,4 +14,8 @@ internal enum OrpheusLogger {
         subsystem: "com.orpheus.core",
         category: "settings"
     )
+    internal static let sessions = Logger(
+        subsystem: "com.orpheus.core",
+        category: "sessions"
+    )
 }
