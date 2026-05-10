@@ -81,6 +81,14 @@ try {
   }
   console.log(`[install-mac] installing ${appBundle} -> ${target}`)
   execSync(`/usr/bin/ditto "${appBundle}" "${target}"`, { stdio: 'inherit' })
+
+  // Remove the build-output bundle so there's only ever ONE Orpheus.app on
+  // disk after install. Without this, dist/mac-arm64/Orpheus.app lingers as
+  // a real bundle next to the installed copy — mdfind reports both, and a
+  // stray double-click on the dist/ one would launch a stale build.
+  console.log(`[install-mac] cleaning ${distDir}`)
+  rmSync(distDir, { recursive: true, force: true })
+
   console.log(`[install-mac] done. Open with: open "${target}"`)
 } catch (err) {
   console.error(`[install-mac] failed: ${err.message}`)
