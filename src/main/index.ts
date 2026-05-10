@@ -6,6 +6,14 @@ import icon from '../../resources/icon.png?asset'
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
+
+// Track when the user explicitly quits (Cmd+Q / app.quit()) so the close
+// handler below can let the window actually close instead of hiding.
+let isQuitting = false
+app.on('before-quit', () => {
+  isQuitting = true
+})
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -32,6 +40,25 @@ function createWindow(): void {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
+
+  // On macOS, standard Electron behavior keeps the app frontmost when the
+  // user clicks close or minimize — the menu bar stays "Orpheus" and apps
+  // behind remain darkened. We call app.hide() instead so the previous app
+  // regains focus naturally (same as Cmd+H). Cmd+Q still quits because
+  // before-quit sets isQuitting=true, letting the close event pass through.
+  if (process.platform === 'darwin') {
+    mainWindow.on('close', (e) => {
+      if (!isQuitting) {
+        e.preventDefault()
+        app.hide()
+      }
+    })
+    // 'minimize' fires after the window has been minimized; hide the app
+    // immediately after so the previous app gains focus.
+    mainWindow.on('minimize', () => {
+      app.hide()
+    })
+  }
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
