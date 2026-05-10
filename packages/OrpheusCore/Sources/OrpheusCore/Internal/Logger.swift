@@ -18,4 +18,8 @@ internal enum OrpheusLogger {
         subsystem: "com.orpheus.core",
         category: "sessions"
     )
+    internal static let subprocess = Logger(
+        subsystem: "com.orpheus.core",
+        category: "subprocess"
+    )
 }
