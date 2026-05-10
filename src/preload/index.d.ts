@@ -4,8 +4,10 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
-      spike: {
-        unmount: () => Promise<void>
+      config: {
+        getApiKey: () => Promise<string | null>
+        setApiKey: (key: string) => Promise<boolean>
+        openFolder: () => Promise<string | null>
       }
     }
   }
