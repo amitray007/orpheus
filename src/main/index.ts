@@ -1,62 +1,7 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-
-// ---------------------------------------------------------------------------
-// API key persistence via Electron safeStorage (macOS Keychain)
-// ---------------------------------------------------------------------------
-
-interface ConfigFile {
-  apiKey?: string // base64 of the encrypted bytes
-}
-
-function getConfigPath(): string {
-  return join(app.getPath('userData'), 'config.json')
-}
-
-function readConfig(): ConfigFile {
-  try {
-    const raw = readFileSync(getConfigPath(), 'utf-8')
-    return JSON.parse(raw) as ConfigFile
-  } catch {
-    return {}
-  }
-}
-
-function writeConfig(data: ConfigFile): void {
-  const dir = app.getPath('userData')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(getConfigPath(), JSON.stringify(data, null, 2), 'utf-8')
-}
-
-function getApiKey(): string | null {
-  if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('[orpheus] safeStorage encryption not available — cannot decrypt API key')
-    return null
-  }
-  const config = readConfig()
-  if (!config.apiKey) return null
-  try {
-    const encrypted = Buffer.from(config.apiKey, 'base64')
-    return safeStorage.decryptString(encrypted)
-  } catch (err) {
-    console.error('[orpheus] failed to decrypt API key', err)
-    return null
-  }
-}
-
-function setApiKey(key: string): void {
-  if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('[orpheus] safeStorage encryption not available — cannot store API key')
-    return
-  }
-  const encrypted = safeStorage.encryptString(key)
-  const config = readConfig()
-  config.apiKey = Buffer.from(encrypted).toString('base64')
-  writeConfig(config)
-}
 
 // ---------------------------------------------------------------------------
 // Window
@@ -125,13 +70,6 @@ function createWindow(): void {
 // ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
-
-ipcMain.handle('config:getApiKey', () => getApiKey())
-
-ipcMain.handle('config:setApiKey', (_event, key: string) => {
-  setApiKey(key)
-  return true
-})
 
 ipcMain.handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })

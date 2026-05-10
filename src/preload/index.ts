@@ -4,8 +4,6 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   config: {
-    getApiKey: (): Promise<string | null> => ipcRenderer.invoke('config:getApiKey'),
-    setApiKey: (key: string): Promise<boolean> => ipcRenderer.invoke('config:setApiKey', key),
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
   }
 }

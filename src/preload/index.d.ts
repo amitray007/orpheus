@@ -5,8 +5,6 @@ declare global {
     electron: ElectronAPI
     api: {
       config: {
-        getApiKey: () => Promise<string | null>
-        setApiKey: (key: string) => Promise<boolean>
         openFolder: () => Promise<string | null>
       }
     }
