@@ -17,11 +17,11 @@ const _dirname = dirname(fileURLToPath(import.meta.url))
 function resolveAddonPath(): string {
   const addonRelative = 'native-spike-zorder/build/Release/native_spike_zorder.node'
   if (app.isPackaged) {
-    // asarUnpack places unpacked files under Contents/Resources/app.asar.unpacked/
-    return resolve(process.resourcesPath, 'app.asar.unpacked', 'packages', addonRelative)
+    // extraResources copies the file to Contents/Resources/<to> (no app.asar.unpacked prefix).
+    return resolve(process.resourcesPath, 'packages', addonRelative)
   }
-  // Dev / build:unpack (not packaged yet, but electron-vite wrote out/main/index.js)
-  // project root is two levels up from out/main/
+  // Dev / build:unpack (not packaged): electron-vite wrote out/main/index.js.
+  // Project root is two levels up from out/main/.
   return resolve(_dirname, '..', '..', 'packages', addonRelative)
 }
 

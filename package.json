@@ -15,7 +15,8 @@
     "build": "bun run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "install:mac": "node scripts/install-mac.mjs",
-    "build:unpack": "bun run build && electron-builder --dir && bun run install:mac",
+    "build:native": "node scripts/build-native.mjs",
+    "build:unpack": "bun run build && bun run build:native && electron-builder --dir && bun run install:mac",
     "build:win": "bun run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac && bun run install:mac",
     "build:linux": "electron-vite build && electron-builder --linux"
