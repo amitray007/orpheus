@@ -18,8 +18,21 @@ public final class OrpheusTerminalSurface {
     let options: TerminalSurfaceOptions
 
     /// The AppKit view that hosts the Metal-backed terminal surface.
-    /// Embed this in your NSView hierarchy.
+    ///
+    /// Phase 2C note: this exposes `GhosttyTerminal.AppTerminalView` directly,
+    /// which is a deliberate trade — keeping a thin wrapper means callers
+    /// occasionally need a GhosttyTerminal type. Use `surface.view.layer`
+    /// for the `CAMetalLayer`, `surface.view.delegate` to subscribe to
+    /// `TerminalSurfaceCloseDelegate.terminalDidClose(processAlive:)` for
+    /// process-exit notifications. See AUDIT.md §6.
     public let view: AppTerminalView
+
+    /// Whether `close()` has been called. Used to assert correct cleanup at
+    /// deinit time. Public so Phase 2C can check before re-entering teardown.
+    /// `nonisolated(unsafe)` because deinit runs off-actor and needs to read
+    /// this; in practice `close()` runs on @MainActor and is the only writer,
+    /// and the close-then-release ordering rules out concurrent access.
+    public nonisolated(unsafe) private(set) var isClosed: Bool = false
 
     // MARK: - Init
 
@@ -35,6 +48,10 @@ public final class OrpheusTerminalSurface {
         OrpheusTerminalLogger.surface.info("OrpheusTerminalSurface created")
     }
 
+    deinit {
+        assert(isClosed, "OrpheusTerminalSurface deinit'd without close() — Metal layer + PTY torn down without notice. Phase 2C consumers must call close() before releasing the surface.")
+    }
+
     // MARK: - Public surface
 
     /// Notify the surface that the containing view has been resized.
@@ -45,17 +62,31 @@ public final class OrpheusTerminalSurface {
         OrpheusTerminalLogger.surface.debug("resize to \(size.width)x\(size.height)")
     }
 
+    /// Convenience overload accepting integer cell-pixel dimensions.
+    public func resize(width: Int, height: Int) {
+        resize(to: NSSize(width: width, height: height))
+    }
+
+    /// Send text directly into the terminal as if the user typed it.
+    /// Thin pass-through to `view.sendText` — exposed at the surface level
+    /// so Phase 2C consumers don't need to reach through to GhosttyTerminal.
+    public func sendText(_ text: String) {
+        view.sendText(text)
+    }
+
     /// Cleanly close the terminal surface and terminate the child process.
     ///
     /// Detaches the controller from the view which triggers `tearDownSurface`
     /// inside `TerminalSurfaceCoordinator`, sending SIGHUP to the child
     /// process and freeing the Metal layer. After `close()`, do not interact
-    /// with `view` again.
+    /// with `view` again. Idempotent — calling close() twice is a no-op.
     public func close() {
+        guard !isClosed else { return }
         // Removing the controller causes TerminalSurfaceCoordinator.rebuildIfReady
         // to call tearDownSurface, which frees the TerminalSurface and disconnects
         // the PTY — this is the correct public teardown path.
         view.controller = nil
+        isClosed = true
         OrpheusTerminalLogger.surface.info("OrpheusTerminalSurface closed")
     }
 }

@@ -140,3 +140,78 @@ any of these paths.
    `AppTerminalView` directly (the AppKit layer underneath) for more explicit lifecycle
    control. Phase 2C could consider migrating to `TerminalSurfaceView` if SwiftUI
    composition becomes the primary pattern.
+
+---
+
+## 7. Forward pointers for Phase 2C integration
+
+These answer "where do I find X?" questions Phase 2C builders will hit.
+
+### Subscribing to process exit
+`OrpheusTerminalSurface` does not expose an `AsyncStream<ExitStatus>` — Phase 2C
+should subscribe via the GhosttyTerminal delegate pattern:
+
+```swift
+// Conform a coordinator/observer to TerminalSurfaceCloseDelegate
+final class MyExitObserver: TerminalSurfaceCloseDelegate {
+    func terminalDidClose(processAlive: Bool) {
+        // Update OrpheusCore: terminal.status = processAlive ? .detached : .stopped
+    }
+}
+
+let observer = MyExitObserver()
+surface.view.delegate = observer
+```
+
+The delegate is wired up internally by `TerminalCallbackBridge`. `processAlive`
+is true if the user closed the view while the child was still running (we
+sent SIGHUP); false if the child exited on its own.
+
+### Accessing the Metal layer
+`OrpheusTerminalSurface` does not expose `metalLayer: CAMetalLayer` directly.
+If Phase 2C needs the layer (e.g. for offscreen capture):
+
+```swift
+let layer = surface.view.layer as? CAMetalLayer
+```
+
+Don't try to host the layer in another view — it's owned by `AppTerminalView`.
+
+### Spawning `claude` instead of `zsh`
+Use the same `command` config-key escape hatch the engine already uses:
+
+```swift
+let config = SurfaceConfig(
+    command: claudeBinaryPath,        // e.g. from OrpheusCore.SettingsLoader
+    arguments: ["--resume", sessionID.rawValue],
+    cwd: project.rootPath,
+    palette: .orpheusDefault
+)
+let surface = try OrpheusTerminalEngine.shared.makeSurface(config: config)
+```
+
+The engine joins `command + arguments` with spaces and writes to libghostty's
+`command` config key — libghostty handles fork/exec.
+
+### Sending text programmatically
+`OrpheusTerminalSurface.sendText(_:)` is exposed. Use it for self-drive
+("type this command and press return") flows.
+
+### `SurfaceConfig.environment` is currently a no-op
+Phase 2A does not wire `environment` through to the libghostty surface
+(libghostty inherits the parent process env as-is). Phase 2C will need to
+either route via libghostty's command-line `env` prefix or extend
+`TerminalSurfaceOptions` upstream.
+
+### API surface deltas from `tasks.md`
+The Phase 2A implementer made a handful of deliberate API choices that
+diverge from the brief. None block Phase 2C; documented here for clarity:
+
+| Brief said | Code is | Why |
+|---|---|---|
+| `OrpheusTerminalEngine.makeSurface(_:) async throws` | `func makeSurface(_:) throws` | The function is `@MainActor`-isolated and synchronous; `async` would be ceremony with no await point. |
+| `func resize(width: Int, height: Int) async` | `func resize(to: NSSize)` (sync) + `func resize(width:height:)` overload | NSSize is the natural AppKit size unit; integer overload is provided for callers who think in cells. |
+| `KeyEvent` / `MouseEvent` translation types | omitted | `AppTerminalView` handles all input + IME internally; reimplementing would duplicate years of upstream work. |
+| `metalLayer: CAMetalLayer` accessor | omitted | Layer is owned by `AppTerminalView`; access via `surface.view.layer` if needed. |
+| `processExited: AsyncStream<ExitStatus>` | omitted | Subscribe via `TerminalSurfaceCloseDelegate` instead (see above). |
+| `cellSize` / `gridSize` in `SurfaceConfig` | omitted | libghostty derives these from the view's frame and the configured cell metrics; explicit override not yet needed. |

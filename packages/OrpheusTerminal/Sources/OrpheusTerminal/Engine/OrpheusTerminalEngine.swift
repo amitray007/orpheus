@@ -19,12 +19,15 @@ public final class OrpheusTerminalEngine {
     /// The process-wide shared engine. Created on first access.
     public static let shared = OrpheusTerminalEngine()
 
-    let controller: TerminalController
+    /// Held purely so its initializer's call to `ghostty_init` runs once on
+    /// first engine access. Not used after init; surface creation builds its
+    /// own per-surface controller. Don't reference this from new code.
+    private let runtimeAnchor: TerminalController
 
     // MARK: - Init
 
     private init() {
-        controller = TerminalController()
+        runtimeAnchor = TerminalController()
         OrpheusTerminalLogger.engine.info("OrpheusTerminalEngine initialized")
     }
 

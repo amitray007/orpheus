@@ -14,7 +14,12 @@ public struct SurfaceConfig: Sendable {
     /// Working directory for the spawned process.
     public var cwd: URL?
 
-    /// Additional environment variables merged into the shell environment.
+    /// Additional environment variables to merge into the shell environment.
+    /// **Phase 2A limitation:** libghostty currently inherits the parent
+    /// process's environment as-is; this field is reserved for the Phase 2C
+    /// integration where we'll either route via libghostty's command-line
+    /// `env` prefix or extend `TerminalSurfaceOptions` upstream. Setting it
+    /// today is a no-op.
     public var environment: [String: String]?
 
     /// Terminal colour palette applied at surface creation time.
