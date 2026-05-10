@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from 'node:child_process'
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,6 +11,16 @@ if (process.platform !== 'darwin') {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = resolve(projectRoot, 'dist')
+
+// Tell Spotlight to skip dist/ so the build-output Orpheus.app doesn't appear
+// alongside the real one in /Applications when searching. The marker file
+// applies to the whole tree below it; we drop it idempotently every install.
+if (existsSync(distDir)) {
+  const marker = resolve(distDir, '.metadata_never_index')
+  if (!existsSync(marker)) {
+    closeSync(openSync(marker, 'w'))
+  }
+}
 
 function findAppBundle(dir) {
   if (!existsSync(dir)) return null
