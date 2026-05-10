@@ -190,6 +190,49 @@ final class SettingsWatcherTests: XCTestCase {
         // After stop, the test should return without hanging.
     }
 
+    // MARK: - Coalescing simultaneous changes
+
+    func testSimultaneousChangesCoalesceToSingleEmission() async throws {
+        var global = OrpheusSettings.defaultValue
+        global.general.theme = .light
+        try write(global, to: globalURL())
+
+        var project = OrpheusSettings.defaultValue
+        project.terminal.colorScheme = "nord"
+        try write(project, to: projectURL())
+
+        let watcher = SettingsWatcher(
+            globalURL: globalURL(),
+            projectURL: projectURL(),
+            loader: loader,
+            merger: merger
+        )
+        let stream = await watcher.start()
+
+        // Consume the initial emission.
+        _ = await firstValue(from: stream, timeout: 1.0)
+
+        // Mutate BOTH files in rapid succession (well within the debounce window).
+        var newGlobal = OrpheusSettings.defaultValue
+        newGlobal.general.theme = .dark
+        try write(newGlobal, to: globalURL())
+
+        var newProject = OrpheusSettings.defaultValue
+        newProject.terminal.colorScheme = "solarized-dark"
+        try write(newProject, to: projectURL())
+
+        // Count emissions over a window long enough for both FCW debounces
+        // and the SettingsWatcher coalescing debounce to fire (~750 ms slack).
+        let count = await countEmissions(from: stream, duration: 1.5)
+
+        XCTAssertEqual(
+            count, 1,
+            "Both files changed within the debounce window; expected exactly one merged emission"
+        )
+
+        await watcher.stop()
+    }
+
     func testRestartProducesNewStream() async throws {
         try write(.defaultValue, to: globalURL())
 
@@ -232,4 +275,35 @@ private func firstValue<T: Sendable>(
         group.cancelAll()
         return result
     }
+}
+
+/// Lock-protected emission counter. Hoisted to file scope because Swift
+/// disallows nesting non-generic types inside generic functions.
+private final class EmissionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func inc() { lock.withLock { n += 1 } }
+    var value: Int { lock.withLock { n } }
+}
+
+/// Count emissions from `stream` over `duration` seconds. Races the
+/// consumer against a sleep timer so a low-event-rate stream cannot
+/// block on `for await` waiting for the next value.
+private func countEmissions<T: Sendable>(
+    from stream: AsyncStream<T>,
+    duration: Double
+) async -> Int {
+    let counter = EmissionCounter()
+
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask {
+            for await _ in stream { counter.inc() }
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        }
+        await group.next()
+        group.cancelAll()
+    }
+    return counter.value
 }

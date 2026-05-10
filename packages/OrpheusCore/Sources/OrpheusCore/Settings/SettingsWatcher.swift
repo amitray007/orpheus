@@ -105,8 +105,9 @@ public actor SettingsWatcher {
             continuation.yield(current)
         }
 
-        let globalWatcher  = FileChangeWatcher(path: globalURL.path)
-        let projectWatcher = projectURL.map { FileChangeWatcher(path: $0.path) }
+        let debounce       = SettingsConstants.settingsDebounceInterval
+        let globalWatcher  = FileChangeWatcher(path: globalURL.path, debounce: debounce)
+        let projectWatcher = projectURL.map { FileChangeWatcher(path: $0.path, debounce: debounce) }
 
         let globalEvents  = await globalWatcher.events()
         let projectEvents = await projectWatcher?.events()
@@ -131,24 +132,35 @@ public actor SettingsWatcher {
             return stream
         }()
 
+        // Coalesce events arriving from both watchers within the debounce
+        // window into a single load + yield. Without this, simultaneous
+        // changes to global and project files produce two emissions.
+        var debounceTask: Task<Void, Never>?
+        let debounceNanos = UInt64(debounce * 1_000_000_000)
         for await _ in merged {
             if Task.isCancelled { break }
-            do {
-                let settings = try loadMerged(
-                    globalURL: globalURL,
-                    projectURL: projectURL,
-                    loader: loader,
-                    merger: merger
-                )
-                continuation.yield(settings)
-            } catch {
-                OrpheusLogger.settings.error(
-                    "SettingsWatcher: failed to reload settings — \(error.localizedDescription, privacy: .public)"
-                )
-                // Suppress; keep previous value.
+            debounceTask?.cancel()
+            debounceTask = Task {
+                try? await Task.sleep(nanoseconds: debounceNanos)
+                if Task.isCancelled { return }
+                do {
+                    let settings = try loadMerged(
+                        globalURL: globalURL,
+                        projectURL: projectURL,
+                        loader: loader,
+                        merger: merger
+                    )
+                    continuation.yield(settings)
+                } catch {
+                    OrpheusLogger.settings.error(
+                        "SettingsWatcher: failed to reload settings — \(error.localizedDescription, privacy: .public)"
+                    )
+                    // Suppress; keep previous value.
+                }
             }
         }
 
+        debounceTask?.cancel()
         await globalWatcher.stop()
         if let pw = projectWatcher { await pw.stop() }
         continuation.finish()
