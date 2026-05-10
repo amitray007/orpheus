@@ -55,6 +55,16 @@ if (existsSync(target) && isAppRunning()) {
 }
 
 try {
+  // electron-builder's ad-hoc signing leaves the inner frameworks (Electron Framework,
+  // Squirrel, Helpers, etc.) with mismatched Team IDs. macOS 15+ refuses to load
+  // any framework whose Team ID doesn't match the loading process, so the app
+  // crashes on launch with a "Library not loaded" dyld error and Finder shows the
+  // misleading "check with the developer" Gatekeeper-style dialog. Re-signing the
+  // whole bundle as one ad-hoc unit normalizes the Team IDs across components.
+  console.log(`[install-mac] re-signing ${appBundle} (ad-hoc, unified Team IDs)`)
+  execSync(`codesign --force --deep --sign - "${appBundle}"`, { stdio: 'inherit' })
+  execSync(`codesign --verify --deep --strict "${appBundle}"`, { stdio: 'pipe' })
+
   if (existsSync(target)) {
     console.log(`[install-mac] removing existing ${target}`)
     rmSync(target, { recursive: true, force: true })
