@@ -1,0 +1,8 @@
+{
+  "name": "native-spike-zorder",
+  "private": true,
+  "main": "build/Release/native_spike_zorder.node",
+  "scripts": {
+    "build": "node-gyp rebuild"
+  }
+}
