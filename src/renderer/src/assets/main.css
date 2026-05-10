@@ -33,3 +33,15 @@ body {
   height: 100%;
   width: 100%;
 }
+
+/* Transparent overlay drag region — sits flush at the top of the window.
+   position: fixed keeps it out of normal flow so it never pushes content down.
+   height matches the macOS traffic-light row (36px). */
+.titlebar-drag-region {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  -webkit-app-region: drag;
+}
