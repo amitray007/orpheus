@@ -10,4 +10,8 @@ internal enum OrpheusLogger {
         subsystem: "com.orpheus.core",
         category: "persistence"
     )
+    internal static let settings = Logger(
+        subsystem: "com.orpheus.core",
+        category: "settings"
+    )
 }
