@@ -8,7 +8,13 @@ export interface FormFieldProps {
   children: ReactNode
 }
 
-export function FormField({ label, htmlFor, helper, error, children }: FormFieldProps): React.JSX.Element {
+export function FormField({
+  label,
+  htmlFor,
+  helper,
+  error,
+  children
+}: FormFieldProps): React.JSX.Element {
   const errorText = typeof error === 'string' ? error : undefined
 
   return (
@@ -22,13 +28,9 @@ export function FormField({ label, htmlFor, helper, error, children }: FormField
 
       {children}
 
-      {helper && !errorText && (
-        <p className="text-xs text-text-muted">{helper}</p>
-      )}
+      {helper && !errorText && <p className="text-xs text-text-muted">{helper}</p>}
 
-      {errorText && (
-        <p className="text-xs text-red-500">{errorText}</p>
-      )}
+      {errorText && <p className="text-xs text-red-500">{errorText}</p>}
     </div>
   )
 }
