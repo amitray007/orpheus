@@ -37,6 +37,10 @@ let package = Package(
                 "OrpheusCore",
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
+        ),
+        .testTarget(
+            name: "DisciplineLintTests",
+            dependencies: []
         )
     ]
 )
