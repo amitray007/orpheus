@@ -83,10 +83,12 @@ final class ToolbarBuilder: NSObject, NSToolbarDelegate {
             // Sidebar toggle — Phase 2C will wire sidebar collapse
         }
         let host = NSHostingView(rootView: button.orpheusTheme(nil))
-        host.setFrameSize(NSSize(width: 32, height: 32))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.widthAnchor.constraint(equalToConstant: 32),
+            host.heightAnchor.constraint(equalToConstant: 32),
+        ])
         item.view = host
-        item.minSize = NSSize(width: 32, height: 32)
-        item.maxSize = NSSize(width: 32, height: 32)
         return item
     }
 
@@ -112,10 +114,13 @@ final class ToolbarBuilder: NSObject, NSToolbarDelegate {
         .frame(minWidth: 200, maxWidth: 400)
 
         let host = NSHostingView(rootView: searchView.orpheusTheme(nil))
-        host.setFrameSize(NSSize(width: 240, height: 28))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            host.widthAnchor.constraint(lessThanOrEqualToConstant: 400),
+            host.heightAnchor.constraint(equalToConstant: 28),
+        ])
         item.view = host
-        item.minSize = NSSize(width: 160, height: 28)
-        item.maxSize = NSSize(width: 400, height: 28)
         return item
     }
 
@@ -133,10 +138,13 @@ final class ToolbarBuilder: NSObject, NSToolbarDelegate {
             // User menu — Phase 4
         }
         let host = NSHostingView(rootView: userView.orpheusTheme(nil))
-        host.setFrameSize(NSSize(width: 72, height: 28))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            host.widthAnchor.constraint(lessThanOrEqualToConstant: 120),
+            host.heightAnchor.constraint(equalToConstant: 28),
+        ])
         item.view = host
-        item.minSize = NSSize(width: 72, height: 28)
-        item.maxSize = NSSize(width: 120, height: 28)
         return item
     }
 }

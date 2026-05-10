@@ -1,7 +1,7 @@
 import OSLog
 
 /// App-level logging. All log calls in `apps/Orpheus/` go through this
-/// namespace. `print(` is forbidden; see DisciplineLintTests.
+/// namespace. The print statement is forbidden; see DisciplineLintTests.
 enum OrpheusAppLogger {
     static let app       = Logger(subsystem: "com.orpheus.app", category: "app")
     static let sidebar   = Logger(subsystem: "com.orpheus.app", category: "sidebar")

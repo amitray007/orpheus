@@ -11,6 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // When running as a unit-test host, skip the full launch sequence.
+        // XCTest injects XCTestBundlePath into the environment.
+        if ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil {
+            return
+        }
+
         // Hide any empty placeholder windows that @main creates.
         for window in NSApp.windows {
             if window.frame.width < 10 {

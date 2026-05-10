@@ -8,7 +8,7 @@ struct ErrorBanner: View {
     let kind: OrpheusBanner.Kind
     var title: String? = nil
     var primaryActionLabel: String? = nil
-    var primaryAction: (() -> Void)? = nil
+    var primaryAction: (@Sendable () -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
 
     var body: some View {
@@ -18,7 +18,7 @@ struct ErrorBanner: View {
             title: title,
             isDismissable: onDismiss != nil,
             primaryAction: primaryActionLabel.map { label in
-                OrpheusBanner.Action(title: label) { primaryAction?() }
+                OrpheusBanner.Action(title: label, handler: primaryAction ?? {})
             },
             onDismiss: onDismiss
         )
