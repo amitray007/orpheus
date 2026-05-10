@@ -4,11 +4,14 @@ _Last updated: 2026-05-10 IST_
 
 ## Now
 
-- Phase 2 build — Shell + Terminal. Requires Phase 0 (design system) + Phase 0.5 (wireframes) + Phase 1 (core), all of which are now done. First "real app" moment: launch `Orpheus.app`, open a project, see sidebar populated, click a project, see a terminal running `claude`, splits work, force-close + relaunch restores everything (W1, W2, W6, W7, W8, W17, W10, W11, W18, W19).
+- Phase 2A — libghostty FFI. Standalone `OrpheusTerminal` Swift Package wrapping libghostty's C API. Test executable opens a window, embeds a terminal, spawns a shell, takes input, renders output. Smallest sub-phase but riskiest — if the binding strategy doesn't work, everything else in Phase 2 stalls. Brief to draft at `docs/agent-briefs/v2a/`.
 
 ## Next
 
-- Phase 3 build — Self-Drive CLI + Rich Content. Adds the chat viewer (W4), diff viewer (W21), and code viewer with syntax highlighting. Depends on Phase 1 (core) + Phase 2 (terminal host).
+- Phase 2B — app shell + sidebar (W1, W2, W3, W18, W19). Orpheus.app target with main window chrome, sidebar populated from `OrpheusCore`'s `ProjectRepository`/`SpaceRepository`/`TerminalRepository` observers, onboarding flow, empty/loading/error states. No terminal hosting yet — that lands in 2C.
+- Phase 2C — terminal hosting + splits + auto-restore (W6, W7, W8, W10, W11). `OrpheusTerminalView` wrapping 2A's bindings. H/V splits per space. New-project + new-space modals. Auto-restore on launch from `OrpheusCore` persistence; force-close survival.
+- Phase 2D — canvas + drag polish (W17). Free-arranged terminals, terminal-drag UX across splits, final wireframe-fidelity touches. Can slip to Phase 7 if tight.
+- Phase 3 build — Self-Drive CLI + Rich Content. Adds the chat viewer (W4), diff viewer (W21), code viewer with syntax highlighting. Depends on Phase 1 (core) + Phase 2 (terminal host).
 
 ## Done
 
