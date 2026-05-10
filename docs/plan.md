@@ -209,6 +209,8 @@ Phase 0 substantially complete (design-system tokens available for wireframe ann
 
 ## Phase 1 — Core Foundation
 
+**Status as of 2026-05-10:** ✅ DONE. See `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-0654-review-phase-1-core-foundation-build.md`.
+
 ### Goal
 The plumbing that every feature depends on. Data model persists, settings load, session state is readable, `claude` can be spawned as a subprocess. No UI — headless core logic only.
 

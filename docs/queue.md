@@ -4,18 +4,17 @@ _Last updated: 2026-05-10 IST_
 
 ## Now
 
-- Phase 1 brief — drafted at `docs/agent-briefs/v1/` (5 files: README, inputs, tasks, discipline, handoff). User to review before handing off to a builder agent. Decisions surfaced in `tasks.md` "Decisions to lock in this phase" — recommended defaults provided; user can override before build starts.
+- Phase 2 build — Shell + Terminal. Requires Phase 0 (design system) + Phase 0.5 (wireframes) + Phase 1 (core), all of which are now done. First "real app" moment: launch `Orpheus.app`, open a project, see sidebar populated, click a project, see a terminal running `claude`, splits work, force-close + relaunch restores everything (W1, W2, W6, W7, W8, W17, W10, W11, W18, W19).
 
 ## Next
 
-- Phase 1 build — Core Foundation, `OrpheusCore` Swift Package. Headless plumbing (data model, persistence, settings, session registry, JSONL watcher, subprocess manager). Smoke executable as the human-verifiable gate.
-- Phase 2 build — Shell + Terminal. Requires Phase 0 (design system) + Phase 0.5 (wireframes) + Phase 1 (core).
+- Phase 3 build — Self-Drive CLI + Rich Content. Adds the chat viewer (W4), diff viewer (W21), and code viewer with syntax highlighting. Depends on Phase 1 (core) + Phase 2 (terminal host).
 
 ## Done
 
+- ✅ **Phase 1 — Core Foundation, `OrpheusCore`** (2026-05-10) — Swift Package shipped at `packages/OrpheusCore/`. Headless data + plumbing: typed model, GRDB persistence with FTS5, settings loader/merger/hot-reload, session registry + JSONL watcher, subprocess manager, smoke executable. 291 tests passing (2 documented skips), 0 failures. Review session: `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-10-0654-review-phase-1-core-foundation-build.md`.
 - ✅ **Phase 0.5 — Wireframes & Flows** (2026-04-19) — 22 active v0 wireframes locked across 13 iterations + 4 archived post-v0. See `docs/wireframes/wireframes-v0.5.md` and `docs/agent-briefs/v0.5/lore.md`.
 - ✅ **Phase 0 — Design-System Foundation, `OrpheusDesign`** (2026-05-09) — Swift Package shipped at `packages/OrpheusDesign/` with all token categories, 22 components, dark + light themes, and `OrpheusDesignCatalog` preview app. 84 tests, all gates green. Review session: `/Users/maverick/code/projects/thoughts/projects/orpheus/sessions/2026-05-09-2128-review-phase-0-design-system-build.md`.
-- ✅ **Phase 1 brief drafted** (2026-05-10) — `docs/agent-briefs/v1/` with README / inputs / tasks (39 numbered tasks across 9 groups) / discipline / handoff. Ready for user review before handing off to a builder agent.
 
 ## Blocked / open issues
 

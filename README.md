@@ -52,7 +52,7 @@ Key commitments locked in [`docs/specs/`](docs/specs/):
 |---|---|---|
 | 0 | Design-System Foundation (`OrpheusDesign`) | ✅ Done (2026-05-09) |
 | 0.5 | Wireframes & Flows | ✅ Done (2026-04-19) |
-| 1 | Core Foundation | ⬜ Pending — `docs/agent-briefs/v1/` not yet written |
+| 1 | Core Foundation (`OrpheusCore`) | ✅ Done (2026-05-10) |
 | 2+ | Feature surfaces | ⬜ Pending |
 
 Live state lives in [`docs/queue.md`](docs/queue.md).
