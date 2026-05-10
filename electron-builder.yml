@@ -14,12 +14,6 @@ asarUnpack:
   # electron-builder extracts anything matching these globs to app.asar.unpacked/
   - resources/**
   - '**/*.node'
-# extraResources copies files/dirs into Contents/Resources OUTSIDE the asar,
-# preserving the relative path structure. Native addons are placed here so the
-# main process can load them via require() regardless of packaging state.
-extraResources:
-  - from: 'packages/native-spike-zorder/build/Release/native_spike_zorder.node'
-    to: 'packages/native-spike-zorder/build/Release/native_spike_zorder.node'
 win:
   executableName: Orpheus
 nsis:
