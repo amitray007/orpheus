@@ -786,7 +786,11 @@ export function Sidebar({
               <div className="flex flex-col gap-0.5 overflow-y-auto max-h-80">
                 {projects.map((p) => {
                   const expanded = expandedProjectIds.has(p.id)
-                  const workspaces = workspacesByProject[p.id] ?? []
+                  // workspacesByProject now stores all (active + archived);
+                  // sidebar only surfaces active ones.
+                  const workspaces = (workspacesByProject[p.id] ?? []).filter(
+                    (w) => w.archivedAt === null
+                  )
                   return (
                     <ProjectRow
                       key={p.id}

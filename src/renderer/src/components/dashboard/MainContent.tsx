@@ -38,6 +38,8 @@ interface MainContentProps {
   view: View
   project: ProjectRecord | undefined
   workspace?: WorkspaceRecord | undefined
+  // null = not yet fetched; [] = fetched, empty
+  workspacesForProject: WorkspaceRecord[] | null
   onRequestRemoveProject: (project: ProjectRecord) => void
   onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
@@ -52,6 +54,7 @@ export function MainContent({
   view,
   project,
   workspace,
+  workspacesForProject,
   onRequestRemoveProject,
   onNavigateToProject,
   onSelectWorkspace,
@@ -98,6 +101,7 @@ export function MainContent({
   return (
     <ProjectView
       project={project}
+      workspaces={workspacesForProject}
       onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onAddWorkspace={onAddWorkspace}

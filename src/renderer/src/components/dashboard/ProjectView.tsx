@@ -344,6 +344,8 @@ function WorkspaceCard({
 
 interface ProjectViewProps {
   project: ProjectRecord
+  // null = not yet fetched (Dashboard lazy-loads on select); array = ready
+  workspaces: WorkspaceRecord[] | null
   onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
@@ -355,6 +357,7 @@ interface ProjectViewProps {
 
 export function ProjectView({
   project,
+  workspaces,
   onRequestRemove,
   onSelectWorkspace,
   onAddWorkspace,
@@ -363,18 +366,10 @@ export function ProjectView({
   onUnarchiveWorkspace,
   onToggleWorkspacePin
 }: ProjectViewProps): React.JSX.Element {
-
-  // Workspaces — projectId-keyed shape so `loading` derives from state without
-  // a synchronous setState inside the effect (matches the sessions pattern below).
-  const [workspaceData, setWorkspaceData] = useState<{
-    projectId: string | null
-    list: WorkspaceRecord[]
-  }>({ projectId: null, list: [] })
-  const workspaces = workspaceData.list
-  const workspacesLoading = workspaceData.projectId !== project.id
-
-  const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
-  const archivedWorkspaces = workspaces.filter((w) => w.archivedAt !== null)
+  const workspacesLoading = workspaces === null
+  const allWorkspaces = workspaces ?? []
+  const activeWorkspaces = allWorkspaces.filter((w) => w.archivedAt === null)
+  const archivedWorkspaces = allWorkspaces.filter((w) => w.archivedAt !== null)
 
   const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
@@ -389,23 +384,6 @@ export function ProjectView({
 
   const sessions = sessionData.list
   const sessionsLoading = sessionData.projectId !== project.id
-
-  // Load workspaces (all — active + archived)
-  useEffect(() => {
-    let cancelled = false
-    window.api.workspaces
-      .listForProject(project.id, { scope: 'all' })
-      .then((list) => {
-        if (!cancelled) setWorkspaceData({ projectId: project.id, list })
-      })
-      .catch((err) => {
-        console.error('[project-view] failed to load workspaces', err)
-        if (!cancelled) setWorkspaceData({ projectId: project.id, list: [] })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [project.id])
 
   // Load sessions
   useEffect(() => {

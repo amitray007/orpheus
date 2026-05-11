@@ -76,9 +76,12 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     refreshPins()
   }, [])
 
+  // Stores all workspaces (active + archived) per project. Callers filter by
+  // archivedAt at render time. One source of truth — keeps ProjectView in
+  // sync when the sidebar mutates workspace state.
   async function fetchWorkspacesForProject(projectId: string): Promise<void> {
     try {
-      const workspaces = await window.api.workspaces.listForProject(projectId)
+      const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
       setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
     } catch (err) {
       console.error('[dashboard] failed to load workspaces for', projectId, err)
@@ -106,6 +109,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     setSelectedProjectId(id)
     setSelectedWorkspaceId(null)
     setView({ kind: 'project', projectId: id })
+    if (!workspacesByProject[id]) {
+      fetchWorkspacesForProject(id)
+    }
     window.api.projects.open(id).catch(console.error)
   }
 
@@ -138,6 +144,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     setSelectedProjectId(id)
     setSelectedWorkspaceId(null)
     setView({ kind: 'project', projectId: id })
+    if (!workspacesByProject[id]) {
+      fetchWorkspacesForProject(id)
+    }
     window.api.projects.open(id).catch(console.error)
   }
 
@@ -364,6 +373,11 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
               view={view}
               project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
               workspace={activeWorkspace}
+              workspacesForProject={
+                view.kind === 'project'
+                  ? (workspacesByProject[view.projectId] ?? null)
+                  : null
+              }
               onRequestRemoveProject={handleRequestRemoveProject}
               onNavigateToProject={handleNavigateToProject}
               onSelectWorkspace={handleSelectWorkspace}
