@@ -42,16 +42,19 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       <div className="flex flex-1 min-h-0">
         <Sidebar collapsed={sidebarCollapsed} />
 
-        <main className="flex-1 overflow-y-auto px-8 py-6">
-          <div className="flex flex-col gap-6">
-            <PlaceholderSection title="Activity" />
-            <PlaceholderSection title="Recent Projects" />
-            <PlaceholderSection title="Recent Sessions" />
-          </div>
-        </main>
-      </div>
+        {/* Right column: main content + footer (footer stays out of the sidebar's column) */}
+        <div className="flex flex-1 flex-col min-w-0">
+          <main className="flex-1 overflow-y-auto px-8 py-6">
+            <div className="flex flex-col gap-6">
+              <PlaceholderSection title="Activity" />
+              <PlaceholderSection title="Recent Projects" />
+              <PlaceholderSection title="Recent Sessions" />
+            </div>
+          </main>
 
-      <Footer version={version} connected={claudeInstalled} />
+          <Footer version={version} connected={claudeInstalled} />
+        </div>
+      </div>
     </div>
   )
 }
