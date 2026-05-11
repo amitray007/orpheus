@@ -7,6 +7,8 @@ declare global {
     api: {
       config: {
         openFolder: () => Promise<string | null>
+        getSetupCompleted: () => Promise<boolean>
+        setSetupCompleted: (value: boolean) => Promise<boolean>
       }
       doctor: {
         check: () => Promise<DoctorResult>
