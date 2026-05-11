@@ -1,5 +1,5 @@
 import type React from 'react'
-import { Menu, Settings } from 'lucide-react'
+import { List, Gear } from '@phosphor-icons/react'
 
 interface TopbarProps {
   onToggleSidebar: () => void
@@ -19,7 +19,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps): React.JSX.Element {
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           onClick={onToggleSidebar}
         >
-          <Menu size={18} strokeWidth={1.75} />
+          <List size={20} weight="bold" />
         </button>
       </div>
 
@@ -38,7 +38,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps): React.JSX.Element {
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           onClick={() => console.log('[settings] not wired yet')}
         >
-          <Settings size={18} strokeWidth={1.75} />
+          <Gear size={20} weight="bold" />
         </button>
       </div>
     </header>
