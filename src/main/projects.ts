@@ -15,7 +15,6 @@ type ProjectRow = {
   claude_encoded_name: string | null
   added_at: number
   last_opened_at: number | null
-  pinned_at: number | null
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -25,8 +24,7 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     name: row.name,
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
-    lastOpenedAt: row.last_opened_at,
-    pinnedAt: row.pinned_at
+    lastOpenedAt: row.last_opened_at
   }
 }
 
@@ -107,10 +105,3 @@ export function renameProject(id: string, name: string): void {
   db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name, id)
 }
 
-export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
-  const db = getDb()
-  const pinnedAt = pinned ? Date.now() : null
-  db.prepare('UPDATE projects SET pinned_at = ? WHERE id = ?').run(pinnedAt, id)
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
-  return rowToRecord(row)
-}

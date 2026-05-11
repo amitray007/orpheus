@@ -28,7 +28,6 @@ declare global {
         open: (id: string) => Promise<ProjectRecord>
         remove: (id: string) => Promise<void>
         rename: (id: string, name: string) => Promise<void>
-        setPinned: (id: string, pinned: boolean) => Promise<ProjectRecord>
       }
       sessions: {
         listForProject: (

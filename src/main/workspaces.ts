@@ -24,7 +24,6 @@ type ProjectRow = {
   claude_encoded_name: string | null
   added_at: number
   last_opened_at: number | null
-  pinned_at: number | null
 }
 
 function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
@@ -48,8 +47,7 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     name: row.name,
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
-    lastOpenedAt: row.last_opened_at,
-    pinnedAt: row.pinned_at
+    lastOpenedAt: row.last_opened_at
   }
 }
 
@@ -169,12 +167,11 @@ export function unarchiveWorkspace(id: string): WorkspaceRecord {
 export function listAllPinned(): PinnedItem[] {
   const db = getDb()
 
-  const pinnedWorkspaceRows = db
+  const rows = db
     .prepare(
       `SELECT w.*, p.id as p_id, p.path as p_path, p.name as p_name,
               p.claude_encoded_name as p_claude_encoded_name,
-              p.added_at as p_added_at, p.last_opened_at as p_last_opened_at,
-              p.pinned_at as p_pinned_at
+              p.added_at as p_added_at, p.last_opened_at as p_last_opened_at
        FROM workspaces w
        JOIN projects p ON p.id = w.project_id
        WHERE w.pinned_at IS NOT NULL
@@ -188,19 +185,9 @@ export function listAllPinned(): PinnedItem[] {
       p_claude_encoded_name: string | null
       p_added_at: number
       p_last_opened_at: number | null
-      p_pinned_at: number | null
     })[]
 
-  const pinnedProjectRows = db
-    .prepare(
-      `SELECT * FROM projects
-       WHERE pinned_at IS NOT NULL
-       ORDER BY pinned_at DESC`
-    )
-    .all() as ProjectRow[]
-
-  const workspaceItems: PinnedItem[] = pinnedWorkspaceRows.map((row) => ({
-    kind: 'workspace' as const,
+  return rows.map((row) => ({
     workspace: rowToWorkspaceRecord(row),
     project: rowToProjectRecord({
       id: row.p_id,
@@ -208,22 +195,7 @@ export function listAllPinned(): PinnedItem[] {
       name: row.p_name,
       claude_encoded_name: row.p_claude_encoded_name,
       added_at: row.p_added_at,
-      last_opened_at: row.p_last_opened_at,
-      pinned_at: row.p_pinned_at
+      last_opened_at: row.p_last_opened_at
     })
   }))
-
-  const projectItems: PinnedItem[] = pinnedProjectRows.map((row) => ({
-    kind: 'project' as const,
-    project: rowToProjectRecord(row)
-  }))
-
-  // Combine and sort by pinned_at DESC. Helper avoids scratch-field hack.
-  function pinnedAtOf(item: PinnedItem): number {
-    return item.kind === 'workspace' ? item.workspace.pinnedAt! : item.project.pinnedAt!
-  }
-
-  const all: PinnedItem[] = [...workspaceItems, ...projectItems]
-  all.sort((a, b) => pinnedAtOf(b) - pinnedAtOf(a))
-  return all
 }

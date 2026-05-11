@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 3
+const CURRENT_VERSION = 4
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -126,7 +126,19 @@ function migrate(db: Database.Database): void {
     }
 
     if (row) {
-      db.prepare('UPDATE schema_version SET version = ?').run(CURRENT_VERSION)
+      db.prepare('UPDATE schema_version SET version = ?').run(3)
+    }
+  }
+
+  // Version 4: drop projects.pinned_at
+  if (currentVersion < 4) {
+    try {
+      db.exec('ALTER TABLE projects DROP COLUMN pinned_at')
+    } catch {
+      // Already gone
+    }
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(4)
     }
   }
 }

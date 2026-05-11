@@ -24,7 +24,6 @@ export type ProjectRecord = {
   claudeEncodedName: string | null
   addedAt: number
   lastOpenedAt: number | null
-  pinnedAt: number | null
 }
 
 export type WorkspaceRecord = {
@@ -39,10 +38,11 @@ export type WorkspaceRecord = {
   archivedAt: number | null
 }
 
-// For Pinned section: a pinned project, or a pinned workspace with its project's context for breadcrumb display
-export type PinnedItem =
-  | { kind: 'project'; project: ProjectRecord }
-  | { kind: 'workspace'; workspace: WorkspaceRecord; project: ProjectRecord }
+// For Pinned section: a pinned workspace with its project for context
+export type PinnedItem = {
+  workspace: WorkspaceRecord
+  project: ProjectRecord
+}
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 

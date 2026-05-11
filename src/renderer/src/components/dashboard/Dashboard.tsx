@@ -158,19 +158,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     window.api.workspaces.open(workspaceId).catch(console.error)
   }
 
-  async function handleToggleProjectPin(projectId: string): Promise<void> {
-    const project = projects.find((p) => p.id === projectId)
-    if (!project) return
-    const pinned = project.pinnedAt === null
-    try {
-      const updated = await window.api.projects.setPinned(projectId, pinned)
-      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
-      refreshPins()
-    } catch (err) {
-      console.error('[dashboard] setPinned failed', err)
-    }
-  }
-
   async function handleToggleWorkspacePin(workspaceId: string, projectId: string): Promise<void> {
     const workspaces = workspacesByProject[projectId] ?? []
     const ws = workspaces.find((w) => w.id === workspaceId)
@@ -356,7 +343,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           addingProject={addingProject}
           onToggleProjectExpand={handleToggleProjectExpand}
           onSelectWorkspace={handleSelectWorkspace}
-          onToggleProjectPin={handleToggleProjectPin}
           onToggleWorkspacePin={handleToggleWorkspacePin}
           onRenameProject={handleRenameProject}
           onRequestRemoveProject={handleRequestRemoveProject}

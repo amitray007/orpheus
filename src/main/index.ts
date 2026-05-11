@@ -8,7 +8,7 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
 import { getDb } from './db'
-import { listProjects, addProject, openProject, deleteProject, renameProject, setProjectPinned } from './projects'
+import { listProjects, addProject, openProject, deleteProject, renameProject } from './projects'
 import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
 import {
   listWorkspacesForProject,
@@ -228,10 +228,6 @@ ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => deleteProject(
 
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
-)
-
-ipcMain.handle('projects:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
-  setProjectPinned(id, pinned)
 )
 
 // ---------------------------------------------------------------------------
