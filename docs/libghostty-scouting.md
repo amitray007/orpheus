@@ -398,3 +398,34 @@ Start the Ghostty `ghostty_app_t` inside the Electron process and verify it find
 - [ghostty-org/ghostty — LICENSE (MIT)](https://github.com/ghostty-org/ghostty/blob/main/LICENSE)
 - [Ghostty architecture — DeepWiki](https://deepwiki.com/ghostty-org/ghostty)
 - [Ghostty build from source](https://ghostty.org/docs/install/build)
+
+---
+
+## 6. Update: switching to prebuilt xcframework (2026-05-11)
+
+Building Ghostty from source is currently blocked on this machine: Zig 0.15.2 cannot
+link against the Xcode 26.4 SDK on macOS 26 Tahoe due to a linker TBD-identifier change
+that Zig's linker driver does not yet handle. Ghostty does not support Zig 0.16 yet, so
+there is no forward path through the toolchain until either Ghostty bumps its minimum Zig
+version or Zig releases a 0.15.x patch.
+
+To unblock integration work, we are switching to the prebuilt `GhosttyKit.xcframework`
+published by [`Lakr233/libghostty-spm`](https://github.com/Lakr233/libghostty-spm) (MIT
+license, single maintainer, weekly auto-rebuilds triggered by Ghostty CI). The artifact
+is a four-slice xcframework (macOS universal arm64+x86_64, plus iOS and Catalyst slices
+we ignore) and wraps Ghostty v1.3.1. The macOS slice provides `libghostty.a` and
+`ghostty.h` with the full embedding API confirmed above.
+
+**Trust caveat**: this is a single-maintainer community wrapper — it is not an official
+Ghostty artifact. Mitigation: we pin the artifact by its SHA-256 hash in
+`scripts/fetch-libghostty.sh`; any tampered or accidentally swapped release will fail
+the verification step loudly at fetch time. Future bumps must update both the URL and the
+hash constant together.
+
+The Ghostty source clone (`vendor/ghostty/`) is retained alongside the xcframework. It
+provides `terminfo/78/xterm-ghostty` and the shell-integration scripts that the native
+addon will need to locate at runtime inside the Electron app bundle (see §3b Spike 5).
+
+**Next step**: the native addon (`packages/ghostty-native/`) will link against
+`vendor/GhosttyKit.xcframework/macos-arm64_x86_64/libghostty.a` using cmake-js and
+bind the C API via NAPI (Node-API v9). The IPC shape is already defined in §3c above.
