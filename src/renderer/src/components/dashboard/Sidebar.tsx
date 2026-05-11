@@ -1,8 +1,19 @@
 import type React from 'react'
+import { useState } from 'react'
 import type { Icon } from '@phosphor-icons/react'
-import { SquaresFour, ChatsCircle, Plus, Folder } from '@phosphor-icons/react'
-import type { ProjectRecord } from '@shared/types'
-import { ProjectListSkeleton } from '../Skeleton'
+import {
+  SquaresFour,
+  ChatsCircle,
+  Plus,
+  CaretDown,
+  CaretRight,
+  PushPin,
+  Stack,
+  Folder
+} from '@phosphor-icons/react'
+import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
+import { ProjectListSkeleton, Skeleton } from '../Skeleton'
+import { Identicon } from '../Identicon'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -61,38 +72,370 @@ function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element
 }
 
 // ---------------------------------------------------------------------------
-// Project row
+// Workspace sub-row (nested inside expanded project row)
+// ---------------------------------------------------------------------------
+
+interface WorkspaceRowProps {
+  workspace: WorkspaceRecord
+  project: ProjectRecord
+  active: boolean
+  onSelect: () => void
+  onTogglePin: () => void
+}
+
+function WorkspaceSubRow({
+  workspace,
+  active,
+  onSelect,
+  onTogglePin
+}: WorkspaceRowProps): React.JSX.Element {
+  const [hovered, setHovered] = useState(false)
+  const isPinned = workspace.pinnedAt !== null
+
+  return (
+    <div
+      className={[
+        'relative flex items-center ml-7 rounded-md transition-colors duration-150 group',
+        active
+          ? 'bg-accent/15 text-text-primary'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+      ].join(' ')}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        onClick={onSelect}
+        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0"
+        title={workspace.cwd}
+      >
+        <Stack
+          size={12}
+          weight={active ? 'fill' : 'regular'}
+          className={[
+            'flex-shrink-0 transition-colors duration-150',
+            active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
+          ].join(' ')}
+        />
+        <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+      </button>
+
+      {/* Pin affordance — visible on hover or when pinned */}
+      {(hovered || isPinned) && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onTogglePin()
+          }}
+          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+          title={isPinned ? 'Unpin workspace' : 'Pin workspace'}
+        >
+          <PushPin size={10} weight={isPinned ? 'fill' : 'regular'} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Project row (with identicon, expand chevron, workspace count, pin)
 // ---------------------------------------------------------------------------
 
 interface ProjectRowProps {
   project: ProjectRecord
   active: boolean
-  onClick: () => void
+  expanded: boolean
+  workspaces: WorkspaceRecord[]
+  workspaceCount: number
+  selectedWorkspaceId?: string | null
+  onSelect: () => void
+  onToggleExpand: () => void
+  onSelectWorkspace: (workspaceId: string) => void
+  onToggleProjectPin: () => void
+  onToggleWorkspacePin: (workspaceId: string) => void
+  currentViewKind: string
+  currentWorkspaceId?: string | null
 }
 
-function ProjectRow({ project, active, onClick }: ProjectRowProps): React.JSX.Element {
+function ProjectRow({
+  project,
+  active,
+  expanded,
+  workspaces,
+  workspaceCount,
+  selectedWorkspaceId,
+  onSelect,
+  onToggleExpand,
+  onSelectWorkspace,
+  onToggleProjectPin,
+  onToggleWorkspacePin,
+  currentViewKind,
+  currentWorkspaceId
+}: ProjectRowProps): React.JSX.Element {
+  const [hovered, setHovered] = useState(false)
+  const isPinned = project.pinnedAt !== null
+
   return (
-    <button
-      onClick={onClick}
+    <div className="flex flex-col">
+      <div
+        className={[
+          'relative flex items-center rounded-md transition-colors duration-150 group',
+          active
+            ? 'bg-accent/15 text-text-primary'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+        ].join(' ')}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        {/* Main clickable row — navigate to project view */}
+        <button
+          onClick={onSelect}
+          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0"
+          title={project.path}
+        >
+          <Identicon seed={project.path} size={20} />
+          <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+        </button>
+
+        {/* Right controls: pin + count + chevron */}
+        <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
+          {/* Pin affordance — visible on hover or when pinned */}
+          {(hovered || isPinned) && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleProjectPin()
+              }}
+              className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+              title={isPinned ? 'Unpin project' : 'Pin project'}
+            >
+              <PushPin size={11} weight={isPinned ? 'fill' : 'regular'} />
+            </button>
+          )}
+
+          {/* Workspace count pill */}
+          {workspaceCount > 0 && (
+            <span className="text-xs text-text-muted px-1.5 py-0.5 rounded bg-surface-overlay">
+              {workspaceCount}
+            </span>
+          )}
+
+          {/* Expand/collapse chevron */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand()
+            }}
+            className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+            title={expanded ? 'Collapse' : 'Expand workspaces'}
+          >
+            {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
+          </button>
+        </div>
+      </div>
+
+      {/* Nested workspace rows */}
+      {expanded && workspaces.length > 0 && (
+        <div className="flex flex-col gap-0.5 mt-0.5">
+          {workspaces.map((ws) => (
+            <WorkspaceSubRow
+              key={ws.id}
+              workspace={ws}
+              project={project}
+              active={
+                currentViewKind === 'workspace' &&
+                (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
+              }
+              onSelect={() => onSelectWorkspace(ws.id)}
+              onTogglePin={() => onToggleWorkspacePin(ws.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pinned section
+// ---------------------------------------------------------------------------
+
+interface PinnedSectionProps {
+  pinnedItems: PinnedItem[]
+  loading: boolean
+  currentViewKind: string
+  currentProjectId?: string | null
+  currentWorkspaceId?: string | null
+  onSelectProject: (id: string) => void
+  onSelectWorkspace: (workspaceId: string, projectId: string) => void
+  onUnpinProject: (id: string) => void
+  onUnpinWorkspace: (id: string) => void
+}
+
+function PinnedSection({
+  pinnedItems,
+  loading,
+  currentViewKind,
+  currentProjectId,
+  currentWorkspaceId,
+  onSelectProject,
+  onSelectWorkspace,
+  onUnpinProject,
+  onUnpinWorkspace
+}: PinnedSectionProps): React.JSX.Element | null {
+  if (loading) {
+    return (
+      <div className="mt-4 flex flex-col gap-0.5">
+        <SectionHeader label="Pinned" />
+        <div className="flex flex-col gap-1 px-1 mt-1">
+          <Skeleton className="h-7 w-full opacity-60" />
+          <Skeleton className="h-7 w-4/5 opacity-40" />
+        </div>
+      </div>
+    )
+  }
+
+  if (pinnedItems.length === 0) return null
+
+  return (
+    <div className="mt-4 flex flex-col gap-0.5">
+      <SectionHeader label="Pinned" />
+      {pinnedItems.map((item) => {
+        if (item.kind === 'project') {
+          const isActive =
+            currentViewKind === 'project' && currentProjectId === item.project.id
+          return (
+            <PinnedProjectRow
+              key={`proj-${item.project.id}`}
+              project={item.project}
+              active={isActive}
+              onSelect={() => onSelectProject(item.project.id)}
+              onUnpin={() => onUnpinProject(item.project.id)}
+            />
+          )
+        }
+        // workspace
+        const isActive =
+          currentViewKind === 'workspace' && currentWorkspaceId === item.workspace.id
+        return (
+          <PinnedWorkspaceRow
+            key={`ws-${item.workspace.id}`}
+            workspace={item.workspace}
+            project={item.project}
+            active={isActive}
+            onSelect={() => onSelectWorkspace(item.workspace.id, item.project.id)}
+            onUnpin={() => onUnpinWorkspace(item.workspace.id)}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+interface PinnedProjectRowProps {
+  project: ProjectRecord
+  active: boolean
+  onSelect: () => void
+  onUnpin: () => void
+}
+
+function PinnedProjectRow({
+  project,
+  active,
+  onSelect,
+  onUnpin
+}: PinnedProjectRowProps): React.JSX.Element {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
       className={[
-        'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
-        'transition-colors duration-150 group',
+        'flex items-center rounded-md transition-colors duration-150 group',
         active
           ? 'bg-accent/15 text-text-primary'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
       ].join(' ')}
-      title={project.path}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      <Folder
-        size={14}
-        weight={active ? 'fill' : 'regular'}
-        className={[
-          'flex-shrink-0 transition-colors duration-150',
-          active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
-        ].join(' ')}
-      />
-      <span className="text-xs truncate min-w-0 flex-1">{project.name}</span>
-    </button>
+      <button
+        onClick={onSelect}
+        className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0"
+        title={project.path}
+      >
+        <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
+        <Identicon seed={project.path} size={16} />
+        <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+      </button>
+      {hovered && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onUnpin()
+          }}
+          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+          title="Unpin project"
+        >
+          <PushPin size={11} weight="fill" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface PinnedWorkspaceRowProps {
+  workspace: WorkspaceRecord
+  project: ProjectRecord
+  active: boolean
+  onSelect: () => void
+  onUnpin: () => void
+}
+
+function PinnedWorkspaceRow({
+  workspace,
+  project,
+  active,
+  onSelect,
+  onUnpin
+}: PinnedWorkspaceRowProps): React.JSX.Element {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
+      className={[
+        'flex items-center rounded-md transition-colors duration-150 group',
+        active
+          ? 'bg-accent/15 text-text-primary'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+      ].join(' ')}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        onClick={onSelect}
+        className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0"
+        title={workspace.cwd}
+      >
+        <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
+        <Identicon seed={project.path} size={14} />
+        <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
+          {project.name}
+        </span>
+        <CaretRight size={9} className="flex-shrink-0 text-text-muted" />
+        <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+      </button>
+      {hovered && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onUnpin()
+          }}
+          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+          title="Unpin workspace"
+        >
+          <PushPin size={11} weight="fill" />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -100,18 +443,28 @@ function ProjectRow({ project, active, onClick }: ProjectRowProps): React.JSX.El
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView = 'dashboard' | 'sessions' | 'project'
+export type SidebarActiveView = 'dashboard' | 'sessions' | 'project' | 'workspace'
 
 interface SidebarProps {
   collapsed: boolean
   projects: ProjectRecord[]
   projectsLoading: boolean
   selectedProjectId: string | null
+  selectedWorkspaceId: string | null
   activeView: SidebarActiveView
+  currentViewKind: string
+  expandedProjectIds: Set<string>
+  workspacesByProject: Record<string, WorkspaceRecord[]>
+  pinnedItems: PinnedItem[]
+  pinnedLoading: boolean
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'dashboard' | 'sessions') => void
   onAddProject: () => void
   addingProject?: boolean
+  onToggleProjectExpand: (id: string) => void
+  onSelectWorkspace: (workspaceId: string, projectId: string) => void
+  onToggleProjectPin: (id: string) => void
+  onToggleWorkspacePin: (workspaceId: string, projectId: string) => void
 }
 
 export function Sidebar({
@@ -119,11 +472,21 @@ export function Sidebar({
   projects,
   projectsLoading,
   selectedProjectId,
+  selectedWorkspaceId,
   activeView,
+  currentViewKind,
+  expandedProjectIds,
+  workspacesByProject,
+  pinnedItems,
+  pinnedLoading,
   onSelectProject,
   onSelectNav,
   onAddProject,
-  addingProject = false
+  addingProject = false,
+  onToggleProjectExpand,
+  onSelectWorkspace,
+  onToggleProjectPin,
+  onToggleWorkspacePin
 }: SidebarProps): React.JSX.Element {
   const addProjectButton = (
     <button
@@ -144,7 +507,7 @@ export function Sidebar({
   return (
     <aside
       className={[
-        collapsed ? 'w-14' : 'w-60',
+        collapsed ? 'w-14' : 'w-64',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
         'px-2 py-4 flex flex-col gap-1 overflow-hidden shrink-0'
@@ -166,10 +529,27 @@ export function Sidebar({
         onClick={() => onSelectNav('sessions')}
       />
 
-      {/* Pinned section — hidden when collapsed */}
-      <div className="mt-6">
-        {!collapsed && <SectionHeader label="Pinned" />}
-      </div>
+      {/* Pinned section — only when not collapsed */}
+      {!collapsed && (
+        <PinnedSection
+          pinnedItems={pinnedItems}
+          loading={pinnedLoading}
+          currentViewKind={currentViewKind}
+          currentProjectId={selectedProjectId}
+          currentWorkspaceId={selectedWorkspaceId}
+          onSelectProject={onSelectProject}
+          onSelectWorkspace={onSelectWorkspace}
+          onUnpinProject={(id) => onToggleProjectPin(id)}
+          onUnpinWorkspace={(id) => {
+            const ws = pinnedItems.find(
+              (item) => item.kind === 'workspace' && item.workspace.id === id
+            )
+            if (ws && ws.kind === 'workspace') {
+              onToggleWorkspacePin(id, ws.project.id)
+            }
+          }}
+        />
+      )}
 
       {/* Projects section */}
       <div className="mt-4 flex flex-col gap-0.5">
@@ -181,22 +561,72 @@ export function Sidebar({
             ) : projects.length === 0 ? (
               <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
             ) : (
-              <div className="flex flex-col gap-0.5 overflow-y-auto max-h-72">
-                {projects.map((p) => (
-                  <ProjectRow
-                    key={p.id}
-                    project={p}
-                    active={activeView === 'project' && selectedProjectId === p.id}
-                    onClick={() => onSelectProject(p.id)}
-                  />
-                ))}
+              <div className="flex flex-col gap-0.5 overflow-y-auto max-h-80">
+                {projects.map((p) => {
+                  const expanded = expandedProjectIds.has(p.id)
+                  const workspaces = workspacesByProject[p.id] ?? []
+                  return (
+                    <ProjectRow
+                      key={p.id}
+                      project={p}
+                      active={activeView === 'project' && selectedProjectId === p.id}
+                      expanded={expanded}
+                      workspaces={workspaces}
+                      workspaceCount={workspaces.length}
+                      selectedWorkspaceId={selectedWorkspaceId}
+                      onSelect={() => onSelectProject(p.id)}
+                      onToggleExpand={() => onToggleProjectExpand(p.id)}
+                      onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                      onToggleProjectPin={() => onToggleProjectPin(p.id)}
+                      onToggleWorkspacePin={(wsId) => onToggleWorkspacePin(wsId, p.id)}
+                      currentViewKind={currentViewKind}
+                      currentWorkspaceId={selectedWorkspaceId}
+                    />
+                  )
+                })}
               </div>
             )}
           </>
         ) : (
-          <div className="flex justify-center">{addProjectButton}</div>
+          /* Collapsed: show identicons only */
+          <div className="flex flex-col gap-1 items-center">
+            <div className="flex justify-center mb-1">{addProjectButton}</div>
+            {!projectsLoading &&
+              projects.map((p) => {
+                const isActive =
+                  (activeView === 'project' || activeView === 'workspace') &&
+                  selectedProjectId === p.id
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => onSelectProject(p.id)}
+                    title={p.name}
+                    className={[
+                      'p-1 rounded-md transition-colors duration-150',
+                      isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
+                    ].join(' ')}
+                  >
+                    <Identicon seed={p.path} size={22} />
+                  </button>
+                )
+              })}
+          </div>
         )}
       </div>
+
+      {/* Collapsed: Folder icon for sessions */}
+      {collapsed && (
+        <div className="mt-auto flex justify-center">
+          <button
+            title="Add project"
+            disabled={addingProject}
+            onClick={onAddProject}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+          >
+            <Folder size={18} />
+          </button>
+        </div>
+      )}
     </aside>
   )
 }

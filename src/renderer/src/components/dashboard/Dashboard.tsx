@@ -3,7 +3,7 @@ import { Topbar } from './Topbar'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { Footer } from './Footer'
 import { MainContent, type View } from './MainContent'
-import type { ProjectRecord } from '@shared/types'
+import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -18,9 +18,22 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   const [projectsLoading, setProjectsLoading] = useState(true)
   const [addingProject, setAddingProject] = useState(false)
 
+  // Workspace state: lazy-loaded per project, keyed by projectId
+  const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, WorkspaceRecord[]>>(
+    {}
+  )
+
+  // Which project rows are expanded in the sidebar
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
+
+  // Pinned items
+  const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
+  const [pinnedLoading, setPinnedLoading] = useState(true)
+
   // View routing
   const [view, setView] = useState<View>({ kind: 'dashboard' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
   useEffect(() => {
     window.api.app
@@ -42,8 +55,52 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       })
   }, [])
 
+  function refreshPins(): void {
+    window.api.pins
+      .listAll()
+      .then((items) => {
+        setPinnedItems(items)
+        setPinnedLoading(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] failed to load pins', err)
+        setPinnedLoading(false)
+      })
+  }
+
+  useEffect(() => {
+    refreshPins()
+  }, [])
+
+  async function fetchWorkspacesForProject(projectId: string): Promise<void> {
+    try {
+      const workspaces = await window.api.workspaces.listForProject(projectId)
+      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
+    } catch (err) {
+      console.error('[dashboard] failed to load workspaces for', projectId, err)
+      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
+    }
+  }
+
+  function handleToggleProjectExpand(id: string): void {
+    setExpandedProjectIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+        // Lazy-load workspaces if not yet fetched
+        if (!workspacesByProject[id]) {
+          fetchWorkspacesForProject(id)
+        }
+      }
+      return next
+    })
+  }
+
   function handleSelectProject(id: string): void {
     setSelectedProjectId(id)
+    setSelectedWorkspaceId(null)
     setView({ kind: 'project', projectId: id })
     window.api.projects.open(id).catch(console.error)
   }
@@ -51,6 +108,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   function handleSelectNav(nav: 'dashboard' | 'sessions'): void {
     setView({ kind: nav })
     setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
   }
 
   async function handleAddProject(): Promise<void> {
@@ -60,7 +118,10 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       if (result) {
         setProjects((arr) => [result, ...arr.filter((p) => p.id !== result.id)])
         setSelectedProjectId(result.id)
+        setSelectedWorkspaceId(null)
         setView({ kind: 'project', projectId: result.id })
+        // Fetch the auto-created Default workspace
+        await fetchWorkspacesForProject(result.id)
       }
     } catch (err) {
       console.error('[dashboard] pickAndAdd failed', err)
@@ -70,25 +131,114 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   }
 
   function handleProjectArchived(): void {
-    // Remove from list + navigate back to dashboard
     if (selectedProjectId) {
       setProjects((arr) => arr.filter((p) => p.id !== selectedProjectId))
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        next.delete(selectedProjectId)
+        return next
+      })
     }
     setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
     setView({ kind: 'dashboard' })
+    refreshPins()
   }
 
   function handleNavigateToProject(id: string): void {
     setSelectedProjectId(id)
+    setSelectedWorkspaceId(null)
     setView({ kind: 'project', projectId: id })
     window.api.projects.open(id).catch(console.error)
   }
 
+  function handleSelectWorkspace(workspaceId: string, projectId: string): void {
+    setSelectedProjectId(projectId)
+    setSelectedWorkspaceId(workspaceId)
+    setView({ kind: 'workspace', workspaceId, projectId })
+    // Keep the project expanded so the workspace stays visible
+    setExpandedProjectIds((prev) => {
+      const next = new Set(prev)
+      next.add(projectId)
+      return next
+    })
+    // Ensure workspaces are loaded for this project
+    if (!workspacesByProject[projectId]) {
+      fetchWorkspacesForProject(projectId)
+    }
+    window.api.workspaces.open(workspaceId).catch(console.error)
+  }
+
+  function handleWorkspaceArchived(projectId: string): void {
+    // Refresh workspaces for the project, then navigate back to project view
+    fetchWorkspacesForProject(projectId)
+    setSelectedWorkspaceId(null)
+    setView({ kind: 'project', projectId })
+    refreshPins()
+  }
+
+  async function handleToggleProjectPin(projectId: string): Promise<void> {
+    const project = projects.find((p) => p.id === projectId)
+    if (!project) return
+    const pinned = project.pinnedAt === null
+    try {
+      const updated = await window.api.projects.setPinned(projectId, pinned)
+      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
+      refreshPins()
+    } catch (err) {
+      console.error('[dashboard] setPinned failed', err)
+    }
+  }
+
+  async function handleToggleWorkspacePin(workspaceId: string, projectId: string): Promise<void> {
+    const workspaces = workspacesByProject[projectId] ?? []
+    const ws = workspaces.find((w) => w.id === workspaceId)
+    if (!ws) return
+    const pinned = ws.pinnedAt === null
+    try {
+      const updated = await window.api.workspaces.setPinned(workspaceId, pinned)
+      setWorkspacesByProject((prev) => ({
+        ...prev,
+        [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
+      }))
+      refreshPins()
+    } catch (err) {
+      console.error('[dashboard] workspace setPinned failed', err)
+    }
+  }
+
+  async function handleWorkspaceCreated(projectId: string, name: string, cwd: string): Promise<void> {
+    try {
+      await window.api.workspaces.create({ projectId, name, cwd })
+      await fetchWorkspacesForProject(projectId)
+    } catch (err) {
+      console.error('[dashboard] workspace create failed', err)
+    }
+  }
+
   const activeProject =
-    view.kind === 'project' ? projects.find((p) => p.id === view.projectId) : undefined
+    view.kind === 'project' || view.kind === 'workspace'
+      ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
+      : undefined
+
+  const activeProjectForWorkspace =
+    view.kind === 'workspace'
+      ? projects.find((p) => p.id === view.projectId)
+      : undefined
+
+  const activeWorkspace =
+    view.kind === 'workspace'
+      ? (workspacesByProject[view.projectId] ?? []).find((w) => w.id === view.workspaceId)
+      : undefined
 
   const activeView: SidebarActiveView =
-    view.kind === 'project' ? 'project' : view.kind === 'sessions' ? 'sessions' : 'dashboard'
+    view.kind === 'workspace'
+      ? 'workspace'
+      : view.kind === 'project'
+        ? 'project'
+        : view.kind === 'sessions'
+          ? 'sessions'
+          : 'dashboard'
 
   return (
     <div className="flex flex-col h-full">
@@ -100,11 +250,21 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           projects={projects}
           projectsLoading={projectsLoading}
           selectedProjectId={selectedProjectId}
+          selectedWorkspaceId={selectedWorkspaceId}
           activeView={activeView}
+          currentViewKind={view.kind}
+          expandedProjectIds={expandedProjectIds}
+          workspacesByProject={workspacesByProject}
+          pinnedItems={pinnedItems}
+          pinnedLoading={pinnedLoading}
           onSelectProject={handleSelectProject}
           onSelectNav={handleSelectNav}
           onAddProject={handleAddProject}
           addingProject={addingProject}
+          onToggleProjectExpand={handleToggleProjectExpand}
+          onSelectWorkspace={handleSelectWorkspace}
+          onToggleProjectPin={handleToggleProjectPin}
+          onToggleWorkspacePin={handleToggleWorkspacePin}
         />
 
         {/* Right column: main content + footer */}
@@ -112,9 +272,13 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           <main className="flex-1 overflow-y-auto px-8 py-6">
             <MainContent
               view={view}
-              project={activeProject}
+              project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
+              workspace={activeWorkspace}
               onProjectArchived={handleProjectArchived}
               onNavigateToProject={handleNavigateToProject}
+              onSelectWorkspace={handleSelectWorkspace}
+              onWorkspaceArchived={handleWorkspaceArchived}
+              onWorkspaceCreated={handleWorkspaceCreated}
             />
           </main>
 
