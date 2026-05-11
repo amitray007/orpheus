@@ -134,21 +134,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     }
   }
 
-  function handleProjectRemoved(): void {
-    if (selectedProjectId) {
-      setProjects((arr) => arr.filter((p) => p.id !== selectedProjectId))
-      setExpandedProjectIds((prev) => {
-        const next = new Set(prev)
-        next.delete(selectedProjectId)
-        return next
-      })
-    }
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    setView({ kind: 'dashboard' })
-    refreshPins()
-  }
-
   function handleNavigateToProject(id: string): void {
     setSelectedProjectId(id)
     setSelectedWorkspaceId(null)
@@ -208,15 +193,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       refreshPins()
     } catch (err) {
       console.error('[dashboard] workspace setPinned failed', err)
-    }
-  }
-
-  async function handleWorkspaceCreated(projectId: string, name: string, cwd: string): Promise<void> {
-    try {
-      await window.api.workspaces.create({ projectId, name, cwd })
-      await fetchWorkspacesForProject(projectId)
-    } catch (err) {
-      console.error('[dashboard] workspace create failed', err)
     }
   }
 
@@ -287,6 +263,16 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       } else {
         console.error('[dashboard] workspace archive failed', err)
       }
+    }
+  }
+
+  async function handleUnarchiveWorkspace(workspaceId: string, projectId: string): Promise<void> {
+    try {
+      await window.api.workspaces.unarchive(workspaceId)
+      await fetchWorkspacesForProject(projectId)
+      refreshPins()
+    } catch (err) {
+      console.error('[dashboard] workspace unarchive failed', err)
     }
   }
 
@@ -394,12 +380,15 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
               view={view}
               project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
               workspace={activeWorkspace}
-              onProjectRemoved={handleProjectRemoved}
               onRequestRemoveProject={handleRequestRemoveProject}
               onNavigateToProject={handleNavigateToProject}
               onSelectWorkspace={handleSelectWorkspace}
               onWorkspaceArchived={handleWorkspaceArchived}
-              onWorkspaceCreated={handleWorkspaceCreated}
+              onAddWorkspace={handleAddWorkspace}
+              onRenameWorkspace={handleRenameWorkspace}
+              onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+              onUnarchiveWorkspace={handleUnarchiveWorkspace}
+              onToggleWorkspacePin={handleToggleWorkspacePin}
             />
           </main>
 

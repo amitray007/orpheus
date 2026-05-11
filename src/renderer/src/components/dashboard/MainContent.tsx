@@ -38,24 +38,30 @@ interface MainContentProps {
   view: View
   project: ProjectRecord | undefined
   workspace?: WorkspaceRecord | undefined
-  onProjectRemoved: () => void
   onRequestRemoveProject: (project: ProjectRecord) => void
   onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onWorkspaceArchived: (projectId: string) => void
-  onWorkspaceCreated: (projectId: string, name: string, cwd: string) => Promise<void>
+  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
 }
 
 export function MainContent({
   view,
   project,
   workspace,
-  onProjectRemoved,
   onRequestRemoveProject,
   onNavigateToProject,
   onSelectWorkspace,
   onWorkspaceArchived,
-  onWorkspaceCreated
+  onAddWorkspace,
+  onRenameWorkspace,
+  onArchiveWorkspace,
+  onUnarchiveWorkspace,
+  onToggleWorkspacePin
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'dashboard') {
     return (
@@ -100,10 +106,13 @@ export function MainContent({
   return (
     <ProjectView
       project={project}
-      onRemoved={onProjectRemoved}
       onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
-      onWorkspaceCreated={(name, cwd) => onWorkspaceCreated(project.id, name, cwd)}
+      onAddWorkspace={onAddWorkspace}
+      onRenameWorkspace={onRenameWorkspace}
+      onArchiveWorkspace={onArchiveWorkspace}
+      onUnarchiveWorkspace={onUnarchiveWorkspace}
+      onToggleWorkspacePin={onToggleWorkspacePin}
     />
   )
 }

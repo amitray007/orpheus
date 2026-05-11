@@ -120,7 +120,7 @@ function WorkspaceSubRow({
 
   function handleRenameCommit(): void {
     const trimmed = renameValue.trim()
-    if (trimmed) {
+    if (trimmed && trimmed !== workspace.name) {
       onFinishRename(trimmed)
     } else {
       onCancelRename()
@@ -715,7 +715,7 @@ function PinnedWorkspaceRow({
 
   function handleRenameCommit(): void {
     const trimmed = renameValue.trim()
-    if (trimmed) {
+    if (trimmed && trimmed !== workspace.name) {
       onFinishRename(trimmed)
     } else {
       onCancelRename()

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Folder,
   Archive,
@@ -8,11 +8,13 @@ import {
   ClockCounterClockwise,
   Stack,
   Plus,
-  X,
-  Terminal
+  Terminal,
+  PencilSimple,
+  PushPin
 } from '@phosphor-icons/react'
 import type { ProjectRecord, SessionRecord, SessionStatus, WorkspaceRecord } from '@shared/types'
 import { SessionListSkeleton, Skeleton } from '../Skeleton'
+import { ContextMenu } from '../ContextMenu'
 
 // ---------------------------------------------------------------------------
 // Relative time helper
@@ -177,125 +179,161 @@ function SessionGroup({
 
 interface WorkspaceCardProps {
   workspace: WorkspaceRecord
+  archived?: boolean
+  renaming: boolean
   onSelect: () => void
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onTogglePin: () => void
   onArchive: () => void
+  onUnarchive?: () => void
 }
 
-function WorkspaceCard({ workspace, onSelect, onArchive }: WorkspaceCardProps): React.JSX.Element {
+function WorkspaceCard({
+  workspace,
+  archived = false,
+  renaming,
+  onSelect,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onTogglePin,
+  onArchive,
+  onUnarchive
+}: WorkspaceCardProps): React.JSX.Element {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [renameValue, setRenameValue] = useState(workspace.name)
+
+  // Sync rename value when workspace name changes externally
+  if (!renaming && renameValue !== workspace.name) {
+    setRenameValue(workspace.name)
+  }
+
+  const isPinned = workspace.pinnedAt !== null
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  function handleRenameCommit(): void {
+    const trimmed = renameValue.trim()
+    if (trimmed && trimmed !== workspace.name) {
+      onFinishRename(trimmed)
+    } else {
+      onCancelRename()
+    }
+  }
+
+  const activeMenuItems = [
+    {
+      label: 'Rename',
+      icon: <PencilSimple size={13} />,
+      onClick: onBeginRename
+    },
+    {
+      label: isPinned ? 'Unpin' : 'Pin',
+      icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
+      onClick: onTogglePin
+    },
+    { divider: true, label: '', onClick: () => {} },
+    {
+      label: 'Archive',
+      icon: <Archive size={13} />,
+      onClick: onArchive,
+      destructive: true
+    }
+  ]
+
+  const archivedMenuItems = [
+    {
+      label: 'Unarchive',
+      icon: <ArrowUUpLeft size={13} />,
+      onClick: onUnarchive ?? (() => {})
+    },
+    {
+      label: 'Rename',
+      icon: <PencilSimple size={13} />,
+      onClick: onBeginRename
+    }
+  ]
+
   return (
-    <div className="group relative bg-surface-raised border border-border-default rounded-lg p-4 transition-colors duration-150 hover:border-accent/30 hover:bg-surface-overlay/40">
+    <div
+      className={[
+        'group relative bg-surface-raised border border-border-default rounded-lg p-4 transition-all duration-150 hover:border-accent/30 hover:bg-surface-overlay/40',
+        archived ? 'opacity-60 hover:opacity-80 grayscale-[30%]' : ''
+      ].join(' ')}
+      onContextMenu={handleContextMenu}
+    >
       <button
-        onClick={onSelect}
+        onClick={renaming ? undefined : onSelect}
         className="w-full text-left flex flex-col gap-2"
       >
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded bg-surface-overlay">
-            <Stack size={14} weight="fill" className="text-accent" />
+            <Stack size={14} weight="fill" className={archived ? 'text-text-muted' : 'text-accent'} />
           </div>
-          <span className="text-sm font-medium text-text-primary truncate flex-1">
-            {workspace.name}
-          </span>
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameCommit()
+                if (e.key === 'Escape') onCancelRename()
+              }}
+              onBlur={handleRenameCommit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="text-sm bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-text-primary min-w-0 flex-1"
+            />
+          ) : (
+            <span className="text-sm font-medium text-text-primary truncate flex-1">
+              {workspace.name}
+            </span>
+          )}
         </div>
-        <p className="text-xs text-text-muted truncate flex items-center gap-1" title={workspace.cwd}>
-          <Folder size={10} className="flex-shrink-0" />
-          {workspace.cwd}
-        </p>
-        {workspace.lastOpenedAt ? (
-          <p className="text-xs text-text-muted">
-            Last opened {relativeTime(workspace.lastOpenedAt)}
-          </p>
-        ) : (
-          <p className="text-xs text-text-muted">Never opened</p>
+        {!renaming && (
+          <>
+            <p className="text-xs text-text-muted truncate flex items-center gap-1" title={workspace.cwd}>
+              <Folder size={10} className="flex-shrink-0" />
+              {workspace.cwd}
+            </p>
+            {workspace.lastOpenedAt ? (
+              <p className="text-xs text-text-muted">
+                Last opened {relativeTime(workspace.lastOpenedAt)}
+              </p>
+            ) : (
+              <p className="text-xs text-text-muted">Never opened</p>
+            )}
+          </>
         )}
       </button>
 
-      {/* Archive button on hover */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation()
-          onArchive()
-        }}
-        title="Archive workspace"
-        className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay"
-      >
-        <Archive size={12} />
-      </button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// New workspace inline form
-// ---------------------------------------------------------------------------
-
-interface NewWorkspaceFormProps {
-  projectPath: string
-  onCancel: () => void
-  onCreate: (name: string, cwd: string) => Promise<void>
-}
-
-function NewWorkspaceForm({ projectPath, onCancel, onCreate }: NewWorkspaceFormProps): React.JSX.Element {
-  const [name, setName] = useState('')
-  const [cwd, setCwd] = useState(projectPath)
-  const [creating, setCreating] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
-  async function handleCreate(): Promise<void> {
-    if (!name.trim() || creating) return
-    setCreating(true)
-    try {
-      await onCreate(name.trim(), cwd.trim() || projectPath)
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  return (
-    <div className="border border-accent/30 rounded-lg p-4 bg-surface-overlay/30 flex flex-col gap-3">
-      <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">New workspace</p>
-      <div className="flex flex-col gap-2">
-        <input
-          ref={inputRef}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Workspace name"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleCreate()
-            if (e.key === 'Escape') onCancel()
+      {/* Archived: hover-revealed Unarchive button */}
+      {archived && !renaming && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onUnarchive?.()
           }}
-          className="px-3 py-1.5 rounded-md text-sm bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 w-full"
-        />
-        <input
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-          placeholder="Working directory (defaults to project root)"
-          className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 w-full font-mono"
-        />
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={handleCreate}
-          disabled={!name.trim() || creating}
-          className={[
-            'px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-150',
-            !name.trim() || creating
-              ? 'bg-accent/30 text-text-muted cursor-not-allowed'
-              : 'bg-accent text-white hover:bg-accent/80'
-          ].join(' ')}
+          title="Unarchive workspace"
+          className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay"
         >
-          {creating ? 'Creating…' : 'Create'}
+          <ArrowUUpLeft size={12} />
         </button>
-        <button
-          onClick={onCancel}
-          className="px-3 py-1.5 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150"
-        >
-          Cancel
-        </button>
-      </div>
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={archived ? archivedMenuItems : activeMenuItems}
+        />
+      )}
     </div>
   )
 }
@@ -306,18 +344,24 @@ function NewWorkspaceForm({ projectPath, onCancel, onCreate }: NewWorkspaceFormP
 
 interface ProjectViewProps {
   project: ProjectRecord
-  onRemoved: () => void
   onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
-  onWorkspaceCreated: (name: string, cwd: string) => Promise<void>
+  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
 }
 
 export function ProjectView({
   project,
-  onRemoved: _onRemoved,
   onRequestRemove,
   onSelectWorkspace,
-  onWorkspaceCreated
+  onAddWorkspace,
+  onRenameWorkspace,
+  onArchiveWorkspace,
+  onUnarchiveWorkspace,
+  onToggleWorkspacePin
 }: ProjectViewProps): React.JSX.Element {
 
   // Workspaces — projectId-keyed shape so `loading` derives from state without
@@ -328,7 +372,12 @@ export function ProjectView({
   }>({ projectId: null, list: [] })
   const workspaces = workspaceData.list
   const workspacesLoading = workspaceData.projectId !== project.id
-  const [showNewWorkspaceForm, setShowNewWorkspaceForm] = useState(false)
+
+  const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
+  const archivedWorkspaces = workspaces.filter((w) => w.archivedAt !== null)
+
+  const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
 
   // Sessions (legacy CC)
   const [sessionData, setSessionData] = useState<{
@@ -341,11 +390,11 @@ export function ProjectView({
   const sessions = sessionData.list
   const sessionsLoading = sessionData.projectId !== project.id
 
-  // Load workspaces
+  // Load workspaces (all — active + archived)
   useEffect(() => {
     let cancelled = false
     window.api.workspaces
-      .listForProject(project.id)
+      .listForProject(project.id, { scope: 'all' })
       .then((list) => {
         if (!cancelled) setWorkspaceData({ projectId: project.id, list })
       })
@@ -396,31 +445,6 @@ export function ProjectView({
     })
   }
 
-  async function handleArchiveWorkspace(workspaceId: string): Promise<void> {
-    try {
-      await window.api.workspaces.archive(workspaceId)
-      setWorkspaceData((prev) => ({
-        projectId: prev.projectId,
-        list: prev.list.filter((w) => w.id !== workspaceId)
-      }))
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('last active')) {
-        alert('Cannot archive the last active workspace in this project.')
-      } else {
-        console.error('[project-view] workspace archive failed', err)
-      }
-    }
-  }
-
-  async function handleCreateWorkspace(name: string, cwd: string): Promise<void> {
-    await onWorkspaceCreated(name, cwd)
-    // Refresh workspace list
-    const list = await window.api.workspaces.listForProject(project.id)
-    setWorkspaceData({ projectId: project.id, list })
-    setShowNewWorkspaceForm(false)
-  }
-
   const inProgressSessions = sessions.filter((s) => s.status === 'in_progress')
   const inReviewSessions = sessions.filter((s) => s.status === 'in_review')
   const archivedSessions = sessions.filter((s) => s.status === 'archived')
@@ -451,7 +475,7 @@ export function ProjectView({
         </button>
       </div>
 
-      {/* Workspaces section — primary */}
+      {/* Workspaces section — active */}
       <section className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary flex items-center gap-1.5">
@@ -459,37 +483,20 @@ export function ProjectView({
             Workspaces
           </h2>
           <button
-            onClick={() => setShowNewWorkspaceForm((v) => !v)}
+            onClick={() => onAddWorkspace(project.id)}
             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150"
           >
-            {showNewWorkspaceForm ? (
-              <>
-                <X size={11} />
-                Cancel
-              </>
-            ) : (
-              <>
-                <Plus size={11} />
-                New workspace
-              </>
-            )}
+            <Plus size={11} />
+            New workspace
           </button>
         </div>
-
-        {showNewWorkspaceForm && (
-          <NewWorkspaceForm
-            projectPath={project.path}
-            onCancel={() => setShowNewWorkspaceForm(false)}
-            onCreate={handleCreateWorkspace}
-          />
-        )}
 
         {workspacesLoading ? (
           <div className="grid grid-cols-2 gap-3">
             <Skeleton className="h-24 rounded-lg opacity-70" />
             <Skeleton className="h-24 rounded-lg opacity-40" />
           </div>
-        ) : workspaces.length === 0 ? (
+        ) : activeWorkspaces.length === 0 && archivedWorkspaces.length === 0 ? (
           <div className="bg-surface-raised border border-border-default rounded-lg p-8 flex flex-col items-center gap-2">
             <Terminal size={24} className="text-text-muted opacity-50" />
             <p className="text-sm text-text-muted text-center">No workspaces yet</p>
@@ -497,19 +504,72 @@ export function ProjectView({
               Create a workspace to start working in this project.
             </p>
           </div>
+        ) : activeWorkspaces.length === 0 ? (
+          <div className="bg-surface-raised border border-border-default rounded-lg p-6 flex flex-col items-center gap-2">
+            <p className="text-sm text-text-muted text-center">All workspaces are archived.</p>
+          </div>
         ) : (
           <div className="grid grid-cols-2 gap-3">
-            {workspaces.map((ws) => (
+            {activeWorkspaces.map((ws) => (
               <WorkspaceCard
                 key={ws.id}
                 workspace={ws}
+                renaming={renamingWorkspaceId === ws.id}
+                onBeginRename={() => setRenamingWorkspaceId(ws.id)}
+                onFinishRename={(newName) => {
+                  onRenameWorkspace(ws.id, project.id, newName)
+                  setRenamingWorkspaceId(null)
+                }}
+                onCancelRename={() => setRenamingWorkspaceId(null)}
                 onSelect={() => onSelectWorkspace(ws.id)}
-                onArchive={() => handleArchiveWorkspace(ws.id)}
+                onTogglePin={() => onToggleWorkspacePin(ws.id, project.id)}
+                onArchive={() => onArchiveWorkspace(ws.id, project.id)}
               />
             ))}
           </div>
         )}
       </section>
+
+      {/* Archived workspaces section */}
+      {archivedWorkspaces.length > 0 && (
+        <section className="flex flex-col gap-1">
+          <button
+            onClick={() => setArchivedExpanded((v) => !v)}
+            className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer hover:text-text-primary transition-colors duration-150 self-start"
+          >
+            {archivedExpanded ? (
+              <CaretDown size={11} className="text-text-muted" />
+            ) : (
+              <CaretRight size={11} className="text-text-muted" />
+            )}
+            <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary">Archived</h2>
+            <span className="text-xs text-text-muted ml-1">({archivedWorkspaces.length})</span>
+          </button>
+
+          {archivedExpanded && (
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              {archivedWorkspaces.map((ws) => (
+                <WorkspaceCard
+                  key={ws.id}
+                  workspace={ws}
+                  archived
+                  renaming={renamingWorkspaceId === ws.id}
+                  onBeginRename={() => setRenamingWorkspaceId(ws.id)}
+                  onFinishRename={(newName) => {
+                    onRenameWorkspace(ws.id, project.id, newName)
+                    setRenamingWorkspaceId(null)
+                  }}
+                  onCancelRename={() => setRenamingWorkspaceId(null)}
+                  onSelect={() => onSelectWorkspace(ws.id)}
+                  onTogglePin={() => onToggleWorkspacePin(ws.id, project.id)}
+                  onArchive={() => onArchiveWorkspace(ws.id, project.id)}
+                  onUnarchive={() => onUnarchiveWorkspace(ws.id, project.id)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Legacy CC Sessions — collapsed by default */}
       <section className="flex flex-col gap-1">
