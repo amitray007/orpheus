@@ -235,6 +235,11 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     workspaceId: string,
     projectId: string
   ): Promise<void> {
+    // Destroy the terminal surface before archiving so the shell process is cleaned up.
+    // Don't block on failure — the DB archive can proceed regardless.
+    window.api.terminal
+      .destroy(workspaceId)
+      .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
     try {
       await window.api.workspaces.archive(workspaceId)
       await fetchWorkspacesForProject(projectId)
@@ -285,6 +290,16 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   async function handleConfirmRemove(): Promise<void> {
     if (!removeConfirmTarget) return
     const target = removeConfirmTarget
+    // Destroy all terminal surfaces for this project's workspaces before the
+    // DB cascade-delete removes the workspace rows.
+    const projectWorkspaces = workspacesByProject[target.id] ?? []
+    for (const ws of projectWorkspaces) {
+      window.api.terminal
+        .destroy(ws.id)
+        .catch((e) =>
+          console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
+        )
+    }
     await window.api.projects.remove(target.id)
     setRemoveConfirmTarget(null)
     setProjects((arr) => arr.filter((p) => p.id !== target.id))

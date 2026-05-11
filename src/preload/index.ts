@@ -19,12 +19,19 @@ const api = {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
   },
   terminal: {
-    mount: (rect: TerminalRect, scaleFactor: number, cwd?: string): Promise<{ surfaceId: string }> =>
-      ipcRenderer.invoke('terminal:mount', { rect, scaleFactor, cwd }),
-    unmount: (surfaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:unmount', { surfaceId }),
-    resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
-      ipcRenderer.invoke('terminal:resize', { surfaceId, rect, scaleFactor })
+    mount: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      cwd?: string
+    ): Promise<{ workspaceId: string; created: boolean }> =>
+      ipcRenderer.invoke('terminal:mount', { workspaceId, rect, scaleFactor, cwd }),
+    hide: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:hide', { workspaceId }),
+    resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
+    destroy: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:destroy', { workspaceId })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')

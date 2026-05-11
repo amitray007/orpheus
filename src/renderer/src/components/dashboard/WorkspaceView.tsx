@@ -9,7 +9,7 @@ interface WorkspaceViewProps {
 
 export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  const surfaceIdRef = useRef<string | null>(null)
+  // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
 
   useEffect(() => {
@@ -17,6 +17,8 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     if (!el) return
     if (mountedRef.current) return
     mountedRef.current = true
+
+    const workspaceId = workspace.id
 
     const doMount = async (): Promise<void> => {
       const rect = el.getBoundingClientRect()
@@ -32,11 +34,26 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
         h: Math.round(rect.height)
       }
 
-      console.log('[WorkspaceView] mounting terminal', termRect, 'dpr=', scaleFactor)
+      console.log(
+        '[WorkspaceView] mounting terminal workspaceId=',
+        workspaceId,
+        termRect,
+        'dpr=',
+        scaleFactor
+      )
       try {
-        const { surfaceId } = await window.api.terminal.mount(termRect, scaleFactor, workspace.cwd)
-        surfaceIdRef.current = surfaceId
-        console.log('[WorkspaceView] mounted surface', surfaceId)
+        const result = await window.api.terminal.mount(
+          workspaceId,
+          termRect,
+          scaleFactor,
+          workspace.cwd
+        )
+        console.log(
+          '[WorkspaceView] mounted workspaceId=',
+          result.workspaceId,
+          'created=',
+          result.created
+        )
       } catch (err) {
         console.error('[WorkspaceView] mount failed:', err)
       }
@@ -50,34 +67,40 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
 
     // ResizeObserver — fires when the div's intrinsic size changes.
     const ro = new ResizeObserver(() => {
-      const sid = surfaceIdRef.current
-      if (!sid || !el) return
+      if (!el) return
       const newRect = el.getBoundingClientRect()
       const sf = window.devicePixelRatio ?? 1
       window.api.terminal
-        .resize(sid, {
-          x: Math.round(newRect.left),
-          y: Math.round(newRect.top),
-          w: Math.round(newRect.width),
-          h: Math.round(newRect.height)
-        }, sf)
+        .resize(
+          workspaceId,
+          {
+            x: Math.round(newRect.left),
+            y: Math.round(newRect.top),
+            w: Math.round(newRect.width),
+            h: Math.round(newRect.height)
+          },
+          sf
+        )
         .catch((e) => console.error('[WorkspaceView] resize failed:', e))
     })
     ro.observe(el)
 
     // window resize — bounding rect position shifts even if our div size doesn't.
     const onWindowResize = (): void => {
-      const sid = surfaceIdRef.current
-      if (!sid || !el) return
+      if (!el) return
       const newRect = el.getBoundingClientRect()
       const sf = window.devicePixelRatio ?? 1
       window.api.terminal
-        .resize(sid, {
-          x: Math.round(newRect.left),
-          y: Math.round(newRect.top),
-          w: Math.round(newRect.width),
-          h: Math.round(newRect.height)
-        }, sf)
+        .resize(
+          workspaceId,
+          {
+            x: Math.round(newRect.left),
+            y: Math.round(newRect.top),
+            w: Math.round(newRect.width),
+            h: Math.round(newRect.height)
+          },
+          sf
+        )
         .catch((e) => console.error('[WorkspaceView] window-resize failed:', e))
     }
     window.addEventListener('resize', onWindowResize)
@@ -86,14 +109,13 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
       ro.disconnect()
       window.removeEventListener('resize', onWindowResize)
 
-      const sid = surfaceIdRef.current
-      if (sid) {
-        console.log('[WorkspaceView] unmounting surface', sid)
-        window.api.terminal.unmount(sid).catch((e) =>
-          console.error('[WorkspaceView] unmount failed:', e)
-        )
-        surfaceIdRef.current = null
-      }
+      // hide() keeps the surface alive in the addon's map so that navigating
+      // back re-attaches the same shell session. Destroy is fired only from
+      // Dashboard on archive/project-remove.
+      console.log('[WorkspaceView] hiding surface workspaceId=', workspaceId)
+      window.api.terminal
+        .hide(workspaceId)
+        .catch((e) => console.error('[WorkspaceView] hide failed:', e))
       mountedRef.current = false
     }
   }, [])

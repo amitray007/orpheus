@@ -1,11 +1,20 @@
 // ghostty-native — production lifecycle addon for Orpheus.
 //
-// Exports three synchronous NAPI functions (all called on the AppKit main thread
+// Exports four synchronous NAPI functions (all called on the AppKit main thread
 // from the Electron main process):
 //
-//   mount(handleBuffer, { x, y, w, h }, scaleFactor)  → { surfaceId }
-//   unmount(surfaceId)                                 → void
-//   resize(surfaceId, { x, y, w, h }, scaleFactor)    → void
+//   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? })
+//       → { workspaceId, created: bool }
+//   hide(workspaceId)    → void   (keeps surface alive, just removes from superview)
+//   resize(workspaceId, { x, y, w, h }, scaleFactor) → void
+//   destroy(workspaceId) → void   (full teardown; call only on archive/project-remove)
+//
+// Persistence model:
+//   Each workspace owns exactly one GhosttySurfaceEntry keyed by workspace.id.
+//   mount()   — creates on first call; re-attaches on subsequent calls.
+//   hide()    — removeFromSuperview + occlusion + stop CVDisplayLink; keeps entry alive.
+//   destroy() — full teardown; removes from map.
+//   Orpheus quit → process exit GCs everything naturally.
 //
 // Threading model:
 //   • NAPI handlers run on the main thread — all ghostty_* calls here are safe.
@@ -340,19 +349,21 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 // Global app state (lazily inited on first mount)
 // ---------------------------------------------------------------------------
 
-struct SurfaceEntry {
+struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
     OrpheusGhosttyView* __strong view;
     CVDisplayLinkRef displayLink;
+    BOOL isAttached;       // YES = view is in contentView superview, displayLink running
+    CGRect lastRect;       // last known CSS rect (top-left origin, pre-flip)
+    CGFloat lastScale;
 };
 
 static ghostty_app_t    g_app    = nullptr;
 static ghostty_config_t g_config = nullptr;
 static std::atomic<bool> g_inited{false};
 
-// surfaceId → entry
-static std::map<std::string, SurfaceEntry> g_surfaces;
-static uint64_t g_nextId = 1;
+// workspaceId → entry
+static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
 // ---------------------------------------------------------------------------
 // Coordinate helpers
@@ -470,7 +481,13 @@ static bool ensureApp() {
 }
 
 // ---------------------------------------------------------------------------
-// NAPI: mount(handleBuffer, { rect, scaleFactor, cwd? }) → { surfaceId }
+// NAPI: mount(handleBuffer, { workspaceId, rect, scaleFactor, cwd? })
+//       → { workspaceId, created: bool }
+//
+// If an entry already exists for this workspaceId:
+//   • isAttached == NO → re-attach (wake up surface, add to superview).
+//   • isAttached == YES → defensive resize + log warning (should not happen).
+// If no entry exists → create surface from scratch.
 // ---------------------------------------------------------------------------
 
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
@@ -487,18 +504,19 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
     Napi::Buffer<uint8_t> handleBuf = info[0].As<Napi::Buffer<uint8_t>>();
-    // The handle is a pointer value serialised as little-endian bytes.
     void* rawHandle = nullptr;
     size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
-    // Arg 1 — options { rect: {x,y,w,h}, scaleFactor, cwd? }
+    // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
-        Napi::TypeError::New(env, "arg 1 must be object {rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "arg 1 must be object {workspaceId,rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
         return env.Undefined();
     }
     Napi::Object opts = info[1].As<Napi::Object>();
+
+    std::string workspaceId = opts.Get("workspaceId").As<Napi::String>().Utf8Value();
 
     Napi::Object rectObj = opts.Get("rect").As<Napi::Object>();
     double rx = rectObj.Get("x").As<Napi::Number>().DoubleValue();
@@ -521,11 +539,69 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
-    // Create the OrpheusGhosttyView at the right AppKit rect.
+    auto it = g_surfaces.find(workspaceId);
+
+    if (it != g_surfaces.end()) {
+        // Entry exists — this is a re-attach (workspace nav back).
+        GhosttySurfaceEntry& entry = it->second;
+
+        if (entry.isAttached) {
+            // Should not happen in normal flow — log warning, just resize.
+            NSLog(@"[ghostty-native] mount workspaceId=%s: already attached (defensive resize)",
+                  workspaceId.c_str());
+            double parentH = contentView.bounds.size.height;
+            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+            [entry.view setFrame:newFrame];
+            uint32_t physW = (uint32_t)(rw * scaleFactor);
+            uint32_t physH = (uint32_t)(rh * scaleFactor);
+            ghostty_surface_set_size(entry.surface, physW, physH);
+            ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+        } else {
+            // Re-attach: add back to superview, wake display link.
+            NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
+                  workspaceId.c_str());
+
+            double parentH = contentView.bounds.size.height;
+            NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+            [entry.view setFrame:newFrame];
+            [contentView addSubview:entry.view];
+
+            // Wake the renderer — surface is no longer occluded.
+            ghostty_surface_set_occlusion(entry.surface, false);
+
+            // Re-start the display link.
+            CVDisplayLinkStart(entry.displayLink);
+
+            // Update size in case the window was resized while hidden.
+            uint32_t physW = (uint32_t)(rw * scaleFactor);
+            uint32_t physH = (uint32_t)(rh * scaleFactor);
+            ghostty_surface_set_size(entry.surface, physW, physH);
+            ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+
+            // Re-grab first responder.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if ([entry.view window]) {
+                    [[entry.view window] makeFirstResponder:entry.view];
+                }
+            });
+
+            entry.lastRect = CGRectMake(rx, ry, rw, rh);
+            entry.lastScale = scaleFactor;
+            entry.isAttached = YES;
+        }
+
+        Napi::Object result = Napi::Object::New(env);
+        result.Set("workspaceId", Napi::String::New(env, workspaceId));
+        result.Set("created", Napi::Boolean::New(env, false));
+        return result;
+    }
+
+    // No existing entry — create surface from scratch.
     double parentH = contentView.bounds.size.height;
     NSRect frame = cssRectToAppKit(rx, ry, rw, rh, parentH);
 
-    NSLog(@"[ghostty-native] mount: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
+    NSLog(@"[ghostty-native] mount workspaceId=%s: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
+          workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
@@ -596,81 +672,82 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     ghostty_surface_set_size(surface, physW, physH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
 
-    // Start CVDisplayLink — fires every vsync; callback dispatches draw to main thread.
+    // Create CVDisplayLink — one per workspace, lives until destroy().
+    // The display link is stopped/started on hide/mount but never recreated.
     CVDisplayLinkRef displayLink = nullptr;
     CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
     CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback,
                                    reinterpret_cast<void*>(surface));
     CVDisplayLinkStart(displayLink);
 
-    // Generate surfaceId.
-    std::string surfaceId = "surface-" + std::to_string(g_nextId++);
-
-    SurfaceEntry entry;
-    entry.surface    = surface;
-    entry.view       = termView;
+    // Store entry — view is retained by the map (ARC __strong).
+    GhosttySurfaceEntry entry;
+    entry.surface     = surface;
+    entry.view        = termView;
     entry.displayLink = displayLink;
-    g_surfaces[surfaceId] = entry;
+    entry.isAttached  = YES;
+    entry.lastRect    = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale   = scaleFactor;
+    g_surfaces[workspaceId] = entry;
 
-    NSLog(@"[ghostty-native] mounted surface %s (physPx %ux%u)", surfaceId.c_str(), physW, physH);
+    NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
+          workspaceId.c_str(), physW, physH);
 
     Napi::Object result = Napi::Object::New(env);
-    result.Set("surfaceId", Napi::String::New(env, surfaceId));
+    result.Set("workspaceId", Napi::String::New(env, workspaceId));
+    result.Set("created", Napi::Boolean::New(env, true));
     return result;
 }
 
 // ---------------------------------------------------------------------------
-// NAPI: unmount(surfaceId) → void
+// NAPI: hide(workspaceId) → void
+//
+// Removes the NSView from its superview and stops the display link.
+// The surface + shell process keep running in the background.
+// isAttached is set to NO. View is retained in the map entry.
 // ---------------------------------------------------------------------------
 
-static Napi::Value Unmount(const Napi::CallbackInfo& info) {
+static Napi::Value Hide(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     if (info.Length() < 1 || !info[0].IsString()) {
-        Napi::TypeError::New(env, "unmount requires surfaceId string").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "hide requires workspaceId string").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
-    std::string surfaceId = info[0].As<Napi::String>().Utf8Value();
-    auto it = g_surfaces.find(surfaceId);
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] unmount: unknown surfaceId %s", surfaceId.c_str());
+        NSLog(@"[ghostty-native] hide workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    SurfaceEntry& entry = it->second;
-
-    // Stop and release the display link first.
-    if (entry.displayLink) {
-        CVDisplayLinkStop(entry.displayLink);
-        CVDisplayLinkRelease(entry.displayLink);
-        entry.displayLink = nullptr;
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached) {
+        NSLog(@"[ghostty-native] hide workspaceId=%s: already hidden (no-op)", workspaceId.c_str());
+        return env.Undefined();
     }
 
-    // Nil out the view's surface pointer so in-flight key events don't use freed memory.
-    if (entry.view) {
-        entry.view.surface = nullptr;
-    }
+    NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
 
-    // Free the Ghostty surface.
-    if (entry.surface) {
-        ghostty_surface_free(entry.surface);
-        entry.surface = nullptr;
-    }
+    // Tell Ghostty the surface is now occluded — renderer thread sleeps.
+    ghostty_surface_set_occlusion(entry.surface, true);
 
-    // Remove the NSView from its parent.
-    if (entry.view) {
-        [entry.view removeFromSuperview];
-        entry.view = nil;
-    }
+    // Stop the display link — no more draw dispatches until mount re-attaches.
+    CVDisplayLinkStop(entry.displayLink);
 
-    g_surfaces.erase(it);
-    NSLog(@"[ghostty-native] unmounted surface %s", surfaceId.c_str());
+    // Remove from view hierarchy — view is retained in the map, not freed.
+    [entry.view removeFromSuperview];
+
+    entry.isAttached = NO;
     return env.Undefined();
 }
 
 // ---------------------------------------------------------------------------
-// NAPI: resize(surfaceId, rect, scaleFactor) → void
+// NAPI: resize(workspaceId, rect, scaleFactor) → void
+//
+// If attached: resize the view + notify Ghostty.
+// If not attached: cache the rect for next mount.
 // ---------------------------------------------------------------------------
 
 static Napi::Value Resize(const Napi::CallbackInfo& info) {
@@ -681,7 +758,7 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
-    std::string surfaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
     Napi::Object rectObj = info[1].As<Napi::Object>();
     double rx = rectObj.Get("x").As<Napi::Number>().DoubleValue();
     double ry = rectObj.Get("y").As<Napi::Number>().DoubleValue();
@@ -689,26 +766,88 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
     double rh = rectObj.Get("h").As<Napi::Number>().DoubleValue();
     double scaleFactor = info[2].As<Napi::Number>().DoubleValue();
 
-    auto it = g_surfaces.find(surfaceId);
+    auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] resize: unknown surfaceId %s", surfaceId.c_str());
+        NSLog(@"[ghostty-native] resize workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    SurfaceEntry& entry = it->second;
+    GhosttySurfaceEntry& entry = it->second;
 
-    // Update NSView frame (with coordinate flip).
-    NSView* parentView = [entry.view superview];
-    double parentH = parentView ? parentView.bounds.size.height : rh;
-    NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
-    [entry.view setFrame:newFrame];
+    // Always cache the latest rect/scale.
+    entry.lastRect  = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale = scaleFactor;
 
-    // Update Ghostty surface size.
-    uint32_t physW = (uint32_t)(rw * scaleFactor);
-    uint32_t physH = (uint32_t)(rh * scaleFactor);
-    ghostty_surface_set_size(entry.surface, physW, physH);
-    ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+    if (entry.isAttached) {
+        // Update NSView frame (with coordinate flip).
+        NSView* parentView = [entry.view superview];
+        double parentH = parentView ? parentView.bounds.size.height : rh;
+        NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
+        [entry.view setFrame:newFrame];
 
+        // Update Ghostty surface size.
+        uint32_t physW = (uint32_t)(rw * scaleFactor);
+        uint32_t physH = (uint32_t)(rh * scaleFactor);
+        ghostty_surface_set_size(entry.surface, physW, physH);
+        ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+    }
+    // If not attached: rect is cached above; will be applied on next mount.
+
+    return env.Undefined();
+}
+
+// ---------------------------------------------------------------------------
+// NAPI: destroy(workspaceId) → void
+//
+// Full teardown — call only on workspace archive or project removal.
+// Idempotent: no-op if no entry exists.
+// ---------------------------------------------------------------------------
+
+static Napi::Value Destroy(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "destroy requires workspaceId string").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        NSLog(@"[ghostty-native] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        return env.Undefined();
+    }
+
+    NSLog(@"[ghostty-native] destroy workspaceId=%s", workspaceId.c_str());
+
+    GhosttySurfaceEntry& entry = it->second;
+
+    // Stop + release the display link first.
+    if (entry.displayLink) {
+        CVDisplayLinkStop(entry.displayLink);
+        CVDisplayLinkRelease(entry.displayLink);
+        entry.displayLink = nullptr;
+    }
+
+    // Nil out the view's surface pointer so any in-flight key events don't
+    // use freed memory.
+    if (entry.view) {
+        entry.view.surface = nullptr;
+    }
+
+    // Free the Ghostty surface (terminates the shell process).
+    if (entry.surface) {
+        ghostty_surface_free(entry.surface);
+        entry.surface = nullptr;
+    }
+
+    // Remove the view from its parent (if still attached).
+    if (entry.view) {
+        [entry.view removeFromSuperview];
+        entry.view = nil; // ARC releases
+    }
+
+    g_surfaces.erase(it);
     return env.Undefined();
 }
 
@@ -718,8 +857,9 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("mount",   Napi::Function::New(env, Mount));
-    exports.Set("unmount", Napi::Function::New(env, Unmount));
+    exports.Set("hide",    Napi::Function::New(env, Hide));
     exports.Set("resize",  Napi::Function::New(env, Resize));
+    exports.Set("destroy", Napi::Function::New(env, Destroy));
     return exports;
 }
 

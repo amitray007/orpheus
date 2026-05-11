@@ -20,9 +20,15 @@ declare global {
         getVersion: () => Promise<string>
       }
       terminal: {
-        mount: (rect: TerminalRect, scaleFactor: number, cwd?: string) => Promise<{ surfaceId: string }>
-        unmount: (surfaceId: string) => Promise<void>
-        resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
+        mount: (
+          workspaceId: string,
+          rect: TerminalRect,
+          scaleFactor: number,
+          cwd?: string
+        ) => Promise<{ workspaceId: string; created: boolean }>
+        hide: (workspaceId: string) => Promise<void>
+        resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
+        destroy: (workspaceId: string) => Promise<void>
       }
       config: {
         openFolder: () => Promise<string | null>

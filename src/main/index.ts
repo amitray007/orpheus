@@ -314,10 +314,11 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 type GhosttyNativeAddon = {
   mount: (
     handle: Buffer,
-    opts: { rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ) => { surfaceId: string }
-  unmount: (surfaceId: string) => void
-  resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => void
+    opts: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
+  ) => { workspaceId: string; created: boolean }
+  hide: (workspaceId: string) => void
+  resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
+  destroy: (workspaceId: string) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -358,28 +359,45 @@ ipcMain.handle(
   'terminal:mount',
   (
     e,
-    { rect, scaleFactor, cwd }: { rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): { surfaceId: string } => {
+    {
+      workspaceId,
+      rect,
+      scaleFactor,
+      cwd
+    }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
+  ): { workspaceId: string; created: boolean } => {
     const addon = loadTerminalAddon()
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
-    return addon.mount(handle, { rect, scaleFactor, cwd })
+    return addon.mount(handle, { workspaceId, rect, scaleFactor, cwd })
   }
 )
 
-ipcMain.handle('terminal:unmount', (_e, { surfaceId }: { surfaceId: string }): void => {
+ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
-  addon.unmount(surfaceId)
+  addon.hide(workspaceId)
 })
 
 ipcMain.handle(
   'terminal:resize',
-  (_e, { surfaceId, rect, scaleFactor }: { surfaceId: string; rect: TerminalRect; scaleFactor: number }): void => {
+  (
+    _e,
+    {
+      workspaceId,
+      rect,
+      scaleFactor
+    }: { workspaceId: string; rect: TerminalRect; scaleFactor: number }
+  ): void => {
     const addon = loadTerminalAddon()
-    addon.resize(surfaceId, rect, scaleFactor)
+    addon.resize(workspaceId, rect, scaleFactor)
   }
 )
+
+ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.destroy(workspaceId)
+})
 
 // ---------------------------------------------------------------------------
 // App lifecycle
