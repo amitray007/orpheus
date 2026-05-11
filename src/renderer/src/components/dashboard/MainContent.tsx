@@ -86,7 +86,10 @@ export function MainContent({
         </div>
       )
     }
-    return <WorkspaceView workspace={workspace} />
+    // key forces React to unmount the old WorkspaceView and mount a fresh
+    // one when the workspace changes — without this the useEffect with []
+    // deps doesn't re-run and terminal:hide/mount never fires.
+    return <WorkspaceView key={workspace.id} workspace={workspace} />
   }
 
   // project view
