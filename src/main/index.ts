@@ -2,6 +2,11 @@ import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import * as childProcess from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as nodePath from 'node:path'
+import type { DoctorResult, ExistingProject } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -68,6 +73,93 @@ function createWindow(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Doctor helpers
+// ---------------------------------------------------------------------------
+
+// Main process inherits the launching user's shell environment, so PATH-based
+// lookups (e.g. brew-installed `claude`) should resolve automatically.
+// We augment PATH defensively for common install locations just in case.
+const augmentedEnv = {
+  ...process.env,
+  PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ''}`
+}
+
+function checkClaude(): { installed: boolean; version: string | null; path: string | null } {
+  let claudePath: string | null = null
+
+  try {
+    claudePath = childProcess
+      .execSync('which claude', { encoding: 'utf-8', env: augmentedEnv })
+      .trim()
+  } catch {
+    // `which` failed — claude not on PATH
+    return { installed: false, version: null, path: null }
+  }
+
+  let version: string | null = null
+  try {
+    const versionOutput = childProcess.execSync('claude --version', {
+      encoding: 'utf-8',
+      env: augmentedEnv
+    })
+    const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
+    version = match ? match[1] : null
+  } catch {
+    // `claude --version` failed but `which` succeeded — installed, version unknown
+  }
+
+  return { installed: true, version, path: claudePath }
+}
+
+function readClaudeProjects(): ExistingProject[] {
+  const projectsDir = nodePath.join(os.homedir(), '.claude', 'projects')
+
+  if (!fs.existsSync(projectsDir)) return []
+
+  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
+  const dirs = entries.filter((e) => e.isDirectory())
+
+  const projects: ExistingProject[] = dirs.map((dir) => {
+    const encodedName = dir.name
+    // TODO: handle paths with literal dashes — naive decode treats every `-` as `/`,
+    // so a path like `/Users/foo/my-cool-repo` (encoded: `-Users-foo-my-cool-repo`)
+    // decodes ambiguously. Acceptable for v0 minimal.
+    const decoded = encodedName.replace(/-/g, '/')
+    const name = nodePath.basename(decoded)
+
+    const dirPath = nodePath.join(projectsDir, encodedName)
+    const jsonlFiles = fs
+      .readdirSync(dirPath)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => nodePath.join(dirPath, f))
+
+    const sessionCount = jsonlFiles.length
+
+    let lastActivity: number | null = null
+    for (const file of jsonlFiles) {
+      try {
+        const mtime = fs.statSync(file).mtimeMs
+        if (lastActivity === null || mtime > lastActivity) {
+          lastActivity = mtime
+        }
+      } catch {
+        // skip unreadable files
+      }
+    }
+
+    return { encodedName, path: decoded, name, sessionCount, lastActivity }
+  })
+
+  // Sort by lastActivity descending; null sinks to bottom
+  return projects.sort((a, b) => {
+    if (a.lastActivity === null && b.lastActivity === null) return 0
+    if (a.lastActivity === null) return 1
+    if (b.lastActivity === null) return -1
+    return b.lastActivity - a.lastActivity
+  })
+}
+
+// ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
 
@@ -77,6 +169,16 @@ ipcMain.handle('config:openFolder', async () => {
   const chosen = result.filePaths[0]
   console.log('[orpheus] folder selected:', chosen)
   return chosen ?? null
+})
+
+ipcMain.handle('doctor:check', (): DoctorResult => {
+  const { installed, version, path: claudePath } = checkClaude()
+  return {
+    claudeInstalled: installed,
+    claudeVersion: version,
+    claudePath,
+    existingProjects: readClaudeProjects()
+  }
 })
 
 // ---------------------------------------------------------------------------

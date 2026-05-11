@@ -1,10 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { DoctorResult } from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
+  },
+  doctor: {
+    check: (): Promise<DoctorResult> => ipcRenderer.invoke('doctor:check')
   }
 }
 
