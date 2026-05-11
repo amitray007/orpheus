@@ -4,6 +4,9 @@ import type { DoctorResult } from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
+  app: {
+    getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
+  },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
   },

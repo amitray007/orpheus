@@ -188,6 +188,8 @@ ipcMain.handle('config:openFolder', async () => {
   return chosen ?? null
 })
 
+ipcMain.handle('app:getVersion', () => app.getVersion())
+
 ipcMain.handle('doctor:check', (): DoctorResult => {
   const { installed, version, path: claudePath } = checkClaude()
   return {

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { TitleBarDragRegion } from './components/TitleBarDragRegion'
-import { MainPage } from './components/MainPage'
+import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
 import type { DoctorResult } from '@shared/types'
 
@@ -25,14 +24,11 @@ function App(): React.JSX.Element {
     }
   }, [])
 
-  // Always render MainPage; overlay the modal only when claude is missing.
-  const projects = doctor?.existingProjects ?? []
   const showMissingModal = doctor !== null && !doctor.claudeInstalled
 
   return (
-    <main className="app pt-9">
-      <TitleBarDragRegion />
-      <MainPage existingProjects={projects} />
+    <main className="app h-full">
+      {doctor !== null && <Dashboard claudeInstalled={doctor.claudeInstalled} />}
       {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
     </main>
   )

@@ -5,6 +5,9 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      app: {
+        getVersion: () => Promise<string>
+      }
       config: {
         openFolder: () => Promise<string | null>
       }
