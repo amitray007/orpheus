@@ -9,6 +9,8 @@ import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
 import { getDb } from './db'
 import { listProjects, addProject, openProject, archiveProject, renameProject } from './projects'
+import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
+import type { SessionStatus } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -216,6 +218,25 @@ ipcMain.handle('projects:archive', (_e, { id }: { id: string }) => archiveProjec
 
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
+)
+
+// ---------------------------------------------------------------------------
+// Sessions IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'sessions:listForProject',
+  (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
+    listSessionsForProject(projectId, { includeArchived })
+)
+
+ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) =>
+  listAllSessions(opts)
+)
+
+ipcMain.handle(
+  'sessions:setStatus',
+  (_e, { id, status }: { id: string; status: SessionStatus }) => setSessionStatus(id, status)
 )
 
 ipcMain.handle('doctor:check', (): DoctorResult => {

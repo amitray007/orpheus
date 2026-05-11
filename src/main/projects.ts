@@ -1,5 +1,6 @@
 import { getDb } from './db'
 import type { ProjectRecord } from '../shared/types'
+import { importSessionsForProject } from './sessions'
 import * as nodePath from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -65,13 +66,23 @@ export function addProject(path: string): ProjectRecord {
   const claudeEncodedName = path.replace(/\//g, '-')
   const addedAt = Date.now()
 
-  db.prepare(
-    `INSERT INTO projects (id, path, name, claude_encoded_name, added_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(id, path, name, claudeEncodedName, addedAt)
+  // Insert project + import its sessions atomically.
+  const insertProjectAndSessions = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO projects (id, path, name, claude_encoded_name, added_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, path, name, claudeEncodedName, addedAt)
 
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
-  return rowToRecord(row)
+    const newProject = rowToRecord(
+      db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
+    )
+    // importSessionsForProject writes inside the same transaction
+    importSessionsForProject(newProject)
+
+    return newProject
+  })
+
+  return insertProjectAndSessions()
 }
 
 export function openProject(id: string): ProjectRecord {

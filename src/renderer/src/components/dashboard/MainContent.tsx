@@ -1,4 +1,5 @@
 import { ProjectView } from './ProjectView'
+import { SessionsView } from './SessionsView'
 import type { ProjectRecord } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -19,7 +20,7 @@ function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// View union type (mirrors Dashboard.tsx)
+// View union type
 // ---------------------------------------------------------------------------
 
 export type View =
@@ -41,7 +42,8 @@ interface MainContentProps {
 export function MainContent({
   view,
   project,
-  onProjectArchived
+  onProjectArchived,
+  onNavigateToProject
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'dashboard') {
     return (
@@ -54,12 +56,7 @@ export function MainContent({
   }
 
   if (view.kind === 'sessions') {
-    // SessionsView will be wired in commit 3
-    return (
-      <div className="flex flex-col gap-6">
-        <PlaceholderSection title="Sessions" />
-      </div>
-    )
+    return <SessionsView onNavigateToProject={onNavigateToProject} />
   }
 
   // project view
