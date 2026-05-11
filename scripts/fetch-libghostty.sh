@@ -100,14 +100,21 @@ if [ ! -d "$GHOSTTY_DIR/.git" ]; then
 fi
 
 cd "$GHOSTTY_DIR"
-echo "[fetch-libghostty] fetching $GHOSTTY_TAG_LABEL ($GHOSTTY_PIN)"
-git fetch --tags origin
-git checkout -f "$GHOSTTY_PIN"
 
-ACTUAL_PIN=$(git rev-parse HEAD)
-if [ "$ACTUAL_PIN" != "$GHOSTTY_PIN" ]; then
-  echo "[fetch-libghostty] HEAD ($ACTUAL_PIN) does not match pin ($GHOSTTY_PIN)" >&2
-  exit 1
+# Idempotency check: if HEAD is already at the pinned commit, skip network fetch.
+CURRENT_PIN=$(git rev-parse HEAD 2>/dev/null || echo "none")
+if [ "$CURRENT_PIN" = "$GHOSTTY_PIN" ]; then
+  echo "[fetch-libghostty] Ghostty source already at $GHOSTTY_TAG_LABEL ($GHOSTTY_PIN) — skipping fetch"
+else
+  echo "[fetch-libghostty] fetching $GHOSTTY_TAG_LABEL ($GHOSTTY_PIN)"
+  git fetch --tags origin
+  git checkout -f "$GHOSTTY_PIN"
+
+  ACTUAL_PIN=$(git rev-parse HEAD)
+  if [ "$ACTUAL_PIN" != "$GHOSTTY_PIN" ]; then
+    echo "[fetch-libghostty] HEAD ($ACTUAL_PIN) does not match pin ($GHOSTTY_PIN)" >&2
+    exit 1
+  fi
 fi
 
 echo "[fetch-libghostty] Ghostty source at $GHOSTTY_TAG_LABEL ($GHOSTTY_PIN) in $GHOSTTY_DIR"
