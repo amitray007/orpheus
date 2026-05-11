@@ -98,66 +98,34 @@ function getUserShellPath(): string {
 }
 
 function checkClaude(): { installed: boolean; version: string | null; path: string | null } {
+  // PATH comes from the user's actual shell (cached). No hardcoded fallbacks:
+  // if `claude` isn't on the user's shell PATH, it isn't installed for them.
   const userPath = getUserShellPath()
-  const env = {
-    ...process.env,
-    PATH: `${userPath}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ''}`
-  }
+  const env = { ...process.env, PATH: userPath || process.env.PATH || '' }
 
-  // 1. Try PATH-based lookup first (uses user's shell PATH).
+  let claudePath: string
   try {
-    const claudePath = childProcess
+    claudePath = childProcess
       .execSync('which claude', { encoding: 'utf-8', env, timeout: 3000 })
       .trim()
-
-    if (claudePath) {
-      let version: string | null = null
-      try {
-        const versionOutput = childProcess.execSync('claude --version', {
-          encoding: 'utf-8',
-          env,
-          timeout: 3000
-        })
-        const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
-        version = match ? match[1] : null
-      } catch {
-        // version check failed, but `which` succeeded
-      }
-      return { installed: true, version, path: claudePath }
-    }
+    if (!claudePath) return { installed: false, version: null, path: null }
   } catch {
-    // PATH-based lookup failed — fall through to known install locations
+    return { installed: false, version: null, path: null }
   }
 
-  // 2. Fallback: check known install locations directly. Useful for tools
-  //    that install `claude` outside the user's shell PATH (e.g. cmux).
-  const candidates = [
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
-    nodePath.join(os.homedir(), '.local', 'bin', 'claude'),
-    nodePath.join(os.homedir(), '.claude', 'bin', 'claude'),
-    nodePath.join(os.homedir(), '.bun', 'bin', 'claude'),
-    nodePath.join(os.homedir(), '.npm-global', 'bin', 'claude'),
-    '/Applications/cmux.app/Contents/Resources/bin/claude'
-  ]
-
-  for (const candidate of candidates) {
-    if (!fs.existsSync(candidate)) continue
-    let version: string | null = null
-    try {
-      const versionOutput = childProcess.execSync(`"${candidate}" --version`, {
-        encoding: 'utf-8',
-        timeout: 3000
-      })
-      const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
-      version = match ? match[1] : null
-    } catch {
-      // version check failed; still treat binary presence as installed
-    }
-    return { installed: true, version, path: candidate }
+  let version: string | null = null
+  try {
+    const versionOutput = childProcess.execSync('claude --version', {
+      encoding: 'utf-8',
+      env,
+      timeout: 3000
+    })
+    const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
+    version = match ? match[1] : null
+  } catch {
+    // `which` succeeded but `--version` failed; treat as installed, version unknown
   }
-
-  return { installed: false, version: null, path: null }
+  return { installed: true, version, path: claudePath }
 }
 
 function readClaudeProjects(): ExistingProject[] {
