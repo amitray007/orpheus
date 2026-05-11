@@ -416,7 +416,37 @@ static bool ensureApp() {
         NSLog(@"[ghostty-native] ghostty_config_new FAILED");
         return false;
     }
+
+    // Match the upstream Ghostty.app config-load sequence (Ghostty.Config.swift):
+    //   1. ghostty_config_load_default_files  — discovers ~/.config/ghostty/config
+    //      and ~/Library/Application Support/com.mitchellh.ghostty/config
+    //   2. ghostty_config_load_recursive_files — resolves any `theme = ...` or
+    //      `config-file = ...` directives found in the loaded files
+    //   3. ghostty_config_finalize             — fills in defaults
+    //
+    // We intentionally skip ghostty_config_load_cli_args (not meaningful here).
+    // The user's preferences from their installed Ghostty.app (font, theme,
+    // palette, keybinds, etc.) now flow into this surface automatically.
+    NSLog(@"[ghostty-native] loading user config (default files)");
+    ghostty_config_load_default_files(g_config);
+
+    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
+    ghostty_config_load_recursive_files(g_config);
+
     ghostty_config_finalize(g_config);
+
+    // Log any config diagnostics so theme/parse errors are visible in Console.app.
+    uint32_t diagCount = ghostty_config_diagnostics_count(g_config);
+    if (diagCount > 0) {
+        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
+        for (uint32_t i = 0; i < diagCount; i++) {
+            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(g_config, i);
+            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
+                  diag.message ? diag.message : "(null)");
+        }
+    } else {
+        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
+    }
 
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
