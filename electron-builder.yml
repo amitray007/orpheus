@@ -19,6 +19,19 @@ extraResources:
   # so the main process can load them from process.resourcesPath at runtime.
   - from: packages/ghostty-spike1/build/Release/ghostty_spike1.node
     to: packages/ghostty-spike1/ghostty_spike1.node
+  # Ghostty terminfo sentinel — must live at Contents/Resources/terminfo/78/xterm-ghostty
+  # so Ghostty's auto-walk (resourcesdir.zig) finds the bundle when scanning up from the
+  # Contents/MacOS/Orpheus executable.
+  - from: resources/ghostty/terminfo
+    to: terminfo
+    filter:
+      - "**/*"
+  # Ghostty resources dir — shell-integration scripts etc.
+  # Ghostty sets app_path = Contents/Resources/ghostty after the sentinel walk.
+  - from: resources/ghostty/ghostty
+    to: ghostty
+    filter:
+      - "**/*"
 win:
   executableName: Orpheus
 nsis:

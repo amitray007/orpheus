@@ -311,27 +311,47 @@ app.whenReady().then(() => {
   createWindow()
 
   // ---------------------------------------------------------------------------
-  // Spike 1 — libghostty NAPI main-thread compatibility test
+  // Spike 1 / Spike 5 — libghostty NAPI main-thread + terminfo + shell-spawn test.
   // Only runs when SPIKE1=1 is set in the environment.
+  //
+  // Spike 5 runs TWO passes:
+  //   Pass A (auto-walk):   GHOSTTY_RESOURCES_DIR not set; Ghostty walks up from
+  //                         the executable to find Contents/Resources/terminfo/78/xterm-ghostty.
+  //   Pass B (env-override): GHOSTTY_RESOURCES_DIR = process.resourcesPath/ghostty set
+  //                          explicitly before calling runSpike().
   // ---------------------------------------------------------------------------
   if (process.env['SPIKE1']) {
     const mainWin = BrowserWindow.getAllWindows()[0]
     if (mainWin) {
       mainWin.webContents.once('did-finish-load', () => {
-        console.log('[spike1] did-finish-load fired, loading addon...')
+        console.log('[spike5] did-finish-load fired, loading addon...')
         try {
           // Resolve the .node path: dev = project-relative, packaged = resourcesPath
           const addonPath = app.isPackaged
             ? join(process.resourcesPath, 'packages/ghostty-spike1/ghostty_spike1.node')
             : join(__dirname, '../../packages/ghostty-spike1/build/Release/ghostty_spike1.node')
-          console.log('[spike1] loading addon from:', addonPath)
+          console.log('[spike5] loading addon from:', addonPath)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const addon = createRequire(import.meta.url)(addonPath) as { runSpike: () => string }
-          console.log('[spike1] addon loaded OK, calling runSpike()...')
-          const result = addon.runSpike()
-          console.log('[spike1] runSpike result:\n' + result)
+          console.log('[spike5] addon loaded OK')
+
+          // --- Pass A: auto-walk (no GHOSTTY_RESOURCES_DIR override) ---
+          console.log('[spike5] === PASS A: auto-walk (GHOSTTY_RESOURCES_DIR unset) ===')
+          delete process.env['GHOSTTY_RESOURCES_DIR']
+          const resultA = addon.runSpike()
+          console.log('[spike5] Pass A result:\n' + resultA)
+
+          // --- Pass B: explicit env override ---
+          const ghosttyResDir = join(process.resourcesPath, 'ghostty')
+          console.log('[spike5] === PASS B: env-override (GHOSTTY_RESOURCES_DIR=' + ghosttyResDir + ') ===')
+          process.env['GHOSTTY_RESOURCES_DIR'] = ghosttyResDir
+          const resultB = addon.runSpike()
+          console.log('[spike5] Pass B result:\n' + resultB)
+
+          // Cleanup env var so it doesn't leak
+          delete process.env['GHOSTTY_RESOURCES_DIR']
         } catch (err) {
-          console.error('[spike1] addon load or runSpike threw:', err)
+          console.error('[spike5] addon load or runSpike threw:', err)
         }
       })
     }
