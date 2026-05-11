@@ -1,28 +1,56 @@
 import type React from 'react'
+import type { Icon } from '@phosphor-icons/react'
+import { SquaresFour, ChatsCircle, Plus } from '@phosphor-icons/react'
 
 interface NavItemProps {
-  icon: string
+  Icon: Icon
   label: string
   active?: boolean
   collapsed: boolean
+  onClick?: () => void
 }
 
-function NavItem({ icon, label, active = false, collapsed }: NavItemProps): React.JSX.Element {
+function NavItem({
+  Icon,
+  label,
+  active = false,
+  collapsed,
+  onClick
+}: NavItemProps): React.JSX.Element {
   return (
     <button
       className={[
-        'w-full flex items-center rounded-md transition-colors duration-100',
-        collapsed ? 'justify-center px-1 py-2' : 'px-2 py-2',
+        'w-full flex items-center rounded-md transition-colors duration-150',
+        collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2 gap-3',
         active
-          ? 'bg-accent/10 border-l-2 border-accent text-text-primary'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
+          ? 'bg-accent/15 text-text-primary font-medium'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
       ].join(' ')}
-      onClick={() => console.log(`[nav] ${label}`)}
+      onClick={onClick ?? (() => console.log(`[nav] ${label}`))}
       aria-label={label}
+      aria-current={active ? 'page' : undefined}
     >
-      <span className="text-base leading-none">{icon}</span>
-      {!collapsed && <span className="ml-2 text-sm">{label}</span>}
+      <Icon
+        size={20}
+        weight={active ? 'fill' : 'regular'}
+        className={active ? 'text-accent' : ''}
+      />
+      {!collapsed && <span className="text-sm">{label}</span>}
     </button>
+  )
+}
+
+interface SectionHeaderProps {
+  label: string
+  action?: React.ReactNode
+}
+
+function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element {
+  return (
+    <div className="flex items-center justify-between px-3 mb-1">
+      <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
+      {action}
+    </div>
   )
 }
 
@@ -31,6 +59,16 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
+  const addProjectButton = (
+    <button
+      aria-label="Add project"
+      className="p-1 text-text-muted hover:text-text-primary hover:bg-surface-overlay rounded transition-colors duration-150"
+      onClick={() => console.log('[projects] add project')}
+    >
+      <Plus size={14} weight="bold" />
+    </button>
+  )
+
   return (
     <aside
       className={[
@@ -40,54 +78,24 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
         'px-2 py-4 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
     >
-      {/* Top nav items */}
-      <NavItem icon="▣" label="Dashboard" active={true} collapsed={collapsed} />
-      <NavItem icon="⌕" label="Sessions" active={false} collapsed={collapsed} />
+      {/* Top nav */}
+      <NavItem Icon={SquaresFour} label="Dashboard" active collapsed={collapsed} />
+      <NavItem Icon={ChatsCircle} label="Sessions" collapsed={collapsed} />
 
-      {/* PINNED section */}
+      {/* Pinned section — empty state for v0 */}
       <div className="mt-6">
-        {!collapsed && (
-          <p className="text-xs font-medium uppercase tracking-wide text-text-muted px-2 mb-1">
-            Pinned
-          </p>
-        )}
-        {collapsed && (
-          <div className="flex justify-center px-1 py-1">
-            <span className="text-base text-text-muted select-none">╌</span>
-          </div>
-        )}
-        {/* Empty pinned list — no rows in v0 */}
+        {!collapsed && <SectionHeader label="Pinned" />}
       </div>
 
-      {/* PROJECTS section */}
-      <div className="mt-6">
+      {/* Projects section */}
+      <div className="mt-4">
         {!collapsed ? (
           <>
-            <div className="flex items-center justify-between px-2 mb-1">
-              <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                Projects
-              </p>
-              <button
-                aria-label="Add project"
-                className="text-xs text-text-muted hover:text-text-primary hover:bg-surface-overlay rounded px-1 py-0.5 transition-colors duration-100"
-                onClick={() => console.log('[projects] add project')}
-              >
-                +
-              </button>
-            </div>
-            <p className="text-sm text-text-muted px-2">(coming soon)</p>
+            <SectionHeader label="Projects" action={addProjectButton} />
+            <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
           </>
         ) : (
-          <div className="flex flex-col items-center gap-2">
-            <span className="text-base text-text-muted select-none">╌</span>
-            <button
-              aria-label="Add project"
-              className="text-xs text-text-muted hover:text-text-primary hover:bg-surface-overlay rounded px-1 py-0.5 transition-colors duration-100"
-              onClick={() => console.log('[projects] add project')}
-            >
-              +
-            </button>
-          </div>
+          <div className="flex justify-center">{addProjectButton}</div>
         )}
       </div>
     </aside>
