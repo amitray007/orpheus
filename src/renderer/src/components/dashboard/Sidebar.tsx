@@ -9,11 +9,14 @@ import {
   CaretRight,
   PushPin,
   Stack,
-  Folder
+  Folder,
+  PencilSimple,
+  Trash
 } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 import { ProjectListSkeleton, Skeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
+import { ContextMenu } from '../ContextMenu'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -154,6 +157,11 @@ interface ProjectRowProps {
   onToggleWorkspacePin: (workspaceId: string) => void
   currentViewKind: string
   currentWorkspaceId?: string | null
+  renaming: boolean
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onRequestRemove: () => void
 }
 
 function ProjectRow({
@@ -169,10 +177,36 @@ function ProjectRow({
   onToggleProjectPin,
   onToggleWorkspacePin,
   currentViewKind,
-  currentWorkspaceId
+  currentWorkspaceId,
+  renaming,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onRequestRemove
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [renameValue, setRenameValue] = useState(project.name)
   const isPinned = project.pinnedAt !== null
+
+  // Sync rename input when project name changes externally
+  if (!renaming && renameValue !== project.name) {
+    setRenameValue(project.name)
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  function handleRenameCommit(): void {
+    const trimmed = renameValue.trim()
+    if (trimmed && trimmed !== project.name) {
+      onFinishRename(trimmed)
+    } else {
+      onCancelRename()
+    }
+  }
 
   return (
     <div className="flex flex-col">
@@ -185,6 +219,7 @@ function ProjectRow({
         ].join(' ')}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onContextMenu={handleContextMenu}
       >
         {/* Main clickable row — navigate to project view */}
         <button
@@ -193,44 +228,61 @@ function ProjectRow({
           title={project.path}
         >
           <Identicon seed={project.path} size={20} />
-          <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameCommit()
+                if (e.key === 'Escape') onCancelRename()
+              }}
+              onBlur={handleRenameCommit}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
+            />
+          ) : (
+            <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+          )}
         </button>
 
         {/* Right controls: pin + count + chevron */}
-        <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
-          {/* Pin affordance — visible on hover or when pinned */}
-          {(hovered || isPinned) && (
+        {!renaming && (
+          <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
+            {/* Pin affordance — visible on hover or when pinned */}
+            {(hovered || isPinned) && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onToggleProjectPin()
+                }}
+                className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+                title={isPinned ? 'Unpin project' : 'Pin project'}
+              >
+                <PushPin size={11} weight={isPinned ? 'fill' : 'regular'} />
+              </button>
+            )}
+
+            {/* Workspace count pill */}
+            {workspaceCount > 0 && (
+              <span className="text-xs text-text-muted px-1.5 py-0.5 rounded bg-surface-overlay">
+                {workspaceCount}
+              </span>
+            )}
+
+            {/* Expand/collapse chevron */}
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                onToggleProjectPin()
+                onToggleExpand()
               }}
               className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
-              title={isPinned ? 'Unpin project' : 'Pin project'}
+              title={expanded ? 'Collapse' : 'Expand workspaces'}
             >
-              <PushPin size={11} weight={isPinned ? 'fill' : 'regular'} />
+              {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
             </button>
-          )}
-
-          {/* Workspace count pill */}
-          {workspaceCount > 0 && (
-            <span className="text-xs text-text-muted px-1.5 py-0.5 rounded bg-surface-overlay">
-              {workspaceCount}
-            </span>
-          )}
-
-          {/* Expand/collapse chevron */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onToggleExpand()
-            }}
-            className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
-            title={expanded ? 'Collapse' : 'Expand workspaces'}
-          >
-            {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Nested workspace rows */}
@@ -251,6 +303,33 @@ function ProjectRow({
           ))}
         </div>
       )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: 'Rename',
+              icon: <PencilSimple size={13} />,
+              onClick: onBeginRename
+            },
+            {
+              label: isPinned ? 'Unpin' : 'Pin',
+              icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
+              onClick: onToggleProjectPin
+            },
+            { divider: true, label: '', onClick: () => {} },
+            {
+              label: 'Remove from Orpheus…',
+              icon: <Trash size={13} />,
+              onClick: onRequestRemove,
+              destructive: true
+            }
+          ]}
+        />
+      )}
     </div>
   )
 }
@@ -265,10 +344,15 @@ interface PinnedSectionProps {
   currentViewKind: string
   currentProjectId?: string | null
   currentWorkspaceId?: string | null
+  renamingProjectId: string | null
   onSelectProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onUnpinProject: (id: string) => void
   onUnpinWorkspace: (id: string) => void
+  onBeginRenameProject: (id: string) => void
+  onFinishRenameProject: (id: string, newName: string) => void
+  onCancelRenameProject: () => void
+  onRequestRemoveProject: (project: ProjectRecord) => void
 }
 
 function PinnedSection({
@@ -277,10 +361,15 @@ function PinnedSection({
   currentViewKind,
   currentProjectId,
   currentWorkspaceId,
+  renamingProjectId,
   onSelectProject,
   onSelectWorkspace,
   onUnpinProject,
-  onUnpinWorkspace
+  onUnpinWorkspace,
+  onBeginRenameProject,
+  onFinishRenameProject,
+  onCancelRenameProject,
+  onRequestRemoveProject
 }: PinnedSectionProps): React.JSX.Element | null {
   if (loading) {
     return (
@@ -310,6 +399,11 @@ function PinnedSection({
               active={isActive}
               onSelect={() => onSelectProject(item.project.id)}
               onUnpin={() => onUnpinProject(item.project.id)}
+              renaming={renamingProjectId === item.project.id}
+              onBeginRename={() => onBeginRenameProject(item.project.id)}
+              onFinishRename={(name) => onFinishRenameProject(item.project.id, name)}
+              onCancelRename={onCancelRenameProject}
+              onRequestRemove={() => onRequestRemoveProject(item.project)}
             />
           )
         }
@@ -336,49 +430,125 @@ interface PinnedProjectRowProps {
   active: boolean
   onSelect: () => void
   onUnpin: () => void
+  renaming: boolean
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onRequestRemove: () => void
 }
 
 function PinnedProjectRow({
   project,
   active,
   onSelect,
-  onUnpin
+  onUnpin,
+  renaming,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onRequestRemove
 }: PinnedProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [renameValue, setRenameValue] = useState(project.name)
+
+  // Sync rename input when project name changes externally
+  if (!renaming && renameValue !== project.name) {
+    setRenameValue(project.name)
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  function handleRenameCommit(): void {
+    const trimmed = renameValue.trim()
+    if (trimmed && trimmed !== project.name) {
+      onFinishRename(trimmed)
+    } else {
+      onCancelRename()
+    }
+  }
 
   return (
-    <div
-      className={[
-        'flex items-center rounded-md transition-colors duration-150 group',
-        active
-          ? 'bg-accent/15 text-text-primary'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
-      ].join(' ')}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <button
-        onClick={onSelect}
-        className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0"
-        title={project.path}
+    <>
+      <div
+        className={[
+          'flex items-center rounded-md transition-colors duration-150 group',
+          active
+            ? 'bg-accent/15 text-text-primary'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+        ].join(' ')}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onContextMenu={handleContextMenu}
       >
-        <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
-        <Identicon seed={project.path} size={16} />
-        <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
-      </button>
-      {hovered && (
         <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onUnpin()
-          }}
-          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
-          title="Unpin project"
+          onClick={onSelect}
+          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0"
+          title={project.path}
         >
-          <PushPin size={11} weight="fill" />
+          <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
+          <Identicon seed={project.path} size={16} />
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameCommit()
+                if (e.key === 'Escape') onCancelRename()
+              }}
+              onBlur={handleRenameCommit}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
+            />
+          ) : (
+            <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+          )}
         </button>
+        {!renaming && hovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onUnpin()
+            }}
+            className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+            title="Unpin project"
+          >
+            <PushPin size={11} weight="fill" />
+          </button>
+        )}
+      </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: 'Rename',
+              icon: <PencilSimple size={13} />,
+              onClick: onBeginRename
+            },
+            {
+              label: 'Unpin',
+              icon: <PushPin size={13} weight="fill" />,
+              onClick: onUnpin
+            },
+            { divider: true, label: '', onClick: () => {} },
+            {
+              label: 'Remove from Orpheus…',
+              icon: <Trash size={13} />,
+              onClick: onRequestRemove,
+              destructive: true
+            }
+          ]}
+        />
       )}
-    </div>
+    </>
   )
 }
 
@@ -465,6 +635,8 @@ interface SidebarProps {
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onToggleProjectPin: (id: string) => void
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void
+  onRenameProject: (id: string, newName: string) => void | Promise<void>
+  onRequestRemoveProject: (project: ProjectRecord) => void
 }
 
 export function Sidebar({
@@ -486,8 +658,25 @@ export function Sidebar({
   onToggleProjectExpand,
   onSelectWorkspace,
   onToggleProjectPin,
-  onToggleWorkspacePin
+  onToggleWorkspacePin,
+  onRenameProject,
+  onRequestRemoveProject
 }: SidebarProps): React.JSX.Element {
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+
+  function handleBeginRename(id: string): void {
+    setRenamingProjectId(id)
+  }
+
+  function handleFinishRename(id: string, newName: string): void {
+    onRenameProject(id, newName)
+    setRenamingProjectId(null)
+  }
+
+  function handleCancelRename(): void {
+    setRenamingProjectId(null)
+  }
+
   const addProjectButton = (
     <button
       aria-label="Add project"
@@ -537,6 +726,7 @@ export function Sidebar({
           currentViewKind={currentViewKind}
           currentProjectId={selectedProjectId}
           currentWorkspaceId={selectedWorkspaceId}
+          renamingProjectId={renamingProjectId}
           onSelectProject={onSelectProject}
           onSelectWorkspace={onSelectWorkspace}
           onUnpinProject={(id) => onToggleProjectPin(id)}
@@ -548,6 +738,10 @@ export function Sidebar({
               onToggleWorkspacePin(id, ws.project.id)
             }
           }}
+          onBeginRenameProject={handleBeginRename}
+          onFinishRenameProject={handleFinishRename}
+          onCancelRenameProject={handleCancelRename}
+          onRequestRemoveProject={onRequestRemoveProject}
         />
       )}
 
@@ -581,6 +775,11 @@ export function Sidebar({
                       onToggleWorkspacePin={(wsId) => onToggleWorkspacePin(wsId, p.id)}
                       currentViewKind={currentViewKind}
                       currentWorkspaceId={selectedWorkspaceId}
+                      renaming={renamingProjectId === p.id}
+                      onBeginRename={() => handleBeginRename(p.id)}
+                      onFinishRename={(name) => handleFinishRename(p.id, name)}
+                      onCancelRename={handleCancelRename}
+                      onRequestRemove={() => onRequestRemoveProject(p)}
                     />
                   )
                 })}

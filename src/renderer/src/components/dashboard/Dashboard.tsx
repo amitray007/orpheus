@@ -3,6 +3,7 @@ import { Topbar } from './Topbar'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { Footer } from './Footer'
 import { MainContent, type View } from './MainContent'
+import { ConfirmModal } from '../ConfirmModal'
 import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 
 interface DashboardProps {
@@ -34,6 +35,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   const [view, setView] = useState<View>({ kind: 'dashboard' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+
+  // Remove confirm dialog
+  const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
 
   useEffect(() => {
     window.api.app
@@ -216,6 +220,47 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     }
   }
 
+  async function handleRenameProject(id: string, newName: string): Promise<void> {
+    // Optimistic update
+    setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, name: newName } : p)))
+    try {
+      await window.api.projects.rename(id, newName)
+      // Refresh pins in case the project appears in the pinned section
+      refreshPins()
+    } catch (err) {
+      console.error('[dashboard] project rename failed', err)
+      // Revert by re-fetching
+      window.api.projects.list().then(setProjects).catch(console.error)
+    }
+  }
+
+  function handleRequestRemoveProject(project: ProjectRecord): void {
+    setRemoveConfirmTarget(project)
+  }
+
+  async function handleConfirmRemove(): Promise<void> {
+    if (!removeConfirmTarget) return
+    const target = removeConfirmTarget
+    await window.api.projects.remove(target.id)
+    setRemoveConfirmTarget(null)
+    setProjects((arr) => arr.filter((p) => p.id !== target.id))
+    setExpandedProjectIds((prev) => {
+      const next = new Set(prev)
+      next.delete(target.id)
+      return next
+    })
+    if (selectedProjectId === target.id) {
+      setSelectedProjectId(null)
+      setSelectedWorkspaceId(null)
+      setView({ kind: 'dashboard' })
+    }
+    refreshPins()
+  }
+
+  function handleCancelRemove(): void {
+    setRemoveConfirmTarget(null)
+  }
+
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
       ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
@@ -265,6 +310,8 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           onSelectWorkspace={handleSelectWorkspace}
           onToggleProjectPin={handleToggleProjectPin}
           onToggleWorkspacePin={handleToggleWorkspacePin}
+          onRenameProject={handleRenameProject}
+          onRequestRemoveProject={handleRequestRemoveProject}
         />
 
         {/* Right column: main content + footer */}
@@ -275,6 +322,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
               project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
               workspace={activeWorkspace}
               onProjectRemoved={handleProjectRemoved}
+              onRequestRemoveProject={handleRequestRemoveProject}
               onNavigateToProject={handleNavigateToProject}
               onSelectWorkspace={handleSelectWorkspace}
               onWorkspaceArchived={handleWorkspaceArchived}
@@ -285,6 +333,27 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           <Footer version={version} connected={claudeInstalled} />
         </div>
       </div>
+
+      {removeConfirmTarget && (
+        <ConfirmModal
+          title="Remove from Orpheus?"
+          body={
+            <>
+              <p className="mb-2">
+                <span className="font-medium text-text-primary">{removeConfirmTarget.name}</span>{' '}
+                will be removed from Orpheus along with its workspaces and sessions.
+              </p>
+              <p className="text-text-muted">
+                Files on disk are untouched. You can re-add the folder later.
+              </p>
+            </>
+          }
+          confirmLabel="Remove"
+          destructive
+          onConfirm={handleConfirmRemove}
+          onCancel={handleCancelRemove}
+        />
+      )}
     </div>
   )
 }

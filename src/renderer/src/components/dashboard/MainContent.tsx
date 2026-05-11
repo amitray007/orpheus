@@ -39,6 +39,7 @@ interface MainContentProps {
   project: ProjectRecord | undefined
   workspace?: WorkspaceRecord | undefined
   onProjectRemoved: () => void
+  onRequestRemoveProject: (project: ProjectRecord) => void
   onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onWorkspaceArchived: (projectId: string) => void
@@ -50,6 +51,7 @@ export function MainContent({
   project,
   workspace,
   onProjectRemoved,
+  onRequestRemoveProject,
   onNavigateToProject,
   onSelectWorkspace,
   onWorkspaceArchived,
@@ -99,6 +101,7 @@ export function MainContent({
     <ProjectView
       project={project}
       onRemoved={onProjectRemoved}
+      onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onWorkspaceCreated={(name, cwd) => onWorkspaceCreated(project.id, name, cwd)}
     />

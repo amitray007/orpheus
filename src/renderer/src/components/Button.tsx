@@ -1,7 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from 'react'
 import { Spinner } from './Spinner'
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost'
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'destructive'
 export type ButtonSize = 'md' | 'sm'
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -14,7 +14,8 @@ const variantClasses: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-accent-on hover:bg-accent-hover focus-visible:ring-accent',
   secondary:
     'bg-transparent border border-border-default text-text-primary hover:bg-surface-raised focus-visible:ring-accent',
-  ghost: 'bg-transparent text-text-primary hover:bg-surface-raised focus-visible:ring-accent'
+  ghost: 'bg-transparent text-text-primary hover:bg-surface-raised focus-visible:ring-accent',
+  destructive: 'bg-red-500 text-white hover:bg-red-600 focus-visible:ring-red-500'
 }
 
 const sizeClasses: Record<ButtonSize, string> = {

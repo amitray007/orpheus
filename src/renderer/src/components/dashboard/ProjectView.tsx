@@ -307,17 +307,18 @@ function NewWorkspaceForm({ projectPath, onCancel, onCreate }: NewWorkspaceFormP
 interface ProjectViewProps {
   project: ProjectRecord
   onRemoved: () => void
+  onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
   onWorkspaceCreated: (name: string, cwd: string) => Promise<void>
 }
 
 export function ProjectView({
   project,
-  onRemoved,
+  onRemoved: _onRemoved,
+  onRequestRemove,
   onSelectWorkspace,
   onWorkspaceCreated
 }: ProjectViewProps): React.JSX.Element {
-  const [removing, setRemoving] = useState(false)
 
   // Workspaces — projectId-keyed shape so `loading` derives from state without
   // a synchronous setState inside the effect (matches the sessions pattern below).
@@ -373,18 +374,6 @@ export function ProjectView({
       cancelled = true
     }
   }, [project.id])
-
-  async function handleRemoveProject(): Promise<void> {
-    if (removing) return
-    setRemoving(true)
-    try {
-      await window.api.projects.remove(project.id)
-      onRemoved()
-    } catch (err) {
-      console.error('[project-view] remove failed', err)
-      setRemoving(false)
-    }
-  }
 
   function handleSetSessionStatus(id: string, status: SessionStatus): void {
     const updated = sessions.map((s) =>
@@ -454,18 +443,11 @@ export function ProjectView({
         </div>
 
         <button
-          onClick={handleRemoveProject}
-          disabled={removing}
-          className={[
-            'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium',
-            'border border-border-default transition-colors duration-150 flex-shrink-0',
-            removing
-              ? 'opacity-40 cursor-wait text-text-muted'
-              : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
-          ].join(' ')}
+          onClick={onRequestRemove}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-border-default transition-colors duration-150 flex-shrink-0 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
         >
           <Archive size={14} weight="regular" />
-          {removing ? 'Removing…' : 'Remove'}
+          Remove
         </button>
       </div>
 
