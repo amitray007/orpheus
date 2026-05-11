@@ -9,6 +9,7 @@ type WorkspaceRow = {
   id: string
   project_id: string
   name: string
+  name_is_auto: number
   cwd: string
   pinned_at: number | null
   created_at: number
@@ -23,7 +24,6 @@ type ProjectRow = {
   claude_encoded_name: string | null
   added_at: number
   last_opened_at: number | null
-  archived_at: number | null
   pinned_at: number | null
 }
 
@@ -32,6 +32,7 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     id: row.id,
     projectId: row.project_id,
     name: row.name,
+    nameIsAuto: row.name_is_auto === 1,
     cwd: row.cwd,
     pinnedAt: row.pinned_at,
     createdAt: row.created_at,
@@ -48,7 +49,6 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
-    archivedAt: row.archived_at,
     pinnedAt: row.pinned_at
   }
 }
@@ -81,16 +81,21 @@ export function createWorkspace({
 
 export function listWorkspacesForProject(
   projectId: string,
-  options?: { includeArchived?: boolean }
+  options?: { scope?: 'active' | 'archived' | 'all' }
 ): WorkspaceRecord[] {
   const db = getDb()
-  const includeArchived = options?.includeArchived ?? false
-  const archivedFilter = includeArchived ? '' : 'AND archived_at IS NULL'
+  const scope = options?.scope ?? 'active'
+  const archiveFilter =
+    scope === 'active'
+      ? 'AND archived_at IS NULL'
+      : scope === 'archived'
+        ? 'AND archived_at IS NOT NULL'
+        : ''
 
   const rows = db
     .prepare(
       `SELECT * FROM workspaces
-       WHERE project_id = ? ${archivedFilter}
+       WHERE project_id = ? ${archiveFilter}
        ORDER BY created_at ASC`
     )
     .all(projectId) as WorkspaceRow[]
@@ -145,7 +150,14 @@ export function archiveWorkspace(id: string): WorkspaceRecord {
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name, id)
+  db.prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ?').run(name, id)
+  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  return rowToWorkspaceRecord(row)
+}
+
+export function unarchiveWorkspace(id: string): WorkspaceRecord {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET archived_at = NULL WHERE id = ?').run(id)
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }
@@ -162,11 +174,10 @@ export function listAllPinned(): PinnedItem[] {
       `SELECT w.*, p.id as p_id, p.path as p_path, p.name as p_name,
               p.claude_encoded_name as p_claude_encoded_name,
               p.added_at as p_added_at, p.last_opened_at as p_last_opened_at,
-              p.archived_at as p_archived_at, p.pinned_at as p_pinned_at
+              p.pinned_at as p_pinned_at
        FROM workspaces w
        JOIN projects p ON p.id = w.project_id
        WHERE w.pinned_at IS NOT NULL
-         AND p.archived_at IS NULL
          AND w.archived_at IS NULL
        ORDER BY w.pinned_at DESC`
     )
@@ -177,14 +188,13 @@ export function listAllPinned(): PinnedItem[] {
       p_claude_encoded_name: string | null
       p_added_at: number
       p_last_opened_at: number | null
-      p_archived_at: number | null
       p_pinned_at: number | null
     })[]
 
   const pinnedProjectRows = db
     .prepare(
       `SELECT * FROM projects
-       WHERE pinned_at IS NOT NULL AND archived_at IS NULL
+       WHERE pinned_at IS NOT NULL
        ORDER BY pinned_at DESC`
     )
     .all() as ProjectRow[]
@@ -199,7 +209,6 @@ export function listAllPinned(): PinnedItem[] {
       claude_encoded_name: row.p_claude_encoded_name,
       added_at: row.p_added_at,
       last_opened_at: row.p_last_opened_at,
-      archived_at: row.p_archived_at,
       pinned_at: row.p_pinned_at
     })
   }))

@@ -24,7 +24,6 @@ export type ProjectRecord = {
   claudeEncodedName: string | null
   addedAt: number
   lastOpenedAt: number | null
-  archivedAt: number | null
   pinnedAt: number | null
 }
 
@@ -32,6 +31,7 @@ export type WorkspaceRecord = {
   id: string
   projectId: string
   name: string
+  nameIsAuto: boolean
   cwd: string
   pinnedAt: number | null
   createdAt: number

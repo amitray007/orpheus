@@ -8,7 +8,7 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
 import { getDb } from './db'
-import { listProjects, addProject, openProject, archiveProject, renameProject, setProjectPinned } from './projects'
+import { listProjects, addProject, openProject, deleteProject, renameProject, setProjectPinned } from './projects'
 import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
 import {
   listWorkspacesForProject,
@@ -16,6 +16,7 @@ import {
   openWorkspace,
   setWorkspacePinned,
   archiveWorkspace,
+  unarchiveWorkspace,
   renameWorkspace,
   listAllPinned
 } from './workspaces'
@@ -223,7 +224,7 @@ ipcMain.handle('projects:pickAndAdd', async () => {
 
 ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-ipcMain.handle('projects:archive', (_e, { id }: { id: string }) => archiveProject(id))
+ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => deleteProject(id))
 
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
@@ -239,8 +240,8 @@ ipcMain.handle('projects:setPinned', (_e, { id, pinned }: { id: string; pinned: 
 
 ipcMain.handle(
   'workspaces:listForProject',
-  (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
-    listWorkspacesForProject(projectId, { includeArchived })
+  (_e, { projectId, scope }: { projectId: string; scope?: 'active' | 'archived' | 'all' }) =>
+    listWorkspacesForProject(projectId, { scope })
 )
 
 ipcMain.handle(
@@ -255,6 +256,8 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => archiveWorkspace(id))
+
+ipcMain.handle('workspaces:unarchive', (_e, { id }: { id: string }) => unarchiveWorkspace(id))
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)

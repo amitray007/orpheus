@@ -25,7 +25,7 @@ const api = {
     add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
     pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
     open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
-    archive: (id: string): Promise<void> => ipcRenderer.invoke('projects:archive', { id }),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('projects:remove', { id }),
     rename: (id: string, name: string): Promise<void> =>
       ipcRenderer.invoke('projects:rename', { id, name })
   },
@@ -43,7 +43,7 @@ const api = {
   workspaces: {
     listForProject: (
       projectId: string,
-      options?: { includeArchived?: boolean }
+      options?: { scope?: 'active' | 'archived' | 'all' }
     ): Promise<WorkspaceRecord[]> =>
       ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
     create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
@@ -53,6 +53,8 @@ const api = {
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
     archive: (id: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:archive', { id }),
+    unarchive: (id: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:unarchive', { id }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:rename', { id, name })
   },

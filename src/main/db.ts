@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 2
+const CURRENT_VERSION = 3
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -19,8 +19,7 @@ const SCHEMA_SQL = `
     name TEXT NOT NULL,
     claude_encoded_name TEXT,
     added_at INTEGER NOT NULL,
-    last_opened_at INTEGER,
-    archived_at INTEGER
+    last_opened_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
@@ -51,7 +50,8 @@ const WORKSPACES_SCHEMA_SQL = `
     pinned_at INTEGER,
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
-    archived_at INTEGER
+    archived_at INTEGER,
+    name_is_auto INTEGER NOT NULL DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -104,6 +104,25 @@ function migrate(db: Database.Database): void {
       db.exec('ALTER TABLE projects ADD COLUMN pinned_at INTEGER')
     } catch {
       // Column may already exist if DB was created fresh with an older version check missed
+    }
+
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(2)
+    }
+  }
+
+  // Version 3: drop projects.archived_at + add workspaces.name_is_auto
+  if (currentVersion < 3) {
+    try {
+      db.exec('ALTER TABLE projects DROP COLUMN archived_at')
+    } catch {
+      // Column may already be absent on a fresh DB or previous partial migration
+    }
+
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN name_is_auto INTEGER NOT NULL DEFAULT 1')
+    } catch {
+      // Column may already exist if this migration ran partially
     }
 
     if (row) {

@@ -306,18 +306,18 @@ function NewWorkspaceForm({ projectPath, onCancel, onCreate }: NewWorkspaceFormP
 
 interface ProjectViewProps {
   project: ProjectRecord
-  onArchived: () => void
+  onRemoved: () => void
   onSelectWorkspace: (workspaceId: string) => void
   onWorkspaceCreated: (name: string, cwd: string) => Promise<void>
 }
 
 export function ProjectView({
   project,
-  onArchived,
+  onRemoved,
   onSelectWorkspace,
   onWorkspaceCreated
 }: ProjectViewProps): React.JSX.Element {
-  const [archiving, setArchiving] = useState(false)
+  const [removing, setRemoving] = useState(false)
 
   // Workspaces — projectId-keyed shape so `loading` derives from state without
   // a synchronous setState inside the effect (matches the sessions pattern below).
@@ -374,15 +374,15 @@ export function ProjectView({
     }
   }, [project.id])
 
-  async function handleArchiveProject(): Promise<void> {
-    if (archiving) return
-    setArchiving(true)
+  async function handleRemoveProject(): Promise<void> {
+    if (removing) return
+    setRemoving(true)
     try {
-      await window.api.projects.archive(project.id)
-      onArchived()
+      await window.api.projects.remove(project.id)
+      onRemoved()
     } catch (err) {
-      console.error('[project-view] archive failed', err)
-      setArchiving(false)
+      console.error('[project-view] remove failed', err)
+      setRemoving(false)
     }
   }
 
@@ -454,18 +454,18 @@ export function ProjectView({
         </div>
 
         <button
-          onClick={handleArchiveProject}
-          disabled={archiving}
+          onClick={handleRemoveProject}
+          disabled={removing}
           className={[
             'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium',
             'border border-border-default transition-colors duration-150 flex-shrink-0',
-            archiving
+            removing
               ? 'opacity-40 cursor-wait text-text-muted'
               : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
           ].join(' ')}
         >
           <Archive size={14} weight="regular" />
-          {archiving ? 'Archiving…' : 'Archive'}
+          {removing ? 'Removing…' : 'Remove'}
         </button>
       </div>
 

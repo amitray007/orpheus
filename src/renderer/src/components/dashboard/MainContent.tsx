@@ -38,7 +38,7 @@ interface MainContentProps {
   view: View
   project: ProjectRecord | undefined
   workspace?: WorkspaceRecord | undefined
-  onProjectArchived: () => void
+  onProjectRemoved: () => void
   onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onWorkspaceArchived: (projectId: string) => void
@@ -49,7 +49,7 @@ export function MainContent({
   view,
   project,
   workspace,
-  onProjectArchived,
+  onProjectRemoved,
   onNavigateToProject,
   onSelectWorkspace,
   onWorkspaceArchived,
@@ -98,7 +98,7 @@ export function MainContent({
   return (
     <ProjectView
       project={project}
-      onArchived={onProjectArchived}
+      onRemoved={onProjectRemoved}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onWorkspaceCreated={(name, cwd) => onWorkspaceCreated(project.id, name, cwd)}
     />

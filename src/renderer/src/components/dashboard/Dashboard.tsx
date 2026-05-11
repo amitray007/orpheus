@@ -130,7 +130,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     }
   }
 
-  function handleProjectArchived(): void {
+  function handleProjectRemoved(): void {
     if (selectedProjectId) {
       setProjects((arr) => arr.filter((p) => p.id !== selectedProjectId))
       setExpandedProjectIds((prev) => {
@@ -274,7 +274,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
               view={view}
               project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
               workspace={activeWorkspace}
-              onProjectArchived={handleProjectArchived}
+              onProjectRemoved={handleProjectRemoved}
               onNavigateToProject={handleNavigateToProject}
               onSelectWorkspace={handleSelectWorkspace}
               onWorkspaceArchived={handleWorkspaceArchived}

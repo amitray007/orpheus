@@ -15,7 +15,6 @@ type ProjectRow = {
   claude_encoded_name: string | null
   added_at: number
   last_opened_at: number | null
-  archived_at: number | null
   pinned_at: number | null
 }
 
@@ -27,7 +26,6 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
-    archivedAt: row.archived_at,
     pinnedAt: row.pinned_at
   }
 }
@@ -41,7 +39,6 @@ export function listProjects(): ProjectRecord[] {
   const rows = db
     .prepare(
       `SELECT * FROM projects
-       WHERE archived_at IS NULL
        ORDER BY last_opened_at DESC NULLS LAST, added_at DESC`
     )
     .all() as ProjectRow[]
@@ -51,10 +48,10 @@ export function listProjects(): ProjectRecord[] {
 export function addProject(path: string): ProjectRecord {
   const db = getDb()
 
-  // Dedup: if an active (non-archived) project with this path exists, bump
-  // last_opened_at and return it instead of inserting a duplicate.
+  // Dedup: if a project with this path already exists, bump last_opened_at
+  // and return it instead of inserting a duplicate.
   const existing = db
-    .prepare('SELECT * FROM projects WHERE path = ? AND archived_at IS NULL')
+    .prepare('SELECT * FROM projects WHERE path = ?')
     .get(path) as ProjectRow | undefined
 
   if (existing) {
@@ -99,9 +96,10 @@ export function openProject(id: string): ProjectRecord {
   return rowToRecord(row)
 }
 
-export function archiveProject(id: string): void {
+export function deleteProject(id: string): void {
   const db = getDb()
-  db.prepare('UPDATE projects SET archived_at = ? WHERE id = ?').run(Date.now(), id)
+  // ON DELETE CASCADE in the schema removes associated workspaces and sessions.
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
 }
 
 export function renameProject(id: string, name: string): void {
