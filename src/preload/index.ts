@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { DoctorResult } from '../shared/types'
+import type { DoctorResult, ProjectRecord, SessionRecord, SessionStatus } from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
@@ -12,6 +12,26 @@ const api = {
   },
   doctor: {
     check: (): Promise<DoctorResult> => ipcRenderer.invoke('doctor:check')
+  },
+  projects: {
+    list: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('projects:list'),
+    add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
+    pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
+    open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
+    archive: (id: string): Promise<void> => ipcRenderer.invoke('projects:archive', { id }),
+    rename: (id: string, name: string): Promise<void> =>
+      ipcRenderer.invoke('projects:rename', { id, name })
+  },
+  sessions: {
+    listForProject: (
+      projectId: string,
+      options?: { includeArchived?: boolean }
+    ): Promise<SessionRecord[]> =>
+      ipcRenderer.invoke('sessions:listForProject', { projectId, ...options }),
+    listAll: (opts?: { status?: SessionStatus }): Promise<SessionRecord[]> =>
+      ipcRenderer.invoke('sessions:listAll', opts),
+    setStatus: (id: string, status: SessionStatus): Promise<void> =>
+      ipcRenderer.invoke('sessions:setStatus', { id, status })
   }
 }
 

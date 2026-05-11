@@ -7,6 +7,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
+import { getDb } from './db'
+import { listProjects, addProject, openProject, archiveProject, renameProject } from './projects'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -192,6 +194,30 @@ ipcMain.handle('config:openFolder', async () => {
 
 ipcMain.handle('app:getVersion', () => app.getVersion())
 
+// ---------------------------------------------------------------------------
+// Projects IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('projects:list', () => listProjects())
+
+ipcMain.handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
+
+ipcMain.handle('projects:pickAndAdd', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  if (result.canceled || !result.filePaths[0]) return null
+  const chosen = result.filePaths[0]
+  console.log('[orpheus] project folder selected:', chosen)
+  return addProject(chosen)
+})
+
+ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
+
+ipcMain.handle('projects:archive', (_e, { id }: { id: string }) => archiveProject(id))
+
+ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
+  renameProject(id, name)
+)
+
 ipcMain.handle('doctor:check', (): DoctorResult => {
   const { installed, version, path: claudePath } = checkClaude()
   return {
@@ -207,6 +233,9 @@ ipcMain.handle('doctor:check', (): DoctorResult => {
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('dev.orpheus.app')
+
+  // Initialize / migrate the SQLite database early, before any IPC can fire.
+  getDb()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

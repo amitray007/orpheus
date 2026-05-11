@@ -12,3 +12,32 @@ export type DoctorResult = {
   claudePath: string | null // e.g. "/usr/local/bin/claude"
   existingProjects: ExistingProject[]
 }
+
+// ---------------------------------------------------------------------------
+// Persistence types (SQLite-backed)
+// ---------------------------------------------------------------------------
+
+export type ProjectRecord = {
+  id: string
+  path: string
+  name: string
+  claudeEncodedName: string | null
+  addedAt: number
+  lastOpenedAt: number | null
+  archivedAt: number | null
+}
+
+export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
+
+export type SessionRecord = {
+  id: string
+  projectId: string
+  jsonlPath: string
+  title: string | null
+  status: SessionStatus
+  createdAt: number
+  updatedAt: number
+  archivedAt: number | null
+  model: string | null
+  lastMessageRole: string | null
+}
