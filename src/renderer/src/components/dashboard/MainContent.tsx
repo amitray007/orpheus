@@ -41,7 +41,6 @@ interface MainContentProps {
   onRequestRemoveProject: (project: ProjectRecord) => void
   onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
-  onWorkspaceArchived: (projectId: string) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
   onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
@@ -56,7 +55,6 @@ export function MainContent({
   onRequestRemoveProject,
   onNavigateToProject,
   onSelectWorkspace,
-  onWorkspaceArchived,
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
@@ -85,13 +83,7 @@ export function MainContent({
         </div>
       )
     }
-    return (
-      <WorkspaceView
-        workspace={workspace}
-        project={project}
-        onArchive={() => onWorkspaceArchived(project.id)}
-      />
-    )
+    return <WorkspaceView workspace={workspace} />
   }
 
   // project view

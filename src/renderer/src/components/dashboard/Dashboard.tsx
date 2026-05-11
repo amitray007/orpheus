@@ -158,14 +158,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     window.api.workspaces.open(workspaceId).catch(console.error)
   }
 
-  function handleWorkspaceArchived(projectId: string): void {
-    // Refresh workspaces for the project, then navigate back to project view
-    fetchWorkspacesForProject(projectId)
-    setSelectedWorkspaceId(null)
-    setView({ kind: 'project', projectId })
-    refreshPins()
-  }
-
   async function handleToggleProjectPin(projectId: string): Promise<void> {
     const project = projects.find((p) => p.id === projectId)
     if (!project) return
@@ -375,7 +367,13 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
 
         {/* Right column: main content + footer */}
         <div className="flex flex-1 flex-col min-w-0">
-          <main className="flex-1 overflow-y-auto px-8 py-6">
+          <main
+            className={
+              view.kind === 'workspace'
+                ? 'flex-1 overflow-hidden min-h-0'
+                : 'flex-1 overflow-y-auto px-8 py-6'
+            }
+          >
             <MainContent
               view={view}
               project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
@@ -383,7 +381,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
               onRequestRemoveProject={handleRequestRemoveProject}
               onNavigateToProject={handleNavigateToProject}
               onSelectWorkspace={handleSelectWorkspace}
-              onWorkspaceArchived={handleWorkspaceArchived}
               onAddWorkspace={handleAddWorkspace}
               onRenameWorkspace={handleRenameWorkspace}
               onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
