@@ -9,10 +9,20 @@ import type {
   PinnedItem
 } from '../shared/types'
 
+type TerminalRect = { x: number; y: number; w: number; h: number }
+
 // Custom APIs for renderer
 const api = {
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
+  },
+  terminal: {
+    mount: (rect: TerminalRect, scaleFactor: number): Promise<{ surfaceId: string }> =>
+      ipcRenderer.invoke('terminal:mount', { rect, scaleFactor }),
+    unmount: (surfaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:unmount', { surfaceId }),
+    resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:resize', { surfaceId, rect, scaleFactor })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')

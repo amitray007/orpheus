@@ -8,12 +8,19 @@ import type {
   PinnedItem
 } from '../shared/types'
 
+type TerminalRect = { x: number; y: number; w: number; h: number }
+
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
       app: {
         getVersion: () => Promise<string>
+      }
+      terminal: {
+        mount: (rect: TerminalRect, scaleFactor: number) => Promise<{ surfaceId: string }>
+        unmount: (surfaceId: string) => Promise<void>
+        resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
       }
       config: {
         openFolder: () => Promise<string | null>

@@ -296,6 +296,78 @@ ipcMain.handle('doctor:check', (): DoctorResult => {
 })
 
 // ---------------------------------------------------------------------------
+// Terminal IPC — ghostty-native lifecycle
+// ---------------------------------------------------------------------------
+
+type TerminalRect = { x: number; y: number; w: number; h: number }
+type GhosttyNativeAddon = {
+  mount: (handle: Buffer, rect: TerminalRect, scaleFactor: number) => { surfaceId: string }
+  unmount: (surfaceId: string) => void
+  resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => void
+}
+
+let terminalAddon: GhosttyNativeAddon | null = null
+let terminalAddonError: string | null = null
+
+function loadTerminalAddon(): GhosttyNativeAddon {
+  if (terminalAddon) return terminalAddon
+  if (terminalAddonError) throw new Error(terminalAddonError)
+
+  // Set GHOSTTY_RESOURCES_DIR before the addon is loaded so ghostty_init
+  // can find the terminfo / shell-integration resources bundled at:
+  //   (packaged) Contents/Resources/ghostty
+  //   (dev)      resources/ghostty/ghostty
+  const resDir = app.isPackaged
+    ? join(process.resourcesPath, 'ghostty')
+    : join(__dirname, '../../resources/ghostty/ghostty')
+  process.env['GHOSTTY_RESOURCES_DIR'] = resDir
+  console.log('[terminal] GHOSTTY_RESOURCES_DIR set to', resDir)
+
+  const addonPath = app.isPackaged
+    ? join(process.resourcesPath, 'packages/ghostty-native/ghostty_native.node')
+    : join(__dirname, '../../packages/ghostty-native/build/Release/ghostty_native.node')
+
+  console.log('[terminal] loading addon from:', addonPath)
+  try {
+    terminalAddon = createRequire(import.meta.url)(addonPath) as GhosttyNativeAddon
+    console.log('[terminal] addon loaded OK')
+    return terminalAddon
+  } catch (err) {
+    const msg = String(err)
+    terminalAddonError = msg
+    console.error('[terminal] addon load FAILED:', msg)
+    throw err
+  }
+}
+
+ipcMain.handle(
+  'terminal:mount',
+  (
+    e,
+    { rect, scaleFactor }: { rect: TerminalRect; scaleFactor: number }
+  ): { surfaceId: string } => {
+    const addon = loadTerminalAddon()
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
+    const handle = win.getNativeWindowHandle()
+    return addon.mount(handle, rect, scaleFactor)
+  }
+)
+
+ipcMain.handle('terminal:unmount', (_e, { surfaceId }: { surfaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.unmount(surfaceId)
+})
+
+ipcMain.handle(
+  'terminal:resize',
+  (_e, { surfaceId, rect, scaleFactor }: { surfaceId: string; rect: TerminalRect; scaleFactor: number }): void => {
+    const addon = loadTerminalAddon()
+    addon.resize(surfaceId, rect, scaleFactor)
+  }
+)
+
+// ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
@@ -309,53 +381,6 @@ app.whenReady().then(() => {
   })
 
   createWindow()
-
-  // ---------------------------------------------------------------------------
-  // Spike 1 / Spike 5 — libghostty NAPI main-thread + terminfo + shell-spawn test.
-  // Only runs when SPIKE1=1 is set in the environment.
-  //
-  // Spike 5 runs TWO passes:
-  //   Pass A (auto-walk):   GHOSTTY_RESOURCES_DIR not set; Ghostty walks up from
-  //                         the executable to find Contents/Resources/terminfo/78/xterm-ghostty.
-  //   Pass B (env-override): GHOSTTY_RESOURCES_DIR = process.resourcesPath/ghostty set
-  //                          explicitly before calling runSpike().
-  // ---------------------------------------------------------------------------
-  if (process.env['SPIKE1']) {
-    const mainWin = BrowserWindow.getAllWindows()[0]
-    if (mainWin) {
-      mainWin.webContents.once('did-finish-load', () => {
-        console.log('[spike5] did-finish-load fired, loading addon...')
-        try {
-          // Resolve the .node path: dev = project-relative, packaged = resourcesPath
-          const addonPath = app.isPackaged
-            ? join(process.resourcesPath, 'packages/ghostty-spike1/ghostty_spike1.node')
-            : join(__dirname, '../../packages/ghostty-spike1/build/Release/ghostty_spike1.node')
-          console.log('[spike5] loading addon from:', addonPath)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const addon = createRequire(import.meta.url)(addonPath) as { runSpike: () => string }
-          console.log('[spike5] addon loaded OK')
-
-          // --- Pass A: auto-walk (no GHOSTTY_RESOURCES_DIR override) ---
-          console.log('[spike5] === PASS A: auto-walk (GHOSTTY_RESOURCES_DIR unset) ===')
-          delete process.env['GHOSTTY_RESOURCES_DIR']
-          const resultA = addon.runSpike()
-          console.log('[spike5] Pass A result:\n' + resultA)
-
-          // --- Pass B: explicit env override ---
-          const ghosttyResDir = join(process.resourcesPath, 'ghostty')
-          console.log('[spike5] === PASS B: env-override (GHOSTTY_RESOURCES_DIR=' + ghosttyResDir + ') ===')
-          process.env['GHOSTTY_RESOURCES_DIR'] = ghosttyResDir
-          const resultB = addon.runSpike()
-          console.log('[spike5] Pass B result:\n' + resultB)
-
-          // Cleanup env var so it doesn't leak
-          delete process.env['GHOSTTY_RESOURCES_DIR']
-        } catch (err) {
-          console.error('[spike5] addon load or runSpike threw:', err)
-        }
-      })
-    }
-  }
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

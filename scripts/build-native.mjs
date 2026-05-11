@@ -12,6 +12,7 @@ const ROOT = resolve(__dirname, '..')
 // Each entry is the path to a package dir that contains a binding.gyp.
 const TARGETS = [
   'packages/ghostty-spike1',
+  'packages/ghostty-native',
 ]
 
 // Electron version — read from the installed electron package.
