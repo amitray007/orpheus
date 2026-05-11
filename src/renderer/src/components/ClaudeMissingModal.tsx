@@ -11,9 +11,19 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
   async function handleRecheck(): Promise<void> {
     if (rechecking) return
     setRechecking(true)
+    // Ensure the spinner stays visible for at least MIN_VISIBLE_MS — the
+    // doctor IPC resolves almost instantly locally and the spinner would
+    // otherwise just flash. Long enough to read the spinner; short enough
+    // to still feel snappy.
+    const MIN_VISIBLE_MS = 600
+    const started = Date.now()
     try {
       await onRecheck()
     } finally {
+      const elapsed = Date.now() - started
+      if (elapsed < MIN_VISIBLE_MS) {
+        await new Promise((resolve) => setTimeout(resolve, MIN_VISIBLE_MS - elapsed))
+      }
       setRechecking(false)
     }
   }
