@@ -76,39 +76,88 @@ function createWindow(): void {
 // Doctor helpers
 // ---------------------------------------------------------------------------
 
-// Main process inherits the launching user's shell environment, so PATH-based
-// lookups (e.g. brew-installed `claude`) should resolve automatically.
-// We augment PATH defensively for common install locations just in case.
-const augmentedEnv = {
-  ...process.env,
-  PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ''}`
+// Finder-launched Electron apps get a stripped-down PATH that doesn't include
+// the user's shell customizations (`.zshrc`, brew paths, npm-global, etc.).
+// To match what the user sees in their actual terminal, we spawn a login +
+// interactive subshell once on first check, capture its $PATH, and cache it.
+let cachedShellPath: string | null = null
+function getUserShellPath(): string {
+  if (cachedShellPath !== null) return cachedShellPath
+  try {
+    const shell = process.env.SHELL ?? '/bin/zsh'
+    const output = childProcess.execSync(
+      `${shell} -ilc 'printf "%s" "$PATH"'`,
+      { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+    cachedShellPath = output.trim()
+  } catch (err) {
+    console.warn('[orpheus] failed to read user shell PATH:', err)
+    cachedShellPath = ''
+  }
+  return cachedShellPath
 }
 
 function checkClaude(): { installed: boolean; version: string | null; path: string | null } {
-  let claudePath: string | null = null
+  const userPath = getUserShellPath()
+  const env = {
+    ...process.env,
+    PATH: `${userPath}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ''}`
+  }
 
+  // 1. Try PATH-based lookup first (uses user's shell PATH).
   try {
-    claudePath = childProcess
-      .execSync('which claude', { encoding: 'utf-8', env: augmentedEnv })
+    const claudePath = childProcess
+      .execSync('which claude', { encoding: 'utf-8', env, timeout: 3000 })
       .trim()
+
+    if (claudePath) {
+      let version: string | null = null
+      try {
+        const versionOutput = childProcess.execSync('claude --version', {
+          encoding: 'utf-8',
+          env,
+          timeout: 3000
+        })
+        const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
+        version = match ? match[1] : null
+      } catch {
+        // version check failed, but `which` succeeded
+      }
+      return { installed: true, version, path: claudePath }
+    }
   } catch {
-    // `which` failed — claude not on PATH
-    return { installed: false, version: null, path: null }
+    // PATH-based lookup failed — fall through to known install locations
   }
 
-  let version: string | null = null
-  try {
-    const versionOutput = childProcess.execSync('claude --version', {
-      encoding: 'utf-8',
-      env: augmentedEnv
-    })
-    const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
-    version = match ? match[1] : null
-  } catch {
-    // `claude --version` failed but `which` succeeded — installed, version unknown
+  // 2. Fallback: check known install locations directly. Useful for tools
+  //    that install `claude` outside the user's shell PATH (e.g. cmux).
+  const candidates = [
+    '/usr/local/bin/claude',
+    '/opt/homebrew/bin/claude',
+    nodePath.join(os.homedir(), '.local', 'bin', 'claude'),
+    nodePath.join(os.homedir(), '.claude', 'bin', 'claude'),
+    nodePath.join(os.homedir(), '.bun', 'bin', 'claude'),
+    nodePath.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+    '/Applications/cmux.app/Contents/Resources/bin/claude'
+  ]
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue
+    let version: string | null = null
+    try {
+      const versionOutput = childProcess.execSync(`"${candidate}" --version`, {
+        encoding: 'utf-8',
+        timeout: 3000
+      })
+      const match = versionOutput.match(/(\d+\.\d+\.\d+)/)
+      version = match ? match[1] : null
+    } catch {
+      // version check failed; still treat binary presence as installed
+    }
+    return { installed: true, version, path: candidate }
   }
 
-  return { installed: true, version, path: claudePath }
+  return { installed: false, version: null, path: null }
 }
 
 function readClaudeProjects(): ExistingProject[] {
