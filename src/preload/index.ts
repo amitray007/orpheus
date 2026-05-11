@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { DoctorResult, ProjectRecord, SessionRecord, SessionStatus } from '../shared/types'
+import type {
+  DoctorResult,
+  ProjectRecord,
+  SessionRecord,
+  SessionStatus,
+  WorkspaceRecord,
+  PinnedItem
+} from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
@@ -32,6 +39,25 @@ const api = {
       ipcRenderer.invoke('sessions:listAll', opts),
     setStatus: (id: string, status: SessionStatus): Promise<void> =>
       ipcRenderer.invoke('sessions:setStatus', { id, status })
+  },
+  workspaces: {
+    listForProject: (
+      projectId: string,
+      options?: { includeArchived?: boolean }
+    ): Promise<WorkspaceRecord[]> =>
+      ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
+    create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:create', args),
+    open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
+    setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
+    archive: (id: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:archive', { id }),
+    rename: (id: string, name: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:rename', { id, name })
+  },
+  pins: {
+    listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
   }
 }
 

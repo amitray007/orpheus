@@ -1,6 +1,7 @@
 import { getDb } from './db'
 import type { ProjectRecord } from '../shared/types'
 import { importSessionsForProject } from './sessions'
+import { createWorkspace } from './workspaces'
 import * as nodePath from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,7 @@ type ProjectRow = {
   added_at: number
   last_opened_at: number | null
   archived_at: number | null
+  pinned_at: number | null
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -25,7 +27,8 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
-    archivedAt: row.archived_at
+    archivedAt: row.archived_at,
+    pinnedAt: row.pinned_at
   }
 }
 
@@ -66,7 +69,7 @@ export function addProject(path: string): ProjectRecord {
   const claudeEncodedName = path.replace(/\//g, '-')
   const addedAt = Date.now()
 
-  // Insert project + import its sessions atomically.
+  // Insert project + default workspace + import its sessions atomically.
   const insertProjectAndSessions = db.transaction(() => {
     db.prepare(
       `INSERT INTO projects (id, path, name, claude_encoded_name, added_at)
@@ -76,6 +79,10 @@ export function addProject(path: string): ProjectRecord {
     const newProject = rowToRecord(
       db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
     )
+
+    // Auto-create the Default workspace (cwd = project root)
+    createWorkspace({ projectId: id, name: 'Default', cwd: path })
+
     // importSessionsForProject writes inside the same transaction
     importSessionsForProject(newProject)
 
@@ -100,4 +107,12 @@ export function archiveProject(id: string): void {
 export function renameProject(id: string, name: string): void {
   const db = getDb()
   db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name, id)
+}
+
+export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
+  const db = getDb()
+  const pinnedAt = pinned ? Date.now() : null
+  db.prepare('UPDATE projects SET pinned_at = ? WHERE id = ?').run(pinnedAt, id)
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
+  return rowToRecord(row)
 }

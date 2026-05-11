@@ -25,7 +25,24 @@ export type ProjectRecord = {
   addedAt: number
   lastOpenedAt: number | null
   archivedAt: number | null
+  pinnedAt: number | null
 }
+
+export type WorkspaceRecord = {
+  id: string
+  projectId: string
+  name: string
+  cwd: string
+  pinnedAt: number | null
+  createdAt: number
+  lastOpenedAt: number | null
+  archivedAt: number | null
+}
+
+// For Pinned section: a pinned project, or a pinned workspace with its project's context for breadcrumb display
+export type PinnedItem =
+  | { kind: 'project'; project: ProjectRecord }
+  | { kind: 'workspace'; workspace: WorkspaceRecord; project: ProjectRecord }
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 

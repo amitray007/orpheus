@@ -8,8 +8,17 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
 import { getDb } from './db'
-import { listProjects, addProject, openProject, archiveProject, renameProject } from './projects'
+import { listProjects, addProject, openProject, archiveProject, renameProject, setProjectPinned } from './projects'
 import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
+import {
+  listWorkspacesForProject,
+  createWorkspace,
+  openWorkspace,
+  setWorkspacePinned,
+  archiveWorkspace,
+  renameWorkspace,
+  listAllPinned
+} from './workspaces'
 import type { SessionStatus } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -219,6 +228,43 @@ ipcMain.handle('projects:archive', (_e, { id }: { id: string }) => archiveProjec
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
 )
+
+ipcMain.handle('projects:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+  setProjectPinned(id, pinned)
+)
+
+// ---------------------------------------------------------------------------
+// Workspaces IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'workspaces:listForProject',
+  (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
+    listWorkspacesForProject(projectId, { includeArchived })
+)
+
+ipcMain.handle(
+  'workspaces:create',
+  (_e, args: { projectId: string; name: string; cwd: string }) => createWorkspace(args)
+)
+
+ipcMain.handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
+
+ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+  setWorkspacePinned(id, pinned)
+)
+
+ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => archiveWorkspace(id))
+
+ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
+  renameWorkspace(id, name)
+)
+
+// ---------------------------------------------------------------------------
+// Pins IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('pins:listAll', () => listAllPinned())
 
 // ---------------------------------------------------------------------------
 // Sessions IPC

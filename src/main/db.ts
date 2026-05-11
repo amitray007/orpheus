@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 1
+const CURRENT_VERSION = 2
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -42,6 +42,21 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions(updated_at);
 `
 
+const WORKSPACES_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    pinned_at INTEGER,
+    created_at INTEGER NOT NULL,
+    last_opened_at INTEGER,
+    archived_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
+  CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
+`
+
 // ---------------------------------------------------------------------------
 // Singleton
 // ---------------------------------------------------------------------------
@@ -66,7 +81,7 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database): void {
-  // Apply schema (all CREATE IF NOT EXISTS — safe to re-run)
+  // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run)
   db.exec(SCHEMA_SQL)
 
   // Check / set schema version
@@ -74,8 +89,25 @@ function migrate(db: Database.Database): void {
     | { version: number }
     | undefined
 
+  const currentVersion = row?.version ?? 0
+
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
   }
-  // Future migrations: if (row.version < 2) { ... }
+
+  // Version 2: add projects.pinned_at + workspaces table
+  if (currentVersion < 2) {
+    db.exec(WORKSPACES_SCHEMA_SQL)
+
+    // ALTER TABLE ADD COLUMN is safe to run once — guard with version check
+    try {
+      db.exec('ALTER TABLE projects ADD COLUMN pinned_at INTEGER')
+    } catch {
+      // Column may already exist if DB was created fresh with an older version check missed
+    }
+
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(CURRENT_VERSION)
+    }
+  }
 }

@@ -1,5 +1,12 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { DoctorResult, ProjectRecord, SessionRecord, SessionStatus } from '../shared/types'
+import type {
+  DoctorResult,
+  ProjectRecord,
+  SessionRecord,
+  SessionStatus,
+  WorkspaceRecord,
+  PinnedItem
+} from '../shared/types'
 
 declare global {
   interface Window {
@@ -21,6 +28,7 @@ declare global {
         open: (id: string) => Promise<ProjectRecord>
         archive: (id: string) => Promise<void>
         rename: (id: string, name: string) => Promise<void>
+        setPinned: (id: string, pinned: boolean) => Promise<ProjectRecord>
       }
       sessions: {
         listForProject: (
@@ -29,6 +37,20 @@ declare global {
         ) => Promise<SessionRecord[]>
         listAll: (opts?: { status?: SessionStatus }) => Promise<SessionRecord[]>
         setStatus: (id: string, status: SessionStatus) => Promise<void>
+      }
+      workspaces: {
+        listForProject: (
+          projectId: string,
+          options?: { includeArchived?: boolean }
+        ) => Promise<WorkspaceRecord[]>
+        create: (args: { projectId: string; name: string; cwd: string }) => Promise<WorkspaceRecord>
+        open: (id: string) => Promise<WorkspaceRecord>
+        setPinned: (id: string, pinned: boolean) => Promise<WorkspaceRecord>
+        archive: (id: string) => Promise<WorkspaceRecord>
+        rename: (id: string, name: string) => Promise<WorkspaceRecord>
+      }
+      pins: {
+        listAll: () => Promise<PinnedItem[]>
       }
     }
   }
