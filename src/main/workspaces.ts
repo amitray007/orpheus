@@ -209,19 +209,12 @@ export function listAllPinned(): PinnedItem[] {
     project: rowToProjectRecord(row)
   }))
 
-  // Combine and sort by pinned_at DESC
-  const all: (PinnedItem & { _pinnedAt: number })[] = [
-    ...workspaceItems.map((item) => ({
-      ...item,
-      _pinnedAt: (item as { kind: 'workspace'; workspace: WorkspaceRecord; project: ProjectRecord }).workspace.pinnedAt!
-    })),
-    ...projectItems.map((item) => ({
-      ...item,
-      _pinnedAt: (item as { kind: 'project'; project: ProjectRecord }).project.pinnedAt!
-    }))
-  ]
+  // Combine and sort by pinned_at DESC. Helper avoids scratch-field hack.
+  function pinnedAtOf(item: PinnedItem): number {
+    return item.kind === 'workspace' ? item.workspace.pinnedAt! : item.project.pinnedAt!
+  }
 
-  all.sort((a, b) => b._pinnedAt - a._pinnedAt)
-
-  return all.map(({ _pinnedAt: _, ...item }) => item as PinnedItem)
+  const all: PinnedItem[] = [...workspaceItems, ...projectItems]
+  all.sort((a, b) => pinnedAtOf(b) - pinnedAtOf(a))
+  return all
 }

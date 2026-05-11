@@ -1,14 +1,18 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Folder,
   Archive,
   ArrowUUpLeft,
   CaretDown,
   CaretRight,
-  ClockCounterClockwise
+  ClockCounterClockwise,
+  Stack,
+  Plus,
+  X,
+  Terminal
 } from '@phosphor-icons/react'
-import type { ProjectRecord, SessionRecord, SessionStatus } from '@shared/types'
-import { SessionListSkeleton } from '../Skeleton'
+import type { ProjectRecord, SessionRecord, SessionStatus, WorkspaceRecord } from '@shared/types'
+import { SessionListSkeleton, Skeleton } from '../Skeleton'
 
 // ---------------------------------------------------------------------------
 // Relative time helper
@@ -168,27 +172,192 @@ function SessionGroup({
 }
 
 // ---------------------------------------------------------------------------
+// Workspace card
+// ---------------------------------------------------------------------------
+
+interface WorkspaceCardProps {
+  workspace: WorkspaceRecord
+  onSelect: () => void
+  onArchive: () => void
+}
+
+function WorkspaceCard({ workspace, onSelect, onArchive }: WorkspaceCardProps): React.JSX.Element {
+  return (
+    <div className="group relative bg-surface-raised border border-border-default rounded-lg p-4 transition-colors duration-150 hover:border-accent/30 hover:bg-surface-overlay/40">
+      <button
+        onClick={onSelect}
+        className="w-full text-left flex flex-col gap-2"
+      >
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded bg-surface-overlay">
+            <Stack size={14} weight="fill" className="text-accent" />
+          </div>
+          <span className="text-sm font-medium text-text-primary truncate flex-1">
+            {workspace.name}
+          </span>
+        </div>
+        <p className="text-xs text-text-muted truncate flex items-center gap-1" title={workspace.cwd}>
+          <Folder size={10} className="flex-shrink-0" />
+          {workspace.cwd}
+        </p>
+        {workspace.lastOpenedAt ? (
+          <p className="text-xs text-text-muted">
+            Last opened {relativeTime(workspace.lastOpenedAt)}
+          </p>
+        ) : (
+          <p className="text-xs text-text-muted">Never opened</p>
+        )}
+      </button>
+
+      {/* Archive button on hover */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onArchive()
+        }}
+        title="Archive workspace"
+        className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+      >
+        <Archive size={12} />
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// New workspace inline form
+// ---------------------------------------------------------------------------
+
+interface NewWorkspaceFormProps {
+  projectPath: string
+  onCancel: () => void
+  onCreate: (name: string, cwd: string) => Promise<void>
+}
+
+function NewWorkspaceForm({ projectPath, onCancel, onCreate }: NewWorkspaceFormProps): React.JSX.Element {
+  const [name, setName] = useState('')
+  const [cwd, setCwd] = useState(projectPath)
+  const [creating, setCreating] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  async function handleCreate(): Promise<void> {
+    if (!name.trim() || creating) return
+    setCreating(true)
+    try {
+      await onCreate(name.trim(), cwd.trim() || projectPath)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div className="border border-accent/30 rounded-lg p-4 bg-surface-overlay/30 flex flex-col gap-3">
+      <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">New workspace</p>
+      <div className="flex flex-col gap-2">
+        <input
+          ref={inputRef}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Workspace name"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleCreate()
+            if (e.key === 'Escape') onCancel()
+          }}
+          className="px-3 py-1.5 rounded-md text-sm bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 w-full"
+        />
+        <input
+          value={cwd}
+          onChange={(e) => setCwd(e.target.value)}
+          placeholder="Working directory (defaults to project root)"
+          className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 w-full font-mono"
+        />
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={handleCreate}
+          disabled={!name.trim() || creating}
+          className={[
+            'px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-150',
+            !name.trim() || creating
+              ? 'bg-accent/30 text-text-muted cursor-not-allowed'
+              : 'bg-accent text-white hover:bg-accent/80'
+          ].join(' ')}
+        >
+          {creating ? 'Creating…' : 'Create'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-3 py-1.5 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ProjectView
 // ---------------------------------------------------------------------------
 
 interface ProjectViewProps {
   project: ProjectRecord
   onArchived: () => void
+  onSelectWorkspace: (workspaceId: string) => void
+  onWorkspaceCreated: (name: string, cwd: string) => Promise<void>
 }
 
-export function ProjectView({ project, onArchived }: ProjectViewProps): React.JSX.Element {
+export function ProjectView({
+  project,
+  onArchived,
+  onSelectWorkspace,
+  onWorkspaceCreated
+}: ProjectViewProps): React.JSX.Element {
   const [archiving, setArchiving] = useState(false)
-  // { projectId, list } — projectId tells us which fetch the list belongs to.
-  // If projectId doesn't match props.project.id we treat it as loading.
+
+  // Workspaces — projectId-keyed shape so `loading` derives from state without
+  // a synchronous setState inside the effect (matches the sessions pattern below).
+  const [workspaceData, setWorkspaceData] = useState<{
+    projectId: string | null
+    list: WorkspaceRecord[]
+  }>({ projectId: null, list: [] })
+  const workspaces = workspaceData.list
+  const workspacesLoading = workspaceData.projectId !== project.id
+  const [showNewWorkspaceForm, setShowNewWorkspaceForm] = useState(false)
+
+  // Sessions (legacy CC)
   const [sessionData, setSessionData] = useState<{
     projectId: string | null
     list: SessionRecord[]
   }>({ projectId: null, list: [] })
+  const [legacyExpanded, setLegacyExpanded] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
 
   const sessions = sessionData.list
   const sessionsLoading = sessionData.projectId !== project.id
 
+  // Load workspaces
+  useEffect(() => {
+    let cancelled = false
+    window.api.workspaces
+      .listForProject(project.id)
+      .then((list) => {
+        if (!cancelled) setWorkspaceData({ projectId: project.id, list })
+      })
+      .catch((err) => {
+        console.error('[project-view] failed to load workspaces', err)
+        if (!cancelled) setWorkspaceData({ projectId: project.id, list: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  // Load sessions
   useEffect(() => {
     let cancelled = false
     window.api.sessions
@@ -218,7 +387,6 @@ export function ProjectView({ project, onArchived }: ProjectViewProps): React.JS
   }
 
   function handleSetSessionStatus(id: string, status: SessionStatus): void {
-    // Optimistic update
     const updated = sessions.map((s) =>
       s.id === id
         ? {
@@ -232,7 +400,6 @@ export function ProjectView({ project, onArchived }: ProjectViewProps): React.JS
     setSessionData({ projectId: project.id, list: updated })
     window.api.sessions.setStatus(id, status).catch((err) => {
       console.error('[project-view] setStatus failed', err)
-      // Reload on failure
       window.api.sessions
         .listForProject(project.id, { includeArchived: true })
         .then((list) => setSessionData({ projectId: project.id, list }))
@@ -240,10 +407,34 @@ export function ProjectView({ project, onArchived }: ProjectViewProps): React.JS
     })
   }
 
+  async function handleArchiveWorkspace(workspaceId: string): Promise<void> {
+    try {
+      await window.api.workspaces.archive(workspaceId)
+      setWorkspaceData((prev) => ({
+        projectId: prev.projectId,
+        list: prev.list.filter((w) => w.id !== workspaceId)
+      }))
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('last active')) {
+        alert('Cannot archive the last active workspace in this project.')
+      } else {
+        console.error('[project-view] workspace archive failed', err)
+      }
+    }
+  }
+
+  async function handleCreateWorkspace(name: string, cwd: string): Promise<void> {
+    await onWorkspaceCreated(name, cwd)
+    // Refresh workspace list
+    const list = await window.api.workspaces.listForProject(project.id)
+    setWorkspaceData({ projectId: project.id, list })
+    setShowNewWorkspaceForm(false)
+  }
+
   const inProgressSessions = sessions.filter((s) => s.status === 'in_progress')
   const inReviewSessions = sessions.filter((s) => s.status === 'in_review')
   const archivedSessions = sessions.filter((s) => s.status === 'archived')
-
   const hasAnySessions = sessions.length > 0
 
   return (
@@ -278,55 +469,133 @@ export function ProjectView({ project, onArchived }: ProjectViewProps): React.JS
         </button>
       </div>
 
-      {/* Sessions */}
-      <section className="flex flex-col gap-1">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Sessions
+      {/* Workspaces section — primary */}
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary flex items-center gap-1.5">
+            <Stack size={12} className="text-accent" />
+            Workspaces
           </h2>
-          {archivedSessions.length > 0 && (
-            <button
-              onClick={() => setShowArchived((v) => !v)}
-              className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150"
-            >
-              {showArchived ? 'Hide archived' : `Show archived (${archivedSessions.length})`}
-            </button>
-          )}
+          <button
+            onClick={() => setShowNewWorkspaceForm((v) => !v)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150"
+          >
+            {showNewWorkspaceForm ? (
+              <>
+                <X size={11} />
+                Cancel
+              </>
+            ) : (
+              <>
+                <Plus size={11} />
+                New workspace
+              </>
+            )}
+          </button>
         </div>
 
-        {sessionsLoading ? (
-          <div className="bg-surface-raised border border-border-default rounded-lg py-3">
-            <SessionListSkeleton />
+        {showNewWorkspaceForm && (
+          <NewWorkspaceForm
+            projectPath={project.path}
+            onCancel={() => setShowNewWorkspaceForm(false)}
+            onCreate={handleCreateWorkspace}
+          />
+        )}
+
+        {workspacesLoading ? (
+          <div className="grid grid-cols-2 gap-3">
+            <Skeleton className="h-24 rounded-lg opacity-70" />
+            <Skeleton className="h-24 rounded-lg opacity-40" />
           </div>
-        ) : !hasAnySessions ? (
+        ) : workspaces.length === 0 ? (
           <div className="bg-surface-raised border border-border-default rounded-lg p-8 flex flex-col items-center gap-2">
-            <p className="text-sm text-text-muted text-center">No sessions yet</p>
+            <Terminal size={24} className="text-text-muted opacity-50" />
+            <p className="text-sm text-text-muted text-center">No workspaces yet</p>
             <p className="text-xs text-text-muted text-center max-w-xs">
-              Start Claude Code in this folder and your sessions will appear here.
+              Create a workspace to start working in this project.
             </p>
           </div>
         ) : (
-          <div className="bg-surface-raised border border-border-default rounded-lg p-3 flex flex-col gap-4">
-            <SessionGroup
-              label="In Progress"
-              sessions={inProgressSessions}
-              onSetStatus={handleSetSessionStatus}
-            />
-            <SessionGroup
-              label="In Review"
-              sessions={inReviewSessions}
-              onSetStatus={handleSetSessionStatus}
-            />
-            {showArchived && (
-              <SessionGroup
-                label="Archived"
-                sessions={archivedSessions}
-                collapsible
-                defaultCollapsed={false}
-                onSetStatus={handleSetSessionStatus}
+          <div className="grid grid-cols-2 gap-3">
+            {workspaces.map((ws) => (
+              <WorkspaceCard
+                key={ws.id}
+                workspace={ws}
+                onSelect={() => onSelectWorkspace(ws.id)}
+                onArchive={() => handleArchiveWorkspace(ws.id)}
               />
-            )}
+            ))}
           </div>
+        )}
+      </section>
+
+      {/* Legacy CC Sessions — collapsed by default */}
+      <section className="flex flex-col gap-1">
+        <button
+          onClick={() => setLegacyExpanded((v) => !v)}
+          className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer hover:text-text-primary transition-colors duration-150"
+        >
+          {legacyExpanded ? (
+            <CaretDown size={11} className="text-text-muted" />
+          ) : (
+            <CaretRight size={11} className="text-text-muted" />
+          )}
+          <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+            Legacy Claude Code Sessions
+          </h2>
+          {!sessionsLoading && (
+            <span className="text-xs text-text-muted ml-1">({sessions.length})</span>
+          )}
+        </button>
+
+        {legacyExpanded && (
+          <>
+            <div className="flex items-center justify-end mb-1">
+              {archivedSessions.length > 0 && (
+                <button
+                  onClick={() => setShowArchived((v) => !v)}
+                  className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150"
+                >
+                  {showArchived ? 'Hide archived' : `Show archived (${archivedSessions.length})`}
+                </button>
+              )}
+            </div>
+
+            {sessionsLoading ? (
+              <div className="bg-surface-raised border border-border-default rounded-lg py-3">
+                <SessionListSkeleton />
+              </div>
+            ) : !hasAnySessions ? (
+              <div className="bg-surface-raised border border-border-default rounded-lg p-6 flex flex-col items-center gap-2">
+                <p className="text-sm text-text-muted text-center">No sessions yet</p>
+                <p className="text-xs text-text-muted text-center max-w-xs">
+                  Start Claude Code in this folder and your sessions will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-surface-raised border border-border-default rounded-lg p-3 flex flex-col gap-4">
+                <SessionGroup
+                  label="In Progress"
+                  sessions={inProgressSessions}
+                  onSetStatus={handleSetSessionStatus}
+                />
+                <SessionGroup
+                  label="In Review"
+                  sessions={inReviewSessions}
+                  onSetStatus={handleSetSessionStatus}
+                />
+                {showArchived && (
+                  <SessionGroup
+                    label="Archived"
+                    sessions={archivedSessions}
+                    collapsible
+                    defaultCollapsed={false}
+                    onSetStatus={handleSetSessionStatus}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
       </section>
     </div>
