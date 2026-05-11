@@ -16,6 +16,7 @@
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
+#import <Carbon/Carbon.h>
 
 #include <string>
 #include <map>
@@ -29,11 +30,37 @@
 #include <napi.h>
 
 // ---------------------------------------------------------------------------
-// OrpheusGhosttyView — thin NSView subclass for the terminal surface.
-// No keyboard/mouse handlers yet (next commit).
+// OrpheusGhosttyView — NSView subclass with keyboard + focus support.
+//
+// Keyboard design (from Ghostty Swift reference implementation):
+//   • ghostty_input_key_s.keycode = raw macOS virtual keycode (event.keyCode).
+//     Ghostty's key codec maps these natively; we do NOT pre-convert to
+//     GHOSTTY_KEY_* enum values.
+//   • mods = NSEvent.modifierFlags translated to ghostty_input_mods_e bitmask.
+//   • action = GHOSTTY_ACTION_PRESS for keyDown:, GHOSTTY_ACTION_RELEASE for keyUp:,
+//     GHOSTTY_ACTION_REPEAT for auto-repeat.
+//   • text field: pass event.characters unless it's a control char (< 0x20) or PUA
+//     range (0xF700–0xF8FF).  Control-char encoding is handled inside libghostty.
+//
+// NSTextInputClient (minimal stub):
+//   • insertText:replacementRange: → ghostty_surface_text  (committed text from IME)
+//   • doCommandBySelector:        → suppressed (no NSBeep); keyDown: already forwarded
+//   • Marked text / preedit: stubbed out.  CJK dead-key composition is a follow-up.
+//     ghostty_surface_preedit and ghostty_surface_ime_point are intentionally not
+//     wired here; add them when NSTextInputClient composition is fully wired.
+//
+// Mouse:
+//   • mouseDown: makes the view first responder so keystrokes route here.
+//   • Full mouse-button/scroll forwarding to ghostty_surface_mouse_button /
+//     ghostty_surface_mouse_scroll is NOT in scope this commit.
 // ---------------------------------------------------------------------------
 
-@interface OrpheusGhosttyView : NSView
+@interface OrpheusGhosttyView : NSView <NSTextInputClient>
+@property (nonatomic, assign) ghostty_surface_t surface;
+// Set to YES while we are inside keyDown: so that insertText:replacementRange:
+// can distinguish IME-committed text (outside keyDown:) from plain ASCII input
+// that ghostty_surface_key already handled via the .text field.
+@property (nonatomic, assign) BOOL inKeyDown;
 @end
 
 @implementation OrpheusGhosttyView
@@ -49,6 +76,223 @@
 
 - (BOOL)acceptsFirstResponder {
     return YES;
+}
+
+// ---------------------------------------------------------------------------
+// Modifier flag → Ghostty mods bitmask
+// Source: Ghostty.Input.swift ghosttyMods() method.
+// NX_DEVICE* masks detect right-side modifier keys (IOKit private constants).
+// ---------------------------------------------------------------------------
+
+static ghostty_input_mods_e modsFromEvent(NSEvent *event) {
+    NSEventModifierFlags flags = event.modifierFlags;
+    uint32_t mods = GHOSTTY_MODS_NONE;
+
+    if (flags & NSEventModifierFlagShift)   mods |= GHOSTTY_MODS_SHIFT;
+    if (flags & NSEventModifierFlagControl) mods |= GHOSTTY_MODS_CTRL;
+    if (flags & NSEventModifierFlagOption)  mods |= GHOSTTY_MODS_ALT;
+    if (flags & NSEventModifierFlagCommand) mods |= GHOSTTY_MODS_SUPER;
+    if (flags & NSEventModifierFlagCapsLock) mods |= GHOSTTY_MODS_CAPS;
+
+    // Sided modifiers via IOKit raw bits (same constants used in Ghostty Swift).
+    NSUInteger raw = flags;
+    if (raw & NX_DEVICERSHIFTKEYMASK) mods |= GHOSTTY_MODS_SHIFT_RIGHT;
+    if (raw & NX_DEVICERCTLKEYMASK)   mods |= GHOSTTY_MODS_CTRL_RIGHT;
+    if (raw & NX_DEVICERALTKEYMASK)   mods |= GHOSTTY_MODS_ALT_RIGHT;
+    if (raw & NX_DEVICERCMDKEYMASK)   mods |= GHOSTTY_MODS_SUPER_RIGHT;
+
+    return (ghostty_input_mods_e)mods;
+}
+
+// ---------------------------------------------------------------------------
+// Return the text to pass in ghostty_input_key_s.text:
+//   • nil if no characters
+//   • nil if single control character (< 0x20) — libghostty encodes these itself
+//   • nil if single PUA codepoint (0xF700–0xF8FF) — these are AppKit function-key
+//     private-use sentinels, not real text
+//   • otherwise: the characters string (caller must use withCString lifetime)
+// ---------------------------------------------------------------------------
+
+static NSString *ghosttyTextForEvent(NSEvent *event) {
+    NSString *chars = event.characters;
+    if (!chars || chars.length == 0) return nil;
+
+    if (chars.length == 1) {
+        unichar c = [chars characterAtIndex:0];
+        if (c < 0x20) return nil;               // control char
+        if (c >= 0xF700 && c <= 0xF8FF) return nil; // PUA (function keys etc.)
+    }
+
+    return chars;
+}
+
+// ---------------------------------------------------------------------------
+// keyDown: — build ghostty_input_key_s and forward to libghostty.
+// After that, call interpretKeyEvents: so the NSTextInputClient chain runs,
+// which fires insertText: for normal printable characters (used by IME).
+// ---------------------------------------------------------------------------
+
+- (void)keyDown:(NSEvent *)event {
+    if (!self.surface) {
+        [self interpretKeyEvents:@[event]];
+        return;
+    }
+
+    ghostty_input_action_e action = event.isARepeat
+        ? GHOSTTY_ACTION_REPEAT
+        : GHOSTTY_ACTION_PRESS;
+
+    ghostty_input_key_s key_ev = {};
+    key_ev.action          = action;
+    key_ev.mods            = modsFromEvent(event);
+    key_ev.consumed_mods   = (ghostty_input_mods_e)(key_ev.mods &
+                                ~(GHOSTTY_MODS_CTRL | GHOSTTY_MODS_SUPER));
+    key_ev.keycode         = (uint32_t)event.keyCode; // raw macOS vkey
+    key_ev.composing       = false;
+    key_ev.unshifted_codepoint = 0;
+    key_ev.text            = nullptr;
+
+    // Compute unshifted codepoint (codepoint with no modifiers applied).
+    NSString *bare = [event charactersByApplyingModifiers:0];
+    if (bare && bare.length > 0) {
+        NSUInteger cp = [bare characterAtIndex:0];
+        if (cp < 0xD800 || cp > 0xDFFF) { // exclude surrogates
+            key_ev.unshifted_codepoint = (uint32_t)cp;
+        }
+    }
+
+    // Include text only for non-control, non-PUA characters.
+    NSString *textStr = ghosttyTextForEvent(event);
+    if (textStr) {
+        const char *cstr = [textStr UTF8String];
+        if (cstr) {
+            key_ev.text = cstr;
+            ghostty_surface_key(self.surface, key_ev);
+            key_ev.text = nullptr; // pointer no longer valid after return
+        } else {
+            ghostty_surface_key(self.surface, key_ev);
+        }
+    } else {
+        ghostty_surface_key(self.surface, key_ev);
+    }
+
+    // Run the AppKit input manager so IME / dead keys / NSTextInputClient fire.
+    // We set inKeyDown = YES so that insertText:replacementRange: knows the text
+    // is already handled via ghostty_surface_key (.text field) and should not
+    // double-send via ghostty_surface_text.
+    self.inKeyDown = YES;
+    [self interpretKeyEvents:@[event]];
+    self.inKeyDown = NO;
+}
+
+// ---------------------------------------------------------------------------
+// keyUp:
+// ---------------------------------------------------------------------------
+
+- (void)keyUp:(NSEvent *)event {
+    if (!self.surface) return;
+
+    ghostty_input_key_s key_ev = {};
+    key_ev.action        = GHOSTTY_ACTION_RELEASE;
+    key_ev.mods          = modsFromEvent(event);
+    key_ev.consumed_mods = (ghostty_input_mods_e)0;
+    key_ev.keycode       = (uint32_t)event.keyCode;
+    key_ev.composing     = false;
+    key_ev.text          = nullptr;
+    key_ev.unshifted_codepoint = 0;
+
+    ghostty_surface_key(self.surface, key_ev);
+}
+
+// ---------------------------------------------------------------------------
+// mouseDown: — grab first responder so subsequent keystrokes come here.
+// Full mouse forwarding (ghostty_surface_mouse_button) is next commit.
+// ---------------------------------------------------------------------------
+
+- (void)mouseDown:(NSEvent *)event {
+    [self.window makeFirstResponder:self];
+    // Don't call super — swallow the click for the terminal area.
+    // If clicking sidebar/topbar fails to return focus to WKWebView after this
+    // commit, surface it in the next mouse-input commit (not in scope here).
+}
+
+// ---------------------------------------------------------------------------
+// NSTextInputClient — minimal implementation
+//
+// insertText:replacementRange: fires when AppKit has committed text (after
+// any IME composition or for direct ASCII input via interpretKeyEvents:).
+// We forward to ghostty_surface_text so the terminal sees it.
+//
+// NOTE: For normal ASCII typing this path runs IN ADDITION to the
+// ghostty_surface_key call in keyDown:.  Ghostty deduplicates internally
+// (the key event carries the text in its .text field; ghostty_surface_text
+// is for cases where the text comes from outside key events, e.g. paste or
+// IME commit). Both paths are needed because some key combos go only through
+// one path depending on the IME state.
+//
+// CJK / dead-key full composition (setMarkedText: / syncPreedit) is deferred.
+// ghostty_surface_preedit and ghostty_surface_ime_point are not yet wired.
+// ---------------------------------------------------------------------------
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    if (!self.surface) return;
+
+    // If we are inside keyDown:, ghostty_surface_key already forwarded the text
+    // via the .text field on the key event struct.  Sending it again via
+    // ghostty_surface_text would double-encode every keystroke (e.g., "l" → "ll").
+    // Only forward here when interpretKeyEvents: fires insertText: from OUTSIDE a
+    // key event — which is the IME commit path (CJK, dead keys, paste via IME).
+    if (self.inKeyDown) return;
+
+    NSString *s = [string isKindOfClass:[NSAttributedString class]]
+        ? [(NSAttributedString *)string string]
+        : (NSString *)string;
+
+    const char *bytes = [s UTF8String];
+    if (!bytes) return;
+    NSUInteger len = strlen(bytes);
+    if (len == 0) return;
+
+    ghostty_surface_text(self.surface, bytes, (uintptr_t)len);
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    // Suppress NSBeep for unhandled commands.
+    // keyDown: already forwarded the raw key event to ghostty_surface_key,
+    // so control keys (Return, Tab, Backspace, arrows, Escape, Ctrl+C etc.)
+    // are already encoded by libghostty from the key event.
+    // We intentionally do nothing here rather than double-encoding.
+    (void)selector;
+}
+
+// ---------------------------------------------------------------------------
+// NSTextInputClient stubs — marked text / IME
+// CJK composition and dead-key preedit are deferred to a follow-up commit.
+// ---------------------------------------------------------------------------
+
+- (BOOL)hasMarkedText { return NO; }
+- (NSRange)markedRange { return NSMakeRange(NSNotFound, 0); }
+- (NSRange)selectedRange { return NSMakeRange(NSNotFound, 0); }
+- (void)setMarkedText:(id)string
+        selectedRange:(NSRange)selectedRange
+     replacementRange:(NSRange)replacementRange {
+    (void)string; (void)selectedRange; (void)replacementRange;
+}
+- (void)unmarkText {}
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText { return @[]; }
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range
+                                                actualRange:(NSRangePointer)actualRange {
+    (void)range; (void)actualRange;
+    return nil;
+}
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    (void)point;
+    return 0;
+}
+- (NSRect)firstRectForCharacterRange:(NSRange)range
+                         actualRange:(NSRangePointer)actualRange {
+    (void)range; (void)actualRange;
+    return NSZeroRect;
 }
 
 @end
@@ -294,6 +538,16 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
+    // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
+    termView.surface = surface;
+
+    // Make the terminal first responder so the user can type immediately.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([termView window]) {
+            [[termView window] makeFirstResponder:termView];
+        }
+    });
+
     // Set initial size (physical pixels).
     uint32_t physW = (uint32_t)(rw * scaleFactor);
     uint32_t physH = (uint32_t)(rh * scaleFactor);
@@ -349,6 +603,11 @@ static Napi::Value Unmount(const Napi::CallbackInfo& info) {
         CVDisplayLinkStop(entry.displayLink);
         CVDisplayLinkRelease(entry.displayLink);
         entry.displayLink = nullptr;
+    }
+
+    // Nil out the view's surface pointer so in-flight key events don't use freed memory.
+    if (entry.view) {
+        entry.view.surface = nullptr;
     }
 
     // Free the Ghostty surface.
