@@ -14,11 +14,11 @@
 ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  ← 1280 × 800 window
 │ [o o o]                                                                                       │  ← 36px hidden-inset drag strip (existing)
 │                                                                                               │
-│                                                                                               │  ← ~48px breathing room
-│   Setup Orpheus                                                                               │  text-3xl, font-semibold
-│   Orpheus is built around Claude Code. Confirm your setup to get started.                     │  text-sm, text-text-secondary
 │                                                                                               │
-│                                                                                               │  ~32px gap
+│                                       Orpheus.                                                │  ← wordmark, text-4xl bold, "." in accent gold
+│                                  Let's get you set up.                                        │  ← text-sm, text-text-secondary, centered
+│                                                                                               │
+│                                                                                               │  ~40px gap
 │   ┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐         │
 │   │  ◆  Claude Code                      │  │  +  More providers                   │         │  provider cards row
 │   │     Anthropic's coding agent.        │  │     GitHub, agents, and more —       │         │
@@ -50,8 +50,9 @@
 ## Elements
 
 ### Header
-- **Title** — "Setup Orpheus" — `text-3xl font-semibold text-text-primary`
-- **Subtitle** — "Orpheus is built around Claude Code. Confirm your setup to get started." — `text-sm text-text-secondary`, max ~70ch width
+- **Wordmark** — "Orpheus." centered, `text-4xl font-bold tracking-tight text-text-primary` with the final `.` in `text-accent` (same treatment as `MainPage` for cross-surface consistency). The wordmark is the brand mark; it appears on every first-impression surface (`MainPage`, `Setup`, future onboarding states).
+- **Subtitle** — "Let's get you set up." — `text-sm text-text-secondary`, centered directly under the wordmark
+- (No separate "Setup Orpheus" header — the wordmark + subtitle do the job, matching `MainPage`'s rhythm rather than Conductor's bold-title style.)
 
 ### Provider cards (row)
 Two cards, equal width (~360px each), 16px gap. Each card: `bg-surface-raised`, `border border-border-default`, `rounded-lg`, 16px padding.
@@ -160,11 +161,21 @@ No page dots (single page for v0). If we add a page 2 later (e.g., GitHub auth +
 
 ---
 
+## Decisions locked
+
+- **"More providers" card stays.** v0 is Claude Code only; the placeholder card communicates the future direction (GitHub, additional agent backends) without us having to ship them yet. (Confirmed by user, 2026-05-11.)
+- **Wordmark "Orpheus."** with the accent-gold dot is the brand mark on every first-impression surface. Reused from `MainPage`; consistent rhythm across surfaces.
+
 ## Open questions
 
-- Is the "More providers" card useful, or just visual filler? Alternative: single full-width Claude Code card. **Lean:** keep it for now — communicates intent.
 - Should the existing "Found in Claude Code" projects list (currently on `MainPage`) move into this setup as a page 2, or stay on `MainPage` as the post-setup welcome state? **Lean:** keep it on `MainPage` — setup is for configuration, not project import.
 - Sound catalog: just `Chime`? Multiple options? Volume? **Lean:** start with `Chime / Soft bell / Off`, no volume in v0.
 - "Get support" target: GitHub Issues, a Discord, or an email? **Lean:** GitHub Issues for v0.
 - Light / System theme chips: show disabled with "(soon)", or hide entirely until they work? **Lean:** show disabled — communicates the roadmap.
 - "Finish setup" button: disable when Claude is missing, or always-enabled (let user proceed but show a warning in the app)? **Lean:** disable; setup should mean ready-to-use.
+
+---
+
+## Iterative wireframing note
+
+This wireframe is the v0.6 (Electron-era) reimagining of the Swift-era v0.5 W18 onboarding (`old-plans/wireframes-v0.5.md`). The expectation going forward: as we adapt more surfaces from v0.5, each gets its own file in `docs/wireframes/` rather than being patched in-place in the old-plans archive. The Swift-era doc remains the historical reference; this directory accumulates the Electron-era replacements one surface at a time.
