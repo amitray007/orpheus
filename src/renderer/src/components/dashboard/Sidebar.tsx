@@ -11,7 +11,8 @@ import {
   Stack,
   Folder,
   PencilSimple,
-  Trash
+  Trash,
+  Archive
 } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 import { ProjectListSkeleton, Skeleton } from '../Skeleton'
@@ -84,16 +85,47 @@ interface WorkspaceRowProps {
   active: boolean
   onSelect: () => void
   onTogglePin: () => void
+  renaming: boolean
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onArchive: () => void
 }
 
 function WorkspaceSubRow({
   workspace,
   active,
   onSelect,
-  onTogglePin
+  onTogglePin,
+  renaming,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onArchive
 }: WorkspaceRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [renameValue, setRenameValue] = useState(workspace.name)
   const isPinned = workspace.pinnedAt !== null
+
+  // Sync rename input when workspace name changes externally
+  if (!renaming && renameValue !== workspace.name) {
+    setRenameValue(workspace.name)
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  function handleRenameCommit(): void {
+    const trimmed = renameValue.trim()
+    if (trimmed) {
+      onFinishRename(trimmed)
+    } else {
+      onCancelRename()
+    }
+  }
 
   return (
     <div
@@ -105,6 +137,7 @@ function WorkspaceSubRow({
       ].join(' ')}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={handleContextMenu}
     >
       <button
         onClick={onSelect}
@@ -119,11 +152,27 @@ function WorkspaceSubRow({
             active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
           ].join(' ')}
         />
-        <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+        {renaming ? (
+          <input
+            autoFocus
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameCommit()
+              if (e.key === 'Escape') onCancelRename()
+            }}
+            onBlur={handleRenameCommit}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+          />
+        ) : (
+          <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+        )}
       </button>
 
       {/* Pin affordance — visible on hover or when pinned */}
-      {(hovered || isPinned) && (
+      {!renaming && (hovered || isPinned) && (
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -134,6 +183,33 @@ function WorkspaceSubRow({
         >
           <PushPin size={10} weight={isPinned ? 'fill' : 'regular'} />
         </button>
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: 'Rename',
+              icon: <PencilSimple size={13} />,
+              onClick: onBeginRename
+            },
+            {
+              label: isPinned ? 'Unpin' : 'Pin',
+              icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
+              onClick: onTogglePin
+            },
+            { divider: true, label: '', onClick: () => {} },
+            {
+              label: 'Archive',
+              icon: <Archive size={13} />,
+              onClick: onArchive,
+              destructive: true
+            }
+          ]}
+        />
       )}
     </div>
   )
@@ -162,6 +238,12 @@ interface ProjectRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onRequestRemove: () => void
+  onAddWorkspace: () => void
+  renamingWorkspaceId: string | null
+  onBeginRenameWorkspace: (workspaceId: string) => void
+  onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
+  onCancelRenameWorkspace: () => void
+  onArchiveWorkspace: (workspaceId: string) => void
 }
 
 function ProjectRow({
@@ -182,7 +264,13 @@ function ProjectRow({
   onBeginRename,
   onFinishRename,
   onCancelRename,
-  onRequestRemove
+  onRequestRemove,
+  onAddWorkspace,
+  renamingWorkspaceId,
+  onBeginRenameWorkspace,
+  onFinishRenameWorkspace,
+  onCancelRenameWorkspace,
+  onArchiveWorkspace
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -246,9 +334,23 @@ function ProjectRow({
           )}
         </button>
 
-        {/* Right controls: pin + count + chevron */}
+        {/* Right controls: add workspace + pin + count + chevron */}
         {!renaming && (
           <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
+            {/* Add workspace — visible on hover */}
+            {hovered && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onAddWorkspace()
+                }}
+                className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+                title="New workspace"
+              >
+                <Plus size={11} weight="bold" />
+              </button>
+            )}
+
             {/* Pin affordance — visible on hover or when pinned */}
             {(hovered || isPinned) && (
               <button
@@ -299,6 +401,11 @@ function ProjectRow({
               }
               onSelect={() => onSelectWorkspace(ws.id)}
               onTogglePin={() => onToggleWorkspacePin(ws.id)}
+              renaming={renamingWorkspaceId === ws.id}
+              onBeginRename={() => onBeginRenameWorkspace(ws.id)}
+              onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
+              onCancelRename={onCancelRenameWorkspace}
+              onArchive={() => onArchiveWorkspace(ws.id)}
             />
           ))}
         </div>
@@ -345,6 +452,7 @@ interface PinnedSectionProps {
   currentProjectId?: string | null
   currentWorkspaceId?: string | null
   renamingProjectId: string | null
+  renamingWorkspaceId: string | null
   onSelectProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onUnpinProject: (id: string) => void
@@ -353,6 +461,10 @@ interface PinnedSectionProps {
   onFinishRenameProject: (id: string, newName: string) => void
   onCancelRenameProject: () => void
   onRequestRemoveProject: (project: ProjectRecord) => void
+  onBeginRenameWorkspace: (workspaceId: string) => void
+  onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
+  onCancelRenameWorkspace: () => void
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void
 }
 
 function PinnedSection({
@@ -362,6 +474,7 @@ function PinnedSection({
   currentProjectId,
   currentWorkspaceId,
   renamingProjectId,
+  renamingWorkspaceId,
   onSelectProject,
   onSelectWorkspace,
   onUnpinProject,
@@ -369,7 +482,11 @@ function PinnedSection({
   onBeginRenameProject,
   onFinishRenameProject,
   onCancelRenameProject,
-  onRequestRemoveProject
+  onRequestRemoveProject,
+  onBeginRenameWorkspace,
+  onFinishRenameWorkspace,
+  onCancelRenameWorkspace,
+  onArchiveWorkspace
 }: PinnedSectionProps): React.JSX.Element | null {
   if (loading) {
     return (
@@ -418,6 +535,11 @@ function PinnedSection({
             active={isActive}
             onSelect={() => onSelectWorkspace(item.workspace.id, item.project.id)}
             onUnpin={() => onUnpinWorkspace(item.workspace.id)}
+            renaming={renamingWorkspaceId === item.workspace.id}
+            onBeginRename={() => onBeginRenameWorkspace(item.workspace.id)}
+            onFinishRename={(name) => onFinishRenameWorkspace(item.workspace.id, item.project.id, name)}
+            onCancelRename={onCancelRenameWorkspace}
+            onArchive={() => onArchiveWorkspace(item.workspace.id, item.project.id)}
           />
         )
       })}
@@ -558,6 +680,11 @@ interface PinnedWorkspaceRowProps {
   active: boolean
   onSelect: () => void
   onUnpin: () => void
+  renaming: boolean
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onArchive: () => void
 }
 
 function PinnedWorkspaceRow({
@@ -565,47 +692,119 @@ function PinnedWorkspaceRow({
   project,
   active,
   onSelect,
-  onUnpin
+  onUnpin,
+  renaming,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onArchive
 }: PinnedWorkspaceRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [renameValue, setRenameValue] = useState(workspace.name)
+
+  // Sync rename input when workspace name changes externally
+  if (!renaming && renameValue !== workspace.name) {
+    setRenameValue(workspace.name)
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  function handleRenameCommit(): void {
+    const trimmed = renameValue.trim()
+    if (trimmed) {
+      onFinishRename(trimmed)
+    } else {
+      onCancelRename()
+    }
+  }
 
   return (
-    <div
-      className={[
-        'flex items-center rounded-md transition-colors duration-150 group',
-        active
-          ? 'bg-accent/15 text-text-primary'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
-      ].join(' ')}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <button
-        onClick={onSelect}
-        className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0"
-        title={workspace.cwd}
+    <>
+      <div
+        className={[
+          'flex items-center rounded-md transition-colors duration-150 group',
+          active
+            ? 'bg-accent/15 text-text-primary'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+        ].join(' ')}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onContextMenu={handleContextMenu}
       >
-        <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
-        <Identicon seed={project.path} size={14} />
-        <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
-          {project.name}
-        </span>
-        <CaretRight size={9} className="flex-shrink-0 text-text-muted" />
-        <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
-      </button>
-      {hovered && (
         <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onUnpin()
-          }}
-          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
-          title="Unpin workspace"
+          onClick={onSelect}
+          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0"
+          title={workspace.cwd}
         >
-          <PushPin size={11} weight="fill" />
+          <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
+          <Identicon seed={project.path} size={14} />
+          <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
+            {project.name}
+          </span>
+          <CaretRight size={9} className="flex-shrink-0 text-text-muted" />
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameCommit()
+                if (e.key === 'Escape') onCancelRename()
+              }}
+              onBlur={handleRenameCommit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+            />
+          ) : (
+            <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+          )}
         </button>
+        {!renaming && hovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onUnpin()
+            }}
+            className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+            title="Unpin workspace"
+          >
+            <PushPin size={11} weight="fill" />
+          </button>
+        )}
+      </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: 'Rename',
+              icon: <PencilSimple size={13} />,
+              onClick: onBeginRename
+            },
+            {
+              label: 'Unpin',
+              icon: <PushPin size={13} weight="fill" />,
+              onClick: onUnpin
+            },
+            { divider: true, label: '', onClick: () => {} },
+            {
+              label: 'Archive',
+              icon: <Archive size={13} />,
+              onClick: onArchive,
+              destructive: true
+            }
+          ]}
+        />
       )}
-    </div>
+    </>
   )
 }
 
@@ -637,6 +836,9 @@ interface SidebarProps {
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void
   onRenameProject: (id: string, newName: string) => void | Promise<void>
   onRequestRemoveProject: (project: ProjectRecord) => void
+  onAddWorkspace: (projectId: string) => void | Promise<void>
+  onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
 }
 
 export function Sidebar({
@@ -660,9 +862,13 @@ export function Sidebar({
   onToggleProjectPin,
   onToggleWorkspacePin,
   onRenameProject,
-  onRequestRemoveProject
+  onRequestRemoveProject,
+  onAddWorkspace,
+  onRenameWorkspace,
+  onArchiveWorkspace
 }: SidebarProps): React.JSX.Element {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+  const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
 
   function handleBeginRename(id: string): void {
     setRenamingProjectId(id)
@@ -675,6 +881,19 @@ export function Sidebar({
 
   function handleCancelRename(): void {
     setRenamingProjectId(null)
+  }
+
+  function handleBeginRenameWorkspace(id: string): void {
+    setRenamingWorkspaceId(id)
+  }
+
+  function handleFinishRenameWorkspace(workspaceId: string, projectId: string, newName: string): void {
+    onRenameWorkspace(workspaceId, projectId, newName)
+    setRenamingWorkspaceId(null)
+  }
+
+  function handleCancelRenameWorkspace(): void {
+    setRenamingWorkspaceId(null)
   }
 
   const addProjectButton = (
@@ -727,6 +946,7 @@ export function Sidebar({
           currentProjectId={selectedProjectId}
           currentWorkspaceId={selectedWorkspaceId}
           renamingProjectId={renamingProjectId}
+          renamingWorkspaceId={renamingWorkspaceId}
           onSelectProject={onSelectProject}
           onSelectWorkspace={onSelectWorkspace}
           onUnpinProject={(id) => onToggleProjectPin(id)}
@@ -742,6 +962,10 @@ export function Sidebar({
           onFinishRenameProject={handleFinishRename}
           onCancelRenameProject={handleCancelRename}
           onRequestRemoveProject={onRequestRemoveProject}
+          onBeginRenameWorkspace={handleBeginRenameWorkspace}
+          onFinishRenameWorkspace={handleFinishRenameWorkspace}
+          onCancelRenameWorkspace={handleCancelRenameWorkspace}
+          onArchiveWorkspace={(workspaceId, projectId) => onArchiveWorkspace(workspaceId, projectId)}
         />
       )}
 
@@ -780,6 +1004,12 @@ export function Sidebar({
                       onFinishRename={(name) => handleFinishRename(p.id, name)}
                       onCancelRename={handleCancelRename}
                       onRequestRemove={() => onRequestRemoveProject(p)}
+                      onAddWorkspace={() => onAddWorkspace(p.id)}
+                      renamingWorkspaceId={renamingWorkspaceId}
+                      onBeginRenameWorkspace={handleBeginRenameWorkspace}
+                      onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
+                      onCancelRenameWorkspace={handleCancelRenameWorkspace}
+                      onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
                     />
                   )
                 })}

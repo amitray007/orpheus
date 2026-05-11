@@ -220,6 +220,76 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     }
   }
 
+  async function handleAddWorkspace(projectId: string): Promise<void> {
+    const project = projects.find((p) => p.id === projectId)
+    if (!project) return
+    try {
+      const newWs = await window.api.workspaces.create({
+        projectId,
+        name: 'New Workspace',
+        cwd: project.path
+      })
+      // Refresh workspace list for this project
+      await fetchWorkspacesForProject(projectId)
+      // Expand the project row so the new workspace is visible
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        next.add(projectId)
+        return next
+      })
+      // Navigate to the new workspace
+      handleSelectWorkspace(newWs.id, projectId)
+    } catch (err) {
+      console.error('[dashboard] add workspace failed', err)
+    }
+  }
+
+  async function handleRenameWorkspace(
+    workspaceId: string,
+    projectId: string,
+    newName: string
+  ): Promise<void> {
+    const trimmed = newName.trim()
+    if (!trimmed) return
+    // Optimistic update
+    setWorkspacesByProject((prev) => ({
+      ...prev,
+      [projectId]: (prev[projectId] ?? []).map((w) =>
+        w.id === workspaceId ? { ...w, name: trimmed, nameIsAuto: false } : w
+      )
+    }))
+    try {
+      await window.api.workspaces.rename(workspaceId, trimmed)
+      refreshPins()
+    } catch (err) {
+      console.error('[dashboard] workspace rename failed', err)
+      await fetchWorkspacesForProject(projectId)
+    }
+  }
+
+  async function handleArchiveWorkspaceFromSidebar(
+    workspaceId: string,
+    projectId: string
+  ): Promise<void> {
+    try {
+      await window.api.workspaces.archive(workspaceId)
+      await fetchWorkspacesForProject(projectId)
+      // If the archived workspace was active, route back to its project view
+      if (selectedWorkspaceId === workspaceId) {
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'project', projectId })
+      }
+      refreshPins()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('last active')) {
+        alert('Cannot archive the last active workspace in this project.')
+      } else {
+        console.error('[dashboard] workspace archive failed', err)
+      }
+    }
+  }
+
   async function handleRenameProject(id: string, newName: string): Promise<void> {
     // Optimistic update
     setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, name: newName } : p)))
@@ -312,6 +382,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           onToggleWorkspacePin={handleToggleWorkspacePin}
           onRenameProject={handleRenameProject}
           onRequestRemoveProject={handleRequestRemoveProject}
+          onAddWorkspace={handleAddWorkspace}
+          onRenameWorkspace={handleRenameWorkspace}
+          onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
         />
 
         {/* Right column: main content + footer */}
