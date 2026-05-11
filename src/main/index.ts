@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
+import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
@@ -308,6 +309,33 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // ---------------------------------------------------------------------------
+  // Spike 1 — libghostty NAPI main-thread compatibility test
+  // Only runs when SPIKE1=1 is set in the environment.
+  // ---------------------------------------------------------------------------
+  if (process.env['SPIKE1']) {
+    const mainWin = BrowserWindow.getAllWindows()[0]
+    if (mainWin) {
+      mainWin.webContents.once('did-finish-load', () => {
+        console.log('[spike1] did-finish-load fired, loading addon...')
+        try {
+          // Resolve the .node path: dev = project-relative, packaged = resourcesPath
+          const addonPath = app.isPackaged
+            ? join(process.resourcesPath, 'packages/ghostty-spike1/ghostty_spike1.node')
+            : join(__dirname, '../../packages/ghostty-spike1/build/Release/ghostty_spike1.node')
+          console.log('[spike1] loading addon from:', addonPath)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const addon = createRequire(import.meta.url)(addonPath) as { runSpike: () => string }
+          console.log('[spike1] addon loaded OK, calling runSpike()...')
+          const result = addon.runSpike()
+          console.log('[spike1] runSpike result:\n' + result)
+        } catch (err) {
+          console.error('[spike1] addon load or runSpike threw:', err)
+        }
+      })
+    }
+  }
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

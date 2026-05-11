@@ -1,0 +1,7 @@
+{
+  "name": "@orpheus/ghostty-spike1",
+  "version": "0.0.1",
+  "description": "Spike 1 — libghostty NAPI main-thread compatibility test",
+  "private": true,
+  "main": "build/Release/ghostty_spike1.node"
+}
