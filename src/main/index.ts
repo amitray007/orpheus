@@ -301,7 +301,10 @@ ipcMain.handle('doctor:check', (): DoctorResult => {
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
 type GhosttyNativeAddon = {
-  mount: (handle: Buffer, rect: TerminalRect, scaleFactor: number) => { surfaceId: string }
+  mount: (
+    handle: Buffer,
+    opts: { rect: TerminalRect; scaleFactor: number; cwd?: string }
+  ) => { surfaceId: string }
   unmount: (surfaceId: string) => void
   resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => void
 }
@@ -344,13 +347,13 @@ ipcMain.handle(
   'terminal:mount',
   (
     e,
-    { rect, scaleFactor }: { rect: TerminalRect; scaleFactor: number }
+    { rect, scaleFactor, cwd }: { rect: TerminalRect; scaleFactor: number; cwd?: string }
   ): { surfaceId: string } => {
     const addon = loadTerminalAddon()
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
-    return addon.mount(handle, rect, scaleFactor)
+    return addon.mount(handle, { rect, scaleFactor, cwd })
   }
 )
 

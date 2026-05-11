@@ -470,14 +470,14 @@ static bool ensureApp() {
 }
 
 // ---------------------------------------------------------------------------
-// NAPI: mount(handleBuffer, rect, scaleFactor) → { surfaceId }
+// NAPI: mount(handleBuffer, { rect, scaleFactor, cwd? }) → { surfaceId }
 // ---------------------------------------------------------------------------
 
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
-    if (info.Length() < 3) {
-        Napi::TypeError::New(env, "mount requires 3 args").ThrowAsJavaScriptException();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "mount requires 2 args").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -493,19 +493,27 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
-    // Arg 1 — rect { x, y, w, h }
+    // Arg 1 — options { rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
-        Napi::TypeError::New(env, "arg 1 must be object {x,y,w,h}").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "arg 1 must be object {rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    Napi::Object rectObj = info[1].As<Napi::Object>();
+    Napi::Object opts = info[1].As<Napi::Object>();
+
+    Napi::Object rectObj = opts.Get("rect").As<Napi::Object>();
     double rx = rectObj.Get("x").As<Napi::Number>().DoubleValue();
     double ry = rectObj.Get("y").As<Napi::Number>().DoubleValue();
     double rw = rectObj.Get("w").As<Napi::Number>().DoubleValue();
     double rh = rectObj.Get("h").As<Napi::Number>().DoubleValue();
 
-    // Arg 2 — scaleFactor (devicePixelRatio)
-    double scaleFactor = info[2].As<Napi::Number>().DoubleValue();
+    double scaleFactor = opts.Get("scaleFactor").As<Napi::Number>().DoubleValue();
+
+    // cwd — optional; if undefined fall back to $HOME then /tmp.
+    std::string cwdStr;
+    Napi::Value cwdVal = opts.Get("cwd");
+    if (cwdVal.IsString()) {
+        cwdStr = cwdVal.As<Napi::String>().Utf8Value();
+    }
 
     // Lazy init Ghostty
     if (!ensureApp()) {
@@ -535,8 +543,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     surface_cfg.scale_factor = scaleFactor;
     surface_cfg.font_size = 13.0;
 
+    // Use the cwd passed from JS; fall back to $HOME then /tmp.
     const char* home = getenv("HOME");
-    surface_cfg.working_directory = home ? home : "/tmp";
+    const char* fallbackCwd = home ? home : "/tmp";
+    surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
     // Use $SHELL if set, else /bin/zsh.
     const char* shell = getenv("SHELL");
@@ -548,8 +558,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     surface_cfg.wait_after_command = false;
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new shell=%s cwd=%s",
-          surface_cfg.command, surface_cfg.working_directory);
+    NSLog(@"[ghostty-native] surface_new shell=%s cwd=%s (from_js=%s)",
+          surface_cfg.command,
+          surface_cfg.working_directory,
+          cwdStr.empty() ? "(fallback)" : "yes");
 
     ghostty_surface_t surface = nullptr;
     @try {

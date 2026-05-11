@@ -34,7 +34,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
 
       console.log('[WorkspaceView] mounting terminal', termRect, 'dpr=', scaleFactor)
       try {
-        const { surfaceId } = await window.api.terminal.mount(termRect, scaleFactor)
+        const { surfaceId } = await window.api.terminal.mount(termRect, scaleFactor, workspace.cwd)
         surfaceIdRef.current = surfaceId
         console.log('[WorkspaceView] mounted surface', surfaceId)
       } catch (err) {

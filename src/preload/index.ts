@@ -17,8 +17,8 @@ const api = {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
   },
   terminal: {
-    mount: (rect: TerminalRect, scaleFactor: number): Promise<{ surfaceId: string }> =>
-      ipcRenderer.invoke('terminal:mount', { rect, scaleFactor }),
+    mount: (rect: TerminalRect, scaleFactor: number, cwd?: string): Promise<{ surfaceId: string }> =>
+      ipcRenderer.invoke('terminal:mount', { rect, scaleFactor, cwd }),
     unmount: (surfaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:unmount', { surfaceId }),
     resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>

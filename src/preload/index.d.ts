@@ -18,7 +18,7 @@ declare global {
         getVersion: () => Promise<string>
       }
       terminal: {
-        mount: (rect: TerminalRect, scaleFactor: number) => Promise<{ surfaceId: string }>
+        mount: (rect: TerminalRect, scaleFactor: number, cwd?: string) => Promise<{ surfaceId: string }>
         unmount: (surfaceId: string) => Promise<void>
         resize: (surfaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
       }
