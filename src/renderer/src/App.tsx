@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 import { TitleBarDragRegion } from './components/TitleBarDragRegion'
 import { MainPage } from './components/MainPage'
-import { Setup } from './components/Setup'
+import { ClaudeMissingModal } from './components/ClaudeMissingModal'
 import type { DoctorResult } from '@shared/types'
 
 function App(): React.JSX.Element {
   const [doctor, setDoctor] = useState<DoctorResult | null>(null)
-  const [setupCompleted, setSetupCompleted] = useState<boolean | null>(null)
 
   async function runDoctor(): Promise<void> {
     const result = await window.api.doctor.check()
@@ -14,29 +13,27 @@ function App(): React.JSX.Element {
   }
 
   useEffect(() => {
-    async function loadInitial(): Promise<void> {
-      const [completed] = await Promise.all([
-        window.api.config.getSetupCompleted(),
-        runDoctor()
-      ])
-      setSetupCompleted(completed)
+    let cancelled = false
+    window.api.doctor
+      .check()
+      .then((result) => {
+        if (!cancelled) setDoctor(result)
+      })
+      .catch((err) => console.error('[app] doctor check failed', err))
+    return () => {
+      cancelled = true
     }
-    loadInitial().catch((err) => console.error('[app] initial load failed', err))
   }, [])
 
-  async function handleFinish(): Promise<void> {
-    await window.api.config.setSetupCompleted(true)
-    setSetupCompleted(true)
-  }
+  // Always render MainPage; overlay the modal only when claude is missing.
+  const projects = doctor?.existingProjects ?? []
+  const showMissingModal = doctor !== null && !doctor.claudeInstalled
 
   return (
     <main className="app pt-9">
       <TitleBarDragRegion />
-      {doctor === null || setupCompleted === null ? null : setupCompleted ? (
-        <MainPage existingProjects={doctor.existingProjects} />
-      ) : (
-        <Setup doctor={doctor} onFinish={handleFinish} onRecheck={runDoctor} />
-      )}
+      <MainPage existingProjects={projects} />
+      {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
     </main>
   )
 }

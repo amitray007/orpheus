@@ -5,10 +5,7 @@ import type { DoctorResult } from '../shared/types'
 // Custom APIs for renderer
 const api = {
   config: {
-    openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder'),
-    getSetupCompleted: (): Promise<boolean> => ipcRenderer.invoke('config:getSetupCompleted'),
-    setSetupCompleted: (value: boolean): Promise<boolean> =>
-      ipcRenderer.invoke('config:setSetupCompleted', value)
+    openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
   },
   doctor: {
     check: (): Promise<DoctorResult> => ipcRenderer.invoke('doctor:check')

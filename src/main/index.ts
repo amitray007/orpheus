@@ -160,48 +160,8 @@ function readClaudeProjects(): ExistingProject[] {
 }
 
 // ---------------------------------------------------------------------------
-// Config persistence helpers
-// ---------------------------------------------------------------------------
-
-function getConfigPath(): string {
-  return nodePath.join(app.getPath('userData'), 'config.json')
-}
-
-function readConfig(): Record<string, unknown> {
-  try {
-    const raw = fs.readFileSync(getConfigPath(), 'utf-8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    // file missing, unreadable, or invalid JSON — fall through
-  }
-  return {}
-}
-
-function getSetupCompleted(): boolean {
-  const config = readConfig()
-  return config['setupCompleted'] === true
-}
-
-function setSetupCompleted(value: boolean): void {
-  const dir = nodePath.dirname(getConfigPath())
-  fs.mkdirSync(dir, { recursive: true })
-  const existing = readConfig()
-  const updated = { ...existing, setupCompleted: value }
-  fs.writeFileSync(getConfigPath(), JSON.stringify(updated, null, 2), 'utf-8')
-}
-
-// ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
-
-ipcMain.handle('config:getSetupCompleted', () => getSetupCompleted())
-ipcMain.handle('config:setSetupCompleted', (_e, value: boolean) => {
-  setSetupCompleted(value)
-  return true
-})
 
 ipcMain.handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
