@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 4
+const CURRENT_VERSION = 5
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -57,6 +57,20 @@ const WORKSPACES_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
 `
 
+const CLAUDE_SETTINGS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS claude_global_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model TEXT NOT NULL DEFAULT 'sonnet',
+    permission_mode TEXT NOT NULL DEFAULT 'default'
+      CHECK (permission_mode IN ('default', 'acceptEdits', 'plan', 'bypassPermissions')),
+    effort TEXT NOT NULL DEFAULT 'auto'
+      CHECK (effort IN ('auto', 'low', 'medium', 'high', 'xhigh', 'max')),
+    auto_memory INTEGER NOT NULL DEFAULT 1 CHECK (auto_memory IN (0, 1)),
+    always_thinking INTEGER NOT NULL DEFAULT 0 CHECK (always_thinking IN (0, 1)),
+    updated_at INTEGER NOT NULL
+  );
+`
+
 // ---------------------------------------------------------------------------
 // Singleton
 // ---------------------------------------------------------------------------
@@ -83,6 +97,8 @@ export function getDb(): Database.Database {
 function migrate(db: Database.Database): void {
   // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run)
   db.exec(SCHEMA_SQL)
+  db.exec(WORKSPACES_SCHEMA_SQL)
+  db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
 
   // Check / set schema version
   const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
@@ -97,7 +113,7 @@ function migrate(db: Database.Database): void {
 
   // Version 2: add projects.pinned_at + workspaces table
   if (currentVersion < 2) {
-    db.exec(WORKSPACES_SCHEMA_SQL)
+    // WORKSPACES_SCHEMA_SQL is now executed unconditionally above; skip re-exec here.
 
     // ALTER TABLE ADD COLUMN is safe to run once — guard with version check
     try {
@@ -139,6 +155,19 @@ function migrate(db: Database.Database): void {
     }
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(4)
+    }
+  }
+
+  // Version 5: claude_global_settings singleton table + seed row
+  if (currentVersion < 5) {
+    // Table is already created unconditionally above via CLAUDE_SETTINGS_SCHEMA_SQL.
+    // Seed the singleton row (other columns use schema DEFAULT values).
+    db.prepare(
+      `INSERT OR IGNORE INTO claude_global_settings (id, updated_at) VALUES (1, ?)`
+    ).run(Date.now())
+
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(5)
     }
   }
 }

@@ -44,6 +44,24 @@ export type PinnedItem = {
   project: ProjectRecord
 }
 
+// ---------------------------------------------------------------------------
+// Claude global settings
+// ---------------------------------------------------------------------------
+
+export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+export type ClaudeEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export type ClaudeGlobalSettings = {
+  model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
+  permissionMode: ClaudePermissionMode
+  effort: ClaudeEffort
+  autoMemory: boolean
+  alwaysThinking: boolean
+  updatedAt: number
+}
+
+export type ClaudeGlobalSettingsPatch = Partial<Omit<ClaudeGlobalSettings, 'updatedAt'>>
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

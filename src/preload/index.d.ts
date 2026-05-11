@@ -5,7 +5,9 @@ import type {
   SessionRecord,
   SessionStatus,
   WorkspaceRecord,
-  PinnedItem
+  PinnedItem,
+  ClaudeGlobalSettings,
+  ClaudeGlobalSettingsPatch
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -58,6 +60,10 @@ declare global {
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
+      }
+      claudeSettings: {
+        get: () => Promise<ClaudeGlobalSettings>
+        update: (patch: ClaudeGlobalSettingsPatch) => Promise<ClaudeGlobalSettings>
       }
     }
   }

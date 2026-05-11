@@ -21,7 +21,8 @@ import {
   renameWorkspace,
   listAllPinned
 } from './workspaces'
-import type { SessionStatus } from '../shared/types'
+import { getClaudeGlobalSettings, updateClaudeGlobalSettings } from './claudeSettings'
+import type { SessionStatus, ClaudeGlobalSettingsPatch } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -283,6 +284,16 @@ ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) =>
 ipcMain.handle(
   'sessions:setStatus',
   (_e, { id, status }: { id: string; status: SessionStatus }) => setSessionStatus(id, status)
+)
+
+// ---------------------------------------------------------------------------
+// Claude Settings IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
+
+ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =>
+  updateClaudeGlobalSettings(patch)
 )
 
 ipcMain.handle('doctor:check', (): DoctorResult => {

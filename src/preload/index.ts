@@ -6,7 +6,9 @@ import type {
   SessionRecord,
   SessionStatus,
   WorkspaceRecord,
-  PinnedItem
+  PinnedItem,
+  ClaudeGlobalSettings,
+  ClaudeGlobalSettingsPatch
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -70,6 +72,11 @@ const api = {
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
+  },
+  claudeSettings: {
+    get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
+    update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
+      ipcRenderer.invoke('claudeSettings:update', patch)
   }
 }
 
