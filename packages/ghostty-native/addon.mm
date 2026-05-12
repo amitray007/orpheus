@@ -878,24 +878,41 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     const char* fallbackCwd = home ? home : "/tmp";
     surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
-    // Spawn claude directly as the surface process.
+    // Spawn the bundled wrapper script as the surface process.
+    //
+    // orpheus-claude.sh runs claude inside a zsh login session and, when claude
+    // exits, exec's an interactive zsh so the terminal stays alive for further use.
     //
     // Ghostty on macOS wraps the command string via login(1):
-    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l claude"
+    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l <script>"
     // This gives a full login session so ~/.zprofile, ~/.zshrc, etc. are sourced
-    // and ANTHROPIC_API_KEY / PATH are available.  No shell typing hack needed.
+    // and ANTHROPIC_API_KEY / PATH are available.  The wrapper's #!/bin/zsh -l
+    // shebang also sources login files before running claude.
     //
-    // Setting surface_cfg.command also causes Ghostty to set wait-after-command=true
-    // internally (see embedded.zig:532-533), so the surface stays visible after claude exits.
-    surface_cfg.command = "claude";
+    // Path resolution: use [[NSBundle mainBundle] resourcePath] which maps to
+    // Contents/Resources/ in the packaged app.  Fall back to bundlePath +
+    // /Contents/Resources if resourcePath returns an unexpected value.
+    NSString* resourcePath = [[NSBundle mainBundle] resourcePath];
+    if (!resourcePath || resourcePath.length == 0) {
+        // Fallback: derive from bundlePath.
+        resourcePath = [[[NSBundle mainBundle] bundlePath]
+                        stringByAppendingPathComponent:@"Contents/Resources"];
+    }
+    NSString* wrapperNSPath = [resourcePath
+                               stringByAppendingPathComponent:@"orpheus-claude.sh"];
+    const char* commandPath = [wrapperNSPath UTF8String];
+    NSLog(@"[ghostty-native] wrapper script path: %@", wrapperNSPath);
+
+    surface_cfg.command = commandPath;
 
     surface_cfg.env_vars = nullptr;
     surface_cfg.env_var_count = 0;
     surface_cfg.initial_input = nullptr;
-    surface_cfg.wait_after_command = true;  // keep surface alive after claude exits
+    surface_cfg.wait_after_command = true;  // keep surface alive (academic: exec zsh never exits)
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new command=claude cwd=%s (from_js=%s)",
+    NSLog(@"[ghostty-native] surface_new command=%s cwd=%s (from_js=%s)",
+          commandPath,
           surface_cfg.working_directory,
           cwdStr.empty() ? "(fallback)" : "yes");
 
