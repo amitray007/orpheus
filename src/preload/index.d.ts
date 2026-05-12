@@ -17,7 +17,9 @@ import type {
   GitStatus,
   ClaudeAuthState,
   ClaudeAuthPatch,
-  DiscoveredMcpServer
+  DiscoveredMcpServer,
+  ClaudeSlashCommand,
+  ClaudeSubagent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -107,6 +109,10 @@ declare global {
       }
       mcp: {
         listServers: () => Promise<DiscoveredMcpServer[]>
+      }
+      claudeAgents: {
+        listSlashCommands: () => Promise<ClaudeSlashCommand[]>
+        listSubagents: () => Promise<ClaudeSubagent[]>
       }
     }
   }

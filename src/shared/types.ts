@@ -167,6 +167,32 @@ export type DiscoveredMcpServer = {
 }
 
 // ---------------------------------------------------------------------------
+// Discovered slash commands and subagents (v15)
+// ---------------------------------------------------------------------------
+
+export type ClaudeSlashCommand = {
+  name: string
+  path: string
+  source: 'user' | 'project'
+  projectId?: string
+  projectName?: string
+  description: string | null
+  allowedTools: string[] | null
+  argumentHint: string | null
+}
+
+export type ClaudeSubagent = {
+  name: string
+  path: string
+  source: 'user' | 'project'
+  projectId?: string
+  projectName?: string
+  description: string | null
+  tools: string[] | null
+  model: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Per-project Claude settings overrides
 // ---------------------------------------------------------------------------
 

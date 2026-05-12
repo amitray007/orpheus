@@ -36,6 +36,7 @@ import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from './cla
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
 import { listMcpServers } from './mcp'
+import { listSlashCommands, listSubagents } from './claudeAgents'
 import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
@@ -472,6 +473,13 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('mcp:listServers', () => listMcpServers())
+
+// ---------------------------------------------------------------------------
+// Claude Agents IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
+ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC

@@ -14,7 +14,9 @@ import {
   Palette,
   SidebarSimple,
   AppWindow,
-  ArrowsClockwise
+  ArrowsClockwise,
+  Command,
+  Robot
 } from '@phosphor-icons/react'
 
 import { ClaudeGeneralSection } from './settings/ClaudeGeneralSection'
@@ -23,6 +25,8 @@ import { ClaudePermissionsSection } from './settings/ClaudePermissionsSection'
 import { ClaudeAuthSection } from './settings/ClaudeAuthSection'
 import { ClaudeMemorySection } from './settings/ClaudeMemorySection'
 import { ClaudeToolsSection } from './settings/ClaudeToolsSection'
+import { ClaudeSlashCommandsSection } from './settings/ClaudeSlashCommandsSection'
+import { ClaudeSubagentsSection } from './settings/ClaudeSubagentsSection'
 import { ClaudeHooksSection } from './settings/ClaudeHooksSection'
 import { ClaudeDeveloperSection } from './settings/ClaudeDeveloperSection'
 import { ClaudeAboutSection } from './settings/ClaudeAboutSection'
@@ -43,6 +47,8 @@ type SectionId =
   | 'claude-auth'
   | 'claude-memory'
   | 'claude-tools'
+  | 'claude-slash-commands'
+  | 'claude-subagents'
   | 'claude-hooks'
   | 'claude-developer'
   | 'claude-about'
@@ -73,8 +79,10 @@ const GROUPS: SectionGroup[] = [
       { id: 'claude-permissions', label: 'Permissions',      icon: ShieldCheck, Component: ClaudePermissionsSection },
       { id: 'claude-auth',        label: 'Authentication',   icon: Key,         Component: ClaudeAuthSection },
       { id: 'claude-memory',      label: 'Memory & Context', icon: Brain,       Component: ClaudeMemorySection },
-      { id: 'claude-tools',       label: 'Tools',            icon: Wrench,      Component: ClaudeToolsSection },
-      { id: 'claude-hooks',       label: 'Hooks',            icon: FlowArrow,   Component: ClaudeHooksSection },
+      { id: 'claude-tools',          label: 'Tools',          icon: Wrench,   Component: ClaudeToolsSection },
+      { id: 'claude-slash-commands', label: 'Slash commands', icon: Command,  Component: ClaudeSlashCommandsSection },
+      { id: 'claude-subagents',      label: 'Subagents',      icon: Robot,    Component: ClaudeSubagentsSection },
+      { id: 'claude-hooks',          label: 'Hooks',          icon: FlowArrow, Component: ClaudeHooksSection },
       { id: 'claude-developer',   label: 'Developer',        icon: Code,        Component: ClaudeDeveloperSection },
       { id: 'claude-about',       label: 'About Claude',     icon: Info,        Component: ClaudeAboutSection }
     ]

@@ -19,7 +19,9 @@ import type {
   GitStatus,
   ClaudeAuthState,
   ClaudeAuthPatch,
-  DiscoveredMcpServer
+  DiscoveredMcpServer,
+  ClaudeSlashCommand,
+  ClaudeSubagent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -137,6 +139,12 @@ const api = {
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> =>
       ipcRenderer.invoke('mcp:listServers')
+  },
+  claudeAgents: {
+    listSlashCommands: (): Promise<ClaudeSlashCommand[]> =>
+      ipcRenderer.invoke('claudeAgents:listSlashCommands'),
+    listSubagents: (): Promise<ClaudeSubagent[]> =>
+      ipcRenderer.invoke('claudeAgents:listSubagents')
   }
 }
 
