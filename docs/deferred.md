@@ -14,7 +14,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Claude → Hooks** section | P3 | Phase 3 per `project_settings_architecture.md`. Needs JSON event-handler editor. Users can edit `~/.claude/settings.json` directly until UI lands. |
+| **Claude → Hooks** inline JSON editor | P3 | Read-only viewer shipped in commit `ba77cbd` — lists hooks from `~/.claude/settings.json` and per-project `.claude/settings.json` with "Open file" links. Inline editor is the remaining work: add/edit/delete hooks from the UI without leaving Orpheus. |
 | **Claude → Auth → Provider-specific config** | P2 | Sub-fields under the provider radio: Bedrock (workspace ID, AWS region), Vertex (GCP project ID, location), Foundry (resource URL). Currently a `ComingSoonChip` placeholder inside `ClaudeAuthSection`. |
 
 ## 2. Claude Settings — wired but with small gaps in `composeClaudeLaunch`
