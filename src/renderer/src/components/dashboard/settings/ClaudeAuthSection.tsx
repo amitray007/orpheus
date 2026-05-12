@@ -11,14 +11,12 @@ import type { ClaudeAuthState, ClaudeCloudProvider } from '@shared/types'
 
 interface ApiKeyInputProps {
   hasKey: boolean
-  encryptionAvailable: boolean
   onSave: (key: string) => void
   onClear: () => void
 }
 
 function ApiKeyInput({
   hasKey,
-  encryptionAvailable,
   onSave,
   onClear
 }: ApiKeyInputProps): React.JSX.Element {
@@ -42,15 +40,13 @@ function ApiKeyInput({
             setValue('')
             setEditing(true)
           }}
-          disabled={!encryptionAvailable}
-          className="text-xs text-text-secondary hover:text-text-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="text-xs text-text-secondary hover:text-text-primary cursor-pointer transition-colors"
         >
           Replace
         </button>
         <button
           onClick={onClear}
-          disabled={!encryptionAvailable}
-          className="text-xs text-red-400 hover:text-red-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="text-xs text-red-400 hover:text-red-300 cursor-pointer transition-colors"
         >
           Clear
         </button>
@@ -77,8 +73,7 @@ function ApiKeyInput({
         }}
         placeholder="sk-ant-…"
         autoComplete="off"
-        disabled={!encryptionAvailable}
-        className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
       />
       <button
         onClick={() => {
@@ -88,7 +83,7 @@ function ApiKeyInput({
             setValue('')
           }
         }}
-        disabled={!encryptionAvailable || !value}
+        disabled={!value}
         className="text-xs text-accent hover:opacity-80 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
       >
         Save
@@ -114,11 +109,10 @@ function ApiKeyInput({
 
 interface BaseUrlInputProps {
   value: string
-  encryptionAvailable: boolean
   onSave: (url: string) => void
 }
 
-function BaseUrlInput({ value, encryptionAvailable, onSave }: BaseUrlInputProps): React.JSX.Element {
+function BaseUrlInput({ value, onSave }: BaseUrlInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value)
 
   // Sync when external value changes (e.g. after provider switch clears it)
@@ -143,8 +137,7 @@ function BaseUrlInput({ value, encryptionAvailable, onSave }: BaseUrlInputProps)
         }
       }}
       placeholder="https://…"
-      disabled={!encryptionAvailable}
-      className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
+      className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
     />
   )
 }
@@ -201,8 +194,8 @@ export function ClaudeAuthSection(): React.JSX.Element {
     <div>
       <h2 className="text-base font-semibold text-text-primary">Authentication</h2>
       <p className="text-xs text-text-muted mt-1">
-        API key (stored in macOS Keychain), base URL override for proxies, and cloud provider
-        selection (Anthropic, Bedrock, Vertex, Foundry).
+        API key, auth token, base URL, and cloud provider selection. Stored locally in the
+        Orpheus database (single-user macOS).
       </p>
     </div>
   )
@@ -229,14 +222,6 @@ export function ClaudeAuthSection(): React.JSX.Element {
     <div className="flex flex-col gap-10 max-w-2xl">
       {header}
 
-      {/* Encryption-unavailable warning banner */}
-      {!state.encryptionAvailable && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-md p-3 text-xs text-amber-300">
-          Secret storage is unavailable on this system. API keys can&apos;t be saved securely.
-          Inputs are disabled.
-        </div>
-      )}
-
       {/* Provider selection */}
       <section className="flex flex-col">
         <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
@@ -262,11 +247,10 @@ export function ClaudeAuthSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="API key"
-            description="Stored securely in macOS Keychain — never written to disk in plaintext."
+            description="Stored in the local Orpheus database."
           >
             <ApiKeyInput
               hasKey={state.hasApiKey}
-              encryptionAvailable={state.encryptionAvailable}
               onSave={(key) => applyPatch({ apiKey: key })}
               onClear={() => applyPatch({ apiKey: '' })}
             />
@@ -277,7 +261,6 @@ export function ClaudeAuthSection(): React.JSX.Element {
           >
             <BaseUrlInput
               value={state.baseUrl}
-              encryptionAvailable={state.encryptionAvailable}
               onSave={(url) => applyPatch({ baseUrl: url })}
             />
           </SettingRow>
