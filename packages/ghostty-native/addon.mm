@@ -66,10 +66,12 @@
 //     fire for hover and cursor-shape updates.
 //
 // Coordinate system note:
-//   • OrpheusGhosttyView has isFlipped = YES, so convertPoint:fromView:nil yields
-//     top-left origin. Ghostty expects bottom-left origin (non-flipped), so we apply
-//     the same manual flip that Ghostty's own SurfaceView_AppKit.swift performs:
-//       ghosttyY = view.frame.size.height - localPoint.y
+//   • ghostty_surface_mouse_pos expects top-left origin coords (y=0 at top of view).
+//   • OrpheusGhosttyView has isFlipped = YES, so convertPoint:fromView:nil already
+//     returns top-left origin — no additional flip is needed or correct.
+//   • Ghostty's own SurfaceView_AppKit.swift is NOT flipped (default AppKit = bottom-left
+//     origin), so IT applies `frame.height - pos.y` to flip to top-left before the API
+//     call. We must NOT mirror that flip because our starting point is already top-left.
 //   • Coordinates passed to ghostty_surface_mouse_pos are logical (point) values,
 //     NOT scaled physical pixels. The Swift reference confirms this (raw pos.x / pos.y).
 //   • ghostty_surface_mouse_scroll also uses logical deltas (event.scrollingDeltaX/Y).
@@ -135,11 +137,18 @@ static ghostty_input_mods_e modsFromEvent(NSEvent *event) {
 //
 // Steps:
 //   1. event.locationInWindow   → window coords
-//   2. convertPoint:fromView:nil → view-local coords (top-left origin, because
-//      isFlipped = YES)
-//   3. ghosttyY = frame.height - localY   → flip to bottom-left origin
-//      (mirrors the `y: frame.height - pos.y` in SurfaceView_AppKit.swift;
-//       Ghostty's internal mouse logic expects non-flipped coords)
+//   2. convertPoint:fromView:nil → view-local coords
+//
+// Coordinate system explanation:
+//   • OrpheusGhosttyView has isFlipped = YES, so convertPoint:fromView:nil
+//     already returns top-left origin coords (y=0 at the top of the view).
+//   • ghostty_surface_mouse_pos ALSO expects top-left origin coords.
+//     Evidence: Ghostty's own SurfaceView_AppKit.swift (non-flipped NSView,
+//     so its convertPoint gives BOTTOM-left origin) applies `frame.height - pos.y`
+//     to flip from bottom-left to top-left before calling the API.
+//   • Therefore: our view, already in top-left origin, must NOT apply the
+//     extra flip. Applying it would double-invert: top-left → bottom-left,
+//     making clicks at the top of the terminal land at the bottom and vice versa.
 //
 // Returns a struct so both x and y can be passed with a single call.
 // ---------------------------------------------------------------------------
@@ -148,9 +157,10 @@ struct GhosttyMousePos { double x; double y; };
 
 static GhosttyMousePos ghosttyPosForEvent(NSEvent *event, OrpheusGhosttyView *view) {
     NSPoint local = [view convertPoint:event.locationInWindow fromView:nil];
-    // local.y is top-origin (isFlipped = YES); flip it for Ghostty.
-    double ghosttyY = view.frame.size.height - local.y;
-    return { local.x, ghosttyY };
+    // local is already in top-left origin (isFlipped=YES). Do NOT re-flip.
+    NSLog(@"[ghostty-native] mouse pos: (%.1f, %.1f) view=%.0fx%.0f",
+          local.x, local.y, view.frame.size.width, view.frame.size.height);
+    return { local.x, local.y };
 }
 
 // ---------------------------------------------------------------------------
