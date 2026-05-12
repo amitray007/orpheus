@@ -877,7 +877,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     surface_cfg.env_vars = nullptr;
     surface_cfg.env_var_count = 0;
-    surface_cfg.initial_input = nullptr;
+    // Pre-type `claude\n` into the spawned zsh so Claude Code launches automatically
+    // when the workspace opens. Shell remains zsh underneath; on claude exit the
+    // user gets the shell back. Settings-driven flags land in a follow-up commit.
+    surface_cfg.initial_input = "claude\n";
     surface_cfg.wait_after_command = false;
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
