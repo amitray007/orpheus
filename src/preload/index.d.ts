@@ -14,7 +14,8 @@ import type {
   AppUiStatePatch,
   GitStatus,
   ClaudeAuthState,
-  ClaudeAuthPatch
+  ClaudeAuthPatch,
+  DiscoveredMcpServer
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -93,6 +94,9 @@ declare global {
       }
       git: {
         status: (cwd: string) => Promise<GitStatus | null>
+      }
+      mcp: {
+        listServers: () => Promise<DiscoveredMcpServer[]>
       }
     }
   }

@@ -34,6 +34,7 @@ import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunc
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
+import { listMcpServers } from './mcp'
 import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -414,6 +415,12 @@ ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
 ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =>
   updateClaudeGlobalSettings(patch)
 )
+
+// ---------------------------------------------------------------------------
+// MCP IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('mcp:listServers', () => listMcpServers())
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC

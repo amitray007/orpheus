@@ -52,6 +52,13 @@ type ClaudeSettingsRow = {
   permission_additional_dirs: string
   // Fallback model (v11)
   fallback_model: string
+  // Tools section (v14)
+  bash_default_timeout_ms: number | null
+  bash_max_timeout_ms: number | null
+  bash_max_output_length: number | null
+  tool_concurrency: number | null
+  browser_integration: number
+  disabled_mcp_servers: string
   updated_at: number
 }
 
@@ -103,6 +110,13 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     permissionAdditionalDirs: parseJsonArray(row.permission_additional_dirs),
     // Fallback model (v11)
     fallbackModel: row.fallback_model ?? '',
+    // Tools section (v14)
+    bashDefaultTimeoutMs: row.bash_default_timeout_ms ?? null,
+    bashMaxTimeoutMs: row.bash_max_timeout_ms ?? null,
+    bashMaxOutputLength: row.bash_max_output_length ?? null,
+    toolConcurrency: row.tool_concurrency ?? null,
+    browserIntegration: (row.browser_integration ?? 1) === 1,
+    disabledMcpServers: parseJsonArray(row.disabled_mcp_servers),
     updatedAt: row.updated_at
   }
 }
@@ -127,11 +141,13 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   'autoMemory', 'alwaysThinking', 'reduceMotion', 'nativeCursor', 'hideCwd',
   'disableGitInstructions', 'debugLogging', 'disableTelemetry', 'disableErrorReporting',
   'disableAutoupdater', 'experimentalAgentTeams', 'experimentalForkedSubagents',
-  'simpleSystemPrompt', 'autoApproveEdits', 'askDestructiveBash', 'planModeDefault'
+  'simpleSystemPrompt', 'autoApproveEdits', 'askDestructiveBash', 'planModeDefault',
+  'browserIntegration'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
-  'permissionAllowRules', 'permissionAskRules', 'permissionDenyRules', 'permissionAdditionalDirs'
+  'permissionAllowRules', 'permissionAskRules', 'permissionDenyRules', 'permissionAdditionalDirs',
+  'disabledMcpServers'
 ]
 
 function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
@@ -206,6 +222,30 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   if ('fallbackModel' in patch) {
     if (typeof patch.fallbackModel !== 'string') {
       throw new Error('claudeSettings: fallbackModel must be a string')
+    }
+  }
+  if ('bashDefaultTimeoutMs' in patch) {
+    const v = patch.bashDefaultTimeoutMs
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: bashDefaultTimeoutMs must be a positive integer or null')
+    }
+  }
+  if ('bashMaxTimeoutMs' in patch) {
+    const v = patch.bashMaxTimeoutMs
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: bashMaxTimeoutMs must be a positive integer or null')
+    }
+  }
+  if ('bashMaxOutputLength' in patch) {
+    const v = patch.bashMaxOutputLength
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: bashMaxOutputLength must be a positive integer or null')
+    }
+  }
+  if ('toolConcurrency' in patch) {
+    const v = patch.toolConcurrency
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: toolConcurrency must be a positive integer or null')
     }
   }
 }
@@ -294,6 +334,14 @@ export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
     flagParts.push(`--fallback-model ${s.fallbackModel.trim()}`)
   }
 
+  // --no-chrome: disable claude's browser integration (default is enabled)
+  // Note: claude CLI flag name not confirmed in published docs; stored in DB,
+  // compose is a no-op until the stable flag name is verified.
+  // Uncomment when confirmed:
+  // if (!s.browserIntegration) {
+  //   flagParts.push('--no-chrome')
+  // }
+
   const flags = flagParts.join(' ')
 
   // -------------------------------------------------------------------------
@@ -377,6 +425,16 @@ export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
   // Stored in DB and surfaced in UI but not composed into the launch command (no-op).
   // If claude adds a mechanism in future, wire it here.
 
+  // Tools section (v14)
+  // toolConcurrency — settings.json key is not confirmed in claude's documented settings;
+  // no-op at compose time. Stored in DB for future wiring when a stable key is published.
+
+  // disabledMcpServers — settings.json key: 'disabledMcpjsonServers' (see claude docs).
+  // We only set it when there are actually disabled servers to avoid overriding claude's defaults.
+  if (s.disabledMcpServers.length > 0) {
+    settingsObj['disabledMcpjsonServers'] = s.disabledMcpServers
+  }
+
   const settingsJson = Object.keys(settingsObj).length > 0 ? JSON.stringify(settingsObj) : ''
 
   // -------------------------------------------------------------------------
@@ -429,6 +487,17 @@ export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
   }
   if (s.experimentalAgentTeams) {
     env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1'
+  }
+
+  // Tools section env vars (v14)
+  if (s.bashDefaultTimeoutMs !== null) {
+    env['BASH_DEFAULT_TIMEOUT_MS'] = String(s.bashDefaultTimeoutMs)
+  }
+  if (s.bashMaxTimeoutMs !== null) {
+    env['BASH_MAX_TIMEOUT_MS'] = String(s.bashMaxTimeoutMs)
+  }
+  if (s.bashMaxOutputLength !== null) {
+    env['BASH_MAX_OUTPUT_LENGTH'] = String(s.bashMaxOutputLength)
   }
 
   return { flags, settingsJson, env }
@@ -490,7 +559,14 @@ export function updateClaudeGlobalSettings(
     permissionDenyRules: 'permission_deny_rules',
     permissionAdditionalDirs: 'permission_additional_dirs',
     // Fallback model (v11)
-    fallbackModel: 'fallback_model'
+    fallbackModel: 'fallback_model',
+    // Tools section (v14)
+    bashDefaultTimeoutMs: 'bash_default_timeout_ms',
+    bashMaxTimeoutMs: 'bash_max_timeout_ms',
+    bashMaxOutputLength: 'bash_max_output_length',
+    toolConcurrency: 'tool_concurrency',
+    browserIntegration: 'browser_integration',
+    disabledMcpServers: 'disabled_mcp_servers'
   }
 
   const setClauses: string[] = []

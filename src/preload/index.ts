@@ -15,7 +15,8 @@ import type {
   AppUiStatePatch,
   GitStatus,
   ClaudeAuthState,
-  ClaudeAuthPatch
+  ClaudeAuthPatch,
+  DiscoveredMcpServer
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -113,6 +114,10 @@ const api = {
   git: {
     status: (cwd: string): Promise<GitStatus | null> =>
       ipcRenderer.invoke('git:status', { cwd })
+  },
+  mcp: {
+    listServers: (): Promise<DiscoveredMcpServer[]> =>
+      ipcRenderer.invoke('mcp:listServers')
   }
 }
 

@@ -139,10 +139,30 @@ export type ClaudeGlobalSettings = {
   // Fallback model (v11) — '' means no fallback (use claude's default behavior)
   fallbackModel: string
 
+  // Tools section (v14)
+  bashDefaultTimeoutMs: number | null
+  bashMaxTimeoutMs: number | null
+  bashMaxOutputLength: number | null
+  toolConcurrency: number | null
+  browserIntegration: boolean
+  disabledMcpServers: string[]
+
   updatedAt: number
 }
 
 export type ClaudeGlobalSettingsPatch = Partial<Omit<ClaudeGlobalSettings, 'updatedAt'>>
+
+// ---------------------------------------------------------------------------
+// Discovered MCP servers (v14)
+// ---------------------------------------------------------------------------
+
+export type DiscoveredMcpServer = {
+  name: string              // server key from ~/.claude.json mcpServers
+  transport: 'stdio' | 'http' | 'sse' | 'unknown'
+  command?: string          // for stdio servers
+  url?: string              // for http/sse servers
+  source: 'user' | 'project'  // where it was discovered (user = ~/.claude.json, project = workspace's .mcp.json — deferred)
+}
 
 // ---------------------------------------------------------------------------
 // Per-project Claude settings overrides

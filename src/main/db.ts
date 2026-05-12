@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 13
+const CURRENT_VERSION = 14
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -104,6 +104,13 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     cloud_provider TEXT NOT NULL DEFAULT 'anthropic'
       CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry')),
     auth_encrypted_blob BLOB,
+    -- Tools section (v14)
+    bash_default_timeout_ms INTEGER,
+    bash_max_timeout_ms INTEGER,
+    bash_max_output_length INTEGER,
+    tool_concurrency INTEGER,
+    browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1)),
+    disabled_mcp_servers TEXT NOT NULL DEFAULT '[]',
     updated_at INTEGER NOT NULL
   );
 `
@@ -349,5 +356,16 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN cloud_provider TEXT NOT NULL DEFAULT 'anthropic' CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry'))") } catch {}
     try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auth_encrypted_blob BLOB') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(13)
+  }
+
+  // Version 14: Tools section columns on claude_global_settings
+  if (currentVersion < 14) {
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_default_timeout_ms INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_timeout_ms INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_output_length INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN tool_concurrency INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1))') } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN disabled_mcp_servers TEXT NOT NULL DEFAULT '[]'") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(14)
   }
 }
