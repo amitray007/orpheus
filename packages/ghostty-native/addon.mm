@@ -554,8 +554,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 @end
 
 // ---------------------------------------------------------------------------
-// GhosttySurfaceEntry + g_surfaces — declared before the runtime callbacks
-// so that action_cb can iterate g_surfaces for the PWD auto-launch guard.
+// GhosttySurfaceEntry + g_surfaces
 // ---------------------------------------------------------------------------
 
 struct GhosttySurfaceEntry {
@@ -565,7 +564,6 @@ struct GhosttySurfaceEntry {
     BOOL isAttached;              // YES = view is in contentView superview, displayLink running
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
-    BOOL hasAutoLaunchedClaude;  // YES after first PWD fires — never reset, prevents re-fire on re-attach
 };
 
 // workspaceId → entry
@@ -580,51 +578,11 @@ static void wakeup_cb(void* /*userdata*/) {
 }
 
 static bool action_cb(ghostty_app_t /*app*/,
-                      ghostty_target_s target,
+                      ghostty_target_s /*target*/,
                       ghostty_action_s action) {
     if (action.tag == GHOSTTY_ACTION_SET_TITLE) {
         const char* title = action.action.set_title.title;
         NSLog(@"[ghostty-native] SET_TITLE: %s", title ? title : "(null)");
-    }
-
-    // Shell-integration-aware claude auto-launch (Option A):
-    //
-    // GHOSTTY_ACTION_PWD fires after Ghostty's shell-integration scripts emit an
-    // OSC sequence signalling the prompt is ready and the cwd has been reported.
-    // This is the earliest reliable moment that the shell is interactive — zshrc
-    // and zprofile have finished, the prompt has rendered, and zsh's line editor
-    // is waiting for input.  We use this event to type "claude\n" rather than
-    // piping it via initial_input (which arrives before the login sequence).
-    //
-    // Guard: hasAutoLaunchedClaude is set once and never reset, so navigating
-    // away and back (hide + mount) does not re-fire claude on re-attach.
-    //
-    // This only fires when Ghostty shell-integration is active.  Users without
-    // shell-integration (bash, fish without integration, etc.) will not see this
-    // action fire; in that case the auto-launch simply does not happen (a silent
-    // no-op is the right behaviour — we never want to inject text blindly).
-    if (action.tag == GHOSTTY_ACTION_PWD &&
-        target.tag == GHOSTTY_TARGET_SURFACE &&
-        target.target.surface != nullptr) {
-
-        ghostty_surface_t surface = target.target.surface;
-
-        // Look up the entry by surface pointer.
-        for (auto& kv : g_surfaces) {
-            if (kv.second.surface == surface) {
-                if (!kv.second.hasAutoLaunchedClaude) {
-                    kv.second.hasAutoLaunchedClaude = YES;
-                    NSLog(@"[ghostty-native] PWD action: shell ready for workspaceId=%s — typing claude",
-                          kv.first.c_str());
-                    // Must dispatch to main thread; action_cb may fire from
-                    // Ghostty's internal IO thread.
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        ghostty_surface_text(surface, "claude\n", 7);
-                    });
-                }
-                break;
-            }
-        }
     }
 
     return false;
@@ -920,23 +878,24 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     const char* fallbackCwd = home ? home : "/tmp";
     surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
-    // Use $SHELL if set, else /bin/zsh.
-    const char* shell = getenv("SHELL");
-    surface_cfg.command = (shell && shell[0]) ? shell : "/bin/zsh";
+    // Spawn claude directly as the surface process.
+    //
+    // Ghostty on macOS wraps the command string via login(1):
+    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l claude"
+    // This gives a full login session so ~/.zprofile, ~/.zshrc, etc. are sourced
+    // and ANTHROPIC_API_KEY / PATH are available.  No shell typing hack needed.
+    //
+    // Setting surface_cfg.command also causes Ghostty to set wait-after-command=true
+    // internally (see embedded.zig:532-533), so the surface stays visible after claude exits.
+    surface_cfg.command = "claude";
 
     surface_cfg.env_vars = nullptr;
     surface_cfg.env_var_count = 0;
-    // initial_input intentionally left as nullptr/zero.
-    // claude is typed in via action_cb on the first GHOSTTY_ACTION_PWD event,
-    // which fires after the shell's login sequence is complete (zshrc etc. done,
-    // prompt rendered, zsh line editor ready).  Using initial_input here caused
-    // the bytes to be echoed by the PTY before zsh was interactive.
     surface_cfg.initial_input = nullptr;
-    surface_cfg.wait_after_command = false;
+    surface_cfg.wait_after_command = true;  // keep surface alive after claude exits
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new shell=%s cwd=%s (from_js=%s)",
-          surface_cfg.command,
+    NSLog(@"[ghostty-native] surface_new command=claude cwd=%s (from_js=%s)",
           surface_cfg.working_directory,
           cwdStr.empty() ? "(fallback)" : "yes");
 
@@ -983,38 +942,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     // Store entry — view is retained by the map (ARC __strong).
     GhosttySurfaceEntry entry;
-    entry.surface              = surface;
-    entry.view                 = termView;
-    entry.displayLink          = displayLink;
-    entry.isAttached           = YES;
-    entry.lastRect             = CGRectMake(rx, ry, rw, rh);
-    entry.lastScale            = scaleFactor;
-    entry.hasAutoLaunchedClaude = NO;   // will flip on first GHOSTTY_ACTION_PWD
+    entry.surface     = surface;
+    entry.view        = termView;
+    entry.displayLink = displayLink;
+    entry.isAttached  = YES;
+    entry.lastRect    = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale   = scaleFactor;
     g_surfaces[workspaceId] = entry;
-
-    // Fallback timer (Option B): fires 1.5 s after surface creation.
-    //
-    // Some shells / prompt frameworks (oh-my-zsh, starship, custom precmd hooks)
-    // do not preserve Ghostty's shell-integration OSC sequences, so
-    // GHOSTTY_ACTION_PWD never fires.  This timer guarantees claude auto-launches
-    // regardless.  The per-surface hasAutoLaunchedClaude guard means whichever
-    // path wins first, the other no-ops — there is no double-fire.
-    //
-    // This block is scheduled only in the create-new-entry branch, so it is
-    // NEVER scheduled on workspace re-attach (hide + mount with existing entry).
-    // That structurally prevents re-firing claude on nav-back.
-    {
-        NSString* wsIdCopy = [NSString stringWithUTF8String:workspaceId.c_str()];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            auto fit = g_surfaces.find(wsIdCopy.UTF8String);
-            if (fit == g_surfaces.end()) return;   // surface destroyed in the meantime
-            if (fit->second.hasAutoLaunchedClaude) return;  // PWD already won the race
-            fit->second.hasAutoLaunchedClaude = YES;
-            NSLog(@"[ghostty-native] fallback timer: typing claude for workspaceId=%@", wsIdCopy);
-            ghostty_surface_text(fit->second.surface, "claude\n", 7);
-        });
-    }
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
