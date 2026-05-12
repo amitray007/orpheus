@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Folder } from '@phosphor-icons/react'
 import type { WorkspaceRecord } from '@shared/types'
@@ -11,6 +11,32 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
+  // remountKey — incrementing this triggers the mount effect to re-run,
+  // which tears down the old surface and boots a fresh one with new settings.
+  const [remountKey, setRemountKey] = useState(0)
+  // Dirty state — true when settings have changed since this workspace was last mounted.
+  const [isDirty, setIsDirty] = useState(false)
+
+  // Seed dirty state on mount and subscribe to live events.
+  useEffect(() => {
+    const workspaceId = workspace.id
+    window.api.workspaces.isDirty(workspaceId).then(setIsDirty).catch(() => setIsDirty(false))
+
+    const unsub = window.api.workspaces.onDirtyChanged((e) => {
+      if (e.workspaceId === workspaceId) {
+        setIsDirty(e.dirty)
+      }
+    })
+    return unsub
+  }, [workspace.id])
+
+  async function handleRestart(): Promise<void> {
+    await window.api.terminal.destroy(workspace.id)
+    // Bumping remountKey re-fires the mount effect below, which calls terminal.mount
+    // with the freshly composed launch params. The main process snapshots the new
+    // launch at that point and clears dirty — the chip disappears via dirtyChanged event.
+    setRemountKey((k) => k + 1)
+  }
 
   useEffect(() => {
     const el = containerRef.current
@@ -39,7 +65,9 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
         workspaceId,
         termRect,
         'dpr=',
-        scaleFactor
+        scaleFactor,
+        'remountKey=',
+        remountKey
       )
       try {
         const result = await window.api.terminal.mount(
@@ -111,14 +139,17 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
 
       // hide() keeps the surface alive in the addon's map so that navigating
       // back re-attaches the same shell session. Destroy is fired only from
-      // Dashboard on archive/project-remove.
+      // Dashboard on archive/project-remove, or from handleRestart above.
       console.log('[WorkspaceView] hiding surface workspaceId=', workspaceId)
       window.api.terminal
         .hide(workspaceId)
         .catch((e) => console.error('[WorkspaceView] hide failed:', e))
       mountedRef.current = false
     }
-  }, [])
+    // remountKey is intentionally included: bumping it re-runs this effect
+    // to remount the surface with fresh launch params after a restart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remountKey])
 
   return (
     <div className="flex flex-col h-full">
@@ -134,6 +165,18 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
           <Folder size={10} className="flex-shrink-0" />
           {workspace.cwd}
         </span>
+        {/* Settings-changed chip — appears when launch params have drifted since last mount */}
+        {isDirty && (
+          <span className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400">
+            Settings changed
+            <button
+              onClick={() => { handleRestart().catch((e) => console.error('[WorkspaceView] restart failed:', e)) }}
+              className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
+            >
+              Restart to apply
+            </button>
+          </span>
+        )}
       </div>
 
       {/* Terminal area — transparent div; the native NSView renders directly behind/over this. */}

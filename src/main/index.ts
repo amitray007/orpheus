@@ -36,6 +36,49 @@ import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
 import { listMcpServers } from './mcp'
 import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
+import type { ClaudeLaunch } from './claudeSettings'
+
+// ---------------------------------------------------------------------------
+// Launch snapshot + dirty tracking
+// ---------------------------------------------------------------------------
+
+// Keyed by workspaceId — snapshot of the ClaudeLaunch used at terminal:mount time.
+const launchSnapshots = new Map<string, ClaudeLaunch>()
+const dirtyWorkspaces = new Set<string>()
+
+function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
+  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
+  const ak = Object.keys(a.env).sort()
+  const bk = Object.keys(b.env).sort()
+  if (ak.length !== bk.length) return false
+  for (let i = 0; i < ak.length; i++) {
+    if (ak[i] !== bk[i]) return false
+    if (a.env[ak[i] as string] !== b.env[ak[i] as string]) return false
+  }
+  return true
+}
+
+function broadcastDirty(workspaceId: string, dirty: boolean): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('workspace:dirtyChanged', { workspaceId, dirty })
+  }
+}
+
+function setDirty(workspaceId: string, dirty: boolean): void {
+  const was = dirtyWorkspaces.has(workspaceId)
+  if (dirty) dirtyWorkspaces.add(workspaceId)
+  else dirtyWorkspaces.delete(workspaceId)
+  if (was !== dirty) broadcastDirty(workspaceId, dirty)
+}
+
+function recomputeDirty(): void {
+  for (const [workspaceId, snap] of launchSnapshots.entries()) {
+    const ws = getWorkspace(workspaceId)
+    if (!ws) continue
+    const fresh = composeClaudeLaunch(ws.projectId)
+    setDirty(workspaceId, !launchEquals(snap, fresh))
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Window
@@ -381,6 +424,11 @@ ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: strin
   renameWorkspace(id, name)
 )
 
+ipcMain.handle(
+  'workspace:isDirty',
+  (_e, { workspaceId }: { workspaceId: string }): boolean => dirtyWorkspaces.has(workspaceId)
+)
+
 // ---------------------------------------------------------------------------
 // Pins IPC
 // ---------------------------------------------------------------------------
@@ -412,9 +460,11 @@ ipcMain.handle(
 
 ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
-ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =>
-  updateClaudeGlobalSettings(patch)
-)
+ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
+  const result = updateClaudeGlobalSettings(patch)
+  recomputeDirty()
+  return result
+})
 
 // ---------------------------------------------------------------------------
 // MCP IPC
@@ -440,8 +490,11 @@ ipcMain.handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: str
 
 ipcMain.handle(
   'claudeProjectSettings:update',
-  (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) =>
-    updateClaudeProjectSettings(args.projectId, args.patch)
+  (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) => {
+    const result = updateClaudeProjectSettings(args.projectId, args.patch)
+    recomputeDirty()
+    return result
+  }
 )
 
 // ---------------------------------------------------------------------------
@@ -580,13 +633,19 @@ ipcMain.handle(
       JSON.stringify(redactedEnv)
     )
 
-    return addon.mount(handle, {
+    const result = addon.mount(handle, {
       workspaceId,
       rect,
       scaleFactor,
       cwd,
       env: surfaceEnv
     })
+
+    // Snapshot the composed launch so we can detect settings drift later.
+    launchSnapshots.set(workspaceId, launch)
+    setDirty(workspaceId, false)
+
+    return result
   }
 )
 
@@ -611,6 +670,11 @@ ipcMain.handle(
 )
 
 ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+  // Clean up snapshot and dirty state before destroying the surface
+  launchSnapshots.delete(workspaceId)
+  if (dirtyWorkspaces.delete(workspaceId)) {
+    broadcastDirty(workspaceId, false)
+  }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
 })

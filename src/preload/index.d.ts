@@ -72,6 +72,10 @@ declare global {
         archive: (id: string) => Promise<WorkspaceRecord>
         unarchive: (id: string) => Promise<WorkspaceRecord>
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
+        isDirty: (id: string) => Promise<boolean>
+        onDirtyChanged: (
+          cb: (e: { workspaceId: string; dirty: boolean }) => void
+        ) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>

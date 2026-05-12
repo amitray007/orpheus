@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   DoctorResult,
@@ -85,7 +86,17 @@ const api = {
     unarchive: (id: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:unarchive', { id }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:rename', { id, name })
+      ipcRenderer.invoke('workspaces:rename', { id, name }),
+    isDirty: (id: string): Promise<boolean> =>
+      ipcRenderer.invoke('workspace:isDirty', { workspaceId: id }),
+    onDirtyChanged: (
+      cb: (e: { workspaceId: string; dirty: boolean }) => void
+    ): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string; dirty: boolean }): void =>
+        cb(e)
+      ipcRenderer.on('workspace:dirtyChanged', listener)
+      return () => ipcRenderer.removeListener('workspace:dirtyChanged', listener)
+    }
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
