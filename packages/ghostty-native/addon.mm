@@ -588,22 +588,161 @@ static bool action_cb(ghostty_app_t /*app*/,
     return false;
 }
 
-static bool read_clipboard_cb(void* /*userdata*/,
-                               ghostty_clipboard_e /*type*/,
-                               void* /*state*/) {
-    return false;
-}
+// ---------------------------------------------------------------------------
+// Clipboard callbacks — NSPasteboard integration
+//
+// Ghostty uses three callbacks to broker clipboard access:
+//
+//   write_clipboard_cb  — terminal wants to SET the clipboard (Cmd+C, OSC 52
+//                         write).  We receive an array of {mime, data} pairs
+//                         and write the plain-text item to NSPasteboard.
+//
+//   read_clipboard_cb   — terminal wants to READ the clipboard (Cmd+V / OSC 52
+//                         read).  This callback is async: return true to signal
+//                         we'll deliver the result, then call
+//                         ghostty_surface_complete_clipboard_request when ready.
+//                         The `state` pointer is an opaque token we hand back.
+//
+//   confirm_read_clipboard_cb — some OSC-52 flows ask the host to confirm
+//                         before exposing clipboard contents.  For v1 we
+//                         auto-approve all reads.  A user-facing confirmation
+//                         dialog is a follow-up (add an NSAlert here if
+//                         paste-protection requests come in from real workloads).
+//
+// Threading: AppKit pasteboard operations MUST run on the main thread.  All
+// three callbacks dispatch to the main queue to be safe — Ghostty may call
+// them from its IO thread.
+// ---------------------------------------------------------------------------
 
-static void confirm_read_clipboard_cb(void* /*userdata*/,
-                                       const char* /*text*/,
-                                       void* /*state*/,
-                                       ghostty_clipboard_request_e /*req*/) {}
-
+// write_clipboard_cb — called when the terminal wants to write to the clipboard.
+//
+// `content` is an array of `count` {mime, data} pairs.  We look for the first
+// "text/plain" (or plain-C-string) entry and write it to NSPasteboard.
+//
+// `confirm` = true means the OSC-52 sequence asked for explicit confirmation
+// before writing.  For v1 we ignore the flag and always write.  If abuse is
+// observed (e.g. a remote host silently clobbering the pasteboard), add an
+// NSAlert here gated on `confirm`.
 static void write_clipboard_cb(void* /*userdata*/,
                                 ghostty_clipboard_e /*type*/,
-                                const ghostty_clipboard_content_s* /*content*/,
-                                size_t /*count*/,
-                                bool /*confirm*/) {}
+                                const ghostty_clipboard_content_s* content,
+                                size_t count,
+                                bool /*confirm*/) {
+    if (!content || count == 0) {
+        NSLog(@"[ghostty-native] write_clipboard_cb: empty content, skip");
+        return;
+    }
+
+    // Find the first plain-text item in the content array.
+    // Ghostty typically sends mime="text/plain;charset=utf-8" or similar.
+    const char* text = nullptr;
+    for (size_t i = 0; i < count; i++) {
+        if (content[i].data && content[i].data[0] != '\0') {
+            // Prefer a mime type that looks like plain text; fall back to first
+            // non-empty item.
+            const char* mime = content[i].mime ? content[i].mime : "";
+            if (strstr(mime, "text/plain") != nullptr || text == nullptr) {
+                text = content[i].data;
+                if (strstr(mime, "text/plain") != nullptr) break; // prefer exact match
+            }
+        }
+    }
+
+    if (!text) {
+        NSLog(@"[ghostty-native] write_clipboard_cb: no usable text in %zu item(s)", count);
+        return;
+    }
+
+    // Capture the text before the async dispatch (content pointer is only valid
+    // during this callback).
+    NSString* str = [NSString stringWithUTF8String:text];
+    if (!str) {
+        NSLog(@"[ghostty-native] write_clipboard_cb: UTF-8 decode failed");
+        return;
+    }
+
+    // Pasteboard operations must run on the main thread.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSPasteboard* pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        [pb setString:str forType:NSPasteboardTypeString];
+        NSLog(@"[ghostty-native] write_clipboard_cb: wrote %lu byte(s) to clipboard",
+              (unsigned long)[str lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    });
+}
+
+// read_clipboard_cb — called when the terminal wants to read from the clipboard.
+//
+// We must return true (async) and later call
+// ghostty_surface_complete_clipboard_request(surface, text, state, true).
+// The `state` token identifies the pending request on the Ghostty side.
+//
+// Because this callback doesn't receive a surface_t directly, we find the
+// first currently-attached surface in g_surfaces.  In Orpheus there is always
+// exactly one visible (attached) surface at a time, so this is safe.
+static bool read_clipboard_cb(void* /*userdata*/,
+                               ghostty_clipboard_e /*type*/,
+                               void* state) {
+    // Capture `state` for the async block — it's the opaque request token.
+    void* capturedState = state;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Find the first attached surface to deliver the result to.
+        ghostty_surface_t targetSurface = nullptr;
+        for (auto& kv : g_surfaces) {
+            if (kv.second.isAttached && kv.second.surface) {
+                targetSurface = kv.second.surface;
+                break;
+            }
+        }
+
+        if (!targetSurface) {
+            NSLog(@"[ghostty-native] read_clipboard_cb: no attached surface, aborting");
+            return;
+        }
+
+        NSString* contents = [[NSPasteboard generalPasteboard]
+                              stringForType:NSPasteboardTypeString];
+
+        if (contents) {
+            const char* bytes = [contents UTF8String];
+            NSLog(@"[ghostty-native] read_clipboard_cb: delivering %lu byte(s) from clipboard",
+                  (unsigned long)[contents lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+            ghostty_surface_complete_clipboard_request(targetSurface, bytes, capturedState, true);
+        } else {
+            NSLog(@"[ghostty-native] read_clipboard_cb: clipboard empty, delivering empty string");
+            ghostty_surface_complete_clipboard_request(targetSurface, "", capturedState, true);
+        }
+    });
+
+    // Return true = we will deliver the result asynchronously.
+    return true;
+}
+
+// confirm_read_clipboard_cb — called when Ghostty wants explicit user approval
+// before exposing clipboard contents to the terminal (OSC-52 anti-paste-attack).
+//
+// For v1 we auto-approve all reads.  To add a real confirmation prompt, replace
+// the body with an NSAlert sheet and call ghostty_surface_complete_clipboard_request
+// only if the user clicks "Allow".
+static void confirm_read_clipboard_cb(void* /*userdata*/,
+                                       const char* /*text*/,
+                                       void* state,
+                                       ghostty_clipboard_request_e /*req*/) {
+    // Auto-approve: find the first attached surface and confirm immediately.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ghostty_surface_t targetSurface = nullptr;
+        for (auto& kv : g_surfaces) {
+            if (kv.second.isAttached && kv.second.surface) {
+                targetSurface = kv.second.surface;
+                break;
+            }
+        }
+        if (targetSurface) {
+            ghostty_surface_complete_clipboard_request(targetSurface, nullptr, state, true);
+        }
+    });
+}
 
 static void close_surface_cb(void* /*userdata*/, bool process_alive) {
     NSLog(@"[ghostty-native] close_surface_cb process_alive=%d", (int)process_alive);
@@ -715,7 +854,7 @@ static bool ensureApp() {
 
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
-    rt.supports_selection_clipboard = false;
+    rt.supports_selection_clipboard = false;  // macOS has no separate X11-style selection clipboard
     rt.wakeup_cb = wakeup_cb;
     rt.action_cb = action_cb;
     rt.read_clipboard_cb = read_clipboard_cb;
