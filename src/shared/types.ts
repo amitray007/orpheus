@@ -76,6 +76,9 @@ export type AppUiStatePatch = Partial<Omit<AppUiState, 'updatedAt'>>
 
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 export type ClaudeEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
+export type ClaudeTuiMode = 'default' | 'fullscreen'
+export type ClaudeEditorMode = 'normal' | 'vim'
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
@@ -83,6 +86,13 @@ export type ClaudeGlobalSettings = {
   effort: ClaudeEffort
   autoMemory: boolean
   alwaysThinking: boolean
+  // B2 Display additions:
+  outputStyle: ClaudeOutputStyle
+  tuiMode: ClaudeTuiMode
+  editorMode: ClaudeEditorMode
+  reduceMotion: boolean
+  nativeCursor: boolean
+  hideCwd: boolean
   updatedAt: number
 }
 

@@ -1,19 +1,67 @@
+import { useEffect, useState } from 'react'
 import type React from 'react'
-import { SettingRow } from './primitives'
-import { ComingSoonChip } from './ClaudeGeneralSection'
+import type {
+  ClaudeGlobalSettings,
+  ClaudeOutputStyle,
+  ClaudeTuiMode,
+  ClaudeEditorMode
+} from '@shared/types'
+import { SettingRow, SegmentedControl, Toggle } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeDisplaySection — output style, TUI renderer, editor mode, a11y toggles
 // ---------------------------------------------------------------------------
 
 export function ClaudeDisplaySection(): React.JSX.Element {
+  const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.claudeSettings
+      .get()
+      .then((s) => {
+        if (!cancelled) setSettings(s)
+      })
+      .catch((err) => console.error('[display-settings] load failed', err))
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function patch(p: Partial<ClaudeGlobalSettings>): void {
+    if (!settings) return
+    setSettings({ ...settings, ...p })
+    window.api.claudeSettings.update(p).catch((err) => {
+      console.error('[display-settings] update failed; refetching', err)
+      window.api.claudeSettings
+        .get()
+        .then((s) => setSettings(s))
+        .catch(console.error)
+    })
+  }
+
+  if (!settings) {
+    return (
+      <div className="flex flex-col gap-6 max-w-2xl">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Display</h2>
+          <p className="text-xs text-text-muted mt-1">
+            Control how Claude renders output, TUI mode, editor keybindings, and accessibility
+            preferences.
+          </p>
+        </div>
+        <p className="text-sm text-text-muted">Loading…</p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
         <h2 className="text-base font-semibold text-text-primary">Display</h2>
         <p className="text-xs text-text-muted mt-1">
           Control how Claude renders output, TUI mode, editor keybindings, and accessibility
-          preferences.
+          preferences. Changes save automatically.
         </p>
       </div>
 
@@ -27,43 +75,31 @@ export function ClaudeDisplaySection(): React.JSX.Element {
             label="Output style"
             description="Influences how verbose and proactive Claude's responses are."
           >
-            <div className="flex items-center gap-2">
-              <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5 opacity-50 pointer-events-none select-none">
-                {(['Default', 'Explanatory', 'Proactive', 'Learning'] as const).map((s) => (
-                  <span
-                    key={s}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded',
-                      s === 'Default' ? 'bg-accent/15 text-text-primary' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {s}
-                  </span>
-                ))}
-              </div>
-              <ComingSoonChip />
-            </div>
+            <SegmentedControl<ClaudeOutputStyle>
+              ariaLabel="Output style"
+              options={[
+                { value: 'default', label: 'Default' },
+                { value: 'explanatory', label: 'Explanatory' },
+                { value: 'proactive', label: 'Proactive' },
+                { value: 'learning', label: 'Learning' }
+              ]}
+              value={settings.outputStyle}
+              onChange={(v) => patch({ outputStyle: v })}
+            />
           </SettingRow>
           <SettingRow
             label="TUI renderer"
             description="Whether Claude's terminal UI fills the pane or stays in a scrollable default view."
           >
-            <div className="flex items-center gap-2">
-              <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5 opacity-50 pointer-events-none select-none">
-                {(['Default', 'Fullscreen'] as const).map((s) => (
-                  <span
-                    key={s}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded',
-                      s === 'Default' ? 'bg-accent/15 text-text-primary' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {s}
-                  </span>
-                ))}
-              </div>
-              <ComingSoonChip />
-            </div>
+            <SegmentedControl<ClaudeTuiMode>
+              ariaLabel="TUI renderer"
+              options={[
+                { value: 'default', label: 'Default' },
+                { value: 'fullscreen', label: 'Fullscreen' }
+              ]}
+              value={settings.tuiMode}
+              onChange={(v) => patch({ tuiMode: v })}
+            />
           </SettingRow>
         </div>
       </section>
@@ -78,40 +114,35 @@ export function ClaudeDisplaySection(): React.JSX.Element {
             label="Editor mode"
             description="Keybinding scheme for the Claude Code inline editor."
           >
-            <div className="flex items-center gap-2">
-              <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5 opacity-50 pointer-events-none select-none">
-                {(['Normal', 'Vim'] as const).map((s) => (
-                  <span
-                    key={s}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded',
-                      s === 'Normal' ? 'bg-accent/15 text-text-primary' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {s}
-                  </span>
-                ))}
-              </div>
-              <ComingSoonChip />
-            </div>
+            <SegmentedControl<ClaudeEditorMode>
+              ariaLabel="Editor mode"
+              options={[
+                { value: 'normal', label: 'Normal' },
+                { value: 'vim', label: 'Vim' }
+              ]}
+              value={settings.editorMode}
+              onChange={(v) => patch({ editorMode: v })}
+            />
           </SettingRow>
           <SettingRow
             label="Native cursor"
             description="Use the system cursor style inside the embedded terminal instead of the block cursor."
           >
-            <div className="flex items-center gap-2">
-              <DisabledToggle />
-              <ComingSoonChip />
-            </div>
+            <Toggle
+              ariaLabel="Native cursor"
+              value={settings.nativeCursor}
+              onChange={(v) => patch({ nativeCursor: v })}
+            />
           </SettingRow>
           <SettingRow
             label="Hide cwd in logo"
             description="Remove the current working directory line from Claude's session banner."
           >
-            <div className="flex items-center gap-2">
-              <DisabledToggle />
-              <ComingSoonChip />
-            </div>
+            <Toggle
+              ariaLabel="Hide cwd in logo"
+              value={settings.hideCwd}
+              onChange={(v) => patch({ hideCwd: v })}
+            />
           </SettingRow>
         </div>
       </section>
@@ -126,25 +157,14 @@ export function ClaudeDisplaySection(): React.JSX.Element {
             label="Reduce motion"
             description="Disables transitions and animations throughout the Orpheus UI."
           >
-            <div className="flex items-center gap-2">
-              <DisabledToggle />
-              <ComingSoonChip />
-            </div>
+            <Toggle
+              ariaLabel="Reduce motion"
+              value={settings.reduceMotion}
+              onChange={(v) => patch({ reduceMotion: v })}
+            />
           </SettingRow>
         </div>
       </section>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// DisabledToggle — visual-only toggle knob for placeholder rows
-// ---------------------------------------------------------------------------
-
-function DisabledToggle(): React.JSX.Element {
-  return (
-    <div className="relative w-9 h-5 rounded-full bg-surface-overlay border border-border-default pointer-events-none opacity-50">
-      <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm" />
     </div>
   )
 }

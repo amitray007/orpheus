@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 7
+const CURRENT_VERSION = 8
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -67,6 +67,15 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
       CHECK (effort IN ('auto', 'low', 'medium', 'high', 'xhigh', 'max')),
     auto_memory INTEGER NOT NULL DEFAULT 1 CHECK (auto_memory IN (0, 1)),
     always_thinking INTEGER NOT NULL DEFAULT 0 CHECK (always_thinking IN (0, 1)),
+    output_style TEXT NOT NULL DEFAULT 'default'
+      CHECK (output_style IN ('default', 'explanatory', 'proactive', 'learning')),
+    tui_mode TEXT NOT NULL DEFAULT 'default'
+      CHECK (tui_mode IN ('default', 'fullscreen')),
+    editor_mode TEXT NOT NULL DEFAULT 'normal'
+      CHECK (editor_mode IN ('normal', 'vim')),
+    reduce_motion INTEGER NOT NULL DEFAULT 0 CHECK (reduce_motion IN (0, 1)),
+    native_cursor INTEGER NOT NULL DEFAULT 0 CHECK (native_cursor IN (0, 1)),
+    hide_cwd INTEGER NOT NULL DEFAULT 0 CHECK (hide_cwd IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -217,6 +226,19 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_fullscreen INTEGER NOT NULL DEFAULT 0') } catch {}
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(7)
+    }
+  }
+
+  // Version 8: Display section columns on claude_global_settings
+  if (currentVersion < 8) {
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN output_style TEXT NOT NULL DEFAULT 'default' CHECK (output_style IN ('default', 'explanatory', 'proactive', 'learning'))") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN tui_mode TEXT NOT NULL DEFAULT 'default' CHECK (tui_mode IN ('default', 'fullscreen'))") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN editor_mode TEXT NOT NULL DEFAULT 'normal' CHECK (editor_mode IN ('normal', 'vim'))") } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN reduce_motion INTEGER NOT NULL DEFAULT 0 CHECK (reduce_motion IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN native_cursor INTEGER NOT NULL DEFAULT 0 CHECK (native_cursor IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN hide_cwd INTEGER NOT NULL DEFAULT 0 CHECK (hide_cwd IN (0, 1))') } catch {}
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(8)
     }
   }
 }
