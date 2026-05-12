@@ -8,10 +8,10 @@ import type {
 import { SettingRow, SegmentedControl, Toggle, ModelPicker } from './primitives'
 
 // ---------------------------------------------------------------------------
-// GeneralSection — model, permission mode, effort, auto-memory, extended thinking
+// ClaudeGeneralSection — model, permission mode, effort, auto-memory, extended thinking
 // ---------------------------------------------------------------------------
 
-export function GeneralSection(): React.JSX.Element {
+export function ClaudeGeneralSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -150,6 +150,39 @@ export function GeneralSection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Fallback &amp; overload
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Fallback model"
+            description="Model used when the primary model is overloaded or unavailable."
+          >
+            <div className="flex items-center gap-2">
+              <input
+                disabled
+                placeholder="e.g. claude-haiku-4-5"
+                className="w-48 px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default text-text-muted placeholder-text-muted font-mono opacity-50 cursor-not-allowed"
+              />
+              <ComingSoonChip />
+            </div>
+          </SettingRow>
+        </div>
+      </section>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ComingSoonChip — inline badge for placeholder controls
+// ---------------------------------------------------------------------------
+
+export function ComingSoonChip(): React.JSX.Element {
+  return (
+    <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 whitespace-nowrap">
+      Coming soon
+    </span>
   )
 }
