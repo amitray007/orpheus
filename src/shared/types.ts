@@ -60,6 +60,11 @@ export type AppUiState = {
   lastViewKind: AppViewKind
   lastProjectId: string | null
   lastWorkspaceId: string | null
+  windowX: number | null
+  windowY: number | null
+  windowWidth: number | null
+  windowHeight: number | null
+  windowFullscreen: boolean
   updatedAt: number
 }
 

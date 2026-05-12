@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 6
+const CURRENT_VERSION = 7
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -79,6 +79,11 @@ const UI_STATE_SCHEMA_SQL = `
       CHECK (last_view_kind IN ('dashboard', 'sessions', 'project', 'workspace')),
     last_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
     last_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    window_x INTEGER,
+    window_y INTEGER,
+    window_width INTEGER,
+    window_height INTEGER,
+    window_fullscreen INTEGER NOT NULL DEFAULT 0 CHECK (window_fullscreen IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -200,6 +205,18 @@ function migrate(db: Database.Database): void {
 
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(6)
+    }
+  }
+
+  // Version 7: window geometry columns on app_ui_state
+  if (currentVersion < 7) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_x INTEGER') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_y INTEGER') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_width INTEGER') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_height INTEGER') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_fullscreen INTEGER NOT NULL DEFAULT 0') } catch {}
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(7)
     }
   }
 }

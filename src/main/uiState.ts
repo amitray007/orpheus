@@ -11,6 +11,11 @@ type AppUiStateRow = {
   last_view_kind: string
   last_project_id: string | null
   last_workspace_id: string | null
+  window_x: number | null
+  window_y: number | null
+  window_width: number | null
+  window_height: number | null
+  window_fullscreen: number
   updated_at: number
 }
 
@@ -20,6 +25,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     lastViewKind: row.last_view_kind as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
+    windowX: row.window_x,
+    windowY: row.window_y,
+    windowWidth: row.window_width,
+    windowHeight: row.window_height,
+    windowFullscreen: row.window_fullscreen === 1,
     updatedAt: row.updated_at
   }
 }
@@ -73,7 +83,12 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     sidebarCollapsed: 'sidebar_collapsed',
     lastViewKind: 'last_view_kind',
     lastProjectId: 'last_project_id',
-    lastWorkspaceId: 'last_workspace_id'
+    lastWorkspaceId: 'last_workspace_id',
+    windowX: 'window_x',
+    windowY: 'window_y',
+    windowWidth: 'window_width',
+    windowHeight: 'window_height',
+    windowFullscreen: 'window_fullscreen'
   }
 
   const setClauses: string[] = []

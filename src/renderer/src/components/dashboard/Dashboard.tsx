@@ -61,6 +61,11 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           lastViewKind: 'dashboard',
           lastProjectId: null,
           lastWorkspaceId: null,
+          windowX: null,
+          windowY: null,
+          windowWidth: null,
+          windowHeight: null,
+          windowFullscreen: false,
           updatedAt: 0
         })
       })

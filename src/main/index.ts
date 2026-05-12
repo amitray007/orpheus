@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, screen } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -44,9 +44,45 @@ app.on('before-quit', () => {
 })
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  // ---------------------------------------------------------------------------
+  // Restore saved window geometry
+  // ---------------------------------------------------------------------------
+  const savedState = getAppUiState()
+
+  // Validate saved bounds against currently-connected displays. If the saved
+  // position is on an unplugged monitor, fall back to defaults.
+  function isWithinSomeDisplay(x: number, y: number): boolean {
+    const displays = screen.getAllDisplays()
+    // Window is "within a display" if at least its top-left corner is inside
+    // one of the displays' workAreas. Electron clamps the rest to screen edges.
+    return displays.some((d) => {
+      const a = d.workArea
+      return x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height
+    })
+  }
+
+  let restoredBounds: { x?: number; y?: number; width: number; height: number } = {
     width: 1280,
-    height: 800,
+    height: 800
+  }
+
+  if (
+    savedState.windowX !== null &&
+    savedState.windowY !== null &&
+    savedState.windowWidth !== null &&
+    savedState.windowHeight !== null &&
+    isWithinSomeDisplay(savedState.windowX, savedState.windowY)
+  ) {
+    restoredBounds = {
+      x: savedState.windowX,
+      y: savedState.windowY,
+      width: Math.max(savedState.windowWidth, 960),  // clamp to minWidth
+      height: Math.max(savedState.windowHeight, 600)
+    }
+  }
+
+  const mainWindow = new BrowserWindow({
+    ...restoredBounds,
     minWidth: 960,
     minHeight: 600,
     show: false,
@@ -62,6 +98,11 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  // Restore fullscreen state before the window is shown
+  if (savedState.windowFullscreen) {
+    mainWindow.setFullScreen(true)
+  }
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -90,6 +131,64 @@ function createWindow(): void {
       app.hide()
     })
   }
+
+  // ---------------------------------------------------------------------------
+  // Persist window geometry
+  // ---------------------------------------------------------------------------
+
+  let saveTimer: NodeJS.Timeout | null = null
+
+  function scheduleBoundsSave(): void {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      flushBoundsSave()
+    }, 500)
+  }
+
+  function flushBoundsSave(): void {
+    if (mainWindow.isDestroyed()) return
+    // Don't save bounds while fullscreen — they reflect the pre-fullscreen geometry
+    // that AppKit auto-restores on exit, and saving them here would clobber that.
+    if (mainWindow.isFullScreen()) return
+    const b = mainWindow.getBounds()
+    updateAppUiState({
+      windowX: b.x,
+      windowY: b.y,
+      windowWidth: b.width,
+      windowHeight: b.height
+    })
+  }
+
+  mainWindow.on('resize', scheduleBoundsSave)
+  mainWindow.on('move', scheduleBoundsSave)
+
+  mainWindow.on('enter-full-screen', () => {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    updateAppUiState({ windowFullscreen: true })
+  })
+
+  mainWindow.on('leave-full-screen', () => {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    updateAppUiState({ windowFullscreen: false })
+    // After exiting fullscreen, AppKit restores the pre-fullscreen geometry.
+    // Capture it for next launch.
+    // Use a slight delay because getBounds inside the leave-full-screen callback
+    // may still report fullscreen bounds.
+    setTimeout(() => {
+      if (mainWindow.isDestroyed()) return
+      const b = mainWindow.getBounds()
+      updateAppUiState({ windowX: b.x, windowY: b.y, windowWidth: b.width, windowHeight: b.height })
+    }, 250)
+  })
+
+  mainWindow.on('close', () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+      flushBoundsSave()
+    }
+  })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
