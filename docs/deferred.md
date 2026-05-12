@@ -79,8 +79,8 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Slash commands list** | P2 | Read `~/.claude/commands/*.md` + `<project>/.claude/commands/*.md`. Display in a Claude → Slash commands section with frontmatter inspection + enable/disable. |
-| **Subagents list** | P2 | Read `~/.claude/agents/*.md` + `<project>/.claude/agents/*.md`. Display name, description, model. Optional: per-agent enable/disable. |
+| **Per-entry enable/disable for slash commands / subagents** | P3 | Read-only list shipped in commit `ee9daf1`. claude doesn't currently expose a per-command or per-agent disable mechanism via settings — would require a different approach (e.g., moving files to a `.disabled/` shadow folder or symlink-toggling). Defer until claude exposes this natively or a concrete need appears. |
+| **Frontmatter inspector / preview** | P3 | The list shows name, description, and a few chips. A click-to-expand view that displays full frontmatter + the first paragraph of the body would be useful for spot-checking what a command/agent does. |
 
 ## 10. Multi-workspace UX
 
