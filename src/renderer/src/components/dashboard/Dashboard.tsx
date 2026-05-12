@@ -157,7 +157,11 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           fetchWorkspacesForProject(id)
         }
       }
-      window.api.projects.setExpandedInSidebar(id, next.has(id)).catch(console.error)
+      const nowExpanded = next.has(id)
+      window.api.projects.setExpandedInSidebar(id, nowExpanded).catch(console.error)
+      // Keep local projects state in sync so any subsequent setProjects() call
+      // (e.g. from handleRenameProject revert) doesn't clobber the expandedInSidebar field.
+      setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, expandedInSidebar: nowExpanded } : p)))
       return next
     })
   }
@@ -233,10 +237,14 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     setSelectedProjectId(projectId)
     setSelectedWorkspaceId(workspaceId)
     setView({ kind: 'workspace', workspaceId, projectId })
-    // Keep the project expanded so the workspace stays visible
+    // Keep the project expanded so the workspace stays visible.
+    // Also persist the expanded state to DB so it survives a relaunch.
     setExpandedProjectIds((prev) => {
       const next = new Set(prev)
-      next.add(projectId)
+      if (!next.has(projectId)) {
+        next.add(projectId)
+        window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
+      }
       return next
     })
     // Ensure workspaces are loaded for this project
@@ -277,10 +285,14 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       })
       // Refresh workspace list for this project
       await fetchWorkspacesForProject(projectId)
-      // Expand the project row so the new workspace is visible
+      // Expand the project row so the new workspace is visible.
+      // Persist the expanded state so it survives a relaunch.
       setExpandedProjectIds((prev) => {
         const next = new Set(prev)
-        next.add(projectId)
+        if (!next.has(projectId)) {
+          next.add(projectId)
+          window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
+        }
         return next
       })
       // Navigate to the new workspace
