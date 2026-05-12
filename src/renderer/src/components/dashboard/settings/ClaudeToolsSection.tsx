@@ -7,6 +7,35 @@ import { SettingRow, Toggle, NumberInput } from './primitives'
 // ClaudeToolsSection — MCP servers, bash limits, concurrency, browser integration
 // ---------------------------------------------------------------------------
 
+type McpGroup = { key: string; label: string; servers: DiscoveredMcpServer[] }
+
+function groupServers(servers: DiscoveredMcpServer[]): McpGroup[] {
+  const groups: McpGroup[] = []
+
+  const userServers = servers.filter((s) => s.source === 'user')
+  if (userServers.length > 0) {
+    groups.push({ key: 'user', label: 'User · ~/.claude.json', servers: userServers })
+  }
+
+  const projectGroups = new Map<string, McpGroup>()
+  for (const s of servers) {
+    if (s.source !== 'project' || !s.projectId) continue
+    let group = projectGroups.get(s.projectId)
+    if (!group) {
+      group = {
+        key: `project:${s.projectId}`,
+        label: `Project · ${s.projectName ?? s.projectId}`,
+        servers: []
+      }
+      projectGroups.set(s.projectId, group)
+    }
+    group.servers.push(s)
+  }
+  for (const g of projectGroups.values()) groups.push(g)
+
+  return groups
+}
+
 export function ClaudeToolsSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
   const [servers, setServers] = useState<DiscoveredMcpServer[]>([])
@@ -67,8 +96,8 @@ export function ClaudeToolsSection(): React.JSX.Element {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Tools</h2>
         <p className="text-xs text-text-muted mt-1">
-          MCP server toggles (auto-discovered from ~/.claude.json), Bash limits, tool concurrency,
-          and browser integration. Changes save automatically.
+          MCP server toggles (auto-discovered from ~/.claude.json and each project's .mcp.json),
+          Bash limits, tool concurrency, and browser integration. Changes save automatically.
         </p>
       </div>
 
@@ -82,30 +111,39 @@ export function ClaudeToolsSection(): React.JSX.Element {
             <McpSkeleton />
           ) : servers.length === 0 ? (
             <div className="rounded-md border border-dashed border-border-default/60 bg-surface-overlay px-4 py-6 text-center">
-              <p className="text-xs text-text-muted">No MCP servers configured in ~/.claude.json</p>
+              <p className="text-xs text-text-muted">
+                No MCP servers configured in ~/.claude.json or any project's .mcp.json
+              </p>
               <p className="text-xs text-text-muted mt-1">
-                Add servers to your ~/.claude.json and they will appear here with per-server
+                Add servers to either file and they will appear here with per-server
                 enable/disable toggles.
               </p>
             </div>
           ) : (
-            <div className="flex flex-col">
-              {servers.map((s) => (
-                <div
-                  key={s.name}
-                  className="flex items-center justify-between py-2 border-b border-border-default/40 last:border-b-0"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm text-text-primary truncate">{s.name}</span>
-                    <span className="text-[10px] uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
-                      {s.transport}
-                    </span>
+            <div className="flex flex-col gap-4">
+              {groupServers(servers).map((group) => (
+                <div key={group.key} className="flex flex-col">
+                  <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+                    {group.label}
                   </div>
-                  <Toggle
-                    ariaLabel={`${s.name} enabled`}
-                    value={!settings.disabledMcpServers.includes(s.name)}
-                    onChange={(enabled) => toggleMcpServer(s.name, enabled)}
-                  />
+                  {group.servers.map((s) => (
+                    <div
+                      key={`${group.key}:${s.name}`}
+                      className="flex items-center justify-between py-2 border-b border-border-default/40 last:border-b-0"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-sm text-text-primary truncate">{s.name}</span>
+                        <span className="text-[10px] uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
+                          {s.transport}
+                        </span>
+                      </div>
+                      <Toggle
+                        ariaLabel={`${s.name} enabled`}
+                        value={!settings.disabledMcpServers.includes(s.name)}
+                        onChange={(enabled) => toggleMcpServer(s.name, enabled)}
+                      />
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>

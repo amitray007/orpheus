@@ -157,11 +157,13 @@ export type ClaudeGlobalSettingsPatch = Partial<Omit<ClaudeGlobalSettings, 'upda
 // ---------------------------------------------------------------------------
 
 export type DiscoveredMcpServer = {
-  name: string              // server key from ~/.claude.json mcpServers
+  name: string              // server key from mcpServers map
   transport: 'stdio' | 'http' | 'sse' | 'unknown'
   command?: string          // for stdio servers
   url?: string              // for http/sse servers
-  source: 'user' | 'project'  // where it was discovered (user = ~/.claude.json, project = workspace's .mcp.json — deferred)
+  source: 'user' | 'project'  // user = ~/.claude.json, project = <projectPath>/.mcp.json
+  projectId?: string        // set when source === 'project'
+  projectName?: string      // set when source === 'project'
 }
 
 // ---------------------------------------------------------------------------
