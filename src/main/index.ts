@@ -32,10 +32,11 @@ import {
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
+import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
 import { listMcpServers } from './mcp'
-import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
+import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ function recomputeDirty(): void {
   for (const [workspaceId, snap] of launchSnapshots.entries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) continue
-    const fresh = composeClaudeLaunch(ws.projectId)
+    const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
     setDirty(workspaceId, !launchEquals(snap, fresh))
   }
 }
@@ -498,6 +499,23 @@ ipcMain.handle(
 )
 
 // ---------------------------------------------------------------------------
+// Per-workspace Claude Settings IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
+  getClaudeWorkspaceSettings(workspaceId)
+)
+
+ipcMain.handle(
+  'claudeWorkspaceSettings:update',
+  (_e, args: { workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }) => {
+    const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
+    recomputeDirty()
+    return result
+  }
+)
+
+// ---------------------------------------------------------------------------
 // UI State IPC
 // ---------------------------------------------------------------------------
 
@@ -605,7 +623,7 @@ ipcMain.handle(
     const projectId = ws?.projectId
 
     // Compose claude settings into env vars for the wrapper script.
-    const launch = composeClaudeLaunch(projectId)
+    const launch = composeClaudeLaunch(projectId, workspaceId)
 
     // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
     // Merged LAST so they win over any ambient settings-derived values.

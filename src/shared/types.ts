@@ -181,6 +181,22 @@ export type ClaudeProjectSettings = {
 }
 
 // ---------------------------------------------------------------------------
+// Per-workspace Claude settings overrides
+// ---------------------------------------------------------------------------
+
+export type ClaudeWorkspaceSettingsOverrides = {
+  model?: string
+  permissionMode?: ClaudePermissionMode
+  effort?: ClaudeEffort
+}
+
+export type ClaudeWorkspaceSettings = {
+  workspaceId: string
+  overrides: ClaudeWorkspaceSettingsOverrides
+  updatedAt: number
+}
+
+// ---------------------------------------------------------------------------
 // Claude Authentication (v13)
 // ---------------------------------------------------------------------------
 

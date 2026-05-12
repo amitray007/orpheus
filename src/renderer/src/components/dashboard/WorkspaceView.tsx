@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Folder } from '@phosphor-icons/react'
+import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
 import type { WorkspaceRecord } from '@shared/types'
+import { WorkspaceOverridesPopover } from './WorkspaceOverridesPopover'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -16,6 +17,8 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   const [remountKey, setRemountKey] = useState(0)
   // Dirty state — true when settings have changed since this workspace was last mounted.
   const [isDirty, setIsDirty] = useState(false)
+  const [overridesOpen, setOverridesOpen] = useState(false)
+  const handleCloseOverrides = useCallback(() => setOverridesOpen(false), [])
 
   // Seed dirty state on mount and subscribe to live events.
   useEffect(() => {
@@ -156,7 +159,23 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
       {/* Tab title bar — thin strip */}
       <div className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0">
         <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-        <span className="text-xs font-medium text-text-primary truncate">{workspace.name}</span>
+        <div className="relative flex items-center gap-1.5">
+          <span className="text-xs font-medium text-text-primary truncate">{workspace.name}</span>
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setOverridesOpen((o) => !o)}
+            title="Workspace overrides"
+            className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+          >
+            <Gear size={14} />
+          </button>
+          {overridesOpen && (
+            <WorkspaceOverridesPopover
+              workspaceId={workspace.id}
+              onClose={handleCloseOverrides}
+            />
+          )}
+        </div>
         <span className="text-text-muted text-xs">·</span>
         <span
           className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"

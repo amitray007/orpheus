@@ -12,6 +12,8 @@ import type {
   ClaudeGlobalSettingsPatch,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
+  ClaudeWorkspaceSettings,
+  ClaudeWorkspaceSettingsOverrides,
   AppUiState,
   AppUiStatePatch,
   GitStatus,
@@ -116,6 +118,12 @@ const api = {
       ipcRenderer.invoke('claudeProjectSettings:get', { projectId }),
     update: (projectId: string, patch: ClaudeProjectSettingsOverrides): Promise<ClaudeProjectSettings> =>
       ipcRenderer.invoke('claudeProjectSettings:update', { projectId, patch })
+  },
+  claudeWorkspaceSettings: {
+    get: (workspaceId: string): Promise<ClaudeWorkspaceSettings> =>
+      ipcRenderer.invoke('claudeWorkspaceSettings:get', { workspaceId }),
+    update: (workspaceId: string, patch: ClaudeWorkspaceSettingsOverrides): Promise<ClaudeWorkspaceSettings> =>
+      ipcRenderer.invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
   },
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),

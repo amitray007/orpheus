@@ -10,6 +10,7 @@ import type {
   ClaudeLogLevel
 } from '../shared/types'
 import { getClaudeProjectSettings } from './claudeProjectSettings'
+import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -276,7 +277,7 @@ export type ClaudeLaunch = {
  * overrides), flags === '' && settingsJson === '' && env === {}
  * which means the wrapper runs bare `claude` with no extra arguments.
  */
-export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
+export function composeClaudeLaunch(projectId?: string, workspaceId?: string): ClaudeLaunch {
   const global = getClaudeGlobalSettings()
 
   // Merge project-level overrides (model, permissionMode, effort) on top of global
@@ -286,10 +287,24 @@ export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
     const ov = proj.overrides
     if (Object.keys(ov).length > 0) {
       s = {
-        ...global,
+        ...s,
         ...(ov.model !== undefined ? { model: ov.model } : {}),
         ...(ov.permissionMode !== undefined ? { permissionMode: ov.permissionMode } : {}),
         ...(ov.effort !== undefined ? { effort: ov.effort } : {})
+      }
+    }
+  }
+
+  // Workspace overrides sit above project overrides — highest precedence before CLI flags
+  if (workspaceId) {
+    const ws = getClaudeWorkspaceSettings(workspaceId)
+    const wov = ws.overrides
+    if (Object.keys(wov).length > 0) {
+      s = {
+        ...s,
+        ...(wov.model !== undefined ? { model: wov.model } : {}),
+        ...(wov.permissionMode !== undefined ? { permissionMode: wov.permissionMode } : {}),
+        ...(wov.effort !== undefined ? { effort: wov.effort } : {})
       }
     }
   }

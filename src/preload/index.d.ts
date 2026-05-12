@@ -10,6 +10,8 @@ import type {
   ClaudeGlobalSettingsPatch,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
+  ClaudeWorkspaceSettings,
+  ClaudeWorkspaceSettingsOverrides,
   AppUiState,
   AppUiStatePatch,
   GitStatus,
@@ -91,6 +93,10 @@ declare global {
       claudeProjectSettings: {
         get: (projectId: string) => Promise<ClaudeProjectSettings>
         update: (projectId: string, patch: ClaudeProjectSettingsOverrides) => Promise<ClaudeProjectSettings>
+      }
+      claudeWorkspaceSettings: {
+        get: (workspaceId: string) => Promise<ClaudeWorkspaceSettings>
+        update: (workspaceId: string, patch: ClaudeWorkspaceSettingsOverrides) => Promise<ClaudeWorkspaceSettings>
       }
       uiState: {
         get: () => Promise<AppUiState>

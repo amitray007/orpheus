@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 14
+const CURRENT_VERSION = 15
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -123,6 +123,14 @@ const CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL = `
   );
 `
 
+const CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS claude_workspace_settings (
+    workspace_id TEXT PRIMARY KEY NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    overrides_json TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL
+  );
+`
+
 const UI_STATE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS app_ui_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -178,6 +186,7 @@ function migrate(db: Database.Database): void {
   db.exec(WORKSPACES_SCHEMA_SQL)
   db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
+  db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
 
   // Check / set schema version
@@ -367,5 +376,14 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1))') } catch {}
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN disabled_mcp_servers TEXT NOT NULL DEFAULT '[]'") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(14)
+  }
+
+  // Version 15: claude_workspace_settings table (per-workspace overrides)
+  if (currentVersion < 15) {
+    // Table is already created unconditionally above via CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL.
+    // Nothing else needed — CREATE TABLE IF NOT EXISTS handles both fresh and existing DBs.
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(15)
+    }
   }
 }
