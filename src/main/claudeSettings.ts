@@ -9,6 +9,7 @@ import type {
   ClaudeEditorMode,
   ClaudeLogLevel
 } from '../shared/types'
+import { getClaudeProjectSettings } from './claudeProjectSettings'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -218,15 +219,31 @@ export type ClaudeLaunch = {
 }
 
 /**
- * Read the current ClaudeGlobalSettings and produce the three buckets needed
- * to wire them into the claude invocation at workspace launch time.
+ * Read the current ClaudeGlobalSettings (and optional per-project overrides) and
+ * produce the three buckets needed to wire them into the claude invocation at
+ * workspace launch time.
  *
- * Invariant: for the seeded default state (all fields at DB defaults),
- *   flags === '' && settingsJson === '' && env === {}
+ * Invariant: for the seeded default state (all fields at DB defaults, no project
+ * overrides), flags === '' && settingsJson === '' && env === {}
  * which means the wrapper runs bare `claude` with no extra arguments.
  */
-export function composeClaudeLaunch(): ClaudeLaunch {
-  const s = getClaudeGlobalSettings()
+export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
+  const global = getClaudeGlobalSettings()
+
+  // Merge project-level overrides (model, permissionMode, effort) on top of global
+  let s = global
+  if (projectId) {
+    const proj = getClaudeProjectSettings(projectId)
+    const ov = proj.overrides
+    if (Object.keys(ov).length > 0) {
+      s = {
+        ...global,
+        ...(ov.model !== undefined ? { model: ov.model } : {}),
+        ...(ov.permissionMode !== undefined ? { permissionMode: ov.permissionMode } : {}),
+        ...(ov.effort !== undefined ? { effort: ov.effort } : {})
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // 1. CLI flags

@@ -9,6 +9,8 @@ import type {
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
+  ClaudeProjectSettings,
+  ClaudeProjectSettingsOverrides,
   AppUiState,
   AppUiStatePatch
 } from '../shared/types'
@@ -88,6 +90,12 @@ const api = {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
       ipcRenderer.invoke('claudeSettings:update', patch)
+  },
+  claudeProjectSettings: {
+    get: (projectId: string): Promise<ClaudeProjectSettings> =>
+      ipcRenderer.invoke('claudeProjectSettings:get', { projectId }),
+    update: (projectId: string, patch: ClaudeProjectSettingsOverrides): Promise<ClaudeProjectSettings> =>
+      ipcRenderer.invoke('claudeProjectSettings:update', { projectId, patch })
   },
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),

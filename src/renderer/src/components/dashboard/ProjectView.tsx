@@ -12,9 +12,17 @@ import {
   PencilSimple,
   PushPin
 } from '@phosphor-icons/react'
-import type { ProjectRecord, SessionRecord, SessionStatus, WorkspaceRecord } from '@shared/types'
+import type {
+  ProjectRecord,
+  SessionRecord,
+  SessionStatus,
+  WorkspaceRecord,
+  ClaudeProjectSettings,
+  ClaudeProjectSettingsOverrides
+} from '@shared/types'
 import { SessionListSkeleton, Skeleton } from '../Skeleton'
 import { ContextMenu } from '../ContextMenu'
+import { SettingRow, SegmentedControl } from './settings/primitives'
 
 // ---------------------------------------------------------------------------
 // Relative time helper
@@ -377,6 +385,45 @@ export function ProjectView({
   const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
 
+  // Per-project Claude settings overrides
+  const [projectClaude, setProjectClaude] = useState<ClaudeProjectSettings | null>(null)
+  const [claudeSettingsExpanded, setClaudeSettingsExpanded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.claudeProjectSettings
+      .get(project.id)
+      .then((s) => {
+        if (!cancelled) setProjectClaude(s)
+      })
+      .catch((err) => console.error('[project-view] failed to load claude project settings', err))
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  function patchOverride(patch: ClaudeProjectSettingsOverrides): void {
+    if (!projectClaude) return
+    // Optimistic update
+    const newOverrides: ClaudeProjectSettingsOverrides = { ...projectClaude.overrides }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) {
+        delete newOverrides[key as keyof ClaudeProjectSettingsOverrides]
+      } else {
+        ;(newOverrides as Record<string, unknown>)[key] = value
+      }
+    }
+    setProjectClaude({ ...projectClaude, overrides: newOverrides })
+    // Persist
+    window.api.claudeProjectSettings.update(project.id, patch).catch((err) => {
+      console.error('[project-view] update failed; refetching', err)
+      window.api.claudeProjectSettings
+        .get(project.id)
+        .then((s) => setProjectClaude(s))
+        .catch(console.error)
+    })
+  }
+
   // Sessions (legacy CC)
   const [sessionData, setSessionData] = useState<{
     projectId: string | null
@@ -455,6 +502,113 @@ export function ProjectView({
           Remove
         </button>
       </div>
+
+      {/* Claude defaults for this project — collapsible, default collapsed */}
+      {projectClaude !== null && (
+        <section className="flex flex-col gap-1">
+          {(() => {
+            const overrides = projectClaude.overrides
+            const overrideCount = Object.keys(overrides).length
+            return (
+              <>
+                <button
+                  onClick={() => setClaudeSettingsExpanded((v) => !v)}
+                  className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer hover:text-text-primary transition-colors duration-150 self-start"
+                >
+                  {claudeSettingsExpanded ? (
+                    <CaretDown size={11} className="text-text-muted" />
+                  ) : (
+                    <CaretRight size={11} className="text-text-muted" />
+                  )}
+                  <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+                    Claude defaults for this project
+                  </h2>
+                  {overrideCount > 0 && (
+                    <span className="text-xs text-accent ml-1">
+                      ({overrideCount} override{overrideCount > 1 ? 's' : ''})
+                    </span>
+                  )}
+                </button>
+
+                {claudeSettingsExpanded && (
+                  <div className="bg-surface-raised border border-border-default rounded-lg px-5 mt-1">
+                    <SettingRow
+                      label="Model"
+                      description="Override the global default model for this project."
+                    >
+                      <SegmentedControl
+                        ariaLabel="Model override"
+                        options={[
+                          { value: '__global__', label: '(global)' },
+                          { value: 'sonnet', label: 'Sonnet' },
+                          { value: 'opus', label: 'Opus' },
+                          { value: 'haiku', label: 'Haiku' }
+                        ]}
+                        value={(overrides.model ?? '__global__') as '__global__' | 'sonnet' | 'opus' | 'haiku'}
+                        onChange={(v) =>
+                          patchOverride({ model: v === '__global__' ? undefined : v })
+                        }
+                      />
+                    </SettingRow>
+
+                    <SettingRow
+                      label="Permission mode"
+                      description="Override the global permission mode for this project."
+                    >
+                      <SegmentedControl
+                        ariaLabel="Permission mode override"
+                        options={[
+                          { value: '__global__', label: '(global)' },
+                          { value: 'default', label: 'Default' },
+                          { value: 'acceptEdits', label: 'Accept edits' },
+                          { value: 'plan', label: 'Plan' },
+                          { value: 'bypassPermissions', label: 'Bypass' }
+                        ]}
+                        value={(overrides.permissionMode ?? '__global__') as '__global__' | 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'}
+                        onChange={(v) =>
+                          patchOverride({
+                            permissionMode:
+                              v === '__global__'
+                                ? undefined
+                                : (v as 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions')
+                          })
+                        }
+                      />
+                    </SettingRow>
+
+                    <SettingRow
+                      label="Effort"
+                      description="Override the global thinking effort for this project."
+                    >
+                      <SegmentedControl
+                        ariaLabel="Effort override"
+                        options={[
+                          { value: '__global__', label: '(global)' },
+                          { value: 'auto', label: 'Auto' },
+                          { value: 'low', label: 'Low' },
+                          { value: 'medium', label: 'Med' },
+                          { value: 'high', label: 'High' },
+                          { value: 'xhigh', label: 'XH' },
+                          { value: 'max', label: 'Max' }
+                        ]}
+                        value={(overrides.effort ?? '__global__') as '__global__' | 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'}
+                        onChange={(v) =>
+                          patchOverride({
+                            effort:
+                              v === '__global__'
+                                ? undefined
+                                : (v as 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max')
+                          })
+                        }
+                      />
+                    </SettingRow>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+        </section>
+      )}
 
       {/* Workspaces section — active */}
       <section className="flex flex-col gap-2">

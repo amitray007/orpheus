@@ -22,6 +22,7 @@ import {
   listWorkspacesForProject,
   createWorkspace,
   openWorkspace,
+  getWorkspace,
   setWorkspacePinned,
   archiveWorkspace,
   unarchiveWorkspace,
@@ -29,8 +30,9 @@ import {
   listAllPinned
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
+import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch } from '../shared/types'
+import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -404,6 +406,20 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 )
 
 // ---------------------------------------------------------------------------
+// Per-project Claude Settings IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
+  getClaudeProjectSettings(projectId)
+)
+
+ipcMain.handle(
+  'claudeProjectSettings:update',
+  (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) =>
+    updateClaudeProjectSettings(args.projectId, args.patch)
+)
+
+// ---------------------------------------------------------------------------
 // UI State IPC
 // ---------------------------------------------------------------------------
 
@@ -498,8 +514,12 @@ ipcMain.handle(
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
 
+    // Look up the workspace's projectId for per-project override resolution
+    const ws = getWorkspace(workspaceId)
+    const projectId = ws?.projectId
+
     // Compose claude settings into env vars for the wrapper script.
-    const launch = composeClaudeLaunch()
+    const launch = composeClaudeLaunch(projectId)
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
       ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),

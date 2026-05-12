@@ -125,6 +125,22 @@ export type ClaudeGlobalSettings = {
 
 export type ClaudeGlobalSettingsPatch = Partial<Omit<ClaudeGlobalSettings, 'updatedAt'>>
 
+// ---------------------------------------------------------------------------
+// Per-project Claude settings overrides
+// ---------------------------------------------------------------------------
+
+export type ClaudeProjectSettingsOverrides = {
+  model?: string
+  permissionMode?: ClaudePermissionMode
+  effort?: ClaudeEffort
+}
+
+export type ClaudeProjectSettings = {
+  projectId: string
+  overrides: ClaudeProjectSettingsOverrides
+  updatedAt: number
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

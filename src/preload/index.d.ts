@@ -8,6 +8,8 @@ import type {
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
+  ClaudeProjectSettings,
+  ClaudeProjectSettingsOverrides,
   AppUiState,
   AppUiStatePatch
 } from '../shared/types'
@@ -73,6 +75,10 @@ declare global {
       claudeSettings: {
         get: () => Promise<ClaudeGlobalSettings>
         update: (patch: ClaudeGlobalSettingsPatch) => Promise<ClaudeGlobalSettings>
+      }
+      claudeProjectSettings: {
+        get: (projectId: string) => Promise<ClaudeProjectSettings>
+        update: (projectId: string, patch: ClaudeProjectSettingsOverrides) => Promise<ClaudeProjectSettings>
       }
       uiState: {
         get: () => Promise<AppUiState>

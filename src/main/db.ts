@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 9
+const CURRENT_VERSION = 10
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -102,6 +102,14 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
   );
 `
 
+const CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS claude_project_settings (
+    project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    overrides_json TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL
+  );
+`
+
 const UI_STATE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS app_ui_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -147,6 +155,7 @@ function migrate(db: Database.Database): void {
   db.exec(SCHEMA_SQL)
   db.exec(WORKSPACES_SCHEMA_SQL)
   db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
+  db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
 
   // Check / set schema version
@@ -289,5 +298,14 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_deny_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_additional_dirs TEXT NOT NULL DEFAULT '[]'") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(9)
+  }
+
+  // Version 10: claude_project_settings table (per-project overrides)
+  if (currentVersion < 10) {
+    // Table is already created unconditionally above via CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL.
+    // Nothing else needed — CREATE TABLE IF NOT EXISTS handles both fresh and existing DBs.
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(10)
+    }
   }
 }
