@@ -192,6 +192,17 @@ export type ClaudeSubagent = {
   model: string | null
 }
 
+export type ClaudeHookEntry = {
+  event: string                  // e.g. 'PreToolUse', 'Stop'
+  matcher: string | null         // e.g. 'Bash' for PreToolUse, null when omitted
+  type: string                   // typically 'command'
+  command: string                // shell command to run
+  source: 'user' | 'project'
+  projectId?: string
+  projectName?: string
+  filePath: string               // absolute path of the settings.json this came from
+}
+
 // ---------------------------------------------------------------------------
 // Per-project Claude settings overrides
 // ---------------------------------------------------------------------------

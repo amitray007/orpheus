@@ -37,6 +37,7 @@ import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
 import { listMcpServers } from './mcp'
 import { listSlashCommands, listSubagents } from './claudeAgents'
+import { listClaudeHooks } from './claudeHooks'
 import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
@@ -480,6 +481,15 @@ ipcMain.handle('mcp:listServers', () => listMcpServers())
 
 ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
 ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
+
+// ---------------------------------------------------------------------------
+// Claude Hooks IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeHooks:list', () => listClaudeHooks())
+ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+  await shell.openPath(filePath)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC

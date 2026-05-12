@@ -21,7 +21,8 @@ import type {
   ClaudeAuthPatch,
   DiscoveredMcpServer,
   ClaudeSlashCommand,
-  ClaudeSubagent
+  ClaudeSubagent,
+  ClaudeHookEntry
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -145,6 +146,11 @@ const api = {
       ipcRenderer.invoke('claudeAgents:listSlashCommands'),
     listSubagents: (): Promise<ClaudeSubagent[]> =>
       ipcRenderer.invoke('claudeAgents:listSubagents')
+  },
+  claudeHooks: {
+    list: (): Promise<ClaudeHookEntry[]> => ipcRenderer.invoke('claudeHooks:list'),
+    openFile: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke('claudeHooks:openFile', { filePath })
   }
 }
 
