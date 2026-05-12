@@ -1,6 +1,6 @@
 # Deferred / Pending Work
 
-Living tracker of everything we've decided to defer in earlier sessions. Update as items move out (when completed) or shift priority. Most recent comprehensive sweep: 2026-05-13.
+Living tracker of everything we've decided to defer in earlier sessions. Update as items move out (when completed) or shift priority. Most recent comprehensive sweep: 2026-05-13. Last shipped-items pass: 2026-05-13 (restart chip + per-workspace overrides).
 
 **Priority legend:**
 
@@ -44,7 +44,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 | **CJK / dead-key IME composition** | P2 | `setMarkedText:` / `ghostty_surface_preedit` / `ghostty_surface_ime_point` are stubbed. Required for Japanese/Chinese/Korean and macOS dead-key combos (option-e, etc.). |
 | **`flagsChanged:` modifier press/release** | P3 | Isolated Shift/Cmd/Ctrl press events. Ghostty handles internally; only needed if a TUI app cares (rare). |
 | **Touch Bar, magnify gesture, force-touch** | P3 | `ghostty_surface_mouse_pressure` exists; not wired. Low priority. |
-| **Settings hot-reload to running terminals** | P2 | Right now settings only apply on next workspace open. Live reload would need an IPC + per-surface config update via `ghostty_surface_update_config`. |
+| **Surface-config live reload (font / theme / scrollback)** | P3 | Display-side settings (font family/size, theme, scrollback) could hot-reload via `ghostty_surface_update_config` without restarting the surface. Currently moot — no such settings are exposed in the UI yet. Wire the substrate when font/theme settings land. The Claude-side restart chip (commit `3b3af83`) covers what was previously in scope here. |
 | **Mouse selection range visualization** | P3 | We forward mouse events; Ghostty handles selection rendering. But copy-on-select / triple-click word-select / drag-to-extend feel less polished than native terminals. Investigate. |
 
 ## 5. Surface lifecycle
@@ -67,7 +67,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Per-workspace claude overrides** | P2 | Currently overrides are per-project only (`claude_project_settings`). Per-workspace would be a third layer (global → project → workspace). Useful for monorepo or multi-task workflows. New table `claude_workspace_settings` (FK to workspaces.id). |
+| **More override-able fields beyond model / permissionMode / effort** | P3 | Shipped in commit `bedc064` (schema v15) but only for the same three fields as project overrides. Extending to other settings (output style, thinking, debug, etc.) is straightforward; do it when a concrete use case appears. |
 
 ## 8. Auth flows
 
