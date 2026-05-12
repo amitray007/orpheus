@@ -106,6 +106,116 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
 }
 
 // ---------------------------------------------------------------------------
+// Launch composition
+// ---------------------------------------------------------------------------
+
+export type ClaudeLaunch = {
+  /** Whitespace-separated CLI flags, e.g. "--model opus --permission-mode acceptEdits".
+   *  Empty string when all settings are at their claude defaults. */
+  flags: string
+  /** Inline JSON blob for --settings, covering keys with no CLI flag equivalent
+   *  (alwaysThinkingEnabled, outputStyle, tui, editorMode, prefersReducedMotion).
+   *  Empty string when no such keys differ from claude's defaults. */
+  settingsJson: string
+  /** Environment variables to set in the surface process, e.g.
+   *  { CLAUDE_CODE_NATIVE_CURSOR: '1' }. Empty object when all at defaults. */
+  env: Record<string, string>
+}
+
+/**
+ * Read the current ClaudeGlobalSettings and produce the three buckets needed
+ * to wire them into the claude invocation at workspace launch time.
+ *
+ * Invariant: for the seeded default state (all fields at DB defaults),
+ *   flags === '' && settingsJson === '' && env === {}
+ * which means the wrapper runs bare `claude` with no extra arguments.
+ */
+export function composeClaudeLaunch(): ClaudeLaunch {
+  const s = getClaudeGlobalSettings()
+
+  // -------------------------------------------------------------------------
+  // 1. CLI flags
+  // -------------------------------------------------------------------------
+  const flagParts: string[] = []
+
+  // --model: always pass for explicitness; 'sonnet' is claude's default but
+  // being explicit avoids any ambient ANTHROPIC_MODEL env var surprises.
+  // Only skip for the literal default 'sonnet' so bare claude is preserved
+  // when the user hasn't changed anything.
+  if (s.model && s.model !== 'sonnet') {
+    flagParts.push(`--model ${s.model}`)
+  }
+
+  // --permission-mode: skip 'default' (claude's default mode)
+  if (s.permissionMode && s.permissionMode !== 'default') {
+    flagParts.push(`--permission-mode ${s.permissionMode}`)
+  }
+
+  // --effort: skip 'auto' (let claude pick the effort level)
+  if (s.effort && s.effort !== 'auto') {
+    flagParts.push(`--effort ${s.effort}`)
+  }
+
+  const flags = flagParts.join(' ')
+
+  // -------------------------------------------------------------------------
+  // 2. settings.json blob (keys with no CLI flag equivalent)
+  // -------------------------------------------------------------------------
+  const settingsObj: Record<string, unknown> = {}
+
+  // alwaysThinkingEnabled — only set when true (default is false)
+  if (s.alwaysThinking) {
+    settingsObj['alwaysThinkingEnabled'] = true
+  }
+
+  // outputStyle — capitalize first letter; skip 'default' (claude's default)
+  // Claude expects capitalized values: "Explanatory", "Proactive", "Learning"
+  if (s.outputStyle && s.outputStyle !== 'default') {
+    const capitalized = s.outputStyle.charAt(0).toUpperCase() + s.outputStyle.slice(1)
+    settingsObj['outputStyle'] = capitalized
+  }
+
+  // tui — settings.json key is "tui"; skip 'default'
+  if (s.tuiMode && s.tuiMode !== 'default') {
+    settingsObj['tui'] = s.tuiMode
+  }
+
+  // editorMode — skip 'normal' (claude's default)
+  if (s.editorMode && s.editorMode !== 'normal') {
+    settingsObj['editorMode'] = s.editorMode
+  }
+
+  // prefersReducedMotion — only set when true (default is false)
+  if (s.reduceMotion) {
+    settingsObj['prefersReducedMotion'] = true
+  }
+
+  const settingsJson = Object.keys(settingsObj).length > 0 ? JSON.stringify(settingsObj) : ''
+
+  // -------------------------------------------------------------------------
+  // 3. Environment variables
+  // -------------------------------------------------------------------------
+  const env: Record<string, string> = {}
+
+  // CLAUDE_CODE_DISABLE_AUTO_MEMORY: set when autoMemory is explicitly false
+  if (!s.autoMemory) {
+    env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+  }
+
+  // CLAUDE_CODE_NATIVE_CURSOR: set when nativeCursor is true
+  if (s.nativeCursor) {
+    env['CLAUDE_CODE_NATIVE_CURSOR'] = '1'
+  }
+
+  // CLAUDE_CODE_HIDE_CWD: set when hideCwd is true
+  if (s.hideCwd) {
+    env['CLAUDE_CODE_HIDE_CWD'] = '1'
+  }
+
+  return { flags, settingsJson, env }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 

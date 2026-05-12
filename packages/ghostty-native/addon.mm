@@ -926,6 +926,27 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         cwdStr = cwdVal.As<Napi::String>().Utf8Value();
     }
 
+    // env — optional Record<string,string>; forwarded to the surface process.
+    // Keys and values are strdup'd for the lifetime of this mount call and
+    // freed after ghostty_surface_new returns (new surfaces only; re-attaches
+    // ignore env because the process is already running).
+    std::vector<std::pair<std::string, std::string>> envPairs;
+    Napi::Value envVal = opts.Get("env");
+    if (envVal.IsObject()) {
+        Napi::Object envObj = envVal.As<Napi::Object>();
+        Napi::Array envKeys = envObj.GetPropertyNames();
+        for (uint32_t i = 0; i < envKeys.Length(); i++) {
+            Napi::Value k = envKeys.Get(i);
+            Napi::Value v = envObj.Get(k);
+            if (k.IsString() && v.IsString()) {
+                envPairs.push_back({
+                    k.As<Napi::String>().Utf8Value(),
+                    v.As<Napi::String>().Utf8Value()
+                });
+            }
+        }
+    }
+
     // Lazy init Ghostty
     if (!ensureApp()) {
         Napi::Error::New(env, "ghostty init failed").ThrowAsJavaScriptException();
@@ -1044,8 +1065,36 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     surface_cfg.command = commandPath;
 
-    surface_cfg.env_vars = nullptr;
-    surface_cfg.env_var_count = 0;
+    // Build env_vars array from JS-provided key/value pairs.
+    // The ghostty_env_var_s structs and their strings must live through
+    // ghostty_surface_new. We strdup the strings here and free them after
+    // the call returns. The ghostty config takes copies internally.
+    std::vector<ghostty_env_var_s> envVarStructs;
+    std::vector<char*> envVarKeys;   // strdup'd, freed below
+    std::vector<char*> envVarValues; // strdup'd, freed below
+
+    if (!envPairs.empty()) {
+        for (const auto& kv : envPairs) {
+            char* keyCopy   = strdup(kv.first.c_str());
+            char* valueCopy = strdup(kv.second.c_str());
+            envVarKeys.push_back(keyCopy);
+            envVarValues.push_back(valueCopy);
+            ghostty_env_var_s ev;
+            ev.key   = keyCopy;
+            ev.value = valueCopy;
+            envVarStructs.push_back(ev);
+        }
+        surface_cfg.env_vars     = envVarStructs.data();
+        surface_cfg.env_var_count = (size_t)envVarStructs.size();
+        NSLog(@"[ghostty-native] surface env_vars count=%zu", envVarStructs.size());
+        for (const auto& ev : envVarStructs) {
+            NSLog(@"[ghostty-native]   env %s=%s", ev.key, ev.value);
+        }
+    } else {
+        surface_cfg.env_vars     = nullptr;
+        surface_cfg.env_var_count = 0;
+    }
+
     surface_cfg.initial_input = nullptr;
     surface_cfg.wait_after_command = true;  // keep surface alive (academic: exec zsh never exits)
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
@@ -1060,11 +1109,18 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         surface = ghostty_surface_new(g_app, &surface_cfg);
     } @catch (NSException* ex) {
         NSLog(@"[ghostty-native] ghostty_surface_new EXCEPTION: %@", ex.reason);
+        // Free strdup'd env var strings before returning.
+        for (char* p : envVarKeys)   free(p);
+        for (char* p : envVarValues) free(p);
         [termView removeFromSuperview];
         Napi::Error::New(env, std::string("ghostty_surface_new threw: ") +
                          [[ex reason] UTF8String]).ThrowAsJavaScriptException();
         return env.Undefined();
     }
+
+    // ghostty_surface_new has copied env var data internally; safe to free now.
+    for (char* p : envVarKeys)   free(p);
+    for (char* p : envVarValues) free(p);
 
     if (!surface) {
         [termView removeFromSuperview];

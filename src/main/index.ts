@@ -28,7 +28,7 @@ import {
   renameWorkspace,
   listAllPinned
 } from './workspaces'
-import { getClaudeGlobalSettings, updateClaudeGlobalSettings } from './claudeSettings'
+import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch } from '../shared/types'
 
@@ -435,7 +435,13 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 type GhosttyNativeAddon = {
   mount: (
     handle: Buffer,
-    opts: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
+    opts: {
+      workspaceId: string
+      rect: TerminalRect
+      scaleFactor: number
+      cwd?: string
+      env?: Record<string, string>
+    }
   ) => { workspaceId: string; created: boolean }
   hide: (workspaceId: string) => void
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
@@ -491,7 +497,29 @@ ipcMain.handle(
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
-    return addon.mount(handle, { workspaceId, rect, scaleFactor, cwd })
+
+    // Compose claude settings into env vars for the wrapper script.
+    const launch = composeClaudeLaunch()
+    const surfaceEnv: Record<string, string> = {
+      ...launch.env,
+      ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
+      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {})
+    }
+    console.log(
+      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s env=%s',
+      workspaceId,
+      launch.flags || '(none)',
+      launch.settingsJson || '(none)',
+      JSON.stringify(launch.env)
+    )
+
+    return addon.mount(handle, {
+      workspaceId,
+      rect,
+      scaleFactor,
+      cwd,
+      env: surfaceEnv
+    })
   }
 )
 
