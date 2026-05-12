@@ -7,7 +7,9 @@ import type {
   WorkspaceRecord,
   PinnedItem,
   ClaudeGlobalSettings,
-  ClaudeGlobalSettingsPatch
+  ClaudeGlobalSettingsPatch,
+  AppUiState,
+  AppUiStatePatch
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -43,6 +45,7 @@ declare global {
         open: (id: string) => Promise<ProjectRecord>
         remove: (id: string) => Promise<void>
         rename: (id: string, name: string) => Promise<void>
+        setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
       }
       sessions: {
         listForProject: (
@@ -70,6 +73,10 @@ declare global {
       claudeSettings: {
         get: () => Promise<ClaudeGlobalSettings>
         update: (patch: ClaudeGlobalSettingsPatch) => Promise<ClaudeGlobalSettings>
+      }
+      uiState: {
+        get: () => Promise<AppUiState>
+        update: (patch: AppUiStatePatch) => Promise<AppUiState>
       }
     }
   }

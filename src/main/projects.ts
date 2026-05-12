@@ -15,6 +15,7 @@ type ProjectRow = {
   claude_encoded_name: string | null
   added_at: number
   last_opened_at: number | null
+  expanded_in_sidebar: number
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -24,7 +25,8 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     name: row.name,
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
-    lastOpenedAt: row.last_opened_at
+    lastOpenedAt: row.last_opened_at,
+    expandedInSidebar: row.expanded_in_sidebar === 1
   }
 }
 
@@ -103,5 +105,10 @@ export function deleteProject(id: string): void {
 export function renameProject(id: string, name: string): void {
   const db = getDb()
   db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name, id)
+}
+
+export function setProjectExpandedInSidebar(id: string, expanded: boolean): void {
+  const db = getDb()
+  db.prepare('UPDATE projects SET expanded_in_sidebar = ? WHERE id = ?').run(expanded ? 1 : 0, id)
 }
 

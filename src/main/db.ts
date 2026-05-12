@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 5
+const CURRENT_VERSION = 6
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -71,6 +71,18 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
   );
 `
 
+const UI_STATE_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS app_ui_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    sidebar_collapsed INTEGER NOT NULL DEFAULT 0 CHECK (sidebar_collapsed IN (0, 1)),
+    last_view_kind TEXT NOT NULL DEFAULT 'dashboard'
+      CHECK (last_view_kind IN ('dashboard', 'sessions', 'project', 'workspace')),
+    last_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    last_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    updated_at INTEGER NOT NULL
+  );
+`
+
 // ---------------------------------------------------------------------------
 // Singleton
 // ---------------------------------------------------------------------------
@@ -99,6 +111,7 @@ function migrate(db: Database.Database): void {
   db.exec(SCHEMA_SQL)
   db.exec(WORKSPACES_SCHEMA_SQL)
   db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
+  db.exec(UI_STATE_SCHEMA_SQL)
 
   // Check / set schema version
   const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
@@ -168,6 +181,25 @@ function migrate(db: Database.Database): void {
 
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(5)
+    }
+  }
+
+  // Version 6: app_ui_state singleton table + projects.expanded_in_sidebar column
+  if (currentVersion < 6) {
+    // Add expanded_in_sidebar column to projects
+    try {
+      db.exec('ALTER TABLE projects ADD COLUMN expanded_in_sidebar INTEGER NOT NULL DEFAULT 0')
+    } catch {
+      // Column may already exist if this migration ran partially
+    }
+
+    // Seed the app_ui_state singleton row
+    db.prepare(
+      `INSERT OR IGNORE INTO app_ui_state (id, updated_at) VALUES (1, ?)`
+    ).run(Date.now())
+
+    if (row) {
+      db.prepare('UPDATE schema_version SET version = ?').run(6)
     }
   }
 }

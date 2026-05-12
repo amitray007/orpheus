@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Topbar } from './Topbar'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { Footer } from './Footer'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
+import type { AppUiState, ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -13,6 +13,10 @@ interface DashboardProps {
 export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [version, setVersion] = useState<string>('')
+
+  // UI state hydration
+  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const hydratedRef = useRef(false)
 
   // Projects state
   const [projects, setProjects] = useState<ProjectRecord[]>([])
@@ -47,6 +51,22 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
   }, [])
 
   useEffect(() => {
+    window.api.uiState
+      .get()
+      .then(setUiState)
+      .catch((err) => {
+        console.error('[dashboard] failed to load ui state', err)
+        setUiState({
+          sidebarCollapsed: false,
+          lastViewKind: 'dashboard',
+          lastProjectId: null,
+          lastWorkspaceId: null,
+          updatedAt: 0
+        })
+      })
+  }, [])
+
+  useEffect(() => {
     window.api.projects
       .list()
       .then((list) => {
@@ -76,6 +96,42 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     refreshPins()
   }, [])
 
+  // Hydrate UI state from DB once both projects and uiState are loaded.
+  // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
+  useEffect(() => {
+    if (!uiState || projectsLoading) return
+    if (hydratedRef.current) return
+    hydratedRef.current = true
+
+    setSidebarCollapsed(uiState.sidebarCollapsed)
+
+    // Restore expanded project rows from the projects list itself
+    const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
+    setExpandedProjectIds(expanded)
+
+    // Restore view: workspace > project > sessions > dashboard
+    if (uiState.lastViewKind === 'workspace' && uiState.lastWorkspaceId && uiState.lastProjectId) {
+      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      if (proj) {
+        handleSelectWorkspace(uiState.lastWorkspaceId, uiState.lastProjectId)
+        return
+      }
+    }
+    if (uiState.lastViewKind === 'project' && uiState.lastProjectId) {
+      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      if (proj) {
+        handleSelectProject(uiState.lastProjectId)
+        return
+      }
+    }
+    if (uiState.lastViewKind === 'sessions') {
+      setView({ kind: 'sessions' })
+      return
+    }
+    // default — dashboard, initial state already handles this
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiState, projectsLoading, projects])
+
   // Stores all workspaces (active + archived) per project. Callers filter by
   // archivedAt at render time. One source of truth — keeps ProjectView in
   // sync when the sidebar mutates workspace state.
@@ -87,6 +143,11 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       console.error('[dashboard] failed to load workspaces for', projectId, err)
       setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
     }
+  }
+
+  function setSidebarCollapsedAndPersist(collapsed: boolean): void {
+    setSidebarCollapsed(collapsed)
+    window.api.uiState.update({ sidebarCollapsed: collapsed }).catch(console.error)
   }
 
   function handleToggleProjectExpand(id: string): void {
@@ -101,6 +162,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
           fetchWorkspacesForProject(id)
         }
       }
+      window.api.projects.setExpandedInSidebar(id, next.has(id)).catch(console.error)
       return next
     })
   }
@@ -113,12 +175,18 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       fetchWorkspacesForProject(id)
     }
     window.api.projects.open(id).catch(console.error)
+    window.api.uiState
+      .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
+      .catch(console.error)
   }
 
   function handleSelectNav(nav: 'dashboard' | 'sessions'): void {
     setView({ kind: nav })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
+    window.api.uiState
+      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
   }
 
   async function handleAddProject(): Promise<void> {
@@ -132,6 +200,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
         setView({ kind: 'project', projectId: result.id })
         // Fetch the auto-created Default workspace
         await fetchWorkspacesForProject(result.id)
+        window.api.uiState
+          .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
+          .catch(console.error)
       }
     } catch (err) {
       console.error('[dashboard] pickAndAdd failed', err)
@@ -148,6 +219,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       fetchWorkspacesForProject(id)
     }
     window.api.projects.open(id).catch(console.error)
+    window.api.uiState
+      .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
+      .catch(console.error)
   }
 
   function handleSelectWorkspace(workspaceId: string, projectId: string): void {
@@ -165,6 +239,9 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
       fetchWorkspacesForProject(projectId)
     }
     window.api.workspaces.open(workspaceId).catch(console.error)
+    window.api.uiState
+      .update({ lastViewKind: 'workspace', lastProjectId: projectId, lastWorkspaceId: workspaceId })
+      .catch(console.error)
   }
 
   async function handleToggleWorkspacePin(workspaceId: string, projectId: string): Promise<void> {
@@ -346,7 +423,7 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar onToggleSidebar={() => setSidebarCollapsed((v) => !v)} />
+      <Topbar onToggleSidebar={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)} />
 
       <div className="flex flex-1 min-h-0">
         <Sidebar

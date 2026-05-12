@@ -24,6 +24,7 @@ export type ProjectRecord = {
   claudeEncodedName: string | null
   addedAt: number
   lastOpenedAt: number | null
+  expandedInSidebar: boolean
 }
 
 export type WorkspaceRecord = {
@@ -43,6 +44,26 @@ export type PinnedItem = {
   workspace: WorkspaceRecord
   project: ProjectRecord
 }
+
+// ---------------------------------------------------------------------------
+// Claude global settings
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// App UI state
+// ---------------------------------------------------------------------------
+
+export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace'
+
+export type AppUiState = {
+  sidebarCollapsed: boolean
+  lastViewKind: AppViewKind
+  lastProjectId: string | null
+  lastWorkspaceId: string | null
+  updatedAt: number
+}
+
+export type AppUiStatePatch = Partial<Omit<AppUiState, 'updatedAt'>>
 
 // ---------------------------------------------------------------------------
 // Claude global settings

@@ -9,7 +9,14 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject } from '../shared/types'
 import { getDb } from './db'
-import { listProjects, addProject, openProject, deleteProject, renameProject } from './projects'
+import {
+  listProjects,
+  addProject,
+  openProject,
+  deleteProject,
+  renameProject,
+  setProjectExpandedInSidebar
+} from './projects'
 import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
 import {
   listWorkspacesForProject,
@@ -22,7 +29,8 @@ import {
   listAllPinned
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings } from './claudeSettings'
-import type { SessionStatus, ClaudeGlobalSettingsPatch } from '../shared/types'
+import { getAppUiState, updateAppUiState } from './uiState'
+import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -294,6 +302,20 @@ ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
 ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =>
   updateClaudeGlobalSettings(patch)
+)
+
+// ---------------------------------------------------------------------------
+// UI State IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('uiState:get', () => getAppUiState())
+
+ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => updateAppUiState(patch))
+
+ipcMain.handle(
+  'projects:setExpandedInSidebar',
+  (_e, { id, expanded }: { id: string; expanded: boolean }) =>
+    setProjectExpandedInSidebar(id, expanded)
 )
 
 ipcMain.handle('doctor:check', (): DoctorResult => {

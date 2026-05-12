@@ -8,7 +8,9 @@ import type {
   WorkspaceRecord,
   PinnedItem,
   ClaudeGlobalSettings,
-  ClaudeGlobalSettingsPatch
+  ClaudeGlobalSettingsPatch,
+  AppUiState,
+  AppUiStatePatch
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -46,7 +48,9 @@ const api = {
     open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('projects:remove', { id }),
     rename: (id: string, name: string): Promise<void> =>
-      ipcRenderer.invoke('projects:rename', { id, name })
+      ipcRenderer.invoke('projects:rename', { id, name }),
+    setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
+      ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded })
   },
   sessions: {
     listForProject: (
@@ -84,6 +88,11 @@ const api = {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
       ipcRenderer.invoke('claudeSettings:update', patch)
+  },
+  uiState: {
+    get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
+    update: (patch: AppUiStatePatch): Promise<AppUiState> =>
+      ipcRenderer.invoke('uiState:update', patch)
   }
 }
 
