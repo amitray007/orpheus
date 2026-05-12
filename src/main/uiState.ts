@@ -20,10 +20,18 @@ type AppUiStateRow = {
   restore_geometry: number
   close_hides: number
   open_at_last_view: number
+  // Sidebar behavior preferences (v12)
+  pinned_section_visible: number
+  workspace_count_inline: number
+  sidebar_width: number
+  default_project_expanded: number
   updated_at: number
 }
 
 function rowToRecord(row: AppUiStateRow): AppUiState {
+  // Clamp sidebar_width to valid range at read time — guards against manual DB edits
+  const rawWidth = row.sidebar_width ?? 256
+  const clampedWidth = Math.min(480, Math.max(200, rawWidth))
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
     lastViewKind: row.last_view_kind as AppViewKind,
@@ -38,6 +46,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     restoreGeometry: (row.restore_geometry ?? 1) === 1,
     closeHides: (row.close_hides ?? 1) === 1,
     openAtLastView: (row.open_at_last_view ?? 1) === 1,
+    // Sidebar behavior preferences (v12)
+    pinnedSectionVisible: (row.pinned_section_visible ?? 1) === 1,
+    workspaceCountInline: (row.workspace_count_inline ?? 1) === 1,
+    sidebarWidth: clampedWidth,
+    defaultProjectExpanded: (row.default_project_expanded ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -100,7 +113,12 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Window behavior preferences (v11)
     restoreGeometry: 'restore_geometry',
     closeHides: 'close_hides',
-    openAtLastView: 'open_at_last_view'
+    openAtLastView: 'open_at_last_view',
+    // Sidebar behavior preferences (v12)
+    pinnedSectionVisible: 'pinned_section_visible',
+    workspaceCountInline: 'workspace_count_inline',
+    sidebarWidth: 'sidebar_width',
+    defaultProjectExpanded: 'default_project_expanded'
   }
 
   const setClauses: string[] = []

@@ -266,6 +266,7 @@ interface ProjectRowProps {
   expanded: boolean
   workspaces: WorkspaceRecord[]
   workspaceCount: number
+  workspaceCountInline: boolean
   selectedWorkspaceId?: string | null
   activeWorkspaceIds: Set<string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
@@ -294,6 +295,7 @@ function ProjectRow({
   expanded,
   workspaces,
   workspaceCount,
+  workspaceCountInline,
   selectedWorkspaceId,
   activeWorkspaceIds,
   gitStatusByWorkspaceId,
@@ -375,7 +377,7 @@ function ProjectRow({
           ) : (
             <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
               <span className="truncate">{project.name}</span>
-              {workspaceCount > 0 && (
+              {workspaceCountInline && workspaceCount > 0 && (
                 <span className="text-xs text-text-muted flex-shrink-0">· {workspaceCount}</span>
               )}
             </span>
@@ -719,6 +721,10 @@ interface SidebarProps {
   pinnedLoading: boolean
   activeWorkspaceIds: Set<string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  // Sidebar behavior preferences (v12)
+  pinnedSectionVisible: boolean
+  workspaceCountInline: boolean
+  sidebarWidth: number // px, expanded state only
   onToggleCollapsed: () => void
   onSelectSettings: () => void
   onSelectProject: (id: string) => void
@@ -749,6 +755,9 @@ export function Sidebar({
   pinnedLoading,
   activeWorkspaceIds,
   gitStatusByWorkspaceId,
+  pinnedSectionVisible,
+  workspaceCountInline,
+  sidebarWidth,
   onToggleCollapsed,
   onSelectSettings,
   onSelectProject,
@@ -812,11 +821,12 @@ export function Sidebar({
   return (
     <aside
       className={[
-        collapsed ? 'w-28' : 'w-64',
+        collapsed ? 'w-28' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
         'pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
+      style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
       {/* Top strip: traffic-lights spacer + toggle when expanded — drag region */}
       <div
@@ -856,8 +866,8 @@ export function Sidebar({
         onClick={() => onSelectNav('sessions')}
       />
 
-      {/* Pinned section — only when not collapsed */}
-      {!collapsed && (
+      {/* Pinned section — only when not collapsed and pinnedSectionVisible is on */}
+      {!collapsed && pinnedSectionVisible && (
         <PinnedSection
           pinnedItems={pinnedItems}
           loading={pinnedLoading}
@@ -906,6 +916,7 @@ export function Sidebar({
                       expanded={expanded}
                       workspaces={workspaces}
                       workspaceCount={workspaces.length}
+                      workspaceCountInline={workspaceCountInline}
                       selectedWorkspaceId={selectedWorkspaceId}
                       activeWorkspaceIds={activeWorkspaceIds}
                       gitStatusByWorkspaceId={gitStatusByWorkspaceId}

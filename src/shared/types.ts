@@ -76,6 +76,11 @@ export type AppUiState = {
   restoreGeometry?: boolean
   closeHides?: boolean
   openAtLastView?: boolean
+  // Sidebar behavior preferences (v12)
+  pinnedSectionVisible: boolean
+  workspaceCountInline: boolean
+  sidebarWidth: number
+  defaultProjectExpanded: boolean
   updatedAt: number
 }
 

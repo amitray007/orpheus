@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 11
+const CURRENT_VERSION = 12
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -129,6 +129,11 @@ const UI_STATE_SCHEMA_SQL = `
     restore_geometry INTEGER NOT NULL DEFAULT 1 CHECK (restore_geometry IN (0, 1)),
     close_hides INTEGER NOT NULL DEFAULT 1 CHECK (close_hides IN (0, 1)),
     open_at_last_view INTEGER NOT NULL DEFAULT 1 CHECK (open_at_last_view IN (0, 1)),
+    -- Sidebar behavior preferences (v12)
+    pinned_section_visible INTEGER NOT NULL DEFAULT 1 CHECK (pinned_section_visible IN (0, 1)),
+    workspace_count_inline INTEGER NOT NULL DEFAULT 1 CHECK (workspace_count_inline IN (0, 1)),
+    sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480),
+    default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -324,5 +329,14 @@ function migrate(db: Database.Database): void {
     // claude_global_settings new column (fallback model)
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN fallback_model TEXT NOT NULL DEFAULT ''") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(11)
+  }
+
+  // Version 12: sidebar behavior columns on app_ui_state
+  if (currentVersion < 12) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN pinned_section_visible INTEGER NOT NULL DEFAULT 1 CHECK (pinned_section_visible IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN workspace_count_inline INTEGER NOT NULL DEFAULT 1 CHECK (workspace_count_inline IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480)') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1))') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(12)
   }
 }

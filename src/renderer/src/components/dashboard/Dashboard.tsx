@@ -62,6 +62,13 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           windowWidth: null,
           windowHeight: null,
           windowFullscreen: false,
+          restoreGeometry: true,
+          closeHides: true,
+          openAtLastView: true,
+          pinnedSectionVisible: true,
+          workspaceCountInline: true,
+          sidebarWidth: 256,
+          defaultProjectExpanded: false,
           updatedAt: 0
         })
       })
@@ -144,6 +151,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     // Restore expanded project rows from the projects list itself
     const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
     setExpandedProjectIds(expanded)
+
+    // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
+    if (!uiState.openAtLastView) return
 
     // Restore view: workspace > project > sessions > dashboard
     if (uiState.lastViewKind === 'workspace' && uiState.lastWorkspaceId && uiState.lastProjectId) {
@@ -250,6 +260,11 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         setView({ kind: 'project', projectId: result.id })
         // Fetch the auto-created Default workspace
         await fetchWorkspacesForProject(result.id)
+        // Auto-expand if defaultProjectExpanded is on
+        if (uiState?.defaultProjectExpanded) {
+          setExpandedProjectIds((prev) => new Set(prev).add(result.id))
+          window.api.projects.setExpandedInSidebar(result.id, true).catch(console.error)
+        }
         window.api.uiState
           .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
           .catch(console.error)
@@ -517,6 +532,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         pinnedLoading={pinnedLoading}
         activeWorkspaceIds={activeWorkspaceIds}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+        pinnedSectionVisible={uiState?.pinnedSectionVisible ?? true}
+        workspaceCountInline={uiState?.workspaceCountInline ?? true}
+        sidebarWidth={uiState?.sidebarWidth ?? 256}
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
         onSelectSettings={handleSelectSettings}
         onSelectProject={handleSelectProject}
