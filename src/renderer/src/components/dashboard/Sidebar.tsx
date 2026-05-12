@@ -47,7 +47,7 @@ function NavItem({
         active
           ? 'bg-accent/15 text-text-primary font-medium'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-        'focus:outline-none focus:ring-2 focus:ring-accent/50'
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
       ].join(' ')}
       onClick={onClick}
       aria-label={label}
@@ -143,7 +143,7 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
+        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -181,7 +181,7 @@ function WorkspaceSubRow({
             e.stopPropagation()
             onTogglePin()
           }}
-          className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
+          className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           title={isPinned ? 'Unpin workspace' : 'Pin workspace'}
           aria-label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
         >
@@ -313,7 +313,7 @@ function ProjectRow({
         {/* Main clickable row — navigate to project view */}
         <button
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
+          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
           title={project.path}
           aria-label={project.name}
         >
@@ -351,7 +351,7 @@ function ProjectRow({
                   e.stopPropagation()
                   onAddWorkspace()
                 }}
-                className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
+                className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                 title="New workspace"
                 aria-label="New workspace"
               >
@@ -365,7 +365,7 @@ function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
+              className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
               aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
@@ -558,7 +558,7 @@ function PinnedWorkspaceRow({
       >
         <button
           onClick={onSelect}
-          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
+          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
           title={workspace.cwd}
           aria-label={`${project.name} — ${workspace.name}`}
         >
@@ -592,7 +592,7 @@ function PinnedWorkspaceRow({
               e.stopPropagation()
               onUnpin()
             }}
-            className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
+            className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
             title="Unpin workspace"
             aria-label="Unpin workspace"
           >
@@ -743,7 +743,7 @@ export function Sidebar({
         collapsed ? 'w-28' : 'w-64',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'px-2 py-4 flex flex-col gap-1 overflow-hidden shrink-0'
+        'px-2 pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
     >
       {/* Top strip: traffic-lights spacer + sidebar toggle */}
@@ -756,7 +756,7 @@ export function Sidebar({
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          className="ml-auto p-2 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/50 transition-colors duration-150"
+          className="ml-auto p-2 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150"
         >
           <SidebarSimple size={16} weight="regular" />
         </button>
@@ -866,7 +866,7 @@ export function Sidebar({
                     title={p.name}
                     aria-label={p.name}
                     className={[
-                      'p-1 rounded-md transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
+                      'p-1 rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
                       isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
                     ].join(' ')}
                   >
@@ -889,7 +889,7 @@ export function Sidebar({
           activeView === 'settings'
             ? 'bg-accent/15 text-text-primary font-medium'
             : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-          'focus:outline-none focus:ring-2 focus:ring-accent/50'
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
         ].join(' ')}
       >
         <Gear size={20} weight={activeView === 'settings' ? 'fill' : 'regular'} />

@@ -50,7 +50,7 @@ export function SegmentedControl<T extends string>({
           aria-checked={value === opt.value}
           onClick={() => onChange(opt.value)}
           className={[
-            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
+            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             value === opt.value
               ? 'bg-accent/15 text-text-primary'
               : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
@@ -69,7 +69,7 @@ export interface ToggleProps {
   ariaLabel: string
 }
 export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.Element {
-  // iOS-style switch: 36x20 track with 16x16 knob.
+  // iOS-style switch: 36x20 track with 14x14 knob, no border on off-state.
   return (
     <button
       role="switch"
@@ -77,14 +77,15 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
       aria-label={ariaLabel}
       onClick={() => onChange(!value)}
       className={[
-        'relative w-9 h-5 rounded-full transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
-        value ? 'bg-accent' : 'bg-surface-overlay border border-border-default'
+        'relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-200',
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-base',
+        value ? 'bg-accent' : 'bg-surface-overlay'
       ].join(' ')}
     >
       <span
         className={[
-          'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-150',
-          value ? 'translate-x-[18px]' : 'translate-x-0.5'
+          'inline-block w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200',
+          value ? 'translate-x-[18px]' : 'translate-x-[2px]'
         ].join(' ')}
       />
     </button>
@@ -119,7 +120,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
               onChange(opt.value)
             }}
             className={[
-              'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
+              'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
               !isCustom && value === opt.value
                 ? 'bg-accent/15 text-text-primary'
                 : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
@@ -133,7 +134,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
           aria-checked={isCustom}
           onClick={() => setShowCustom(true)}
           className={[
-            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
+            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             isCustom ? 'bg-accent/15 text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
           ].join(' ')}
         >

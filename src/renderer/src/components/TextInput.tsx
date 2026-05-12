@@ -21,10 +21,10 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(function T
         'w-full rounded-md bg-surface-raised px-3 py-2 text-sm text-text-primary',
         'border transition-colors duration-150',
         'placeholder:text-text-muted',
-        'focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-surface-base',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-base',
         hasError
-          ? 'border-red-500 focus:ring-red-500'
-          : 'border-border-default focus:border-border-focus focus:ring-accent',
+          ? 'border-red-500 focus-visible:ring-red-500'
+          : 'border-border-default focus-visible:border-border-focus focus-visible:ring-accent',
         rest.disabled ? 'opacity-40 cursor-not-allowed' : '',
         className
       ]
