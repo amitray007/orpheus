@@ -992,6 +992,30 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.hasAutoLaunchedClaude = NO;   // will flip on first GHOSTTY_ACTION_PWD
     g_surfaces[workspaceId] = entry;
 
+    // Fallback timer (Option B): fires 1.5 s after surface creation.
+    //
+    // Some shells / prompt frameworks (oh-my-zsh, starship, custom precmd hooks)
+    // do not preserve Ghostty's shell-integration OSC sequences, so
+    // GHOSTTY_ACTION_PWD never fires.  This timer guarantees claude auto-launches
+    // regardless.  The per-surface hasAutoLaunchedClaude guard means whichever
+    // path wins first, the other no-ops — there is no double-fire.
+    //
+    // This block is scheduled only in the create-new-entry branch, so it is
+    // NEVER scheduled on workspace re-attach (hide + mount with existing entry).
+    // That structurally prevents re-firing claude on nav-back.
+    {
+        NSString* wsIdCopy = [NSString stringWithUTF8String:workspaceId.c_str()];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            auto fit = g_surfaces.find(wsIdCopy.UTF8String);
+            if (fit == g_surfaces.end()) return;   // surface destroyed in the meantime
+            if (fit->second.hasAutoLaunchedClaude) return;  // PWD already won the race
+            fit->second.hasAutoLaunchedClaude = YES;
+            NSLog(@"[ghostty-native] fallback timer: typing claude for workspaceId=%@", wsIdCopy);
+            ghostty_surface_text(fit->second.surface, "claude\n", 7);
+        });
+    }
+
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
 
