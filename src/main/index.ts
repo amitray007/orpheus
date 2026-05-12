@@ -33,7 +33,8 @@ import {
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides } from '../shared/types'
+import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
+import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Window
@@ -415,6 +416,14 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 )
 
 // ---------------------------------------------------------------------------
+// Claude Auth IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('claudeAuth:get', () => getClaudeAuthState())
+
+ipcMain.handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
+
+// ---------------------------------------------------------------------------
 // Per-project Claude Settings IPC
 // ---------------------------------------------------------------------------
 
@@ -537,17 +546,31 @@ ipcMain.handle(
 
     // Compose claude settings into env vars for the wrapper script.
     const launch = composeClaudeLaunch(projectId)
+
+    // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
+    // Merged LAST so they win over any ambient settings-derived values.
+    // NEVER log authEnv values — they contain plaintext secrets.
+    const authEnv = getClaudeAuthEnv()
+
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
+      ...authEnv,  // auth env wins on conflict
       ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
       ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {})
+    }
+
+    // Build a redacted copy of env for logging — never log secret values
+    const redactedEnv: Record<string, string> = {}
+    const SECRET_KEYS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])
+    for (const [k, v] of Object.entries(surfaceEnv)) {
+      redactedEnv[k] = SECRET_KEYS.has(k) ? '[redacted]' : v
     }
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s env=%s',
       workspaceId,
       launch.flags || '(none)',
       launch.settingsJson || '(none)',
-      JSON.stringify(launch.env)
+      JSON.stringify(redactedEnv)
     )
 
     return addon.mount(handle, {

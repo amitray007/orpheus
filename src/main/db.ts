@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 12
+const CURRENT_VERSION = 13
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -100,6 +100,10 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     permission_additional_dirs TEXT NOT NULL DEFAULT '[]',
     -- Fallback model (v11)
     fallback_model TEXT NOT NULL DEFAULT '',
+    -- Auth (v13)
+    cloud_provider TEXT NOT NULL DEFAULT 'anthropic'
+      CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry')),
+    auth_encrypted_blob BLOB,
     updated_at INTEGER NOT NULL
   );
 `
@@ -338,5 +342,12 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480)') } catch {}
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1))') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(12)
+  }
+
+  // Version 13: auth columns on claude_global_settings
+  if (currentVersion < 13) {
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN cloud_provider TEXT NOT NULL DEFAULT 'anthropic' CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry'))") } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auth_encrypted_blob BLOB') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(13)
   }
 }

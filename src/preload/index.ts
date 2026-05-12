@@ -13,7 +13,9 @@ import type {
   ClaudeProjectSettingsOverrides,
   AppUiState,
   AppUiStatePatch,
-  GitStatus
+  GitStatus,
+  ClaudeAuthState,
+  ClaudeAuthPatch
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -91,6 +93,11 @@ const api = {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
       ipcRenderer.invoke('claudeSettings:update', patch)
+  },
+  claudeAuth: {
+    get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),
+    update: (patch: ClaudeAuthPatch): Promise<ClaudeAuthState> =>
+      ipcRenderer.invoke('claudeAuth:update', patch)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>

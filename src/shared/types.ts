@@ -160,6 +160,35 @@ export type ClaudeProjectSettings = {
   updatedAt: number
 }
 
+// ---------------------------------------------------------------------------
+// Claude Authentication (v13)
+// ---------------------------------------------------------------------------
+
+export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry'
+
+export type ClaudeAuthSecrets = {
+  apiKey: string      // empty string = unset
+  baseUrl: string     // empty = use provider default
+  authToken: string   // for OAuth flows; empty = unused
+}
+
+// Public API shape — what the renderer sees (after decryption + masking decisions)
+export type ClaudeAuthState = {
+  cloudProvider: ClaudeCloudProvider
+  hasApiKey: boolean    // true if non-empty stored — renderer shows "•••" instead of the value
+  hasAuthToken: boolean
+  baseUrl: string       // not masked — base URL isn't secret
+  encryptionAvailable: boolean  // false = safeStorage isn't usable on this machine; disable inputs
+}
+
+// Patch shape — partial update; only the fields the user actually changed
+export type ClaudeAuthPatch = {
+  cloudProvider?: ClaudeCloudProvider
+  apiKey?: string    // empty string clears
+  baseUrl?: string
+  authToken?: string
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {
