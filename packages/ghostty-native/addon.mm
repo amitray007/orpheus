@@ -1078,6 +1078,14 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 //
 // Full teardown — call only on workspace archive or project removal.
 // Idempotent: no-op if no entry exists.
+//
+// Performance design: user-visible cleanup runs synchronously so the IPC
+// return is fast (<1ms) and the renderer unblocks immediately. The slow
+// part — ghostty_surface_free (terminates the shell and waits for IO drain,
+// typically 200ms–2s) — is deferred to the main queue via dispatch_async so
+// it runs after this NAPI call returns.  The main thread is still occupied
+// during the actual free, but the *perceived* archive is instant because the
+// NSView has already been removed from the superview.
 // ---------------------------------------------------------------------------
 
 static Napi::Value Destroy(const Napi::CallbackInfo& info) {
@@ -1095,36 +1103,49 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
-    NSLog(@"[ghostty-native] destroy workspaceId=%s", workspaceId.c_str());
+    NSLog(@"[ghostty-native] destroy workspaceId=%s (sync detach + async free)", workspaceId.c_str());
 
-    GhosttySurfaceEntry& entry = it->second;
-
-    // Stop + release the display link first.
-    if (entry.displayLink) {
-        CVDisplayLinkStop(entry.displayLink);
-        CVDisplayLinkRelease(entry.displayLink);
-        entry.displayLink = nullptr;
-    }
-
-    // Nil out the view's surface pointer so any in-flight key events don't
-    // use freed memory.
-    if (entry.view) {
-        entry.view.surface = nullptr;
-    }
-
-    // Free the Ghostty surface (terminates the shell process).
-    if (entry.surface) {
-        ghostty_surface_free(entry.surface);
-        entry.surface = nullptr;
-    }
-
-    // Remove the view from its parent (if still attached).
-    if (entry.view) {
-        [entry.view removeFromSuperview];
-        entry.view = nil; // ARC releases
-    }
-
+    // ---- Synchronous, fast — user-visible state disappears immediately ----
+    // Move ownership out of the map and erase the entry so any concurrent
+    // lookup (e.g. hide() racing with archive) sees no entry.
+    GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
+
+    // Detach the view so the workspace appears gone right away.
+    // Nil out surface pointer first so any in-flight key events see nullptr
+    // instead of soon-to-be-freed memory.
+    if (doomed.view) {
+        doomed.view.surface = nullptr;
+        [doomed.view removeFromSuperview];
+    }
+
+    // Stop the display link so no more draw callbacks fire on the
+    // to-be-freed surface. (Release is deferred to the async block.)
+    if (doomed.displayLink) {
+        CVDisplayLinkStop(doomed.displayLink);
+    }
+
+    // ---- Asynchronous, slow — process teardown after the IPC return ----
+    // ghostty_surface_free MUST run on the main thread per Ghostty's API
+    // contract, but it doesn't have to be synchronous with this NAPI call.
+    // We allocate a heap copy of doomed so the block owns it cleanly
+    // (avoids ObjC++ __block + std::move ARC interaction uncertainty).
+    GhosttySurfaceEntry* heap = new GhosttySurfaceEntry(std::move(doomed));
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (heap->displayLink) {
+            CVDisplayLinkRelease(heap->displayLink);
+            heap->displayLink = nullptr;
+        }
+        if (heap->surface) {
+            // Slow: blocks main thread here, but AFTER the IPC call has returned.
+            ghostty_surface_free(heap->surface);
+            heap->surface = nullptr;
+        }
+        heap->view = nil; // ARC release; removeFromSuperview already ran
+        delete heap;
+        NSLog(@"[ghostty-native] destroy workspaceId=<deferred>: surface freed");
+    });
+
     return env.Undefined();
 }
 
