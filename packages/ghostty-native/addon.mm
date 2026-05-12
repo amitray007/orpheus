@@ -59,9 +59,26 @@
 //     wired here; add them when NSTextInputClient composition is fully wired.
 //
 // Mouse:
-//   • mouseDown: makes the view first responder so keystrokes route here.
-//   • Full mouse-button/scroll forwarding to ghostty_surface_mouse_button /
-//     ghostty_surface_mouse_scroll is NOT in scope this commit.
+//   • mouseDown: makes the view first responder AND forwards to ghostty_surface_mouse_button.
+//   • Full mouse forwarding: mouseUp, mouseDragged, rightMouseDown/Up, otherMouseDown/Up,
+//     scrollWheel — all call ghostty_surface_mouse_*.
+//   • Tracking area added via updateTrackingAreas so mouseMoved / mouseEntered / mouseExited
+//     fire for hover and cursor-shape updates.
+//
+// Coordinate system note:
+//   • OrpheusGhosttyView has isFlipped = YES, so convertPoint:fromView:nil yields
+//     top-left origin. Ghostty expects bottom-left origin (non-flipped), so we apply
+//     the same manual flip that Ghostty's own SurfaceView_AppKit.swift performs:
+//       ghosttyY = view.frame.size.height - localPoint.y
+//   • Coordinates passed to ghostty_surface_mouse_pos are logical (point) values,
+//     NOT scaled physical pixels. The Swift reference confirms this (raw pos.x / pos.y).
+//   • ghostty_surface_mouse_scroll also uses logical deltas (event.scrollingDeltaX/Y).
+//
+// Scroll mods packing (from Ghostty.Input.swift ScrollMods struct):
+//   ghostty_input_scroll_mods_t is an int32 packed bitmask:
+//     bit 0   : precision (1 = hasPreciseScrollingDeltas, trackpad/Magic Mouse)
+//     bits 1–3: momentum phase (NSEvent.Phase → ghostty_input_mouse_momentum_e values 0–6)
+//   precise deltas are multiplied by 2.0 (matches Ghostty upstream behaviour).
 // ---------------------------------------------------------------------------
 
 @interface OrpheusGhosttyView : NSView <NSTextInputClient>
@@ -111,6 +128,68 @@ static ghostty_input_mods_e modsFromEvent(NSEvent *event) {
     if (raw & NX_DEVICERCMDKEYMASK)   mods |= GHOSTTY_MODS_SUPER_RIGHT;
 
     return (ghostty_input_mods_e)mods;
+}
+
+// ---------------------------------------------------------------------------
+// Convert an NSEvent location to view-local Ghostty coordinates.
+//
+// Steps:
+//   1. event.locationInWindow   → window coords
+//   2. convertPoint:fromView:nil → view-local coords (top-left origin, because
+//      isFlipped = YES)
+//   3. ghosttyY = frame.height - localY   → flip to bottom-left origin
+//      (mirrors the `y: frame.height - pos.y` in SurfaceView_AppKit.swift;
+//       Ghostty's internal mouse logic expects non-flipped coords)
+//
+// Returns a struct so both x and y can be passed with a single call.
+// ---------------------------------------------------------------------------
+
+struct GhosttyMousePos { double x; double y; };
+
+static GhosttyMousePos ghosttyPosForEvent(NSEvent *event, OrpheusGhosttyView *view) {
+    NSPoint local = [view convertPoint:event.locationInWindow fromView:nil];
+    // local.y is top-origin (isFlipped = YES); flip it for Ghostty.
+    double ghosttyY = view.frame.size.height - local.y;
+    return { local.x, ghosttyY };
+}
+
+// ---------------------------------------------------------------------------
+// Build ghostty_input_scroll_mods_t from an NSEvent scroll event.
+//
+// Packing (from Ghostty.Input.swift ScrollMods):
+//   bit 0   : 1 if hasPreciseScrollingDeltas (trackpad / Magic Mouse)
+//   bits 1–3: momentum phase (NSEvent.Phase → ghostty_input_mouse_momentum_e)
+//
+// NSEvent.Phase → momentum enum mapping (from Ghostty.Input.swift Momentum):
+//   .began      → GHOSTTY_MOUSE_MOMENTUM_BEGAN      (1)
+//   .stationary → GHOSTTY_MOUSE_MOMENTUM_STATIONARY (2)
+//   .changed    → GHOSTTY_MOUSE_MOMENTUM_CHANGED    (3)
+//   .ended      → GHOSTTY_MOUSE_MOMENTUM_ENDED      (4)
+//   .cancelled  → GHOSTTY_MOUSE_MOMENTUM_CANCELLED  (5)
+//   .mayBegin   → GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN  (6)
+//   default     → GHOSTTY_MOUSE_MOMENTUM_NONE       (0)
+// ---------------------------------------------------------------------------
+
+static ghostty_input_scroll_mods_t scrollModsForEvent(NSEvent *event) {
+    int32_t mods = 0;
+
+    bool precise = event.hasPreciseScrollingDeltas;
+    if (precise) mods |= 0x01;   // bit 0
+
+    // Map NSEvent.Phase (momentum phase) → ghostty momentum enum value (0–6).
+    uint8_t momentum = GHOSTTY_MOUSE_MOMENTUM_NONE;
+    switch (event.momentumPhase) {
+        case NSEventPhaseBegan:       momentum = GHOSTTY_MOUSE_MOMENTUM_BEGAN;       break;
+        case NSEventPhaseStationary:  momentum = GHOSTTY_MOUSE_MOMENTUM_STATIONARY;  break;
+        case NSEventPhaseChanged:     momentum = GHOSTTY_MOUSE_MOMENTUM_CHANGED;     break;
+        case NSEventPhaseEnded:       momentum = GHOSTTY_MOUSE_MOMENTUM_ENDED;       break;
+        case NSEventPhaseCancelled:   momentum = GHOSTTY_MOUSE_MOMENTUM_CANCELLED;   break;
+        case NSEventPhaseMayBegin:    momentum = GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN;   break;
+        default:                      momentum = GHOSTTY_MOUSE_MOMENTUM_NONE;        break;
+    }
+    mods |= (int32_t)momentum << 1;   // bits 1–3
+
+    return (ghostty_input_scroll_mods_t)mods;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,15 +293,183 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 }
 
 // ---------------------------------------------------------------------------
-// mouseDown: — grab first responder so subsequent keystrokes come here.
-// Full mouse forwarding (ghostty_surface_mouse_button) is next commit.
+// updateTrackingAreas — install a tracking area that covers the entire view.
+//
+// This fires mouseMoved: and mouseEntered:/mouseExited: events, which are
+// needed for:
+//   • cursor shape updates (GHOSTTY_ACTION_MOUSE_SHAPE via action_cb)
+//   • terminal mouse-tracking mode (OSC mouse extensions used by vim, htop…)
+//   • hover-aware URL detection
+//
+// Options mirror Ghostty's SurfaceView_AppKit.swift updateTrackingAreas().
+// .activeAlways ensures mouse reports fire even when the window isn't key
+// (important for focus-follows-mouse and multi-pane terminal managers).
+// ---------------------------------------------------------------------------
+
+- (void)updateTrackingAreas {
+    // Remove all existing tracking areas before installing new ones.
+    for (NSTrackingArea *ta in [self.trackingAreas copy]) {
+        [self removeTrackingArea:ta];
+    }
+
+    NSTrackingAreaOptions opts =
+        NSTrackingMouseEnteredAndExited |
+        NSTrackingMouseMoved           |
+        NSTrackingInVisibleRect        |  // only events in non-obscured rect
+        NSTrackingActiveAlways;           // fire even when not key window
+
+    NSTrackingArea *ta = [[NSTrackingArea alloc]
+        initWithRect:self.frame
+             options:opts
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+
+// ---------------------------------------------------------------------------
+// mouseDown: — make the view first responder (keeps keyboard working) AND
+// forward the press to Ghostty so TUI apps that use click-to-position (vim,
+// less, htop, etc.) respond to the click.
 // ---------------------------------------------------------------------------
 
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
-    // Don't call super — swallow the click for the terminal area.
-    // If clicking sidebar/topbar fails to return focus to WKWebView after this
-    // commit, surface it in the next mouse-input commit (not in scope here).
+    if (!self.surface) return;
+
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    ghostty_surface_mouse_button(self.surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modsFromEvent(event));
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (!self.surface) return;
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    ghostty_surface_mouse_button(self.surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modsFromEvent(event));
+}
+
+// ---------------------------------------------------------------------------
+// Mouse movement — report position for selection (drag) and hover tracking.
+// mouseDragged: / rightMouseDragged: / otherMouseDragged: all call through
+// to the shared helper so Ghostty sees continuous position updates for
+// click-drag selection regardless of which button is held.
+// ---------------------------------------------------------------------------
+
+- (void)sendMousePos:(NSEvent *)event {
+    if (!self.surface) return;
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+}
+
+- (void)mouseMoved:(NSEvent *)event    { [self sendMousePos:event]; }
+- (void)mouseDragged:(NSEvent *)event  { [self sendMousePos:event]; }
+- (void)rightMouseDragged:(NSEvent *)event { [self sendMousePos:event]; }
+- (void)otherMouseDragged:(NSEvent *)event { [self sendMousePos:event]; }
+
+// mouseEntered/mouseExited: reset the cursor position in Ghostty.
+// On exit we send -1/-1 to tell Ghostty the cursor has left the viewport
+// (mirrors Ghostty SurfaceView_AppKit.swift mouseExited behaviour).
+
+- (void)mouseEntered:(NSEvent *)event {
+    if (!self.surface) { [super mouseEntered:event]; return; }
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    [super mouseEntered:event];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    if (!self.surface) { [super mouseExited:event]; return; }
+    // Skip the -1/-1 reset while a button is held (drag case).
+    if (NSEvent.pressedMouseButtons != 0) return;
+    ghostty_surface_mouse_pos(self.surface, -1.0, -1.0, modsFromEvent(event));
+    [super mouseExited:event];
+}
+
+// ---------------------------------------------------------------------------
+// Right mouse button — forward to Ghostty first; fall through to super
+// so macOS still shows the context menu if Ghostty doesn't consume it.
+// (mirrors Ghostty SurfaceView_AppKit.swift rightMouseDown: pattern)
+// ---------------------------------------------------------------------------
+
+- (void)rightMouseDown:(NSEvent *)event {
+    if (!self.surface) { [super rightMouseDown:event]; return; }
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    bool consumed = ghostty_surface_mouse_button(
+        self.surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event));
+    if (!consumed) [super rightMouseDown:event];
+}
+
+- (void)rightMouseUp:(NSEvent *)event {
+    if (!self.surface) { [super rightMouseUp:event]; return; }
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    bool consumed = ghostty_surface_mouse_button(
+        self.surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event));
+    if (!consumed) [super rightMouseUp:event];
+}
+
+// ---------------------------------------------------------------------------
+// Other mouse buttons (middle = buttonNumber 2, back/forward = 3/4, etc.)
+// Map NSEvent.buttonNumber → ghostty_input_mouse_button_e exactly as
+// Ghostty.Input.swift MouseButton.init(fromNSEventButtonNumber:) does.
+// ---------------------------------------------------------------------------
+
+static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn) {
+    switch (btn) {
+        case 0:  return GHOSTTY_MOUSE_LEFT;
+        case 1:  return GHOSTTY_MOUSE_RIGHT;
+        case 2:  return GHOSTTY_MOUSE_MIDDLE;
+        case 3:  return GHOSTTY_MOUSE_EIGHT;   // back
+        case 4:  return GHOSTTY_MOUSE_NINE;    // forward
+        case 5:  return GHOSTTY_MOUSE_SIX;
+        case 6:  return GHOSTTY_MOUSE_SEVEN;
+        case 7:  return GHOSTTY_MOUSE_FOUR;
+        case 8:  return GHOSTTY_MOUSE_FIVE;
+        case 9:  return GHOSTTY_MOUSE_TEN;
+        case 10: return GHOSTTY_MOUSE_ELEVEN;
+        default: return GHOSTTY_MOUSE_UNKNOWN;
+    }
+}
+
+- (void)otherMouseDown:(NSEvent *)event {
+    if (!self.surface) return;
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    ghostty_surface_mouse_button(self.surface, GHOSTTY_MOUSE_PRESS,
+        ghosttyButtonForNSEventNumber(event.buttonNumber), modsFromEvent(event));
+}
+
+- (void)otherMouseUp:(NSEvent *)event {
+    if (!self.surface) return;
+    GhosttyMousePos pos = ghosttyPosForEvent(event, self);
+    ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
+    ghostty_surface_mouse_button(self.surface, GHOSTTY_MOUSE_RELEASE,
+        ghosttyButtonForNSEventNumber(event.buttonNumber), modsFromEvent(event));
+}
+
+// ---------------------------------------------------------------------------
+// scrollWheel: — forward to ghostty_surface_mouse_scroll.
+//
+// Delta values: use event.scrollingDeltaX/Y (logical points, not pixels).
+// For precise (trackpad) events, multiply by 2.0 — same as Ghostty upstream.
+// Scroll mods are packed per the ScrollMods bitmask (see scrollModsForEvent).
+// ---------------------------------------------------------------------------
+
+- (void)scrollWheel:(NSEvent *)event {
+    if (!self.surface) return;
+
+    double x = event.scrollingDeltaX;
+    double y = event.scrollingDeltaY;
+
+    if (event.hasPreciseScrollingDeltas) {
+        // Trackpad / Magic Mouse — 2x multiplier (matches Ghostty upstream).
+        x *= 2.0;
+        y *= 2.0;
+    }
+
+    ghostty_input_scroll_mods_t scrollMods = scrollModsForEvent(event);
+    ghostty_surface_mouse_scroll(self.surface, x, y, scrollMods);
 }
 
 // ---------------------------------------------------------------------------
