@@ -28,6 +28,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
+  // Track which workspace surfaces are alive this session (mounted via terminal.mount)
+  const [activeWorkspaceIds, setActiveWorkspaceIds] = useState<Set<string>>(new Set())
+
   // Pinned items
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
   const [pinnedLoading, setPinnedLoading] = useState(true)
@@ -247,6 +250,12 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       }
       return next
     })
+    // Mark this workspace's terminal surface as active (mount succeeds)
+    setActiveWorkspaceIds((prev) => {
+      const next = new Set(prev)
+      next.add(workspaceId)
+      return next
+    })
     // Ensure workspaces are loaded for this project
     if (!workspacesByProject[projectId]) {
       fetchWorkspacesForProject(projectId)
@@ -334,6 +343,12 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     window.api.terminal
       .destroy(workspaceId)
       .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
+    // Remove from active set — surface is being destroyed
+    setActiveWorkspaceIds((prev) => {
+      const next = new Set(prev)
+      next.delete(workspaceId)
+      return next
+    })
     try {
       await window.api.workspaces.archive(workspaceId)
       await fetchWorkspacesForProject(projectId)
@@ -394,6 +409,14 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
         )
     }
+    // Remove all project workspace surfaces from the active set
+    setActiveWorkspaceIds((prev) => {
+      const next = new Set(prev)
+      for (const ws of projectWorkspaces) {
+        next.delete(ws.id)
+      }
+      return next
+    })
     await window.api.projects.remove(target.id)
     setRemoveConfirmTarget(null)
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
@@ -454,6 +477,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         workspacesByProject={workspacesByProject}
         pinnedItems={pinnedItems}
         pinnedLoading={pinnedLoading}
+        activeWorkspaceIds={activeWorkspaceIds}
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
         onSelectSettings={handleSelectSettings}
         onSelectProject={handleSelectProject}

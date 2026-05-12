@@ -78,6 +78,23 @@ function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element
 }
 
 // ---------------------------------------------------------------------------
+// Active-session indicator
+// ---------------------------------------------------------------------------
+
+interface ActivePulseProps {
+  className?: string
+}
+
+function ActivePulse({ className = '' }: ActivePulseProps): React.JSX.Element {
+  return (
+    <span className={['relative flex h-2 w-2 flex-shrink-0', className].join(' ')}>
+      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+      <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
 // ---------------------------------------------------------------------------
 
@@ -85,6 +102,7 @@ interface WorkspaceRowProps {
   workspace: WorkspaceRecord
   project: ProjectRecord
   active: boolean
+  isSessionActive: boolean
   onSelect: () => void
   onTogglePin: () => void
   renaming: boolean
@@ -97,6 +115,7 @@ interface WorkspaceRowProps {
 function WorkspaceSubRow({
   workspace,
   active,
+  isSessionActive,
   onSelect,
   onTogglePin,
   renaming,
@@ -132,7 +151,8 @@ function WorkspaceSubRow({
   return (
     <div
       className={[
-        'relative flex items-center ml-7 rounded-md transition-colors duration-150 group',
+        'relative flex items-center rounded-md transition-colors duration-150 group',
+        // Indent via left padding instead of ml-7 so hover bg reaches full width
         active
           ? 'bg-accent/15 text-text-primary'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
@@ -143,18 +163,22 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
+        className="flex items-center gap-1.5 pl-9 pr-2 py-1 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
-        <Stack
-          size={12}
-          weight={active ? 'fill' : 'regular'}
-          className={[
-            'flex-shrink-0 transition-colors duration-150',
-            active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
-          ].join(' ')}
-        />
+        {isSessionActive ? (
+          <ActivePulse />
+        ) : (
+          <Stack
+            size={12}
+            weight={active ? 'fill' : 'regular'}
+            className={[
+              'flex-shrink-0 transition-colors duration-150',
+              active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
+            ].join(' ')}
+          />
+        )}
         {renaming ? (
           <input
             autoFocus
@@ -230,6 +254,7 @@ interface ProjectRowProps {
   workspaces: WorkspaceRecord[]
   workspaceCount: number
   selectedWorkspaceId?: string | null
+  activeWorkspaceIds: Set<string>
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -256,6 +281,7 @@ function ProjectRow({
   workspaces,
   workspaceCount,
   selectedWorkspaceId,
+  activeWorkspaceIds,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -387,6 +413,7 @@ function ProjectRow({
                 currentViewKind === 'workspace' &&
                 (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
               }
+              isSessionActive={activeWorkspaceIds.has(ws.id)}
               onSelect={() => onSelectWorkspace(ws.id)}
               onTogglePin={() => onToggleWorkspacePin(ws.id)}
               renaming={renamingWorkspaceId === ws.id}
@@ -431,6 +458,7 @@ function ProjectRow({
 interface PinnedSectionProps {
   pinnedItems: PinnedItem[]
   loading: boolean
+  activeWorkspaceIds: Set<string>
   currentViewKind: string
   currentWorkspaceId?: string | null
   renamingWorkspaceId: string | null
@@ -445,6 +473,7 @@ interface PinnedSectionProps {
 function PinnedSection({
   pinnedItems,
   loading,
+  activeWorkspaceIds,
   currentViewKind,
   currentWorkspaceId,
   renamingWorkspaceId,
@@ -481,6 +510,7 @@ function PinnedSection({
             workspace={item.workspace}
             project={item.project}
             active={isActive}
+            isSessionActive={activeWorkspaceIds.has(item.workspace.id)}
             onSelect={() => onSelectWorkspace(item.workspace.id, item.project.id)}
             onUnpin={() => onUnpinWorkspace(item.workspace.id)}
             renaming={renamingWorkspaceId === item.workspace.id}
@@ -499,6 +529,7 @@ interface PinnedWorkspaceRowProps {
   workspace: WorkspaceRecord
   project: ProjectRecord
   active: boolean
+  isSessionActive: boolean
   onSelect: () => void
   onUnpin: () => void
   renaming: boolean
@@ -512,6 +543,7 @@ function PinnedWorkspaceRow({
   workspace,
   project,
   active,
+  isSessionActive,
   onSelect,
   onUnpin,
   renaming,
@@ -562,7 +594,11 @@ function PinnedWorkspaceRow({
           title={workspace.cwd}
           aria-label={`${project.name} — ${workspace.name}`}
         >
-          <PushPin size={13} weight="fill" className="text-accent flex-shrink-0" />
+          {isSessionActive ? (
+            <ActivePulse />
+          ) : (
+            <PushPin size={13} weight="fill" className="text-accent flex-shrink-0" />
+          )}
           <Identicon seed={project.path} size={14} />
           <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
             {project.name}
@@ -649,6 +685,7 @@ interface SidebarProps {
   workspacesByProject: Record<string, WorkspaceRecord[]>
   pinnedItems: PinnedItem[]
   pinnedLoading: boolean
+  activeWorkspaceIds: Set<string>
   onToggleCollapsed: () => void
   onSelectSettings: () => void
   onSelectProject: (id: string) => void
@@ -677,6 +714,7 @@ export function Sidebar({
   workspacesByProject,
   pinnedItems,
   pinnedLoading,
+  activeWorkspaceIds,
   onToggleCollapsed,
   onSelectSettings,
   onSelectProject,
@@ -743,24 +781,14 @@ export function Sidebar({
         collapsed ? 'w-28' : 'w-64',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'px-2 pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
+        'pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
     >
-      {/* Top strip: traffic-lights spacer + sidebar toggle */}
+      {/* Top strip: traffic-lights spacer only — drag region */}
       <div
-        className="h-11 flex items-center pl-[76px] pr-2 mb-1 -mx-2 -mt-4 border-b border-border-default/50"
+        className="h-11 flex items-center pl-[76px] pr-2 mb-1 -mt-4 border-b border-border-default/50"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <button
-          onClick={onToggleCollapsed}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          className="ml-auto p-2 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150"
-        >
-          <SidebarSimple size={16} weight="regular" />
-        </button>
-      </div>
+      />
 
       {/* Top nav */}
       <NavItem
@@ -783,6 +811,7 @@ export function Sidebar({
         <PinnedSection
           pinnedItems={pinnedItems}
           loading={pinnedLoading}
+          activeWorkspaceIds={activeWorkspaceIds}
           currentViewKind={currentViewKind}
           currentWorkspaceId={selectedWorkspaceId}
           renamingWorkspaceId={renamingWorkspaceId}
@@ -827,6 +856,7 @@ export function Sidebar({
                       workspaces={workspaces}
                       workspaceCount={workspaces.length}
                       selectedWorkspaceId={selectedWorkspaceId}
+                      activeWorkspaceIds={activeWorkspaceIds}
                       onSelect={() => onSelectProject(p.id)}
                       onToggleExpand={() => onToggleProjectExpand(p.id)}
                       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
@@ -878,23 +908,42 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Settings button — bottom of sidebar */}
-      <button
-        onClick={onSelectSettings}
-        aria-label="Settings"
-        title="Settings"
-        className={[
-          'mt-auto flex items-center rounded-md transition-colors duration-150',
-          collapsed ? 'justify-center p-2 mx-auto' : 'px-3 py-2 gap-3',
-          activeView === 'settings'
-            ? 'bg-accent/15 text-text-primary font-medium'
-            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-        ].join(' ')}
-      >
-        <Gear size={20} weight={activeView === 'settings' ? 'fill' : 'regular'} />
-        {!collapsed && <span className="text-sm">Settings</span>}
-      </button>
+      {/* Bottom controls: Settings + Sidebar toggle — flush to bottom */}
+      <div className="mt-auto flex flex-col">
+        {/* Settings button */}
+        <button
+          onClick={onSelectSettings}
+          aria-label="Settings"
+          title="Settings"
+          className={[
+            'w-full flex items-center rounded-md transition-colors duration-150',
+            collapsed ? 'justify-center py-2 px-2' : 'px-3 py-2 gap-3',
+            activeView === 'settings'
+              ? 'bg-accent/15 text-text-primary font-medium'
+              : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+          ].join(' ')}
+        >
+          <Gear size={20} weight={activeView === 'settings' ? 'fill' : 'regular'} />
+          {!collapsed && <span className="text-sm">Settings</span>}
+        </button>
+
+        {/* Sidebar toggle button — below settings, flush to bottom */}
+        <button
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={[
+            'w-full flex items-center rounded-md transition-colors duration-150',
+            collapsed ? 'justify-center py-2 px-2' : 'px-3 py-2 gap-3',
+            'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+          ].join(' ')}
+        >
+          <SidebarSimple size={20} weight="regular" />
+          {!collapsed && <span className="text-sm">Collapse</span>}
+        </button>
+      </div>
     </aside>
   )
 }
