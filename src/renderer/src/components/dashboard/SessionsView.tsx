@@ -93,7 +93,7 @@ export function SessionsView({ onNavigateToProject }: SessionsViewProps): React.
               key={f.value}
               onClick={() => setFilter(f.value)}
               className={[
-                'px-3 py-1 rounded-md text-xs font-medium transition-colors duration-150',
+                'px-3 py-1 rounded-md text-xs font-medium transition-colors duration-150 cursor-pointer',
                 filter === f.value
                   ? 'bg-accent/15 text-text-primary border border-accent/30'
                   : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay border border-transparent'
@@ -130,7 +130,7 @@ export function SessionsView({ onNavigateToProject }: SessionsViewProps): React.
               <button
                 key={session.id}
                 onClick={() => onNavigateToProject(session.projectId)}
-                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-overlay transition-colors duration-100 text-left group"
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-overlay transition-colors duration-100 text-left group cursor-pointer"
               >
                 <StatusDot status={session.status} />
                 <span

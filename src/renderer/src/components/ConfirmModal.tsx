@@ -66,7 +66,7 @@ export function ConfirmModal({
           </Button>
           <button
             onClick={onCancel}
-            className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150"
+            className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150 cursor-pointer"
           >
             {cancelLabel}
           </button>

@@ -106,17 +106,17 @@ export function SettingsView(): React.JSX.Element {
     // -mx-8 -my-6 undoes the parent <main>'s px-8 py-6 padding so the internal
     // sidebar can reach the edges of the content area.
     <div className="flex h-full -mx-8 -my-6">
-      {/* Internal nav */}
+      {/* Internal nav — h-full so the bg+border reach the bottom edge */}
       <nav
-        className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default px-2 py-6 overflow-y-auto"
+        className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default py-6 overflow-y-auto h-full"
         aria-label="Settings sections"
       >
         <h1 className="text-base font-semibold text-text-primary px-3 mb-5">Settings</h1>
         <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
       </nav>
 
-      {/* Section content */}
-      <div className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
+      {/* Section content — h-full so the pane also reaches the bottom */}
+      <div className="flex-1 overflow-y-auto px-8 py-6 min-w-0 h-full">
         <ActiveComponent />
       </div>
     </div>
@@ -144,7 +144,7 @@ function GroupedNav(props: {
           <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-text-muted select-none">
             {group.label}
           </p>
-          {/* Section items */}
+          {/* Section items — no mx-* so active bg stretches full nav width */}
           {group.sections.map((s) => {
             const isActive = s.id === props.activeId
             const SectionIcon = s.icon
@@ -154,8 +154,8 @@ function GroupedNav(props: {
                 onClick={() => props.onSelect(s.id)}
                 aria-current={isActive ? 'page' : undefined}
                 className={[
-                  'w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-150',
-                  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                  'w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors duration-150 cursor-pointer',
+                  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40',
                   isActive
                     ? 'bg-accent/15 text-text-primary font-medium'
                     : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'

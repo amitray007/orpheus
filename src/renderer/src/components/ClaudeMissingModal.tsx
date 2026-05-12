@@ -60,7 +60,7 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
             href="https://docs.claude.com/en/docs/claude-code"
             target="_blank"
             rel="noreferrer"
-            className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150"
+            className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150 cursor-pointer"
           >
             Read docs ↗
           </a>

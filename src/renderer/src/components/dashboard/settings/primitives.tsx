@@ -50,7 +50,7 @@ export function SegmentedControl<T extends string>({
           aria-checked={value === opt.value}
           onClick={() => onChange(opt.value)}
           className={[
-            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             value === opt.value
               ? 'bg-accent/15 text-text-primary'
               : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
@@ -77,7 +77,7 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
       aria-label={ariaLabel}
       onClick={() => onChange(!value)}
       className={[
-        'relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-200',
+        'relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-base',
         value ? 'bg-accent' : 'bg-surface-overlay'
       ].join(' ')}
@@ -120,7 +120,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
               onChange(opt.value)
             }}
             className={[
-              'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
               !isCustom && value === opt.value
                 ? 'bg-accent/15 text-text-primary'
                 : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
@@ -134,7 +134,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
           aria-checked={isCustom}
           onClick={() => setShowCustom(true)}
           className={[
-            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
             isCustom ? 'bg-accent/15 text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
           ].join(' ')}
         >

@@ -88,7 +88,7 @@ function SessionRow({ session, onSetStatus }: SessionRowProps): React.JSX.Elemen
   }
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-surface-overlay group transition-colors duration-100">
+    <div className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-surface-overlay group transition-colors duration-100 cursor-default">
       <StatusDot status={session.status} />
       <span className="text-sm text-text-primary truncate flex-1 min-w-0" title={displayTitle}>
         {displayTitle}
@@ -104,7 +104,7 @@ function SessionRow({ session, onSetStatus }: SessionRowProps): React.JSX.Elemen
         className={[
           'flex-shrink-0 p-1 rounded transition-all duration-150',
           'opacity-0 group-hover:opacity-100',
-          loading ? 'opacity-30 cursor-wait' : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
+          loading ? 'opacity-30 cursor-wait' : 'text-text-muted hover:text-text-primary hover:bg-surface-raised cursor-pointer'
         ].join(' ')}
       >
         {session.status === 'archived' ? (
@@ -269,7 +269,10 @@ function WorkspaceCard({
     >
       <button
         onClick={renaming ? undefined : onSelect}
-        className="w-full text-left flex flex-col gap-2"
+        className={[
+          'w-full text-left flex flex-col gap-2',
+          renaming ? 'cursor-default' : 'cursor-pointer'
+        ].join(' ')}
       >
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded bg-surface-overlay">
@@ -320,7 +323,7 @@ function WorkspaceCard({
             onUnarchive?.()
           }}
           title="Unarchive workspace"
-          className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay"
+          className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer"
         >
           <ArrowUUpLeft size={12} />
         </button>
@@ -446,7 +449,7 @@ export function ProjectView({
 
         <button
           onClick={onRequestRemove}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-border-default transition-colors duration-150 flex-shrink-0 text-text-secondary hover:text-text-primary hover:bg-surface-overlay"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-border-default transition-colors duration-150 flex-shrink-0 text-text-secondary hover:text-text-primary hover:bg-surface-overlay cursor-pointer"
         >
           <Archive size={14} weight="regular" />
           Remove
@@ -462,7 +465,7 @@ export function ProjectView({
           </h2>
           <button
             onClick={() => onAddWorkspace(project.id)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 cursor-pointer"
           >
             <Plus size={11} />
             New workspace
@@ -574,7 +577,7 @@ export function ProjectView({
               {archivedSessions.length > 0 && (
                 <button
                   onClick={() => setShowArchived((v) => !v)}
-                  className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150"
+                  className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150 cursor-pointer"
                 >
                   {showArchived ? 'Hide archived' : `Show archived (${archivedSessions.length})`}
                 </button>
