@@ -72,6 +72,10 @@ export type AppUiState = {
   windowWidth: number | null
   windowHeight: number | null
   windowFullscreen: boolean
+  // Window behavior preferences (v11) — optional for back-compat with hardcoded fallbacks
+  restoreGeometry?: boolean
+  closeHides?: boolean
+  openAtLastView?: boolean
   updatedAt: number
 }
 
@@ -126,6 +130,9 @@ export type ClaudeGlobalSettings = {
   permissionAskRules: string[]
   permissionDenyRules: string[]
   permissionAdditionalDirs: string[]
+
+  // Fallback model (v11) — '' means no fallback (use claude's default behavior)
+  fallbackModel: string
 
   updatedAt: number
 }

@@ -158,16 +158,16 @@ export function ClaudeGeneralSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Fallback model"
-            description="Model used when the primary model is overloaded or unavailable."
+            description="Model used when the primary model is overloaded or unavailable. Accepts a model alias or full model ID."
           >
-            <div className="flex items-center gap-2">
-              <input
-                disabled
-                placeholder="e.g. claude-haiku-4-5"
-                className="w-48 px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default text-text-muted placeholder-text-muted font-mono opacity-50 cursor-not-allowed"
-              />
-              <ComingSoonChip />
-            </div>
+            <input
+              type="text"
+              value={settings.fallbackModel}
+              onChange={(e) => patch({ fallbackModel: e.target.value })}
+              onBlur={(e) => patch({ fallbackModel: e.target.value.trim() })}
+              placeholder="(none — claude default)"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
           </SettingRow>
         </div>
       </section>

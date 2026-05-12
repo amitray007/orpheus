@@ -16,6 +16,10 @@ type AppUiStateRow = {
   window_width: number | null
   window_height: number | null
   window_fullscreen: number
+  // Window behavior preferences (v11)
+  restore_geometry: number
+  close_hides: number
+  open_at_last_view: number
   updated_at: number
 }
 
@@ -30,6 +34,10 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     windowWidth: row.window_width,
     windowHeight: row.window_height,
     windowFullscreen: row.window_fullscreen === 1,
+    // Window behavior preferences (v11) — default 1 matches schema DEFAULT
+    restoreGeometry: (row.restore_geometry ?? 1) === 1,
+    closeHides: (row.close_hides ?? 1) === 1,
+    openAtLastView: (row.open_at_last_view ?? 1) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -88,7 +96,11 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     windowY: 'window_y',
     windowWidth: 'window_width',
     windowHeight: 'window_height',
-    windowFullscreen: 'window_fullscreen'
+    windowFullscreen: 'window_fullscreen',
+    // Window behavior preferences (v11)
+    restoreGeometry: 'restore_geometry',
+    closeHides: 'close_hides',
+    openAtLastView: 'open_at_last_view'
   }
 
   const setClauses: string[] = []

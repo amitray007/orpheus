@@ -50,6 +50,8 @@ type ClaudeSettingsRow = {
   permission_ask_rules: string
   permission_deny_rules: string
   permission_additional_dirs: string
+  // Fallback model (v11)
+  fallback_model: string
   updated_at: number
 }
 
@@ -99,6 +101,8 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     permissionAskRules: parseJsonArray(row.permission_ask_rules),
     permissionDenyRules: parseJsonArray(row.permission_deny_rules),
     permissionAdditionalDirs: parseJsonArray(row.permission_additional_dirs),
+    // Fallback model (v11)
+    fallbackModel: row.fallback_model ?? '',
     updatedAt: row.updated_at
   }
 }
@@ -199,6 +203,11 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
       }
     }
   }
+  if ('fallbackModel' in patch) {
+    if (typeof patch.fallbackModel !== 'string') {
+      throw new Error('claudeSettings: fallbackModel must be a string')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +287,11 @@ export function composeClaudeLaunch(projectId?: string): ClaudeLaunch {
   // --debug: enable verbose debug logging
   if (s.debugLogging) {
     flagParts.push('--debug')
+  }
+
+  // --fallback-model: only emit when non-empty
+  if (s.fallbackModel && s.fallbackModel.trim() !== '') {
+    flagParts.push(`--fallback-model ${s.fallbackModel.trim()}`)
   }
 
   const flags = flagParts.join(' ')
@@ -474,7 +488,9 @@ export function updateClaudeGlobalSettings(
     permissionAllowRules: 'permission_allow_rules',
     permissionAskRules: 'permission_ask_rules',
     permissionDenyRules: 'permission_deny_rules',
-    permissionAdditionalDirs: 'permission_additional_dirs'
+    permissionAdditionalDirs: 'permission_additional_dirs',
+    // Fallback model (v11)
+    fallbackModel: 'fallback_model'
   }
 
   const setClauses: string[] = []
