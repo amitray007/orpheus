@@ -15,7 +15,7 @@ import {
   Gear,
   SidebarSimple
 } from '@phosphor-icons/react'
-import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
+import type { ProjectRecord, WorkspaceRecord, PinnedItem, GitStatus } from '@shared/types'
 import { ProjectListSkeleton, Skeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
@@ -103,6 +103,7 @@ interface WorkspaceRowProps {
   project: ProjectRecord
   active: boolean
   isSessionActive: boolean
+  gitStatus?: GitStatus | null
   onSelect: () => void
   onTogglePin: () => void
   renaming: boolean
@@ -116,6 +117,7 @@ function WorkspaceSubRow({
   workspace,
   active,
   isSessionActive,
+  gitStatus,
   onSelect,
   onTogglePin,
   renaming,
@@ -196,6 +198,17 @@ function WorkspaceSubRow({
         ) : (
           <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
         )}
+        {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
+        {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
+          <span className="text-[10px] font-mono flex items-center gap-1 ml-1 flex-shrink-0">
+            {gitStatus.insertions > 0 && (
+              <span className="text-emerald-400">+{gitStatus.insertions}</span>
+            )}
+            {gitStatus.deletions > 0 && (
+              <span className="text-red-400">−{gitStatus.deletions}</span>
+            )}
+          </span>
+        )}
       </button>
 
       {/* Pin affordance — visible on hover or when pinned */}
@@ -255,6 +268,7 @@ interface ProjectRowProps {
   workspaceCount: number
   selectedWorkspaceId?: string | null
   activeWorkspaceIds: Set<string>
+  gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -282,6 +296,7 @@ function ProjectRow({
   workspaceCount,
   selectedWorkspaceId,
   activeWorkspaceIds,
+  gitStatusByWorkspaceId,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -414,6 +429,7 @@ function ProjectRow({
                 (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
               }
               isSessionActive={activeWorkspaceIds.has(ws.id)}
+              gitStatus={gitStatusByWorkspaceId[ws.id]}
               onSelect={() => onSelectWorkspace(ws.id)}
               onTogglePin={() => onToggleWorkspacePin(ws.id)}
               renaming={renamingWorkspaceId === ws.id}
@@ -459,6 +475,7 @@ interface PinnedSectionProps {
   pinnedItems: PinnedItem[]
   loading: boolean
   activeWorkspaceIds: Set<string>
+  gitStatusByWorkspaceId: Record<string, GitStatus | null>
   currentViewKind: string
   currentWorkspaceId?: string | null
   renamingWorkspaceId: string | null
@@ -474,6 +491,7 @@ function PinnedSection({
   pinnedItems,
   loading,
   activeWorkspaceIds,
+  gitStatusByWorkspaceId,
   currentViewKind,
   currentWorkspaceId,
   renamingWorkspaceId,
@@ -511,6 +529,7 @@ function PinnedSection({
             project={item.project}
             active={isActive}
             isSessionActive={activeWorkspaceIds.has(item.workspace.id)}
+            gitStatus={gitStatusByWorkspaceId[item.workspace.id]}
             onSelect={() => onSelectWorkspace(item.workspace.id, item.project.id)}
             onUnpin={() => onUnpinWorkspace(item.workspace.id)}
             renaming={renamingWorkspaceId === item.workspace.id}
@@ -530,6 +549,7 @@ interface PinnedWorkspaceRowProps {
   project: ProjectRecord
   active: boolean
   isSessionActive: boolean
+  gitStatus?: GitStatus | null
   onSelect: () => void
   onUnpin: () => void
   renaming: boolean
@@ -544,6 +564,7 @@ function PinnedWorkspaceRow({
   project,
   active,
   isSessionActive,
+  gitStatus,
   onSelect,
   onUnpin,
   renaming,
@@ -621,6 +642,17 @@ function PinnedWorkspaceRow({
           ) : (
             <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
           )}
+          {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
+          {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
+            <span className="text-[10px] font-mono flex items-center gap-1 ml-1 flex-shrink-0">
+              {gitStatus.insertions > 0 && (
+                <span className="text-emerald-400">+{gitStatus.insertions}</span>
+              )}
+              {gitStatus.deletions > 0 && (
+                <span className="text-red-400">−{gitStatus.deletions}</span>
+              )}
+            </span>
+          )}
         </button>
         {!renaming && hovered && (
           <button
@@ -686,6 +718,7 @@ interface SidebarProps {
   pinnedItems: PinnedItem[]
   pinnedLoading: boolean
   activeWorkspaceIds: Set<string>
+  gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onToggleCollapsed: () => void
   onSelectSettings: () => void
   onSelectProject: (id: string) => void
@@ -715,6 +748,7 @@ export function Sidebar({
   pinnedItems,
   pinnedLoading,
   activeWorkspaceIds,
+  gitStatusByWorkspaceId,
   onToggleCollapsed,
   onSelectSettings,
   onSelectProject,
@@ -812,6 +846,7 @@ export function Sidebar({
           pinnedItems={pinnedItems}
           loading={pinnedLoading}
           activeWorkspaceIds={activeWorkspaceIds}
+          gitStatusByWorkspaceId={gitStatusByWorkspaceId}
           currentViewKind={currentViewKind}
           currentWorkspaceId={selectedWorkspaceId}
           renamingWorkspaceId={renamingWorkspaceId}
@@ -857,6 +892,7 @@ export function Sidebar({
                       workspaceCount={workspaces.length}
                       selectedWorkspaceId={selectedWorkspaceId}
                       activeWorkspaceIds={activeWorkspaceIds}
+                      gitStatusByWorkspaceId={gitStatusByWorkspaceId}
                       onSelect={() => onSelectProject(p.id)}
                       onToggleExpand={() => onToggleProjectExpand(p.id)}
                       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}

@@ -1,3 +1,10 @@
+export type GitStatus = {
+  insertions: number
+  deletions: number
+  hasChanges: boolean
+  branch: string | null
+}
+
 export type ExistingProject = {
   encodedName: string // e.g. "-Users-maverick-code-projects-orpheus"
   path: string // decoded absolute path, e.g. "/Users/maverick/code/projects/orpheus"

@@ -7,7 +7,8 @@ import * as childProcess from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
-import type { DoctorResult, ExistingProject } from '../shared/types'
+import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
+import { getGitStatus } from './git'
 import { getDb } from './db'
 import {
   listProjects,
@@ -442,6 +443,14 @@ ipcMain.handle('doctor:check', (): DoctorResult => {
     existingProjects: readClaudeProjects()
   }
 })
+
+// ---------------------------------------------------------------------------
+// Git IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('git:status', (_e, { cwd }: { cwd: string }): GitStatus | null =>
+  getGitStatus(cwd)
+)
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-native lifecycle

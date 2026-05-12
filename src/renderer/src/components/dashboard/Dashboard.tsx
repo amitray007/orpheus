@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { AppUiState, ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
+import type { AppUiState, ProjectRecord, WorkspaceRecord, PinnedItem, GitStatus } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -34,6 +34,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // Pinned items
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
   const [pinnedLoading, setPinnedLoading] = useState(true)
+
+  // Git status per workspace id
+  const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<Record<string, GitStatus | null>>({})
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'dashboard' })
@@ -93,6 +96,41 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   useEffect(() => {
     refreshPins()
   }, [])
+
+  // Poll git status for all non-archived workspaces every 30s
+  useEffect(() => {
+    const allWorkspaces = Object.values(workspacesByProject)
+      .flat()
+      .filter((w) => w.archivedAt === null)
+    if (allWorkspaces.length === 0) return
+
+    let cancelled = false
+
+    async function refresh(): Promise<void> {
+      const results: Record<string, GitStatus | null> = {}
+      // Sequential to avoid spawning N git processes at once
+      for (const ws of allWorkspaces) {
+        if (cancelled) return
+        try {
+          const status = await window.api.git.status(ws.cwd)
+          results[ws.id] = status
+        } catch (err) {
+          console.error('[dashboard] git status failed for', ws.id, err)
+          results[ws.id] = null
+        }
+      }
+      if (!cancelled) {
+        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...results }))
+      }
+    }
+
+    refresh()
+    const interval = setInterval(refresh, 30000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [workspacesByProject])
 
   // Hydrate UI state from DB once both projects and uiState are loaded.
   // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
@@ -478,6 +516,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         pinnedItems={pinnedItems}
         pinnedLoading={pinnedLoading}
         activeWorkspaceIds={activeWorkspaceIds}
+        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
         onSelectSettings={handleSelectSettings}
         onSelectProject={handleSelectProject}

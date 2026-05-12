@@ -11,7 +11,8 @@ import type {
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   AppUiState,
-  AppUiStatePatch
+  AppUiStatePatch,
+  GitStatus
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -83,6 +84,9 @@ declare global {
       uiState: {
         get: () => Promise<AppUiState>
         update: (patch: AppUiStatePatch) => Promise<AppUiState>
+      }
+      git: {
+        status: (cwd: string) => Promise<GitStatus | null>
       }
     }
   }

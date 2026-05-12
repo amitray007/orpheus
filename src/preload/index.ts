@@ -12,7 +12,8 @@ import type {
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   AppUiState,
-  AppUiStatePatch
+  AppUiStatePatch,
+  GitStatus
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -101,6 +102,10 @@ const api = {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
     update: (patch: AppUiStatePatch): Promise<AppUiState> =>
       ipcRenderer.invoke('uiState:update', patch)
+  },
+  git: {
+    status: (cwd: string): Promise<GitStatus | null> =>
+      ipcRenderer.invoke('git:status', { cwd })
   }
 }
 
