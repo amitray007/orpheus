@@ -70,6 +70,7 @@ function createWindow(): void {
   }
 
   if (
+    (savedState.restoreGeometry ?? true) &&
     savedState.windowX !== null &&
     savedState.windowY !== null &&
     savedState.windowWidth !== null &&
@@ -121,12 +122,19 @@ function createWindow(): void {
   // behind remain darkened. We call app.hide() instead so the previous app
   // regains focus naturally (same as Cmd+H). Cmd+Q still quits because
   // before-quit sets isQuitting=true, letting the close event pass through.
+  //
+  // closeHides is read fresh from DB on each close event so that toggling the
+  // setting in the UI takes effect without a restart.
   if (process.platform === 'darwin') {
     mainWindow.on('close', (e) => {
-      if (!isQuitting) {
+      const state = getAppUiState()
+      if (!isQuitting && (state.closeHides ?? true)) {
         e.preventDefault()
         app.hide()
       }
+      // else: let close proceed → window-all-closed fires → app.quit() not
+      // called on darwin by default, so the process stays alive but windowless.
+      // That's acceptable; user can re-open via the Dock or ⌘Q.
     })
     // 'minimize' fires after the window has been minimized; hide the app
     // immediately after so the previous app gains focus.

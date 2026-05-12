@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 10
+const CURRENT_VERSION = 11
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -98,6 +98,8 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     permission_ask_rules TEXT NOT NULL DEFAULT '[]',
     permission_deny_rules TEXT NOT NULL DEFAULT '[]',
     permission_additional_dirs TEXT NOT NULL DEFAULT '[]',
+    -- Fallback model (v11)
+    fallback_model TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   );
 `
@@ -123,6 +125,10 @@ const UI_STATE_SCHEMA_SQL = `
     window_width INTEGER,
     window_height INTEGER,
     window_fullscreen INTEGER NOT NULL DEFAULT 0 CHECK (window_fullscreen IN (0, 1)),
+    -- Window behavior preferences (v11)
+    restore_geometry INTEGER NOT NULL DEFAULT 1 CHECK (restore_geometry IN (0, 1)),
+    close_hides INTEGER NOT NULL DEFAULT 1 CHECK (close_hides IN (0, 1)),
+    open_at_last_view INTEGER NOT NULL DEFAULT 1 CHECK (open_at_last_view IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -307,5 +313,16 @@ function migrate(db: Database.Database): void {
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(10)
     }
+  }
+
+  // Version 11: window behavior columns on app_ui_state + fallback_model on claude_global_settings
+  if (currentVersion < 11) {
+    // app_ui_state new columns (window behavior preferences)
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN restore_geometry INTEGER NOT NULL DEFAULT 1 CHECK (restore_geometry IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN close_hides INTEGER NOT NULL DEFAULT 1 CHECK (close_hides IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN open_at_last_view INTEGER NOT NULL DEFAULT 1 CHECK (open_at_last_view IN (0, 1))') } catch {}
+    // claude_global_settings new column (fallback model)
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN fallback_model TEXT NOT NULL DEFAULT ''") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(11)
   }
 }
