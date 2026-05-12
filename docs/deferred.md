@@ -24,7 +24,6 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 | `browserIntegration: false` → `--no-chrome` flag | Commented stub | Couldn't verify exact CLI flag in published claude docs. Likely correct; needs confirmation. |
 | `toolConcurrency` | Commented stub | No documented `settings.json` key found for parallel tool calls. Field persists in DB but doesn't compose. |
 | `experimentalForkedSubagents` | No-op at compose | No documented mechanism in claude docs. Field persists for future. |
-| Per-project `.mcp.json` discovery | Skipped | `ClaudeToolsSection` reads only user-level `~/.claude.json`. Per-project MCP servers exist but aren't auto-listed. |
 
 ## 3. Orpheus Settings — sections still placeholder
 
