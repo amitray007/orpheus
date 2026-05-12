@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Topbar } from './Topbar'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
-import { Footer } from './Footer'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import type { AppUiState, ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
@@ -10,9 +8,8 @@ interface DashboardProps {
   claudeInstalled: boolean
 }
 
-export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Element {
+export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [version, setVersion] = useState<string>('')
 
   // UI state hydration
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -42,13 +39,6 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
 
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
-
-  useEffect(() => {
-    window.api.app
-      .getVersion()
-      .then(setVersion)
-      .catch(() => setVersion('0.0.0'))
-  }, [])
 
   useEffect(() => {
     window.api.uiState
@@ -191,6 +181,16 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
     setSelectedWorkspaceId(null)
     window.api.uiState
       .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
+  }
+
+  function handleSelectSettings(): void {
+    setView({ kind: 'settings' })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    // Persist as 'dashboard' — 'settings' is not in the DB enum
+    window.api.uiState
+      .update({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
       .catch(console.error)
   }
 
@@ -424,71 +424,66 @@ export function Dashboard({ claudeInstalled }: DashboardProps): React.JSX.Elemen
         ? 'project'
         : view.kind === 'sessions'
           ? 'sessions'
-          : 'dashboard'
+          : view.kind === 'settings'
+            ? 'settings'
+            : 'dashboard'
 
   return (
-    <div className="flex flex-col h-full">
-      <Topbar onToggleSidebar={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)} />
+    <div className="flex flex-1 h-full min-h-0">
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        projects={projects}
+        projectsLoading={projectsLoading}
+        selectedProjectId={selectedProjectId}
+        selectedWorkspaceId={selectedWorkspaceId}
+        activeView={activeView}
+        currentViewKind={view.kind}
+        expandedProjectIds={expandedProjectIds}
+        workspacesByProject={workspacesByProject}
+        pinnedItems={pinnedItems}
+        pinnedLoading={pinnedLoading}
+        onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
+        onSelectSettings={handleSelectSettings}
+        onSelectProject={handleSelectProject}
+        onSelectNav={handleSelectNav}
+        onAddProject={handleAddProject}
+        addingProject={addingProject}
+        onToggleProjectExpand={handleToggleProjectExpand}
+        onSelectWorkspace={handleSelectWorkspace}
+        onToggleWorkspacePin={handleToggleWorkspacePin}
+        onRenameProject={handleRenameProject}
+        onRequestRemoveProject={handleRequestRemoveProject}
+        onAddWorkspace={handleAddWorkspace}
+        onRenameWorkspace={handleRenameWorkspace}
+        onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+      />
 
-      <div className="flex flex-1 min-h-0">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          projects={projects}
-          projectsLoading={projectsLoading}
-          selectedProjectId={selectedProjectId}
-          selectedWorkspaceId={selectedWorkspaceId}
-          activeView={activeView}
-          currentViewKind={view.kind}
-          expandedProjectIds={expandedProjectIds}
-          workspacesByProject={workspacesByProject}
-          pinnedItems={pinnedItems}
-          pinnedLoading={pinnedLoading}
-          onSelectProject={handleSelectProject}
-          onSelectNav={handleSelectNav}
-          onAddProject={handleAddProject}
-          addingProject={addingProject}
-          onToggleProjectExpand={handleToggleProjectExpand}
-          onSelectWorkspace={handleSelectWorkspace}
-          onToggleWorkspacePin={handleToggleWorkspacePin}
-          onRenameProject={handleRenameProject}
+      <main
+        className={
+          view.kind === 'workspace'
+            ? 'flex-1 overflow-hidden min-h-0'
+            : 'flex-1 overflow-y-auto px-8 py-6'
+        }
+      >
+        <MainContent
+          view={view}
+          project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
+          workspace={activeWorkspace}
+          workspacesForProject={
+            view.kind === 'project'
+              ? (workspacesByProject[view.projectId] ?? null)
+              : null
+          }
           onRequestRemoveProject={handleRequestRemoveProject}
+          onNavigateToProject={handleNavigateToProject}
+          onSelectWorkspace={handleSelectWorkspace}
           onAddWorkspace={handleAddWorkspace}
           onRenameWorkspace={handleRenameWorkspace}
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+          onUnarchiveWorkspace={handleUnarchiveWorkspace}
+          onToggleWorkspacePin={handleToggleWorkspacePin}
         />
-
-        {/* Right column: main content + footer */}
-        <div className="flex flex-1 flex-col min-w-0">
-          <main
-            className={
-              view.kind === 'workspace'
-                ? 'flex-1 overflow-hidden min-h-0'
-                : 'flex-1 overflow-y-auto px-8 py-6'
-            }
-          >
-            <MainContent
-              view={view}
-              project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
-              workspace={activeWorkspace}
-              workspacesForProject={
-                view.kind === 'project'
-                  ? (workspacesByProject[view.projectId] ?? null)
-                  : null
-              }
-              onRequestRemoveProject={handleRequestRemoveProject}
-              onNavigateToProject={handleNavigateToProject}
-              onSelectWorkspace={handleSelectWorkspace}
-              onAddWorkspace={handleAddWorkspace}
-              onRenameWorkspace={handleRenameWorkspace}
-              onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-              onUnarchiveWorkspace={handleUnarchiveWorkspace}
-              onToggleWorkspacePin={handleToggleWorkspacePin}
-            />
-          </main>
-
-          <Footer version={version} connected={claudeInstalled} />
-        </div>
-      </div>
+      </main>
 
       {removeConfirmTarget && (
         <ConfirmModal

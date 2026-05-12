@@ -9,10 +9,11 @@ import {
   CaretRight,
   PushPin,
   Stack,
-  Folder,
   PencilSimple,
   Trash,
-  Archive
+  Archive,
+  Gear,
+  SidebarSimple
 } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord, PinnedItem } from '@shared/types'
 import { ProjectListSkeleton, Skeleton } from '../Skeleton'
@@ -45,7 +46,8 @@ function NavItem({
         collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2 gap-3',
         active
           ? 'bg-accent/15 text-text-primary font-medium'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
+        'focus:outline-none focus:ring-2 focus:ring-accent/50'
       ].join(' ')}
       onClick={onClick}
       aria-label={label}
@@ -141,8 +143,9 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0"
+        className="flex items-center gap-1.5 px-2 py-1 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
         title={workspace.cwd}
+        aria-label={workspace.name}
       >
         <Stack
           size={12}
@@ -178,10 +181,11 @@ function WorkspaceSubRow({
             e.stopPropagation()
             onTogglePin()
           }}
-          className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+          className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
           title={isPinned ? 'Unpin workspace' : 'Pin workspace'}
+          aria-label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
         >
-          <PushPin size={10} weight={isPinned ? 'fill' : 'regular'} />
+          <PushPin size={12} weight={isPinned ? 'fill' : 'regular'} />
         </button>
       )}
 
@@ -309,8 +313,9 @@ function ProjectRow({
         {/* Main clickable row — navigate to project view */}
         <button
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0"
+          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
           title={project.path}
+          aria-label={project.name}
         >
           <Identicon seed={project.path} size={20} />
           {renaming ? (
@@ -327,11 +332,16 @@ function ProjectRow({
               className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
             />
           ) : (
-            <span className="text-sm truncate min-w-0 flex-1">{project.name}</span>
+            <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
+              <span className="truncate">{project.name}</span>
+              {workspaceCount > 0 && (
+                <span className="text-xs text-text-muted flex-shrink-0">· {workspaceCount}</span>
+              )}
+            </span>
           )}
         </button>
 
-        {/* Right controls: add workspace + pin + count + chevron */}
+        {/* Right controls: add workspace + chevron */}
         {!renaming && (
           <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
             {/* Add workspace — visible on hover */}
@@ -341,18 +351,12 @@ function ProjectRow({
                   e.stopPropagation()
                   onAddWorkspace()
                 }}
-                className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+                className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
                 title="New workspace"
+                aria-label="New workspace"
               >
-                <Plus size={11} weight="bold" />
+                <Plus size={13} weight="bold" />
               </button>
-            )}
-
-            {/* Workspace count pill */}
-            {workspaceCount > 0 && (
-              <span className="text-xs text-text-muted px-1.5 py-0.5 rounded bg-surface-overlay">
-                {workspaceCount}
-              </span>
             )}
 
             {/* Expand/collapse chevron */}
@@ -361,10 +365,11 @@ function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="p-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+              className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
+              aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
-              {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
+              {expanded ? <CaretDown size={13} /> : <CaretRight size={13} />}
             </button>
           </div>
         )}
@@ -553,10 +558,11 @@ function PinnedWorkspaceRow({
       >
         <button
           onClick={onSelect}
-          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0"
+          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md"
           title={workspace.cwd}
+          aria-label={`${project.name} — ${workspace.name}`}
         >
-          <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
+          <PushPin size={13} weight="fill" className="text-accent flex-shrink-0" />
           <Identicon seed={project.path} size={14} />
           <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
             {project.name}
@@ -586,10 +592,11 @@ function PinnedWorkspaceRow({
               e.stopPropagation()
               onUnpin()
             }}
-            className="flex-shrink-0 p-1 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150"
+            className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50"
             title="Unpin workspace"
+            aria-label="Unpin workspace"
           >
-            <PushPin size={11} weight="fill" />
+            <PushPin size={13} weight="fill" />
           </button>
         )}
       </div>
@@ -628,7 +635,7 @@ function PinnedWorkspaceRow({
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView = 'dashboard' | 'sessions' | 'project' | 'workspace'
+export type SidebarActiveView = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'settings'
 
 interface SidebarProps {
   collapsed: boolean
@@ -642,6 +649,8 @@ interface SidebarProps {
   workspacesByProject: Record<string, WorkspaceRecord[]>
   pinnedItems: PinnedItem[]
   pinnedLoading: boolean
+  onToggleCollapsed: () => void
+  onSelectSettings: () => void
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'dashboard' | 'sessions') => void
   onAddProject: () => void
@@ -668,6 +677,8 @@ export function Sidebar({
   workspacesByProject,
   pinnedItems,
   pinnedLoading,
+  onToggleCollapsed,
+  onSelectSettings,
   onSelectProject,
   onSelectNav,
   onAddProject,
@@ -729,12 +740,28 @@ export function Sidebar({
   return (
     <aside
       className={[
-        collapsed ? 'w-14' : 'w-64',
+        collapsed ? 'w-28' : 'w-64',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
         'px-2 py-4 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
     >
+      {/* Top strip: traffic-lights spacer + sidebar toggle */}
+      <div
+        className="h-11 flex items-center pl-[76px] pr-2 mb-1 -mx-2 -mt-4 border-b border-border-default/50"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <button
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          className="ml-auto p-2 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/50 transition-colors duration-150"
+        >
+          <SidebarSimple size={16} weight="regular" />
+        </button>
+      </div>
+
       {/* Top nav */}
       <NavItem
         Icon={SquaresFour}
@@ -837,8 +864,9 @@ export function Sidebar({
                     key={p.id}
                     onClick={() => onSelectProject(p.id)}
                     title={p.name}
+                    aria-label={p.name}
                     className={[
-                      'p-1 rounded-md transition-colors duration-150',
+                      'p-1 rounded-md transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent/50',
                       isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
                     ].join(' ')}
                   >
@@ -850,19 +878,23 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Collapsed: Folder icon for sessions */}
-      {collapsed && (
-        <div className="mt-auto flex justify-center">
-          <button
-            title="Add project"
-            disabled={addingProject}
-            onClick={onAddProject}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay"
-          >
-            <Folder size={18} />
-          </button>
-        </div>
-      )}
+      {/* Settings button — bottom of sidebar */}
+      <button
+        onClick={onSelectSettings}
+        aria-label="Settings"
+        title="Settings"
+        className={[
+          'mt-auto flex items-center rounded-md transition-colors duration-150',
+          collapsed ? 'justify-center p-2 mx-auto' : 'px-3 py-2 gap-3',
+          activeView === 'settings'
+            ? 'bg-accent/15 text-text-primary font-medium'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
+          'focus:outline-none focus:ring-2 focus:ring-accent/50'
+        ].join(' ')}
+      >
+        <Gear size={20} weight={activeView === 'settings' ? 'fill' : 'regular'} />
+        {!collapsed && <span className="text-sm">Settings</span>}
+      </button>
     </aside>
   )
 }

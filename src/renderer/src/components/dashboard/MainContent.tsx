@@ -29,6 +29,7 @@ export type View =
   | { kind: 'project'; projectId: string }
   | { kind: 'sessions' }
   | { kind: 'workspace'; workspaceId: string; projectId: string }
+  | { kind: 'settings' }
 
 // ---------------------------------------------------------------------------
 // MainContent
@@ -64,6 +65,17 @@ export function MainContent({
   onUnarchiveWorkspace,
   onToggleWorkspacePin
 }: MainContentProps): React.JSX.Element {
+  if (view.kind === 'settings') {
+    return (
+      <div className="flex flex-col gap-6">
+        <h1 className="text-xl font-semibold text-text-primary">Settings</h1>
+        <PlaceholderSection title="Claude defaults" />
+        <PlaceholderSection title="Workspace preferences" />
+        <PlaceholderSection title="Appearance" />
+      </div>
+    )
+  }
+
   if (view.kind === 'dashboard') {
     return (
       <div className="flex flex-col gap-6">

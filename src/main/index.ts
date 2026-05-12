@@ -88,9 +88,9 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0b0b0c',
     titleBarStyle: 'hiddenInset',
-    // Traffic lights vertically centered in the 48px (h-12) topbar:
-    // y=18 puts the ~12px light's vertical center at 24px = topbar midline.
-    trafficLightPosition: { x: 16, y: 18 },
+    // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
+    // (44 - 14) / 2 = 15
+    trafficLightPosition: { x: 16, y: 15 },
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
