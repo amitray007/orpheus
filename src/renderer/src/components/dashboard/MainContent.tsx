@@ -1,5 +1,6 @@
 import { ProjectView } from './ProjectView'
 import { SessionsView } from './SessionsView'
+import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 
@@ -66,14 +67,7 @@ export function MainContent({
   onToggleWorkspacePin
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
-    return (
-      <div className="flex flex-col gap-6">
-        <h1 className="text-xl font-semibold text-text-primary">Settings</h1>
-        <PlaceholderSection title="Claude defaults" />
-        <PlaceholderSection title="Workspace preferences" />
-        <PlaceholderSection title="Appearance" />
-      </div>
-    )
+    return <SettingsView />
   }
 
   if (view.kind === 'dashboard') {
