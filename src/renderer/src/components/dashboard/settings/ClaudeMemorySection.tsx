@@ -1,19 +1,62 @@
+import { useEffect, useState } from 'react'
 import type React from 'react'
-import { SettingRow } from './primitives'
-import { ComingSoonChip } from './ClaudeGeneralSection'
+import type { ClaudeGlobalSettings } from '@shared/types'
+import { SettingRow, Toggle, NumberInput } from './primitives'
 
 // ---------------------------------------------------------------------------
-// ClaudeMemorySection — CLAUDE.md behavior, context limits, compaction
+// ClaudeMemorySection — git instructions, context limits, compaction
 // ---------------------------------------------------------------------------
 
 export function ClaudeMemorySection(): React.JSX.Element {
+  const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.claudeSettings
+      .get()
+      .then((s) => {
+        if (!cancelled) setSettings(s)
+      })
+      .catch((err) => console.error('[memory-settings] load failed', err))
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function patch(p: Partial<ClaudeGlobalSettings>): void {
+    if (!settings) return
+    setSettings({ ...settings, ...p })
+    window.api.claudeSettings.update(p).catch((err) => {
+      console.error('[memory-settings] update failed; refetching', err)
+      window.api.claudeSettings
+        .get()
+        .then((s) => setSettings(s))
+        .catch(console.error)
+    })
+  }
+
+  if (!settings) {
+    return (
+      <div className="flex flex-col gap-6 max-w-2xl">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Memory &amp; Context</h2>
+          <p className="text-xs text-text-muted mt-1">
+            Fine-grained control over CLAUDE.md auto-load behavior, context window limits, and
+            compaction thresholds.
+          </p>
+        </div>
+        <p className="text-sm text-text-muted">Loading…</p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
         <h2 className="text-base font-semibold text-text-primary">Memory &amp; Context</h2>
         <p className="text-xs text-text-muted mt-1">
           Fine-grained control over CLAUDE.md auto-load behavior, context window limits, and
-          compaction thresholds.
+          compaction thresholds. Changes save automatically.
         </p>
       </div>
 
@@ -24,22 +67,14 @@ export function ClaudeMemorySection(): React.JSX.Element {
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
-            label="Auto-load CLAUDE.md"
-            description="Automatically include CLAUDE.md context files when Claude starts. Mirrors the General setting."
-          >
-            <div className="flex items-center gap-2">
-              <DisabledToggle checked />
-              <ComingSoonChip />
-            </div>
-          </SettingRow>
-          <SettingRow
             label="Disable git instructions"
             description="Suppress the automatic git-context message that Claude prepends to sessions."
           >
-            <div className="flex items-center gap-2">
-              <DisabledToggle />
-              <ComingSoonChip />
-            </div>
+            <Toggle
+              ariaLabel="Disable git instructions"
+              value={settings.disableGitInstructions}
+              onChange={(v) => patch({ disableGitInstructions: v })}
+            />
           </SettingRow>
         </div>
       </section>
@@ -52,29 +87,23 @@ export function ClaudeMemorySection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Max output tokens"
-            description="Upper bound on tokens in a single Claude response. Higher = more complete but slower."
+            description="Upper bound on tokens in a single Claude response. Leave empty to use claude's default. Suggested range: 1024–8192."
           >
-            <div className="flex items-center gap-2">
-              <input
-                disabled
-                placeholder="8192"
-                className="w-24 px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default text-text-muted placeholder-text-muted font-mono text-right opacity-50 cursor-not-allowed"
-              />
-              <ComingSoonChip />
-            </div>
+            <NumberInput
+              value={settings.maxOutputTokens}
+              onChange={(v) => patch({ maxOutputTokens: v })}
+              placeholder="default"
+            />
           </SettingRow>
           <SettingRow
             label="Max context tokens"
-            description="Cap on the total context window sent per turn. Reduces cost on large files."
+            description="Cap on the total context window sent per turn. Leave empty to use the model's max. Suggested range: 8000–200000."
           >
-            <div className="flex items-center gap-2">
-              <input
-                disabled
-                placeholder="200000"
-                className="w-24 px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default text-text-muted placeholder-text-muted font-mono text-right opacity-50 cursor-not-allowed"
-              />
-              <ComingSoonChip />
-            </div>
+            <NumberInput
+              value={settings.maxContextTokens}
+              onChange={(v) => patch({ maxContextTokens: v })}
+              placeholder="default"
+            />
           </SettingRow>
         </div>
       </section>
@@ -87,40 +116,20 @@ export function ClaudeMemorySection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Compaction threshold"
-            description="Percentage of context window used before Claude automatically compacts older turns."
+            description="Compact older context when usage exceeds this percentage. Leave empty to use claude's default. Typical range: 50–95."
           >
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 opacity-50 pointer-events-none">
-                <input
-                  disabled
-                  placeholder="80"
-                  className="w-16 px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default text-text-muted placeholder-text-muted font-mono text-right cursor-not-allowed"
-                />
-                <span className="text-xs text-text-muted">%</span>
-              </div>
-              <ComingSoonChip />
+            <div className="flex items-center gap-1.5">
+              <NumberInput
+                value={settings.compactionThreshold}
+                onChange={(v) => patch({ compactionThreshold: v })}
+                placeholder="default"
+                className="w-24 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono text-right cursor-text"
+              />
+              <span className="text-xs text-text-muted">%</span>
             </div>
           </SettingRow>
         </div>
       </section>
-    </div>
-  )
-}
-
-function DisabledToggle({ checked = false }: { checked?: boolean }): React.JSX.Element {
-  return (
-    <div
-      className={[
-        'relative w-9 h-5 rounded-full pointer-events-none opacity-50',
-        checked ? 'bg-accent' : 'bg-surface-overlay border border-border-default'
-      ].join(' ')}
-    >
-      <span
-        className={[
-          'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm',
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
-        ].join(' ')}
-      />
     </div>
   )
 }

@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 8
+const CURRENT_VERSION = 9
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -76,6 +76,28 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     reduce_motion INTEGER NOT NULL DEFAULT 0 CHECK (reduce_motion IN (0, 1)),
     native_cursor INTEGER NOT NULL DEFAULT 0 CHECK (native_cursor IN (0, 1)),
     hide_cwd INTEGER NOT NULL DEFAULT 0 CHECK (hide_cwd IN (0, 1)),
+    -- Memory section (v9)
+    disable_git_instructions INTEGER NOT NULL DEFAULT 0 CHECK (disable_git_instructions IN (0, 1)),
+    max_output_tokens INTEGER,
+    max_context_tokens INTEGER,
+    compaction_threshold INTEGER,
+    -- Developer section (v9)
+    debug_logging INTEGER NOT NULL DEFAULT 0 CHECK (debug_logging IN (0, 1)),
+    log_level TEXT NOT NULL DEFAULT 'info' CHECK (log_level IN ('debug', 'info', 'warn', 'error')),
+    disable_telemetry INTEGER NOT NULL DEFAULT 0 CHECK (disable_telemetry IN (0, 1)),
+    disable_error_reporting INTEGER NOT NULL DEFAULT 0 CHECK (disable_error_reporting IN (0, 1)),
+    disable_autoupdater INTEGER NOT NULL DEFAULT 0 CHECK (disable_autoupdater IN (0, 1)),
+    experimental_agent_teams INTEGER NOT NULL DEFAULT 0 CHECK (experimental_agent_teams IN (0, 1)),
+    experimental_forked_subagents INTEGER NOT NULL DEFAULT 0 CHECK (experimental_forked_subagents IN (0, 1)),
+    simple_system_prompt INTEGER NOT NULL DEFAULT 0 CHECK (simple_system_prompt IN (0, 1)),
+    -- Permissions section (v9)
+    auto_approve_edits INTEGER NOT NULL DEFAULT 0 CHECK (auto_approve_edits IN (0, 1)),
+    ask_destructive_bash INTEGER NOT NULL DEFAULT 0 CHECK (ask_destructive_bash IN (0, 1)),
+    plan_mode_default INTEGER NOT NULL DEFAULT 0 CHECK (plan_mode_default IN (0, 1)),
+    permission_allow_rules TEXT NOT NULL DEFAULT '[]',
+    permission_ask_rules TEXT NOT NULL DEFAULT '[]',
+    permission_deny_rules TEXT NOT NULL DEFAULT '[]',
+    permission_additional_dirs TEXT NOT NULL DEFAULT '[]',
     updated_at INTEGER NOT NULL
   );
 `
@@ -240,5 +262,32 @@ function migrate(db: Database.Database): void {
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(8)
     }
+  }
+
+  // Version 9: Memory, Developer, Permissions columns on claude_global_settings
+  if (currentVersion < 9) {
+    // Memory section
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_git_instructions INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_output_tokens INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_context_tokens INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN compaction_threshold INTEGER') } catch {}
+    // Developer section
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN debug_logging INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN log_level TEXT NOT NULL DEFAULT 'info'") } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_telemetry INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_error_reporting INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_autoupdater INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN experimental_agent_teams INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN experimental_forked_subagents INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN simple_system_prompt INTEGER NOT NULL DEFAULT 0') } catch {}
+    // Permissions section
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_approve_edits INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN ask_destructive_bash INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN plan_mode_default INTEGER NOT NULL DEFAULT 0') } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_allow_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_ask_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_deny_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_additional_dirs TEXT NOT NULL DEFAULT '[]'") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(9)
   }
 }

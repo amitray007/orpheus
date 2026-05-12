@@ -6,7 +6,8 @@ import type {
   ClaudeEffort,
   ClaudeOutputStyle,
   ClaudeTuiMode,
-  ClaudeEditorMode
+  ClaudeEditorMode,
+  ClaudeLogLevel
 } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -26,7 +27,40 @@ type ClaudeSettingsRow = {
   reduce_motion: number
   native_cursor: number
   hide_cwd: number
+  // Memory section (v9)
+  disable_git_instructions: number
+  max_output_tokens: number | null
+  max_context_tokens: number | null
+  compaction_threshold: number | null
+  // Developer section (v9)
+  debug_logging: number
+  log_level: string
+  disable_telemetry: number
+  disable_error_reporting: number
+  disable_autoupdater: number
+  experimental_agent_teams: number
+  experimental_forked_subagents: number
+  simple_system_prompt: number
+  // Permissions section (v9)
+  auto_approve_edits: number
+  ask_destructive_bash: number
+  plan_mode_default: number
+  permission_allow_rules: string
+  permission_ask_rules: string
+  permission_deny_rules: string
+  permission_additional_dirs: string
   updated_at: number
+}
+
+function parseJsonArray(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed as string[]
+    return []
+  } catch {
+    return []
+  }
 }
 
 function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
@@ -42,6 +76,28 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     reduceMotion: row.reduce_motion === 1,
     nativeCursor: row.native_cursor === 1,
     hideCwd: row.hide_cwd === 1,
+    // Memory section
+    disableGitInstructions: row.disable_git_instructions === 1,
+    maxOutputTokens: row.max_output_tokens ?? null,
+    maxContextTokens: row.max_context_tokens ?? null,
+    compactionThreshold: row.compaction_threshold ?? null,
+    // Developer section
+    debugLogging: row.debug_logging === 1,
+    logLevel: (row.log_level ?? 'info') as ClaudeLogLevel,
+    disableTelemetry: row.disable_telemetry === 1,
+    disableErrorReporting: row.disable_error_reporting === 1,
+    disableAutoupdater: row.disable_autoupdater === 1,
+    experimentalAgentTeams: row.experimental_agent_teams === 1,
+    experimentalForkedSubagents: row.experimental_forked_subagents === 1,
+    simpleSystemPrompt: row.simple_system_prompt === 1,
+    // Permissions section
+    autoApproveEdits: row.auto_approve_edits === 1,
+    askDestructiveBash: row.ask_destructive_bash === 1,
+    planModeDefault: row.plan_mode_default === 1,
+    permissionAllowRules: parseJsonArray(row.permission_allow_rules),
+    permissionAskRules: parseJsonArray(row.permission_ask_rules),
+    permissionDenyRules: parseJsonArray(row.permission_deny_rules),
+    permissionAdditionalDirs: parseJsonArray(row.permission_additional_dirs),
     updatedAt: row.updated_at
   }
 }
@@ -60,6 +116,18 @@ const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh',
 const VALID_OUTPUT_STYLES: ClaudeOutputStyle[] = ['default', 'explanatory', 'proactive', 'learning']
 const VALID_TUI_MODES: ClaudeTuiMode[] = ['default', 'fullscreen']
 const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']
+const VALID_LOG_LEVELS: ClaudeLogLevel[] = ['debug', 'info', 'warn', 'error']
+
+const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
+  'autoMemory', 'alwaysThinking', 'reduceMotion', 'nativeCursor', 'hideCwd',
+  'disableGitInstructions', 'debugLogging', 'disableTelemetry', 'disableErrorReporting',
+  'disableAutoupdater', 'experimentalAgentTeams', 'experimentalForkedSubagents',
+  'simpleSystemPrompt', 'autoApproveEdits', 'askDestructiveBash', 'planModeDefault'
+]
+
+const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
+  'permissionAllowRules', 'permissionAskRules', 'permissionDenyRules', 'permissionAdditionalDirs'
+]
 
 function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   if ('model' in patch) {
@@ -94,14 +162,41 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
       throw new Error(`claudeSettings: editorMode must be one of ${VALID_EDITOR_MODES.join(', ')}`)
     }
   }
-  if ('reduceMotion' in patch && typeof patch.reduceMotion !== 'boolean') {
-    throw new Error('claudeSettings: reduceMotion must be a boolean')
+  if ('logLevel' in patch) {
+    if (!VALID_LOG_LEVELS.includes(patch.logLevel as ClaudeLogLevel)) {
+      throw new Error(`claudeSettings: logLevel must be one of ${VALID_LOG_LEVELS.join(', ')}`)
+    }
   }
-  if ('nativeCursor' in patch && typeof patch.nativeCursor !== 'boolean') {
-    throw new Error('claudeSettings: nativeCursor must be a boolean')
+  for (const key of BOOLEAN_KEYS) {
+    if (key in patch && typeof patch[key] !== 'boolean') {
+      throw new Error(`claudeSettings: ${key} must be a boolean`)
+    }
   }
-  if ('hideCwd' in patch && typeof patch.hideCwd !== 'boolean') {
-    throw new Error('claudeSettings: hideCwd must be a boolean')
+  if ('maxOutputTokens' in patch) {
+    const v = patch.maxOutputTokens
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxOutputTokens must be a positive integer or null')
+    }
+  }
+  if ('maxContextTokens' in patch) {
+    const v = patch.maxContextTokens
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxContextTokens must be a positive integer or null')
+    }
+  }
+  if ('compactionThreshold' in patch) {
+    const v = patch.compactionThreshold
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 100)) {
+      throw new Error('claudeSettings: compactionThreshold must be an integer 1–100 or null')
+    }
+  }
+  for (const key of STRING_ARRAY_KEYS) {
+    if (key in patch) {
+      const v = patch[key]
+      if (!Array.isArray(v) || !(v as unknown[]).every((item) => typeof item === 'string')) {
+        throw new Error(`claudeSettings: ${key} must be a string[]`)
+      }
+    }
   }
 }
 
@@ -147,13 +242,25 @@ export function composeClaudeLaunch(): ClaudeLaunch {
   }
 
   // --permission-mode: skip 'default' (claude's default mode)
-  if (s.permissionMode && s.permissionMode !== 'default') {
-    flagParts.push(`--permission-mode ${s.permissionMode}`)
+  // planModeDefault quick-toggle overrides if General permissionMode is still 'default'
+  const effectivePermissionMode =
+    s.permissionMode !== 'default'
+      ? s.permissionMode
+      : s.planModeDefault
+        ? 'plan'
+        : 'default'
+  if (effectivePermissionMode !== 'default') {
+    flagParts.push(`--permission-mode ${effectivePermissionMode}`)
   }
 
   // --effort: skip 'auto' (let claude pick the effort level)
   if (s.effort && s.effort !== 'auto') {
     flagParts.push(`--effort ${s.effort}`)
+  }
+
+  // --debug: enable verbose debug logging
+  if (s.debugLogging) {
+    flagParts.push('--debug')
   }
 
   const flags = flagParts.join(' ')
@@ -190,6 +297,55 @@ export function composeClaudeLaunch(): ClaudeLaunch {
     settingsObj['prefersReducedMotion'] = true
   }
 
+  // simpleSystemPrompt — settings.json key
+  if (s.simpleSystemPrompt) {
+    settingsObj['simpleSystemPrompt'] = true
+  }
+
+  // Permission rules — settings.json keys: permissions.allow / .ask / .deny / .additionalDirectories
+  // Compose permission arrays: merge stored rules with quick-control toggles
+  const allowRules = [...s.permissionAllowRules]
+  const askRules = [...s.permissionAskRules]
+  const denyRules = [...s.permissionDenyRules]
+
+  // autoApproveEdits: adds "Edit" to allow list (lets claude edit files without prompting)
+  // Design note: we inject at compose time so the raw stored list stays clean
+  if (s.autoApproveEdits && !allowRules.includes('Edit')) {
+    allowRules.push('Edit')
+  }
+
+  // askDestructiveBash: adds common destructive patterns to the ask list
+  if (s.askDestructiveBash) {
+    const destructivePatterns = [
+      'Bash(rm *)',
+      'Bash(rmdir *)',
+      'Bash(git reset *)',
+      'Bash(git push --force*)',
+      'Bash(git clean *)',
+      'Bash(DROP TABLE*)',
+      'Bash(truncate *)',
+    ]
+    for (const p of destructivePatterns) {
+      if (!askRules.includes(p)) askRules.push(p)
+    }
+  }
+
+  const permissionsObj: Record<string, unknown> = {}
+  if (allowRules.length > 0) permissionsObj['allow'] = allowRules
+  if (askRules.length > 0) permissionsObj['ask'] = askRules
+  if (denyRules.length > 0) permissionsObj['deny'] = denyRules
+  if (s.permissionAdditionalDirs.length > 0) {
+    permissionsObj['additionalDirectories'] = s.permissionAdditionalDirs
+  }
+
+  if (Object.keys(permissionsObj).length > 0) {
+    settingsObj['permissions'] = permissionsObj
+  }
+
+  // experimentalForkedSubagents — no confirmed CLI flag / settings key found in claude docs.
+  // Stored in DB and surfaced in UI but not composed into the launch command (no-op).
+  // If claude adds a mechanism in future, wire it here.
+
   const settingsJson = Object.keys(settingsObj).length > 0 ? JSON.stringify(settingsObj) : ''
 
   // -------------------------------------------------------------------------
@@ -210,6 +366,38 @@ export function composeClaudeLaunch(): ClaudeLaunch {
   // CLAUDE_CODE_HIDE_CWD: set when hideCwd is true
   if (s.hideCwd) {
     env['CLAUDE_CODE_HIDE_CWD'] = '1'
+  }
+
+  // Memory section env vars
+  if (s.disableGitInstructions) {
+    env['CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS'] = '1'
+  }
+  if (s.maxOutputTokens !== null) {
+    env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = String(s.maxOutputTokens)
+  }
+  if (s.maxContextTokens !== null) {
+    env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = String(s.maxContextTokens)
+  }
+  if (s.compactionThreshold !== null) {
+    env['CLAUDE_CODE_AUTO_COMPACT_THRESHOLD'] = String(s.compactionThreshold)
+  }
+
+  // Developer section env vars
+  if (s.debugLogging && s.logLevel !== 'info') {
+    // Only set the log level env var when debug logging is active and non-default
+    env['CLAUDE_CODE_DEBUG_LOG_LEVEL'] = s.logLevel
+  }
+  if (s.disableTelemetry) {
+    env['DISABLE_TELEMETRY'] = '1'
+  }
+  if (s.disableErrorReporting) {
+    env['DISABLE_ERROR_REPORTING'] = '1'
+  }
+  if (s.disableAutoupdater) {
+    env['DISABLE_AUTOUPDATER'] = '1'
+  }
+  if (s.experimentalAgentTeams) {
+    env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1'
   }
 
   return { flags, settingsJson, env }
@@ -247,7 +435,29 @@ export function updateClaudeGlobalSettings(
     editorMode: 'editor_mode',
     reduceMotion: 'reduce_motion',
     nativeCursor: 'native_cursor',
-    hideCwd: 'hide_cwd'
+    hideCwd: 'hide_cwd',
+    // Memory section
+    disableGitInstructions: 'disable_git_instructions',
+    maxOutputTokens: 'max_output_tokens',
+    maxContextTokens: 'max_context_tokens',
+    compactionThreshold: 'compaction_threshold',
+    // Developer section
+    debugLogging: 'debug_logging',
+    logLevel: 'log_level',
+    disableTelemetry: 'disable_telemetry',
+    disableErrorReporting: 'disable_error_reporting',
+    disableAutoupdater: 'disable_autoupdater',
+    experimentalAgentTeams: 'experimental_agent_teams',
+    experimentalForkedSubagents: 'experimental_forked_subagents',
+    simpleSystemPrompt: 'simple_system_prompt',
+    // Permissions section
+    autoApproveEdits: 'auto_approve_edits',
+    askDestructiveBash: 'ask_destructive_bash',
+    planModeDefault: 'plan_mode_default',
+    permissionAllowRules: 'permission_allow_rules',
+    permissionAskRules: 'permission_ask_rules',
+    permissionDenyRules: 'permission_deny_rules',
+    permissionAdditionalDirs: 'permission_additional_dirs'
   }
 
   const setClauses: string[] = []
@@ -258,8 +468,14 @@ export function updateClaudeGlobalSettings(
     if (!col) continue
     setClauses.push(`${col} = ?`)
     const val = patch[key]
-    // Coerce booleans to integers for SQLite
-    values.push(typeof val === 'boolean' ? (val ? 1 : 0) : val)
+    // Coerce booleans to integers for SQLite; arrays to JSON strings
+    if (typeof val === 'boolean') {
+      values.push(val ? 1 : 0)
+    } else if (Array.isArray(val)) {
+      values.push(JSON.stringify(val))
+    } else {
+      values.push(val)
+    }
   }
 
   if (setClauses.length === 0) {

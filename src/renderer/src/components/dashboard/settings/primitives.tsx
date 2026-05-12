@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type React from 'react'
+import { X, Plus } from '@phosphor-icons/react'
 
 // ---------------------------------------------------------------------------
 // Shared form primitives for Settings sections
@@ -89,6 +90,174 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
         ].join(' ')}
       />
     </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// NumberInput — controlled text input that commits as integer or null
+// ---------------------------------------------------------------------------
+
+export interface NumberInputProps {
+  value: number | null
+  onChange: (v: number | null) => void
+  placeholder?: string
+  className?: string
+}
+
+export function NumberInput({ value, onChange, placeholder, className }: NumberInputProps): React.JSX.Element {
+  const [local, setLocal] = useState(value === null ? '' : String(value))
+  // Track whether we have focus to avoid overwriting user's in-progress edits
+  const hasFocus = useRef(false)
+
+  // Sync external value changes when not focused
+  const displayValue = hasFocus.current
+    ? local
+    : value === null
+      ? ''
+      : String(value)
+
+  function commit(): void {
+    hasFocus.current = false
+    const trimmed = local.trim()
+    if (trimmed === '') {
+      onChange(null)
+      return
+    }
+    const n = parseInt(trimmed, 10)
+    if (Number.isNaN(n)) {
+      // Revert to external value on bad input
+      setLocal(value === null ? '' : String(value))
+      return
+    }
+    onChange(n)
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={displayValue}
+      onChange={(e) => setLocal(e.target.value)}
+      onFocus={() => {
+        hasFocus.current = true
+        setLocal(value === null ? '' : String(value))
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          ;(e.currentTarget as HTMLInputElement).blur()
+        }
+      }}
+      placeholder={placeholder}
+      className={
+        className ??
+        'w-32 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono text-right cursor-text'
+      }
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RuleListEditor — add/remove string rules (no autocomplete, no validation)
+// ---------------------------------------------------------------------------
+
+export interface RuleListEditorProps {
+  value: string[]
+  onChange: (v: string[]) => void
+  placeholder?: string
+  label?: string
+}
+
+export function RuleListEditor({ value, onChange, placeholder, label }: RuleListEditorProps): React.JSX.Element {
+  const [localItems, setLocalItems] = useState<string[]>(value)
+  // Keep in sync with external changes (e.g. initial load)
+  // Only update if external value reference changed and we're not mid-edit
+  const prevValueRef = useRef(value)
+  if (prevValueRef.current !== value) {
+    prevValueRef.current = value
+    // Only sync if our local state doesn't match — this avoids fighting user edits
+    if (JSON.stringify(localItems) !== JSON.stringify(value)) {
+      setLocalItems(value)
+    }
+  }
+
+  function updateItem(idx: number, text: string): void {
+    const next = [...localItems]
+    next[idx] = text
+    setLocalItems(next)
+  }
+
+  function commitItem(idx: number): void {
+    const trimmed = localItems[idx].trim()
+    const filtered = localItems
+      .map((item, i) => (i === idx ? trimmed : item))
+      .filter((item) => item !== '')
+    setLocalItems(filtered)
+    onChange(filtered)
+  }
+
+  function removeItem(idx: number): void {
+    const next = localItems.filter((_, i) => i !== idx)
+    setLocalItems(next)
+    onChange(next)
+  }
+
+  function addItem(): void {
+    const next = [...localItems, '']
+    setLocalItems(next)
+    // Focus the new input on next tick
+    setTimeout(() => {
+      const inputs = document.querySelectorAll<HTMLInputElement>('[data-rule-input]')
+      const last = inputs[inputs.length - 1]
+      if (last) last.focus()
+    }, 0)
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {label && (
+        <span className="text-xs font-medium text-text-primary">{label}</span>
+      )}
+      {localItems.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {localItems.map((item, idx) => (
+            <div key={idx} className="flex items-center gap-1.5">
+              <input
+                data-rule-input
+                type="text"
+                value={item}
+                onChange={(e) => updateItem(idx, e.target.value)}
+                onBlur={() => commitItem(idx)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    ;(e.currentTarget as HTMLInputElement).blur()
+                  }
+                  if (e.key === 'Escape') {
+                    removeItem(idx)
+                  }
+                }}
+                placeholder={placeholder ?? 'e.g. Bash(npm run *)'}
+                className="flex-1 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
+              />
+              <button
+                onClick={() => removeItem(idx)}
+                className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                aria-label="Remove rule"
+              >
+                <X size={11} weight="bold" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={addItem}
+        className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors self-start focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1"
+      >
+        <Plus size={11} weight="bold" />
+        Add rule
+      </button>
+    </div>
   )
 }
 

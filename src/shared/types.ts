@@ -79,6 +79,7 @@ export type ClaudeEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learning'
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
+export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
@@ -93,6 +94,32 @@ export type ClaudeGlobalSettings = {
   reduceMotion: boolean
   nativeCursor: boolean
   hideCwd: boolean
+
+  // Memory section
+  disableGitInstructions: boolean
+  maxOutputTokens: number | null
+  maxContextTokens: number | null
+  compactionThreshold: number | null
+
+  // Developer section
+  debugLogging: boolean
+  logLevel: ClaudeLogLevel
+  disableTelemetry: boolean
+  disableErrorReporting: boolean
+  disableAutoupdater: boolean
+  experimentalAgentTeams: boolean
+  experimentalForkedSubagents: boolean
+  simpleSystemPrompt: boolean
+
+  // Permissions section
+  autoApproveEdits: boolean
+  askDestructiveBash: boolean
+  planModeDefault: boolean
+  permissionAllowRules: string[]
+  permissionAskRules: string[]
+  permissionDenyRules: string[]
+  permissionAdditionalDirs: string[]
+
   updatedAt: number
 }
 
