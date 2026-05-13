@@ -6,3 +6,4 @@ out
 *.log*
 vendor/
 packages/*/build/
+.claude/
