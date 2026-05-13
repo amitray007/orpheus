@@ -179,6 +179,8 @@ export type ClaudeSlashCommand = {
   description: string | null
   allowedTools: string[] | null
   argumentHint: string | null
+  frontmatter: Record<string, string | string[]>
+  bodyPreview: string
 }
 
 export type ClaudeSubagent = {
@@ -190,6 +192,8 @@ export type ClaudeSubagent = {
   description: string | null
   tools: string[] | null
   model: string | null
+  frontmatter: Record<string, string | string[]>
+  bodyPreview: string
 }
 
 export type ClaudeHookEntry = {

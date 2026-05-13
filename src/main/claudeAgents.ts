@@ -55,12 +55,33 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
   return result
 }
 
-function readMdFile(filePath: string): Record<string, string | string[]> {
+function parseFile(filePath: string): { frontmatter: Record<string, string | string[]>; bodyPreview: string } {
   try {
     const content = fs.readFileSync(filePath, 'utf-8')
-    return parseFrontmatter(content)
+    const frontmatter = parseFrontmatter(content)
+
+    // Body = content after the closing --- line (the second --- in the file)
+    const lines = content.split('\n')
+    let closingIdx = -1
+    if (lines[0]?.trim() === '---') {
+      for (let i = 1; i < lines.length; i++) {
+        if (lines[i]?.trim() === '---') { closingIdx = i; break }
+      }
+    }
+
+    let bodyPreview = ''
+    if (closingIdx !== -1) {
+      const raw = lines.slice(closingIdx + 1).join('\n').trim()
+      if (raw.length > 600) {
+        bodyPreview = raw.slice(0, 600) + '\n…'
+      } else {
+        bodyPreview = raw
+      }
+    }
+
+    return { frontmatter, bodyPreview }
   } catch {
-    return {}
+    return { frontmatter: {}, bodyPreview: '' }
   }
 }
 
@@ -98,7 +119,7 @@ export function listSlashCommands(): ClaudeSlashCommand[] {
 
   const userDir = nodePath.join(os.homedir(), '.claude', 'commands')
   for (const filePath of listMdFiles(userDir)) {
-    const fm = readMdFile(filePath)
+    const { frontmatter: fm, bodyPreview } = parseFile(filePath)
     const baseName = nodePath.basename(filePath, '.md')
     all.push({
       name: stringOrNull(fm['name']) ?? baseName,
@@ -106,14 +127,16 @@ export function listSlashCommands(): ClaudeSlashCommand[] {
       source: 'user',
       description: stringOrNull(fm['description']),
       allowedTools: stringsOrNull(fm['allowed-tools']),
-      argumentHint: stringOrNull(fm['argument-hint'])
+      argumentHint: stringOrNull(fm['argument-hint']),
+      frontmatter: fm,
+      bodyPreview
     })
   }
 
   for (const project of listProjects()) {
     const projectDir = nodePath.join(project.path, '.claude', 'commands')
     for (const filePath of listMdFiles(projectDir)) {
-      const fm = readMdFile(filePath)
+      const { frontmatter: fm, bodyPreview } = parseFile(filePath)
       const baseName = nodePath.basename(filePath, '.md')
       all.push({
         name: stringOrNull(fm['name']) ?? baseName,
@@ -123,7 +146,9 @@ export function listSlashCommands(): ClaudeSlashCommand[] {
         projectName: project.name,
         description: stringOrNull(fm['description']),
         allowedTools: stringsOrNull(fm['allowed-tools']),
-        argumentHint: stringOrNull(fm['argument-hint'])
+        argumentHint: stringOrNull(fm['argument-hint']),
+        frontmatter: fm,
+        bodyPreview
       })
     }
   }
@@ -143,7 +168,7 @@ export function listSubagents(): ClaudeSubagent[] {
 
   const userDir = nodePath.join(os.homedir(), '.claude', 'agents')
   for (const filePath of listMdFiles(userDir)) {
-    const fm = readMdFile(filePath)
+    const { frontmatter: fm, bodyPreview } = parseFile(filePath)
     const baseName = nodePath.basename(filePath, '.md')
     all.push({
       name: stringOrNull(fm['name']) ?? baseName,
@@ -151,14 +176,16 @@ export function listSubagents(): ClaudeSubagent[] {
       source: 'user',
       description: stringOrNull(fm['description']),
       tools: stringsOrNull(fm['tools']),
-      model: stringOrNull(fm['model'])
+      model: stringOrNull(fm['model']),
+      frontmatter: fm,
+      bodyPreview
     })
   }
 
   for (const project of listProjects()) {
     const projectDir = nodePath.join(project.path, '.claude', 'agents')
     for (const filePath of listMdFiles(projectDir)) {
-      const fm = readMdFile(filePath)
+      const { frontmatter: fm, bodyPreview } = parseFile(filePath)
       const baseName = nodePath.basename(filePath, '.md')
       all.push({
         name: stringOrNull(fm['name']) ?? baseName,
@@ -168,7 +195,9 @@ export function listSubagents(): ClaudeSubagent[] {
         projectName: project.name,
         description: stringOrNull(fm['description']),
         tools: stringsOrNull(fm['tools']),
-        model: stringOrNull(fm['model'])
+        model: stringOrNull(fm['model']),
+        frontmatter: fm,
+        bodyPreview
       })
     }
   }
