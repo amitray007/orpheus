@@ -5,6 +5,7 @@ import type {
   SessionRecord,
   SessionStatus,
   WorkspaceRecord,
+  WorkspaceStatus,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -85,6 +86,7 @@ declare global {
         onDirtyChanged: (
           cb: (e: { workspaceId: string; dirty: boolean }) => void
         ) => () => void
+        setStatus: (id: string, status: WorkspaceStatus) => Promise<WorkspaceRecord>
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>

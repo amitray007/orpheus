@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
-import type { WorkspaceRecord } from '@shared/types'
-import { WorkspaceOverridesPopover } from './WorkspaceOverridesPopover'
+import type { WorkspaceRecord, WorkspaceStatus } from '@shared/types'
+import { WorkspaceDrawer, StatusChip } from './WorkspaceDrawer'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
+  onWorkspaceStatusChanged?: (workspaceId: string, status: WorkspaceStatus) => void
 }
 
-export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Element {
+export function WorkspaceView({
+  workspace,
+  onWorkspaceStatusChanged
+}: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
@@ -17,8 +21,15 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   const [remountKey, setRemountKey] = useState(0)
   // Dirty state — true when settings have changed since this workspace was last mounted.
   const [isDirty, setIsDirty] = useState(false)
-  const [overridesOpen, setOverridesOpen] = useState(false)
-  const handleCloseOverrides = useCallback(() => setOverridesOpen(false), [])
+  // Drawer: null = closed; 'status' | 'overrides' = open on that tab
+  const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
+  // Optimistic local status so the chip updates immediately without waiting for a refetch
+  const [displayStatus, setDisplayStatus] = useState<WorkspaceStatus>(workspace.status)
+
+  // Sync displayStatus when the prop changes (parent refetch landed)
+  useEffect(() => {
+    setDisplayStatus(workspace.status)
+  }, [workspace.status])
 
   // Seed dirty state on mount and subscribe to live events.
   useEffect(() => {
@@ -40,6 +51,26 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     // launch at that point and clears dirty — the chip disappears via dirtyChanged event.
     setRemountKey((k) => k + 1)
   }
+
+  function handleStatusChange(next: WorkspaceStatus): void {
+    setDisplayStatus(next) // optimistic
+    window.api.workspaces
+      .setStatus(workspace.id, next)
+      .then((updated) => {
+        setDisplayStatus(updated.status)
+        onWorkspaceStatusChanged?.(workspace.id, updated.status)
+      })
+      .catch((err) => {
+        console.error('[WorkspaceView] status change failed', err)
+        setDisplayStatus(workspace.status) // revert optimistic
+      })
+  }
+
+  const handleTabChange = useCallback((tab: 'status' | 'overrides') => {
+    setDrawer(tab)
+  }, [])
+
+  const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
   useEffect(() => {
     const el = containerRef.current
@@ -97,6 +128,8 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     })
 
     // ResizeObserver — fires when the div's intrinsic size changes.
+    // This fires automatically when the drawer opens/closes and changes the
+    // terminal host div's width via flex layout.
     const ro = new ResizeObserver(() => {
       if (!el) return
       const newRect = el.getBoundingClientRect()
@@ -159,23 +192,28 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
       {/* Tab title bar — thin strip */}
       <div className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0">
         <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-        <div className="relative flex items-center gap-1.5">
-          <span className="text-xs font-medium text-text-primary truncate">{workspace.name}</span>
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setOverridesOpen((o) => !o)}
-            title="Workspace overrides"
-            className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-          >
-            <Gear size={14} />
-          </button>
-          {overridesOpen && (
-            <WorkspaceOverridesPopover
-              workspaceId={workspace.id}
-              onClose={handleCloseOverrides}
-            />
-          )}
-        </div>
+        <span className="text-xs font-medium text-text-primary truncate">{workspace.name}</span>
+
+        {/* Status chip — clicking opens drawer on status tab */}
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => setDrawer(drawer === 'status' ? null : 'status')}
+          title="Workspace status"
+          className="flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+        >
+          <StatusChip status={displayStatus} />
+        </button>
+
+        {/* Gear — opens drawer on overrides tab */}
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => setDrawer(drawer === 'overrides' ? null : 'overrides')}
+          title="Workspace overrides"
+          className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+        >
+          <Gear size={14} />
+        </button>
+
         <span className="text-text-muted text-xs">·</span>
         <span
           className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
@@ -189,7 +227,11 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
           <span className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400">
             Settings changed
             <button
-              onClick={() => { handleRestart().catch((e) => console.error('[WorkspaceView] restart failed:', e)) }}
+              onClick={() => {
+                handleRestart().catch((e) =>
+                  console.error('[WorkspaceView] restart failed:', e)
+                )
+              }}
               className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
             >
               Restart to apply
@@ -198,8 +240,25 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
         )}
       </div>
 
-      {/* Terminal area — transparent div; the native NSView renders directly behind/over this. */}
-      <div ref={containerRef} className="flex-1 min-h-0 relative" />
+      {/* Content row: terminal host + optional drawer */}
+      <div className="flex flex-1 min-h-0">
+        {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
+            ResizeObserver on this div fires when the drawer opens/closes (flex layout narrows it),
+            which triggers terminal:resize and repositions the native NSView. */}
+        <div ref={containerRef} className="flex-1 min-w-0 relative" />
+
+        {drawer !== null && (
+          <div className="w-80 flex-shrink-0 border-l border-border-default bg-surface-raised flex flex-col">
+            <WorkspaceDrawer
+              workspace={{ ...workspace, status: displayStatus }}
+              activeTab={drawer}
+              onTabChange={handleTabChange}
+              onClose={handleCloseDrawer}
+              onStatusChange={handleStatusChange}
+            />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

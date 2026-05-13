@@ -436,6 +436,18 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     }
   }
 
+  function handleWorkspaceStatusChanged(workspaceId: string): void {
+    // Find the project that owns this workspace and refetch so the status
+    // flows back through props into WorkspaceView.
+    const projectId = Object.entries(workspacesByProject).find(([, ws]) =>
+      ws.some((w) => w.id === workspaceId)
+    )?.[0]
+    if (projectId) {
+      fetchWorkspacesForProject(projectId).catch(console.error)
+      refreshPins()
+    }
+  }
+
   async function handleRenameProject(id: string, newName: string): Promise<void> {
     // Optimistic update
     setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, name: newName } : p)))
@@ -612,6 +624,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
           onUnarchiveWorkspace={handleUnarchiveWorkspace}
           onToggleWorkspacePin={handleToggleWorkspacePin}
+          onWorkspaceStatusChanged={handleWorkspaceStatusChanged}
         />
       </main>
 

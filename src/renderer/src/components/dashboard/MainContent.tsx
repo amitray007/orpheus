@@ -2,7 +2,7 @@ import { ProjectView } from './ProjectView'
 import { SessionsView } from './SessionsView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
-import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
+import type { ProjectRecord, WorkspaceRecord, WorkspaceStatus } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // Dashboard home placeholder sections
@@ -50,6 +50,7 @@ interface MainContentProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
+  onWorkspaceStatusChanged?: (workspaceId: string, status: WorkspaceStatus) => void
 }
 
 export function MainContent({
@@ -64,7 +65,8 @@ export function MainContent({
   onRenameWorkspace,
   onArchiveWorkspace,
   onUnarchiveWorkspace,
-  onToggleWorkspacePin
+  onToggleWorkspacePin,
+  onWorkspaceStatusChanged
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -95,7 +97,13 @@ export function MainContent({
     // key forces React to unmount the old WorkspaceView and mount a fresh
     // one when the workspace changes — without this the useEffect with []
     // deps doesn't re-run and terminal:hide/mount never fires.
-    return <WorkspaceView key={workspace.id} workspace={workspace} />
+    return (
+      <WorkspaceView
+        key={workspace.id}
+        workspace={workspace}
+        onWorkspaceStatusChanged={onWorkspaceStatusChanged}
+      />
+    )
   }
 
   // project view

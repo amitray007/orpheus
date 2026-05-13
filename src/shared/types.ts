@@ -46,6 +46,7 @@ export type WorkspaceRecord = {
   lastOpenedAt: number | null
   archivedAt: number | null
   sortOrder: number | null
+  status: WorkspaceStatus
 }
 
 // For Pinned section: a pinned workspace with its project for context
@@ -288,6 +289,8 @@ export type ClaudeAuthPatch = {
 export type ClaudeAuthTestResult =
   | { ok: true; durationMs: number }
   | { ok: false; reason: string; status?: number }
+
+export type WorkspaceStatus = 'in_progress' | 'in_review' | 'completed' | 'archived'
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 

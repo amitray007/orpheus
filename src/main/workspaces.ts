@@ -1,5 +1,5 @@
 import { getDb } from './db'
-import type { WorkspaceRecord, PinnedItem, ProjectRecord } from '../shared/types'
+import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -15,6 +15,7 @@ type WorkspaceRow = {
   created_at: number
   last_opened_at: number | null
   archived_at: number | null
+  status: WorkspaceStatus
   sort_order: number | null
 }
 
@@ -40,6 +41,7 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
+    status: row.status ?? 'in_progress',
     sortOrder: row.sort_order ?? null
   }
 }
@@ -147,7 +149,7 @@ export function archiveWorkspace(id: string): WorkspaceRecord {
     throw new Error('Cannot archive the last active workspace in a project')
   }
 
-  db.prepare('UPDATE workspaces SET archived_at = ? WHERE id = ?').run(Date.now(), id)
+  db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(Date.now(), id)
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }
@@ -170,7 +172,31 @@ export function reorderWorkspaces(projectId: string, orderedIds: string[]): void
 
 export function unarchiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET archived_at = NULL WHERE id = ?').run(id)
+  db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'in_progress' WHERE id = ?").run(id)
+  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  return rowToWorkspaceRecord(row)
+}
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+const VALID_STATUSES: WorkspaceStatus[] = ['in_progress', 'in_review', 'completed', 'archived']
+
+export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
+  if (!VALID_STATUSES.includes(status)) {
+    throw new Error(`Invalid status: ${status}`)
+  }
+  const db = getDb()
+  // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
+  // transitioning AWAY from 'archived' clears it.
+  if (status === 'archived') {
+    db.prepare("UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ?")
+      .run(status, Date.now(), id)
+  } else {
+    db.prepare("UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ?")
+      .run(status, id)
+  }
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }

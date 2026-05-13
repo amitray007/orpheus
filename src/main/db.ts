@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 20
+const CURRENT_VERSION = 21
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -51,6 +51,7 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
+    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER
   );
@@ -432,5 +433,13 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 20) {
     try { db.exec('ALTER TABLE workspaces ADD COLUMN sort_order INTEGER') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(20)
+  }
+
+  // Version 21: workspaces.status — four-stage workflow status
+  if (currentVersion < 21) {
+    try { db.exec("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived'))") } catch {}
+    // Backfill: archived workspaces should have status='archived'
+    db.prepare("UPDATE workspaces SET status = 'archived' WHERE archived_at IS NOT NULL AND status != 'archived'").run()
+    db.prepare('UPDATE schema_version SET version = ?').run(21)
   }
 }

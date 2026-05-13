@@ -7,6 +7,7 @@ import type {
   SessionRecord,
   SessionStatus,
   WorkspaceRecord,
+  WorkspaceStatus,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -107,7 +108,9 @@ const api = {
         cb(e)
       ipcRenderer.on('workspace:dirtyChanged', listener)
       return () => ipcRenderer.removeListener('workspace:dirtyChanged', listener)
-    }
+    },
+    setStatus: (id: string, status: WorkspaceStatus): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:setStatus', { id, status })
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')

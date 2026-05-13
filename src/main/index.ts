@@ -30,7 +30,8 @@ import {
   unarchiveWorkspace,
   renameWorkspace,
   reorderWorkspaces,
-  listAllPinned
+  listAllPinned,
+  setWorkspaceStatus
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
@@ -40,7 +41,7 @@ import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv, testAnthropicCo
 import { listMcpServers } from './mcp'
 import { listSlashCommands, listSubagents } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
-import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch, ClaudeHookDraft } from '../shared/types'
+import type { SessionStatus, WorkspaceStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch, ClaudeHookDraft } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
 // ---------------------------------------------------------------------------
@@ -478,6 +479,11 @@ ipcMain.handle(
 ipcMain.handle(
   'workspace:isDirty',
   (_e, { workspaceId }: { workspaceId: string }): boolean => dirtyWorkspaces.has(workspaceId)
+)
+
+ipcMain.handle(
+  'workspaces:setStatus',
+  (_e, { id, status }: { id: string; status: WorkspaceStatus }) => setWorkspaceStatus(id, status)
 )
 
 // ---------------------------------------------------------------------------
