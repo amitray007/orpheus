@@ -10,6 +10,13 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "2", default-features = false, features = ["napi8"] }
 napi-derive = "2"
+# libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", branch = "master" }
+# BLOCKED: macOS 26.5 SDK + Zig 0.15.2 (required by libghostty-vt-sys) produce
+# unresolved libc symbol errors (isatty/malloc_size/posix_memalign/sigaction/
+# waitpid/realpath$DARWIN_EXTSN/sysctlbyname/sigemptyset) when Zig links its
+# own build runner. The libghostty-rs crate also requires Rust 1.90+ (we
+# upgraded to 1.95). See docs/notes/libghostty-vt-blocker.md for details +
+# next steps.
 
 [build-dependencies]
 napi-build = "2"
