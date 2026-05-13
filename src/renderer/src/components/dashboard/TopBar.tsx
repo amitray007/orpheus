@@ -14,7 +14,7 @@ export function TopBar({
 }: TopBarProps): React.JSX.Element {
   return (
     <header
-      className="h-9 flex items-center bg-surface-raised border-b border-border-default flex-shrink-0"
+      className="h-11 flex items-center bg-surface-raised border-b border-border-default flex-shrink-0"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       {/* Traffic-light spacer — reserves 80px on the left */}
