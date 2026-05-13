@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 17
+const CURRENT_VERSION = 18
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -159,6 +159,9 @@ const UI_STATE_SCHEMA_SQL = `
     workspace_count_inline INTEGER NOT NULL DEFAULT 1 CHECK (workspace_count_inline IN (0, 1)),
     sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480),
     default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1)),
+    -- Launch + hotkey (v18)
+    launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1)),
+    global_hotkey TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   );
 `
@@ -409,5 +412,12 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_project_id TEXT NOT NULL DEFAULT ''") } catch {}
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_region TEXT NOT NULL DEFAULT ''") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(17)
+  }
+
+  // Version 18: launch at login + global hotkey on app_ui_state
+  if (currentVersion < 18) {
+    try { db.exec("ALTER TABLE app_ui_state ADD COLUMN launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1))") } catch {}
+    try { db.exec("ALTER TABLE app_ui_state ADD COLUMN global_hotkey TEXT NOT NULL DEFAULT ''") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(18)
   }
 }

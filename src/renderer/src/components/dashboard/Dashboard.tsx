@@ -69,6 +69,8 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           workspaceCountInline: true,
           sidebarWidth: 256,
           defaultProjectExpanded: false,
+          launchAtLogin: false,
+          globalHotkey: '',
           updatedAt: 0
         })
       })

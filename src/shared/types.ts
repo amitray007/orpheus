@@ -81,6 +81,9 @@ export type AppUiState = {
   workspaceCountInline: boolean
   sidebarWidth: number
   defaultProjectExpanded: boolean
+  // Launch + hotkey (v18)
+  launchAtLogin: boolean
+  globalHotkey: string
   updatedAt: number
 }
 

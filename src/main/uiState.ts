@@ -25,6 +25,9 @@ type AppUiStateRow = {
   workspace_count_inline: number
   sidebar_width: number
   default_project_expanded: number
+  // Launch + hotkey (v18)
+  launch_at_login: number
+  global_hotkey: string
   updated_at: number
 }
 
@@ -51,6 +54,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     workspaceCountInline: (row.workspace_count_inline ?? 1) === 1,
     sidebarWidth: clampedWidth,
     defaultProjectExpanded: (row.default_project_expanded ?? 0) === 1,
+    // Launch + hotkey (v18)
+    launchAtLogin: (row.launch_at_login ?? 0) === 1,
+    globalHotkey: row.global_hotkey ?? '',
     updatedAt: row.updated_at
   }
 }
@@ -118,7 +124,10 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     pinnedSectionVisible: 'pinned_section_visible',
     workspaceCountInline: 'workspace_count_inline',
     sidebarWidth: 'sidebar_width',
-    defaultProjectExpanded: 'default_project_expanded'
+    defaultProjectExpanded: 'default_project_expanded',
+    // Launch + hotkey (v18)
+    launchAtLogin: 'launch_at_login',
+    globalHotkey: 'global_hotkey'
   }
 
   const setClauses: string[] = []

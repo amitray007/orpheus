@@ -1,8 +1,113 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
 import { SettingRow, Toggle } from './primitives'
-import { ComingSoonChip } from './ClaudeGeneralSection'
+
+// ---------------------------------------------------------------------------
+// HotkeyInput — inline key-capture component
+// ---------------------------------------------------------------------------
+
+function normalizeKey(key: string): string {
+  if (key.length === 1) return key.toUpperCase()
+  const map: Record<string, string> = {
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    Enter: 'Return',
+    ' ': 'Space',
+  }
+  return map[key] ?? key
+}
+
+interface HotkeyInputProps {
+  value: string
+  onChange: (accel: string) => void
+}
+
+function HotkeyInput({ value, onChange }: HotkeyInputProps): React.JSX.Element {
+  const [capturing, setCapturing] = useState(false)
+  const captureRef = useRef(false)
+
+  function startCapture(): void {
+    setCapturing(true)
+    captureRef.current = true
+  }
+
+  function exitCapture(): void {
+    setCapturing(false)
+    captureRef.current = false
+  }
+
+  useEffect(() => {
+    if (!capturing) return
+
+    function onKeyDown(e: KeyboardEvent): void {
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Escape with no modifiers → cancel
+      if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        exitCapture()
+        return
+      }
+
+      // Skip bare modifier keystrokes — keep waiting
+      if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return
+
+      const parts: string[] = []
+      if (e.metaKey || e.ctrlKey) parts.push('CommandOrControl')
+      if (e.altKey) parts.push('Alt')
+      if (e.shiftKey) parts.push('Shift')
+
+      // Require at least one non-shift modifier
+      if (parts.length === 0 || (parts.length === 1 && parts[0] === 'Shift')) {
+        return // keep waiting
+      }
+
+      const mainKey = normalizeKey(e.key)
+      parts.push(mainKey)
+
+      onChange(parts.join('+'))
+      exitCapture()
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [capturing, onChange])
+
+  return (
+    <div className="flex items-center gap-2">
+      {capturing ? (
+        <button
+          type="button"
+          onClick={exitCapture}
+          className="px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-brand-accent text-text-muted font-mono min-w-[160px] text-left cursor-pointer animate-pulse"
+        >
+          Press a key combo… (Esc to cancel)
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={startCapture}
+          className="px-3 py-1.5 rounded-md text-xs bg-surface-overlay border border-border-default hover:border-border-hover text-text-primary font-mono min-w-[160px] text-left cursor-pointer transition-colors"
+        >
+          {value || <span className="text-text-muted font-sans">None</span>}
+        </button>
+      )}
+      {value && !capturing && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          className="text-xs text-text-muted hover:text-text-primary transition-colors px-1.5 py-1 rounded hover:bg-surface-overlay"
+          aria-label="Clear hotkey"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // OrpheusWindowSection — window behavior, close/hide, last view restore
@@ -135,23 +240,30 @@ export function OrpheusWindowSection(): React.JSX.Element {
         </div>
       </section>
 
-      {/* Coming soon */}
+      {/* Launch + hotkey */}
       <section className="flex flex-col">
         <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Coming soon
+          Launch + hotkey
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Launch at login"
             description="Start Orpheus automatically when you log into macOS."
           >
-            <ComingSoonChip />
+            <Toggle
+              value={uiState.launchAtLogin}
+              onChange={(v) => patch({ launchAtLogin: v })}
+              ariaLabel="Launch at login"
+            />
           </SettingRow>
           <SettingRow
             label="Global hotkey"
             description="System-wide keyboard shortcut to bring Orpheus to the front from any app."
           >
-            <ComingSoonChip />
+            <HotkeyInput
+              value={uiState.globalHotkey}
+              onChange={(accel) => patch({ globalHotkey: accel })}
+            />
           </SettingRow>
         </div>
       </section>

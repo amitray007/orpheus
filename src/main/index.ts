@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, screen } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -80,6 +80,46 @@ function recomputeDirty(): void {
     if (!ws) continue
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
     setDirty(workspaceId, !launchEquals(snap, fresh))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Launch at login + global hotkey helpers
+// ---------------------------------------------------------------------------
+
+function applyLaunchAtLogin(enabled: boolean): void {
+  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: false })
+}
+
+let registeredHotkey: string = ''
+
+function applyGlobalHotkey(hotkey: string): boolean {
+  // Unregister previous if changed
+  if (registeredHotkey && registeredHotkey !== hotkey) {
+    globalShortcut.unregister(registeredHotkey)
+    registeredHotkey = ''
+  }
+  if (!hotkey) return true
+  if (registeredHotkey === hotkey) return true // already active
+  try {
+    const ok = globalShortcut.register(hotkey, () => {
+      const wins = BrowserWindow.getAllWindows()
+      const win = wins[0]
+      if (!win) return
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      app.focus({ steal: true })
+    })
+    if (!ok) {
+      console.error('[shortcut] failed to register:', hotkey)
+      return false
+    }
+    registeredHotkey = hotkey
+    return true
+  } catch (err) {
+    console.error('[shortcut] register threw:', err)
+    return false
   }
 }
 
@@ -539,7 +579,12 @@ ipcMain.handle(
 
 ipcMain.handle('uiState:get', () => getAppUiState())
 
-ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => updateAppUiState(patch))
+ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
+  const result = updateAppUiState(patch)
+  if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
+  if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
+  return result
+})
 
 ipcMain.handle(
   'projects:setExpandedInSidebar',
@@ -730,9 +775,22 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Apply OS-level settings after the window exists (hotkey callback needs it)
+  try {
+    const state = getAppUiState()
+    applyLaunchAtLogin(state.launchAtLogin)
+    applyGlobalHotkey(state.globalHotkey)
+  } catch (err) {
+    console.error('[startup] failed to apply launch/hotkey settings:', err)
+  }
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
 
 app.on('window-all-closed', () => {
