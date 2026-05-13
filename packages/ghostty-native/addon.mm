@@ -677,6 +677,23 @@ static bool action_cb(ghostty_app_t /*app*/,
             case GHOSTTY_ACTION_KEY_TABLE: tagName = "KEY_TABLE"; break;
             case GHOSTTY_ACTION_OPEN_URL: tagName = "OPEN_URL"; break;
             case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD: tagName = "COPY_TITLE_TO_CLIPBOARD"; break;
+            case GHOSTTY_ACTION_QUIT_TIMER: tagName = "QUIT_TIMER"; break;
+            case GHOSTTY_ACTION_FLOAT_WINDOW: tagName = "FLOAT_WINDOW"; break;
+            case GHOSTTY_ACTION_OPEN_CONFIG: tagName = "OPEN_CONFIG"; break;
+            case GHOSTTY_ACTION_RELOAD_CONFIG: tagName = "RELOAD_CONFIG"; break;
+            case GHOSTTY_ACTION_CLOSE_WINDOW: tagName = "CLOSE_WINDOW"; break;
+            case GHOSTTY_ACTION_UNDO: tagName = "UNDO"; break;
+            case GHOSTTY_ACTION_REDO: tagName = "REDO"; break;
+            case GHOSTTY_ACTION_CHECK_FOR_UPDATES: tagName = "CHECK_FOR_UPDATES"; break;
+            case GHOSTTY_ACTION_SHOW_CHILD_EXITED: tagName = "SHOW_CHILD_EXITED"; break;
+            case GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD: tagName = "SHOW_ON_SCREEN_KEYBOARD"; break;
+            case GHOSTTY_ACTION_START_SEARCH: tagName = "START_SEARCH"; break;
+            case GHOSTTY_ACTION_END_SEARCH: tagName = "END_SEARCH"; break;
+            case GHOSTTY_ACTION_SEARCH_TOTAL: tagName = "SEARCH_TOTAL"; break;
+            case GHOSTTY_ACTION_SEARCH_SELECTED: tagName = "SEARCH_SELECTED"; break;
+            case GHOSTTY_ACTION_READONLY: tagName = "READONLY"; break;
+            case GHOSTTY_ACTION_INSPECTOR: tagName = "INSPECTOR"; break;
+            case GHOSTTY_ACTION_RENDER_INSPECTOR: tagName = "RENDER_INSPECTOR"; break;
             default: break;
         }
         int tagInt = (int)action.tag;
