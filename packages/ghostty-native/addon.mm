@@ -619,9 +619,15 @@ static void wakeup_cb(void* /*userdata*/) {
 static bool action_cb(ghostty_app_t /*app*/,
                       ghostty_target_s target,
                       ghostty_action_s action) {
-    if (action.tag == GHOSTTY_ACTION_SET_TITLE) {
-        const char* rawTitle = action.action.set_title.title;
-        NSLog(@"[ghostty-native] SET_TITLE: %s", rawTitle ? rawTitle : "(null)");
+    if (action.tag == GHOSTTY_ACTION_SET_TITLE ||
+        action.tag == GHOSTTY_ACTION_SET_TAB_TITLE) {
+        // Both share the same ghostty_action_set_title_s payload shape, but
+        // they're addressed differently in the union — set_title vs set_tab_title.
+        const char* rawTitle = (action.tag == GHOSTTY_ACTION_SET_TITLE)
+            ? action.action.set_title.title
+            : action.action.set_tab_title.title;
+        const char* tagName = (action.tag == GHOSTTY_ACTION_SET_TITLE) ? "SET_TITLE" : "SET_TAB_TITLE";
+        NSLog(@"[ghostty-native] %s: %s", tagName, rawTitle ? rawTitle : "(null)");
 
         if (g_titleTSFNActive && target.tag == GHOSTTY_TARGET_SURFACE) {
             ghostty_surface_t surf = target.target.surface;
