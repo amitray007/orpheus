@@ -6,7 +6,7 @@ import type {
   ClaudeTuiMode,
   ClaudeEditorMode
 } from '@shared/types'
-import { SettingRow, SegmentedControl, Toggle } from './primitives'
+import { SettingRow, SegmentedControl, Toggle, NumberInput } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeDisplaySection — output style, TUI renderer, editor mode, a11y toggles
@@ -167,6 +167,125 @@ export function ClaudeDisplaySection(): React.JSX.Element {
               ariaLabel="Reduce motion"
               value={settings.reduceMotion}
               onChange={(v) => patch({ reduceMotion: v })}
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      {/* Rendering */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Rendering
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="No flicker"
+            description="Reduce screen flicker on some terminal emulators (CLAUDE_CODE_NO_FLICKER=1)."
+            mapsTo="CLAUDE_CODE_NO_FLICKER"
+          >
+            <Toggle
+              ariaLabel="No flicker"
+              value={settings.noFlicker}
+              onChange={(v) => patch({ noFlicker: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable alternate screen"
+            description="Prevent Claude from switching to an alternate terminal screen buffer (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"
+          >
+            <Toggle
+              ariaLabel="Disable alternate screen"
+              value={settings.disableAlternateScreen}
+              onChange={(v) => patch({ disableAlternateScreen: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable virtual scroll"
+            description="Turn off Claude's virtual scrolling implementation (CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL"
+          >
+            <Toggle
+              ariaLabel="Disable virtual scroll"
+              value={settings.disableVirtualScroll}
+              onChange={(v) => patch({ disableVirtualScroll: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable mouse"
+            description="Disable mouse event handling inside Claude's terminal UI (CLAUDE_CODE_DISABLE_MOUSE=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_MOUSE"
+          >
+            <Toggle
+              ariaLabel="Disable mouse"
+              value={settings.disableMouse}
+              onChange={(v) => patch({ disableMouse: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable terminal title"
+            description="Stop Claude from updating the terminal window title during sessions (CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
+          >
+            <Toggle
+              ariaLabel="Disable terminal title"
+              value={settings.disableTerminalTitle}
+              onChange={(v) => patch({ disableTerminalTitle: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Scroll speed (1–20)"
+            description="Override the scroll speed inside Claude's TUI (CLAUDE_CODE_SCROLL_SPEED). Leave empty to use the default."
+            mapsTo="CLAUDE_CODE_SCROLL_SPEED"
+          >
+            <NumberInput
+              value={settings.scrollSpeed}
+              onChange={(v) => patch({ scrollSpeed: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Code accessibility"
+            description="Enable accessibility enhancements for code blocks in Claude's output (CLAUDE_CODE_CODE_ACCESSIBILITY=1)."
+            mapsTo="CLAUDE_CODE_CODE_ACCESSIBILITY"
+          >
+            <Toggle
+              ariaLabel="Code accessibility"
+              value={settings.codeAccessibility}
+              onChange={(v) => patch({ codeAccessibility: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Omit attribution header"
+            description="Remove the attribution block from the system prompt start (CLAUDE_CODE_ATTRIBUTION_HEADER=1)."
+            mapsTo="CLAUDE_CODE_ATTRIBUTION_HEADER"
+          >
+            <Toggle
+              ariaLabel="Omit attribution header"
+              value={settings.omitAttributionHeader}
+              onChange={(v) => patch({ omitAttributionHeader: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Force sync output"
+            description="Force all terminal output to be written synchronously (CLAUDE_CODE_FORCE_SYNC_OUTPUT=1)."
+            mapsTo="CLAUDE_CODE_FORCE_SYNC_OUTPUT"
+          >
+            <Toggle
+              ariaLabel="Force sync output"
+              value={settings.forceSyncOutput}
+              onChange={(v) => patch({ forceSyncOutput: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Enable prompt suggestion"
+            description="Show inline prompt suggestions inside the Claude input field (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1)."
+            mapsTo="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+          >
+            <Toggle
+              ariaLabel="Enable prompt suggestion"
+              value={settings.enablePromptSuggestion}
+              onChange={(v) => patch({ enablePromptSuggestion: v })}
             />
           </SettingRow>
         </div>

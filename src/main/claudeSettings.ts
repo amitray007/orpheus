@@ -83,6 +83,37 @@ type ClaudeSettingsRow = {
   disable_agent_view: number
   anthropic_betas: string
   extra_body_json: string
+  // More env-var controls (v24)
+  no_flicker: number
+  disable_alternate_screen: number
+  disable_virtual_scroll: number
+  disable_mouse: number
+  disable_terminal_title: number
+  scroll_speed: number | null
+  code_accessibility: number
+  omit_attribution_header: number
+  force_sync_output: number
+  enable_prompt_suggestion: number
+  disable_1m_context: number
+  disable_adaptive_thinking: number
+  disable_legacy_model_remap: number
+  auto_compact_window: number | null
+  autocompact_pct_override: number | null
+  disable_file_checkpointing: number
+  disable_attachments: number
+  shell_override: string
+  shell_prefix: string
+  enable_fine_grained_tool_streaming: number
+  disable_nonstreaming_fallback: number
+  proxy_resolves_hosts: number
+  enable_gateway_model_discovery: number
+  auto_background_tasks: number
+  async_agent_stall_timeout_ms: number | null
+  enable_tasks: number
+  disable_cron: number
+  exit_after_stop_delay: number | null
+  disable_feedback_command: number
+  disable_feedback_survey: number
   updated_at: number
 }
 
@@ -180,6 +211,42 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     disableAgentView: row.disable_agent_view === 1,
     anthropicBetas: row.anthropic_betas ?? '',
     extraBodyJson: row.extra_body_json ?? '',
+    // Env-var controls (v24) — Display / Rendering
+    noFlicker: row.no_flicker === 1,
+    disableAlternateScreen: row.disable_alternate_screen === 1,
+    disableVirtualScroll: row.disable_virtual_scroll === 1,
+    disableMouse: row.disable_mouse === 1,
+    disableTerminalTitle: row.disable_terminal_title === 1,
+    scrollSpeed: row.scroll_speed ?? null,
+    codeAccessibility: row.code_accessibility === 1,
+    omitAttributionHeader: row.omit_attribution_header === 1,
+    forceSyncOutput: row.force_sync_output === 1,
+    enablePromptSuggestion: row.enable_prompt_suggestion === 1,
+    // Env-var controls (v24) — General / Model capabilities
+    disable1mContext: row.disable_1m_context === 1,
+    disableAdaptiveThinking: row.disable_adaptive_thinking === 1,
+    disableLegacyModelRemap: row.disable_legacy_model_remap === 1,
+    // Env-var controls (v24) — Memory & Context
+    autoCompactWindow: row.auto_compact_window ?? null,
+    autocompactPctOverride: row.autocompact_pct_override ?? null,
+    // Env-var controls (v24) — Tools / File operations & Shell
+    disableFileCheckpointing: row.disable_file_checkpointing === 1,
+    disableAttachments: row.disable_attachments === 1,
+    shellOverride: row.shell_override ?? '',
+    shellPrefix: row.shell_prefix ?? '',
+    // Env-var controls (v24) — Developer / Network
+    enableFineGrainedToolStreaming: row.enable_fine_grained_tool_streaming === 1,
+    disableNonstreamingFallback: row.disable_nonstreaming_fallback === 1,
+    proxyResolvesHosts: row.proxy_resolves_hosts === 1,
+    enableGatewayModelDiscovery: row.enable_gateway_model_discovery === 1,
+    // Env-var controls (v24) — Developer / Privacy & background tasks
+    autoBackgroundTasks: row.auto_background_tasks === 1,
+    asyncAgentStallTimeoutMs: row.async_agent_stall_timeout_ms ?? null,
+    enableTasks: row.enable_tasks === 1,
+    disableCron: row.disable_cron === 1,
+    exitAfterStopDelay: row.exit_after_stop_delay ?? null,
+    disableFeedbackCommand: row.disable_feedback_command === 1,
+    disableFeedbackSurvey: row.disable_feedback_survey === 1,
     updatedAt: row.updated_at
   }
 }
@@ -209,7 +276,14 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   // Env-var controls (v23)
   'disableThinking', 'disableFastMode', 'disableClaudeMds',
   'bashMaintainCwd', 'perforceMode', 'globHidden', 'globNoIgnore',
-  'disableNonessentialTraffic', 'doNotTrack', 'disableBackgroundTasks', 'disableAgentView'
+  'disableNonessentialTraffic', 'doNotTrack', 'disableBackgroundTasks', 'disableAgentView',
+  // Env-var controls (v24)
+  'noFlicker', 'disableAlternateScreen', 'disableVirtualScroll', 'disableMouse',
+  'disableTerminalTitle', 'codeAccessibility', 'omitAttributionHeader', 'forceSyncOutput',
+  'enablePromptSuggestion', 'disable1mContext', 'disableAdaptiveThinking', 'disableLegacyModelRemap',
+  'disableFileCheckpointing', 'disableAttachments', 'enableFineGrainedToolStreaming',
+  'disableNonstreamingFallback', 'proxyResolvesHosts', 'enableGatewayModelDiscovery',
+  'autoBackgroundTasks', 'enableTasks', 'disableCron', 'disableFeedbackCommand', 'disableFeedbackSurvey'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
@@ -377,6 +451,46 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
       } catch {
         throw new Error('claudeSettings: extraBodyJson must be empty or valid JSON')
       }
+    }
+  }
+  if ('scrollSpeed' in patch) {
+    const v = patch.scrollSpeed
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 20)) {
+      throw new Error('claudeSettings: scrollSpeed must be an integer 1–20 or null')
+    }
+  }
+  if ('autoCompactWindow' in patch) {
+    const v = patch.autoCompactWindow
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: autoCompactWindow must be a positive integer or null')
+    }
+  }
+  if ('autocompactPctOverride' in patch) {
+    const v = patch.autocompactPctOverride
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 100)) {
+      throw new Error('claudeSettings: autocompactPctOverride must be an integer 0–100 or null')
+    }
+  }
+  if ('shellOverride' in patch) {
+    if (typeof patch.shellOverride !== 'string') {
+      throw new Error('claudeSettings: shellOverride must be a string')
+    }
+  }
+  if ('shellPrefix' in patch) {
+    if (typeof patch.shellPrefix !== 'string') {
+      throw new Error('claudeSettings: shellPrefix must be a string')
+    }
+  }
+  if ('asyncAgentStallTimeoutMs' in patch) {
+    const v = patch.asyncAgentStallTimeoutMs
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: asyncAgentStallTimeoutMs must be a positive integer or null')
+    }
+  }
+  if ('exitAfterStopDelay' in patch) {
+    const v = patch.exitAfterStopDelay
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
+      throw new Error('claudeSettings: exitAfterStopDelay must be a non-negative integer or null')
     }
   }
   if ('customEnvVars' in patch) {
@@ -691,6 +805,48 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   if (s.anthropicBetas) env['ANTHROPIC_BETAS'] = s.anthropicBetas
   if (s.extraBodyJson) env['CLAUDE_CODE_EXTRA_BODY'] = s.extraBodyJson
 
+  // Env-var controls (v24) — Display / Rendering
+  if (s.noFlicker) env['CLAUDE_CODE_NO_FLICKER'] = '1'
+  if (s.disableAlternateScreen) env['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1'
+  if (s.disableVirtualScroll) env['CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL'] = '1'
+  if (s.disableMouse) env['CLAUDE_CODE_DISABLE_MOUSE'] = '1'
+  if (s.disableTerminalTitle) env['CLAUDE_CODE_DISABLE_TERMINAL_TITLE'] = '1'
+  if (s.scrollSpeed !== null) env['CLAUDE_CODE_SCROLL_SPEED'] = String(s.scrollSpeed)
+  if (s.codeAccessibility) env['CLAUDE_CODE_CODE_ACCESSIBILITY'] = '1'
+  if (s.omitAttributionHeader) env['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '1'
+  if (s.forceSyncOutput) env['CLAUDE_CODE_FORCE_SYNC_OUTPUT'] = '1'
+  if (s.enablePromptSuggestion) env['CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION'] = '1'
+
+  // Env-var controls (v24) — General / Model capabilities
+  if (s.disable1mContext) env['CLAUDE_CODE_DISABLE_1M_CONTEXT'] = '1'
+  if (s.disableAdaptiveThinking) env['CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'] = '1'
+  if (s.disableLegacyModelRemap) env['CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP'] = '1'
+
+  // Env-var controls (v24) — Memory & Context
+  if (s.autoCompactWindow !== null) env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = String(s.autoCompactWindow)
+  if (s.autocompactPctOverride !== null) env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = String(s.autocompactPctOverride)
+
+  // Env-var controls (v24) — Tools / File operations & Shell
+  if (s.disableFileCheckpointing) env['CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING'] = '1'
+  if (s.disableAttachments) env['CLAUDE_CODE_DISABLE_ATTACHMENTS'] = '1'
+  if (s.shellOverride) env['CLAUDE_CODE_SHELL'] = s.shellOverride
+  if (s.shellPrefix) env['CLAUDE_CODE_SHELL_PREFIX'] = s.shellPrefix
+
+  // Env-var controls (v24) — Developer / Network
+  if (s.enableFineGrainedToolStreaming) env['CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING'] = '1'
+  if (s.disableNonstreamingFallback) env['CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK'] = '1'
+  if (s.proxyResolvesHosts) env['CLAUDE_CODE_PROXY_RESOLVES_HOSTS'] = '1'
+  if (s.enableGatewayModelDiscovery) env['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'] = '1'
+
+  // Env-var controls (v24) — Developer / Privacy & background tasks
+  if (s.autoBackgroundTasks) env['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'] = '1'
+  if (s.asyncAgentStallTimeoutMs !== null) env['CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS'] = String(s.asyncAgentStallTimeoutMs)
+  if (s.enableTasks) env['CLAUDE_CODE_ENABLE_TASKS'] = '1'
+  if (s.disableCron) env['CLAUDE_CODE_DISABLE_CRON'] = '1'
+  if (s.exitAfterStopDelay !== null) env['CLAUDE_CODE_EXIT_AFTER_STOP_DELAY'] = String(s.exitAfterStopDelay)
+  if (s.disableFeedbackCommand) env['DISABLE_FEEDBACK_COMMAND'] = '1'
+  if (s.disableFeedbackSurvey) env['CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY'] = '1'
+
   // Custom env vars — merged last; user's keys win on conflict
   for (const [k, v] of Object.entries(s.customEnvVars)) {
     if (k && typeof v === 'string') env[k] = v
@@ -785,7 +941,38 @@ export function updateClaudeGlobalSettings(
     disableBackgroundTasks: 'disable_background_tasks',
     disableAgentView: 'disable_agent_view',
     anthropicBetas: 'anthropic_betas',
-    extraBodyJson: 'extra_body_json'
+    extraBodyJson: 'extra_body_json',
+    // Env-var controls (v24)
+    noFlicker: 'no_flicker',
+    disableAlternateScreen: 'disable_alternate_screen',
+    disableVirtualScroll: 'disable_virtual_scroll',
+    disableMouse: 'disable_mouse',
+    disableTerminalTitle: 'disable_terminal_title',
+    scrollSpeed: 'scroll_speed',
+    codeAccessibility: 'code_accessibility',
+    omitAttributionHeader: 'omit_attribution_header',
+    forceSyncOutput: 'force_sync_output',
+    enablePromptSuggestion: 'enable_prompt_suggestion',
+    disable1mContext: 'disable_1m_context',
+    disableAdaptiveThinking: 'disable_adaptive_thinking',
+    disableLegacyModelRemap: 'disable_legacy_model_remap',
+    autoCompactWindow: 'auto_compact_window',
+    autocompactPctOverride: 'autocompact_pct_override',
+    disableFileCheckpointing: 'disable_file_checkpointing',
+    disableAttachments: 'disable_attachments',
+    shellOverride: 'shell_override',
+    shellPrefix: 'shell_prefix',
+    enableFineGrainedToolStreaming: 'enable_fine_grained_tool_streaming',
+    disableNonstreamingFallback: 'disable_nonstreaming_fallback',
+    proxyResolvesHosts: 'proxy_resolves_hosts',
+    enableGatewayModelDiscovery: 'enable_gateway_model_discovery',
+    autoBackgroundTasks: 'auto_background_tasks',
+    asyncAgentStallTimeoutMs: 'async_agent_stall_timeout_ms',
+    enableTasks: 'enable_tasks',
+    disableCron: 'disable_cron',
+    exitAfterStopDelay: 'exit_after_stop_delay',
+    disableFeedbackCommand: 'disable_feedback_command',
+    disableFeedbackSurvey: 'disable_feedback_survey'
   }
 
   const setClauses: string[] = []

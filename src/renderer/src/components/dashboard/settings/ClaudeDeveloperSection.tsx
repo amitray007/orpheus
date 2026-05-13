@@ -451,6 +451,50 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
               placeholder="default"
             />
           </SettingRow>
+          <SettingRow
+            label="Enable fine-grained tool streaming"
+            description="Stream tool results at a finer granularity for lower perceived latency (CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1)."
+            mapsTo="CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"
+          >
+            <Toggle
+              ariaLabel="Enable fine-grained tool streaming"
+              value={settings.enableFineGrainedToolStreaming}
+              onChange={(v) => patch({ enableFineGrainedToolStreaming: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable nonstreaming fallback"
+            description="Prevent Claude from falling back to non-streaming mode when streaming fails (CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"
+          >
+            <Toggle
+              ariaLabel="Disable nonstreaming fallback"
+              value={settings.disableNonstreamingFallback}
+              onChange={(v) => patch({ disableNonstreamingFallback: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Proxy resolves hosts"
+            description="Delegate hostname resolution to the proxy instead of resolving locally first (CLAUDE_CODE_PROXY_RESOLVES_HOSTS=1)."
+            mapsTo="CLAUDE_CODE_PROXY_RESOLVES_HOSTS"
+          >
+            <Toggle
+              ariaLabel="Proxy resolves hosts"
+              value={settings.proxyResolvesHosts}
+              onChange={(v) => patch({ proxyResolvesHosts: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Enable gateway model discovery"
+            description="Allow Claude to discover available models through the gateway API (CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1)."
+            mapsTo="CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+          >
+            <Toggle
+              ariaLabel="Enable gateway model discovery"
+              value={settings.enableGatewayModelDiscovery}
+              onChange={(v) => patch({ enableGatewayModelDiscovery: v })}
+            />
+          </SettingRow>
         </div>
       </section>
 
@@ -502,6 +546,83 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
               ariaLabel="Disable agent view"
               value={settings.disableAgentView}
               onChange={(v) => patch({ disableAgentView: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Auto background tasks"
+            description="Allow Claude to automatically schedule background tasks without explicit user approval (CLAUDE_CODE_AUTO_BACKGROUND_TASKS=1)."
+            mapsTo="CLAUDE_CODE_AUTO_BACKGROUND_TASKS"
+          >
+            <Toggle
+              ariaLabel="Auto background tasks"
+              value={settings.autoBackgroundTasks}
+              onChange={(v) => patch({ autoBackgroundTasks: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Async agent stall timeout (ms)"
+            description="Milliseconds before an unresponsive async agent is considered stalled (CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS). Leave empty to use claude's default."
+            mapsTo="CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS"
+          >
+            <NumberInput
+              value={settings.asyncAgentStallTimeoutMs}
+              onChange={(v) => patch({ asyncAgentStallTimeoutMs: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Enable tasks"
+            description="Enable Claude's task management system for tracking long-running work items (CLAUDE_CODE_ENABLE_TASKS=1)."
+            mapsTo="CLAUDE_CODE_ENABLE_TASKS"
+          >
+            <Toggle
+              ariaLabel="Enable tasks"
+              value={settings.enableTasks}
+              onChange={(v) => patch({ enableTasks: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable cron"
+            description="Prevent Claude from creating or running scheduled (cron) tasks (CLAUDE_CODE_DISABLE_CRON=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_CRON"
+          >
+            <Toggle
+              ariaLabel="Disable cron"
+              value={settings.disableCron}
+              onChange={(v) => patch({ disableCron: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Exit after stop delay (ms)"
+            description="Milliseconds to wait after a stop signal before Claude exits (CLAUDE_CODE_EXIT_AFTER_STOP_DELAY). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_EXIT_AFTER_STOP_DELAY"
+          >
+            <NumberInput
+              value={settings.exitAfterStopDelay}
+              onChange={(v) => patch({ exitAfterStopDelay: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable feedback command"
+            description="Remove the /feedback slash command from Claude's UI (DISABLE_FEEDBACK_COMMAND=1)."
+            mapsTo="DISABLE_FEEDBACK_COMMAND"
+          >
+            <Toggle
+              ariaLabel="Disable feedback command"
+              value={settings.disableFeedbackCommand}
+              onChange={(v) => patch({ disableFeedbackCommand: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable feedback survey"
+            description="Prevent the periodic in-session feedback survey prompt from appearing (CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
+          >
+            <Toggle
+              ariaLabel="Disable feedback survey"
+              value={settings.disableFeedbackSurvey}
+              onChange={(v) => patch({ disableFeedbackSurvey: v })}
             />
           </SettingRow>
         </div>

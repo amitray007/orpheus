@@ -195,6 +195,48 @@ export type ClaudeGlobalSettings = {
   anthropicBetas: string
   extraBodyJson: string
 
+  // Env-var controls (v24) — Display / Rendering
+  noFlicker: boolean
+  disableAlternateScreen: boolean
+  disableVirtualScroll: boolean
+  disableMouse: boolean
+  disableTerminalTitle: boolean
+  scrollSpeed: number | null
+  codeAccessibility: boolean
+  omitAttributionHeader: boolean
+  forceSyncOutput: boolean
+  enablePromptSuggestion: boolean
+
+  // Env-var controls (v24) — General / Model capabilities
+  disable1mContext: boolean
+  disableAdaptiveThinking: boolean
+  disableLegacyModelRemap: boolean
+
+  // Env-var controls (v24) — Memory & Context
+  autoCompactWindow: number | null
+  autocompactPctOverride: number | null
+
+  // Env-var controls (v24) — Tools / File operations & Shell
+  disableFileCheckpointing: boolean
+  disableAttachments: boolean
+  shellOverride: string
+  shellPrefix: string
+
+  // Env-var controls (v24) — Developer / Network
+  enableFineGrainedToolStreaming: boolean
+  disableNonstreamingFallback: boolean
+  proxyResolvesHosts: boolean
+  enableGatewayModelDiscovery: boolean
+
+  // Env-var controls (v24) — Developer / Privacy & background tasks
+  autoBackgroundTasks: boolean
+  asyncAgentStallTimeoutMs: number | null
+  enableTasks: boolean
+  disableCron: boolean
+  exitAfterStopDelay: number | null
+  disableFeedbackCommand: boolean
+  disableFeedbackSurvey: boolean
+
   updatedAt: number
 }
 

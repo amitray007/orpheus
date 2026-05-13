@@ -216,6 +216,47 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Model capabilities
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Disable 1M context"
+            description="Prevent Claude from using the 1-million-token extended context window (CLAUDE_CODE_DISABLE_1M_CONTEXT=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_1M_CONTEXT"
+          >
+            <Toggle
+              ariaLabel="Disable 1M context"
+              value={settings.disable1mContext}
+              onChange={(v) => patch({ disable1mContext: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable adaptive thinking"
+            description="Turn off adaptive thinking optimizations that adjust reasoning depth based on prompt complexity (CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"
+          >
+            <Toggle
+              ariaLabel="Disable adaptive thinking"
+              value={settings.disableAdaptiveThinking}
+              onChange={(v) => patch({ disableAdaptiveThinking: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable legacy model remap"
+            description="Stop Claude from automatically remapping legacy model identifiers to their current equivalents (CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP"
+          >
+            <Toggle
+              ariaLabel="Disable legacy model remap"
+              value={settings.disableLegacyModelRemap}
+              onChange={(v) => patch({ disableLegacyModelRemap: v })}
+            />
+          </SettingRow>
+        </div>
+      </section>
     </div>
   )
 }

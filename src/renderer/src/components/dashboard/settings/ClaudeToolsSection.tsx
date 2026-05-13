@@ -284,6 +284,71 @@ export function ClaudeToolsSection(): React.JSX.Element {
               placeholder="default"
             />
           </SettingRow>
+          <SettingRow
+            label="Disable file checkpointing"
+            description="Prevent Claude from creating file snapshots before edits for potential rollback (CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING"
+          >
+            <Toggle
+              ariaLabel="Disable file checkpointing"
+              value={settings.disableFileCheckpointing}
+              onChange={(v) => patch({ disableFileCheckpointing: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable attachments"
+            description="Prevent users from attaching files to Claude sessions (CLAUDE_CODE_DISABLE_ATTACHMENTS=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_ATTACHMENTS"
+          >
+            <Toggle
+              ariaLabel="Disable attachments"
+              value={settings.disableAttachments}
+              onChange={(v) => patch({ disableAttachments: v })}
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      {/* Shell */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Shell
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Shell override"
+            description="Use a specific shell binary instead of the default for Bash tool invocations (CLAUDE_CODE_SHELL)."
+            mapsTo="CLAUDE_CODE_SHELL"
+          >
+            <input
+              type="text"
+              value={settings.shellOverride}
+              onChange={(e) => patch({ shellOverride: e.target.value })}
+              onBlur={(e) => patch({ shellOverride: e.target.value.trim() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
+              placeholder="/bin/zsh"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Shell prefix"
+            description="Prepend a command prefix to every Bash invocation, e.g. to lower process priority (CLAUDE_CODE_SHELL_PREFIX)."
+            mapsTo="CLAUDE_CODE_SHELL_PREFIX"
+          >
+            <input
+              type="text"
+              value={settings.shellPrefix}
+              onChange={(e) => patch({ shellPrefix: e.target.value })}
+              onBlur={(e) => patch({ shellPrefix: e.target.value.trim() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
+              placeholder="nice -n 19"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
         </div>
       </section>
     </div>

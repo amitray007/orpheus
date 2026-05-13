@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 23
+const CURRENT_VERSION = 24
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -147,6 +147,37 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     disable_agent_view INTEGER NOT NULL DEFAULT 0 CHECK (disable_agent_view IN (0, 1)),
     anthropic_betas TEXT NOT NULL DEFAULT '',
     extra_body_json TEXT NOT NULL DEFAULT '',
+    -- More env-var controls (v24)
+    no_flicker INTEGER NOT NULL DEFAULT 0 CHECK (no_flicker IN (0, 1)),
+    disable_alternate_screen INTEGER NOT NULL DEFAULT 0 CHECK (disable_alternate_screen IN (0, 1)),
+    disable_virtual_scroll INTEGER NOT NULL DEFAULT 0 CHECK (disable_virtual_scroll IN (0, 1)),
+    disable_mouse INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse IN (0, 1)),
+    disable_terminal_title INTEGER NOT NULL DEFAULT 0 CHECK (disable_terminal_title IN (0, 1)),
+    scroll_speed INTEGER,
+    code_accessibility INTEGER NOT NULL DEFAULT 0 CHECK (code_accessibility IN (0, 1)),
+    omit_attribution_header INTEGER NOT NULL DEFAULT 0 CHECK (omit_attribution_header IN (0, 1)),
+    force_sync_output INTEGER NOT NULL DEFAULT 0 CHECK (force_sync_output IN (0, 1)),
+    enable_prompt_suggestion INTEGER NOT NULL DEFAULT 0 CHECK (enable_prompt_suggestion IN (0, 1)),
+    disable_1m_context INTEGER NOT NULL DEFAULT 0 CHECK (disable_1m_context IN (0, 1)),
+    disable_adaptive_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_adaptive_thinking IN (0, 1)),
+    disable_legacy_model_remap INTEGER NOT NULL DEFAULT 0 CHECK (disable_legacy_model_remap IN (0, 1)),
+    auto_compact_window INTEGER,
+    autocompact_pct_override INTEGER,
+    disable_file_checkpointing INTEGER NOT NULL DEFAULT 0 CHECK (disable_file_checkpointing IN (0, 1)),
+    disable_attachments INTEGER NOT NULL DEFAULT 0 CHECK (disable_attachments IN (0, 1)),
+    shell_override TEXT NOT NULL DEFAULT '',
+    shell_prefix TEXT NOT NULL DEFAULT '',
+    enable_fine_grained_tool_streaming INTEGER NOT NULL DEFAULT 0 CHECK (enable_fine_grained_tool_streaming IN (0, 1)),
+    disable_nonstreaming_fallback INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonstreaming_fallback IN (0, 1)),
+    proxy_resolves_hosts INTEGER NOT NULL DEFAULT 0 CHECK (proxy_resolves_hosts IN (0, 1)),
+    enable_gateway_model_discovery INTEGER NOT NULL DEFAULT 0 CHECK (enable_gateway_model_discovery IN (0, 1)),
+    auto_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (auto_background_tasks IN (0, 1)),
+    async_agent_stall_timeout_ms INTEGER,
+    enable_tasks INTEGER NOT NULL DEFAULT 0 CHECK (enable_tasks IN (0, 1)),
+    disable_cron INTEGER NOT NULL DEFAULT 0 CHECK (disable_cron IN (0, 1)),
+    exit_after_stop_delay INTEGER,
+    disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1)),
+    disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -511,5 +542,47 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN anthropic_betas TEXT NOT NULL DEFAULT ''") } catch {}
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN extra_body_json TEXT NOT NULL DEFAULT ''") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(23)
+  }
+
+  // Version 24: More env-var controls (Display rendering, General model capabilities, Memory, Tools, Developer)
+  if (currentVersion < 24) {
+    // Display / Rendering
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN no_flicker INTEGER NOT NULL DEFAULT 0 CHECK (no_flicker IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_alternate_screen INTEGER NOT NULL DEFAULT 0 CHECK (disable_alternate_screen IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_virtual_scroll INTEGER NOT NULL DEFAULT 0 CHECK (disable_virtual_scroll IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_mouse INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_terminal_title INTEGER NOT NULL DEFAULT 0 CHECK (disable_terminal_title IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN scroll_speed INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN code_accessibility INTEGER NOT NULL DEFAULT 0 CHECK (code_accessibility IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN omit_attribution_header INTEGER NOT NULL DEFAULT 0 CHECK (omit_attribution_header IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN force_sync_output INTEGER NOT NULL DEFAULT 0 CHECK (force_sync_output IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_prompt_suggestion INTEGER NOT NULL DEFAULT 0 CHECK (enable_prompt_suggestion IN (0, 1))') } catch {}
+    // General / Model capabilities
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_1m_context INTEGER NOT NULL DEFAULT 0 CHECK (disable_1m_context IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_adaptive_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_adaptive_thinking IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_legacy_model_remap INTEGER NOT NULL DEFAULT 0 CHECK (disable_legacy_model_remap IN (0, 1))') } catch {}
+    // Memory & Context
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_compact_window INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN autocompact_pct_override INTEGER') } catch {}
+    // Tools / File operations
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_file_checkpointing INTEGER NOT NULL DEFAULT 0 CHECK (disable_file_checkpointing IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_attachments INTEGER NOT NULL DEFAULT 0 CHECK (disable_attachments IN (0, 1))') } catch {}
+    // Tools / Shell
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN shell_override TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN shell_prefix TEXT NOT NULL DEFAULT ''") } catch {}
+    // Developer / Network
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_fine_grained_tool_streaming INTEGER NOT NULL DEFAULT 0 CHECK (enable_fine_grained_tool_streaming IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_nonstreaming_fallback INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonstreaming_fallback IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN proxy_resolves_hosts INTEGER NOT NULL DEFAULT 0 CHECK (proxy_resolves_hosts IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_gateway_model_discovery INTEGER NOT NULL DEFAULT 0 CHECK (enable_gateway_model_discovery IN (0, 1))') } catch {}
+    // Developer / Privacy & background tasks
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (auto_background_tasks IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN async_agent_stall_timeout_ms INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_tasks INTEGER NOT NULL DEFAULT 0 CHECK (enable_tasks IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_cron INTEGER NOT NULL DEFAULT 0 CHECK (disable_cron IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN exit_after_stop_delay INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1))') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(24)
   }
 }

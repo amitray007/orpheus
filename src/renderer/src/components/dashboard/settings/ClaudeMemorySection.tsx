@@ -174,6 +174,32 @@ export function ClaudeMemorySection(): React.JSX.Element {
               onChange={(v) => patch({ disableClaudeMds: v })}
             />
           </SettingRow>
+          <SettingRow
+            label="Auto-compact context window (tokens)"
+            description="Token count at which Claude triggers context auto-compaction (CLAUDE_CODE_AUTO_COMPACT_WINDOW). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+          >
+            <NumberInput
+              value={settings.autoCompactWindow}
+              onChange={(v) => patch({ autoCompactWindow: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Auto-compact percentage override (0–100)"
+            description="Override the percentage of context used before auto-compaction triggers (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Leave empty to use claude's default."
+            mapsTo="CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+          >
+            <div className="flex items-center gap-1.5">
+              <NumberInput
+                value={settings.autocompactPctOverride}
+                onChange={(v) => patch({ autocompactPctOverride: v })}
+                placeholder="default"
+                className="w-24 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono text-right cursor-text"
+              />
+              <span className="text-xs text-text-muted">%</span>
+            </div>
+          </SettingRow>
         </div>
       </section>
     </div>
