@@ -251,6 +251,9 @@ export type ClaudeAuthState = {
   hasApiKey: boolean    // true if non-empty stored — renderer shows "•••" instead of the value
   hasAuthToken: boolean
   baseUrl: string       // not masked — base URL isn't secret
+  awsRegion: string
+  vertexProjectId: string
+  vertexRegion: string
 }
 
 // Patch shape — partial update; only the fields the user actually changed
@@ -259,6 +262,9 @@ export type ClaudeAuthPatch = {
   apiKey?: string    // empty string clears
   baseUrl?: string
   authToken?: string
+  awsRegion?: string
+  vertexProjectId?: string
+  vertexRegion?: string
 }
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'

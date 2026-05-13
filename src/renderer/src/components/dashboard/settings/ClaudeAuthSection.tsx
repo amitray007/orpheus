@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './primitives'
-import { ComingSoonChip } from './ClaudeGeneralSection'
 import type { ClaudeAuthState, ClaudeCloudProvider } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -137,6 +136,45 @@ function BaseUrlInput({ value, onSave }: BaseUrlInputProps): React.JSX.Element {
         }
       }}
       placeholder="https://…"
+      className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ProviderTextInput — plain text, saves on blur or Enter (mirrors BaseUrlInput)
+// ---------------------------------------------------------------------------
+
+interface ProviderTextInputProps {
+  value: string
+  placeholder: string
+  onSave: (value: string) => void
+}
+
+function ProviderTextInput({ value, placeholder, onSave }: ProviderTextInputProps): React.JSX.Element {
+  const [local, setLocal] = useState(value)
+
+  useEffect(() => {
+    setLocal(value)
+  }, [value])
+
+  return (
+    <input
+      type="text"
+      value={local}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        const trimmed = local.trim()
+        if (trimmed !== value) onSave(trimmed)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+        if (e.key === 'Escape') {
+          setLocal(value)
+          ;(e.currentTarget as HTMLInputElement).blur()
+        }
+      }}
+      placeholder={placeholder}
       className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
     />
   )
@@ -281,17 +319,52 @@ export function ClaudeAuthSection(): React.JSX.Element {
           Provider-specific config
         </button>
         {providerOpen && (
-          <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-text-primary">
-                Bedrock / Vertex / Foundry options
-              </span>
-              <ComingSoonChip />
-            </div>
-            <p className="text-xs text-text-muted italic">
-              AWS region, GCP project ID, IAM role ARN, and other provider-specific fields will
-              appear here once provider config is wired.
-            </p>
+          <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+            {(state.cloudProvider === 'anthropic' || state.cloudProvider === 'foundry') && (
+              <div className="py-4">
+                <p className="text-xs text-text-muted italic">
+                  {state.cloudProvider === 'foundry'
+                    ? 'No additional fields — use the Base URL field above for the Foundry resource URL.'
+                    : 'No additional fields — API key and optional Base URL above are sufficient.'}
+                </p>
+              </div>
+            )}
+            {state.cloudProvider === 'bedrock' && (
+              <SettingRow
+                label="AWS region"
+                description="Required for Bedrock. Example: us-east-1, eu-west-1."
+              >
+                <ProviderTextInput
+                  value={state.awsRegion}
+                  placeholder="us-east-1"
+                  onSave={(v) => applyPatch({ awsRegion: v })}
+                />
+              </SettingRow>
+            )}
+            {state.cloudProvider === 'vertex' && (
+              <>
+                <SettingRow
+                  label="GCP project ID"
+                  description="Required for Vertex. Your Google Cloud project ID."
+                >
+                  <ProviderTextInput
+                    value={state.vertexProjectId}
+                    placeholder="my-gcp-project"
+                    onSave={(v) => applyPatch({ vertexProjectId: v })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Region"
+                  description="Required for Vertex. Example: us-east5, global, europe-west1."
+                >
+                  <ProviderTextInput
+                    value={state.vertexRegion}
+                    placeholder="us-east5"
+                    onSave={(v) => applyPatch({ vertexRegion: v })}
+                  />
+                </SettingRow>
+              </>
+            )}
           </div>
         )}
       </section>

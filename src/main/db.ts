@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 16
+const CURRENT_VERSION = 17
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -100,13 +100,16 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     permission_additional_dirs TEXT NOT NULL DEFAULT '[]',
     -- Fallback model (v11)
     fallback_model TEXT NOT NULL DEFAULT '',
-    -- Auth (v13 / v16)
+    -- Auth (v13 / v16 / v17)
     cloud_provider TEXT NOT NULL DEFAULT 'anthropic'
       CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry')),
     auth_encrypted_blob BLOB,
     auth_api_key TEXT NOT NULL DEFAULT '',
     auth_token TEXT NOT NULL DEFAULT '',
     auth_base_url TEXT NOT NULL DEFAULT '',
+    auth_aws_region TEXT NOT NULL DEFAULT '',
+    auth_vertex_project_id TEXT NOT NULL DEFAULT '',
+    auth_vertex_region TEXT NOT NULL DEFAULT '',
     -- Tools section (v14)
     bash_default_timeout_ms INTEGER,
     bash_max_timeout_ms INTEGER,
@@ -398,5 +401,13 @@ function migrate(db: Database.Database): void {
     // Clear the old encrypted blob — we can't decrypt it without the original signing identity
     db.prepare('UPDATE claude_global_settings SET auth_encrypted_blob = NULL WHERE id = 1').run()
     db.prepare('UPDATE schema_version SET version = ?').run(16)
+  }
+
+  // Version 17: provider-specific config columns for Bedrock and Vertex
+  if (currentVersion < 17) {
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_aws_region TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_project_id TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_region TEXT NOT NULL DEFAULT ''") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(17)
   }
 }
