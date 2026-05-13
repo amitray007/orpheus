@@ -151,23 +151,6 @@ export function trimArchivedWorkspaces(limit: number): number {
 
 export function archiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-
-  // Don't allow archiving the last non-archived workspace in the project
-  const workspace = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow | undefined
-  if (!workspace) throw new Error(`Workspace ${id} not found`)
-
-  const activeCount = (
-    db
-      .prepare(
-        'SELECT COUNT(*) as count FROM workspaces WHERE project_id = ? AND archived_at IS NULL'
-      )
-      .get(workspace.project_id) as { count: number }
-  ).count
-
-  if (activeCount <= 1) {
-    throw new Error('Cannot archive the last active workspace in a project')
-  }
-
   db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(Date.now(), id)
 
   // LRU cap: delete oldest archived workspaces if over the limit
