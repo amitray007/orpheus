@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
+import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
@@ -549,65 +550,71 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
             : 'dashboard'
 
   return (
-    <div className="flex flex-1 h-full min-h-0">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        projects={projects}
-        projectsLoading={projectsLoading}
-        selectedProjectId={selectedProjectId}
-        selectedWorkspaceId={selectedWorkspaceId}
-        activeView={activeView}
-        currentViewKind={view.kind}
-        expandedProjectIds={expandedProjectIds}
-        workspacesByProject={workspacesByProject}
-        activeWorkspaceIds={activeWorkspaceIds}
-        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-        workspaceCountInline={uiState?.workspaceCountInline ?? true}
-        sidebarWidth={uiState?.sidebarWidth ?? 256}
+    <div className="flex flex-col h-screen">
+      <TopBar
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
         onSelectSettings={handleSelectSettings}
-        onSelectProject={handleSelectProject}
-        onSelectNav={handleSelectNav}
-        onAddProject={handleAddProject}
-        addingProject={addingProject}
-        onToggleProjectExpand={handleToggleProjectExpand}
-        onSelectWorkspace={handleSelectWorkspace}
-        onRenameProject={handleRenameProject}
-        onRequestRemoveProject={handleRequestRemoveProject}
-        onAddWorkspace={handleAddWorkspace}
-        onRenameWorkspace={handleRenameWorkspace}
-        onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-        onReorderProjects={handleReorderProjects}
-        onReorderWorkspaces={handleReorderWorkspaces}
+        isSettingsActive={view.kind === 'settings'}
       />
 
-      <main
-        className={
-          view.kind === 'workspace' || view.kind === 'settings'
-            ? 'flex-1 overflow-hidden min-h-0'
-            : 'flex-1 overflow-y-auto px-8 py-6'
-        }
-      >
-        <MainContent
-          view={view}
-          project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
-          workspace={activeWorkspace}
-          workspacesForProject={
-            view.kind === 'project'
-              ? (workspacesByProject[view.projectId] ?? null)
-              : null
-          }
-          onRequestRemoveProject={handleRequestRemoveProject}
-          onNavigateToProject={handleNavigateToProject}
+      <div className="flex flex-1 min-h-0">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          projects={projects}
+          projectsLoading={projectsLoading}
+          selectedProjectId={selectedProjectId}
+          selectedWorkspaceId={selectedWorkspaceId}
+          activeView={activeView}
+          currentViewKind={view.kind}
+          expandedProjectIds={expandedProjectIds}
+          workspacesByProject={workspacesByProject}
+          activeWorkspaceIds={activeWorkspaceIds}
+          gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+          workspaceCountInline={uiState?.workspaceCountInline ?? true}
+          sidebarWidth={uiState?.sidebarWidth ?? 256}
+          onSelectProject={handleSelectProject}
+          onSelectNav={handleSelectNav}
+          onAddProject={handleAddProject}
+          addingProject={addingProject}
+          onToggleProjectExpand={handleToggleProjectExpand}
           onSelectWorkspace={handleSelectWorkspace}
+          onRenameProject={handleRenameProject}
+          onRequestRemoveProject={handleRequestRemoveProject}
           onAddWorkspace={handleAddWorkspace}
           onRenameWorkspace={handleRenameWorkspace}
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-          onUnarchiveWorkspace={handleUnarchiveWorkspace}
-          onToggleWorkspacePin={handleToggleWorkspacePin}
-          onWorkspaceStatusChanged={handleWorkspaceStatusChanged}
+          onReorderProjects={handleReorderProjects}
+          onReorderWorkspaces={handleReorderWorkspaces}
         />
-      </main>
+
+        <main
+          className={
+            view.kind === 'workspace' || view.kind === 'settings'
+              ? 'flex-1 overflow-hidden min-h-0'
+              : 'flex-1 overflow-y-auto px-8 py-6'
+          }
+        >
+          <MainContent
+            view={view}
+            project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
+            workspace={activeWorkspace}
+            workspacesForProject={
+              view.kind === 'project'
+                ? (workspacesByProject[view.projectId] ?? null)
+                : null
+            }
+            onRequestRemoveProject={handleRequestRemoveProject}
+            onNavigateToProject={handleNavigateToProject}
+            onSelectWorkspace={handleSelectWorkspace}
+            onAddWorkspace={handleAddWorkspace}
+            onRenameWorkspace={handleRenameWorkspace}
+            onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+            onUnarchiveWorkspace={handleUnarchiveWorkspace}
+            onToggleWorkspacePin={handleToggleWorkspacePin}
+            onWorkspaceStatusChanged={handleWorkspaceStatusChanged}
+          />
+        </main>
+      </div>
 
       {removeConfirmTarget && (
         <ConfirmModal

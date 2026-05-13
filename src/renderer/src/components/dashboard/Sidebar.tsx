@@ -8,9 +8,7 @@ import {
   CaretDown,
   CaretRight,
   Stack,
-  Archive,
-  Gear,
-  SidebarSimple
+  Archive
 } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -542,8 +540,6 @@ interface SidebarProps {
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
-  onToggleCollapsed: () => void
-  onSelectSettings: () => void
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'dashboard' | 'sessions') => void
   onAddProject: () => void
@@ -573,8 +569,6 @@ export function Sidebar({
   gitStatusByWorkspaceId,
   workspaceCountInline,
   sidebarWidth,
-  onToggleCollapsed,
-  onSelectSettings,
   onSelectProject,
   onSelectNav,
   onAddProject,
@@ -753,32 +747,10 @@ export function Sidebar({
         collapsed ? 'w-14' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
+        'pt-2 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
-      {/* Top strip: traffic-lights spacer + toggle when expanded — drag region */}
-      <div
-        className="h-11 flex items-center pl-[76px] pr-2 mb-1 -mt-4 border-b border-border-default/50"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        {!collapsed && (
-          <button
-            onClick={onToggleCollapsed}
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar"
-            className={[
-              'ml-auto p-1.5 rounded-md transition-colors duration-150',
-              'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-            ].join(' ')}
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <SidebarSimple size={16} />
-          </button>
-        )}
-      </div>
-
       {/* Top nav */}
       <NavItem
         Icon={SquaresFour}
@@ -910,49 +882,6 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Bottom controls: Settings always; toggle only when collapsed */}
-      <div className="mt-auto flex flex-col">
-        {/* Settings button
-            NOTE: activeView === 'settings' is the highlight gate. If this highlights
-            on non-settings views, the bug is upstream in Dashboard.tsx passing the
-            wrong activeView value. Sidebar.tsx only reads the prop — it cannot
-            defensively override it without knowing the real view state. */}
-        <button
-          onClick={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).blur()
-            onSelectSettings()
-          }}
-          aria-label="Settings"
-          title="Settings"
-          className={[
-            'w-full flex items-center rounded-md transition-colors duration-150',
-            collapsed ? 'justify-center py-2 px-2' : 'px-3 py-2 gap-3',
-            activeView === 'settings'
-              ? 'bg-accent/15 text-text-primary font-medium'
-              : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-          ].join(' ')}
-        >
-          <Gear size={20} weight={activeView === 'settings' ? 'fill' : 'regular'} />
-          {!collapsed && <span className="text-sm">Settings</span>}
-        </button>
-
-        {/* Sidebar toggle — only in collapsed state (expanded state toggle is in top strip) */}
-        {collapsed && (
-          <button
-            onClick={onToggleCollapsed}
-            aria-label="Expand sidebar"
-            title="Expand sidebar"
-            className={[
-              'w-full flex items-center justify-center py-2 px-2 rounded-md transition-colors duration-150',
-              'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-            ].join(' ')}
-          >
-            <SidebarSimple size={20} weight="regular" />
-          </button>
-        )}
-      </div>
     </aside>
   )
 }
