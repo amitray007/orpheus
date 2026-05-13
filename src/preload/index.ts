@@ -22,8 +22,11 @@ import type {
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
   DiscoveredMcpServer,
+  McpServerDraft,
   ClaudeSlashCommand,
+  ClaudeSlashCommandDraft,
   ClaudeSubagent,
+  ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft
 } from '../shared/types'
@@ -150,13 +153,31 @@ const api = {
   },
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> =>
-      ipcRenderer.invoke('mcp:listServers')
+      ipcRenderer.invoke('mcp:listServers'),
+    add: (draft: McpServerDraft): Promise<void> =>
+      ipcRenderer.invoke('mcp:add', draft),
+    update: (filePath: string, oldName: string, draft: Omit<McpServerDraft, 'source' | 'projectId'>): Promise<void> =>
+      ipcRenderer.invoke('mcp:update', { filePath, oldName, draft }),
+    delete: (filePath: string, name: string): Promise<void> =>
+      ipcRenderer.invoke('mcp:delete', { filePath, name })
   },
   claudeAgents: {
     listSlashCommands: (): Promise<ClaudeSlashCommand[]> =>
       ipcRenderer.invoke('claudeAgents:listSlashCommands'),
     listSubagents: (): Promise<ClaudeSubagent[]> =>
-      ipcRenderer.invoke('claudeAgents:listSubagents')
+      ipcRenderer.invoke('claudeAgents:listSubagents'),
+    addSlashCommand: (draft: ClaudeSlashCommandDraft): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:addSlashCommand', draft),
+    updateSlashCommand: (filePath: string, draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:updateSlashCommand', { filePath, draft }),
+    deleteSlashCommand: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:deleteSlashCommand', { filePath }),
+    addSubagent: (draft: ClaudeSubagentDraft): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:addSubagent', draft),
+    updateSubagent: (filePath: string, draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:updateSubagent', { filePath, draft }),
+    deleteSubagent: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke('claudeAgents:deleteSubagent', { filePath })
   },
   claudeHooks: {
     list: (): Promise<ClaudeHookEntry[]> => ipcRenderer.invoke('claudeHooks:list'),

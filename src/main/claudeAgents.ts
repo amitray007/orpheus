@@ -1,8 +1,19 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
-import type { ClaudeSlashCommand, ClaudeSubagent } from '../shared/types'
+import type {
+  ClaudeSlashCommand,
+  ClaudeSubagent,
+  ClaudeSlashCommandDraft,
+  ClaudeSubagentDraft
+} from '../shared/types'
 import { listProjects } from './projects'
+
+const SLUG_RE = /^[a-z0-9_-]+$/
+
+// ---------------------------------------------------------------------------
+// Frontmatter parsing
+// ---------------------------------------------------------------------------
 
 // Minimal frontmatter parser — handles only the subset Claude command/agent
 // files actually use: scalar strings, inline flow sequences [a, b], and block
@@ -53,6 +64,54 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
   }
 
   return result
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter serialization (inverse of parseFrontmatter)
+// ---------------------------------------------------------------------------
+
+function serializeFrontmatter(record: Record<string, string | string[] | null | undefined>): string {
+  const lines: string[] = []
+  for (const [key, value] of Object.entries(record)) {
+    if (value === null || value === undefined) continue
+    if (Array.isArray(value)) {
+      if (value.length === 0) continue
+      // Inline flow for short lists (<=5 items), block for longer
+      if (value.length <= 5) {
+        lines.push(`${key}: [${value.join(', ')}]`)
+      } else {
+        lines.push(`${key}:`)
+        for (const item of value) {
+          lines.push(`  - ${item}`)
+        }
+      }
+    } else {
+      if (value === '') continue
+      // Quote if contains colon or hash or starts with whitespace
+      const needsQuotes = value.includes(':') || value.includes('#') || /^\s/.test(value)
+      const serialized = needsQuotes ? `"${value.replace(/"/g, '\\"')}"` : value
+      lines.push(`${key}: ${serialized}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+function buildMdFile(frontmatter: Record<string, string | string[] | null | undefined>, body: string): string {
+  const fm = serializeFrontmatter(frontmatter)
+  if (fm) {
+    return `---\n${fm}\n---\n${body}\n`
+  }
+  return body + '\n'
+}
+
+// ---------------------------------------------------------------------------
+// File helpers
+// ---------------------------------------------------------------------------
+
+function atomicWrite(filePath: string, content: string): void {
+  const tmp = filePath + '.tmp'
+  fs.writeFileSync(tmp, content, 'utf-8')
+  fs.renameSync(tmp, filePath)
 }
 
 function parseFile(filePath: string): { frontmatter: Record<string, string | string[]>; bodyPreview: string } {
@@ -113,6 +172,10 @@ function stringsOrNull(v: unknown): string[] | null {
   }
   return null
 }
+
+// ---------------------------------------------------------------------------
+// List functions
+// ---------------------------------------------------------------------------
 
 export function listSlashCommands(): ClaudeSlashCommand[] {
   const all: ClaudeSlashCommand[] = []
@@ -210,4 +273,168 @@ export function listSubagents(): ClaudeSubagent[] {
     }
     return a.name.localeCompare(b.name)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Slash command mutations
+// ---------------------------------------------------------------------------
+
+function resolveCommandDir(draft: Pick<ClaudeSlashCommandDraft, 'source' | 'projectId'>): string {
+  if (draft.source === 'user') {
+    return nodePath.join(os.homedir(), '.claude', 'commands')
+  }
+  if (!draft.projectId) throw new Error('projectId is required when source is "project"')
+  const project = listProjects().find((p) => p.id === draft.projectId)
+  if (!project) throw new Error(`Project not found: ${draft.projectId}`)
+  return nodePath.join(project.path, '.claude', 'commands')
+}
+
+function validateSlashCommandName(name: string): void {
+  if (!SLUG_RE.test(name)) {
+    throw new Error(
+      `Command name "${name}" is invalid. Use only lowercase letters, digits, underscores, and hyphens.`
+    )
+  }
+}
+
+export function addSlashCommand(draft: ClaudeSlashCommandDraft): void {
+  validateSlashCommandName(draft.name)
+  if (!draft.body.trim()) throw new Error('Body cannot be empty.')
+
+  const dir = resolveCommandDir(draft)
+  fs.mkdirSync(dir, { recursive: true })
+  const filePath = nodePath.join(dir, `${draft.name}.md`)
+
+  if (fs.existsSync(filePath)) {
+    throw new Error(`A command named "${draft.name}" already exists.`)
+  }
+
+  const content = buildMdFile(
+    {
+      description: draft.description || null,
+      'allowed-tools': draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
+      'argument-hint': draft.argumentHint || null
+    },
+    draft.body
+  )
+  atomicWrite(filePath, content)
+}
+
+export function updateSlashCommand(
+  filePath: string,
+  draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>
+): void {
+  validateSlashCommandName(draft.name)
+  if (!draft.body.trim()) throw new Error('Body cannot be empty.')
+
+  // Reject renames (name must match existing basename)
+  const existingBase = nodePath.basename(filePath, '.md')
+  if (draft.name !== existingBase) {
+    throw new Error(
+      `Renaming a command is not supported. To rename, delete "${existingBase}" and create a new command named "${draft.name}".`
+    )
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`)
+  }
+
+  const content = buildMdFile(
+    {
+      description: draft.description || null,
+      'allowed-tools': draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
+      'argument-hint': draft.argumentHint || null
+    },
+    draft.body
+  )
+  atomicWrite(filePath, content)
+}
+
+export function deleteSlashCommand(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`)
+  }
+  fs.unlinkSync(filePath)
+}
+
+// ---------------------------------------------------------------------------
+// Subagent mutations
+// ---------------------------------------------------------------------------
+
+function resolveAgentDir(draft: Pick<ClaudeSubagentDraft, 'source' | 'projectId'>): string {
+  if (draft.source === 'user') {
+    return nodePath.join(os.homedir(), '.claude', 'agents')
+  }
+  if (!draft.projectId) throw new Error('projectId is required when source is "project"')
+  const project = listProjects().find((p) => p.id === draft.projectId)
+  if (!project) throw new Error(`Project not found: ${draft.projectId}`)
+  return nodePath.join(project.path, '.claude', 'agents')
+}
+
+function validateSubagentName(name: string): void {
+  if (!SLUG_RE.test(name)) {
+    throw new Error(
+      `Subagent name "${name}" is invalid. Use only lowercase letters, digits, underscores, and hyphens.`
+    )
+  }
+}
+
+export function addSubagent(draft: ClaudeSubagentDraft): void {
+  validateSubagentName(draft.name)
+  if (!draft.body.trim()) throw new Error('Body cannot be empty.')
+
+  const dir = resolveAgentDir(draft)
+  fs.mkdirSync(dir, { recursive: true })
+  const filePath = nodePath.join(dir, `${draft.name}.md`)
+
+  if (fs.existsSync(filePath)) {
+    throw new Error(`A subagent named "${draft.name}" already exists.`)
+  }
+
+  const content = buildMdFile(
+    {
+      description: draft.description || null,
+      tools: draft.tools && draft.tools.length > 0 ? draft.tools : null,
+      model: draft.model || null
+    },
+    draft.body
+  )
+  atomicWrite(filePath, content)
+}
+
+export function updateSubagent(
+  filePath: string,
+  draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>
+): void {
+  validateSubagentName(draft.name)
+  if (!draft.body.trim()) throw new Error('Body cannot be empty.')
+
+  // Reject renames
+  const existingBase = nodePath.basename(filePath, '.md')
+  if (draft.name !== existingBase) {
+    throw new Error(
+      `Renaming a subagent is not supported. To rename, delete "${existingBase}" and create a new subagent named "${draft.name}".`
+    )
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`)
+  }
+
+  const content = buildMdFile(
+    {
+      description: draft.description || null,
+      tools: draft.tools && draft.tools.length > 0 ? draft.tools : null,
+      model: draft.model || null
+    },
+    draft.body
+  )
+  atomicWrite(filePath, content)
+}
+
+export function deleteSubagent(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`)
+  }
+  fs.unlinkSync(filePath)
 }

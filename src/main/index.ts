@@ -38,10 +38,31 @@ import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeP
 import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv, testAnthropicConnection } from './claudeAuth'
-import { listMcpServers } from './mcp'
-import { listSlashCommands, listSubagents } from './claudeAgents'
+import { listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer } from './mcp'
+import {
+  listSlashCommands,
+  listSubagents,
+  addSlashCommand,
+  updateSlashCommand,
+  deleteSlashCommand,
+  addSubagent,
+  updateSubagent,
+  deleteSubagent
+} from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
-import type { SessionStatus, WorkspaceStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch, ClaudeHookDraft } from '../shared/types'
+import type {
+  SessionStatus,
+  WorkspaceStatus,
+  ClaudeGlobalSettingsPatch,
+  AppUiStatePatch,
+  ClaudeProjectSettingsOverrides,
+  ClaudeWorkspaceSettingsOverrides,
+  ClaudeAuthPatch,
+  ClaudeHookDraft,
+  McpServerDraft,
+  ClaudeSlashCommandDraft,
+  ClaudeSubagentDraft
+} from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
 // ---------------------------------------------------------------------------
@@ -533,6 +554,13 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('mcp:listServers', () => listMcpServers())
+ipcMain.handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
+ipcMain.handle('mcp:update', (_e, args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }) =>
+  updateMcpServer(args.filePath, args.oldName, args.draft)
+)
+ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
+  deleteMcpServer(args.filePath, args.name)
+)
 
 // ---------------------------------------------------------------------------
 // Claude Agents IPC
@@ -540,6 +568,22 @@ ipcMain.handle('mcp:listServers', () => listMcpServers())
 
 ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
 ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
+
+ipcMain.handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) => addSlashCommand(draft))
+ipcMain.handle('claudeAgents:updateSlashCommand', (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
+  updateSlashCommand(args.filePath, args.draft)
+)
+ipcMain.handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
+  deleteSlashCommand(args.filePath)
+)
+
+ipcMain.handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
+ipcMain.handle('claudeAgents:updateSubagent', (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
+  updateSubagent(args.filePath, args.draft)
+)
+ipcMain.handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
+  deleteSubagent(args.filePath)
+)
 
 // ---------------------------------------------------------------------------
 // Claude Hooks IPC

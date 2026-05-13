@@ -250,10 +250,24 @@ export type DiscoveredMcpServer = {
   name: string              // server key from mcpServers map
   transport: 'stdio' | 'http' | 'sse' | 'unknown'
   command?: string          // for stdio servers
+  args?: string[]           // for stdio servers
+  env?: Record<string, string>  // for stdio servers
   url?: string              // for http/sse servers
   source: 'user' | 'project'  // user = ~/.claude.json, project = <projectPath>/.mcp.json
   projectId?: string        // set when source === 'project'
   projectName?: string      // set when source === 'project'
+  filePath: string          // absolute path to the file this came from (for edit/delete)
+}
+
+export type McpServerDraft = {
+  name: string
+  transport: 'stdio' | 'http' | 'sse'
+  command?: string       // stdio only
+  args?: string[]        // stdio only
+  url?: string           // http/sse only
+  env?: Record<string, string>  // stdio only
+  source: 'user' | 'project'
+  projectId?: string     // required when source === 'project'
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +321,26 @@ export type ClaudeHookDraft = {
   command: string
   source: 'user' | 'project'
   projectId?: string             // required when source === 'project'
+}
+
+export type ClaudeSlashCommandDraft = {
+  name: string
+  description: string
+  allowedTools: string[] | null
+  argumentHint: string
+  body: string
+  source: 'user' | 'project'
+  projectId?: string
+}
+
+export type ClaudeSubagentDraft = {
+  name: string
+  description: string
+  tools: string[] | null
+  model: string
+  body: string
+  source: 'user' | 'project'
+  projectId?: string
 }
 
 // ---------------------------------------------------------------------------

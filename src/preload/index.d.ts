@@ -20,8 +20,11 @@ import type {
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
   DiscoveredMcpServer,
+  McpServerDraft,
   ClaudeSlashCommand,
+  ClaudeSlashCommandDraft,
   ClaudeSubagent,
+  ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft
 } from '../shared/types'
@@ -117,10 +120,19 @@ declare global {
       }
       mcp: {
         listServers: () => Promise<DiscoveredMcpServer[]>
+        add: (draft: McpServerDraft) => Promise<void>
+        update: (filePath: string, oldName: string, draft: Omit<McpServerDraft, 'source' | 'projectId'>) => Promise<void>
+        delete: (filePath: string, name: string) => Promise<void>
       }
       claudeAgents: {
         listSlashCommands: () => Promise<ClaudeSlashCommand[]>
         listSubagents: () => Promise<ClaudeSubagent[]>
+        addSlashCommand: (draft: ClaudeSlashCommandDraft) => Promise<void>
+        updateSlashCommand: (filePath: string, draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>) => Promise<void>
+        deleteSlashCommand: (filePath: string) => Promise<void>
+        addSubagent: (draft: ClaudeSubagentDraft) => Promise<void>
+        updateSubagent: (filePath: string, draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>) => Promise<void>
+        deleteSubagent: (filePath: string) => Promise<void>
       }
       claudeHooks: {
         list: () => Promise<ClaudeHookEntry[]>
