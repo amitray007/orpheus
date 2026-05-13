@@ -85,6 +85,7 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
   addon.setTitleCallback((workspaceId: string, title: string) => {
+    console.log('[title] native fired', { workspaceId, title })
     if (title) {
       workspaceTitles.set(workspaceId, title)
     } else {

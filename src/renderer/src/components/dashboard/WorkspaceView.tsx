@@ -204,7 +204,12 @@ export function WorkspaceView({
       {/* Tab title bar — thin strip */}
       <div className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0">
         <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-        <span className="text-xs font-medium text-text-primary truncate">{workspace.name}</span>
+        <span
+          className="text-xs font-medium text-text-primary truncate"
+          title={terminalTitle && terminalTitle !== workspace.name ? `${workspace.name} — ${terminalTitle}` : workspace.name}
+        >
+          {terminalTitle || workspace.name}
+        </span>
 
         {/* Status chip — clicking opens drawer on status tab */}
         <button
@@ -227,17 +232,6 @@ export function WorkspaceView({
         </button>
 
         <span className="text-text-muted text-xs">·</span>
-        {terminalTitle && (
-          <>
-            <span
-              className="text-xs text-text-muted truncate max-w-[240px] flex-shrink min-w-0"
-              title={terminalTitle}
-            >
-              {terminalTitle}
-            </span>
-            <span className="text-text-muted text-xs flex-shrink-0">·</span>
-          </>
-        )}
         <span
           className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
           title={workspace.cwd}

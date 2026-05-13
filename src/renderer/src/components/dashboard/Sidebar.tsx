@@ -124,9 +124,15 @@ function WorkspaceSubRow({
 
   useEffect(() => {
     const workspaceId = workspace.id
-    window.api.workspaces.getTitle(workspaceId).then(setTerminalTitle).catch(() => {})
+    window.api.workspaces.getTitle(workspaceId).then((t) => {
+      console.log('[sidebar] seeded title', workspaceId, t)
+      setTerminalTitle(t)
+    }).catch(() => {})
     const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
+      if (e.workspaceId === workspaceId) {
+        console.log('[sidebar] title changed', e)
+        setTerminalTitle(e.title || null)
+      }
     })
     return unsub
   }, [workspace.id])
@@ -202,13 +208,13 @@ function WorkspaceSubRow({
             onMouseDown={(e) => e.stopPropagation()}
             className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
           />
-        ) : terminalTitle && terminalTitle !== workspace.name ? (
-          <span className="flex flex-col min-w-0 flex-1 overflow-hidden">
-            <span className="text-xs text-text-primary truncate leading-tight">{workspace.name}</span>
-            <span className="text-[10px] text-text-muted leading-tight truncate">{terminalTitle}</span>
-          </span>
         ) : (
-          <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
+          <span
+            className="text-xs truncate min-w-0 flex-1"
+            title={terminalTitle && terminalTitle !== workspace.name ? `${workspace.name} — ${terminalTitle}` : workspace.name}
+          >
+            {terminalTitle || workspace.name}
+          </span>
         )}
         {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
         {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
