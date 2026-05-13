@@ -981,7 +981,7 @@ export function Sidebar({
   return (
     <aside
       className={[
-        collapsed ? 'w-28' : '',
+        collapsed ? 'w-14' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
         'pt-4 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
