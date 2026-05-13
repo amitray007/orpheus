@@ -38,6 +38,10 @@
 // node-addon-api (C++ NAPI wrapper)
 #include <napi.h>
 
+// libuv — needed to schedule ghostty_app_tick() on the JS main loop from the
+// Ghostty IO thread's wakeup_cb. See addon.mm:Init for setup.
+#include <uv.h>
+
 // ---------------------------------------------------------------------------
 // OrpheusGhosttyView — NSView subclass with keyboard + focus support.
 //
@@ -722,8 +726,32 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
 // Runtime callbacks (required by ghostty_runtime_config_s)
 // ---------------------------------------------------------------------------
 
+// Forward refs — actual definitions live further down with the rest of the
+// app-lifecycle globals, but the wakeup hop needs them before that point.
+static ghostty_app_t g_app;
+static std::atomic<bool> g_inited;
+
+// Async handle that hops from Ghostty's IO thread back to the JS main thread
+// to call ghostty_app_tick(). Per embedded.zig:1423: "Tick the event loop.
+// This should be called whenever the 'wakeup' callback is invoked for the
+// runtime." Without this, surface mailbox messages (set_title, set_tab_title,
+// pwd, etc.) never drain — the actions fire inside Ghostty but never reach
+// our action_cb.
+static uv_async_t g_tickAsync;
+static std::atomic<bool> g_tickAsyncInited{false};
+
+static void tick_async_cb(uv_async_t* /*handle*/) {
+    if (g_inited.load(std::memory_order_acquire) && g_app) {
+        ghostty_app_tick(g_app);
+    }
+}
+
 static void wakeup_cb(void* /*userdata*/) {
     // Called from Ghostty's IO thread — do not call ghostty_* here.
+    // Marshal to the JS main thread, which will call ghostty_app_tick().
+    if (g_tickAsyncInited.load(std::memory_order_acquire)) {
+        uv_async_send(&g_tickAsync);
+    }
 }
 
 static bool action_cb(ghostty_app_t /*app*/,
@@ -990,11 +1018,11 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 // Global app state (lazily inited on first mount)
 // GhosttySurfaceEntry and g_surfaces are declared above the runtime callbacks
 // so that action_cb can iterate g_surfaces for the PWD auto-launch guard.
+// g_app and g_inited are forward-declared near wakeup_cb so the IO-thread
+// hop can see them; only g_config lives entirely here.
 // ---------------------------------------------------------------------------
 
-static ghostty_app_t    g_app    = nullptr;
 static ghostty_config_t g_config = nullptr;
-static std::atomic<bool> g_inited{false};
 
 // ---------------------------------------------------------------------------
 // Coordinate helpers
@@ -1614,6 +1642,21 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
 // ---------------------------------------------------------------------------
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    // Bind the tick uv_async to Node's event loop so wakeup_cb can hop back
+    // to the JS main thread. The handle is unref'd so it doesn't prevent
+    // process exit; it stays valid for the addon's lifetime.
+    uv_loop_t* loop = nullptr;
+    if (napi_get_uv_event_loop(env, &loop) == napi_ok && loop) {
+        if (uv_async_init(loop, &g_tickAsync, tick_async_cb) == 0) {
+            uv_unref(reinterpret_cast<uv_handle_t*>(&g_tickAsync));
+            g_tickAsyncInited.store(true, std::memory_order_release);
+        } else {
+            NSLog(@"[ghostty-native] uv_async_init FAILED — terminal titles will not update");
+        }
+    } else {
+        NSLog(@"[ghostty-native] napi_get_uv_event_loop FAILED — terminal titles will not update");
+    }
+
     exports.Set("mount",             Napi::Function::New(env, Mount));
     exports.Set("hide",              Napi::Function::New(env, Hide));
     exports.Set("resize",            Napi::Function::New(env, Resize));
