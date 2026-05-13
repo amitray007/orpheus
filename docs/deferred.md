@@ -14,7 +14,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Claude → Hooks** inline JSON editor | P3 | Read-only viewer shipped in commit `ba77cbd` — lists hooks from `~/.claude/settings.json` and per-project `.claude/settings.json` with "Open file" links. Inline editor is the remaining work: add/edit/delete hooks from the UI without leaving Orpheus. |
+| **Move-hook-between-files affordance** | P3 | Inline add/edit/delete shipped in commit `4893a99` over `~/.claude/settings.json` and per-project `.claude/settings.json`. Edit locks the source picker — moving a hook between files (e.g. user → project) requires delete + re-add. A direct "move" action would polish that flow. |
 | **Claude → Auth → optional provider fields** | P3 | Bedrock + Vertex required fields shipped in commit `a4ba984` (schema v17). Optional follow-ups: `ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION` for Bedrock fast-model override, vertex region overrides per model (`VERTEX_REGION_CLAUDE_HAIKU_4_5` etc.), Azure Foundry deployment name, IAM role ARN for Bedrock. |
 
 ## 2. Claude Settings — wired but with small gaps in `composeClaudeLaunch`
