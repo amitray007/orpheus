@@ -6,4 +6,7 @@ out
 *.log*
 vendor/
 packages/*/build/
-.claude/
+# .claude/agents and .claude/commands ARE tracked; only the per-dispatch
+# worktree clones (each one contains a .git pointer file that would otherwise
+# be added as a submodule) are ignored.
+.claude/worktrees/

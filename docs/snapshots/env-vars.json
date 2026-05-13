@@ -1,0 +1,223 @@
+{
+  "_meta": {
+    "description": "Canonical list of Claude Code env vars + settings keys + CLI flags, with whether Orpheus exposes each one. Updated by .claude/agents/audit-claude-env-vars.md.",
+    "source": "https://code.claude.com/docs/en/env-vars.md",
+    "lastUpdated": "2026-05-13",
+    "schemaVersion": 24
+  },
+  "envVars": {
+    "auth": {
+      "ANTHROPIC_API_KEY": { "wired": true, "via": "claudeAuth.ts (anthropic provider)" },
+      "ANTHROPIC_AUTH_TOKEN": { "wired": true, "via": "claudeAuth.ts (anthropic provider)" },
+      "ANTHROPIC_AWS_API_KEY": { "wired": false, "note": "Claude Platform on AWS — distinct from Bedrock; not surfaced" },
+      "ANTHROPIC_AWS_WORKSPACE_ID": { "wired": false, "note": "Claude Platform on AWS" },
+      "ANTHROPIC_FOUNDRY_API_KEY": { "wired": true, "via": "claudeAuth.ts (foundry provider)" },
+      "ANTHROPIC_FOUNDRY_RESOURCE": { "wired": true, "via": "claudeAuth.ts (foundry provider)" },
+      "ANTHROPIC_FOUNDRY_BASE_URL": { "wired": true, "via": "claudeAuth.ts (foundry provider)" },
+      "CLAUDE_CODE_OAUTH_TOKEN": { "wired": false, "note": "Managed by claude login — not user-managed" },
+      "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": { "wired": false, "note": "Managed by claude login" },
+      "CLAUDE_CODE_OAUTH_SCOPES": { "wired": false, "note": "Managed by claude login" },
+      "AWS_BEARER_TOKEN_BEDROCK": { "wired": true, "via": "claudeAuth.ts (bedrock provider, optional)" }
+    },
+    "endpoint": {
+      "ANTHROPIC_BASE_URL": { "wired": true, "via": "claudeAuth.ts" },
+      "ANTHROPIC_AWS_BASE_URL": { "wired": false, "note": "Claude Platform on AWS" },
+      "ANTHROPIC_BEDROCK_BASE_URL": { "wired": true, "via": "claudeAuth.ts (bedrock baseUrl field)" },
+      "ANTHROPIC_BEDROCK_MANTLE_BASE_URL": { "wired": false, "note": "Bedrock Mantle endpoint" },
+      "ANTHROPIC_VERTEX_BASE_URL": { "wired": true, "via": "claudeAuth.ts (vertex baseUrl field)" },
+      "ANTHROPIC_VERTEX_PROJECT_ID": { "wired": true, "via": "claudeAuth.ts" }
+    },
+    "model": {
+      "ANTHROPIC_MODEL": { "wired": "indirect", "via": "--model CLI flag" },
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": { "wired": false, "note": "Power-user model defaults override" },
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": { "wired": false },
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": { "wired": false },
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES": { "wired": false },
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": { "wired": false },
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": { "wired": false },
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION": { "wired": false },
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES": { "wired": false },
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": { "wired": false },
+      "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": { "wired": false },
+      "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": { "wired": false },
+      "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES": { "wired": false },
+      "ANTHROPIC_SMALL_FAST_MODEL": { "wired": false, "note": "Deprecated" },
+      "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION": { "wired": false, "note": "Bedrock fast-model region override" },
+      "ANTHROPIC_CUSTOM_MODEL_OPTION": { "wired": false, "note": "Custom model picker entry" },
+      "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": { "wired": false },
+      "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": { "wired": false },
+      "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES": { "wired": false }
+    },
+    "request": {
+      "ANTHROPIC_BETAS": { "wired": true, "via": "Developer → Advanced" },
+      "ANTHROPIC_CUSTOM_HEADERS": { "wired": false, "note": "Use Custom env vars editor" },
+      "CLAUDE_CODE_EXTRA_BODY": { "wired": true, "via": "Developer → Advanced (extraBodyJson)" },
+      "API_TIMEOUT_MS": { "wired": true, "via": "Developer → Network" },
+      "CLAUDE_CODE_MAX_RETRIES": { "wired": true, "via": "Developer → Network" }
+    },
+    "bedrock": {
+      "ANTHROPIC_BEDROCK_SERVICE_TIER": { "wired": false }
+    },
+    "context": {
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": { "wired": true, "via": "Memory & Context" },
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": { "wired": true, "via": "Memory & Context" },
+      "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS": { "wired": true, "via": "Memory & Context" },
+      "MAX_THINKING_TOKENS": { "wired": true, "via": "Memory & Context" },
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": { "wired": true, "via": "Memory & Context (v24)" },
+      "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": { "wired": true, "via": "Memory & Context (v24)" },
+      "CLAUDE_CODE_AUTO_COMPACT_THRESHOLD": { "wired": true, "via": "Memory & Context (compactionThreshold)" }
+    },
+    "effort": {
+      "CLAUDE_CODE_EFFORT_LEVEL": { "wired": "indirect", "via": "--effort CLI flag" },
+      "CLAUDE_CODE_DISABLE_THINKING": { "wired": true, "via": "General → Model behavior" }
+    },
+    "fastMode": {
+      "CLAUDE_CODE_DISABLE_FAST_MODE": { "wired": true, "via": "General → Model behavior" },
+      "CLAUDE_CODE_ENABLE_OPUS_4_7_FAST_MODE": { "wired": false },
+      "CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE": { "wired": false }
+    },
+    "capabilities": {
+      "CLAUDE_CODE_DISABLE_1M_CONTEXT": { "wired": true, "via": "General → Model capabilities (v24)" },
+      "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": { "wired": true, "via": "General → Model capabilities (v24)" },
+      "CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP": { "wired": true, "via": "General → Model capabilities (v24)" }
+    },
+    "bash": {
+      "BASH_DEFAULT_TIMEOUT_MS": { "wired": true, "via": "Tools → Bash limits" },
+      "BASH_MAX_TIMEOUT_MS": { "wired": true, "via": "Tools → Bash limits" },
+      "BASH_MAX_OUTPUT_LENGTH": { "wired": true, "via": "Tools → Bash limits" },
+      "CLAUDE_CODE_SHELL": { "wired": true, "via": "Tools → Shell (v24)" },
+      "CLAUDE_CODE_SHELL_PREFIX": { "wired": true, "via": "Tools → Shell (v24)" },
+      "CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR": { "wired": true, "via": "Tools → File operations" },
+      "CLAUDE_CODE_GIT_BASH_PATH": { "wired": false, "note": "Windows only — skipped" }
+    },
+    "fileOps": {
+      "CLAUDE_CODE_GLOB_HIDDEN": { "wired": true, "via": "Tools → File operations" },
+      "CLAUDE_CODE_GLOB_NO_IGNORE": { "wired": true, "via": "Tools → File operations" },
+      "CLAUDE_CODE_GLOB_TIMEOUT_SECONDS": { "wired": true, "via": "Tools → File operations" },
+      "CLAUDE_CODE_DISABLE_ATTACHMENTS": { "wired": true, "via": "Tools → File operations (v24)" },
+      "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING": { "wired": true, "via": "Tools → File operations (v24)" }
+    },
+    "git": {
+      "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": { "wired": true, "via": "Memory & Context" },
+      "CLAUDE_CODE_PERFORCE_MODE": { "wired": true, "via": "Tools → File operations" }
+    },
+    "memory": {
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY": { "wired": true, "via": "General (auto-memory toggle, inverted)" },
+      "CLAUDE_CODE_DISABLE_CLAUDE_MDS": { "wired": true, "via": "Memory & Context" },
+      "CLAUDE_CODE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": { "wired": false }
+    },
+    "display": {
+      "CLAUDE_CODE_NO_FLICKER": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_DISABLE_MOUSE": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_NATIVE_CURSOR": { "wired": true, "via": "Display" },
+      "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_SCROLL_SPEED": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_HIDE_CWD": { "wired": true, "via": "Display" },
+      "CLAUDE_CODE_CODE_ACCESSIBILITY": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_ATTRIBUTION_HEADER": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_FORCE_SYNC_OUTPUT": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": { "wired": true, "via": "Display → Rendering (v24)" }
+    },
+    "background": {
+      "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": { "wired": true, "via": "Developer → Privacy & background tasks" },
+      "CLAUDE_CODE_AUTO_BACKGROUND_TASKS": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "CLAUDE_CODE_DISABLE_AGENT_VIEW": { "wired": true, "via": "Developer → Privacy & background tasks" },
+      "CLAUDE_CODE_FORK_SUBAGENT": { "wired": true, "via": "Developer (experimentalForkedSubagents)" },
+      "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": { "wired": true, "via": "Developer" }
+    },
+    "tasks": {
+      "CLAUDE_CODE_ENABLE_TASKS": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "CLAUDE_CODE_DISABLE_CRON": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "CLAUDE_CODE_EXIT_AFTER_STOP_DELAY": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" }
+    },
+    "telemetry": {
+      "DISABLE_TELEMETRY": { "wired": true, "via": "Developer" },
+      "DO_NOT_TRACK": { "wired": true, "via": "Developer → Privacy & background tasks" },
+      "DISABLE_AUTOUPDATER": { "wired": true, "via": "Developer" },
+      "DISABLE_FEEDBACK_COMMAND": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "DISABLE_ERROR_REPORTING": { "wired": true, "via": "Developer" },
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": { "wired": true, "via": "Developer → Privacy & background tasks" },
+      "CLAUDE_CODE_ENABLE_TELEMETRY": { "wired": false, "note": "OTEL pipeline — advanced" },
+      "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": { "wired": true, "via": "Developer → Privacy & background tasks (v24)" },
+      "CLAUDE_CODE_ENABLE_FEEDBACK_SURVEY_FOR_OTEL": { "wired": false, "note": "OTEL pipeline" },
+      "DISABLE_COMPACT": { "wired": false }
+    },
+    "otel": {
+      "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS": { "wired": false, "note": "OTEL pipeline" },
+      "CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS": { "wired": false, "note": "OTEL pipeline" },
+      "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": { "wired": false, "note": "OTEL pipeline" }
+    },
+    "mcp": {
+      "CLAUDE_CODE_MCP_ALLOWLIST_ENV": { "wired": false },
+      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": { "wired": false },
+      "CLAUDE_AGENT_SDK_MCP_NO_PREFIX": { "wired": false, "note": "SDK-only" },
+      "ENABLE_TOOL_SEARCH": { "wired": false }
+    },
+    "ide": {
+      "CLAUDE_CODE_AUTO_CONNECT_IDE": { "wired": false },
+      "CLAUDE_CODE_IDE_HOST_OVERRIDE": { "wired": false },
+      "CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": { "wired": false },
+      "CLAUDE_CODE_IDE_SKIP_VALID_CHECK": { "wired": false }
+    },
+    "plugins": {
+      "CLAUDE_CODE_PLUGIN_CACHE_DIR": { "wired": false },
+      "CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS": { "wired": false },
+      "CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE": { "wired": false },
+      "CLAUDE_CODE_PLUGIN_SEED_DIR": { "wired": false },
+      "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": { "wired": false },
+      "CLAUDE_CODE_DISABLE_POLICY_SKILLS": { "wired": false },
+      "FORCE_AUTOUPDATE_PLUGINS": { "wired": false },
+      "CLAUDE_CODE_ENABLE_BACKGROUND_PLUGIN_REFRESH": { "wired": false }
+    },
+    "session": {
+      "CLAUDE_CODE_RESUME_INTERRUPTED_TURN": { "wired": false, "note": "Session-internal" },
+      "CLAUDE_CODE_RESUME_PROMPT": { "wired": false, "note": "Session-internal" },
+      "CLAUDE_CODE_SESSION_ID": { "wired": false, "note": "Auto-set by claude" },
+      "CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS": { "wired": false },
+      "CLAUDE_CODE_MAX_TURNS": { "wired": true, "via": "General → Model behavior" },
+      "CLAUDE_CODE_NEW_INIT": { "wired": false }
+    },
+    "remote": {
+      "CLAUDE_CODE_REMOTE": { "wired": false, "note": "Auto-set by cloud runtime" },
+      "CLAUDE_CODE_REMOTE_SESSION_ID": { "wired": false, "note": "Auto-set" },
+      "CCR_FORCE_BUNDLE": { "wired": false }
+    },
+    "tls": {
+      "CLAUDE_CODE_CERT_STORE": { "wired": false, "note": "mTLS" },
+      "CLAUDE_CODE_CLIENT_CERT": { "wired": false, "note": "mTLS" },
+      "CLAUDE_CODE_CLIENT_KEY": { "wired": false, "note": "mTLS" },
+      "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE": { "wired": false, "note": "mTLS" }
+    },
+    "network": {
+      "HTTP_PROXY": { "wired": true, "via": "Developer → Network" },
+      "HTTPS_PROXY": { "wired": true, "via": "Developer → Network" },
+      "CLAUDE_CODE_PROXY_RESOLVES_HOSTS": { "wired": true, "via": "Developer → Network (v24)" },
+      "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING": { "wired": true, "via": "Developer → Network (v24)" },
+      "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": { "wired": true, "via": "Developer → Network (v24)" },
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": { "wired": true, "via": "Developer → Network (v24)" }
+    },
+    "tools": {
+      "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY": { "wired": true, "via": "Tools (toolConcurrency)" },
+      "CLAUDE_CODE_SCRIPT_CAPS": { "wired": false, "note": "Security policy JSON" }
+    },
+    "internal": {
+      "CLAUDECODE": { "wired": false, "note": "Auto-set in subprocesses" },
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": { "wired": false, "note": "Auto-set" },
+      "CLAUDE_ENV_FILE": { "wired": false, "note": "Auto-set per Bash command" }
+    },
+    "packageManager": {
+      "CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE": { "wired": false },
+      "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": { "wired": false }
+    },
+    "providerFlags": {
+      "CLAUDE_CODE_USE_BEDROCK": { "wired": true, "via": "claudeAuth.ts (bedrock provider)" },
+      "CLAUDE_CODE_USE_VERTEX": { "wired": true, "via": "claudeAuth.ts (vertex provider)" },
+      "CLAUDE_CODE_USE_FOUNDRY": { "wired": true, "via": "claudeAuth.ts (foundry provider)" },
+      "AWS_REGION": { "wired": true, "via": "claudeAuth.ts (bedrock)" },
+      "CLOUD_ML_REGION": { "wired": true, "via": "claudeAuth.ts (vertex)" }
+    }
+  }
+}
