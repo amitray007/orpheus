@@ -6,6 +6,12 @@ out
 *.log*
 vendor/
 packages/*/build/
+# Rust artifacts for terminal-vt-native (and any future Rust addon)
+packages/*/target/
+packages/*/*.node
+# napi-rs generates these per build; keep out of git, they're build artifacts
+packages/terminal-vt-native/index.js
+packages/terminal-vt-native/index.d.ts
 # .claude/agents and .claude/commands ARE tracked; only the per-dispatch
 # worktree clones (each one contains a .git pointer file that would otherwise
 # be added as a submodule) are ignored.
