@@ -44,7 +44,7 @@ declare global {
         reload: () => Promise<void>
       }
       debug: {
-        onActionTrace: (cb: (e: { tag: number; targetTag: number }) => void) => () => void
+        onActionTrace: (cb: (e: { tagName: string }) => void) => () => void
       }
       terminal: {
         mount: (

@@ -645,17 +645,46 @@ static void wakeup_cb(void* /*userdata*/) {
 static bool action_cb(ghostty_app_t /*app*/,
                       ghostty_target_s target,
                       ghostty_action_s action) {
-    // Diagnostic: forward every tag to JS via the trace TSFN if active.
+    // Diagnostic: forward every tag NAME (string) to JS via the trace TSFN.
     if (g_actionTraceTSFNActive) {
+        const char* tagName = "(unknown)";
+        switch (action.tag) {
+            case GHOSTTY_ACTION_QUIT: tagName = "QUIT"; break;
+            case GHOSTTY_ACTION_NEW_WINDOW: tagName = "NEW_WINDOW"; break;
+            case GHOSTTY_ACTION_NEW_TAB: tagName = "NEW_TAB"; break;
+            case GHOSTTY_ACTION_CLOSE_TAB: tagName = "CLOSE_TAB"; break;
+            case GHOSTTY_ACTION_SIZE_LIMIT: tagName = "SIZE_LIMIT"; break;
+            case GHOSTTY_ACTION_INITIAL_SIZE: tagName = "INITIAL_SIZE"; break;
+            case GHOSTTY_ACTION_CELL_SIZE: tagName = "CELL_SIZE"; break;
+            case GHOSTTY_ACTION_SCROLLBAR: tagName = "SCROLLBAR"; break;
+            case GHOSTTY_ACTION_RENDER: tagName = "RENDER"; break;
+            case GHOSTTY_ACTION_DESKTOP_NOTIFICATION: tagName = "DESKTOP_NOTIFICATION"; break;
+            case GHOSTTY_ACTION_SET_TITLE: tagName = "SET_TITLE"; break;
+            case GHOSTTY_ACTION_SET_TAB_TITLE: tagName = "SET_TAB_TITLE"; break;
+            case GHOSTTY_ACTION_PROMPT_TITLE: tagName = "PROMPT_TITLE"; break;
+            case GHOSTTY_ACTION_PWD: tagName = "PWD"; break;
+            case GHOSTTY_ACTION_MOUSE_SHAPE: tagName = "MOUSE_SHAPE"; break;
+            case GHOSTTY_ACTION_MOUSE_VISIBILITY: tagName = "MOUSE_VISIBILITY"; break;
+            case GHOSTTY_ACTION_MOUSE_OVER_LINK: tagName = "MOUSE_OVER_LINK"; break;
+            case GHOSTTY_ACTION_RENDERER_HEALTH: tagName = "RENDERER_HEALTH"; break;
+            case GHOSTTY_ACTION_RING_BELL: tagName = "RING_BELL"; break;
+            case GHOSTTY_ACTION_COLOR_CHANGE: tagName = "COLOR_CHANGE"; break;
+            case GHOSTTY_ACTION_CONFIG_CHANGE: tagName = "CONFIG_CHANGE"; break;
+            case GHOSTTY_ACTION_SECURE_INPUT: tagName = "SECURE_INPUT"; break;
+            case GHOSTTY_ACTION_PROGRESS_REPORT: tagName = "PROGRESS_REPORT"; break;
+            case GHOSTTY_ACTION_COMMAND_FINISHED: tagName = "COMMAND_FINISHED"; break;
+            case GHOSTTY_ACTION_KEY_SEQUENCE: tagName = "KEY_SEQUENCE"; break;
+            case GHOSTTY_ACTION_KEY_TABLE: tagName = "KEY_TABLE"; break;
+            case GHOSTTY_ACTION_OPEN_URL: tagName = "OPEN_URL"; break;
+            case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD: tagName = "COPY_TITLE_TO_CLIPBOARD"; break;
+            default: break;
+        }
         int tagInt = (int)action.tag;
-        int targetTag = (int)target.tag;
+        std::string tagStr = std::string(tagName) + "(" + std::to_string(tagInt) + ")";
         g_actionTraceTSFN.BlockingCall(
-            new std::pair<int, int>(tagInt, targetTag),
-            [](Napi::Env env, Napi::Function jsCb, std::pair<int, int>* data) {
-                jsCb.Call({
-                    Napi::Number::New(env, data->first),
-                    Napi::Number::New(env, data->second)
-                });
+            new std::string(tagStr),
+            [](Napi::Env env, Napi::Function jsCb, std::string* data) {
+                jsCb.Call({ Napi::String::New(env, *data) });
                 delete data;
             }
         );

@@ -98,9 +98,9 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   // Diagnostic: also forward every action_cb tag to the renderer for visibility
   // via DevTools console. Routed through a separate IPC so it doesn't pollute
   // the title flow.
-  addon.setActionTraceCallback((tag: number, targetTag: number) => {
+  addon.setActionTraceCallback((tagName: string) => {
     for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('addon:actionTrace', { tag, targetTag })
+      w.webContents.send('addon:actionTrace', { tagName })
     }
   })
 }
@@ -834,7 +834,7 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
-  setActionTraceCallback: (cb: (tag: number, targetTag: number) => void) => void
+  setActionTraceCallback: (cb: (tagName: string) => void) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null

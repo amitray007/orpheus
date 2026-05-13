@@ -79,7 +79,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // ghostty.h. Should disappear in a follow-up commit once title flow is verified.
   useEffect(() => {
     return window.api.debug.onActionTrace((e) => {
-      console.log('[addon-trace] tag', e.tag, 'targetTag', e.targetTag)
+      console.log('[addon-trace]', e.tagName)
     })
   }, [])
 

@@ -44,9 +44,8 @@ const api = {
     reload: (): Promise<void> => ipcRenderer.invoke('window:reload')
   },
   debug: {
-    onActionTrace: (cb: (e: { tag: number; targetTag: number }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { tag: number; targetTag: number }): void =>
-        cb(e)
+    onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { tagName: string }): void => cb(e)
       ipcRenderer.on('addon:actionTrace', listener)
       return () => ipcRenderer.removeListener('addon:actionTrace', listener)
     }
