@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight, Trash, Plus } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, ClaudeLogLevel } from '@shared/types'
-import { SettingRow, Toggle, SegmentedControl } from './primitives'
+import { SettingRow, Toggle, SegmentedControl, NumberInput } from './primitives'
 
 // ---------------------------------------------------------------------------
 // CustomEnvVarsEditor — inline key/value editor for raw env vars
@@ -136,6 +136,63 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
         <Plus size={12} weight="bold" />
         Add
       </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExtraBodyJsonInput — textarea with JSON validation on blur
+// ---------------------------------------------------------------------------
+
+interface ExtraBodyJsonInputProps {
+  value: string
+  onChange: (v: string) => void
+}
+
+function ExtraBodyJsonInput({ value, onChange }: ExtraBodyJsonInputProps): React.JSX.Element {
+  const [local, setLocal] = useState(value)
+  const [jsonError, setJsonError] = useState<string | null>(null)
+
+  // Sync when external value changes (e.g. initial load, revert after failed save)
+  const prevValueRef = useRef(value)
+  if (prevValueRef.current !== value) {
+    prevValueRef.current = value
+    setLocal(value)
+    setJsonError(null)
+  }
+
+  function commit(): void {
+    const trimmed = local.trim()
+    if (trimmed === '') {
+      setJsonError(null)
+      onChange('')
+      return
+    }
+    try {
+      JSON.parse(trimmed)
+      setJsonError(null)
+      onChange(trimmed)
+    } catch {
+      // Revert local state to last saved valid value and show inline error briefly
+      setLocal(value)
+      setJsonError('Invalid JSON — reverted to last saved value.')
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 w-64">
+      <textarea
+        value={local}
+        onChange={(e) => {
+          setLocal(e.target.value)
+          setJsonError(null)
+        }}
+        onBlur={commit}
+        rows={3}
+        placeholder='{"key": "value"}'
+        className={`w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text resize-none ${jsonError ? 'border-red-500/60' : 'border-border-default'}`}
+      />
+      {jsonError && <p className="text-xs text-red-400">{jsonError}</p>}
     </div>
   )
 }
@@ -322,6 +379,150 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
             </SettingRow>
           </div>
         )}
+      </section>
+
+      {/* Network */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Network
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="HTTP_PROXY"
+            description="HTTP proxy for outbound requests from claude (HTTP_PROXY). Leave empty to use the system default."
+          >
+            <input
+              type="text"
+              value={settings.httpProxy}
+              onChange={(e) => patch({ httpProxy: e.target.value })}
+              onBlur={(e) => patch({ httpProxy: e.target.value.trim() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
+              placeholder="http://proxy.example.com:8080"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
+          <SettingRow
+            label="HTTPS_PROXY"
+            description="HTTPS proxy for outbound requests from claude (HTTPS_PROXY). Leave empty to use the system default."
+          >
+            <input
+              type="text"
+              value={settings.httpsProxy}
+              onChange={(e) => patch({ httpsProxy: e.target.value })}
+              onBlur={(e) => patch({ httpsProxy: e.target.value.trim() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
+              placeholder="https://proxy.example.com:8080"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
+          <SettingRow
+            label="API timeout (ms)"
+            description="Timeout in milliseconds for each API request to Anthropic (API_TIMEOUT_MS). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.apiTimeoutMs}
+              onChange={(v) => patch({ apiTimeoutMs: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Max retries"
+            description="Number of times to retry a failed API request (CLAUDE_CODE_MAX_RETRIES). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.maxRetries}
+              onChange={(v) => patch({ maxRetries: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      {/* Privacy & background tasks */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Privacy &amp; background tasks
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Disable nonessential traffic"
+            description="Bundles autoupdater, feedback, error reporting, and telemetry off in one toggle (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)."
+          >
+            <Toggle
+              ariaLabel="Disable nonessential traffic"
+              value={settings.disableNonessentialTraffic}
+              onChange={(v) => patch({ disableNonessentialTraffic: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Honor DO_NOT_TRACK"
+            description="Respect the DO_NOT_TRACK signal to disable analytics and usage tracking (DO_NOT_TRACK=1)."
+          >
+            <Toggle
+              ariaLabel="Honor DO_NOT_TRACK"
+              value={settings.doNotTrack}
+              onChange={(v) => patch({ doNotTrack: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable background tasks"
+            description="Prevent Claude from running background processing tasks between turns (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)."
+          >
+            <Toggle
+              ariaLabel="Disable background tasks"
+              value={settings.disableBackgroundTasks}
+              onChange={(v) => patch({ disableBackgroundTasks: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable agent view"
+            description="Hide the real-time agent activity view during agentic sessions (CLAUDE_CODE_DISABLE_AGENT_VIEW=1)."
+          >
+            <Toggle
+              ariaLabel="Disable agent view"
+              value={settings.disableAgentView}
+              onChange={(v) => patch({ disableAgentView: v })}
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      {/* Advanced */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Advanced
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Anthropic-Beta headers"
+            description="Comma-separated values for the anthropic-beta header on every request (ANTHROPIC_BETAS). Example: prompt-caching-2024-07-31,messages-2023-12-15."
+          >
+            <input
+              type="text"
+              value={settings.anthropicBetas}
+              onChange={(e) => patch({ anthropicBetas: e.target.value })}
+              onBlur={(e) => patch({ anthropicBetas: e.target.value.trim() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
+              placeholder="prompt-caching-2024-07-31,messages-2023-12-15"
+              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Extra body JSON"
+            description="Raw JSON object merged into every API request body (CLAUDE_CODE_EXTRA_BODY). Must be valid JSON. Validated on save."
+          >
+            <ExtraBodyJsonInput
+              value={settings.extraBodyJson}
+              onChange={(v) => patch({ extraBodyJson: v })}
+            />
+          </SettingRow>
+        </div>
       </section>
 
       {/* Custom environment variables */}

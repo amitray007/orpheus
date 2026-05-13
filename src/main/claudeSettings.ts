@@ -61,6 +61,28 @@ type ClaudeSettingsRow = {
   browser_integration: number
   disabled_mcp_servers: string
   custom_env_vars: string
+  // Env-var controls (v23)
+  disable_thinking: number
+  disable_fast_mode: number
+  max_turns: number | null
+  max_thinking_tokens: number | null
+  file_read_max_output_tokens: number | null
+  disable_claude_mds: number
+  bash_maintain_cwd: number
+  perforce_mode: number
+  glob_hidden: number
+  glob_no_ignore: number
+  glob_timeout_seconds: number | null
+  api_timeout_ms: number | null
+  max_retries: number | null
+  http_proxy: string
+  https_proxy: string
+  disable_nonessential_traffic: number
+  do_not_track: number
+  disable_background_tasks: number
+  disable_agent_view: number
+  anthropic_betas: string
+  extra_body_json: string
   updated_at: number
 }
 
@@ -133,6 +155,31 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     browserIntegration: (row.browser_integration ?? 1) === 1,
     disabledMcpServers: parseJsonArray(row.disabled_mcp_servers),
     customEnvVars: parseJsonRecord(row.custom_env_vars),
+    // Env-var controls (v23) — General
+    disableThinking: row.disable_thinking === 1,
+    disableFastMode: row.disable_fast_mode === 1,
+    maxTurns: row.max_turns ?? null,
+    // Env-var controls (v23) — Memory & Context
+    maxThinkingTokens: row.max_thinking_tokens ?? null,
+    fileReadMaxOutputTokens: row.file_read_max_output_tokens ?? null,
+    disableClaudeMds: row.disable_claude_mds === 1,
+    // Env-var controls (v23) — Tools
+    bashMaintainCwd: row.bash_maintain_cwd === 1,
+    perforceMode: row.perforce_mode === 1,
+    globHidden: row.glob_hidden === 1,
+    globNoIgnore: row.glob_no_ignore === 1,
+    globTimeoutSeconds: row.glob_timeout_seconds ?? null,
+    // Env-var controls (v23) — Developer
+    apiTimeoutMs: row.api_timeout_ms ?? null,
+    maxRetries: row.max_retries ?? null,
+    httpProxy: row.http_proxy ?? '',
+    httpsProxy: row.https_proxy ?? '',
+    disableNonessentialTraffic: row.disable_nonessential_traffic === 1,
+    doNotTrack: row.do_not_track === 1,
+    disableBackgroundTasks: row.disable_background_tasks === 1,
+    disableAgentView: row.disable_agent_view === 1,
+    anthropicBetas: row.anthropic_betas ?? '',
+    extraBodyJson: row.extra_body_json ?? '',
     updatedAt: row.updated_at
   }
 }
@@ -158,7 +205,11 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   'disableGitInstructions', 'debugLogging', 'disableTelemetry', 'disableErrorReporting',
   'disableAutoupdater', 'experimentalAgentTeams', 'experimentalForkedSubagents',
   'simpleSystemPrompt', 'autoApproveEdits', 'askDestructiveBash', 'planModeDefault',
-  'browserIntegration'
+  'browserIntegration',
+  // Env-var controls (v23)
+  'disableThinking', 'disableFastMode', 'disableClaudeMds',
+  'bashMaintainCwd', 'perforceMode', 'globHidden', 'globNoIgnore',
+  'disableNonessentialTraffic', 'doNotTrack', 'disableBackgroundTasks', 'disableAgentView'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
@@ -262,6 +313,70 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
     const v = patch.toolConcurrency
     if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
       throw new Error('claudeSettings: toolConcurrency must be a positive integer or null')
+    }
+  }
+  if ('maxTurns' in patch) {
+    const v = patch.maxTurns
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxTurns must be a positive integer or null')
+    }
+  }
+  if ('maxThinkingTokens' in patch) {
+    const v = patch.maxThinkingTokens
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxThinkingTokens must be a positive integer or null')
+    }
+  }
+  if ('fileReadMaxOutputTokens' in patch) {
+    const v = patch.fileReadMaxOutputTokens
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: fileReadMaxOutputTokens must be a positive integer or null')
+    }
+  }
+  if ('globTimeoutSeconds' in patch) {
+    const v = patch.globTimeoutSeconds
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: globTimeoutSeconds must be a positive integer or null')
+    }
+  }
+  if ('apiTimeoutMs' in patch) {
+    const v = patch.apiTimeoutMs
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: apiTimeoutMs must be a positive integer or null')
+    }
+  }
+  if ('maxRetries' in patch) {
+    const v = patch.maxRetries
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxRetries must be a positive integer or null')
+    }
+  }
+  if ('httpProxy' in patch) {
+    if (typeof patch.httpProxy !== 'string') {
+      throw new Error('claudeSettings: httpProxy must be a string')
+    }
+  }
+  if ('httpsProxy' in patch) {
+    if (typeof patch.httpsProxy !== 'string') {
+      throw new Error('claudeSettings: httpsProxy must be a string')
+    }
+  }
+  if ('anthropicBetas' in patch) {
+    if (typeof patch.anthropicBetas !== 'string') {
+      throw new Error('claudeSettings: anthropicBetas must be a string')
+    }
+  }
+  if ('extraBodyJson' in patch) {
+    const v = patch.extraBodyJson
+    if (typeof v !== 'string') {
+      throw new Error('claudeSettings: extraBodyJson must be a string')
+    }
+    if (v.trim() !== '') {
+      try {
+        JSON.parse(v)
+      } catch {
+        throw new Error('claudeSettings: extraBodyJson must be empty or valid JSON')
+      }
     }
   }
   if ('customEnvVars' in patch) {
@@ -543,6 +658,39 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
     env['BASH_MAX_OUTPUT_LENGTH'] = String(s.bashMaxOutputLength)
   }
 
+  // Env-var controls (v23) — General
+  if (s.disableThinking) env['CLAUDE_CODE_DISABLE_THINKING'] = '1'
+  if (s.disableFastMode) env['CLAUDE_CODE_DISABLE_FAST_MODE'] = '1'
+  if (s.maxTurns !== null) env['CLAUDE_CODE_MAX_TURNS'] = String(s.maxTurns)
+
+  // Env-var controls (v23) — Memory & Context
+  if (s.maxThinkingTokens !== null) env['MAX_THINKING_TOKENS'] = String(s.maxThinkingTokens)
+  if (s.fileReadMaxOutputTokens !== null) env['CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS'] = String(s.fileReadMaxOutputTokens)
+  if (s.disableClaudeMds) env['CLAUDE_CODE_DISABLE_CLAUDE_MDS'] = '1'
+
+  // Env-var controls (v23) — Tools
+  if (s.bashMaintainCwd) env['CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR'] = '1'
+  if (s.perforceMode) env['CLAUDE_CODE_PERFORCE_MODE'] = '1'
+  if (s.globHidden) env['CLAUDE_CODE_GLOB_HIDDEN'] = '1'
+  if (s.globNoIgnore) env['CLAUDE_CODE_GLOB_NO_IGNORE'] = '1'
+  if (s.globTimeoutSeconds !== null) env['CLAUDE_CODE_GLOB_TIMEOUT_SECONDS'] = String(s.globTimeoutSeconds)
+
+  // Env-var controls (v23) — Developer / Network
+  if (s.apiTimeoutMs !== null) env['API_TIMEOUT_MS'] = String(s.apiTimeoutMs)
+  if (s.maxRetries !== null) env['CLAUDE_CODE_MAX_RETRIES'] = String(s.maxRetries)
+  if (s.httpProxy) env['HTTP_PROXY'] = s.httpProxy
+  if (s.httpsProxy) env['HTTPS_PROXY'] = s.httpsProxy
+
+  // Env-var controls (v23) — Developer / Privacy & background
+  if (s.disableNonessentialTraffic) env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
+  if (s.doNotTrack) env['DO_NOT_TRACK'] = '1'
+  if (s.disableBackgroundTasks) env['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
+  if (s.disableAgentView) env['CLAUDE_CODE_DISABLE_AGENT_VIEW'] = '1'
+
+  // Env-var controls (v23) — Developer / Advanced
+  if (s.anthropicBetas) env['ANTHROPIC_BETAS'] = s.anthropicBetas
+  if (s.extraBodyJson) env['CLAUDE_CODE_EXTRA_BODY'] = s.extraBodyJson
+
   // Custom env vars — merged last; user's keys win on conflict
   for (const [k, v] of Object.entries(s.customEnvVars)) {
     if (k && typeof v === 'string') env[k] = v
@@ -615,7 +763,29 @@ export function updateClaudeGlobalSettings(
     toolConcurrency: 'tool_concurrency',
     browserIntegration: 'browser_integration',
     disabledMcpServers: 'disabled_mcp_servers',
-    customEnvVars: 'custom_env_vars'
+    customEnvVars: 'custom_env_vars',
+    // Env-var controls (v23)
+    disableThinking: 'disable_thinking',
+    disableFastMode: 'disable_fast_mode',
+    maxTurns: 'max_turns',
+    maxThinkingTokens: 'max_thinking_tokens',
+    fileReadMaxOutputTokens: 'file_read_max_output_tokens',
+    disableClaudeMds: 'disable_claude_mds',
+    bashMaintainCwd: 'bash_maintain_cwd',
+    perforceMode: 'perforce_mode',
+    globHidden: 'glob_hidden',
+    globNoIgnore: 'glob_no_ignore',
+    globTimeoutSeconds: 'glob_timeout_seconds',
+    apiTimeoutMs: 'api_timeout_ms',
+    maxRetries: 'max_retries',
+    httpProxy: 'http_proxy',
+    httpsProxy: 'https_proxy',
+    disableNonessentialTraffic: 'disable_nonessential_traffic',
+    doNotTrack: 'do_not_track',
+    disableBackgroundTasks: 'disable_background_tasks',
+    disableAgentView: 'disable_agent_view',
+    anthropicBetas: 'anthropic_betas',
+    extraBodyJson: 'extra_body_json'
   }
 
   const setClauses: string[] = []

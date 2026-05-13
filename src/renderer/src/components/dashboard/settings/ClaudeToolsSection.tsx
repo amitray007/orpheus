@@ -218,6 +218,65 @@ export function ClaudeToolsSection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      {/* File operations */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          File operations
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Bash maintains project cwd"
+            description="Each Bash command resets its working directory to the project root (CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1)."
+          >
+            <Toggle
+              ariaLabel="Bash maintains project cwd"
+              value={settings.bashMaintainCwd}
+              onChange={(v) => patch({ bashMaintainCwd: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Perforce mode"
+            description="Enable Perforce VCS integration for source control operations (CLAUDE_CODE_PERFORCE_MODE=1)."
+          >
+            <Toggle
+              ariaLabel="Perforce mode"
+              value={settings.perforceMode}
+              onChange={(v) => patch({ perforceMode: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Glob includes hidden files (override)"
+            description="When enabled, sets CLAUDE_CODE_GLOB_HIDDEN=1. Note: claude's default already includes hidden files. To force-exclude them, use Custom env vars to set CLAUDE_CODE_GLOB_HIDDEN=0."
+          >
+            <Toggle
+              ariaLabel="Glob includes hidden files override"
+              value={settings.globHidden}
+              onChange={(v) => patch({ globHidden: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Glob ignores .gitignore (override)"
+            description="When enabled, sets CLAUDE_CODE_GLOB_NO_IGNORE=1 so globs skip .gitignore patterns. To force-enable .gitignore respect, use Custom env vars to set CLAUDE_CODE_GLOB_NO_IGNORE=0."
+          >
+            <Toggle
+              ariaLabel="Glob ignores .gitignore override"
+              value={settings.globNoIgnore}
+              onChange={(v) => patch({ globNoIgnore: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Glob timeout (seconds)"
+            description="Maximum seconds to spend on a single glob operation (CLAUDE_CODE_GLOB_TIMEOUT_SECONDS). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.globTimeoutSeconds}
+              onChange={(v) => patch({ globTimeoutSeconds: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+        </div>
+      </section>
     </div>
   )
 }

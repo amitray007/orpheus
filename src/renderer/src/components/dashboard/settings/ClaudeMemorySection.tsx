@@ -130,6 +130,45 @@ export function ClaudeMemorySection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      {/* Token limits & memory */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Token limits &amp; memory
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Max thinking tokens"
+            description="Upper bound on tokens used for extended thinking per response (MAX_THINKING_TOKENS). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.maxThinkingTokens}
+              onChange={(v) => patch({ maxThinkingTokens: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="File read max output tokens"
+            description="Truncation limit for file-read tool output (CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.fileReadMaxOutputTokens}
+              onChange={(v) => patch({ fileReadMaxOutputTokens: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable CLAUDE.md memory files"
+            description="Prevent Claude from loading CLAUDE.md files from the filesystem (CLAUDE_CODE_DISABLE_CLAUDE_MDS=1)."
+          >
+            <Toggle
+              ariaLabel="Disable CLAUDE.md memory files"
+              value={settings.disableClaudeMds}
+              onChange={(v) => patch({ disableClaudeMds: v })}
+            />
+          </SettingRow>
+        </div>
+      </section>
     </div>
   )
 }

@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 22
+const CURRENT_VERSION = 23
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -125,6 +125,28 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     auth_foundry_base_url TEXT NOT NULL DEFAULT '',
     auth_bedrock_bearer_token TEXT NOT NULL DEFAULT '',
     custom_env_vars TEXT NOT NULL DEFAULT '{}',
+    -- Env-var controls (v23)
+    disable_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_thinking IN (0, 1)),
+    disable_fast_mode INTEGER NOT NULL DEFAULT 0 CHECK (disable_fast_mode IN (0, 1)),
+    max_turns INTEGER,
+    max_thinking_tokens INTEGER,
+    file_read_max_output_tokens INTEGER,
+    disable_claude_mds INTEGER NOT NULL DEFAULT 0 CHECK (disable_claude_mds IN (0, 1)),
+    bash_maintain_cwd INTEGER NOT NULL DEFAULT 0 CHECK (bash_maintain_cwd IN (0, 1)),
+    perforce_mode INTEGER NOT NULL DEFAULT 0 CHECK (perforce_mode IN (0, 1)),
+    glob_hidden INTEGER NOT NULL DEFAULT 0 CHECK (glob_hidden IN (0, 1)),
+    glob_no_ignore INTEGER NOT NULL DEFAULT 0 CHECK (glob_no_ignore IN (0, 1)),
+    glob_timeout_seconds INTEGER,
+    api_timeout_ms INTEGER,
+    max_retries INTEGER,
+    http_proxy TEXT NOT NULL DEFAULT '',
+    https_proxy TEXT NOT NULL DEFAULT '',
+    disable_nonessential_traffic INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonessential_traffic IN (0, 1)),
+    do_not_track INTEGER NOT NULL DEFAULT 0 CHECK (do_not_track IN (0, 1)),
+    disable_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (disable_background_tasks IN (0, 1)),
+    disable_agent_view INTEGER NOT NULL DEFAULT 0 CHECK (disable_agent_view IN (0, 1)),
+    anthropic_betas TEXT NOT NULL DEFAULT '',
+    extra_body_json TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   );
 `
@@ -457,5 +479,37 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_bedrock_bearer_token TEXT NOT NULL DEFAULT ''") } catch {}
     try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN custom_env_vars TEXT NOT NULL DEFAULT '{}'") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(22)
+  }
+
+  // Version 23: Typed env-var controls (General, Memory & Context, Tools, Developer)
+  if (currentVersion < 23) {
+    // General
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_thinking IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_fast_mode INTEGER NOT NULL DEFAULT 0 CHECK (disable_fast_mode IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_turns INTEGER') } catch {}
+    // Memory & Context
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_thinking_tokens INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN file_read_max_output_tokens INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_claude_mds INTEGER NOT NULL DEFAULT 0 CHECK (disable_claude_mds IN (0, 1))') } catch {}
+    // Tools
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_maintain_cwd INTEGER NOT NULL DEFAULT 0 CHECK (bash_maintain_cwd IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN perforce_mode INTEGER NOT NULL DEFAULT 0 CHECK (perforce_mode IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_hidden INTEGER NOT NULL DEFAULT 0 CHECK (glob_hidden IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_no_ignore INTEGER NOT NULL DEFAULT 0 CHECK (glob_no_ignore IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_timeout_seconds INTEGER') } catch {}
+    // Developer / Network
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN api_timeout_ms INTEGER') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_retries INTEGER') } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN http_proxy TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN https_proxy TEXT NOT NULL DEFAULT ''") } catch {}
+    // Developer / Privacy & background
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_nonessential_traffic INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonessential_traffic IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN do_not_track INTEGER NOT NULL DEFAULT 0 CHECK (do_not_track IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (disable_background_tasks IN (0, 1))') } catch {}
+    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_agent_view INTEGER NOT NULL DEFAULT 0 CHECK (disable_agent_view IN (0, 1))') } catch {}
+    // Developer / Advanced
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN anthropic_betas TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN extra_body_json TEXT NOT NULL DEFAULT ''") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(23)
   }
 }

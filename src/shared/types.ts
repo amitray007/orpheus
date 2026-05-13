@@ -156,6 +156,35 @@ export type ClaudeGlobalSettings = {
   // Custom env vars (v22) — merged last at launch; user's keys win on conflict
   customEnvVars: Record<string, string>
 
+  // Env-var controls (v23) — General
+  disableThinking: boolean
+  disableFastMode: boolean
+  maxTurns: number | null
+
+  // Env-var controls (v23) — Memory & Context
+  maxThinkingTokens: number | null
+  fileReadMaxOutputTokens: number | null
+  disableClaudeMds: boolean
+
+  // Env-var controls (v23) — Tools
+  bashMaintainCwd: boolean
+  perforceMode: boolean
+  globHidden: boolean
+  globNoIgnore: boolean
+  globTimeoutSeconds: number | null
+
+  // Env-var controls (v23) — Developer
+  apiTimeoutMs: number | null
+  maxRetries: number | null
+  httpProxy: string
+  httpsProxy: string
+  disableNonessentialTraffic: boolean
+  doNotTrack: boolean
+  disableBackgroundTasks: boolean
+  disableAgentView: boolean
+  anthropicBetas: string
+  extraBodyJson: string
+
   updatedAt: number
 }
 

@@ -5,7 +5,7 @@ import type {
   ClaudePermissionMode,
   ClaudeEffort
 } from '@shared/types'
-import { SettingRow, SegmentedControl, Toggle, ModelPicker } from './primitives'
+import { SettingRow, SegmentedControl, Toggle, ModelPicker, NumberInput } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeGeneralSection — model, permission mode, effort, auto-memory, extended thinking
@@ -167,6 +167,44 @@ export function ClaudeGeneralSection(): React.JSX.Element {
               onBlur={(e) => patch({ fallbackModel: e.target.value.trim() })}
               placeholder="(none — claude default)"
               className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Model behavior
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Disable extended thinking"
+            description="Prevents Claude from using extended thinking even when effort is high (CLAUDE_CODE_DISABLE_THINKING=1)."
+          >
+            <Toggle
+              ariaLabel="Disable extended thinking"
+              value={settings.disableThinking}
+              onChange={(v) => patch({ disableThinking: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable fast mode"
+            description="Forces Claude to skip the fast-response optimization path (CLAUDE_CODE_DISABLE_FAST_MODE=1)."
+          >
+            <Toggle
+              ariaLabel="Disable fast mode"
+              value={settings.disableFastMode}
+              onChange={(v) => patch({ disableFastMode: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Max turns per session"
+            description="Hard cap on the number of agentic turns per session (CLAUDE_CODE_MAX_TURNS). Leave empty to use claude's default."
+          >
+            <NumberInput
+              value={settings.maxTurns}
+              onChange={(v) => patch({ maxTurns: v })}
+              placeholder="default"
             />
           </SettingRow>
         </div>
