@@ -153,6 +153,9 @@ export type ClaudeGlobalSettings = {
   browserIntegration: boolean
   disabledMcpServers: string[]
 
+  // Custom env vars (v22) — merged last at launch; user's keys win on conflict
+  customEnvVars: Record<string, string>
+
   updatedAt: number
 }
 
@@ -272,6 +275,12 @@ export type ClaudeAuthState = {
   awsRegion: string
   vertexProjectId: string
   vertexRegion: string
+  // Foundry-specific (v22)
+  hasFoundryApiKey: boolean
+  foundryResource: string
+  foundryBaseUrl: string
+  // Bedrock bearer token (v22)
+  hasBedrockBearerToken: boolean
 }
 
 // Patch shape — partial update; only the fields the user actually changed
@@ -283,6 +292,12 @@ export type ClaudeAuthPatch = {
   awsRegion?: string
   vertexProjectId?: string
   vertexRegion?: string
+  // Foundry-specific (v22)
+  foundryApiKey?: string   // empty string clears
+  foundryResource?: string
+  foundryBaseUrl?: string
+  // Bedrock bearer token (v22)
+  bedrockBearerToken?: string  // empty string clears
 }
 
 // Test-connection result — returned by the Auth section's "Test connection" button

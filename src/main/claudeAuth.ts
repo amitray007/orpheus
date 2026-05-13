@@ -19,12 +19,16 @@ type Row = {
   auth_aws_region: string
   auth_vertex_project_id: string
   auth_vertex_region: string
+  auth_foundry_api_key: string
+  auth_foundry_resource: string
+  auth_foundry_base_url: string
+  auth_bedrock_bearer_token: string
 }
 
 function readRow(): Row | undefined {
   const db = getDb()
   return db
-    .prepare('SELECT cloud_provider, auth_api_key, auth_token, auth_base_url, auth_aws_region, auth_vertex_project_id, auth_vertex_region FROM claude_global_settings WHERE id = 1')
+    .prepare('SELECT cloud_provider, auth_api_key, auth_token, auth_base_url, auth_aws_region, auth_vertex_project_id, auth_vertex_region, auth_foundry_api_key, auth_foundry_resource, auth_foundry_base_url, auth_bedrock_bearer_token FROM claude_global_settings WHERE id = 1')
     .get() as Row | undefined
 }
 
@@ -41,7 +45,11 @@ export function getClaudeAuthState(): ClaudeAuthState {
     baseUrl: row?.auth_base_url ?? '',
     awsRegion: row?.auth_aws_region ?? '',
     vertexProjectId: row?.auth_vertex_project_id ?? '',
-    vertexRegion: row?.auth_vertex_region ?? ''
+    vertexRegion: row?.auth_vertex_region ?? '',
+    hasFoundryApiKey: (row?.auth_foundry_api_key ?? '').length > 0,
+    foundryResource: row?.auth_foundry_resource ?? '',
+    foundryBaseUrl: row?.auth_foundry_base_url ?? '',
+    hasBedrockBearerToken: (row?.auth_bedrock_bearer_token ?? '').length > 0
   }
 }
 
@@ -58,17 +66,25 @@ export function updateClaudeAuth(patch: ClaudeAuthPatch): ClaudeAuthState {
     auth_base_url: patch.baseUrl !== undefined ? patch.baseUrl : (existing?.auth_base_url ?? ''),
     auth_aws_region: patch.awsRegion !== undefined ? patch.awsRegion : (existing?.auth_aws_region ?? ''),
     auth_vertex_project_id: patch.vertexProjectId !== undefined ? patch.vertexProjectId : (existing?.auth_vertex_project_id ?? ''),
-    auth_vertex_region: patch.vertexRegion !== undefined ? patch.vertexRegion : (existing?.auth_vertex_region ?? '')
+    auth_vertex_region: patch.vertexRegion !== undefined ? patch.vertexRegion : (existing?.auth_vertex_region ?? ''),
+    auth_foundry_api_key: patch.foundryApiKey !== undefined ? patch.foundryApiKey : (existing?.auth_foundry_api_key ?? ''),
+    auth_foundry_resource: patch.foundryResource !== undefined ? patch.foundryResource : (existing?.auth_foundry_resource ?? ''),
+    auth_foundry_base_url: patch.foundryBaseUrl !== undefined ? patch.foundryBaseUrl : (existing?.auth_foundry_base_url ?? ''),
+    auth_bedrock_bearer_token: patch.bedrockBearerToken !== undefined ? patch.bedrockBearerToken : (existing?.auth_bedrock_bearer_token ?? '')
   }
   const now = Date.now()
   db.prepare(
     `UPDATE claude_global_settings
      SET cloud_provider = ?, auth_api_key = ?, auth_token = ?, auth_base_url = ?,
-         auth_aws_region = ?, auth_vertex_project_id = ?, auth_vertex_region = ?, updated_at = ?
+         auth_aws_region = ?, auth_vertex_project_id = ?, auth_vertex_region = ?,
+         auth_foundry_api_key = ?, auth_foundry_resource = ?, auth_foundry_base_url = ?,
+         auth_bedrock_bearer_token = ?, updated_at = ?
      WHERE id = 1`
   ).run(
     next.cloud_provider, next.auth_api_key, next.auth_token, next.auth_base_url,
-    next.auth_aws_region, next.auth_vertex_project_id, next.auth_vertex_region, now
+    next.auth_aws_region, next.auth_vertex_project_id, next.auth_vertex_region,
+    next.auth_foundry_api_key, next.auth_foundry_resource, next.auth_foundry_base_url,
+    next.auth_bedrock_bearer_token, now
   )
   return getClaudeAuthState()
 }
@@ -81,26 +97,35 @@ export function getClaudeAuthEnv(): Record<string, string> {
   const row = readRow()
   if (!row) return {}
   const env: Record<string, string> = {}
-  if (row.cloud_provider === 'bedrock') env.CLAUDE_CODE_USE_BEDROCK = '1'
-  if (row.cloud_provider === 'vertex') env.CLAUDE_CODE_USE_VERTEX = '1'
-  if (row.auth_api_key) env.ANTHROPIC_API_KEY = row.auth_api_key
-  if (row.auth_token) env.ANTHROPIC_AUTH_TOKEN = row.auth_token
-  if (row.auth_base_url) {
-    if (row.cloud_provider === 'anthropic' || row.cloud_provider === 'foundry') {
-      env.ANTHROPIC_BASE_URL = row.auth_base_url
-    } else if (row.cloud_provider === 'bedrock') {
-      env.ANTHROPIC_BEDROCK_BASE_URL = row.auth_base_url
-    } else if (row.cloud_provider === 'vertex') {
-      env.ANTHROPIC_VERTEX_BASE_URL = row.auth_base_url
-    }
+
+  if (row.cloud_provider === 'foundry') {
+    env.CLAUDE_CODE_USE_FOUNDRY = '1'
+    if (row.auth_foundry_api_key) env.ANTHROPIC_FOUNDRY_API_KEY = row.auth_foundry_api_key
+    if (row.auth_foundry_resource) env.ANTHROPIC_FOUNDRY_RESOURCE = row.auth_foundry_resource
+    if (row.auth_foundry_base_url) env.ANTHROPIC_FOUNDRY_BASE_URL = row.auth_foundry_base_url
+    return env
   }
-  if (row.cloud_provider === 'bedrock' && row.auth_aws_region) {
-    env.AWS_REGION = row.auth_aws_region
+
+  if (row.cloud_provider === 'bedrock') {
+    env.CLAUDE_CODE_USE_BEDROCK = '1'
+    if (row.auth_aws_region) env.AWS_REGION = row.auth_aws_region
+    if (row.auth_bedrock_bearer_token) env.AWS_BEARER_TOKEN_BEDROCK = row.auth_bedrock_bearer_token
+    if (row.auth_base_url) env.ANTHROPIC_BEDROCK_BASE_URL = row.auth_base_url
+    return env
   }
+
   if (row.cloud_provider === 'vertex') {
+    env.CLAUDE_CODE_USE_VERTEX = '1'
     if (row.auth_vertex_project_id) env.ANTHROPIC_VERTEX_PROJECT_ID = row.auth_vertex_project_id
     if (row.auth_vertex_region) env.CLOUD_ML_REGION = row.auth_vertex_region
+    if (row.auth_base_url) env.ANTHROPIC_VERTEX_BASE_URL = row.auth_base_url
+    return env
   }
+
+  // anthropic (default)
+  if (row.auth_api_key) env.ANTHROPIC_API_KEY = row.auth_api_key
+  if (row.auth_token) env.ANTHROPIC_AUTH_TOKEN = row.auth_token
+  if (row.auth_base_url) env.ANTHROPIC_BASE_URL = row.auth_base_url
   return env
 }
 

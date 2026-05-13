@@ -60,6 +60,7 @@ type ClaudeSettingsRow = {
   tool_concurrency: number | null
   browser_integration: number
   disabled_mcp_servers: string
+  custom_env_vars: string
   updated_at: number
 }
 
@@ -71,6 +72,19 @@ function parseJsonArray(raw: string | null | undefined): string[] {
     return []
   } catch {
     return []
+  }
+}
+
+function parseJsonRecord(raw: string | null | undefined): Record<string, string> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>
+    }
+    return {}
+  } catch {
+    return {}
   }
 }
 
@@ -118,6 +132,7 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     toolConcurrency: row.tool_concurrency ?? null,
     browserIntegration: (row.browser_integration ?? 1) === 1,
     disabledMcpServers: parseJsonArray(row.disabled_mcp_servers),
+    customEnvVars: parseJsonRecord(row.custom_env_vars),
     updatedAt: row.updated_at
   }
 }
@@ -247,6 +262,21 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
     const v = patch.toolConcurrency
     if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
       throw new Error('claudeSettings: toolConcurrency must be a positive integer or null')
+    }
+  }
+  if ('customEnvVars' in patch) {
+    const v = patch.customEnvVars
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+      throw new Error('claudeSettings: customEnvVars must be a Record<string, string>')
+    }
+    const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (!KEY_RE.test(k)) {
+        throw new Error(`claudeSettings: customEnvVars key "${k}" is not a valid env var name`)
+      }
+      if (typeof val !== 'string') {
+        throw new Error(`claudeSettings: customEnvVars value for "${k}" must be a string`)
+      }
     }
   }
 }
@@ -436,14 +466,6 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
     settingsObj['permissions'] = permissionsObj
   }
 
-  // experimentalForkedSubagents — no confirmed CLI flag / settings key found in claude docs.
-  // Stored in DB and surfaced in UI but not composed into the launch command (no-op).
-  // If claude adds a mechanism in future, wire it here.
-
-  // Tools section (v14)
-  // toolConcurrency — settings.json key is not confirmed in claude's documented settings;
-  // no-op at compose time. Stored in DB for future wiring when a stable key is published.
-
   // disabledMcpServers — settings.json key: 'disabledMcpjsonServers' (see claude docs).
   // We only set it when there are actually disabled servers to avoid overriding claude's defaults.
   if (s.disabledMcpServers.length > 0) {
@@ -503,8 +525,14 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   if (s.experimentalAgentTeams) {
     env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1'
   }
+  if (s.experimentalForkedSubagents) {
+    env['CLAUDE_CODE_FORK_SUBAGENT'] = '1'
+  }
 
   // Tools section env vars (v14)
+  if (s.toolConcurrency !== null) {
+    env['CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY'] = String(s.toolConcurrency)
+  }
   if (s.bashDefaultTimeoutMs !== null) {
     env['BASH_DEFAULT_TIMEOUT_MS'] = String(s.bashDefaultTimeoutMs)
   }
@@ -513,6 +541,11 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   }
   if (s.bashMaxOutputLength !== null) {
     env['BASH_MAX_OUTPUT_LENGTH'] = String(s.bashMaxOutputLength)
+  }
+
+  // Custom env vars — merged last; user's keys win on conflict
+  for (const [k, v] of Object.entries(s.customEnvVars)) {
+    if (k && typeof v === 'string') env[k] = v
   }
 
   return { flags, settingsJson, env }
@@ -581,7 +614,8 @@ export function updateClaudeGlobalSettings(
     bashMaxOutputLength: 'bash_max_output_length',
     toolConcurrency: 'tool_concurrency',
     browserIntegration: 'browser_integration',
-    disabledMcpServers: 'disabled_mcp_servers'
+    disabledMcpServers: 'disabled_mcp_servers',
+    customEnvVars: 'custom_env_vars'
   }
 
   const setClauses: string[] = []
@@ -592,10 +626,12 @@ export function updateClaudeGlobalSettings(
     if (!col) continue
     setClauses.push(`${col} = ?`)
     const val = patch[key]
-    // Coerce booleans to integers for SQLite; arrays to JSON strings
+    // Coerce booleans to integers for SQLite; arrays and objects to JSON strings
     if (typeof val === 'boolean') {
       values.push(val ? 1 : 0)
     } else if (Array.isArray(val)) {
+      values.push(JSON.stringify(val))
+    } else if (val !== null && typeof val === 'object') {
       values.push(JSON.stringify(val))
     } else {
       values.push(val)

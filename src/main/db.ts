@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 21
+const CURRENT_VERSION = 22
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -119,6 +119,12 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     tool_concurrency INTEGER,
     browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1)),
     disabled_mcp_servers TEXT NOT NULL DEFAULT '[]',
+    -- Foundry + Bedrock bearer token + custom env vars (v22)
+    auth_foundry_api_key TEXT NOT NULL DEFAULT '',
+    auth_foundry_resource TEXT NOT NULL DEFAULT '',
+    auth_foundry_base_url TEXT NOT NULL DEFAULT '',
+    auth_bedrock_bearer_token TEXT NOT NULL DEFAULT '',
+    custom_env_vars TEXT NOT NULL DEFAULT '{}',
     updated_at INTEGER NOT NULL
   );
 `
@@ -441,5 +447,15 @@ function migrate(db: Database.Database): void {
     // Backfill: archived workspaces should have status='archived'
     db.prepare("UPDATE workspaces SET status = 'archived' WHERE archived_at IS NOT NULL AND status != 'archived'").run()
     db.prepare('UPDATE schema_version SET version = ?').run(21)
+  }
+
+  // Version 22: Foundry-specific auth fields, Bedrock bearer token, custom env vars
+  if (currentVersion < 22) {
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_api_key TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_resource TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_base_url TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_bedrock_bearer_token TEXT NOT NULL DEFAULT ''") } catch {}
+    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN custom_env_vars TEXT NOT NULL DEFAULT '{}'") } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(22)
   }
 }

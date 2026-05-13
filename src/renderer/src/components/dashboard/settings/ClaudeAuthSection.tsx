@@ -332,43 +332,43 @@ export function ClaudeAuthSection(): React.JSX.Element {
         </div>
       </section>
 
-      {/* Credentials */}
-      <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Credentials
-        </h3>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="API key"
-            description="Stored in the local Orpheus database."
-          >
-            <ApiKeyInput
-              hasKey={state.hasApiKey}
-              onSave={(key) => applyPatch({ apiKey: key })}
-              onClear={() => applyPatch({ apiKey: '' })}
-            />
-          </SettingRow>
-          {state.cloudProvider === 'anthropic' && (
+      {/* Credentials — shown for anthropic only; Foundry and Bedrock use provider-specific fields */}
+      {(state.cloudProvider === 'anthropic') && (
+        <section className="flex flex-col">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+            Credentials
+          </h3>
+          <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+            <SettingRow
+              label="API key"
+              description="Stored in the local Orpheus database."
+            >
+              <ApiKeyInput
+                hasKey={state.hasApiKey}
+                onSave={(key) => applyPatch({ apiKey: key })}
+                onClear={() => applyPatch({ apiKey: '' })}
+              />
+            </SettingRow>
             <SettingRow
               label="Verify"
               description="Hits Anthropic /v1/models with your stored key. No tokens are billed."
             >
               <TestConnectionButton disabled={!state.hasApiKey} />
             </SettingRow>
-          )}
-          <SettingRow
-            label="Base URL override"
-            description="Proxy or local model endpoint. Leave blank to use the provider default."
-          >
-            <BaseUrlInput
-              value={state.baseUrl}
-              onSave={(url) => applyPatch({ baseUrl: url })}
-            />
-          </SettingRow>
-        </div>
-      </section>
+            <SettingRow
+              label="Base URL override"
+              description="Proxy or local model endpoint. Leave blank to use the provider default."
+            >
+              <BaseUrlInput
+                value={state.baseUrl}
+                onSave={(url) => applyPatch({ baseUrl: url })}
+              />
+            </SettingRow>
+          </div>
+        </section>
+      )}
 
-      {/* Provider-specific config (collapsible) — deferred to follow-up */}
+      {/* Provider-specific config (collapsible) */}
       <section className="flex flex-col">
         <button
           onClick={() => setProviderOpen((v) => !v)}
@@ -383,26 +383,69 @@ export function ClaudeAuthSection(): React.JSX.Element {
         </button>
         {providerOpen && (
           <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-            {(state.cloudProvider === 'anthropic' || state.cloudProvider === 'foundry') && (
+            {state.cloudProvider === 'anthropic' && (
               <div className="py-4">
                 <p className="text-xs text-text-muted italic">
-                  {state.cloudProvider === 'foundry'
-                    ? 'No additional fields — use the Base URL field above for the Foundry resource URL.'
-                    : 'No additional fields — API key and optional Base URL above are sufficient.'}
+                  No additional fields — API key and optional Base URL above are sufficient.
                 </p>
               </div>
             )}
+            {state.cloudProvider === 'foundry' && (
+              <>
+                <SettingRow
+                  label="Resource"
+                  description="Your Azure AI Foundry resource name. Sets ANTHROPIC_FOUNDRY_RESOURCE."
+                >
+                  <ProviderTextInput
+                    value={state.foundryResource}
+                    placeholder="my-foundry-resource"
+                    onSave={(v) => applyPatch({ foundryResource: v })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="API key"
+                  description="Foundry API key. Sets ANTHROPIC_FOUNDRY_API_KEY."
+                >
+                  <ApiKeyInput
+                    hasKey={state.hasFoundryApiKey}
+                    onSave={(key) => applyPatch({ foundryApiKey: key })}
+                    onClear={() => applyPatch({ foundryApiKey: '' })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Base URL (optional)"
+                  description="Foundry endpoint URL. Sets ANTHROPIC_FOUNDRY_BASE_URL."
+                >
+                  <BaseUrlInput
+                    value={state.foundryBaseUrl}
+                    onSave={(url) => applyPatch({ foundryBaseUrl: url })}
+                  />
+                </SettingRow>
+              </>
+            )}
             {state.cloudProvider === 'bedrock' && (
-              <SettingRow
-                label="AWS region"
-                description="Required for Bedrock. Example: us-east-1, eu-west-1."
-              >
-                <ProviderTextInput
-                  value={state.awsRegion}
-                  placeholder="us-east-1"
-                  onSave={(v) => applyPatch({ awsRegion: v })}
-                />
-              </SettingRow>
+              <>
+                <SettingRow
+                  label="AWS region"
+                  description="Required for Bedrock. Example: us-east-1, eu-west-1."
+                >
+                  <ProviderTextInput
+                    value={state.awsRegion}
+                    placeholder="us-east-1"
+                    onSave={(v) => applyPatch({ awsRegion: v })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="AWS bearer token (optional)"
+                  description="Alternative to IAM credentials. Sets AWS_BEARER_TOKEN_BEDROCK."
+                >
+                  <ApiKeyInput
+                    hasKey={state.hasBedrockBearerToken}
+                    onSave={(token) => applyPatch({ bedrockBearerToken: token })}
+                    onClear={() => applyPatch({ bedrockBearerToken: '' })}
+                  />
+                </SettingRow>
+              </>
             )}
             {state.cloudProvider === 'vertex' && (
               <>
