@@ -7,18 +7,14 @@ import {
   Plus,
   CaretDown,
   CaretRight,
-  PushPin,
   Stack,
-  PencilSimple,
-  Trash,
   Archive,
   Gear,
   SidebarSimple
 } from '@phosphor-icons/react'
-import type { ProjectRecord, WorkspaceRecord, PinnedItem, GitStatus } from '@shared/types'
-import { ProjectListSkeleton, Skeleton } from '../Skeleton'
+import type { ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
+import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
-import { ContextMenu } from '../ContextMenu'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -105,7 +101,6 @@ interface WorkspaceRowProps {
   isSessionActive: boolean
   gitStatus?: GitStatus | null
   onSelect: () => void
-  onTogglePin: () => void
   renaming: boolean
   onBeginRename: () => void
   onFinishRename: (newName: string) => void
@@ -119,7 +114,6 @@ function WorkspaceSubRow({
   isSessionActive,
   gitStatus,
   onSelect,
-  onTogglePin,
   renaming,
   onBeginRename,
   onFinishRename,
@@ -127,18 +121,23 @@ function WorkspaceSubRow({
   onArchive
 }: WorkspaceRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [renameValue, setRenameValue] = useState(workspace.name)
-  const isPinned = workspace.pinnedAt !== null
 
   // Sync rename input when workspace name changes externally
   if (!renaming && renameValue !== workspace.name) {
     setRenameValue(workspace.name)
   }
 
-  function handleContextMenu(e: React.MouseEvent): void {
+  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
+    const action = await window.api.contextMenu.show([
+      { label: 'Rename', action: 'rename' },
+      { divider: true },
+      { label: 'Archive', action: 'archive' }
+    ])
+    if (!action) return
+    if (action === 'rename') onBeginRename()
+    else if (action === 'archive') onArchive()
   }
 
   function handleRenameCommit(): void {
@@ -211,53 +210,25 @@ function WorkspaceSubRow({
         )}
       </button>
 
-      {/* Pin affordance — visible on hover or when pinned. 32x32 hit target. */}
-      {!renaming && (hovered || isPinned) && (
+      {/* Archive affordance — visible on hover. 32x32 hit target. */}
+      {!renaming && hovered && (
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onTogglePin()
+            onArchive()
           }}
           className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          title={isPinned ? 'Unpin workspace' : 'Pin workspace'}
-          aria-label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
+          aria-label="Archive workspace"
         >
-          <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />
+          <Archive size={13} />
         </button>
-      )}
-
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={[
-            {
-              label: 'Rename',
-              icon: <PencilSimple size={13} />,
-              onClick: onBeginRename
-            },
-            {
-              label: isPinned ? 'Unpin' : 'Pin',
-              icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
-              onClick: onTogglePin
-            },
-            { divider: true, label: '', onClick: () => {} },
-            {
-              label: 'Archive',
-              icon: <Archive size={13} />,
-              onClick: onArchive,
-              destructive: true
-            }
-          ]}
-        />
       )}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Project row (with identicon, expand chevron, workspace count, pin)
+// Project row (with identicon, expand chevron, workspace count)
 // ---------------------------------------------------------------------------
 
 interface ProjectRowProps {
@@ -273,7 +244,6 @@ interface ProjectRowProps {
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
-  onToggleWorkspacePin: (workspaceId: string) => void
   currentViewKind: string
   currentWorkspaceId?: string | null
   renaming: boolean
@@ -309,7 +279,6 @@ function ProjectRow({
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
-  onToggleWorkspacePin,
   currentViewKind,
   currentWorkspaceId,
   renaming,
@@ -332,7 +301,6 @@ function ProjectRow({
   onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [renameValue, setRenameValue] = useState(project.name)
 
   // Sync rename input when project name changes externally
@@ -340,9 +308,16 @@ function ProjectRow({
     setRenameValue(project.name)
   }
 
-  function handleContextMenu(e: React.MouseEvent): void {
+  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
+    const action = await window.api.contextMenu.show([
+      { label: 'Rename', action: 'rename' },
+      { divider: true },
+      { label: 'Remove from Orpheus…', action: 'remove' }
+    ])
+    if (!action) return
+    if (action === 'rename') onBeginRename()
+    else if (action === 'remove') onRequestRemove()
   }
 
   function handleRenameCommit(): void {
@@ -460,7 +435,6 @@ function ProjectRow({
                   isSessionActive={activeWorkspaceIds.has(ws.id)}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
                   onSelect={() => onSelectWorkspace(ws.id)}
-                  onTogglePin={() => onToggleWorkspacePin(ws.id)}
                   renaming={renamingWorkspaceId === ws.id}
                   onBeginRename={() => onBeginRenameWorkspace(ws.id)}
                   onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
@@ -473,261 +447,7 @@ function ProjectRow({
           })}
         </div>
       )}
-
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={[
-            {
-              label: 'Rename',
-              icon: <PencilSimple size={13} />,
-              onClick: onBeginRename
-            },
-            { divider: true, label: '', onClick: () => {} },
-            {
-              label: 'Remove from Orpheus…',
-              icon: <Trash size={13} />,
-              onClick: onRequestRemove,
-              destructive: true
-            }
-          ]}
-        />
-      )}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Pinned section
-// ---------------------------------------------------------------------------
-
-interface PinnedSectionProps {
-  pinnedItems: PinnedItem[]
-  loading: boolean
-  activeWorkspaceIds: Set<string>
-  gitStatusByWorkspaceId: Record<string, GitStatus | null>
-  currentViewKind: string
-  currentWorkspaceId?: string | null
-  renamingWorkspaceId: string | null
-  onSelectWorkspace: (workspaceId: string, projectId: string) => void
-  onUnpinWorkspace: (id: string) => void
-  onBeginRenameWorkspace: (workspaceId: string) => void
-  onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
-  onCancelRenameWorkspace: () => void
-  onArchiveWorkspace: (workspaceId: string, projectId: string) => void
-}
-
-function PinnedSection({
-  pinnedItems,
-  loading,
-  activeWorkspaceIds,
-  gitStatusByWorkspaceId,
-  currentViewKind,
-  currentWorkspaceId,
-  renamingWorkspaceId,
-  onSelectWorkspace,
-  onUnpinWorkspace,
-  onBeginRenameWorkspace,
-  onFinishRenameWorkspace,
-  onCancelRenameWorkspace,
-  onArchiveWorkspace
-}: PinnedSectionProps): React.JSX.Element | null {
-  if (loading) {
-    return (
-      <div className="mt-4 flex flex-col gap-0.5">
-        <SectionHeader label="Pinned" />
-        <div className="flex flex-col gap-1 px-1 mt-1">
-          <Skeleton className="h-7 w-full opacity-60" />
-          <Skeleton className="h-7 w-4/5 opacity-40" />
-        </div>
-      </div>
-    )
-  }
-
-  if (pinnedItems.length === 0) return null
-
-  return (
-    <div className="mt-4 flex flex-col gap-0.5">
-      <SectionHeader label="Pinned" />
-      {pinnedItems.map((item) => {
-        const isActive =
-          currentViewKind === 'workspace' && currentWorkspaceId === item.workspace.id
-        return (
-          <PinnedWorkspaceRow
-            key={`ws-${item.workspace.id}`}
-            workspace={item.workspace}
-            project={item.project}
-            active={isActive}
-            isSessionActive={activeWorkspaceIds.has(item.workspace.id)}
-            gitStatus={gitStatusByWorkspaceId[item.workspace.id]}
-            onSelect={() => onSelectWorkspace(item.workspace.id, item.project.id)}
-            onUnpin={() => onUnpinWorkspace(item.workspace.id)}
-            renaming={renamingWorkspaceId === item.workspace.id}
-            onBeginRename={() => onBeginRenameWorkspace(item.workspace.id)}
-            onFinishRename={(name) => onFinishRenameWorkspace(item.workspace.id, item.project.id, name)}
-            onCancelRename={onCancelRenameWorkspace}
-            onArchive={() => onArchiveWorkspace(item.workspace.id, item.project.id)}
-          />
-        )
-      })}
-    </div>
-  )
-}
-
-interface PinnedWorkspaceRowProps {
-  workspace: WorkspaceRecord
-  project: ProjectRecord
-  active: boolean
-  isSessionActive: boolean
-  gitStatus?: GitStatus | null
-  onSelect: () => void
-  onUnpin: () => void
-  renaming: boolean
-  onBeginRename: () => void
-  onFinishRename: (newName: string) => void
-  onCancelRename: () => void
-  onArchive: () => void
-}
-
-function PinnedWorkspaceRow({
-  workspace,
-  project,
-  active,
-  isSessionActive,
-  gitStatus,
-  onSelect,
-  onUnpin,
-  renaming,
-  onBeginRename,
-  onFinishRename,
-  onCancelRename,
-  onArchive
-}: PinnedWorkspaceRowProps): React.JSX.Element {
-  const [hovered, setHovered] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const [renameValue, setRenameValue] = useState(workspace.name)
-
-  // Sync rename input when workspace name changes externally
-  if (!renaming && renameValue !== workspace.name) {
-    setRenameValue(workspace.name)
-  }
-
-  function handleContextMenu(e: React.MouseEvent): void {
-    e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
-  }
-
-  function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== workspace.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
-  }
-
-  return (
-    <>
-      <div
-        className={[
-          'flex items-center rounded-md transition-colors duration-150 group',
-          active
-            ? 'bg-accent/15 text-text-primary'
-            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
-        ].join(' ')}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onContextMenu={handleContextMenu}
-      >
-        <button
-          onClick={onSelect}
-          className="flex items-center gap-1.5 px-2 py-1.5 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
-          title={workspace.cwd}
-          aria-label={`${project.name} — ${workspace.name}`}
-        >
-          {isSessionActive ? (
-            <ActivePulse />
-          ) : (
-            <PushPin size={13} weight="fill" className="text-accent flex-shrink-0" />
-          )}
-          <Identicon seed={project.path} size={14} />
-          <span className="text-xs text-text-muted truncate flex-shrink-0 max-w-[50px]">
-            {project.name}
-          </span>
-          <CaretRight size={9} className="flex-shrink-0 text-text-muted" />
-          {renaming ? (
-            <input
-              autoFocus
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameCommit()
-                if (e.key === 'Escape') onCancelRename()
-              }}
-              onBlur={handleRenameCommit}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
-            />
-          ) : (
-            <span className="text-xs truncate min-w-0 flex-1">{workspace.name}</span>
-          )}
-          {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
-          {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
-            <span className="text-[10px] font-mono flex items-center gap-1 ml-1 flex-shrink-0">
-              {gitStatus.insertions > 0 && (
-                <span className="text-emerald-400">+{gitStatus.insertions}</span>
-              )}
-              {gitStatus.deletions > 0 && (
-                <span className="text-red-400">−{gitStatus.deletions}</span>
-              )}
-            </span>
-          )}
-        </button>
-        {!renaming && hovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onUnpin()
-            }}
-            className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-            title="Unpin workspace"
-            aria-label="Unpin workspace"
-          >
-            <PushPin size={13} weight="fill" />
-          </button>
-        )}
-      </div>
-
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={[
-            {
-              label: 'Rename',
-              icon: <PencilSimple size={13} />,
-              onClick: onBeginRename
-            },
-            {
-              label: 'Unpin',
-              icon: <PushPin size={13} weight="fill" />,
-              onClick: onUnpin
-            },
-            { divider: true, label: '', onClick: () => {} },
-            {
-              label: 'Archive',
-              icon: <Archive size={13} />,
-              onClick: onArchive,
-              destructive: true
-            }
-          ]}
-        />
-      )}
-    </>
   )
 }
 
@@ -760,12 +480,9 @@ interface SidebarProps {
   currentViewKind: string
   expandedProjectIds: Set<string>
   workspacesByProject: Record<string, WorkspaceRecord[]>
-  pinnedItems: PinnedItem[]
-  pinnedLoading: boolean
   activeWorkspaceIds: Set<string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   // Sidebar behavior preferences (v12)
-  pinnedSectionVisible: boolean
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
   onToggleCollapsed: () => void
@@ -776,7 +493,6 @@ interface SidebarProps {
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
-  onToggleWorkspacePin: (workspaceId: string, projectId: string) => void
   onRenameProject: (id: string, newName: string) => void | Promise<void>
   onRequestRemoveProject: (project: ProjectRecord) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
@@ -796,11 +512,8 @@ export function Sidebar({
   currentViewKind,
   expandedProjectIds,
   workspacesByProject,
-  pinnedItems,
-  pinnedLoading,
   activeWorkspaceIds,
   gitStatusByWorkspaceId,
-  pinnedSectionVisible,
   workspaceCountInline,
   sidebarWidth,
   onToggleCollapsed,
@@ -811,7 +524,6 @@ export function Sidebar({
   addingProject = false,
   onToggleProjectExpand,
   onSelectWorkspace,
-  onToggleWorkspacePin,
   onRenameProject,
   onRequestRemoveProject,
   onAddWorkspace,
@@ -1026,30 +738,6 @@ export function Sidebar({
         onClick={() => onSelectNav('sessions')}
       />
 
-      {/* Pinned section — only when not collapsed and pinnedSectionVisible is on */}
-      {!collapsed && pinnedSectionVisible && (
-        <PinnedSection
-          pinnedItems={pinnedItems}
-          loading={pinnedLoading}
-          activeWorkspaceIds={activeWorkspaceIds}
-          gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-          currentViewKind={currentViewKind}
-          currentWorkspaceId={selectedWorkspaceId}
-          renamingWorkspaceId={renamingWorkspaceId}
-          onSelectWorkspace={onSelectWorkspace}
-          onUnpinWorkspace={(id) => {
-            const ws = pinnedItems.find((item) => item.workspace.id === id)
-            if (ws) {
-              onToggleWorkspacePin(id, ws.project.id)
-            }
-          }}
-          onBeginRenameWorkspace={handleBeginRenameWorkspace}
-          onFinishRenameWorkspace={handleFinishRenameWorkspace}
-          onCancelRenameWorkspace={handleCancelRenameWorkspace}
-          onArchiveWorkspace={(workspaceId, projectId) => onArchiveWorkspace(workspaceId, projectId)}
-        />
-      )}
-
       {/* Projects section */}
       <div className="mt-4 flex flex-col gap-0.5">
         {!collapsed ? (
@@ -1095,7 +783,6 @@ export function Sidebar({
                         onSelect={() => onSelectProject(p.id)}
                         onToggleExpand={() => onToggleProjectExpand(p.id)}
                         onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                        onToggleWorkspacePin={(wsId) => onToggleWorkspacePin(wsId, p.id)}
                         currentViewKind={currentViewKind}
                         currentWorkspaceId={selectedWorkspaceId}
                         renaming={renamingProjectId === p.id}

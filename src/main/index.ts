@@ -50,6 +50,7 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
+import { showContextMenu } from './contextMenu'
 import type {
   SessionStatus,
   WorkspaceStatus,
@@ -61,7 +62,8 @@ import type {
   ClaudeHookDraft,
   McpServerDraft,
   ClaudeSlashCommandDraft,
-  ClaudeSubagentDraft
+  ClaudeSubagentDraft,
+  ContextMenuNativeItem
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
@@ -683,6 +685,16 @@ ipcMain.handle('doctor:check', (): DoctorResult => {
     claudePath,
     existingProjects: readClaudeProjects()
   }
+})
+
+// ---------------------------------------------------------------------------
+// Context menu IPC (native Electron menu — renders above NSView)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) return null
+  return showContextMenu(items, win)
 })
 
 // ---------------------------------------------------------------------------

@@ -88,16 +88,6 @@ export function OrpheusSidebarSection(): React.JSX.Element {
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
-            label="Pinned section visible"
-            description="Show or hide the Pinned workspaces section at the top of the sidebar."
-          >
-            <Toggle
-              value={uiState.pinnedSectionVisible}
-              onChange={(v) => patch({ pinnedSectionVisible: v })}
-              ariaLabel="Pinned section visible"
-            />
-          </SettingRow>
-          <SettingRow
             label="Workspace count inline"
             description="Show · N next to project names showing workspace count."
           >
@@ -106,6 +96,18 @@ export function OrpheusSidebarSection(): React.JSX.Element {
               onChange={(v) => patch({ workspaceCountInline: v })}
               ariaLabel="Workspace count inline"
             />
+          </SettingRow>
+          <SettingRow
+            label="Max archived workspaces"
+            description="Older archived workspaces are auto-deleted to stay under this cap."
+          >
+            <div className="flex items-center gap-1.5">
+              <NumberInput
+                value={uiState.archivedWorkspaceLimit ?? 20}
+                onChange={(v) => patch({ archivedWorkspaceLimit: Math.max(1, v ?? 20) })}
+                placeholder="20"
+              />
+            </div>
           </SettingRow>
         </div>
       </section>

@@ -26,7 +26,8 @@ import type {
   ClaudeSubagent,
   ClaudeSubagentDraft,
   ClaudeHookEntry,
-  ClaudeHookDraft
+  ClaudeHookDraft,
+  ContextMenuNativeItem
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -146,6 +147,9 @@ declare global {
           draft: { event: string; matcher: string | null; type: string; command: string }
         ) => Promise<void>
         delete: (filePath: string, event: string, matcherEntryIdx: number, hookIdx: number) => Promise<void>
+      }
+      contextMenu: {
+        show: (items: ContextMenuNativeItem[]) => Promise<string | null>
       }
     }
   }

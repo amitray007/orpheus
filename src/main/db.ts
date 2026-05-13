@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 24
+const CURRENT_VERSION = 25
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -223,6 +223,8 @@ const UI_STATE_SCHEMA_SQL = `
     -- Launch + hotkey (v18)
     launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1)),
     global_hotkey TEXT NOT NULL DEFAULT '',
+    -- Archive cap (v25)
+    archived_workspace_limit INTEGER NOT NULL DEFAULT 20,
     updated_at INTEGER NOT NULL
   );
 `
@@ -584,5 +586,11 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1))') } catch {}
     try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1))') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(24)
+  }
+
+  // Version 25: archived_workspace_limit on app_ui_state (LRU cap)
+  if (currentVersion < 25) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN archived_workspace_limit INTEGER NOT NULL DEFAULT 20') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(25)
   }
 }

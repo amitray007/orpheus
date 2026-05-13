@@ -28,7 +28,8 @@ import type {
   ClaudeSubagent,
   ClaudeSubagentDraft,
   ClaudeHookEntry,
-  ClaudeHookDraft
+  ClaudeHookDraft,
+  ContextMenuNativeItem
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -195,6 +196,10 @@ const api = {
       ipcRenderer.invoke('claudeHooks:update', { filePath, event, matcherEntryIdx, hookIdx, draft }),
     delete: (filePath: string, event: string, matcherEntryIdx: number, hookIdx: number): Promise<void> =>
       ipcRenderer.invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
+  },
+  contextMenu: {
+    show: (items: ContextMenuNativeItem[]): Promise<string | null> =>
+      ipcRenderer.invoke('contextMenu:show', items)
   }
 }
 

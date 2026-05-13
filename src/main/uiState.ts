@@ -28,6 +28,8 @@ type AppUiStateRow = {
   // Launch + hotkey (v18)
   launch_at_login: number
   global_hotkey: string
+  // Archive cap (v25)
+  archived_workspace_limit: number
   updated_at: number
 }
 
@@ -57,6 +59,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Launch + hotkey (v18)
     launchAtLogin: (row.launch_at_login ?? 0) === 1,
     globalHotkey: row.global_hotkey ?? '',
+    // Archive cap (v25)
+    archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
     updatedAt: row.updated_at
   }
 }
@@ -127,7 +131,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     defaultProjectExpanded: 'default_project_expanded',
     // Launch + hotkey (v18)
     launchAtLogin: 'launch_at_login',
-    globalHotkey: 'global_hotkey'
+    globalHotkey: 'global_hotkey',
+    // Archive cap (v25)
+    archivedWorkspaceLimit: 'archived_workspace_limit'
   }
 
   const setClauses: string[] = []

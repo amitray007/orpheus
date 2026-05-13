@@ -87,6 +87,8 @@ export type AppUiState = {
   // Launch + hotkey (v18)
   launchAtLogin: boolean
   globalHotkey: string
+  // Archive cap (v25)
+  archivedWorkspaceLimit: number
   updatedAt: number
 }
 
@@ -419,6 +421,19 @@ export type ClaudeAuthPatch = {
 export type ClaudeAuthTestResult =
   | { ok: true; durationMs: number }
   | { ok: false; reason: string; status?: number }
+
+// ---------------------------------------------------------------------------
+// Native context menu (v25)
+// ---------------------------------------------------------------------------
+
+export type ContextMenuNativeItem =
+  | {
+      label: string
+      action: string  // identifier the renderer maps to a callback
+      enabled?: boolean
+      destructive?: boolean
+    }
+  | { divider: true }
 
 export type WorkspaceStatus = 'in_progress' | 'in_review' | 'completed' | 'archived'
 

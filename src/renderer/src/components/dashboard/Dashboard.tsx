@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { AppUiState, ProjectRecord, WorkspaceRecord, PinnedItem, GitStatus } from '@shared/types'
+import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -30,10 +30,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
 
   // Track which workspace surfaces are alive this session (mounted via terminal.mount)
   const [activeWorkspaceIds, setActiveWorkspaceIds] = useState<Set<string>>(new Set())
-
-  // Pinned items
-  const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
-  const [pinnedLoading, setPinnedLoading] = useState(true)
 
   // Git status per workspace id
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<Record<string, GitStatus | null>>({})
@@ -71,6 +67,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           defaultProjectExpanded: false,
           launchAtLogin: false,
           globalHotkey: '',
+          archivedWorkspaceLimit: 20,
           updatedAt: 0
         })
       })
@@ -89,22 +86,10 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       })
   }, [])
 
-  function refreshPins(): void {
-    window.api.pins
-      .listAll()
-      .then((items) => {
-        setPinnedItems(items)
-        setPinnedLoading(false)
-      })
-      .catch((err) => {
-        console.error('[dashboard] failed to load pins', err)
-        setPinnedLoading(false)
-      })
-  }
-
-  useEffect(() => {
-    refreshPins()
-  }, [])
+  // refreshPins is kept as a no-op: the pins IPC still exists for back-compat
+  // but the Sidebar no longer renders a Pinned section.
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  function refreshPins(): void {}
 
   // Poll git status for all non-archived workspaces every 30s
   useEffect(() => {
@@ -575,11 +560,8 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         currentViewKind={view.kind}
         expandedProjectIds={expandedProjectIds}
         workspacesByProject={workspacesByProject}
-        pinnedItems={pinnedItems}
-        pinnedLoading={pinnedLoading}
         activeWorkspaceIds={activeWorkspaceIds}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-        pinnedSectionVisible={uiState?.pinnedSectionVisible ?? true}
         workspaceCountInline={uiState?.workspaceCountInline ?? true}
         sidebarWidth={uiState?.sidebarWidth ?? 256}
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
@@ -590,7 +572,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         addingProject={addingProject}
         onToggleProjectExpand={handleToggleProjectExpand}
         onSelectWorkspace={handleSelectWorkspace}
-        onToggleWorkspacePin={handleToggleWorkspacePin}
         onRenameProject={handleRenameProject}
         onRequestRemoveProject={handleRequestRemoveProject}
         onAddWorkspace={handleAddWorkspace}

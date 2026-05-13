@@ -1,4 +1,5 @@
 import { getDb } from './db'
+import { getAppUiState } from './uiState'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -130,6 +131,24 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
   return rowToWorkspaceRecord(row)
 }
 
+export function trimArchivedWorkspaces(limit: number): number {
+  const db = getDb()
+  const { count } = db.prepare('SELECT COUNT(*) as count FROM workspaces WHERE archived_at IS NOT NULL').get() as { count: number }
+  if (count <= limit) return 0
+  const toDelete = count - limit
+  const stmt = db.prepare(
+    `DELETE FROM workspaces
+     WHERE id IN (
+       SELECT id FROM workspaces
+       WHERE archived_at IS NOT NULL
+       ORDER BY archived_at ASC
+       LIMIT ?
+     )`
+  )
+  const result = stmt.run(toDelete)
+  return result.changes
+}
+
 export function archiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
 
@@ -150,6 +169,14 @@ export function archiveWorkspace(id: string): WorkspaceRecord {
   }
 
   db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(Date.now(), id)
+
+  // LRU cap: delete oldest archived workspaces if over the limit
+  const state = getAppUiState()
+  const trimmed = trimArchivedWorkspaces(state.archivedWorkspaceLimit ?? 20)
+  if (trimmed > 0) {
+    console.log(`[workspaces] trimmed ${trimmed} oldest archived workspaces (cap=${state.archivedWorkspaceLimit})`)
+  }
+
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }
