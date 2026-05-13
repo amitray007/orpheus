@@ -385,6 +385,20 @@ function createWindow(): void {
   mainWindow.on('resize', scheduleBoundsSave)
   mainWindow.on('move', scheduleBoundsSave)
 
+  // Auto-focus the current workspace's terminal whenever the window becomes
+  // active again (Cmd-Tab back, dock click, etc.). Without this the focus
+  // stays on whatever HTML element it was on, and typing won't reach claude.
+  mainWindow.on('focus', () => {
+    try {
+      const state = getAppUiState()
+      if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
+      const addon = loadTerminalAddon()
+      addon.focus(state.lastWorkspaceId)
+    } catch (err) {
+      console.error('[focus] auto-focus terminal failed:', err)
+    }
+  })
+
   mainWindow.on('enter-full-screen', () => {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
     updateAppUiState({ windowFullscreen: true })
@@ -833,6 +847,7 @@ type GhosttyNativeAddon = {
   hide: (workspaceId: string) => void
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
+  focus: (workspaceId: string) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
 }

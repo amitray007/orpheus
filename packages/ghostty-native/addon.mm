@@ -225,6 +225,33 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 }
 
 // ---------------------------------------------------------------------------
+// performKeyEquivalent: — intercept Cmd+C / Cmd+V / Cmd+X (and the upper-case
+// versions when Shift is held) BEFORE Electron's default Edit menu binds them.
+// Without this, the macOS app-menu Copy/Paste/Cut accelerators eat the event
+// and the terminal never gets a chance to handle it (so libghostty's
+// super+c/v/x bindings, which invoke read_clipboard_cb / write_clipboard_cb,
+// never trigger). Returning YES tells AppKit we consumed the event.
+// ---------------------------------------------------------------------------
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (!self.surface) return NO;
+    NSWindow* win = [self window];
+    if (!win || [win firstResponder] != self) return NO;
+
+    NSEventModifierFlags mods = event.modifierFlags;
+    if (!(mods & NSEventModifierFlagCommand)) return NO;
+
+    NSString* chars = event.charactersIgnoringModifiers;
+    if (chars.length != 1) return NO;
+    unichar c = [chars characterAtIndex:0];
+    // Only intercept the clipboard triad; leave Cmd+Q/W/A/Z/etc. for the OS.
+    if (c == 'c' || c == 'C' || c == 'v' || c == 'V' || c == 'x' || c == 'X') {
+        [self keyDown:event];
+        return YES;
+    }
+    return NO;
+}
+
+// ---------------------------------------------------------------------------
 // keyDown: — build ghostty_input_key_s and forward to libghostty.
 // After that, call interpretKeyEvents: so the NSTextInputClient chain runs,
 // which fires insertText: for normal printable characters (used by IME).
@@ -559,6 +586,63 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
                          actualRange:(NSRangePointer)actualRange {
     (void)range; (void)actualRange;
     return NSZeroRect;
+}
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop — accept file URLs (incl. images) and paste their absolute
+// paths into the terminal. claude code's attachment detection picks up file
+// paths from pasted text and treats them as attachments.
+// ---------------------------------------------------------------------------
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    NSPasteboard* pb = sender.draggingPasteboard;
+    if ([pb.types containsObject:NSPasteboardTypeFileURL] ||
+        [pb canReadObjectForClasses:@[[NSURL class]]
+                            options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) {
+        return NSDragOperationCopy;
+    }
+    return NSDragOperationNone;
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    return [self draggingEntered:sender];
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    (void)sender;
+    return YES;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    if (!self.surface) return NO;
+    NSPasteboard* pb = sender.draggingPasteboard;
+    NSArray<NSURL*>* urls = [pb readObjectsForClasses:@[[NSURL class]]
+                                              options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+    if (urls.count == 0) return NO;
+
+    NSMutableString* text = [NSMutableString string];
+    for (NSURL* url in urls) {
+        NSString* path = url.path;
+        if (!path) continue;
+        // Quote paths containing spaces / shell metacharacters so claude sees
+        // a single token. Standard POSIX single-quoting.
+        NSCharacterSet* needsQuote = [NSCharacterSet characterSetWithCharactersInString:@" \t\"'$`\\(){}[]&|;<>*?#"];
+        if ([path rangeOfCharacterFromSet:needsQuote].location != NSNotFound) {
+            // Replace embedded single quotes with '"'"'
+            NSString* escaped = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\"'\"'"];
+            [text appendFormat:@"'%@' ", escaped];
+        } else {
+            [text appendFormat:@"%@ ", path];
+        }
+    }
+    NSString* trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (trimmed.length == 0) return NO;
+
+    const char* utf8 = [trimmed UTF8String];
+    if (!utf8) return NO;
+    ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
+    NSLog(@"[ghostty-native] performDragOperation: pasted %lu file path(s)", (unsigned long)urls.count);
+    return YES;
 }
 
 @end
@@ -1174,6 +1258,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     [contentView addSubview:termView];
+    // Accept file URLs (images, any files) so claude attachments work via drop.
+    [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
     // Surface config
     ghostty_surface_config_s surface_cfg = ghostty_surface_config_new();
@@ -1437,6 +1523,26 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 // NSView has already been removed from the superview.
 // ---------------------------------------------------------------------------
 
+// NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
+// Called when Orpheus regains app focus so typing goes directly to the terminal.
+static Napi::Value Focus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "focus requires workspaceId string").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return env.Undefined();
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached || !entry.view) return env.Undefined();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSWindow* win = [entry.view window];
+        if (win) [win makeFirstResponder:entry.view];
+    });
+    return env.Undefined();
+}
+
 static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -1507,6 +1613,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("hide",              Napi::Function::New(env, Hide));
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
+    exports.Set("focus",             Napi::Function::New(env, Focus));
     exports.Set("setTitleCallback",       Napi::Function::New(env, SetTitleCallback));
     exports.Set("setActionTraceCallback", Napi::Function::New(env, SetActionTraceCallback));
     return exports;
