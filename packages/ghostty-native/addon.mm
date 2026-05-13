@@ -587,6 +587,11 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 static Napi::ThreadSafeFunction g_titleTSFN;
 static bool g_titleTSFNActive = false;
 
+// Diagnostic: when set, every action_cb invocation forwards its tag value
+// (integer) to JS. Used to debug the title flow.
+static Napi::ThreadSafeFunction g_actionTraceTSFN;
+static bool g_actionTraceTSFNActive = false;
+
 static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsFunction()) {
@@ -608,6 +613,27 @@ static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setActionTraceCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_actionTraceTSFNActive) {
+        g_actionTraceTSFN.Release();
+        g_actionTraceTSFNActive = false;
+    }
+    g_actionTraceTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-action-trace-callback",
+        0,
+        1
+    );
+    g_actionTraceTSFNActive = true;
+    return env.Undefined();
+}
+
 // ---------------------------------------------------------------------------
 // Runtime callbacks (required by ghostty_runtime_config_s)
 // ---------------------------------------------------------------------------
@@ -619,6 +645,22 @@ static void wakeup_cb(void* /*userdata*/) {
 static bool action_cb(ghostty_app_t /*app*/,
                       ghostty_target_s target,
                       ghostty_action_s action) {
+    // Diagnostic: forward every tag to JS via the trace TSFN if active.
+    if (g_actionTraceTSFNActive) {
+        int tagInt = (int)action.tag;
+        int targetTag = (int)target.tag;
+        g_actionTraceTSFN.BlockingCall(
+            new std::pair<int, int>(tagInt, targetTag),
+            [](Napi::Env env, Napi::Function jsCb, std::pair<int, int>* data) {
+                jsCb.Call({
+                    Napi::Number::New(env, data->first),
+                    Napi::Number::New(env, data->second)
+                });
+                delete data;
+            }
+        );
+    }
+
     if (action.tag == GHOSTTY_ACTION_SET_TITLE ||
         action.tag == GHOSTTY_ACTION_SET_TAB_TITLE) {
         // Both share the same ghostty_action_set_title_s payload shape, but
@@ -1419,7 +1461,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("hide",              Napi::Function::New(env, Hide));
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
-    exports.Set("setTitleCallback",  Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setTitleCallback",       Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setActionTraceCallback", Napi::Function::New(env, SetActionTraceCallback));
     return exports;
 }
 

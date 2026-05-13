@@ -43,6 +43,9 @@ declare global {
         openDevTools: () => Promise<void>
         reload: () => Promise<void>
       }
+      debug: {
+        onActionTrace: (cb: (e: { tag: number; targetTag: number }) => void) => () => void
+      }
       terminal: {
         mount: (
           workspaceId: string,

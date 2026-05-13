@@ -74,6 +74,15 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       })
   }, [])
 
+  // Diagnostic: log every native action_cb tag to the console so we can debug
+  // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current
+  // ghostty.h. Should disappear in a follow-up commit once title flow is verified.
+  useEffect(() => {
+    return window.api.debug.onActionTrace((e) => {
+      console.log('[addon-trace] tag', e.tag, 'targetTag', e.targetTag)
+    })
+  }, [])
+
   useEffect(() => {
     window.api.projects
       .list()

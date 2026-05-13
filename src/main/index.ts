@@ -95,6 +95,14 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
       w.webContents.send('workspace:titleChanged', { workspaceId, title: title || null })
     }
   })
+  // Diagnostic: also forward every action_cb tag to the renderer for visibility
+  // via DevTools console. Routed through a separate IPC so it doesn't pollute
+  // the title flow.
+  addon.setActionTraceCallback((tag: number, targetTag: number) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.webContents.send('addon:actionTrace', { tag, targetTag })
+    }
+  })
 }
 
 function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
@@ -826,6 +834,7 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
+  setActionTraceCallback: (cb: (tag: number, targetTag: number) => void) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
