@@ -138,10 +138,17 @@ function WorkspaceSubRow({
     return unsub
   }, [workspace.id])
 
-  // Sync rename input when workspace name changes externally
-  if (!renaming && renameValue !== workspace.name) {
-    setRenameValue(workspace.name)
-  }
+  // If the user has manually renamed the workspace (nameIsAuto === false),
+  // the custom name takes priority — Claude's emitted title is ignored for
+  // display. Only rename can change what's shown.
+  const displayName = workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name
+
+  // Seed the rename input with whatever the user currently sees, so renaming
+  // from a Claude title doesn't snap back to "New workspace".
+  useEffect(() => {
+    if (renaming) setRenameValue(displayName)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming])
 
   async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()
@@ -162,6 +169,7 @@ function WorkspaceSubRow({
     } else {
       onCancelRename()
     }
+    setRenameValue(workspace.name) // reset so a future rename starts clean
   }
 
   return (
@@ -212,9 +220,13 @@ function WorkspaceSubRow({
         ) : (
           <span
             className="text-xs truncate min-w-0 flex-1"
-            title={terminalTitle && terminalTitle !== workspace.name ? `${workspace.name} — ${terminalTitle}` : workspace.name}
+            title={
+              workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
+                ? `${workspace.name} — ${terminalTitle}`
+                : workspace.name
+            }
           >
-            {terminalTitle || workspace.name}
+            {displayName}
           </span>
         )}
         {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}

@@ -206,9 +206,13 @@ export function WorkspaceView({
         <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
         <span
           className="text-xs font-medium text-text-primary truncate"
-          title={terminalTitle && terminalTitle !== workspace.name ? `${workspace.name} — ${terminalTitle}` : workspace.name}
+          title={
+            workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
+              ? `${workspace.name} — ${terminalTitle}`
+              : workspace.name
+          }
         >
-          {terminalTitle || workspace.name}
+          {workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name}
         </span>
 
         {/* Status chip — clicking opens drawer on status tab */}

@@ -87,21 +87,33 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
   addon.setTitleCallback((workspaceId: string, title: string) => {
-    console.log('[title] native fired', { workspaceId, title })
-    if (title) {
-      workspaceTitles.set(workspaceId, title)
+    // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
+    // and a space. Strip leading non-letter/non-digit characters so the
+    // sidebar shows clean text and so our own loader UI can layer in front.
+    // Stripping also collapses the spinner animation to one stable string
+    // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
+    // dedupe below uses to avoid hammering the DB on every frame.
+    const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
+
+    // Skip if nothing changed — guards the per-frame spinner churn.
+    if (workspaceTitles.get(workspaceId) === (cleaned ?? undefined)) return
+    if (!cleaned && !workspaceTitles.has(workspaceId)) return
+
+    console.log('[title] native fired', { workspaceId, raw: title, cleaned })
+    if (cleaned) {
+      workspaceTitles.set(workspaceId, cleaned)
     } else {
       workspaceTitles.delete(workspaceId)
     }
     // Persist so the next launch can seed from the DB and the sidebar/header
     // shows the prior title instead of the default workspace name.
     try {
-      setWorkspaceLastTitle(workspaceId, title || null)
+      setWorkspaceLastTitle(workspaceId, cleaned)
     } catch (err) {
       console.error('[title] failed to persist last_title', err)
     }
     for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('workspace:titleChanged', { workspaceId, title: title || null })
+      w.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
     }
   })
   // Diagnostic: also forward every action_cb tag to the renderer for visibility
