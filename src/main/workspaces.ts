@@ -25,6 +25,7 @@ type ProjectRow = {
   added_at: number
   last_opened_at: number | null
   expanded_in_sidebar: number
+  sort_order: number | null
 }
 
 function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
@@ -49,7 +50,8 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
-    expandedInSidebar: row.expanded_in_sidebar === 1
+    expandedInSidebar: row.expanded_in_sidebar === 1,
+    sortOrder: row.sort_order ?? null
   }
 }
 
@@ -174,7 +176,8 @@ export function listAllPinned(): PinnedItem[] {
       `SELECT w.*, p.id as p_id, p.path as p_path, p.name as p_name,
               p.claude_encoded_name as p_claude_encoded_name,
               p.added_at as p_added_at, p.last_opened_at as p_last_opened_at,
-              p.expanded_in_sidebar as p_expanded_in_sidebar
+              p.expanded_in_sidebar as p_expanded_in_sidebar,
+              p.sort_order as p_sort_order
        FROM workspaces w
        JOIN projects p ON p.id = w.project_id
        WHERE w.pinned_at IS NOT NULL
@@ -189,6 +192,7 @@ export function listAllPinned(): PinnedItem[] {
       p_added_at: number
       p_last_opened_at: number | null
       p_expanded_in_sidebar: number
+      p_sort_order: number | null
     })[]
 
   return rows.map((row) => ({
@@ -200,7 +204,8 @@ export function listAllPinned(): PinnedItem[] {
       claude_encoded_name: row.p_claude_encoded_name,
       added_at: row.p_added_at,
       last_opened_at: row.p_last_opened_at,
-      expanded_in_sidebar: row.p_expanded_in_sidebar
+      expanded_in_sidebar: row.p_expanded_in_sidebar,
+      sort_order: row.p_sort_order
     })
   }))
 }

@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 18
+const CURRENT_VERSION = 19
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -419,5 +419,11 @@ function migrate(db: Database.Database): void {
     try { db.exec("ALTER TABLE app_ui_state ADD COLUMN launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1))") } catch {}
     try { db.exec("ALTER TABLE app_ui_state ADD COLUMN global_hotkey TEXT NOT NULL DEFAULT ''") } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(18)
+  }
+
+  // Version 19: projects.sort_order for drag-to-reorder
+  if (currentVersion < 19) {
+    try { db.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(19)
   }
 }

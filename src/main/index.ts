@@ -16,7 +16,8 @@ import {
   openProject,
   deleteProject,
   renameProject,
-  setProjectExpandedInSidebar
+  setProjectExpandedInSidebar,
+  reorderProjects
 } from './projects'
 import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
 import {
@@ -590,6 +591,10 @@ ipcMain.handle(
   'projects:setExpandedInSidebar',
   (_e, { id, expanded }: { id: string; expanded: boolean }) =>
     setProjectExpandedInSidebar(id, expanded)
+)
+
+ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
+  reorderProjects(orderedIds)
 )
 
 ipcMain.handle('doctor:check', (): DoctorResult => {

@@ -702,6 +702,19 @@ function PinnedWorkspaceRow({
 }
 
 // ---------------------------------------------------------------------------
+// Drop indicator
+// ---------------------------------------------------------------------------
+
+function DropIndicator({ position }: { position: 'top' | 'bottom' }): React.JSX.Element {
+  return (
+    <div
+      className="absolute left-0 right-0 h-0.5 bg-accent rounded-full pointer-events-none z-10"
+      style={position === 'top' ? { top: -1 } : { bottom: -1 }}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
@@ -739,6 +752,7 @@ interface SidebarProps {
   onAddWorkspace: (projectId: string) => void | Promise<void>
   onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onReorderProjects: (orderedIds: string[]) => void
 }
 
 export function Sidebar({
@@ -771,10 +785,14 @@ export function Sidebar({
   onRequestRemoveProject,
   onAddWorkspace,
   onRenameWorkspace,
-  onArchiveWorkspace
+  onArchiveWorkspace,
+  onReorderProjects
 }: SidebarProps): React.JSX.Element {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const [dropPos, setDropPos] = useState<'before' | 'after'>('before')
 
   function handleBeginRename(id: string): void {
     setRenamingProjectId(id)
@@ -800,6 +818,47 @@ export function Sidebar({
 
   function handleCancelRenameWorkspace(): void {
     setRenamingWorkspaceId(null)
+  }
+
+  function onProjectDragStart(e: React.DragEvent<HTMLDivElement>, id: string): void {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', id)
+    setDragId(id)
+  }
+
+  function onProjectDragOver(e: React.DragEvent<HTMLDivElement>, id: string): void {
+    if (!dragId || dragId === id) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const isAbove = e.clientY < rect.top + rect.height / 2
+    setDropTargetId(id)
+    setDropPos(isAbove ? 'before' : 'after')
+  }
+
+  function onProjectDrop(e: React.DragEvent<HTMLDivElement>, targetId: string): void {
+    e.preventDefault()
+    if (!dragId || dragId === targetId) {
+      setDragId(null)
+      setDropTargetId(null)
+      return
+    }
+    const ids = projects.map((p) => p.id)
+    const fromIdx = ids.indexOf(dragId)
+    if (fromIdx === -1) return
+    ids.splice(fromIdx, 1)
+    let toIdx = ids.indexOf(targetId)
+    if (toIdx === -1) toIdx = ids.length
+    if (dropPos === 'after') toIdx += 1
+    ids.splice(toIdx, 0, dragId)
+    onReorderProjects(ids)
+    setDragId(null)
+    setDropTargetId(null)
+  }
+
+  function onProjectDragEnd(): void {
+    setDragId(null)
+    setDropTargetId(null)
   }
 
   const addProjectButton = (
@@ -908,36 +967,50 @@ export function Sidebar({
                   const workspaces = (workspacesByProject[p.id] ?? []).filter(
                     (w) => w.archivedAt === null
                   )
+                  const showLineAbove = dropTargetId === p.id && dropPos === 'before'
+                  const showLineBelow = dropTargetId === p.id && dropPos === 'after'
+                  const isDragging = dragId === p.id
                   return (
-                    <ProjectRow
+                    <div
                       key={p.id}
-                      project={p}
-                      active={activeView === 'project' && selectedProjectId === p.id}
-                      expanded={expanded}
-                      workspaces={workspaces}
-                      workspaceCount={workspaces.length}
-                      workspaceCountInline={workspaceCountInline}
-                      selectedWorkspaceId={selectedWorkspaceId}
-                      activeWorkspaceIds={activeWorkspaceIds}
-                      gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-                      onSelect={() => onSelectProject(p.id)}
-                      onToggleExpand={() => onToggleProjectExpand(p.id)}
-                      onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                      onToggleWorkspacePin={(wsId) => onToggleWorkspacePin(wsId, p.id)}
-                      currentViewKind={currentViewKind}
-                      currentWorkspaceId={selectedWorkspaceId}
-                      renaming={renamingProjectId === p.id}
-                      onBeginRename={() => handleBeginRename(p.id)}
-                      onFinishRename={(name) => handleFinishRename(p.id, name)}
-                      onCancelRename={handleCancelRename}
-                      onRequestRemove={() => onRequestRemoveProject(p)}
-                      onAddWorkspace={() => onAddWorkspace(p.id)}
-                      renamingWorkspaceId={renamingWorkspaceId}
-                      onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                      onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
-                      onCancelRenameWorkspace={handleCancelRenameWorkspace}
-                      onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
-                    />
+                      draggable={renamingProjectId !== p.id}
+                      onDragStart={(e) => onProjectDragStart(e, p.id)}
+                      onDragOver={(e) => onProjectDragOver(e, p.id)}
+                      onDrop={(e) => onProjectDrop(e, p.id)}
+                      onDragEnd={onProjectDragEnd}
+                      className={`relative ${isDragging ? 'opacity-40' : ''}`}
+                    >
+                      {showLineAbove && <DropIndicator position="top" />}
+                      <ProjectRow
+                        project={p}
+                        active={activeView === 'project' && selectedProjectId === p.id}
+                        expanded={expanded}
+                        workspaces={workspaces}
+                        workspaceCount={workspaces.length}
+                        workspaceCountInline={workspaceCountInline}
+                        selectedWorkspaceId={selectedWorkspaceId}
+                        activeWorkspaceIds={activeWorkspaceIds}
+                        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+                        onSelect={() => onSelectProject(p.id)}
+                        onToggleExpand={() => onToggleProjectExpand(p.id)}
+                        onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                        onToggleWorkspacePin={(wsId) => onToggleWorkspacePin(wsId, p.id)}
+                        currentViewKind={currentViewKind}
+                        currentWorkspaceId={selectedWorkspaceId}
+                        renaming={renamingProjectId === p.id}
+                        onBeginRename={() => handleBeginRename(p.id)}
+                        onFinishRename={(name) => handleFinishRename(p.id, name)}
+                        onCancelRename={handleCancelRename}
+                        onRequestRemove={() => onRequestRemoveProject(p)}
+                        onAddWorkspace={() => onAddWorkspace(p.id)}
+                        renamingWorkspaceId={renamingWorkspaceId}
+                        onBeginRenameWorkspace={handleBeginRenameWorkspace}
+                        onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
+                        onCancelRenameWorkspace={handleCancelRenameWorkspace}
+                        onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                      />
+                      {showLineBelow && <DropIndicator position="bottom" />}
+                    </div>
                   )
                 })}
               </div>

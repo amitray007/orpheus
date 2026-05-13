@@ -32,6 +32,7 @@ export type ProjectRecord = {
   addedAt: number
   lastOpenedAt: number | null
   expandedInSidebar: boolean
+  sortOrder: number | null
 }
 
 export type WorkspaceRecord = {

@@ -16,6 +16,7 @@ type ProjectRow = {
   added_at: number
   last_opened_at: number | null
   expanded_in_sidebar: number
+  sort_order: number | null
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -26,7 +27,8 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     claudeEncodedName: row.claude_encoded_name,
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
-    expandedInSidebar: row.expanded_in_sidebar === 1
+    expandedInSidebar: row.expanded_in_sidebar === 1,
+    sortOrder: row.sort_order ?? null
   }
 }
 
@@ -39,10 +41,19 @@ export function listProjects(): ProjectRecord[] {
   const rows = db
     .prepare(
       `SELECT * FROM projects
-       ORDER BY last_opened_at DESC NULLS LAST, added_at DESC`
+       ORDER BY sort_order ASC NULLS LAST, last_opened_at DESC NULLS LAST, added_at DESC`
     )
     .all() as ProjectRow[]
   return rows.map(rowToRecord)
+}
+
+export function reorderProjects(orderedIds: string[]): void {
+  const db = getDb()
+  const tx = db.transaction((ids: string[]) => {
+    const stmt = db.prepare('UPDATE projects SET sort_order = ? WHERE id = ?')
+    ids.forEach((id, idx) => stmt.run(idx, id))
+  })
+  tx(orderedIds)
 }
 
 export function addProject(path: string): ProjectRecord {

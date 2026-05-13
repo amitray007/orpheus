@@ -57,6 +57,7 @@ declare global {
         remove: (id: string) => Promise<void>
         rename: (id: string, name: string) => Promise<void>
         setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
+        reorder: (orderedIds: string[]) => Promise<void>
       }
       sessions: {
         listForProject: (

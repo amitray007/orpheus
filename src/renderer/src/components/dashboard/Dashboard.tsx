@@ -495,6 +495,17 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     setRemoveConfirmTarget(null)
   }
 
+  function handleReorderProjects(orderedIds: string[]): void {
+    // Optimistic reorder — update local state immediately
+    const byId = new Map(projects.map((p) => [p.id, p]))
+    const reordered = orderedIds.map((id) => byId.get(id)).filter((p): p is ProjectRecord => !!p)
+    setProjects(reordered)
+    window.api.projects.reorder(orderedIds).catch((err) => {
+      console.error('[dashboard] reorder failed; refetching', err)
+      window.api.projects.list().then(setProjects).catch(console.error)
+    })
+  }
+
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
       ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
@@ -554,6 +565,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         onAddWorkspace={handleAddWorkspace}
         onRenameWorkspace={handleRenameWorkspace}
         onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+        onReorderProjects={handleReorderProjects}
       />
 
       <main

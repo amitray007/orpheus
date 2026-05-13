@@ -62,7 +62,9 @@ const api = {
     rename: (id: string, name: string): Promise<void> =>
       ipcRenderer.invoke('projects:rename', { id, name }),
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
-      ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded })
+      ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded }),
+    reorder: (orderedIds: string[]): Promise<void> =>
+      ipcRenderer.invoke('projects:reorder', { orderedIds })
   },
   sessions: {
     listForProject: (
