@@ -15,7 +15,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 | Item | Priority | Notes |
 |---|---|---|
 | **Claude → Hooks** inline JSON editor | P3 | Read-only viewer shipped in commit `ba77cbd` — lists hooks from `~/.claude/settings.json` and per-project `.claude/settings.json` with "Open file" links. Inline editor is the remaining work: add/edit/delete hooks from the UI without leaving Orpheus. |
-| **Claude → Auth → Provider-specific config** | P2 | Sub-fields under the provider radio: Bedrock (workspace ID, AWS region), Vertex (GCP project ID, location), Foundry (resource URL). Currently a `ComingSoonChip` placeholder inside `ClaudeAuthSection`. |
+| **Claude → Auth → optional provider fields** | P3 | Bedrock + Vertex required fields shipped in commit `a4ba984` (schema v17). Optional follow-ups: `ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION` for Bedrock fast-model override, vertex region overrides per model (`VERTEX_REGION_CLAUDE_HAIKU_4_5` etc.), Azure Foundry deployment name, IAM role ARN for Bedrock. |
 
 ## 2. Claude Settings — wired but with small gaps in `composeClaudeLaunch`
 
@@ -80,7 +80,7 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 | Item | Priority | Notes |
 |---|---|---|
 | **Per-entry enable/disable for slash commands / subagents** | P3 | Read-only list shipped in commit `ee9daf1`. claude doesn't currently expose a per-command or per-agent disable mechanism via settings — would require a different approach (e.g., moving files to a `.disabled/` shadow folder or symlink-toggling). Defer until claude exposes this natively or a concrete need appears. |
-| **Frontmatter inspector / preview** | P3 | The list shows name, description, and a few chips. A click-to-expand view that displays full frontmatter + the first paragraph of the body would be useful for spot-checking what a command/agent does. |
+| **Open file from inspector + edit affordance** | P3 | Click-to-expand inspector shipped in commit `bd64355` — full description, extra frontmatter, and 600-char body preview. Follow-up: an "Open file" link on the expanded drawer (mirrors hooks section pattern), and eventually inline edit of the underlying .md file. |
 
 ## 10. Multi-workspace UX
 
