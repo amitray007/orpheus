@@ -310,8 +310,13 @@ function createWindow(): void {
 let cachedShellPath: string | null = null
 function getUserShellPath(): string {
   if (cachedShellPath !== null) return cachedShellPath
+  const shell = process.env.SHELL
+  if (!shell) {
+    console.warn('[orpheus] SHELL not set; user PATH cannot be derived')
+    cachedShellPath = ''
+    return cachedShellPath
+  }
   try {
-    const shell = process.env.SHELL ?? '/bin/zsh'
     const output = childProcess.execSync(
       `${shell} -ilc 'printf "%s" "$PATH"'`,
       { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }

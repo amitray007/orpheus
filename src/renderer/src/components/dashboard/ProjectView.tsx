@@ -12,13 +12,14 @@ import {
   PencilSimple,
   PushPin
 } from '@phosphor-icons/react'
-import type {
-  ProjectRecord,
-  SessionRecord,
-  SessionStatus,
-  WorkspaceRecord,
-  ClaudeProjectSettings,
-  ClaudeProjectSettingsOverrides
+import {
+  CLAUDE_MODEL_OPTIONS,
+  type ProjectRecord,
+  type SessionRecord,
+  type SessionStatus,
+  type WorkspaceRecord,
+  type ClaudeProjectSettings,
+  type ClaudeProjectSettingsOverrides
 } from '@shared/types'
 import { SessionListSkeleton, Skeleton } from '../Skeleton'
 import { ContextMenu } from '../ContextMenu'
@@ -540,9 +541,7 @@ export function ProjectView({
                         ariaLabel="Model override"
                         options={[
                           { value: '__global__', label: '(global)' },
-                          { value: 'sonnet', label: 'Sonnet' },
-                          { value: 'opus', label: 'Opus' },
-                          { value: 'haiku', label: 'Haiku' }
+                          ...CLAUDE_MODEL_OPTIONS
                         ]}
                         value={(overrides.model ?? '__global__') as '__global__' | 'sonnet' | 'opus' | 'haiku'}
                         onChange={(v) =>

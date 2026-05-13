@@ -144,7 +144,10 @@ export async function testAnthropicConnection(): Promise<ClaudeAuthTestResult> {
     return { ok: false, reason: 'No API key set' }
   }
 
-  const base = row.auth_base_url || 'https://api.anthropic.com'
+  // Prefer the user's configured base URL, then their shell env override, then
+  // the canonical API endpoint as a final fallback.
+  const base =
+    row.auth_base_url || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
   const url = base.replace(/\/+$/, '') + '/v1/models'
   const started = Date.now()
 

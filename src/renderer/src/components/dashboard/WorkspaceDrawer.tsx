@@ -8,13 +8,14 @@ import {
   Archive
 } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './settings/primitives'
-import type {
-  WorkspaceRecord,
-  WorkspaceStatus,
-  ClaudeWorkspaceSettings,
-  ClaudeWorkspaceSettingsOverrides,
-  ClaudePermissionMode,
-  ClaudeEffort
+import {
+  CLAUDE_MODEL_OPTIONS,
+  type WorkspaceRecord,
+  type WorkspaceStatus,
+  type ClaudeWorkspaceSettings,
+  type ClaudeWorkspaceSettingsOverrides,
+  type ClaudePermissionMode,
+  type ClaudeEffort
 } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -129,9 +130,7 @@ function StatusTab({ currentStatus, onStatusChange }: StatusTabProps): React.JSX
 
 const MODEL_OPTIONS = [
   { value: 'default', label: 'Default' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'opus', label: 'Opus' },
-  { value: 'haiku', label: 'Haiku' }
+  ...CLAUDE_MODEL_OPTIONS
 ] as const
 
 const PERMISSION_OPTIONS = [

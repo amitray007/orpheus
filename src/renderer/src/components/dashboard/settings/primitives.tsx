@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type React from 'react'
 import { X, Plus } from '@phosphor-icons/react'
+import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // Shared form primitives for Settings sections
@@ -267,11 +268,7 @@ export interface ModelPickerProps {
 }
 export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.Element {
   // Pre-defined aliases + a "Custom..." option that reveals a text input
-  const aliases = [
-    { value: 'sonnet', label: 'Sonnet' },
-    { value: 'opus', label: 'Opus' },
-    { value: 'haiku', label: 'Haiku' }
-  ]
+  const aliases = CLAUDE_MODEL_OPTIONS
   const isCustom = !aliases.some((a) => a.value === value)
   const [showCustom, setShowCustom] = useState(isCustom)
   const [customValue, setCustomValue] = useState(isCustom ? value : '')

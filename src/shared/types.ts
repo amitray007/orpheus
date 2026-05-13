@@ -103,6 +103,16 @@ export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
 export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
+// Shared model picker options — keep this list in one place so the General
+// settings, ProjectView overrides, and WorkspaceDrawer all agree.
+export const CLAUDE_MODEL_OPTIONS = [
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'haiku', label: 'Haiku' }
+] as const
+
+export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
+
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
   permissionMode: ClaudePermissionMode
