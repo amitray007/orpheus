@@ -111,20 +111,19 @@ export function SettingsView(): React.JSX.Element {
   const ActiveComponent = active.Component
 
   return (
-    // -mx-8 -my-6 undoes the parent <main>'s px-8 py-6 padding so the internal
-    // sidebar can reach the edges of the content area.
-    <div className="flex h-full -mx-8 -my-6">
-      {/* Internal nav — h-full so the bg+border reach the bottom edge */}
+    // Parent <main> uses overflow-hidden min-h-0 for the settings view so this
+    // flex container fills the whole pane edge-to-edge. Internal nav + content
+    // each manage their own scroll.
+    <div className="flex h-full">
       <nav
-        className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default py-6 overflow-y-auto h-full"
+        className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default py-6 overflow-y-auto"
         aria-label="Settings sections"
       >
         <h1 className="text-base font-semibold text-text-primary px-3 mb-5">Settings</h1>
         <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
       </nav>
 
-      {/* Section content — h-full so the pane also reaches the bottom */}
-      <div className="flex-1 overflow-y-auto px-8 py-6 min-w-0 h-full">
+      <div className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
         <ActiveComponent />
       </div>
     </div>
