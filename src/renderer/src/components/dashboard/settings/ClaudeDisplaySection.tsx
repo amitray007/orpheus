@@ -74,6 +74,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="Output style"
             description="Influences how verbose and proactive Claude's responses are."
+            mapsTo="outputStyle"
           >
             <SegmentedControl<ClaudeOutputStyle>
               ariaLabel="Output style"
@@ -90,6 +91,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="TUI renderer"
             description="Whether Claude's terminal UI fills the pane or stays in a scrollable default view."
+            mapsTo="tui"
           >
             <SegmentedControl<ClaudeTuiMode>
               ariaLabel="TUI renderer"
@@ -113,6 +115,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="Editor mode"
             description="Keybinding scheme for the Claude Code inline editor."
+            mapsTo="editorMode"
           >
             <SegmentedControl<ClaudeEditorMode>
               ariaLabel="Editor mode"
@@ -127,6 +130,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="Native cursor"
             description="Use the system cursor style inside the embedded terminal instead of the block cursor."
+            mapsTo="CLAUDE_CODE_NATIVE_CURSOR"
           >
             <Toggle
               ariaLabel="Native cursor"
@@ -137,6 +141,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="Hide cwd in logo"
             description="Remove the current working directory line from Claude's session banner."
+            mapsTo="CLAUDE_CODE_HIDE_CWD"
           >
             <Toggle
               ariaLabel="Hide cwd in logo"
@@ -156,6 +161,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           <SettingRow
             label="Reduce motion"
             description="Disables transitions and animations throughout the Orpheus UI."
+            mapsTo="prefersReducedMotion"
           >
             <Toggle
               ariaLabel="Reduce motion"

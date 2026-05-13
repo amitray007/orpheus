@@ -342,6 +342,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
             <SettingRow
               label="API key"
               description="Stored in the local Orpheus database."
+              mapsTo="ANTHROPIC_API_KEY"
             >
               <ApiKeyInput
                 hasKey={state.hasApiKey}
@@ -358,6 +359,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
             <SettingRow
               label="Base URL override"
               description="Proxy or local model endpoint. Leave blank to use the provider default."
+              mapsTo="ANTHROPIC_BASE_URL"
             >
               <BaseUrlInput
                 value={state.baseUrl}
@@ -395,6 +397,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="Resource"
                   description="Your Azure AI Foundry resource name. Sets ANTHROPIC_FOUNDRY_RESOURCE."
+                  mapsTo="ANTHROPIC_FOUNDRY_RESOURCE"
                 >
                   <ProviderTextInput
                     value={state.foundryResource}
@@ -405,6 +408,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="API key"
                   description="Foundry API key. Sets ANTHROPIC_FOUNDRY_API_KEY."
+                  mapsTo="ANTHROPIC_FOUNDRY_API_KEY"
                 >
                   <ApiKeyInput
                     hasKey={state.hasFoundryApiKey}
@@ -415,6 +419,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="Base URL (optional)"
                   description="Foundry endpoint URL. Sets ANTHROPIC_FOUNDRY_BASE_URL."
+                  mapsTo="ANTHROPIC_FOUNDRY_BASE_URL"
                 >
                   <BaseUrlInput
                     value={state.foundryBaseUrl}
@@ -428,6 +433,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="AWS region"
                   description="Required for Bedrock. Example: us-east-1, eu-west-1."
+                  mapsTo="AWS_REGION"
                 >
                   <ProviderTextInput
                     value={state.awsRegion}
@@ -438,6 +444,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="AWS bearer token (optional)"
                   description="Alternative to IAM credentials. Sets AWS_BEARER_TOKEN_BEDROCK."
+                  mapsTo="AWS_BEARER_TOKEN_BEDROCK"
                 >
                   <ApiKeyInput
                     hasKey={state.hasBedrockBearerToken}
@@ -452,6 +459,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="GCP project ID"
                   description="Required for Vertex. Your Google Cloud project ID."
+                  mapsTo="ANTHROPIC_VERTEX_PROJECT_ID"
                 >
                   <ProviderTextInput
                     value={state.vertexProjectId}
@@ -462,6 +470,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
                 <SettingRow
                   label="Region"
                   description="Required for Vertex. Example: us-east5, global, europe-west1."
+                  mapsTo="CLOUD_ML_REGION"
                 >
                   <ProviderTextInput
                     value={state.vertexRegion}

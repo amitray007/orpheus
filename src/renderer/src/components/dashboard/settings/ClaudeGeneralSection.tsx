@@ -86,12 +86,13 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           Claude defaults
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow label="Model" description="Which Claude model launches by default.">
+          <SettingRow label="Model" description="Which Claude model launches by default." mapsTo={['--model', 'ANTHROPIC_MODEL']}>
             <ModelPicker value={settings.model} onChange={(v) => patch({ model: v })} />
           </SettingRow>
           <SettingRow
             label="Permission mode"
             description="How claude handles tool-use permission requests."
+            mapsTo="--permission-mode"
           >
             <SegmentedControl<ClaudePermissionMode>
               ariaLabel="Permission mode"
@@ -105,7 +106,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
               onChange={(v) => patch({ permissionMode: v })}
             />
           </SettingRow>
-          <SettingRow label="Effort" description="Trade-off between speed and thoroughness.">
+          <SettingRow label="Effort" description="Trade-off between speed and thoroughness." mapsTo={['--effort', 'CLAUDE_CODE_EFFORT_LEVEL']}>
             <SegmentedControl<ClaudeEffort>
               ariaLabel="Effort level"
               options={[
@@ -131,6 +132,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Auto-load memory"
             description="Automatically include CLAUDE.md context files when claude starts."
+            mapsTo="CLAUDE_CODE_DISABLE_AUTO_MEMORY"
           >
             <Toggle
               ariaLabel="Auto-load memory"
@@ -141,6 +143,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Extended thinking"
             description="Always allow claude to think before responding. Slower but more thorough."
+            mapsTo="alwaysThinkingEnabled"
           >
             <Toggle
               ariaLabel="Extended thinking"
@@ -159,6 +162,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Fallback model"
             description="Model used when the primary model is overloaded or unavailable. Accepts a model alias or full model ID."
+            mapsTo="--fallback-model"
           >
             <input
               type="text"
@@ -180,6 +184,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Disable extended thinking"
             description="Prevents Claude from using extended thinking even when effort is high (CLAUDE_CODE_DISABLE_THINKING=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_THINKING"
           >
             <Toggle
               ariaLabel="Disable extended thinking"
@@ -190,6 +195,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Disable fast mode"
             description="Forces Claude to skip the fast-response optimization path (CLAUDE_CODE_DISABLE_FAST_MODE=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_FAST_MODE"
           >
             <Toggle
               ariaLabel="Disable fast mode"
@@ -200,6 +206,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           <SettingRow
             label="Max turns per session"
             description="Hard cap on the number of agentic turns per session (CLAUDE_CODE_MAX_TURNS). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_MAX_TURNS"
           >
             <NumberInput
               value={settings.maxTurns}

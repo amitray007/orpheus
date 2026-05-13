@@ -271,6 +271,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Debug logging"
             description="Pass --debug to Claude at launch for verbose output. Applies on next workspace open."
+            mapsTo="--debug"
           >
             <Toggle
               ariaLabel="Debug logging"
@@ -281,6 +282,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Log level"
             description="Minimum severity level for log entries. Only active when Debug logging is enabled."
+            mapsTo="CLAUDE_CODE_DEBUG_LOG_LEVEL"
           >
             <SegmentedControl<ClaudeLogLevel>
               ariaLabel="Log level"
@@ -301,6 +303,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable telemetry"
             description="Opt out of anonymous usage statistics sent to Anthropic (DISABLE_TELEMETRY=1)."
+            mapsTo="DISABLE_TELEMETRY"
           >
             <Toggle
               ariaLabel="Disable telemetry"
@@ -311,6 +314,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable error reporting"
             description="Stop sending crash reports and stack traces to Anthropic (DISABLE_ERROR_REPORTING=1)."
+            mapsTo="DISABLE_ERROR_REPORTING"
           >
             <Toggle
               ariaLabel="Disable error reporting"
@@ -321,6 +325,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable auto-updater"
             description="Prevent Orpheus from checking for or applying updates automatically (DISABLE_AUTOUPDATER=1)."
+            mapsTo="DISABLE_AUTOUPDATER"
           >
             <Toggle
               ariaLabel="Disable auto-updater"
@@ -350,6 +355,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
             <SettingRow
               label="Agent teams"
               description="Run multiple Claude instances collaborating on the same task in parallel (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1)."
+              mapsTo="CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
             >
               <Toggle
                 ariaLabel="Agent teams"
@@ -360,6 +366,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
             <SettingRow
               label="Forked subagents"
               description="Allow Claude to spawn isolated subagent processes for long-running subtasks (CLAUDE_CODE_FORK_SUBAGENT=1)."
+              mapsTo="CLAUDE_CODE_FORK_SUBAGENT"
             >
               <Toggle
                 ariaLabel="Forked subagents"
@@ -370,6 +377,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
             <SettingRow
               label="Simple system prompt"
               description="Use a minimal system prompt without Orpheus-specific injections (settings.json: simpleSystemPrompt)."
+              mapsTo="simpleSystemPrompt"
             >
               <Toggle
                 ariaLabel="Simple system prompt"
@@ -390,6 +398,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="HTTP_PROXY"
             description="HTTP proxy for outbound requests from claude (HTTP_PROXY). Leave empty to use the system default."
+            mapsTo="HTTP_PROXY"
           >
             <input
               type="text"
@@ -406,6 +415,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="HTTPS_PROXY"
             description="HTTPS proxy for outbound requests from claude (HTTPS_PROXY). Leave empty to use the system default."
+            mapsTo="HTTPS_PROXY"
           >
             <input
               type="text"
@@ -422,6 +432,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="API timeout (ms)"
             description="Timeout in milliseconds for each API request to Anthropic (API_TIMEOUT_MS). Leave empty to use claude's default."
+            mapsTo="API_TIMEOUT_MS"
           >
             <NumberInput
               value={settings.apiTimeoutMs}
@@ -432,6 +443,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Max retries"
             description="Number of times to retry a failed API request (CLAUDE_CODE_MAX_RETRIES). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_MAX_RETRIES"
           >
             <NumberInput
               value={settings.maxRetries}
@@ -451,6 +463,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable nonessential traffic"
             description="Bundles autoupdater, feedback, error reporting, and telemetry off in one toggle (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
           >
             <Toggle
               ariaLabel="Disable nonessential traffic"
@@ -461,6 +474,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Honor DO_NOT_TRACK"
             description="Respect the DO_NOT_TRACK signal to disable analytics and usage tracking (DO_NOT_TRACK=1)."
+            mapsTo="DO_NOT_TRACK"
           >
             <Toggle
               ariaLabel="Honor DO_NOT_TRACK"
@@ -471,6 +485,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable background tasks"
             description="Prevent Claude from running background processing tasks between turns (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
           >
             <Toggle
               ariaLabel="Disable background tasks"
@@ -481,6 +496,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Disable agent view"
             description="Hide the real-time agent activity view during agentic sessions (CLAUDE_CODE_DISABLE_AGENT_VIEW=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_AGENT_VIEW"
           >
             <Toggle
               ariaLabel="Disable agent view"
@@ -500,6 +516,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Anthropic-Beta headers"
             description="Comma-separated values for the anthropic-beta header on every request (ANTHROPIC_BETAS). Example: prompt-caching-2024-07-31,messages-2023-12-15."
+            mapsTo="ANTHROPIC_BETAS"
           >
             <input
               type="text"
@@ -516,6 +533,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           <SettingRow
             label="Extra body JSON"
             description="Raw JSON object merged into every API request body (CLAUDE_CODE_EXTRA_BODY). Must be valid JSON. Validated on save."
+            mapsTo="CLAUDE_CODE_EXTRA_BODY"
           >
             <ExtraBodyJsonInput
               value={settings.extraBodyJson}

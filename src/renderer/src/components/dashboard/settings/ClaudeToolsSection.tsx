@@ -160,6 +160,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Bash default timeout (ms)"
             description="Default timeout in milliseconds for each Bash command. Leave empty to use claude's default (120000 ms)."
+            mapsTo="BASH_DEFAULT_TIMEOUT_MS"
           >
             <NumberInput
               value={settings.bashDefaultTimeoutMs}
@@ -170,6 +171,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Bash max timeout (ms)"
             description="Maximum timeout a user may request for a single Bash command. Leave empty to use claude's default (600000 ms)."
+            mapsTo="BASH_MAX_TIMEOUT_MS"
           >
             <NumberInput
               value={settings.bashMaxTimeoutMs}
@@ -180,6 +182,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Bash max output length"
             description="Maximum characters of stdout/stderr captured per command. Leave empty to let claude auto-truncate."
+            mapsTo="BASH_MAX_OUTPUT_LENGTH"
           >
             <NumberInput
               value={settings.bashMaxOutputLength}
@@ -199,6 +202,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Tool concurrency"
             description="How many tools Claude may run in parallel in a single turn. Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"
           >
             <NumberInput
               value={settings.toolConcurrency}
@@ -228,6 +232,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Bash maintains project cwd"
             description="Each Bash command resets its working directory to the project root (CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1)."
+            mapsTo="CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR"
           >
             <Toggle
               ariaLabel="Bash maintains project cwd"
@@ -238,6 +243,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Perforce mode"
             description="Enable Perforce VCS integration for source control operations (CLAUDE_CODE_PERFORCE_MODE=1)."
+            mapsTo="CLAUDE_CODE_PERFORCE_MODE"
           >
             <Toggle
               ariaLabel="Perforce mode"
@@ -248,6 +254,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Glob includes hidden files (override)"
             description="When enabled, sets CLAUDE_CODE_GLOB_HIDDEN=1. Note: claude's default already includes hidden files. To force-exclude them, use Custom env vars to set CLAUDE_CODE_GLOB_HIDDEN=0."
+            mapsTo="CLAUDE_CODE_GLOB_HIDDEN"
           >
             <Toggle
               ariaLabel="Glob includes hidden files override"
@@ -258,6 +265,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Glob ignores .gitignore (override)"
             description="When enabled, sets CLAUDE_CODE_GLOB_NO_IGNORE=1 so globs skip .gitignore patterns. To force-enable .gitignore respect, use Custom env vars to set CLAUDE_CODE_GLOB_NO_IGNORE=0."
+            mapsTo="CLAUDE_CODE_GLOB_NO_IGNORE"
           >
             <Toggle
               ariaLabel="Glob ignores .gitignore override"
@@ -268,6 +276,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Glob timeout (seconds)"
             description="Maximum seconds to spend on a single glob operation (CLAUDE_CODE_GLOB_TIMEOUT_SECONDS). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_GLOB_TIMEOUT_SECONDS"
           >
             <NumberInput
               value={settings.globTimeoutSeconds}

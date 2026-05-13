@@ -80,6 +80,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
           <SettingRow
             label="Auto-approve file edits"
             description='Adds "Edit" to the allow list at launch — claude may edit files without prompting.'
+            mapsTo="permissions.allow[Edit]"
           >
             <Toggle
               ariaLabel="Auto-approve file edits"
@@ -90,6 +91,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
           <SettingRow
             label="Ask before destructive Bash commands"
             description="Injects ask-rules for rm, git reset, force-push, DROP TABLE, and similar at launch."
+            mapsTo="permissions.ask[Bash(...)]"
           >
             <Toggle
               ariaLabel="Ask before destructive Bash commands"
@@ -100,6 +102,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
           <SettingRow
             label="Plan mode by default"
             description="Sets --permission-mode plan at launch so Claude always produces a plan before executing. Overridden if General's Permission mode is set explicitly."
+            mapsTo="--permission-mode plan"
           >
             <Toggle
               ariaLabel="Plan mode by default"
@@ -132,6 +135,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
               value={settings.permissionAllowRules}
               onChange={(v) => patch({ permissionAllowRules: v })}
               placeholder="e.g. Bash(npm run *)"
+              mapsTo="permissions.allow"
             />
             {/* Ask rules */}
             <RuleListEditor
@@ -139,6 +143,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
               value={settings.permissionAskRules}
               onChange={(v) => patch({ permissionAskRules: v })}
               placeholder="e.g. Bash(git push *)"
+              mapsTo="permissions.ask"
             />
             {/* Deny rules */}
             <RuleListEditor
@@ -146,6 +151,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
               value={settings.permissionDenyRules}
               onChange={(v) => patch({ permissionDenyRules: v })}
               placeholder="e.g. Bash(curl *)"
+              mapsTo="permissions.deny"
             />
             {/* Additional directories */}
             <RuleListEditor
@@ -153,6 +159,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
               value={settings.permissionAdditionalDirs}
               onChange={(v) => patch({ permissionAdditionalDirs: v })}
               placeholder="e.g. /Users/me/shared"
+              mapsTo="permissions.additionalDirectories"
             />
           </div>
         )}

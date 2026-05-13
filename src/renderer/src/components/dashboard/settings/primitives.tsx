@@ -10,15 +10,27 @@ import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 export interface SettingRowProps {
   label: string
   description?: string
+  mapsTo?: string | string[]
   children: React.ReactNode
 }
-export function SettingRow({ label, description, children }: SettingRowProps): React.JSX.Element {
+export function SettingRow({ label, description, mapsTo, children }: SettingRowProps): React.JSX.Element {
   // Two-column row: label+description on the left, control on the right.
   // On narrow widths it stacks; min 480px wide it goes side-by-side.
+  const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0">
       <div className="flex flex-col gap-0.5 min-w-0 sm:max-w-sm">
-        <label className="text-sm font-medium text-text-primary">{label}</label>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <label className="text-sm font-medium text-text-primary">{label}</label>
+          {chips.map((key) => (
+            <code
+              key={key}
+              className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
+            >
+              {key}
+            </code>
+          ))}
+        </div>
         {description && <p className="text-xs text-text-muted">{description}</p>}
       </div>
       <div className="flex-shrink-0">{children}</div>
@@ -167,9 +179,11 @@ export interface RuleListEditorProps {
   onChange: (v: string[]) => void
   placeholder?: string
   label?: string
+  mapsTo?: string | string[]
 }
 
-export function RuleListEditor({ value, onChange, placeholder, label }: RuleListEditorProps): React.JSX.Element {
+export function RuleListEditor({ value, onChange, placeholder, label, mapsTo }: RuleListEditorProps): React.JSX.Element {
+  const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
   const [localItems, setLocalItems] = useState<string[]>(value)
   // Keep in sync with external changes (e.g. initial load)
   // Only update if external value reference changed and we're not mid-edit
@@ -217,7 +231,17 @@ export function RuleListEditor({ value, onChange, placeholder, label }: RuleList
   return (
     <div className="flex flex-col gap-1.5">
       {label && (
-        <span className="text-xs font-medium text-text-primary">{label}</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-medium text-text-primary">{label}</span>
+          {chips.map((key) => (
+            <code
+              key={key}
+              className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
+            >
+              {key}
+            </code>
+          ))}
+        </div>
       )}
       {localItems.length > 0 && (
         <div className="flex flex-col gap-1">

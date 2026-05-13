@@ -69,6 +69,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Disable git instructions"
             description="Suppress the automatic git-context message that Claude prepends to sessions."
+            mapsTo="CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
           >
             <Toggle
               ariaLabel="Disable git instructions"
@@ -88,6 +89,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Max output tokens"
             description="Upper bound on tokens in a single Claude response. Leave empty to use claude's default. Suggested range: 1024–8192."
+            mapsTo="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
           >
             <NumberInput
               value={settings.maxOutputTokens}
@@ -98,6 +100,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Max context tokens"
             description="Cap on the total context window sent per turn. Leave empty to use the model's max. Suggested range: 8000–200000."
+            mapsTo="CLAUDE_CODE_MAX_CONTEXT_TOKENS"
           >
             <NumberInput
               value={settings.maxContextTokens}
@@ -117,6 +120,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Compaction threshold"
             description="Compact older context when usage exceeds this percentage. Leave empty to use claude's default. Typical range: 50–95."
+            mapsTo="CLAUDE_CODE_AUTO_COMPACT_THRESHOLD"
           >
             <div className="flex items-center gap-1.5">
               <NumberInput
@@ -140,6 +144,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Max thinking tokens"
             description="Upper bound on tokens used for extended thinking per response (MAX_THINKING_TOKENS). Leave empty to use claude's default."
+            mapsTo="MAX_THINKING_TOKENS"
           >
             <NumberInput
               value={settings.maxThinkingTokens}
@@ -150,6 +155,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="File read max output tokens"
             description="Truncation limit for file-read tool output (CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"
           >
             <NumberInput
               value={settings.fileReadMaxOutputTokens}
@@ -160,6 +166,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
           <SettingRow
             label="Disable CLAUDE.md memory files"
             description="Prevent Claude from loading CLAUDE.md files from the filesystem (CLAUDE_CODE_DISABLE_CLAUDE_MDS=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_CLAUDE_MDS"
           >
             <Toggle
               ariaLabel="Disable CLAUDE.md memory files"
