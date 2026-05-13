@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 19
+const CURRENT_VERSION = 20
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -51,7 +51,8 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
-    name_is_auto INTEGER NOT NULL DEFAULT 1
+    name_is_auto INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -425,5 +426,11 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 19) {
     try { db.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(19)
+  }
+
+  // Version 20: workspaces.sort_order for drag-to-reorder within a project
+  if (currentVersion < 20) {
+    try { db.exec('ALTER TABLE workspaces ADD COLUMN sort_order INTEGER') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(20)
   }
 }

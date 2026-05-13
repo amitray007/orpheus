@@ -506,6 +506,25 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     })
   }
 
+  function handleReorderWorkspaces(projectId: string, orderedIds: string[]): void {
+    // Optimistic: reorder the local workspacesByProject[projectId] immediately
+    setWorkspacesByProject((prev) => {
+      const list = prev[projectId] ?? []
+      const byId = new Map(list.map((w) => [w.id, w]))
+      const reordered = orderedIds
+        .map((id) => byId.get(id))
+        .filter((w): w is WorkspaceRecord => !!w)
+      // Append any workspaces missing from orderedIds (e.g. archived ones not in the visible group)
+      const seen = new Set(orderedIds)
+      const tail = list.filter((w) => !seen.has(w.id))
+      return { ...prev, [projectId]: [...reordered, ...tail] }
+    })
+    window.api.workspaces.reorder(projectId, orderedIds).catch((err) => {
+      console.error('[dashboard] workspace reorder failed; refetching', err)
+      fetchWorkspacesForProject(projectId).catch(console.error)
+    })
+  }
+
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
       ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
@@ -566,6 +585,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         onRenameWorkspace={handleRenameWorkspace}
         onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
         onReorderProjects={handleReorderProjects}
+        onReorderWorkspaces={handleReorderWorkspaces}
       />
 
       <main

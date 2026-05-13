@@ -78,6 +78,7 @@ declare global {
         archive: (id: string) => Promise<WorkspaceRecord>
         unarchive: (id: string) => Promise<WorkspaceRecord>
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
+        reorder: (projectId: string, orderedIds: string[]) => Promise<void>
         isDirty: (id: string) => Promise<boolean>
         onDirtyChanged: (
           cb: (e: { workspaceId: string; dirty: boolean }) => void

@@ -15,6 +15,7 @@ type WorkspaceRow = {
   created_at: number
   last_opened_at: number | null
   archived_at: number | null
+  sort_order: number | null
 }
 
 type ProjectRow = {
@@ -38,7 +39,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     pinnedAt: row.pinned_at,
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
-    archivedAt: row.archived_at
+    archivedAt: row.archived_at,
+    sortOrder: row.sort_order ?? null
   }
 }
 
@@ -98,7 +100,7 @@ export function listWorkspacesForProject(
     .prepare(
       `SELECT * FROM workspaces
        WHERE project_id = ? ${archiveFilter}
-       ORDER BY created_at ASC`
+       ORDER BY sort_order ASC NULLS LAST, created_at ASC`
     )
     .all(projectId) as WorkspaceRow[]
 
@@ -155,6 +157,15 @@ export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   db.prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ?').run(name, id)
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
+}
+
+export function reorderWorkspaces(projectId: string, orderedIds: string[]): void {
+  const db = getDb()
+  const tx = db.transaction((ids: string[]) => {
+    const stmt = db.prepare('UPDATE workspaces SET sort_order = ? WHERE id = ? AND project_id = ?')
+    ids.forEach((id, idx) => stmt.run(idx, id, projectId))
+  })
+  tx(orderedIds)
 }
 
 export function unarchiveWorkspace(id: string): WorkspaceRecord {

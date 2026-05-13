@@ -94,6 +94,8 @@ const api = {
       ipcRenderer.invoke('workspaces:unarchive', { id }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:rename', { id, name }),
+    reorder: (projectId: string, orderedIds: string[]): Promise<void> =>
+      ipcRenderer.invoke('workspaces:reorder', { projectId, orderedIds }),
     isDirty: (id: string): Promise<boolean> =>
       ipcRenderer.invoke('workspace:isDirty', { workspaceId: id }),
     onDirtyChanged: (

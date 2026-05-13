@@ -287,6 +287,13 @@ interface ProjectRowProps {
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
   onCancelRenameWorkspace: () => void
   onArchiveWorkspace: (workspaceId: string) => void
+  wsDragId: string | null
+  wsDropTargetId: string | null
+  wsDropPos: 'before' | 'after'
+  onWorkspaceDragStart: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
+  onWorkspaceDragOver: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
+  onWorkspaceDrop: (e: React.DragEvent<HTMLDivElement>, targetId: string, projectId: string, workspaces: WorkspaceRecord[]) => void
+  onWorkspaceDragEnd: () => void
 }
 
 function ProjectRow({
@@ -315,7 +322,14 @@ function ProjectRow({
   onBeginRenameWorkspace,
   onFinishRenameWorkspace,
   onCancelRenameWorkspace,
-  onArchiveWorkspace
+  onArchiveWorkspace,
+  wsDragId,
+  wsDropTargetId,
+  wsDropPos,
+  onWorkspaceDragStart,
+  onWorkspaceDragOver,
+  onWorkspaceDrop,
+  onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -421,26 +435,42 @@ function ProjectRow({
       {/* Nested workspace rows */}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
-          {workspaces.map((ws) => (
-            <WorkspaceSubRow
-              key={ws.id}
-              workspace={ws}
-              project={project}
-              active={
-                currentViewKind === 'workspace' &&
-                (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
-              }
-              isSessionActive={activeWorkspaceIds.has(ws.id)}
-              gitStatus={gitStatusByWorkspaceId[ws.id]}
-              onSelect={() => onSelectWorkspace(ws.id)}
-              onTogglePin={() => onToggleWorkspacePin(ws.id)}
-              renaming={renamingWorkspaceId === ws.id}
-              onBeginRename={() => onBeginRenameWorkspace(ws.id)}
-              onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
-              onCancelRename={onCancelRenameWorkspace}
-              onArchive={() => onArchiveWorkspace(ws.id)}
-            />
-          ))}
+          {workspaces.map((ws) => {
+            const showLineAbove = wsDropTargetId === ws.id && wsDropPos === 'before'
+            const showLineBelow = wsDropTargetId === ws.id && wsDropPos === 'after'
+            const isDragging = wsDragId === ws.id
+            return (
+              <div
+                key={ws.id}
+                draggable={renamingWorkspaceId !== ws.id}
+                onDragStart={(e) => onWorkspaceDragStart(e, ws.id, project.id)}
+                onDragOver={(e) => onWorkspaceDragOver(e, ws.id, project.id)}
+                onDrop={(e) => onWorkspaceDrop(e, ws.id, project.id, workspaces)}
+                onDragEnd={onWorkspaceDragEnd}
+                className={`relative ${isDragging ? 'opacity-40' : ''}`}
+              >
+                {showLineAbove && <DropIndicator position="top" />}
+                <WorkspaceSubRow
+                  workspace={ws}
+                  project={project}
+                  active={
+                    currentViewKind === 'workspace' &&
+                    (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
+                  }
+                  isSessionActive={activeWorkspaceIds.has(ws.id)}
+                  gitStatus={gitStatusByWorkspaceId[ws.id]}
+                  onSelect={() => onSelectWorkspace(ws.id)}
+                  onTogglePin={() => onToggleWorkspacePin(ws.id)}
+                  renaming={renamingWorkspaceId === ws.id}
+                  onBeginRename={() => onBeginRenameWorkspace(ws.id)}
+                  onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
+                  onCancelRename={onCancelRenameWorkspace}
+                  onArchive={() => onArchiveWorkspace(ws.id)}
+                />
+                {showLineBelow && <DropIndicator position="bottom" />}
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -753,6 +783,7 @@ interface SidebarProps {
   onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
+  onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
 }
 
 export function Sidebar({
@@ -786,13 +817,18 @@ export function Sidebar({
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
-  onReorderProjects
+  onReorderProjects,
+  onReorderWorkspaces
 }: SidebarProps): React.JSX.Element {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropPos, setDropPos] = useState<'before' | 'after'>('before')
+  const [wsDragId, setWsDragId] = useState<string | null>(null)
+  const [wsDragProjectId, setWsDragProjectId] = useState<string | null>(null)
+  const [wsDropTargetId, setWsDropTargetId] = useState<string | null>(null)
+  const [wsDropPos, setWsDropPos] = useState<'before' | 'after'>('before')
 
   function handleBeginRename(id: string): void {
     setRenamingProjectId(id)
@@ -859,6 +895,71 @@ export function Sidebar({
   function onProjectDragEnd(): void {
     setDragId(null)
     setDropTargetId(null)
+  }
+
+  function onWorkspaceDragStart(
+    e: React.DragEvent<HTMLDivElement>,
+    wsId: string,
+    projectId: string
+  ): void {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', wsId)
+    setWsDragId(wsId)
+    setWsDragProjectId(projectId)
+  }
+
+  function onWorkspaceDragOver(
+    e: React.DragEvent<HTMLDivElement>,
+    wsId: string,
+    projectId: string
+  ): void {
+    if (!wsDragId || wsDragId === wsId) return
+    // Cross-project drag: no-op
+    if (wsDragProjectId !== projectId) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const isAbove = e.clientY < rect.top + rect.height / 2
+    setWsDropTargetId(wsId)
+    setWsDropPos(isAbove ? 'before' : 'after')
+  }
+
+  function onWorkspaceDrop(
+    e: React.DragEvent<HTMLDivElement>,
+    targetId: string,
+    projectId: string,
+    workspaces: WorkspaceRecord[]
+  ): void {
+    e.preventDefault()
+    if (!wsDragId || wsDragId === targetId || wsDragProjectId !== projectId) {
+      setWsDragId(null)
+      setWsDragProjectId(null)
+      setWsDropTargetId(null)
+      return
+    }
+    const ids = workspaces.map((w) => w.id)
+    const fromIdx = ids.indexOf(wsDragId)
+    if (fromIdx === -1) {
+      setWsDragId(null)
+      setWsDragProjectId(null)
+      setWsDropTargetId(null)
+      return
+    }
+    ids.splice(fromIdx, 1)
+    let toIdx = ids.indexOf(targetId)
+    if (toIdx === -1) toIdx = ids.length
+    if (wsDropPos === 'after') toIdx += 1
+    ids.splice(toIdx, 0, wsDragId)
+    onReorderWorkspaces(projectId, ids)
+    setWsDragId(null)
+    setWsDragProjectId(null)
+    setWsDropTargetId(null)
+  }
+
+  function onWorkspaceDragEnd(): void {
+    setWsDragId(null)
+    setWsDragProjectId(null)
+    setWsDropTargetId(null)
   }
 
   const addProjectButton = (
@@ -1008,6 +1109,13 @@ export function Sidebar({
                         onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
                         onCancelRenameWorkspace={handleCancelRenameWorkspace}
                         onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                        wsDragId={wsDragId}
+                        wsDropTargetId={wsDropTargetId}
+                        wsDropPos={wsDropPos}
+                        onWorkspaceDragStart={onWorkspaceDragStart}
+                        onWorkspaceDragOver={onWorkspaceDragOver}
+                        onWorkspaceDrop={onWorkspaceDrop}
+                        onWorkspaceDragEnd={onWorkspaceDragEnd}
                       />
                       {showLineBelow && <DropIndicator position="bottom" />}
                     </div>

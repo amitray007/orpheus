@@ -45,6 +45,7 @@ export type WorkspaceRecord = {
   createdAt: number
   lastOpenedAt: number | null
   archivedAt: number | null
+  sortOrder: number | null
 }
 
 // For Pinned section: a pinned workspace with its project for context

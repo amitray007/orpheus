@@ -29,6 +29,7 @@ import {
   archiveWorkspace,
   unarchiveWorkspace,
   renameWorkspace,
+  reorderWorkspaces,
   listAllPinned
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
@@ -466,6 +467,12 @@ ipcMain.handle('workspaces:unarchive', (_e, { id }: { id: string }) => unarchive
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
+)
+
+ipcMain.handle(
+  'workspaces:reorder',
+  (_e, { projectId, orderedIds }: { projectId: string; orderedIds: string[] }) =>
+    reorderWorkspaces(projectId, orderedIds)
 )
 
 ipcMain.handle(
