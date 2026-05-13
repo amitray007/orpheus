@@ -39,8 +39,8 @@ import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv, testAnthropicConnection } from './claudeAuth'
 import { listMcpServers } from './mcp'
 import { listSlashCommands, listSubagents } from './claudeAgents'
-import { listClaudeHooks } from './claudeHooks'
-import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch } from '../shared/types'
+import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
+import type { SessionStatus, ClaudeGlobalSettingsPatch, AppUiStatePatch, ClaudeProjectSettingsOverrides, ClaudeWorkspaceSettingsOverrides, ClaudeAuthPatch, ClaudeHookDraft } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 
 // ---------------------------------------------------------------------------
@@ -538,6 +538,20 @@ ipcMain.handle('claudeHooks:list', () => listClaudeHooks())
 ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
   await shell.openPath(filePath)
 })
+ipcMain.handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
+ipcMain.handle('claudeHooks:update', (_e, args: {
+  filePath: string
+  event: string
+  matcherEntryIdx: number
+  hookIdx: number
+  draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
+}) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft))
+ipcMain.handle('claudeHooks:delete', (_e, args: {
+  filePath: string
+  event: string
+  matcherEntryIdx: number
+  hookIdx: number
+}) => deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx))
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC

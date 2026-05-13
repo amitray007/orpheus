@@ -23,7 +23,8 @@ import type {
   DiscoveredMcpServer,
   ClaudeSlashCommand,
   ClaudeSubagent,
-  ClaudeHookEntry
+  ClaudeHookEntry,
+  ClaudeHookDraft
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -157,7 +158,19 @@ const api = {
   claudeHooks: {
     list: (): Promise<ClaudeHookEntry[]> => ipcRenderer.invoke('claudeHooks:list'),
     openFile: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:openFile', { filePath })
+      ipcRenderer.invoke('claudeHooks:openFile', { filePath }),
+    add: (draft: ClaudeHookDraft): Promise<void> =>
+      ipcRenderer.invoke('claudeHooks:add', draft),
+    update: (
+      filePath: string,
+      event: string,
+      matcherEntryIdx: number,
+      hookIdx: number,
+      draft: { event: string; matcher: string | null; type: string; command: string }
+    ): Promise<void> =>
+      ipcRenderer.invoke('claudeHooks:update', { filePath, event, matcherEntryIdx, hookIdx, draft }),
+    delete: (filePath: string, event: string, matcherEntryIdx: number, hookIdx: number): Promise<void> =>
+      ipcRenderer.invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
   }
 }
 

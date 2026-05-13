@@ -210,6 +210,18 @@ export type ClaudeHookEntry = {
   projectId?: string
   projectName?: string
   filePath: string               // absolute path of the settings.json this came from
+  // Addressing fields for edit/delete
+  matcherEntryIdx: number        // index in hooks[event] array
+  hookIdx: number                // index in hooks[event][matcherEntryIdx].hooks array
+}
+
+export type ClaudeHookDraft = {
+  event: string
+  matcher: string | null
+  type: string                   // always 'command' for now
+  command: string
+  source: 'user' | 'project'
+  projectId?: string             // required when source === 'project'
 }
 
 // ---------------------------------------------------------------------------

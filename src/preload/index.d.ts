@@ -21,7 +21,8 @@ import type {
   DiscoveredMcpServer,
   ClaudeSlashCommand,
   ClaudeSubagent,
-  ClaudeHookEntry
+  ClaudeHookEntry,
+  ClaudeHookDraft
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -122,6 +123,15 @@ declare global {
       claudeHooks: {
         list: () => Promise<ClaudeHookEntry[]>
         openFile: (filePath: string) => Promise<void>
+        add: (draft: ClaudeHookDraft) => Promise<void>
+        update: (
+          filePath: string,
+          event: string,
+          matcherEntryIdx: number,
+          hookIdx: number,
+          draft: { event: string; matcher: string | null; type: string; command: string }
+        ) => Promise<void>
+        delete: (filePath: string, event: string, matcherEntryIdx: number, hookIdx: number) => Promise<void>
       }
     }
   }
