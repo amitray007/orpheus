@@ -1265,7 +1265,12 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     ghostty_surface_config_s surface_cfg = ghostty_surface_config_new();
     surface_cfg.platform_tag = GHOSTTY_PLATFORM_MACOS;
     surface_cfg.platform.macos.nsview = (__bridge void*)termView;
-    surface_cfg.userdata = nullptr;
+    // Set userdata to a non-null sentinel so libghostty machinery that gates on
+    // userdata-presence (mirrored from the GhosttyKit-spm Swift wrapper which
+    // sets this to a bridge pointer) doesn't short-circuit. We don't actually
+    // need a per-surface bridge — g_surfaces map is keyed by workspaceId.
+    static int s_userdataSentinel = 1;
+    surface_cfg.userdata = &s_userdataSentinel;
     surface_cfg.backend = GHOSTTY_SURFACE_IO_BACKEND_EXEC;
     surface_cfg.receive_userdata = nullptr;
     surface_cfg.receive_buffer = nullptr;
