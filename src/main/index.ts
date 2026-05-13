@@ -75,6 +75,26 @@ import type { ClaudeLaunch } from './claudeSettings'
 const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
 
+// Keyed by workspaceId — most recent terminal title from OSC 0/2.
+const workspaceTitles = new Map<string, string>()
+
+let titleCallbackRegistered = false
+
+function ensureTitleCallback(addon: GhosttyNativeAddon): void {
+  if (titleCallbackRegistered) return
+  titleCallbackRegistered = true
+  addon.setTitleCallback((workspaceId: string, title: string) => {
+    if (title) {
+      workspaceTitles.set(workspaceId, title)
+    } else {
+      workspaceTitles.delete(workspaceId)
+    }
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.webContents.send('workspace:titleChanged', { workspaceId, title: title || null })
+    }
+  })
+}
+
 function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
   if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
   const ak = Object.keys(a.env).sort()
@@ -724,6 +744,7 @@ type GhosttyNativeAddon = {
   hide: (workspaceId: string) => void
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
+  setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -772,6 +793,7 @@ ipcMain.handle(
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
   ): { workspaceId: string; created: boolean } => {
     const addon = loadTerminalAddon()
+    ensureTitleCallback(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
@@ -851,9 +873,21 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   if (dirtyWorkspaces.delete(workspaceId)) {
     broadcastDirty(workspaceId, false)
   }
+  // Clear title and notify renderer so stale claude titles don't linger
+  if (workspaceTitles.delete(workspaceId)) {
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+    }
+  }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
 })
+
+ipcMain.handle(
+  'workspace:getTitle',
+  (_e, { workspaceId }: { workspaceId: string }): string | null =>
+    workspaceTitles.get(workspaceId) ?? null
+)
 
 // ---------------------------------------------------------------------------
 // App lifecycle

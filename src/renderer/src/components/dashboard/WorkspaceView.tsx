@@ -25,6 +25,8 @@ export function WorkspaceView({
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
   // Optimistic local status so the chip updates immediately without waiting for a refetch
   const [displayStatus, setDisplayStatus] = useState<WorkspaceStatus>(workspace.status)
+  // Terminal title from OSC 0/2 sequences emitted by Claude
+  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
   // Sync displayStatus when the prop changes (parent refetch landed)
   useEffect(() => {
@@ -40,6 +42,16 @@ export function WorkspaceView({
       if (e.workspaceId === workspaceId) {
         setIsDirty(e.dirty)
       }
+    })
+    return unsub
+  }, [workspace.id])
+
+  // Seed terminal title and subscribe to live OSC 0/2 updates.
+  useEffect(() => {
+    const workspaceId = workspace.id
+    window.api.workspaces.getTitle(workspaceId).then(setTerminalTitle).catch(() => {})
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
+      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
     return unsub
   }, [workspace.id])
@@ -215,6 +227,17 @@ export function WorkspaceView({
         </button>
 
         <span className="text-text-muted text-xs">·</span>
+        {terminalTitle && (
+          <>
+            <span
+              className="text-xs text-text-muted truncate max-w-[240px] flex-shrink min-w-0"
+              title={terminalTitle}
+            >
+              {terminalTitle}
+            </span>
+            <span className="text-text-muted text-xs flex-shrink-0">·</span>
+          </>
+        )}
         <span
           className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
           title={workspace.cwd}

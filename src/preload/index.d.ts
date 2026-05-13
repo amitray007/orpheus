@@ -91,6 +91,10 @@ declare global {
           cb: (e: { workspaceId: string; dirty: boolean }) => void
         ) => () => void
         setStatus: (id: string, status: WorkspaceStatus) => Promise<WorkspaceRecord>
+        getTitle: (id: string) => Promise<string | null>
+        onTitleChanged: (
+          cb: (e: { workspaceId: string; title: string | null }) => void
+        ) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>

@@ -114,7 +114,19 @@ const api = {
       return () => ipcRenderer.removeListener('workspace:dirtyChanged', listener)
     },
     setStatus: (id: string, status: WorkspaceStatus): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:setStatus', { id, status })
+      ipcRenderer.invoke('workspaces:setStatus', { id, status }),
+    getTitle: (id: string): Promise<string | null> =>
+      ipcRenderer.invoke('workspace:getTitle', { workspaceId: id }),
+    onTitleChanged: (
+      cb: (e: { workspaceId: string; title: string | null }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; title: string | null }
+      ): void => cb(e)
+      ipcRenderer.on('workspace:titleChanged', listener)
+      return () => ipcRenderer.removeListener('workspace:titleChanged', listener)
+    }
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')

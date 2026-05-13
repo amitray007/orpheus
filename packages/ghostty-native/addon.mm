@@ -580,6 +580,35 @@ struct GhosttySurfaceEntry {
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
 // ---------------------------------------------------------------------------
+// Title ThreadSafeFunction — marshals SET_TITLE from Ghostty's IO thread
+// back to V8.
+// ---------------------------------------------------------------------------
+
+static Napi::ThreadSafeFunction g_titleTSFN;
+static bool g_titleTSFNActive = false;
+
+static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setTitleCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_titleTSFNActive) {
+        g_titleTSFN.Release();
+        g_titleTSFNActive = false;
+    }
+    g_titleTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-title-callback",
+        0,   // unlimited queue
+        1    // single thread
+    );
+    g_titleTSFNActive = true;
+    return env.Undefined();
+}
+
+// ---------------------------------------------------------------------------
 // Runtime callbacks (required by ghostty_runtime_config_s)
 // ---------------------------------------------------------------------------
 
@@ -588,11 +617,32 @@ static void wakeup_cb(void* /*userdata*/) {
 }
 
 static bool action_cb(ghostty_app_t /*app*/,
-                      ghostty_target_s /*target*/,
+                      ghostty_target_s target,
                       ghostty_action_s action) {
     if (action.tag == GHOSTTY_ACTION_SET_TITLE) {
-        const char* title = action.action.set_title.title;
-        NSLog(@"[ghostty-native] SET_TITLE: %s", title ? title : "(null)");
+        const char* rawTitle = action.action.set_title.title;
+        NSLog(@"[ghostty-native] SET_TITLE: %s", rawTitle ? rawTitle : "(null)");
+
+        if (g_titleTSFNActive && target.tag == GHOSTTY_TARGET_SURFACE) {
+            ghostty_surface_t surf = target.target.surface;
+            std::string workspaceId;
+            for (auto& [id, entry] : g_surfaces) {
+                if (entry.surface == surf) { workspaceId = id; break; }
+            }
+            if (!workspaceId.empty()) {
+                std::string title = rawTitle ? rawTitle : "";
+                g_titleTSFN.BlockingCall(
+                    new std::pair<std::string, std::string>(workspaceId, title),
+                    [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
+                        jsCb.Call({
+                            Napi::String::New(env, data->first),
+                            Napi::String::New(env, data->second)
+                        });
+                        delete data;
+                    }
+                );
+            }
+        }
     }
 
     return false;
@@ -1359,10 +1409,11 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
 // ---------------------------------------------------------------------------
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set("mount",   Napi::Function::New(env, Mount));
-    exports.Set("hide",    Napi::Function::New(env, Hide));
-    exports.Set("resize",  Napi::Function::New(env, Resize));
-    exports.Set("destroy", Napi::Function::New(env, Destroy));
+    exports.Set("mount",             Napi::Function::New(env, Mount));
+    exports.Set("hide",              Napi::Function::New(env, Hide));
+    exports.Set("resize",            Napi::Function::New(env, Resize));
+    exports.Set("destroy",           Napi::Function::New(env, Destroy));
+    exports.Set("setTitleCallback",  Napi::Function::New(env, SetTitleCallback));
     return exports;
 }
 
