@@ -154,10 +154,10 @@ function WorkspaceSubRow({
     <div
       className={[
         'relative flex items-center rounded-md transition-colors duration-150 group',
-        // Indent via left padding instead of ml-7 so hover bg reaches full width
+        // Direction D: 2px left accent bar on active rows for unambiguous selection
         active
-          ? 'bg-accent/15 text-text-primary'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+          ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
       ].join(' ')}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -165,7 +165,7 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-1.5 pl-9 pr-2 py-1 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
+        className="flex items-center gap-2 pl-8 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -211,18 +211,18 @@ function WorkspaceSubRow({
         )}
       </button>
 
-      {/* Pin affordance — visible on hover or when pinned */}
+      {/* Pin affordance — visible on hover or when pinned. 32x32 hit target. */}
       {!renaming && (hovered || isPinned) && (
         <button
           onClick={(e) => {
             e.stopPropagation()
             onTogglePin()
           }}
-          className="flex-shrink-0 p-1.5 mr-1 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           title={isPinned ? 'Unpin workspace' : 'Pin workspace'}
           aria-label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
         >
-          <PushPin size={12} weight={isPinned ? 'fill' : 'regular'} />
+          <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />
         </button>
       )}
 
@@ -360,17 +360,17 @@ function ProjectRow({
         className={[
           'relative flex items-center rounded-md transition-colors duration-150 group',
           active
-            ? 'bg-accent/15 text-text-primary'
-            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'
+            ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
         ].join(' ')}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onContextMenu={handleContextMenu}
       >
-        {/* Main clickable row — navigate to project view */}
+        {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
         <button
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-1.5 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
+          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
           title={project.path}
           aria-label={project.name}
         >
@@ -398,9 +398,9 @@ function ProjectRow({
           )}
         </button>
 
-        {/* Right controls: add workspace + chevron */}
+        {/* Right controls: add workspace + chevron. Each button is 32x32. */}
         {!renaming && (
-          <div className="flex items-center gap-0.5 pr-1.5 flex-shrink-0">
+          <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
             {/* Add workspace — visible on hover */}
             {hovered && (
               <button
@@ -408,11 +408,11 @@ function ProjectRow({
                   e.stopPropagation()
                   onAddWorkspace()
                 }}
-                className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                 title="New workspace"
                 aria-label="New workspace"
               >
-                <Plus size={13} weight="bold" />
+                <Plus size={14} weight="bold" />
               </button>
             )}
 
@@ -422,11 +422,11 @@ function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="p-1.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
               aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
-              {expanded ? <CaretDown size={13} /> : <CaretRight size={13} />}
+              {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
             </button>
           </div>
         )}
