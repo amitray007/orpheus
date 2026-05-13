@@ -153,6 +153,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     // Restore expanded project rows from the projects list itself
     const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
     setExpandedProjectIds(expanded)
+    // Sub-rows are gated on workspaces being loaded — kick off fetches so the
+    // visual state matches the restored expanded state on the very first render.
+    for (const projectId of expanded) fetchWorkspacesForProject(projectId)
 
     // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
     if (!uiState.openAtLastView) return
