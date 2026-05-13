@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 26
+const CURRENT_VERSION = 27
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -600,5 +600,14 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 26) {
     try { db.exec('ALTER TABLE workspaces ADD COLUMN claude_session_id TEXT') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(26)
+  }
+
+  // Version 27: last_title on workspaces — last terminal title observed via
+  // OSC dispatch. Used to seed the sidebar / workspace header on app launch
+  // so users see the prior prompt title instead of the default workspace name
+  // until Claude (re)emits a fresh title.
+  if (currentVersion < 27) {
+    try { db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(27)
   }
 }

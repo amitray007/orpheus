@@ -32,7 +32,9 @@ import {
   reorderWorkspaces,
   listAllPinned,
   setWorkspaceStatus,
-  setWorkspaceClaudeSessionId
+  setWorkspaceClaudeSessionId,
+  setWorkspaceLastTitle,
+  getAllWorkspaceLastTitles
 } from './workspaces'
 import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
@@ -90,6 +92,13 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
       workspaceTitles.set(workspaceId, title)
     } else {
       workspaceTitles.delete(workspaceId)
+    }
+    // Persist so the next launch can seed from the DB and the sidebar/header
+    // shows the prior title instead of the default workspace name.
+    try {
+      setWorkspaceLastTitle(workspaceId, title || null)
+    } catch (err) {
+      console.error('[title] failed to persist last_title', err)
     }
     for (const w of BrowserWindow.getAllWindows()) {
       w.webContents.send('workspace:titleChanged', { workspaceId, title: title || null })
@@ -1012,6 +1021,17 @@ app.whenReady().then(() => {
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+
+  // Seed the in-memory workspaceTitles map from the DB so the sidebar /
+  // workspace header can show the last observed prompt title immediately on
+  // launch — without waiting for Claude to re-emit an OSC title.
+  try {
+    for (const { id, title } of getAllWorkspaceLastTitles()) {
+      workspaceTitles.set(id, title)
+    }
+  } catch (err) {
+    console.error('[startup] failed to seed workspaceTitles from DB:', err)
+  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

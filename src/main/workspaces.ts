@@ -190,6 +190,25 @@ export function unarchiveWorkspace(id: string): WorkspaceRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Last terminal title — written each time libghostty dispatches an OSC title,
+// read at app start to seed the in-memory workspaceTitles map so the sidebar
+// shows the prior title instead of "New workspace" until Claude re-emits one.
+// ---------------------------------------------------------------------------
+
+export function setWorkspaceLastTitle(id: string, title: string | null): void {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET last_title = ? WHERE id = ?').run(title, id)
+}
+
+export function getAllWorkspaceLastTitles(): Array<{ id: string; title: string }> {
+  const db = getDb()
+  const rows = db
+    .prepare("SELECT id, last_title FROM workspaces WHERE last_title IS NOT NULL AND last_title != ''")
+    .all() as Array<{ id: string; last_title: string }>
+  return rows.map((r) => ({ id: r.id, title: r.last_title }))
+}
+
+// ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
