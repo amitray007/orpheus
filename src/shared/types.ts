@@ -47,6 +47,7 @@ export type WorkspaceRecord = {
   archivedAt: number | null
   sortOrder: number | null
   status: WorkspaceStatus
+  claudeSessionId: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context

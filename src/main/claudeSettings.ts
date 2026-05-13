@@ -11,6 +11,7 @@ import type {
 } from '../shared/types'
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
+import { getWorkspace } from './workspaces'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -615,6 +616,15 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   // if (!s.browserIntegration) {
   //   flagParts.push('--no-chrome')
   // }
+
+  // --resume: resume the stored session so this workspace picks up where it
+  // left off. Populated by captureWorkspaceSessionId in index.ts after first mount.
+  if (workspaceId) {
+    const ws = getWorkspace(workspaceId)
+    if (ws?.claudeSessionId) {
+      flagParts.push(`--resume ${ws.claudeSessionId}`)
+    }
+  }
 
   const flags = flagParts.join(' ')
 

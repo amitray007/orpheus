@@ -18,6 +18,7 @@ type WorkspaceRow = {
   archived_at: number | null
   status: WorkspaceStatus
   sort_order: number | null
+  claude_session_id: string | null
 }
 
 type ProjectRow = {
@@ -43,7 +44,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
     status: row.status ?? 'in_progress',
-    sortOrder: row.sort_order ?? null
+    sortOrder: row.sort_order ?? null,
+    claudeSessionId: row.claude_session_id ?? null
   }
 }
 
@@ -209,6 +211,15 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   }
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
+}
+
+// ---------------------------------------------------------------------------
+// Claude session tracking (v26)
+// ---------------------------------------------------------------------------
+
+export function setWorkspaceClaudeSessionId(id: string, sessionId: string | null): void {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET claude_session_id = ? WHERE id = ?').run(sessionId, id)
 }
 
 // ---------------------------------------------------------------------------

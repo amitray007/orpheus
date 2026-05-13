@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 25
+const CURRENT_VERSION = 26
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -53,7 +53,8 @@ const WORKSPACES_SCHEMA_SQL = `
     archived_at INTEGER,
     status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
-    sort_order INTEGER
+    sort_order INTEGER,
+    claude_session_id TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -592,5 +593,12 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 25) {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN archived_workspace_limit INTEGER NOT NULL DEFAULT 20') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(25)
+  }
+
+  // Version 26: claude_session_id on workspaces — persists the session ID so
+  // subsequent mounts can pass --resume and pick up the conversation.
+  if (currentVersion < 26) {
+    try { db.exec('ALTER TABLE workspaces ADD COLUMN claude_session_id TEXT') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(26)
   }
 }
