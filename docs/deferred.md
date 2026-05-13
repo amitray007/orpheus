@@ -73,7 +73,6 @@ Living tracker of everything we've decided to defer in earlier sessions. Update 
 | Item | Priority | Notes |
 |---|---|---|
 | **OAuth login wizard for Anthropic** | P2 | Static API key path works; OAuth would be a guided flow that captures `ANTHROPIC_OAUTH_TOKEN`. Likely involves opening a browser window. |
-| **API key validation** | P2 | "Test connection" button that calls a minimal claude API to verify the key works. |
 
 ## 9. Custom slash commands / subagents UIs
 
