@@ -36,7 +36,7 @@ import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunc
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv } from './claudeAuth'
+import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv, testAnthropicConnection } from './claudeAuth'
 import { listMcpServers } from './mcp'
 import { listSlashCommands, listSubagents } from './claudeAgents'
 import { listClaudeHooks } from './claudeHooks'
@@ -546,6 +546,8 @@ ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: stri
 ipcMain.handle('claudeAuth:get', () => getClaudeAuthState())
 
 ipcMain.handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
+
+ipcMain.handle('claudeAuth:testConnection', () => testAnthropicConnection())
 
 // ---------------------------------------------------------------------------
 // Per-project Claude Settings IPC

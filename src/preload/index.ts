@@ -19,6 +19,7 @@ import type {
   GitStatus,
   ClaudeAuthState,
   ClaudeAuthPatch,
+  ClaudeAuthTestResult,
   DiscoveredMcpServer,
   ClaudeSlashCommand,
   ClaudeSubagent,
@@ -118,7 +119,9 @@ const api = {
   claudeAuth: {
     get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),
     update: (patch: ClaudeAuthPatch): Promise<ClaudeAuthState> =>
-      ipcRenderer.invoke('claudeAuth:update', patch)
+      ipcRenderer.invoke('claudeAuth:update', patch),
+    testConnection: (): Promise<ClaudeAuthTestResult> =>
+      ipcRenderer.invoke('claudeAuth:testConnection')
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>

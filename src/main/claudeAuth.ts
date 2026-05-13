@@ -1,5 +1,5 @@
 import { getDb } from './db'
-import type { ClaudeAuthState, ClaudeAuthPatch, ClaudeCloudProvider } from '../shared/types'
+import type { ClaudeAuthState, ClaudeAuthPatch, ClaudeAuthTestResult, ClaudeCloudProvider } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,4 +102,50 @@ export function getClaudeAuthEnv(): Record<string, string> {
     if (row.auth_vertex_region) env.CLOUD_ML_REGION = row.auth_vertex_region
   }
   return env
+}
+
+/**
+ * Ping Anthropic's /v1/models endpoint to verify the configured API key.
+ * Anthropic-only — Bedrock/Vertex auth lives in AWS/GCP SDKs, not here.
+ * NEVER log the api key value — only the outcome.
+ */
+export async function testAnthropicConnection(): Promise<ClaudeAuthTestResult> {
+  const row = readRow()
+  if (!row) return { ok: false, reason: 'No auth row found' }
+  if (row.cloud_provider !== 'anthropic') {
+    return { ok: false, reason: 'Test only supported for Anthropic provider' }
+  }
+  if (!row.auth_api_key) {
+    return { ok: false, reason: 'No API key set' }
+  }
+
+  const base = row.auth_base_url || 'https://api.anthropic.com'
+  const url = base.replace(/\/+$/, '') + '/v1/models'
+  const started = Date.now()
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': row.auth_api_key,
+        'anthropic-version': '2023-06-01'
+      }
+    })
+    const durationMs = Date.now() - started
+    if (res.ok) return { ok: true, durationMs }
+    // Try to extract an error message without leaking sensitive context
+    let reason = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: { message?: string } }
+      if (body?.error?.message) reason = body.error.message
+    } catch {
+      // ignore JSON parse failures — keep the HTTP status as reason
+    }
+    return { ok: false, reason, status: res.status }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : 'Network error'
+    }
+  }
 }

@@ -17,6 +17,7 @@ import type {
   GitStatus,
   ClaudeAuthState,
   ClaudeAuthPatch,
+  ClaudeAuthTestResult,
   DiscoveredMcpServer,
   ClaudeSlashCommand,
   ClaudeSubagent,
@@ -94,6 +95,7 @@ declare global {
       claudeAuth: {
         get: () => Promise<ClaudeAuthState>
         update: (patch: ClaudeAuthPatch) => Promise<ClaudeAuthState>
+        testConnection: () => Promise<ClaudeAuthTestResult>
       }
       claudeProjectSettings: {
         get: (projectId: string) => Promise<ClaudeProjectSettings>

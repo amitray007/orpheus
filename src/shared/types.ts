@@ -272,6 +272,11 @@ export type ClaudeAuthPatch = {
   vertexRegion?: string
 }
 
+// Test-connection result — returned by the Auth section's "Test connection" button
+export type ClaudeAuthTestResult =
+  | { ok: true; durationMs: number }
+  | { ok: false; reason: string; status?: number }
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

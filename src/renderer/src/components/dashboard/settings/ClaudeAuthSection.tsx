@@ -1,8 +1,63 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { CaretDown, CaretRight } from '@phosphor-icons/react'
+import { CaretDown, CaretRight, CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './primitives'
-import type { ClaudeAuthState, ClaudeCloudProvider } from '@shared/types'
+import type { ClaudeAuthState, ClaudeAuthTestResult, ClaudeCloudProvider } from '@shared/types'
+
+// ---------------------------------------------------------------------------
+// TestConnectionButton — pings Anthropic /v1/models with the stored key
+// ---------------------------------------------------------------------------
+
+interface TestConnectionButtonProps {
+  disabled: boolean
+}
+
+function TestConnectionButton({ disabled }: TestConnectionButtonProps): React.JSX.Element {
+  const [state, setState] = useState<'idle' | 'pending' | ClaudeAuthTestResult>('idle')
+
+  async function run(): Promise<void> {
+    setState('pending')
+    try {
+      const result = await window.api.claudeAuth.testConnection()
+      setState(result)
+    } catch (err) {
+      setState({ ok: false, reason: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={() => { run().catch(() => {}) }}
+        disabled={disabled || state === 'pending'}
+        className="text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+      >
+        Test connection
+      </button>
+      {state === 'pending' && (
+        <span className="flex items-center gap-1.5 text-xs text-text-muted">
+          <Spinner size={12} className="animate-spin" />
+          Pinging…
+        </span>
+      )}
+      {state !== 'idle' && state !== 'pending' && state.ok && (
+        <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+          <CheckCircle size={13} weight="fill" />
+          Connected · {state.durationMs} ms
+        </span>
+      )}
+      {state !== 'idle' && state !== 'pending' && !state.ok && (
+        <span
+          className="flex items-center gap-1.5 text-xs text-red-400"
+          title={state.reason}
+        >
+          <XCircle size={13} weight="fill" />
+          {state.status === 401 ? 'Key rejected' : state.reason}
+        </span>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // ApiKeyInput — masked input with Save / Replace / Clear
@@ -293,6 +348,14 @@ export function ClaudeAuthSection(): React.JSX.Element {
               onClear={() => applyPatch({ apiKey: '' })}
             />
           </SettingRow>
+          {state.cloudProvider === 'anthropic' && (
+            <SettingRow
+              label="Verify"
+              description="Hits Anthropic /v1/models with your stored key. No tokens are billed."
+            >
+              <TestConnectionButton disabled={!state.hasApiKey} />
+            </SettingRow>
+          )}
           <SettingRow
             label="Base URL override"
             description="Proxy or local model endpoint. Leave blank to use the provider default."
