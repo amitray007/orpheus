@@ -8,7 +8,8 @@ import {
   CaretDown,
   CaretRight,
   Stack,
-  Archive
+  Archive,
+  Gear
 } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -548,6 +549,7 @@ interface SidebarProps {
   sidebarWidth: number // px, expanded state only
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'dashboard' | 'sessions') => void
+  onSelectSettings: () => void
   onAddProject: () => void
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
@@ -577,6 +579,7 @@ export function Sidebar({
   sidebarWidth,
   onSelectProject,
   onSelectNav,
+  onSelectSettings,
   onAddProject,
   addingProject = false,
   onToggleProjectExpand,
@@ -753,7 +756,7 @@ export function Sidebar({
         collapsed ? 'w-14' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'pt-2 pb-0 flex flex-col gap-1 overflow-hidden shrink-0'
+        'pt-2 pb-2 flex flex-col gap-1 overflow-hidden shrink-0'
       ].join(' ')}
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
@@ -888,6 +891,17 @@ export function Sidebar({
         )}
       </div>
 
+      {/* Spacer pushes Settings to the bottom */}
+      <div className="flex-1" />
+
+      {/* Bottom: Settings */}
+      <NavItem
+        Icon={Gear}
+        label="Settings"
+        active={activeView === 'settings'}
+        collapsed={collapsed}
+        onClick={onSelectSettings}
+      />
     </aside>
   )
 }

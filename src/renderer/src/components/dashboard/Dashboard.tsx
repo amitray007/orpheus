@@ -562,8 +562,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     <div className="flex flex-col h-screen">
       <TopBar
         onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
-        onSelectSettings={handleSelectSettings}
-        isSettingsActive={view.kind === 'settings'}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -583,6 +581,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           sidebarWidth={uiState?.sidebarWidth ?? 256}
           onSelectProject={handleSelectProject}
           onSelectNav={handleSelectNav}
+          onSelectSettings={handleSelectSettings}
           onAddProject={handleAddProject}
           addingProject={addingProject}
           onToggleProjectExpand={handleToggleProjectExpand}
