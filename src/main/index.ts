@@ -534,6 +534,18 @@ ipcMain.handle('config:openFolder', async () => {
 
 ipcMain.handle('app:getVersion', () => app.getVersion())
 
+ipcMain.handle('window:openDevTools', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) return
+  win.webContents.openDevTools({ mode: 'detach' })
+})
+
+ipcMain.handle('window:reload', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) return
+  win.webContents.reload()
+})
+
 // ---------------------------------------------------------------------------
 // Projects IPC
 // ---------------------------------------------------------------------------

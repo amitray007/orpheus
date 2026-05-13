@@ -34,6 +34,7 @@ import { OrpheusAppearanceSection } from './settings/OrpheusAppearanceSection'
 import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
 import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
 import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
+import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ type SectionId =
   | 'orpheus-sidebar'
   | 'orpheus-window'
   | 'orpheus-updates'
+  | 'orpheus-developer'
   | 'orpheus-about'
 
 interface SectionDef {
@@ -94,6 +96,7 @@ const GROUPS: SectionGroup[] = [
       { id: 'orpheus-sidebar',    label: 'Sidebar',          icon: SidebarSimple,    Component: OrpheusSidebarSection },
       { id: 'orpheus-window',     label: 'Window',           icon: AppWindow,        Component: OrpheusWindowSection },
       { id: 'orpheus-updates',    label: 'Updates',          icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
+      { id: 'orpheus-developer',  label: 'Developer',        icon: Code,             Component: OrpheusDeveloperSection },
       { id: 'orpheus-about',      label: 'About Orpheus',    icon: Info,             Component: OrpheusAboutSection }
     ]
   }

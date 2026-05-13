@@ -39,6 +39,10 @@ const api = {
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
   },
+  window: {
+    openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
+    reload: (): Promise<void> => ipcRenderer.invoke('window:reload')
+  },
   terminal: {
     mount: (
       workspaceId: string,

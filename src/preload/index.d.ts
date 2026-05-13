@@ -39,6 +39,10 @@ declare global {
       app: {
         getVersion: () => Promise<string>
       }
+      window: {
+        openDevTools: () => Promise<void>
+        reload: () => Promise<void>
+      }
       terminal: {
         mount: (
           workspaceId: string,
