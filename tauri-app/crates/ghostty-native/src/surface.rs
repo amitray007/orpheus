@@ -118,13 +118,20 @@ pub fn mount(
     }
 
     // Create new surface.
+    // IMPORTANT: keep the view *parentless* until AFTER ghostty_surface_new.
+    // Tauri's WKWebView host contentView is layer-backed; if we addSubview:
+    // beforehand AppKit implicitly promotes ghost_view to layer-backed mode
+    // before libghostty's setLayer:/setWantsLayer:YES dance runs, which
+    // breaks IOSurfaceLayer's setSurfaceCallback present path. Order is:
+    //   1. alloc/init parentless view
+    //   2. ghostty_surface_new — libghostty installs its IOSurfaceLayer and
+    //      puts the view into layer-hosting mode
+    //   3. addSubview: — now safe to attach to the live hierarchy
     let frame = css_to_ns_rect(x, y, w, h, parent_h);
     let ghost_view: Retained<GhosttyView> = unsafe {
         let alloc = GhosttyView::alloc(mtm).set_ivars(GhosttyViewIvars::default());
         msg_send![super(alloc, NSView::class()), initWithFrame: frame]
     };
-
-    content_view.addSubview(&*ghost_view);
 
     let app = {
         let g = crate::app::GLOBAL.get().unwrap().lock().unwrap();
@@ -184,9 +191,12 @@ pub fn mount(
 
     let surface = unsafe { ghostty_surface_new(app, &scfg as *const ghostty_surface_config_s) };
     if surface.is_null() {
-        ghost_view.removeFromSuperview();
         return Err("ghostty_surface_new returned null".into());
     }
+
+    // libghostty has now installed its IOSurfaceLayer and put the view into
+    // layer-hosting mode — safe to attach to the live view hierarchy.
+    content_view.addSubview(&*ghost_view);
 
     // Wire surface into the view so key/mouse handlers can find it.
     ghost_view.set_surface(surface);

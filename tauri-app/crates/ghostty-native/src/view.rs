@@ -163,8 +163,16 @@ define_class!(
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool { true }
 
-        #[unsafe(method(wantsLayer))]
-        fn wants_layer(&self) -> bool { true }
+        // IMPORTANT: do NOT override wantsLayer to return YES.
+        // libghostty's Metal renderer (src/renderer/Metal.zig) puts the view in
+        // *layer-hosting* mode by calling setLayer:(IOSurfaceLayer) FIRST and
+        // then setWantsLayer:YES. If we already report wantsLayer=YES at the
+        // subclass level, AppKit treats the IOSurfaceLayer as a backing layer
+        // instead of a hosted one — its setSurfaceCallback path that presents
+        // new frames to the compositor never runs and animations only update
+        // when input events poke the layer hierarchy. Leaving the default NO
+        // here lets libghostty's setLayer/setWantsLayer dance establish
+        // layer-hosting mode correctly.
 
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool { true }
