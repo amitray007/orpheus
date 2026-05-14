@@ -53,7 +53,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <InfoRow label="Orpheus version" value={orpheusVersion ? `v${orpheusVersion}` : 'Loading…'} mono />
           <InfoRow label="Ghostty version" value="v1.3.1 (Lakr233/libghostty-spm prebuilt)" mono />
-          <InfoRow label="Runtime" value="Electron + libghostty (embedded terminal)" />
+          <InfoRow label="Runtime" value="Tauri 2 + libghostty (embedded terminal)" />
         </div>
       </section>
 
