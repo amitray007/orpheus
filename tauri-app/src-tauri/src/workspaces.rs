@@ -79,6 +79,7 @@ impl rusqlite::types::ToSql for WorkspaceStatus {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub project_id: String,
@@ -97,6 +98,7 @@ pub struct Workspace {
 
 /// A pinned workspace alongside its parent project — mirrors TS PinnedItem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PinnedItem {
     pub workspace: Workspace,
     pub project: Project,

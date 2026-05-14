@@ -54,6 +54,7 @@ pub struct Rect {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MountResult {
     pub workspace_id: String,
     pub created: bool,

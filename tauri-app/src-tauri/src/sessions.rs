@@ -69,6 +69,7 @@ impl rusqlite::types::ToSql for SessionStatus {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub project_id: String,

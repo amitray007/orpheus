@@ -14,6 +14,7 @@ use crate::util::{now_ms, uuid_v4};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub path: String,

@@ -8,19 +8,21 @@ use tokio::sync::oneshot;
 use ghostty_native::{MountResult, Rect};
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MountArgs {
     pub workspace_id: String,
     pub rect: Rect,
-    pub scale: f64,
+    pub scale_factor: f64,
     pub cwd: Option<String>,
     pub command: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResizeArgs {
     pub workspace_id: String,
     pub rect: Rect,
-    pub scale: f64,
+    pub scale_factor: f64,
 }
 
 #[tauri::command]
@@ -34,7 +36,7 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
                 &win,
                 &args.workspace_id,
                 &args.rect,
-                args.scale,
+                args.scale_factor,
                 args.cwd.as_deref(),
                 args.command.as_deref(),
             )
@@ -75,7 +77,7 @@ pub async fn terminal_resize(window: Window, args: ResizeArgs) -> Result<(), Str
     let (tx, rx) = oneshot::channel();
     window
         .run_on_main_thread(move || {
-            let res = ghostty_native::resize(&args.workspace_id, &args.rect, args.scale)
+            let res = ghostty_native::resize(&args.workspace_id, &args.rect, args.scale_factor)
                 .map_err(|e| e.to_string());
             let _ = tx.send(res);
         })
