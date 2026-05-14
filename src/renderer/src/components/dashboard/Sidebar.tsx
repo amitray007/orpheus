@@ -768,7 +768,7 @@ export function Sidebar({
         collapsed ? 'w-14' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'pt-2 pb-2 flex flex-col gap-1 overflow-hidden shrink-0 h-full'
+        'pt-2 flex flex-col gap-1 overflow-hidden shrink-0 h-full'
       ].join(' ')}
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
