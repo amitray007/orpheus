@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use rusqlite::Connection;
 
 use crate::util::now_ms;
@@ -445,12 +444,14 @@ impl Db {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the on-disk path for the Orpheus SQLite database, honoring platform
-/// conventions via the `directories` crate. Returns None only if the OS cannot
-/// provide an app data directory.
+// Matches Electron `app.getPath('userData')` for productName "Orpheus".
+// BaseDirs.data_dir() on macOS = ~/Library/Application Support, so the
+// composed path is ~/Library/Application Support/Orpheus/orpheus.sqlite.
+// ProjectDirs adds a reverse-DNS prefix that diverges from the Electron path,
+// hiding the user's existing data — never use ProjectDirs here.
 pub fn db_path() -> Option<PathBuf> {
-    let dirs = ProjectDirs::from("com", "Orpheus", "Orpheus")?;
-    Some(dirs.data_dir().join("orpheus.sqlite"))
+    let base = directories::BaseDirs::new()?;
+    Some(base.data_dir().join("Orpheus").join("orpheus.sqlite"))
 }
 
 // ---------------------------------------------------------------------------
@@ -739,8 +740,6 @@ mod tests {
     }
 
     fn dirs_next_path() -> PathBuf {
-        ProjectDirs::from("com", "Orpheus", "Orpheus")
-            .map(|d| d.data_dir().join("orpheus.sqlite"))
-            .unwrap_or_default()
+        db_path().unwrap_or_default()
     }
 }

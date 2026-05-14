@@ -103,8 +103,9 @@ pub fn run() {
                 });
             }
 
-            let socket_handle =
-                orpheus_notify::start_socket_server(shared, watchdog_sec, app.handle().clone());
+            let socket_handle = tauri::async_runtime::block_on(async {
+                orpheus_notify::start_socket_server(shared, watchdog_sec, app.handle().clone())
+            });
             app.manage(SocketGuard(Mutex::new(Some(socket_handle))));
 
             Ok(())

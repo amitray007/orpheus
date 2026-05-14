@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -115,9 +114,11 @@ pub fn compute_detail(status: &WorkspaceStatus, detail: &WorkspaceDetail) -> &'s
 // ---------------------------------------------------------------------------
 
 /// Returns the socket path: ~/Library/Application Support/Orpheus/notify.sock
+/// Mirrors db_path's BaseDirs derivation so socket + DB sit side-by-side in
+/// the same Electron-compatible directory.
 pub fn notify_sock_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "Orpheus", "Orpheus")
-        .map(|d| d.data_dir().join("notify.sock"))
+    let base = directories::BaseDirs::new()?;
+    Some(base.data_dir().join("Orpheus").join("notify.sock"))
 }
 
 // ---------------------------------------------------------------------------
