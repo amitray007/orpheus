@@ -756,16 +756,6 @@ export function Sidebar({
       ].join(' ')}
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
-      {/* When the global TopBar is hidden (workspace terminal view), reserve
-          44px at the top of the sidebar so the macOS traffic lights have a
-          drag region and don't overlap the first nav item. */}
-      {activeView === 'workspace' && (
-        <div
-          className="h-11 flex-shrink-0 -mt-2"
-          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        />
-      )}
-
       {/* Top nav */}
       <NavItem
         Icon={SquaresFour}

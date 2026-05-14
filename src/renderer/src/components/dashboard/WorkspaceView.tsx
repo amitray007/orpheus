@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type React from 'react'
-import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
 import type { WorkspaceRecord, WorkspaceStatus, WorkspaceActivityDetail } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
+import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -15,16 +16,18 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   // remountKey — incrementing this triggers the mount effect to re-run,
   // which tears down the old surface and boots a fresh one with new settings.
   const [remountKey, setRemountKey] = useState(0)
-  // Dirty state — true when settings have changed since this workspace was last mounted.
-  const [isDirty, setIsDirty] = useState(false)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
   // Activity status driven by claude hook events
   const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
   // Detail sub-state (thinking / tool / compacting / ready / etc.)
   const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(undefined)
-  // Terminal title from OSC 0/2 sequences emitted by Claude
-  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+  // Where to portal the workspace title bar — slot lives in TopBar.
+  const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
+
+  useLayoutEffect(() => {
+    setTitleBarHost(document.getElementById('topbar-workspace-slot'))
+  }, [])
 
   // Subscribe to live activity changes for this workspace.
   useEffect(() => {
@@ -38,29 +41,6 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     })
     return unsub
   }, [workspace.id, workspace.status])
-
-  // Seed dirty state on mount and subscribe to live events.
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces.isDirty(workspaceId).then(setIsDirty).catch(() => setIsDirty(false))
-
-    const unsub = window.api.workspaces.onDirtyChanged((e) => {
-      if (e.workspaceId === workspaceId) {
-        setIsDirty(e.dirty)
-      }
-    })
-    return unsub
-  }, [workspace.id])
-
-  // Seed terminal title and subscribe to live OSC 0/2 updates.
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces.getTitle(workspaceId).then(setTerminalTitle).catch(() => {})
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
-    })
-    return unsub
-  }, [workspace.id])
 
   async function handleRestart(): Promise<void> {
     await window.api.terminal.destroy(workspace.id)
@@ -192,59 +172,24 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   }, [remountKey])
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Tab title bar — thin strip */}
-      <div className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0">
-        <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-        <span
-          className="text-xs font-medium text-text-primary truncate"
-          title={
-            workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
-              ? `${workspace.name} — ${terminalTitle}`
-              : workspace.name
-          }
-        >
-          {workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name}
-        </span>
-
-        {/* Gear — opens drawer on overrides tab */}
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setDrawer(drawer === 'overrides' ? null : 'overrides')}
-          title="Workspace overrides"
-          className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-        >
-          <Gear size={14} />
-        </button>
-
-        <span className="text-text-muted text-xs">·</span>
-        <span
-          className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
-          title={workspace.cwd}
-        >
-          <Folder size={10} className="flex-shrink-0" />
-          {workspace.cwd}
-        </span>
-        {/* Settings-changed chip — appears when launch params have drifted since last mount */}
-        {isDirty && (
-          <span className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400">
-            Settings changed
-            <button
-              onClick={() => {
-                handleRestart().catch((e) =>
-                  console.error('[WorkspaceView] restart failed:', e)
-                )
-              }}
-              className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-            >
-              Restart to apply
-            </button>
-          </span>
+    <>
+      {titleBarHost &&
+        createPortal(
+          <WorkspaceTitleBar
+            workspace={workspace}
+            drawer={drawer}
+            onSetDrawer={setDrawer}
+            onRestart={() => {
+              handleRestart().catch((e) =>
+                console.error('[WorkspaceView] restart failed:', e)
+              )
+            }}
+          />,
+          titleBarHost
         )}
-      </div>
 
       {/* Content row: terminal host + optional drawer */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex h-full min-h-0">
         {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
             ResizeObserver on this div fires when the drawer opens/closes (flex layout narrows it),
             which triggers terminal:resize and repositions the native NSView. */}
@@ -263,6 +208,6 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
           </div>
         )}
       </div>
-    </div>
+    </>
   )
 }

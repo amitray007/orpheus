@@ -563,11 +563,11 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
 
   return (
     <div className="flex flex-col h-screen">
-      {view.kind !== 'workspace' && (
-        <TopBar
-          onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
-        />
-      )}
+      <TopBar
+        onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
+        sidebarCollapsed={sidebarCollapsed}
+        sidebarWidth={uiState?.sidebarWidth ?? 256}
+      />
 
       <div className="flex flex-1 min-h-0">
         <Sidebar
