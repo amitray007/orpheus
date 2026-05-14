@@ -50,8 +50,18 @@ unsafe extern "C" fn display_link_cb(
 }
 
 unsafe extern "C" fn draw_trampoline(ctx: *mut std::ffi::c_void) {
-    use crate::ffi::ghostty_surface_draw;
-    unsafe { ghostty_surface_draw(ctx as ghostty_surface_t) };
+    use crate::ffi::{ghostty_surface_draw, ghostty_surface_refresh};
+    // ghostty_surface_refresh flags the surface as needing a render. Without
+    // it, ghostty_surface_draw short-circuits when PTY output rewrites cells
+    // with identical glyphs (e.g. Claude's spinner cycling through braille
+    // characters in the same column). Ghostty.app's standalone render thread
+    // handles this internally; embedders driving draw from CVDisplayLink must
+    // signal refresh explicitly per frame. Cheap flag-set.
+    unsafe {
+        let surface = ctx as ghostty_surface_t;
+        ghostty_surface_refresh(surface);
+        ghostty_surface_draw(surface);
+    }
 }
 
 /// Create a started CVDisplayLink wired to the given surface.
