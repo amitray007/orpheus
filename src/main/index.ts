@@ -183,23 +183,6 @@ function encodedClaudeCwd(cwd: string): string {
   return cwd.replace(/\//g, '-')
 }
 
-// Wrap an arbitrary string in POSIX single quotes, escaping any embedded `'`
-// as `'\''`. Used to embed the claude --settings JSON blob inside the command
-// that gets typed into the user's shell on terminal launch.
-function shellQuoteSingle(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'"
-}
-
-// Composed claude command typed into the shell on first mount. Ends with \r
-// so the shell executes it without the user pressing Enter. flags are already
-// space-separated tokens with no embedded spaces, so they don't need quoting.
-function buildClaudeInitialInput(flags: string, settingsJson: string): string {
-  let cmd = 'claude'
-  if (settingsJson) cmd += ' --settings ' + shellQuoteSingle(settingsJson)
-  if (flags) cmd += ' ' + flags
-  return cmd + '\r'
-}
-
 /**
  * After a new workspace mounts (no session ID stored yet), poll the
  * ~/.claude/projects/<encoded-cwd>/ directory until a .jsonl appears,
@@ -897,7 +880,6 @@ type GhosttyNativeAddon = {
       scaleFactor: number
       cwd?: string
       env?: Record<string, string>
-      initialInput?: string
     }
   ) => { workspaceId: string; created: boolean }
   hide: (workspaceId: string) => void
@@ -963,7 +945,7 @@ ipcMain.handle(
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
 
-    // Compose claude settings: flags + JSON blob + env overrides.
+    // Compose claude settings into env vars for the wrapper script.
     const launch = composeClaudeLaunch(projectId, workspaceId)
 
     // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
@@ -974,15 +956,12 @@ ipcMain.handle(
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
       ...authEnv,  // auth env wins on conflict
+      ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
+      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
       ORPHEUS_WORKSPACE_ID: workspaceId,
       ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
       ORPHEUS_NOTIFY: shimPath()
     }
-
-    // Build the claude command that gets typed into the shell on launch.
-    // Flag tokens (--model opus etc.) have no embedded spaces so they tokenize
-    // naturally; the settings JSON gets single-quoted because it contains "{}.
-    const claudeCommand = buildClaudeInitialInput(launch.flags, launch.settingsJson)
 
     // Build a redacted copy of env for logging — never log secret values
     const redactedEnv: Record<string, string> = {}
@@ -1003,8 +982,7 @@ ipcMain.handle(
       rect,
       scaleFactor,
       cwd,
-      env: surfaceEnv,
-      initialInput: claudeCommand
+      env: surfaceEnv
     })
 
     // Snapshot the composed launch so we can detect settings drift later.

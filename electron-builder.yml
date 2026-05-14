@@ -34,6 +34,10 @@ extraResources:
     to: ghostty
     filter:
       - "**/*"
+  # Wrapper script: runs claude in a login zsh, then exec's interactive zsh
+  # after claude exits so the terminal stays alive for further use.
+  - from: resources/orpheus-claude.sh
+    to: orpheus-claude.sh
   # Hook notification shim — invoked by Claude Code hooks to post activity events
   # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
   - from: resources/bin/orpheus-notify

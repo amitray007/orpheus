@@ -1213,15 +1213,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         }
     }
 
-    // initialInput — optional string typed into the surface as soon as the
-    // shell is ready. Used to launch `claude` with the composed flags so the
-    // user sees the command in their scrollback instead of opaque wrapper output.
-    std::string initialInputStr;
-    Napi::Value initialInputVal = opts.Get("initialInput");
-    if (initialInputVal.IsString()) {
-        initialInputStr = initialInputVal.As<Napi::String>().Utf8Value();
-    }
-
     // Lazy init Ghostty
     if (!ensureApp()) {
         Napi::Error::New(env, "ghostty init failed").ThrowAsJavaScriptException();
@@ -1320,12 +1311,32 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     const char* fallbackCwd = home ? home : "/tmp";
     surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
-    // No explicit command — Ghostty falls back to the user's $SHELL wrapped in
-    // /usr/bin/login, giving us a full interactive login session that sources
-    // both ~/.zprofile and ~/.zshrc. The `claude` invocation is typed into the
-    // shell via initial_input below, so the command lands in scrollback and
-    // when claude exits the user is dropped back at their normal shell prompt.
-    surface_cfg.command = nullptr;
+    // Spawn the bundled wrapper script as the surface process.
+    //
+    // orpheus-claude.sh runs claude inside a zsh login session and, when claude
+    // exits, exec's an interactive zsh so the terminal stays alive for further use.
+    //
+    // Ghostty on macOS wraps the command string via login(1):
+    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l <script>"
+    // This gives a full login session so ~/.zprofile, ~/.zshrc, etc. are sourced
+    // and ANTHROPIC_API_KEY / PATH are available.  The wrapper's #!/bin/zsh -l
+    // shebang also sources login files before running claude.
+    //
+    // Path resolution: use [[NSBundle mainBundle] resourcePath] which maps to
+    // Contents/Resources/ in the packaged app.  Fall back to bundlePath +
+    // /Contents/Resources if resourcePath returns an unexpected value.
+    NSString* resourcePath = [[NSBundle mainBundle] resourcePath];
+    if (!resourcePath || resourcePath.length == 0) {
+        // Fallback: derive from bundlePath.
+        resourcePath = [[[NSBundle mainBundle] bundlePath]
+                        stringByAppendingPathComponent:@"Contents/Resources"];
+    }
+    NSString* wrapperNSPath = [resourcePath
+                               stringByAppendingPathComponent:@"orpheus-claude.sh"];
+    const char* commandPath = [wrapperNSPath UTF8String];
+    NSLog(@"[ghostty-native] wrapper script path: %@", wrapperNSPath);
+
+    surface_cfg.command = commandPath;
 
     // Build env_vars array from JS-provided key/value pairs.
     // The ghostty_env_var_s structs and their strings must live through
@@ -1357,18 +1368,14 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         surface_cfg.env_var_count = 0;
     }
 
-    // Don't use initial_input — it fires before the shell is ready to read
-    // stdin, so the bytes end up echoed in scrollback above the prompt
-    // instead of getting typed AT the prompt. Inject via ghostty_surface_text
-    // on a delay after the surface is created (see dispatch_after below).
     surface_cfg.initial_input = nullptr;
-    surface_cfg.wait_after_command = true;  // keep surface alive when the shell exits
+    surface_cfg.wait_after_command = true;  // keep surface alive (academic: exec zsh never exits)
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new command=(default shell) cwd=%s (from_js=%s) deferred_input_len=%zu",
+    NSLog(@"[ghostty-native] surface_new command=%s cwd=%s (from_js=%s)",
+          commandPath,
           surface_cfg.working_directory,
-          cwdStr.empty() ? "(fallback)" : "yes",
-          initialInputStr.size());
+          cwdStr.empty() ? "(fallback)" : "yes");
 
     ghostty_surface_t surface = nullptr;
     @try {
@@ -1430,50 +1437,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
-
-    // Defer typing the claude command until the shell has had time to print
-    // its prompt — 900ms covers a typical heavy ~/.zshrc on a warm boot. The
-    // surface lookup at dispatch time guards against destroy-before-fire.
-    //
-    // ghostty_surface_text uses bracketed paste, which zsh accepts as input
-    // but does NOT execute even with a trailing \r. So we send the command
-    // text via surface_text, then synthesize a Return keypress via surface_key
-    // to actually run it.
-    if (!initialInputStr.empty()) {
-        // Strip any trailing CR/LF from the JS-supplied command — we'll send
-        // Enter ourselves as a real key event below.
-        std::string capturedInput = initialInputStr;
-        while (!capturedInput.empty() &&
-               (capturedInput.back() == '\r' || capturedInput.back() == '\n')) {
-            capturedInput.pop_back();
-        }
-        std::string capturedWid = workspaceId;
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(),
-            ^{
-                auto found = g_surfaces.find(capturedWid);
-                if (found == g_surfaces.end()) {
-                    NSLog(@"[ghostty-native] deferred input: surface for %s gone, skipping",
-                          capturedWid.c_str());
-                    return;
-                }
-                ghostty_surface_t s = found->second.surface;
-                ghostty_surface_text(s, capturedInput.c_str(), capturedInput.size());
-                // Synthesize Return — kVK_Return = 36 on macOS.
-                ghostty_input_key_s enter = {};
-                enter.action = GHOSTTY_ACTION_PRESS;
-                enter.mods = GHOSTTY_MODS_NONE;
-                enter.consumed_mods = GHOSTTY_MODS_NONE;
-                enter.keycode = 36;
-                enter.unshifted_codepoint = 0x0D;
-                enter.composing = false;
-                enter.text = "\r";
-                ghostty_surface_key(s, enter);
-                NSLog(@"[ghostty-native] deferred input sent to %s (%zu bytes + Enter)",
-                      capturedWid.c_str(), capturedInput.size());
-            });
-    }
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("workspaceId", Napi::String::New(env, workspaceId));
