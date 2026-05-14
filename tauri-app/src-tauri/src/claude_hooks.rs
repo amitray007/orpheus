@@ -267,14 +267,16 @@ pub fn list_hooks(db: &Db) -> Result<Vec<ClaudeHookEntry>, ClaudeHookError> {
 
     for project in list_projects(db).unwrap_or_default() {
         let proj_path = project_settings_path(&project.path);
-        let proj_map = read_and_parse(&proj_path)?;
-        all.extend(parse_hooks_from_map(
-            &proj_map,
-            &proj_path.display().to_string(),
-            "project",
-            Some(&project.id),
-            Some(&project.name),
-        ));
+        // Skip per-project files that are missing or unreadable — don't error the whole list.
+        if let Ok(proj_map) = read_and_parse(&proj_path) {
+            all.extend(parse_hooks_from_map(
+                &proj_map,
+                &proj_path.display().to_string(),
+                "project",
+                Some(&project.id),
+                Some(&project.name),
+            ));
+        }
     }
 
     all.sort_by(|a, b| {

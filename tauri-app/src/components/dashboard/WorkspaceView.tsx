@@ -193,8 +193,12 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab title bar — thin strip */}
-      <div className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0">
+      {/* Tab title bar — thin strip; also serves as drag region when the global TopBar is hidden */}
+      <div
+        className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0"
+        data-tauri-drag-region
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
         <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
         <span
           className="text-xs font-medium text-text-primary truncate"
@@ -212,15 +216,18 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setDrawer(drawer === 'overrides' ? null : 'overrides')}
           title="Workspace overrides"
+          data-tauri-drag-region="false"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
         >
           <Gear size={14} />
         </button>
 
-        <span className="text-text-muted text-xs">·</span>
+        <span className="text-text-muted text-xs" data-tauri-drag-region>·</span>
         <span
           className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
           title={workspace.cwd}
+          data-tauri-drag-region
         >
           <Folder size={10} className="flex-shrink-0" />
           {workspace.cwd}
@@ -235,6 +242,8 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
                   console.error('[WorkspaceView] restart failed:', e)
                 )
               }}
+              data-tauri-drag-region="false"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
             >
               Restart to apply
