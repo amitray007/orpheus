@@ -6,6 +6,7 @@ pub mod git;
 pub mod os_notifications;
 pub mod ui_state;
 pub mod mcp;
+pub mod orpheus_notify;
 pub mod claude_hooks;
 pub mod claude_project_settings;
 pub mod claude_settings;

@@ -497,14 +497,6 @@ pub fn delete_mcp_server(file_path: &Path, name: &str) -> Result<(), McpError> {
 mod tests {
     use super::*;
     use crate::db::Db;
-    use tempfile::TempDir;
-
-    fn temp_db() -> (Db, TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.sqlite");
-        let db = Db::open_at(&path).unwrap();
-        (db, dir)
-    }
 
     fn stdio_draft(name: &str, source: &str, project_id: Option<&str>) -> McpServerDraft {
         McpServerDraft {
@@ -530,12 +522,6 @@ mod tests {
             source: "user".into(),
             project_id: None,
         }
-    }
-
-    fn write_user_claude_json(dir: &TempDir, content: &str) -> PathBuf {
-        let path = dir.path().join(".claude.json");
-        std::fs::write(&path, content).unwrap();
-        path
     }
 
     #[test]
