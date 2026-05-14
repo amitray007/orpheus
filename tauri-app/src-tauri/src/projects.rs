@@ -2,12 +2,12 @@
 // IDs are TEXT UUIDs (same as TS). All timestamps are epoch-milliseconds i64.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
+use crate::util::{now_ms, uuid_v4};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -54,13 +54,6 @@ fn row_to_project(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn encode_path(path: &str) -> String {
     // Mirrors TS: path.replace(/\//g, '-')
@@ -195,60 +188,15 @@ pub fn set_project_expanded_in_sidebar(db: &Db, id: &str, expanded: bool) -> Res
 /// Assign sort_order to each project in the given order — mirrors TS reorderProjects transaction.
 pub fn reorder_projects(db: &Db, ordered_ids: &[&str]) -> Result<(), DbError> {
     let conn = db.conn();
-    // rusqlite doesn't expose an explicit transaction builder from &Connection,
-    // so we use execute_batch to manage BEGIN/COMMIT.
-    let mut sql = String::from("BEGIN;\n");
+    let tx = rusqlite::Connection::unchecked_transaction(conn).map_err(DbError::from)?;
     for (idx, id) in ordered_ids.iter().enumerate() {
-        // Safe: idx is usize from enumerate, id comes from caller — not user input in the SQL
-        // injection sense. Using params! here requires the loop to issue individual executes;
-        // we keep it in a single batch by formatting the literal integers and quoting the id.
-        // IDs are UUIDs (hex + dashes only), so this is safe.
-        sql.push_str(&format!(
-            "UPDATE projects SET sort_order = {} WHERE id = '{}';\n",
-            idx, id
-        ));
+        tx.execute(
+            "UPDATE projects SET sort_order = ?1 WHERE id = ?2",
+            rusqlite::params![idx as i64, id],
+        )
+        .map_err(DbError::from)?;
     }
-    sql.push_str("COMMIT;\n");
-    conn.execute_batch(&sql).map_err(DbError::from)
-}
-
-// ---------------------------------------------------------------------------
-// UUID helper — avoids adding the `uuid` crate just for this module.
-// Uses getrandom via std random bytes; simple v4 layout.
-// ---------------------------------------------------------------------------
-
-fn uuid_v4() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{Duration, Instant};
-
-    // For a data-layer test helper, deterministic uniqueness from time + counter is fine.
-    // Production will wire a proper UUID crate in Phase 3 or use Tauri's built-in.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    let mut h = DefaultHasher::new();
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos()
-        .hash(&mut h);
-    seq.hash(&mut h);
-    Instant::now().hash(&mut h); // adds more jitter
-    let h1 = h.finish();
-
-    seq.hash(&mut h);
-    let h2 = h.finish();
-
-    // Format as UUID v4 with the version/variant bits set correctly.
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (h1 >> 32) as u32,
-        (h1 >> 16) as u16,
-        h1 as u16 & 0x0fff,
-        (h2 >> 48) as u16 & 0x3fff | 0x8000,
-        h2 & 0x0000_ffff_ffff_ffff,
-    )
+    tx.commit().map_err(DbError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,5 +300,19 @@ mod tests {
         set_project_expanded_in_sidebar(&db, &p.id, false).expect("collapse");
         let projects = list_projects(&db).expect("list");
         assert!(!projects[0].expanded_in_sidebar);
+    }
+
+    #[test]
+    fn reorder_projects_apostrophe_in_id() {
+        let (db, _dir) = temp_db();
+
+        let p = add_project(&db, Path::new("/tmp/reorder_apos")).expect("add");
+
+        // An ID with a single quote must not cause a SQL error with bound params.
+        let fake_id = "foo'bar";
+        reorder_projects(&db, &[&p.id, fake_id]).expect("reorder should not error");
+
+        let projects = list_projects(&db).expect("list");
+        assert_eq!(projects[0].sort_order, Some(0), "real project gets sort_order 0");
     }
 }

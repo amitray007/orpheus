@@ -1,12 +1,10 @@
 // App UI state — mirrors src/main/uiState.ts.
 // Manages the app_ui_state singleton row (id = 1) in the SQLite DB.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
+use crate::util::now_ms;
 
 // ---------------------------------------------------------------------------
 // AppViewKind
@@ -244,56 +242,57 @@ pub fn update_ui_state(db: &Db, patch: AppUiStatePatch) -> Result<AppUiState, Ui
 
     let now = now_ms();
     let mut set_clauses: Vec<String> = Vec::new();
-    // We build the SQL dynamically and bind with rusqlite params_from_iter.
-    // rusqlite doesn't have a clean variadic bind API, so we collect boxed values.
+    let mut param_vals: Vec<rusqlite::types::Value> = Vec::new();
 
-    // Helper: push a boolean column
     macro_rules! push_bool {
         ($field:expr, $col:literal) => {
             if let Some(v) = $field {
-                set_clauses.push(format!("{} = {}", $col, if v { 1 } else { 0 }));
+                set_clauses.push(format!("{} = ?{}", $col, set_clauses.len() + 1));
+                param_vals.push(rusqlite::types::Value::Integer(if v { 1 } else { 0 }));
             }
         };
     }
     macro_rules! push_int {
         ($field:expr, $col:literal) => {
             if let Some(v) = $field {
-                set_clauses.push(format!("{} = {}", $col, v));
+                set_clauses.push(format!("{} = ?{}", $col, set_clauses.len() + 1));
+                param_vals.push(rusqlite::types::Value::Integer(v));
             }
         };
     }
     macro_rules! push_opt_int {
         ($field:expr, $col:literal) => {
             if let Some(v) = $field {
-                match v {
-                    Some(n) => set_clauses.push(format!("{} = {}", $col, n)),
-                    None => set_clauses.push(format!("{} = NULL", $col)),
-                }
+                set_clauses.push(format!("{} = ?{}", $col, set_clauses.len() + 1));
+                param_vals.push(match v {
+                    Some(n) => rusqlite::types::Value::Integer(n),
+                    None => rusqlite::types::Value::Null,
+                });
             }
         };
     }
     macro_rules! push_str {
         ($field:expr, $col:literal) => {
-            if let Some(ref v) = $field {
-                set_clauses.push(format!("{} = '{}'", $col, v.replace('\'', "''")));
+            if let Some(v) = $field {
+                set_clauses.push(format!("{} = ?{}", $col, set_clauses.len() + 1));
+                param_vals.push(rusqlite::types::Value::Text(v));
             }
         };
     }
     macro_rules! push_opt_str {
         ($field:expr, $col:literal) => {
-            if let Some(ref v) = $field {
-                match v {
-                    Some(s) => set_clauses.push(format!("{} = '{}'", $col, s.replace('\'', "''"))),
-                    None => set_clauses.push(format!("{} = NULL", $col)),
-                }
+            if let Some(v) = $field {
+                set_clauses.push(format!("{} = ?{}", $col, set_clauses.len() + 1));
+                param_vals.push(match v {
+                    Some(s) => rusqlite::types::Value::Text(s),
+                    None => rusqlite::types::Value::Null,
+                });
             }
         };
     }
 
     push_bool!(patch.sidebar_collapsed, "sidebar_collapsed");
-    if let Some(ref kind_str) = patch.last_view_kind {
-        push_str!(Some(kind_str.clone()), "last_view_kind");
-    }
+    push_str!(patch.last_view_kind, "last_view_kind");
     push_opt_str!(patch.last_project_id, "last_project_id");
     push_opt_str!(patch.last_workspace_id, "last_workspace_id");
     push_opt_int!(patch.window_x, "window_x");
@@ -321,21 +320,18 @@ pub fn update_ui_state(db: &Db, patch: AppUiStatePatch) -> Result<AppUiState, Ui
         return Ok(get_ui_state(db)?);
     }
 
-    set_clauses.push(format!("updated_at = {}", now));
+    let updated_at_idx = set_clauses.len() + 1;
+    set_clauses.push(format!("updated_at = ?{updated_at_idx}"));
+    param_vals.push(rusqlite::types::Value::Integer(now));
+
     let sql = format!(
         "UPDATE app_ui_state SET {} WHERE id = 1",
         set_clauses.join(", ")
     );
-    db.conn().execute(&sql, params![]).map_err(DbError::from).map_err(UiStateError::from)?;
+    let mut stmt = db.conn().prepare(&sql).map_err(DbError::from).map_err(UiStateError::from)?;
+    stmt.execute(rusqlite::params_from_iter(param_vals)).map_err(DbError::from).map_err(UiStateError::from)?;
 
     Ok(get_ui_state(db)?)
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -474,5 +470,21 @@ mod tests {
         let after = update_ui_state(&db, AppUiStatePatch::default()).unwrap();
         assert_eq!(before.sidebar_collapsed, after.sidebar_collapsed);
         assert_eq!(before.last_view_kind, after.last_view_kind);
+    }
+
+    #[test]
+    fn update_global_hotkey_with_single_quote_roundtrips() {
+        let (db, _dir) = temp_db();
+        // A value with a single quote must survive the update and read back correctly.
+        let hotkey = "ctrl+'";
+        let updated = update_ui_state(&db, AppUiStatePatch {
+            global_hotkey: Some(hotkey.to_string()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(updated.global_hotkey, hotkey);
+
+        // Verify it also persists on re-read.
+        let reread = get_ui_state(&db).unwrap();
+        assert_eq!(reread.global_hotkey, hotkey);
     }
 }
