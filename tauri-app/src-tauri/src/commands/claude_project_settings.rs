@@ -1,10 +1,11 @@
 // claudeProjectSettings:* commands — per-project overrides.
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::claude_project_settings;
 use crate::claude_settings::SettingsOverrides;
+use crate::commands::events::{DirtySet, MountSnapshots};
 use crate::SharedDb;
 
 // The renderer expects a flat object matching ClaudeProjectSettings in TS.
@@ -63,7 +64,10 @@ pub fn claude_project_settings_get(
 
 #[tauri::command]
 pub fn claude_project_settings_update(
+    app: AppHandle,
     db: State<SharedDb>,
+    snapshots: State<MountSnapshots>,
+    dirty_set: State<DirtySet>,
     project_id: String,
     patch: ProjectSettingsPatch,
 ) -> Result<ProjectSettingsResponse, String> {
@@ -73,5 +77,6 @@ pub fn claude_project_settings_update(
         .map_err(|e| e.to_string())?;
     let updated = claude_project_settings::get_project_overrides(&lock, &project_id)
         .map_err(|e| e.to_string())?;
+    crate::commands::events::recompute_dirty_for_all_mounted(&lock, &app, &snapshots, &dirty_set);
     Ok(overrides_to_response(updated))
 }

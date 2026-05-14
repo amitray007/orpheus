@@ -57,6 +57,30 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
         serde_json::json!({ "workspaceId": workspace_id, "dirty": false }),
     );
 
+    // Capture the current ClaudeLaunch as the baseline dirty snapshot for this workspace.
+    if let Some(db_state) = window.try_state::<crate::SharedDb>() {
+        if let Some(snapshots) = window.try_state::<crate::commands::events::MountSnapshots>() {
+            if let Ok(db) = db_state.lock() {
+                let proj_ovr = crate::claude_project_settings::get_project_overrides_by_workspace(
+                    &db, &workspace_id,
+                ).ok().flatten();
+                let ws_ovr = crate::claude_workspace_settings::get_workspace_overrides(
+                    &db, &workspace_id,
+                ).ok().flatten();
+                if let Ok(launch) = crate::claude_settings::compose_claude_launch(
+                    &db,
+                    proj_ovr.as_ref(),
+                    ws_ovr.as_ref(),
+                    None,
+                ) {
+                    if let Ok(mut snap) = snapshots.lock() {
+                        snap.insert(workspace_id.clone(), launch);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(result)
 }
 
@@ -105,6 +129,12 @@ pub async fn terminal_destroy(window: Window, workspace_id: String) -> Result<()
                 "workspace:dirtyChanged",
                 serde_json::json!({ "workspaceId": wid, "dirty": false }),
             );
+        }
+    }
+    // Remove mount snapshot so stale dirty checks don't fire after destroy.
+    if let Some(snapshots) = window.try_state::<crate::commands::events::MountSnapshots>() {
+        if let Ok(mut snap) = snapshots.lock() {
+            snap.remove(&wid);
         }
     }
     let _ = window.emit(

@@ -91,6 +91,25 @@ pub fn set_project_overrides(
     Ok(())
 }
 
+/// Return the project overrides for the project that owns a given workspace.
+pub fn get_project_overrides_by_workspace(
+    db: &Db,
+    workspace_id: &str,
+) -> Result<Option<SettingsOverrides>, DbError> {
+    let row: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT cps.overrides_json
+             FROM workspaces w
+             JOIN claude_project_settings cps ON cps.project_id = w.project_id
+             WHERE w.id = ?1",
+            [workspace_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(row.map(|json| parse_blob(&json).into_settings_overrides()))
+}
+
 /// Delete the overrides row for a project (no-op if absent).
 pub fn clear_project_overrides(db: &Db, project_id: &str) -> Result<(), DbError> {
     db.conn().execute(

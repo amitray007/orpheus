@@ -45,9 +45,10 @@ pub fn run() {
             let shared: SharedDb = Arc::new(Mutex::new(db));
             app.manage(shared.clone());
 
-            // Managed state for in-memory title and dirty tracking.
+            // Managed state for in-memory title, dirty tracking, and mount snapshots.
             app.manage(commands::events::new_title_map());
             app.manage(commands::events::new_dirty_set());
+            app.manage(commands::events::new_mount_snapshots());
 
             // Managed state for notification retry cancellation and focus suppression.
             let retry_state: SharedRetryState = Arc::new(Mutex::new(AttentionRetryState::new()));

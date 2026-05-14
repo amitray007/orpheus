@@ -1,10 +1,11 @@
 // claudeWorkspaceSettings:* commands — per-workspace overrides.
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::claude_workspace_settings;
 use crate::claude_settings::SettingsOverrides;
+use crate::commands::events::{DirtySet, MountSnapshots};
 use crate::SharedDb;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +62,10 @@ pub fn claude_workspace_settings_get(
 
 #[tauri::command]
 pub fn claude_workspace_settings_update(
+    app: AppHandle,
     db: State<SharedDb>,
+    snapshots: State<MountSnapshots>,
+    dirty_set: State<DirtySet>,
     workspace_id: String,
     patch: WorkspaceSettingsPatch,
 ) -> Result<WorkspaceSettingsResponse, String> {
@@ -71,5 +75,6 @@ pub fn claude_workspace_settings_update(
         .map_err(|e| e.to_string())?;
     let updated = claude_workspace_settings::get_workspace_overrides(&lock, &workspace_id)
         .map_err(|e| e.to_string())?;
+    crate::commands::events::recompute_dirty_for_all_mounted(&lock, &app, &snapshots, &dirty_set);
     Ok(overrides_to_response(updated))
 }
