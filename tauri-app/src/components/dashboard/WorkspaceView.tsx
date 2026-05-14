@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
+import { createPortal } from 'react-dom'
 import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
 import type { WorkspaceRecord, WorkspaceStatus, WorkspaceActivityDetail } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
@@ -191,68 +192,74 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remountKey])
 
+  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    setTopbarSlot(document.getElementById('topbar-slot'))
+  }, [])
+
+  const workspaceLabel = workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name
+
   return (
     <div className="flex flex-col h-full">
-      {/* Tab title bar — thin strip; also serves as drag region when the global TopBar is hidden */}
-      <div
-        className="h-8 flex items-center gap-2 px-3 border-b border-border-default bg-surface-raised flex-shrink-0"
-        data-tauri-drag-region
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-        <span
-          className="text-xs font-medium text-text-primary truncate"
-          title={
-            workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
-              ? `${workspace.name} — ${terminalTitle}`
-              : workspace.name
-          }
-        >
-          {workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name}
-        </span>
-
-        {/* Gear — opens drawer on overrides tab */}
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setDrawer(drawer === 'overrides' ? null : 'overrides')}
-          title="Workspace overrides"
-          data-tauri-drag-region="false"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-        >
-          <Gear size={14} />
-        </button>
-
-        <span className="text-text-muted text-xs" data-tauri-drag-region>·</span>
-        <span
-          className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
-          title={workspace.cwd}
-          data-tauri-drag-region
-        >
-          <Folder size={10} className="flex-shrink-0" />
-          {workspace.cwd}
-        </span>
-        {/* Settings-changed chip — appears when launch params have drifted since last mount */}
-        {isDirty && (
-          <span className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400">
-            Settings changed
-            <button
-              onClick={() => {
-                handleRestart().catch((e) =>
-                  console.error('[WorkspaceView] restart failed:', e)
-                )
-              }}
-              data-tauri-drag-region="false"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-              className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-            >
-              Restart to apply
-            </button>
+      {topbarSlot && createPortal(
+        <>
+          <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
+          <span
+            className="text-xs font-medium text-text-primary truncate"
+            title={
+              workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
+                ? `${workspace.name} — ${terminalTitle}`
+                : workspace.name
+            }
+            data-tauri-drag-region
+          >
+            {workspaceLabel}
           </span>
-        )}
-      </div>
 
-      {/* Content row: terminal host + optional drawer */}
+          <button
+            type="button"
+            onClick={() => setDrawer(drawer === 'overrides' ? null : 'overrides')}
+            title="Workspace overrides"
+            data-tauri-drag-region="false"
+            className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+          >
+            <Gear size={14} />
+          </button>
+
+          <span className="text-text-muted text-xs" data-tauri-drag-region>·</span>
+          <span
+            className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
+            title={workspace.cwd}
+            data-tauri-drag-region
+          >
+            <Folder size={10} className="flex-shrink-0" />
+            {workspace.cwd}
+          </span>
+
+          {isDirty && (
+            <span
+              className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400"
+              data-tauri-drag-region
+            >
+              Settings changed
+              <button
+                type="button"
+                onClick={() => {
+                  handleRestart().catch((e) =>
+                    console.error('[WorkspaceView] restart failed:', e)
+                  )
+                }}
+                data-tauri-drag-region="false"
+                className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
+              >
+                Restart to apply
+              </button>
+            </span>
+          )}
+        </>,
+        topbarSlot
+      )}
+
       <div className="flex flex-1 min-h-0">
         {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
             ResizeObserver on this div fires when the drawer opens/closes (flex layout narrows it),
