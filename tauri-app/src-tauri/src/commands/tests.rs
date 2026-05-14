@@ -274,4 +274,89 @@ mod tests {
         );
         assert_eq!(result, Some(WorkspaceStatus::AwaitingInput));
     }
+
+    // -----------------------------------------------------------------------
+    // BLOCKER serialization contract — camelCase JSON on the wire
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn project_serializes_camel_case() {
+        use crate::projects::add_project;
+        let (db, _dir) = temp_db();
+        let p = add_project(&db, Path::new("/tmp/serial_proj")).expect("add");
+        let json = serde_json::to_value(&p).expect("serialize");
+        // snake_case fields must appear as camelCase in JSON
+        assert!(json.get("claudeEncodedName").is_some(), "claudeEncodedName missing: {json}");
+        assert!(json.get("addedAt").is_some(), "addedAt missing: {json}");
+        assert!(json.get("lastOpenedAt").is_some(), "lastOpenedAt missing: {json}");
+        assert!(json.get("expandedInSidebar").is_some(), "expandedInSidebar missing: {json}");
+        assert!(json.get("sortOrder").is_some(), "sortOrder missing: {json}");
+        // snake_case keys must NOT appear
+        assert!(json.get("claude_encoded_name").is_none(), "snake_case key leaked: claude_encoded_name");
+    }
+
+    #[test]
+    fn workspace_serializes_camel_case() {
+        use crate::projects::add_project;
+        use crate::workspaces::create_workspace;
+        let (db, _dir) = temp_db();
+        let p = add_project(&db, Path::new("/tmp/serial_ws_proj")).expect("add proj");
+        let ws = create_workspace(&db, &p.id, "ws", "/tmp/serial_ws_proj").expect("create");
+        let json = serde_json::to_value(&ws).expect("serialize");
+        assert!(json.get("projectId").is_some(), "projectId missing: {json}");
+        assert!(json.get("nameIsAuto").is_some(), "nameIsAuto missing: {json}");
+        assert!(json.get("pinnedAt").is_some(), "pinnedAt missing: {json}");
+        assert!(json.get("createdAt").is_some(), "createdAt missing: {json}");
+        assert!(json.get("lastOpenedAt").is_some(), "lastOpenedAt missing: {json}");
+        assert!(json.get("archivedAt").is_some(), "archivedAt missing: {json}");
+        assert!(json.get("sortOrder").is_some(), "sortOrder missing: {json}");
+        assert!(json.get("claudeSessionId").is_some(), "claudeSessionId missing: {json}");
+        assert!(json.get("lastTitle").is_some(), "lastTitle missing: {json}");
+        assert!(json.get("project_id").is_none(), "snake_case key leaked: project_id");
+    }
+
+    #[test]
+    fn session_serializes_camel_case() {
+        use crate::projects::add_project;
+        use crate::sessions::add_session;
+        let (db, _dir) = temp_db();
+        let p = add_project(&db, Path::new("/tmp/serial_sess_proj")).expect("add proj");
+        let s = add_session(&db, &p.id, "/tmp/s.jsonl", Some("T"), None, None).expect("add");
+        let json = serde_json::to_value(&s).expect("serialize");
+        assert!(json.get("projectId").is_some(), "projectId missing: {json}");
+        assert!(json.get("jsonlPath").is_some(), "jsonlPath missing: {json}");
+        assert!(json.get("createdAt").is_some(), "createdAt missing: {json}");
+        assert!(json.get("updatedAt").is_some(), "updatedAt missing: {json}");
+        assert!(json.get("archivedAt").is_some(), "archivedAt missing: {json}");
+        assert!(json.get("lastMessageRole").is_some(), "lastMessageRole missing: {json}");
+        assert!(json.get("project_id").is_none(), "snake_case key leaked: project_id");
+    }
+
+    #[test]
+    fn mount_result_serializes_camel_case() {
+        let result = ghostty_native::MountResult {
+            workspace_id: "ws-abc".into(),
+            created: true,
+        };
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert!(json.get("workspaceId").is_some(), "workspaceId missing: {json}");
+        assert_eq!(json["workspaceId"], "ws-abc");
+        assert!(json.get("workspace_id").is_none(), "snake_case key leaked: workspace_id");
+    }
+
+    #[test]
+    fn mount_args_deserializes_camel_case() {
+        use crate::commands::terminal::MountArgs;
+        // preload sends camelCase — verify deser accepts it
+        let raw = r#"{
+            "workspaceId": "ws-1",
+            "rect": {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0},
+            "scaleFactor": 2.0,
+            "cwd": null,
+            "command": null
+        }"#;
+        let args: MountArgs = serde_json::from_str(raw).expect("deserialize MountArgs");
+        assert_eq!(args.workspace_id, "ws-1");
+        assert!((args.scale_factor - 2.0).abs() < f64::EPSILON);
+    }
 }
