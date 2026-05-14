@@ -8,12 +8,13 @@ interface TopBarProps {
 export function TopBar({ onToggleCollapsed }: TopBarProps): React.JSX.Element {
   return (
     <header
-      className="h-11 flex items-start bg-surface-raised border-b border-border-default flex-shrink-0 select-none"
+      className="h-11 flex items-center bg-surface-raised border-b border-border-default flex-shrink-0 select-none"
       data-tauri-drag-region
     >
-      {/* Traffic-light spacer — macOS lights center is at y=14 from window top.
-          items-start + h-7 button puts the button's center at y=14 naturally. */}
-      <div className="w-[78px] h-11 flex-shrink-0" data-tauri-drag-region />
+      {/* Traffic lights are pinned at (20, 15) via tauri.conf.json
+          trafficLightPosition, giving them a center at y=22. The h-11 (44px)
+          header with items-center puts everything else at y=22 naturally. */}
+      <div className="w-[88px] h-11 flex-shrink-0" data-tauri-drag-region />
 
       <button
         type="button"
