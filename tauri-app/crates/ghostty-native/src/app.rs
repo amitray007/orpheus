@@ -77,7 +77,7 @@ pub fn ensure_app() -> Result<(), String> {
             return Err("ghostty_config_new returned null".into());
         }
         ghostty_config_load_default_files(cfg);
-        ghostty_config_load_recursive_files(cfg);
+        ghostty_config_load_recursive_files(cfg); // correct — see addon.mm:1104 for context
         ghostty_config_finalize(cfg);
 
         let rt = ghostty_runtime_config_s {

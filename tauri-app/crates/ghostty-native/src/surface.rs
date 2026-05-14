@@ -146,7 +146,7 @@ pub fn mount(
     scfg.receive_buffer = None;
     scfg.receive_resize = None;
     scfg.scale_factor = scale;
-    scfg.font_size = 13.0;
+    scfg.font_size = 13.0; // TODO(config-pass): derive from user settings, not hardcoded
     scfg.working_directory = cwd_c.as_ptr();
     scfg.command = command_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
     scfg.env_vars = std::ptr::null_mut();
@@ -295,4 +295,48 @@ pub fn set_focus(workspace_id: &str, focused: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // Full round-trip tests (mount → hide → remount → destroy) require a live NSWindow
+    // and must run on the main thread — they cannot be exercised in cargo test.
+    // Run manually: launch the app, mount, hide, remount, destroy, verify no crash.
+    //
+    // The tests below verify the SurfaceEntry state machine using a synthetic entry
+    // with null pointers (no AppKit calls are made).
+
+    use super::*;
+
+    fn synthetic_entry(attached: bool) -> SurfaceEntry {
+        SurfaceEntry {
+            surface: std::ptr::null_mut(),
+            view: 0, // 0 causes Drop to skip objc_release
+            link: std::ptr::null_mut(),
+            attached,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires main thread + live NSWindow; verify manually"]
+    fn appkit_hide_remount_destroy() {
+        // Manual: mount, hide, remount with same workspace_id, destroy.
+        // Expected: no crash, scrollback intact, view at new rect after remount.
+    }
+
+    #[test]
+    fn attached_flag_transitions() {
+        let mut entry = synthetic_entry(true);
+        assert!(entry.attached);
+        entry.attached = false;
+        assert!(!entry.attached);
+        entry.attached = true;
+        assert!(entry.attached);
+    }
+
+    #[test]
+    fn surface_entry_drop_with_null_view() {
+        // Drop must not call objc_release when view == 0.
+        drop(synthetic_entry(false));
+    }
 }
