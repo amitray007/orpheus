@@ -7,28 +7,14 @@ interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
   drawer: null | 'status' | 'overrides'
   onSetDrawer: (drawer: null | 'status' | 'overrides') => void
-  onRestart: () => void
 }
 
 export function WorkspaceTitleBar({
   workspace,
   drawer,
-  onSetDrawer,
-  onRestart
+  onSetDrawer
 }: WorkspaceTitleBarProps): React.JSX.Element {
-  const [isDirty, setIsDirty] = useState(false)
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces
-      .isDirty(workspaceId)
-      .then(setIsDirty)
-      .catch(() => setIsDirty(false))
-    return window.api.workspaces.onDirtyChanged((e) => {
-      if (e.workspaceId === workspaceId) setIsDirty(e.dirty)
-    })
-  }, [workspace.id])
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -67,38 +53,23 @@ export function WorkspaceTitleBar({
         {workspace.cwd}
       </span>
 
-      {/* Right cluster: dirty chip + Workspace Settings */}
-      <div className="ml-auto flex items-center gap-3 flex-shrink-0">
-        {isDirty && (
-          <span className="flex items-center gap-1.5 text-[10px] font-mono text-amber-400">
-            Settings changed
-            <button
-              onClick={onRestart}
-              className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-            >
-              Restart to apply
-            </button>
-          </span>
-        )}
-
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
-          title="Workspace Settings"
-          aria-label="Workspace Settings"
-          className={[
-            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs',
-            'transition-colors duration-150',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            drawer === 'overrides'
-              ? 'bg-surface-overlay text-text-primary'
-              : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-          ].join(' ')}
-        >
-          <Gear size={14} />
-          <span>Workspace Settings</span>
-        </button>
-      </div>
+      <button
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
+        title="Workspace Settings"
+        aria-label="Workspace Settings"
+        className={[
+          'ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
+          'transition-colors duration-150',
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+          drawer === 'overrides'
+            ? 'bg-surface-overlay text-text-primary'
+            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+        ].join(' ')}
+      >
+        <Gear size={14} />
+        <span>Workspace Settings</span>
+      </button>
     </div>
   )
 }

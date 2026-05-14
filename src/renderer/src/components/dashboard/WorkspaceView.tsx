@@ -50,10 +50,6 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     setRemountKey((k) => k + 1)
   }
 
-  const handleTabChange = useCallback((tab: 'status' | 'overrides') => {
-    setDrawer(tab)
-  }, [])
-
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
   useEffect(() => {
@@ -179,11 +175,6 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
             workspace={workspace}
             drawer={drawer}
             onSetDrawer={setDrawer}
-            onRestart={() => {
-              handleRestart().catch((e) =>
-                console.error('[WorkspaceView] restart failed:', e)
-              )
-            }}
           />,
           titleBarHost
         )}
@@ -201,9 +192,12 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
               workspace={workspace}
               activity={activity}
               detail={detail}
-              activeTab={drawer}
-              onTabChange={handleTabChange}
               onClose={handleCloseDrawer}
+              onRestart={() => {
+                handleRestart().catch((e) =>
+                  console.error('[WorkspaceView] restart failed:', e)
+                )
+              }}
             />
           </div>
         )}
