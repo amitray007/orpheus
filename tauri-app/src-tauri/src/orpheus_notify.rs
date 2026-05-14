@@ -544,14 +544,23 @@ fn handle_transition_notifications(
         crate::os_notifications::cancel_for_workspace(&retry_state, workspace_id);
     }
 
-    // Suppress notifications for the workspace the user is currently viewing,
-    // unless they've opted in via `notify_always`.
+    // Suppress notifications for the workspace the user is currently viewing
+    // *and* whose window is focused (mirrors main's shouldSuppress). If the
+    // app is in the background we still toast so the user comes back to it.
     let is_currently_viewed = currently_viewed
         .as_ref()
         .and_then(|cv| cv.lock().ok().and_then(|g| g.get().map(|s| s.to_owned())))
         .as_deref()
         == Some(workspace_id);
-    let suppress = is_currently_viewed && !ui.notify_always;
+    let window_focused = app_handle
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    let suppress = is_currently_viewed && window_focused && !ui.notify_always;
+    eprintln!(
+        "[orpheus-notify] notify? prev={:?} next={:?} viewed={} focused={} always={} suppress={}",
+        prev_status, next_status, is_currently_viewed, window_focused, ui.notify_always, suppress
+    );
 
     match next_status {
         WorkspaceStatus::Attention if ui.notify_attention && !suppress => {

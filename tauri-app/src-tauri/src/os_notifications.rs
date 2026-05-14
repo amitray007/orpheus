@@ -10,6 +10,41 @@ use std::time::Duration;
 
 use notify_rust::{Notification, Timeout};
 
+/// Shell-escape a string for inclusion in an AppleScript double-quoted string.
+/// Replaces `\` with `\\` and `"` with `\"`. Newlines are left as `\n` literals.
+fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Fire a notification via `osascript display notification`. Ad-hoc signed
+/// Tauri builds can't request UNUserNotificationCenter permission cleanly,
+/// so notify-rust silently no-ops. osascript uses Script Editor's
+/// pre-granted notification entitlement and works on every Mac.
+#[cfg(target_os = "macos")]
+fn show_via_osascript(params: &NotifParams) -> std::io::Result<()> {
+    let mut script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        applescript_escape(&params.body),
+        applescript_escape(&params.title),
+    );
+    if let Some(sub) = &params.subtitle {
+        script.push_str(&format!(" subtitle \"{}\"", applescript_escape(sub)));
+    }
+    if !params.silent {
+        script.push_str(" sound name \"default\"");
+    }
+    let status = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("osascript exited with status {}", status),
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -120,17 +155,25 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 // OS-level show (wraps notify-rust)
 // ---------------------------------------------------------------------------
 
-/// Fire a native OS notification. On-click callback is a no-op until Phase 3.
-/// Returns Err only if the notification daemon is unavailable.
+/// Fire a native OS notification. On macOS we route via `osascript` because
+/// notify-rust + ad-hoc signing silently no-ops (no UNUserNotificationCenter
+/// permission grant exists). On other platforms we still use notify-rust.
 pub fn show_notification(params: &NotifParams) -> notify_rust::error::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = show_via_osascript(params) {
+            eprintln!("[notifications] osascript failed: {e}; falling back to notify-rust");
+        } else {
+            return Ok(());
+        }
+    }
+
     let mut n = Notification::new();
     n.summary(&params.title).body(&params.body);
     if let Some(sub) = &params.subtitle {
-        // notify-rust uses "subtitle" on macOS via the `subtitle` method.
         n.subtitle(sub);
     }
     if !params.silent {
-        // Default sound on macOS (empty string = system default)
         n.sound_name("default");
     }
     n.timeout(Timeout::Default);
