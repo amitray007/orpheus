@@ -1253,14 +1253,22 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
         } else {
-            // Re-attach: add back to superview, wake display link.
-            NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
+            // Re-attach via visibility flip — view never leaves the superview, so
+            // its IOSurfaceLayer's layer-hosting state survives across nav cycles.
+            // If we removed+re-added it would re-inherit Chromium's layer-backed
+            // mode and the IOSurfaceLayer's present path would break.
+            NSLog(@"[ghostty-native] mount workspaceId=%s: re-showing existing surface",
                   workspaceId.c_str());
 
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            [contentView addSubview:entry.view];
+            // Defensive: re-parent only if something detached it (shouldn't happen
+            // in normal flow but covers a stale superview from a prior cycle).
+            if (entry.view.superview != contentView) {
+                [contentView addSubview:entry.view];
+            }
+            [entry.view setHidden:NO];
 
             // Wake the renderer — surface is no longer occluded.
             ghostty_surface_set_occlusion(entry.surface, false);
@@ -1514,8 +1522,12 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
     ghostty_surface_set_focus(entry.surface, false);
     ghostty_surface_set_occlusion(entry.surface, true);
 
-    // Remove from view hierarchy — view is retained in the map, not freed.
-    [entry.view removeFromSuperview];
+    // Toggle visibility instead of removing from superview. Detaching the view
+    // would drop its IOSurfaceLayer out of CoreAnimation's tree, and the
+    // subsequent re-attach to Chromium's layer-backed parent would re-promote
+    // the view to layer-backed mode, breaking the layer-hosting model libghostty
+    // installed on first mount. setHidden:YES keeps the layer alive in-tree.
+    [entry.view setHidden:YES];
 
     entry.isAttached = NO;
     return env.Undefined();
