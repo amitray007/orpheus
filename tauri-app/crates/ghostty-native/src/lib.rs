@@ -12,9 +12,19 @@ mod display_link;
 #[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
-mod surface;
+pub mod surface;
 #[cfg(target_os = "macos")]
 mod view;
+
+/// Store the AppHandle for title/event callbacks from the native layer.
+/// Must be called once from lib.rs during app setup (macOS only).
+#[cfg(target_os = "macos")]
+pub fn set_app_handle(handle: tauri::AppHandle) {
+    app::set_app_handle(handle);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_app_handle(_handle: tauri::AppHandle) {}
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

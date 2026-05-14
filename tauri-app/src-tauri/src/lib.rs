@@ -19,7 +19,7 @@ pub mod workspaces;
 
 use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
+use tauri::{Listener, Manager};
 
 use crate::db::Db;
 
@@ -50,6 +50,29 @@ pub fn run() {
 
             if let Err(e) = orpheus_notify::ensure_managed_hooks() {
                 log::warn!("ensure_managed_hooks failed: {e}");
+            }
+
+            // Wire the AppHandle into ghostty-native so the C action_cb can
+            // emit workspace:titleChanged events when the terminal sets an OSC title.
+            ghostty_native::set_app_handle(app.handle().clone());
+
+            // Keep the TitleMap in sync when workspace:titleChanged events fire.
+            {
+                let title_map = app.state::<commands::events::TitleMap>().inner().clone();
+                app.listen("workspace:titleChanged", move |ev| {
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(ev.payload()) {
+                        let workspace_id = payload.get("workspaceId").and_then(|v| v.as_str()).map(str::to_owned);
+                        let title = payload.get("title").and_then(|v| v.as_str()).map(str::to_owned);
+                        if let Some(wid) = workspace_id {
+                            if let Ok(mut m) = title_map.lock() {
+                                match title {
+                                    Some(t) => { m.insert(wid, t); }
+                                    None => { m.remove(&wid); }
+                                }
+                            }
+                        }
+                    }
+                });
             }
 
             let socket_handle =

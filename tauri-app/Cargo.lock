@@ -1453,6 +1453,7 @@ dependencies = [
  "objc2-foundation",
  "once_cell",
  "serde",
+ "serde_json",
  "tauri",
  "thiserror 1.0.69",
 ]

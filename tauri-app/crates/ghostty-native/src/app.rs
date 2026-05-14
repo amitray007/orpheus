@@ -1,7 +1,10 @@
 // Global ghostty_app_t — initialised exactly once on first mount.
 
 use once_cell::sync::OnceCell;
+use std::ffi::CStr;
 use std::sync::Mutex;
+
+use tauri::Emitter;
 
 use crate::dispatch::{dispatch_async_f, main_queue};
 use crate::ffi::*;
@@ -15,6 +18,14 @@ unsafe impl Send for GlobalApp {}
 unsafe impl Sync for GlobalApp {}
 
 pub static GLOBAL: OnceCell<Mutex<GlobalApp>> = OnceCell::new();
+
+/// AppHandle stored so the C callbacks can emit Tauri events.
+pub static APP_HANDLE: OnceCell<tauri::AppHandle> = OnceCell::new();
+
+/// Store the AppHandle for use in C callbacks. Call once from lib.rs setup.
+pub fn set_app_handle(handle: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
 
 unsafe extern "C" fn wakeup_cb(_userdata: *mut std::ffi::c_void) {
     unsafe { dispatch_async_f(main_queue(), std::ptr::null_mut(), tick_trampoline) };
@@ -30,9 +41,52 @@ extern "C" fn tick_trampoline(_ctx: *mut std::ffi::c_void) {
 
 unsafe extern "C" fn action_cb(
     _app: ghostty_app_t,
-    _target: ghostty_target_s,
-    _action: ghostty_action_s,
+    target: ghostty_target_s,
+    action: ghostty_action_s,
 ) -> bool {
+    use crate::ffi::{
+        ghostty_action_tag_e_GHOSTTY_ACTION_SET_TITLE as ACTION_SET_TITLE,
+        ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE as TARGET_SURFACE,
+    };
+
+    if action.tag == ACTION_SET_TITLE
+        && target.tag == TARGET_SURFACE
+    {
+        let surface_ptr = unsafe { target.target.surface };
+        // Map surface pointer back to workspace_id via SURFACES.
+        let workspace_id = {
+            let map = crate::surface::SURFACES.lock().unwrap();
+            map.iter()
+                .find(|(_, e)| e.surface == surface_ptr)
+                .map(|(k, _)| k.clone())
+        };
+
+        if let Some(workspace_id) = workspace_id {
+            let raw_title = unsafe {
+                let ptr = action.action.set_title.title;
+                if ptr.is_null() { None }
+                else { CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_owned()) }
+            };
+
+            // Strip leading spinner glyphs (same logic as Electron index.ts).
+            let cleaned = raw_title.as_deref().map(|t| {
+                let stripped = t.trim_start_matches(|c: char| !c.is_alphanumeric() && !c.is_whitespace());
+                stripped.trim().to_owned()
+            }).filter(|s| !s.is_empty());
+
+            // Emit the event; the app-level TitleMap is updated by listening in lib.rs.
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.emit(
+                    "workspace:titleChanged",
+                    serde_json::json!({
+                        "workspaceId": workspace_id,
+                        "title": cleaned,
+                    }),
+                );
+            }
+        }
+    }
+
     true
 }
 
