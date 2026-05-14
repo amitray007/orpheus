@@ -19,7 +19,7 @@ pub struct CreateArgs {
     pub cwd: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_list_for_project(
     db: State<SharedDb>,
     project_id: String,
@@ -42,13 +42,13 @@ pub fn workspaces_create(db: State<SharedDb>, args: CreateArgs) -> Result<Worksp
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_open(db: State<SharedDb>, id: String) -> Result<Workspace, String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     workspaces::open_workspace(&lock, &id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_set_pinned(
     db: State<SharedDb>,
     id: String,
@@ -58,19 +58,19 @@ pub fn workspaces_set_pinned(
     workspaces::set_workspace_pinned(&lock, &id, pinned).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_archive(db: State<SharedDb>, id: String) -> Result<Workspace, String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     workspaces::archive_workspace(&lock, &id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_unarchive(db: State<SharedDb>, id: String) -> Result<Workspace, String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     workspaces::unarchive_workspace(&lock, &id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_rename(
     db: State<SharedDb>,
     id: String,
@@ -80,7 +80,7 @@ pub fn workspaces_rename(
     workspaces::rename_workspace(&lock, &id, &name).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_reorder(
     db: State<SharedDb>,
     project_id: String,
@@ -91,7 +91,7 @@ pub fn workspaces_reorder(
     workspaces::reorder_workspaces(&lock, &project_id, &refs).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspace_is_dirty(
     dirty_set: State<crate::commands::events::DirtySet>,
     workspace_id: String,
@@ -102,7 +102,7 @@ pub fn workspace_is_dirty(
         .unwrap_or(false)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspace_get_title(
     title_map: State<TitleMap>,
     workspace_id: String,
@@ -113,7 +113,7 @@ pub fn workspace_get_title(
         .and_then(|m| m.get(&workspace_id).cloned())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspace_reset_activity(
     dirty_set: State<crate::commands::events::DirtySet>,
     retry_state: State<SharedRetryState>,
@@ -126,7 +126,7 @@ pub fn workspace_reset_activity(
     cancel_for_workspace(&retry_state, &workspace_id);
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn workspace_set_currently_viewed(
     retry_state: State<SharedRetryState>,
     currently_viewed: State<SharedCurrentlyViewed>,

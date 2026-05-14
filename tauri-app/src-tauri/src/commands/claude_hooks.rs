@@ -12,7 +12,7 @@ pub fn claude_hooks_list(db: State<SharedDb>) -> Result<Vec<ClaudeHookEntry>, St
     claude_hooks::list_hooks(&lock).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn claude_hooks_open_file(file_path: String) -> Result<(), String> {
     // Open the file in the default editor via the shell open command.
     // Mirrors TS shell.openPath(filePath).
@@ -46,7 +46,7 @@ pub struct HookDraftUpdate {
     pub command: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_hooks_update(
     file_path: String,
     event: String,
@@ -66,7 +66,7 @@ pub fn claude_hooks_update(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_hooks_delete(
     file_path: String,
     event: String,

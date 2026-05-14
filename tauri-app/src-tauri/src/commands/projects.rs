@@ -41,25 +41,25 @@ pub async fn projects_pick_and_add(
     Ok(Some(project))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn projects_open(db: State<SharedDb>, id: String) -> Result<Project, String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     projects::open_project(&lock, &id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn projects_remove(db: State<SharedDb>, id: String) -> Result<(), String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     projects::delete_project(&lock, &id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn projects_rename(db: State<SharedDb>, id: String, name: String) -> Result<(), String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     projects::rename_project(&lock, &id, &name).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn projects_set_expanded_in_sidebar(
     db: State<SharedDb>,
     id: String,
@@ -69,7 +69,7 @@ pub fn projects_set_expanded_in_sidebar(
     projects::set_project_expanded_in_sidebar(&lock, &id, expanded).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn projects_reorder(db: State<SharedDb>, ordered_ids: Vec<String>) -> Result<(), String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
     let refs: Vec<&str> = ordered_ids.iter().map(|s| s.as_str()).collect();

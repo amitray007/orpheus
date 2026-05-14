@@ -346,8 +346,18 @@ mod tests {
 
     #[test]
     fn mount_args_deserializes_camel_case() {
-        use crate::commands::terminal::MountArgs;
-        // preload sends camelCase — verify deser accepts it
+        // MountArgs was inlined into the command; verify Rect still deserializes from the
+        // camelCase payload that the preload sends.
+        use ghostty_native::Rect;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct MountPayload {
+            workspace_id: String,
+            rect: Rect,
+            scale_factor: f64,
+            cwd: Option<String>,
+            command: Option<String>,
+        }
         let raw = r#"{
             "workspaceId": "ws-1",
             "rect": {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0},
@@ -355,7 +365,7 @@ mod tests {
             "cwd": null,
             "command": null
         }"#;
-        let args: MountArgs = serde_json::from_str(raw).expect("deserialize MountArgs");
+        let args: MountPayload = serde_json::from_str(raw).expect("deserialize MountPayload");
         assert_eq!(args.workspace_id, "ws-1");
         assert!((args.scale_factor - 2.0).abs() < f64::EPSILON);
     }

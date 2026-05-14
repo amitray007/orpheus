@@ -28,7 +28,7 @@ pub struct McpUpdateDraft {
     pub url: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn mcp_update(
     file_path: String,
     old_name: String,
@@ -53,7 +53,7 @@ pub fn mcp_update(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn mcp_delete(file_path: String, name: String) -> Result<(), String> {
     mcp::delete_mcp_server(std::path::Path::new(&file_path), &name)
         .map_err(|e| e.to_string())

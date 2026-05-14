@@ -49,7 +49,7 @@ impl From<WorkspaceSettingsPatch> for SettingsOverrides {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_workspace_settings_get(
     db: State<SharedDb>,
     workspace_id: String,
@@ -60,7 +60,7 @@ pub fn claude_workspace_settings_get(
     Ok(overrides_to_response(ov))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_workspace_settings_update(
     app: AppHandle,
     db: State<SharedDb>,

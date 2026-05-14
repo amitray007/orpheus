@@ -1,44 +1,32 @@
 // Terminal lifecycle commands — wraps ghostty-native mount/hide/resize/destroy/focus.
 // Migrated from commands.rs (Phase 2) with names aligned to the preload surface.
 
-use serde::Deserialize;
 use tauri::{Emitter, Manager, Window};
 use tokio::sync::oneshot;
 
 use ghostty_native::{MountResult, Rect};
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MountArgs {
-    pub workspace_id: String,
-    pub rect: Rect,
-    pub scale_factor: f64,
-    pub cwd: Option<String>,
-    pub command: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResizeArgs {
-    pub workspace_id: String,
-    pub rect: Rect,
-    pub scale_factor: f64,
-}
-
-#[tauri::command]
-pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResult, String> {
+#[tauri::command(rename_all = "camelCase")]
+pub async fn terminal_mount(
+    window: Window,
+    workspace_id: String,
+    rect: Rect,
+    scale_factor: f64,
+    cwd: Option<String>,
+    command: Option<String>,
+) -> Result<MountResult, String> {
     let (tx, rx) = oneshot::channel();
     let win = window.clone();
-    let workspace_id = args.workspace_id.clone();
+    let wid = workspace_id.clone();
     window
         .run_on_main_thread(move || {
             let res = ghostty_native::mount(
                 &win,
-                &args.workspace_id,
-                &args.rect,
-                args.scale_factor,
-                args.cwd.as_deref(),
-                args.command.as_deref(),
+                &workspace_id,
+                &rect,
+                scale_factor,
+                cwd.as_deref(),
+                command.as_deref(),
             )
             .map_err(|e| e.to_string());
             let _ = tx.send(res);
@@ -49,12 +37,12 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
     // Clear dirty state on (re-)mount — workspace starts clean.
     if let Some(dirty_set) = window.try_state::<crate::commands::events::DirtySet>() {
         if let Ok(mut s) = dirty_set.lock() {
-            s.remove(&workspace_id);
+            s.remove(&wid);
         }
     }
     let _ = window.emit(
         "workspace:dirtyChanged",
-        serde_json::json!({ "workspaceId": workspace_id, "dirty": false }),
+        serde_json::json!({ "workspaceId": wid, "dirty": false }),
     );
 
     // Capture the current ClaudeLaunch as the baseline dirty snapshot for this workspace.
@@ -62,10 +50,10 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
         if let Some(snapshots) = window.try_state::<crate::commands::events::MountSnapshots>() {
             if let Ok(db) = db_state.lock() {
                 let proj_ovr = crate::claude_project_settings::get_project_overrides_by_workspace(
-                    &db, &workspace_id,
+                    &db, &wid,
                 ).ok().flatten();
                 let ws_ovr = crate::claude_workspace_settings::get_workspace_overrides(
-                    &db, &workspace_id,
+                    &db, &wid,
                 ).ok().flatten();
                 if let Ok(launch) = crate::claude_settings::compose_claude_launch(
                     &db,
@@ -74,7 +62,7 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
                     None,
                 ) {
                     if let Ok(mut snap) = snapshots.lock() {
-                        snap.insert(workspace_id.clone(), launch);
+                        snap.insert(wid.clone(), launch);
                     }
                 }
             }
@@ -84,7 +72,7 @@ pub async fn terminal_mount(window: Window, args: MountArgs) -> Result<MountResu
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn terminal_hide(window: Window, workspace_id: String) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
     window
@@ -96,12 +84,17 @@ pub async fn terminal_hide(window: Window, workspace_id: String) -> Result<(), S
     rx.await.map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub async fn terminal_resize(window: Window, args: ResizeArgs) -> Result<(), String> {
+#[tauri::command(rename_all = "camelCase")]
+pub async fn terminal_resize(
+    window: Window,
+    workspace_id: String,
+    rect: Rect,
+    scale_factor: f64,
+) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
     window
         .run_on_main_thread(move || {
-            let res = ghostty_native::resize(&args.workspace_id, &args.rect, args.scale_factor)
+            let res = ghostty_native::resize(&workspace_id, &rect, scale_factor)
                 .map_err(|e| e.to_string());
             let _ = tx.send(res);
         })
@@ -109,7 +102,7 @@ pub async fn terminal_resize(window: Window, args: ResizeArgs) -> Result<(), Str
     rx.await.map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn terminal_destroy(window: Window, workspace_id: String) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
     let wid = workspace_id.clone();
@@ -145,7 +138,7 @@ pub async fn terminal_destroy(window: Window, workspace_id: String) -> Result<()
     result
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn terminal_set_focus(
     window: Window,
     workspace_id: String,

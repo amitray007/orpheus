@@ -38,7 +38,7 @@ pub struct SlashCommandUpdateDraft {
     pub body: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_agents_update_slash_command(
     file_path: String,
     draft: SlashCommandUpdateDraft,
@@ -61,7 +61,7 @@ pub fn claude_agents_update_slash_command(
     claude_agents::update_slash_command(path, full).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_agents_delete_slash_command(file_path: String) -> Result<(), String> {
     claude_agents::delete_slash_command(std::path::Path::new(&file_path))
         .map_err(|e| e.to_string())
@@ -84,7 +84,7 @@ pub struct SubagentUpdateDraft {
     pub body: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_agents_update_subagent(
     file_path: String,
     draft: SubagentUpdateDraft,
@@ -106,7 +106,7 @@ pub fn claude_agents_update_subagent(
     claude_agents::update_subagent(path, full).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn claude_agents_delete_subagent(file_path: String) -> Result<(), String> {
     claude_agents::delete_subagent(std::path::Path::new(&file_path))
         .map_err(|e| e.to_string())
