@@ -13,6 +13,11 @@ use crate::claude_settings::ClaudeLaunch;
 /// Compose the env-var pairs to hand to the spawned `orpheus-claude.sh`.
 ///
 /// Bundles:
+/// - Terminal capability env (`TERM`, `TERMINFO`, `COLORTERM`, `TERM_PROGRAM`,
+///   `GHOSTTY_RESOURCES_DIR`) so claude's `setupterm("xterm-ghostty")` finds
+///   the bundled terminfo entry. Without it claude can't look up cursor /
+///   clear / scroll capability sequences and falls back to a dumb mode where
+///   animations don't render.
 /// - `ORPHEUS_CLAUDE_FLAGS` / `ORPHEUS_CLAUDE_SETTINGS_JSON` (the wrapper reads these)
 /// - `ORPHEUS_WORKSPACE_ID` so hooks and the notify shim can correlate events
 /// - `ORPHEUS_SOCK` / `ORPHEUS_NOTIFY` so the managed Claude hooks can reach
@@ -25,8 +30,27 @@ fn build_launch_env(
     auth_env: HashMap<String, String>,
     sock_path: Option<String>,
     notify_bin: Option<String>,
+    terminfo_dir: Option<String>,
+    ghostty_resources_dir: Option<String>,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
+
+    // Terminal capabilities — match what Ghostty.app sets so TUI apps treat
+    // our surface identically.
+    env.push(("TERM".into(), "xterm-ghostty".into()));
+    env.push(("COLORTERM".into(), "truecolor".into()));
+    env.push(("TERM_PROGRAM".into(), "orpheus".into()));
+    env.push((
+        "TERM_PROGRAM_VERSION".into(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    ));
+    if let Some(p) = terminfo_dir {
+        env.push(("TERMINFO".into(), p));
+    }
+    if let Some(p) = ghostty_resources_dir {
+        env.push(("GHOSTTY_RESOURCES_DIR".into(), p));
+    }
+
     env.push(("ORPHEUS_CLAUDE_FLAGS".into(), launch.flags.clone()));
     env.push((
         "ORPHEUS_CLAUDE_SETTINGS_JSON".into(),
@@ -55,6 +79,30 @@ fn resolve_notify_bin(window: &Window) -> Option<String> {
     let p = resource_dir.join("bin").join("orpheus-notify");
     if !p.exists() {
         eprintln!("[terminal_mount] orpheus-notify missing at {}", p.display());
+        return None;
+    }
+    p.to_str().map(|s| s.to_owned())
+}
+
+/// Resolve the bundled terminfo directory (contains the `xterm-ghostty`
+/// entry). Setting `TERMINFO` to this path lets `setupterm` / `tparm` find
+/// the right capability strings inside the spawned PTY.
+fn resolve_terminfo_dir(window: &Window) -> Option<String> {
+    let resource_dir = window.app_handle().path().resource_dir().ok()?;
+    let p = resource_dir.join("terminfo");
+    if !p.is_dir() {
+        eprintln!("[terminal_mount] terminfo dir missing at {}", p.display());
+        return None;
+    }
+    p.to_str().map(|s| s.to_owned())
+}
+
+/// Resolve the bundled ghostty resources directory (used by some tools that
+/// expect `GHOSTTY_RESOURCES_DIR` to find shell-integration scripts, etc.).
+fn resolve_ghostty_resources_dir(window: &Window) -> Option<String> {
+    let resource_dir = window.app_handle().path().resource_dir().ok()?;
+    let p = resource_dir.join("ghostty");
+    if !p.is_dir() {
         return None;
     }
     p.to_str().map(|s| s.to_owned())
@@ -123,8 +171,18 @@ pub async fn terminal_mount(
         let sock_path = crate::orpheus_notify::notify_sock_path()
             .map(|p| p.to_string_lossy().into_owned());
         let notify_bin = resolve_notify_bin(&window);
+        let terminfo_dir = resolve_terminfo_dir(&window);
+        let ghostty_resources_dir = resolve_ghostty_resources_dir(&window);
 
-        let env_pairs = build_launch_env(&workspace_id, &launch, auth_env, sock_path, notify_bin);
+        let env_pairs = build_launch_env(
+            &workspace_id,
+            &launch,
+            auth_env,
+            sock_path,
+            notify_bin,
+            terminfo_dir,
+            ghostty_resources_dir,
+        );
         (Some(launch), env_pairs, command)
     };
 

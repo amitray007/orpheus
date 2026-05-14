@@ -4,6 +4,19 @@
 # .zshrc, so source it explicitly here.
 [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null
 
+# Enable job control / monitor mode. By default, non-interactive zsh does NOT
+# do the setpgid + tcsetpgrp dance for foreground commands — so a child like
+# `claude` stays in this script's process group instead of becoming a process
+# group leader that owns the PTY foreground slot. libghostty's renderer keys
+# off that state (it learns "new frame ready" through TTY mechanisms that only
+# the actual FG-group leader can trigger), and without it the spinner/animation
+# pipeline stalls until a keypress forcibly refreshes things.
+#
+# `setopt monitor` enables full job control even in a non-interactive shell,
+# so when we run claude below it gets its own pgrp + the FG slot — exactly
+# like running it from an interactive zsh prompt. Animations work from frame 0.
+setopt monitor
+
 # ORPHEUS_CLAUDE_FLAGS — whitespace-separated CLI flags composed by Orpheus
 # from the user's Settings (e.g., "--model opus --permission-mode acceptEdits").
 # ORPHEUS_CLAUDE_SETTINGS_JSON — inline JSON blob for --settings, covering
@@ -16,21 +29,16 @@ if [[ -n "${ORPHEUS_CLAUDE_FLAGS:-}" ]]; then
   flags=(${=ORPHEUS_CLAUDE_FLAGS})
 fi
 
-# IMPORTANT: `exec` replaces this zsh process with claude. Without exec,
-# claude would be a child of a non-interactive zsh holding the controlling
-# TTY, which leaves claude one process away from the PTY foreground-group
-# slot it needs — symptom is stalled spinner/animation until a keystroke
-# pokes the pipeline. With exec, the process tree is just:
-#   ghostty pty → login → bash → claude   (claude IS the foreground group)
+# NOTE: deliberately do NOT `exec` here — we want the wrapper to outlive
+# claude so we can drop the user into a real interactive shell when claude
+# exits. `setopt monitor` above already makes claude the PTY foreground
+# group leader, so leaving the wrapper around as parent doesn't hurt rendering.
 if [[ -n "${ORPHEUS_CLAUDE_SETTINGS_JSON:-}" ]]; then
-  exec claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
+  claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
 else
-  exec claude "${flags[@]}"
+  claude "${flags[@]}"
 fi
 
-# Only reached if exec failed (claude binary not on PATH, etc.). Drop into
-# an interactive zsh so the user can debug — and exec so we don't keep
-# a script-shell parent around.
 echo
-echo "[orpheus-claude: failed to exec claude — dropping to interactive zsh]"
+echo "[claude exited — dropping to interactive zsh]"
 exec zsh -i
