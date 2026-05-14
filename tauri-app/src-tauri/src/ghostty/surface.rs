@@ -151,7 +151,6 @@ fn ensure_global_app() -> Result<(), String> {
             return Err("ghostty_config_new returned null".into());
         }
         ghostty_config_load_default_files(cfg);
-        ghostty_config_load_recursive_files(cfg);
         ghostty_config_finalize(cfg);
 
         let rt = ghostty_runtime_config_s {
@@ -207,11 +206,11 @@ pub fn spawn(
         let parent_h = content_view.bounds().size.height;
         let frame = dom_to_ns_rect(x, y, w, h, parent_h);
 
-        // Allocate and init the ghost view.
         let ghost_view: Retained<NSView> = NSView::initWithFrame(mtm.alloc::<NSView>(), frame);
         ghost_view.setWantsLayer(true);
 
-        // Place ABOVE the WKWebView so it receives events without pointer-events tricks.
+        // Sibling above WKWebView so the view receives events directly.
+        // addSubview retains; ghost_view's Retained drop at end-of-block is balanced by that retain.
         content_view.addSubview(&ghost_view);
 
         // Build surface config.
@@ -231,6 +230,7 @@ pub fn spawn(
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         let cwd = CString::new(home).unwrap();
+        // ghostty_surface_new copies working_directory internally; cwd may drop after the call.
         scfg.working_directory = cwd.as_ptr();
         scfg.command = std::ptr::null();
         scfg.env_vars = std::ptr::null_mut();
@@ -276,14 +276,17 @@ pub fn resize(
     h: f64,
     scale: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _mtm = MainThreadMarker::new().ok_or("resize must run on main thread")?;
     let state_lock = SURFACE.get().ok_or("surface not spawned yet")?;
     let state = state_lock.lock().unwrap();
     unsafe {
         let ns_view = &*(state.nsview as *const NSView);
         let parent_h = ns_view
             .superview()
-            .map(|sv| sv.bounds().size.height)
-            .unwrap_or(800.0);
+            .ok_or("ghost view detached from superview")?
+            .bounds()
+            .size
+            .height;
         let frame = dom_to_ns_rect(x, y, w, h, parent_h);
         ns_view.setFrame(frame);
         ghostty_surface_set_size(state.surface, (w * scale) as u32, (h * scale) as u32);

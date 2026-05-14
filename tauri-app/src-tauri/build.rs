@@ -56,7 +56,9 @@ fn main() {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .unwrap_or_default();
         let sdk_path = sdk_path.trim();
-        if !sdk_path.is_empty() {
+        if sdk_path.is_empty() {
+            println!("cargo:warning=xcrun --show-sdk-path returned empty; dispatch linking may fail");
+        } else {
             println!("cargo:rustc-link-search=native={sdk_path}/usr/lib/system");
             // dispatch is a re-export of libSystem; resolved via the TBD stub above.
             println!("cargo:rustc-link-lib=dylib=dispatch");
