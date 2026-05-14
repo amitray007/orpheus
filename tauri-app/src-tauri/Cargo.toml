@@ -1,0 +1,45 @@
+[package]
+name = "orpheus-tauri-spike"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "orpheus_tauri_spike_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "orpheus-tauri-spike"
+path = "src/main.rs"
+
+[build-dependencies]
+bindgen = "0.71"
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+once_cell = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSThread"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSView",
+    "NSWindow",
+    "NSApplication",
+    "NSResponder",
+    "NSEvent",
+] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = "thin"
+
+[profile.dev]
+panic = "abort"
