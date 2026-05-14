@@ -72,6 +72,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           notifyAttention: true,
           notifyStop: true,
           notifyAlways: false,
+          notifyMaxAttentionRepeats: 5,
           updatedAt: 0
         })
       })

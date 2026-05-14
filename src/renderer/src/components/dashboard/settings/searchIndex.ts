@@ -1269,6 +1269,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     mapsTo: [],
     keywords: ['always notify', 'focused window', 'suppress notifications', 'do not disturb', 'notification suppression', 'force notify']
   },
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: 'repeat-attention-reminders',
+    label: 'Repeat attention reminders',
+    description: 'When Claude is waiting on you, keep re-notifying on an exponential schedule until you view that workspace.',
+    mapsTo: [],
+    keywords: ['repeat', 'reminder', 'persistent', 'nag', 'retry', 'backoff', 'exponential', 'max repeats', 'reminders', 'unattended', 'follow up', 'follow-up']
+  },
 
   // ---------------------------------------------------------------------------
   // Orpheus › Updates

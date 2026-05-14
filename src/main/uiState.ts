@@ -34,6 +34,8 @@ type AppUiStateRow = {
   notify_attention: number
   notify_stop: number
   notify_always: number
+  // Persistent attention reminders (v30)
+  notify_max_attention_repeats: number
   updated_at: number
 }
 
@@ -69,6 +71,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifyAttention: (row.notify_attention ?? 1) === 1,
     notifyStop: (row.notify_stop ?? 1) === 1,
     notifyAlways: (row.notify_always ?? 0) === 1,
+    notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     updatedAt: row.updated_at
   }
 }
@@ -145,7 +148,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Notification preferences (v29)
     notifyAttention: 'notify_attention',
     notifyStop: 'notify_stop',
-    notifyAlways: 'notify_always'
+    notifyAlways: 'notify_always',
+    // Persistent attention reminders (v30)
+    notifyMaxAttentionRepeats: 'notify_max_attention_repeats'
   }
 
   const setClauses: string[] = []

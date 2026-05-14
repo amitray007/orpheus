@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import { SettingRow, Toggle, NumberInput } from './primitives'
 
 export function OrpheusNotificationsSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -107,6 +107,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               value={uiState.notifyStop ?? true}
               onChange={(v) => patch({ notifyStop: v })}
               ariaLabel="Notify when Claude finishes"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Repeat attention reminders"
+            description="When Claude is waiting on you, keep re-notifying on an exponential schedule (30s, 1m, 2m, 4m, 8m, then every 8m) until you view that workspace. Set to 0 to disable repeats."
+          >
+            <NumberInput
+              value={uiState.notifyMaxAttentionRepeats ?? 5}
+              onChange={(v) => patch({ notifyMaxAttentionRepeats: Math.max(0, v ?? 0) })}
+              placeholder="5"
             />
           </SettingRow>
         </div>

@@ -622,4 +622,9 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_always    BOOLEAN NOT NULL DEFAULT 0') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(29)
   }
+
+  if (currentVersion < 30) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_max_attention_repeats INTEGER NOT NULL DEFAULT 5') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(30)
+  }
 }

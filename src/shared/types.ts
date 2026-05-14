@@ -94,6 +94,8 @@ export type AppUiState = {
   notifyAttention: boolean
   notifyStop: boolean
   notifyAlways: boolean
+  // Persistent attention reminders (v30) — 0 disables; cap is hardcoded backoff length.
+  notifyMaxAttentionRepeats: number
   updatedAt: number
 }
 

@@ -6,8 +6,27 @@ import type { WorkspaceStatus } from '../shared/types'
 
 let currentlyViewedWorkspaceId: string | null = null
 
+// Exponential backoff between repeat attention notifications. After the index
+// reaches the end the last delay plateaus, so larger user-configured max counts
+// keep firing at 8-minute intervals rather than blowing up unboundedly.
+const ATTENTION_BACKOFF_MS = [30_000, 60_000, 120_000, 240_000, 480_000]
+
+type AttentionRetry = {
+  count: number
+  timer: NodeJS.Timeout
+}
+const attentionRetries = new Map<string, AttentionRetry>()
+
+function cancelAttentionRetry(workspaceId: string): void {
+  const r = attentionRetries.get(workspaceId)
+  if (!r) return
+  clearTimeout(r.timer)
+  attentionRetries.delete(workspaceId)
+}
+
 export function setCurrentlyViewedWorkspace(workspaceId: string | null): void {
   currentlyViewedWorkspaceId = workspaceId
+  if (workspaceId) cancelAttentionRetry(workspaceId)
 }
 
 function resolveWorkspaceLabel(workspaceId: string): string {
@@ -47,6 +66,44 @@ function focusAndNavigate(workspaceId: string): void {
   win.webContents.send('workspace:navigateTo', { workspaceId })
 }
 
+function fireAttentionNotification(
+  workspaceId: string,
+  count: number,
+  maxRepeats: number
+): void {
+  if (shouldSuppress(workspaceId)) return
+  const label = resolveWorkspaceLabel(workspaceId)
+  const body =
+    count === 0
+      ? 'Waiting on a permission decision'
+      : `Still waiting on a permission decision (${count + 1} of ${maxRepeats + 1})`
+  const notif = new Notification({
+    title: count === 0 ? 'Claude needs you' : 'Claude still needs you',
+    subtitle: label,
+    body,
+    silent: false
+  })
+  notif.on('click', () => focusAndNavigate(workspaceId))
+  notif.show()
+}
+
+function scheduleAttentionRetry(workspaceId: string, nextCount: number, maxRepeats: number): void {
+  if (nextCount > maxRepeats) return
+  const delayIdx = Math.min(nextCount - 1, ATTENTION_BACKOFF_MS.length - 1)
+  const delay = ATTENTION_BACKOFF_MS[delayIdx]
+  const timer = setTimeout(() => {
+    attentionRetries.delete(workspaceId)
+    // Bail if the workspace is no longer in attention (status moved on while we waited).
+    const ws = getWorkspace(workspaceId)
+    if (!ws || ws.status !== 'attention') return
+    const state = getAppUiState()
+    if (!state.notifyAttention) return
+    fireAttentionNotification(workspaceId, nextCount, maxRepeats)
+    scheduleAttentionRetry(workspaceId, nextCount + 1, maxRepeats)
+  }, delay)
+  attentionRetries.set(workspaceId, { count: nextCount, timer })
+}
+
 export function notifyForTransition(
   workspaceId: string,
   prevStatus: WorkspaceStatus | undefined,
@@ -54,17 +111,17 @@ export function notifyForTransition(
 ): void {
   const state = getAppUiState()
 
+  if (nextStatus !== 'attention') {
+    cancelAttentionRetry(workspaceId)
+  }
+
   if (nextStatus === 'attention' && state.notifyAttention) {
-    if (shouldSuppress(workspaceId)) return
-    const label = resolveWorkspaceLabel(workspaceId)
-    const notif = new Notification({
-      title: 'Claude needs you',
-      subtitle: label,
-      body: 'Waiting on a permission decision',
-      silent: false
-    })
-    notif.on('click', () => focusAndNavigate(workspaceId))
-    notif.show()
+    cancelAttentionRetry(workspaceId)
+    const maxRepeats = Math.max(0, state.notifyMaxAttentionRepeats ?? 0)
+    fireAttentionNotification(workspaceId, 0, maxRepeats)
+    if (maxRepeats > 0) {
+      scheduleAttentionRetry(workspaceId, 1, maxRepeats)
+    }
     return
   }
 
