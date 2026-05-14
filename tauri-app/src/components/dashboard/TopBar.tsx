@@ -47,6 +47,7 @@ export function TopBar({
     <header
       className="h-11 flex items-center bg-surface-raised border-b border-border-default flex-shrink-0 select-none"
       data-tauri-drag-region
+      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       {/* Left cluster — traffic-light spacer + sidebar toggle */}
       <div className="w-[88px] h-11 flex-shrink-0" data-tauri-drag-region />
@@ -57,6 +58,7 @@ export function TopBar({
         aria-label="Toggle sidebar"
         title="Toggle sidebar"
         data-tauri-drag-region="false"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         className="w-7 h-7 flex items-center justify-center rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
         <SidebarSimple size={18} />
