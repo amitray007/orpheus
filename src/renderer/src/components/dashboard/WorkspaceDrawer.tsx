@@ -1,12 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import {
-  X,
-  PlayCircle,
-  MagnifyingGlass,
-  CheckCircle,
-  Archive
-} from '@phosphor-icons/react'
+import { X } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './settings/primitives'
 import {
   CLAUDE_MODEL_OPTIONS,
@@ -19,107 +13,44 @@ import {
 } from '@shared/types'
 
 // ---------------------------------------------------------------------------
-// Status tab
+// Status tab — read-only auto-derived activity display
 // ---------------------------------------------------------------------------
 
-const STATUS_STAGES: {
-  value: WorkspaceStatus
-  label: string
-  description: string
-  icon: React.ElementType
-}[] = [
-  {
-    value: 'in_progress',
-    label: 'In Progress',
-    description: 'Working on it',
-    icon: PlayCircle
-  },
-  {
-    value: 'in_review',
-    label: 'In Review',
-    description: 'Awaiting review',
-    icon: MagnifyingGlass
-  },
-  {
-    value: 'completed',
-    label: 'Completed',
-    description: 'Wrapped up',
-    icon: CheckCircle
-  },
-  {
-    value: 'archived',
-    label: 'Archived',
-    description: 'Hidden from sidebar',
-    icon: Archive
-  }
-]
-
-interface StatusTabProps {
-  currentStatus: WorkspaceStatus
-  onStatusChange: (status: WorkspaceStatus) => void
+const STATUS_LABELS: Record<WorkspaceStatus, string | null> = {
+  in_progress: 'working',
+  awaiting_input: 'ready for your next message',
+  attention: 'waiting on you',
+  idle: 'not running',
+  archived: null
 }
 
-function StatusTab({ currentStatus, onStatusChange }: StatusTabProps): React.JSX.Element {
+const STATUS_COLORS: Partial<Record<WorkspaceStatus, string>> = {
+  in_progress: 'text-accent',
+  awaiting_input: 'text-emerald-400',
+  attention: 'text-amber-400',
+  idle: 'text-text-muted'
+}
+
+interface StatusTabProps {
+  activity: WorkspaceStatus
+}
+
+function StatusTab({ activity }: StatusTabProps): React.JSX.Element {
+  const label = STATUS_LABELS[activity]
+  const color = STATUS_COLORS[activity] ?? 'text-text-muted'
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
-          Status
-        </span>
-        <StatusChip status={currentStatus} />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        {STATUS_STAGES.map((stage) => {
-          const Icon = stage.icon
-          const isActive = currentStatus === stage.value
-          return (
-            <button
-              key={stage.value}
-              onClick={() => {
-                if (!isActive) onStatusChange(stage.value)
-              }}
-              disabled={isActive}
-              className={[
-                'flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-colors duration-150',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-                isActive
-                  ? 'bg-accent/10 cursor-default'
-                  : 'hover:bg-surface-overlay cursor-pointer'
-              ].join(' ')}
-            >
-              <Icon
-                size={18}
-                weight={isActive ? 'fill' : 'regular'}
-                className={isActive ? 'text-accent flex-shrink-0' : 'text-text-muted flex-shrink-0'}
-              />
-              <div className="flex flex-col min-w-0">
-                <span
-                  className={[
-                    'text-xs leading-tight',
-                    isActive ? 'font-semibold text-accent' : 'font-medium text-text-primary'
-                  ].join(' ')}
-                >
-                  {stage.label}
-                </span>
-                <span className="text-[10px] text-text-muted leading-tight mt-0.5">
-                  {stage.description}
-                </span>
-              </div>
-              {isActive && (
-                <span className="ml-auto text-[10px] font-medium text-accent flex-shrink-0">
-                  Current
-                </span>
-              )}
-            </button>
-          )
-        })}
-      </div>
-
-      <p className="text-[10px] text-text-muted leading-relaxed mt-1">
-        Switching to Archived hides this workspace from the sidebar. You can restore it from the
-        project's archived list.
-      </p>
+    <div className="flex flex-col gap-2 p-4">
+      <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+        Activity
+      </span>
+      {label !== null ? (
+        <p className="text-xs text-text-muted">
+          Claude is{' '}
+          <span className={color}>{label}</span>
+        </p>
+      ) : (
+        <p className="text-xs text-text-muted">Workspace is archived.</p>
+      )}
     </div>
   )
 }
@@ -286,38 +217,23 @@ function OverridesTab({ workspaceId }: OverridesTabProps): React.JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// Status chip — shared between drawer header and WorkspaceView header
-// ---------------------------------------------------------------------------
-
-export function StatusChip({ status }: { status: WorkspaceStatus }): React.JSX.Element {
-  const stage = STATUS_STAGES.find((s) => s.value === status)!
-  const Icon = stage.icon
-  return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-overlay text-text-muted">
-      <Icon size={10} weight="fill" />
-      {stage.label}
-    </span>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Drawer
 // ---------------------------------------------------------------------------
 
 export interface WorkspaceDrawerProps {
   workspace: WorkspaceRecord
+  activity: WorkspaceStatus
   activeTab: 'status' | 'overrides'
   onTabChange: (tab: 'status' | 'overrides') => void
   onClose: () => void
-  onStatusChange: (status: WorkspaceStatus) => void
 }
 
 export function WorkspaceDrawer({
   workspace,
+  activity,
   activeTab,
   onTabChange,
-  onClose,
-  onStatusChange
+  onClose
 }: WorkspaceDrawerProps): React.JSX.Element {
   return (
     <div className="flex flex-col h-full w-full">
@@ -359,7 +275,7 @@ export function WorkspaceDrawer({
       {/* Drawer body */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {activeTab === 'status' ? (
-          <StatusTab currentStatus={workspace.status} onStatusChange={onStatusChange} />
+          <StatusTab activity={activity} />
         ) : (
           <OverridesTab workspaceId={workspace.id} />
         )}

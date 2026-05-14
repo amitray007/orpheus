@@ -2,17 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
 import type { WorkspaceRecord, WorkspaceStatus } from '@shared/types'
-import { WorkspaceDrawer, StatusChip } from './WorkspaceDrawer'
+import { WorkspaceDrawer } from './WorkspaceDrawer'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
-  onWorkspaceStatusChanged?: (workspaceId: string, status: WorkspaceStatus) => void
 }
 
-export function WorkspaceView({
-  workspace,
-  onWorkspaceStatusChanged
-}: WorkspaceViewProps): React.JSX.Element {
+export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
@@ -23,15 +19,20 @@ export function WorkspaceView({
   const [isDirty, setIsDirty] = useState(false)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
-  // Optimistic local status so the chip updates immediately without waiting for a refetch
-  const [displayStatus, setDisplayStatus] = useState<WorkspaceStatus>(workspace.status)
+  // Activity status driven by claude hook events
+  const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
   // Terminal title from OSC 0/2 sequences emitted by Claude
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
-  // Sync displayStatus when the prop changes (parent refetch landed)
+  // Subscribe to live activity changes for this workspace.
   useEffect(() => {
-    setDisplayStatus(workspace.status)
-  }, [workspace.status])
+    const workspaceId = workspace.id
+    setActivity(workspace.status)
+    const unsub = window.api.workspaces.onActivityChanged((e) => {
+      if (e.workspaceId === workspaceId) setActivity(e.status)
+    })
+    return unsub
+  }, [workspace.id, workspace.status])
 
   // Seed dirty state on mount and subscribe to live events.
   useEffect(() => {
@@ -62,20 +63,6 @@ export function WorkspaceView({
     // with the freshly composed launch params. The main process snapshots the new
     // launch at that point and clears dirty — the chip disappears via dirtyChanged event.
     setRemountKey((k) => k + 1)
-  }
-
-  function handleStatusChange(next: WorkspaceStatus): void {
-    setDisplayStatus(next) // optimistic
-    window.api.workspaces
-      .setStatus(workspace.id, next)
-      .then((updated) => {
-        setDisplayStatus(updated.status)
-        onWorkspaceStatusChanged?.(workspace.id, updated.status)
-      })
-      .catch((err) => {
-        console.error('[WorkspaceView] status change failed', err)
-        setDisplayStatus(workspace.status) // revert optimistic
-      })
   }
 
   const handleTabChange = useCallback((tab: 'status' | 'overrides') => {
@@ -215,16 +202,6 @@ export function WorkspaceView({
           {workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name}
         </span>
 
-        {/* Status chip — clicking opens drawer on status tab */}
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setDrawer(drawer === 'status' ? null : 'status')}
-          title="Workspace status"
-          className="flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-        >
-          <StatusChip status={displayStatus} />
-        </button>
-
         {/* Gear — opens drawer on overrides tab */}
         <button
           onMouseDown={(e) => e.stopPropagation()}
@@ -271,11 +248,11 @@ export function WorkspaceView({
         {drawer !== null && (
           <div className="w-80 flex-shrink-0 border-l border-border-default bg-surface-raised flex flex-col">
             <WorkspaceDrawer
-              workspace={{ ...workspace, status: displayStatus }}
+              workspace={workspace}
+              activity={activity}
               activeTab={drawer}
               onTabChange={handleTabChange}
               onClose={handleCloseDrawer}
-              onStatusChange={handleStatusChange}
             />
           </div>
         )}

@@ -11,7 +11,7 @@ import {
   Archive,
   Gear
 } from '@phosphor-icons/react'
-import type { ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
+import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceStatus } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 
@@ -73,20 +73,26 @@ function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element
 }
 
 // ---------------------------------------------------------------------------
-// Active-session indicator
+// Activity dot — replaces ActivePulse, driven by WorkspaceStatus
 // ---------------------------------------------------------------------------
 
-interface ActivePulseProps {
-  className?: string
-}
-
-function ActivePulse({ className = '' }: ActivePulseProps): React.JSX.Element {
-  return (
-    <span className={['relative flex h-2 w-2 flex-shrink-0', className].join(' ')}>
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
-      <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-    </span>
-  )
+function ActivityDot({ status }: { status: WorkspaceStatus | undefined }): React.JSX.Element | null {
+  if (!status || status === 'idle' || status === 'archived') return null
+  if (status === 'in_progress') {
+    return (
+      <span className="relative flex h-2 w-2 flex-shrink-0">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+      </span>
+    )
+  }
+  if (status === 'awaiting_input') {
+    return <span className="h-2 w-2 rounded-full bg-emerald-400 flex-shrink-0" />
+  }
+  if (status === 'attention') {
+    return <span className="h-2 w-2 rounded-full bg-amber-400 flex-shrink-0 animate-pulse" />
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +103,7 @@ interface WorkspaceRowProps {
   workspace: WorkspaceRecord
   project: ProjectRecord
   active: boolean
-  isSessionActive: boolean
+  activity: WorkspaceStatus | undefined
   gitStatus?: GitStatus | null
   onSelect: () => void
   renaming: boolean
@@ -110,7 +116,7 @@ interface WorkspaceRowProps {
 function WorkspaceSubRow({
   workspace,
   active,
-  isSessionActive,
+  activity,
   gitStatus,
   onSelect,
   renaming,
@@ -191,8 +197,8 @@ function WorkspaceSubRow({
         title={workspace.cwd}
         aria-label={workspace.name}
       >
-        {isSessionActive ? (
-          <ActivePulse />
+        {activity && activity !== 'idle' && activity !== 'archived' ? (
+          <ActivityDot status={activity} />
         ) : (
           <Stack
             size={12}
@@ -271,7 +277,7 @@ interface ProjectRowProps {
   workspaceCount: number
   workspaceCountInline: boolean
   selectedWorkspaceId?: string | null
-  activeWorkspaceIds: Set<string>
+  workspaceActivities: Record<string, WorkspaceStatus>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onSelect: () => void
   onToggleExpand: () => void
@@ -306,7 +312,7 @@ function ProjectRow({
   workspaceCount,
   workspaceCountInline,
   selectedWorkspaceId,
-  activeWorkspaceIds,
+  workspaceActivities,
   gitStatusByWorkspaceId,
   onSelect,
   onToggleExpand,
@@ -474,7 +480,7 @@ function ProjectRow({
                     currentViewKind === 'workspace' &&
                     (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
                   }
-                  isSessionActive={activeWorkspaceIds.has(ws.id)}
+                  activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
                   onSelect={() => onSelectWorkspace(ws.id)}
                   renaming={renamingWorkspaceId === ws.id}
@@ -554,7 +560,7 @@ interface SidebarProps {
   currentViewKind: string
   expandedProjectIds: Set<string>
   workspacesByProject: Record<string, WorkspaceRecord[]>
-  activeWorkspaceIds: Set<string>
+  workspaceActivities: Record<string, WorkspaceStatus>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean
@@ -585,7 +591,7 @@ export function Sidebar({
   currentViewKind,
   expandedProjectIds,
   workspacesByProject,
-  activeWorkspaceIds,
+  workspaceActivities,
   gitStatusByWorkspaceId,
   workspaceCountInline,
   sidebarWidth,
@@ -850,7 +856,7 @@ export function Sidebar({
                             workspaceCount={workspaces.length}
                             workspaceCountInline={workspaceCountInline}
                             selectedWorkspaceId={selectedWorkspaceId}
-                            activeWorkspaceIds={activeWorkspaceIds}
+                            workspaceActivities={workspaceActivities}
                             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
                             onSelect={() => onSelectProject(p.id)}
                             onToggleExpand={() => onToggleProjectExpand(p.id)}

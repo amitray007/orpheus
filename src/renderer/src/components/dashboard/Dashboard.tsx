@@ -3,7 +3,7 @@ import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus } from '@shared/types'
+import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceStatus } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -29,8 +29,8 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
-  // Track which workspace surfaces are alive this session (mounted via terminal.mount)
-  const [activeWorkspaceIds, setActiveWorkspaceIds] = useState<Set<string>>(new Set())
+  // Activity status keyed by workspaceId — driven by claude hook events via IPC
+  const [workspaceActivities, setWorkspaceActivities] = useState<Record<string, WorkspaceStatus>>({})
 
   // Git status per workspace id
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<Record<string, GitStatus | null>>({})
@@ -80,6 +80,12 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   useEffect(() => {
     return window.api.debug.onActionTrace((e) => {
       console.log('[addon-trace]', e.tagName)
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.api.workspaces.onActivityChanged((e) => {
+      setWorkspaceActivities((prev) => ({ ...prev, [e.workspaceId]: e.status }))
     })
   }, [])
 
@@ -303,12 +309,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       }
       return next
     })
-    // Mark this workspace's terminal surface as active (mount succeeds)
-    setActiveWorkspaceIds((prev) => {
-      const next = new Set(prev)
-      next.add(workspaceId)
-      return next
-    })
     // Ensure workspaces are loaded for this project
     if (!workspacesByProject[projectId]) {
       fetchWorkspacesForProject(projectId)
@@ -396,12 +396,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     window.api.terminal
       .destroy(workspaceId)
       .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
-    // Remove from active set — surface is being destroyed
-    setActiveWorkspaceIds((prev) => {
-      const next = new Set(prev)
-      next.delete(workspaceId)
-      return next
-    })
     try {
       await window.api.workspaces.archive(workspaceId)
       await fetchWorkspacesForProject(projectId)
@@ -428,18 +422,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       refreshPins()
     } catch (err) {
       console.error('[dashboard] workspace unarchive failed', err)
-    }
-  }
-
-  function handleWorkspaceStatusChanged(workspaceId: string): void {
-    // Find the project that owns this workspace and refetch so the status
-    // flows back through props into WorkspaceView.
-    const projectId = Object.entries(workspacesByProject).find(([, ws]) =>
-      ws.some((w) => w.id === workspaceId)
-    )?.[0]
-    if (projectId) {
-      fetchWorkspacesForProject(projectId).catch(console.error)
-      refreshPins()
     }
   }
 
@@ -474,14 +456,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
         )
     }
-    // Remove all project workspace surfaces from the active set
-    setActiveWorkspaceIds((prev) => {
-      const next = new Set(prev)
-      for (const ws of projectWorkspaces) {
-        next.delete(ws.id)
-      }
-      return next
-    })
     await window.api.projects.remove(target.id)
     setRemoveConfirmTarget(null)
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
@@ -577,7 +551,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           currentViewKind={view.kind}
           expandedProjectIds={expandedProjectIds}
           workspacesByProject={workspacesByProject}
-          activeWorkspaceIds={activeWorkspaceIds}
+          workspaceActivities={workspaceActivities}
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
@@ -621,7 +595,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
             onUnarchiveWorkspace={handleUnarchiveWorkspace}
             onToggleWorkspacePin={handleToggleWorkspacePin}
-            onWorkspaceStatusChanged={handleWorkspaceStatusChanged}
           />
         </main>
       </div>

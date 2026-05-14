@@ -436,7 +436,12 @@ export type ContextMenuNativeItem =
     }
   | { divider: true }
 
-export type WorkspaceStatus = 'in_progress' | 'in_review' | 'completed' | 'archived'
+export type WorkspaceStatus =
+  | 'in_progress'
+  | 'awaiting_input'
+  | 'attention'
+  | 'idle'
+  | 'archived'
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 

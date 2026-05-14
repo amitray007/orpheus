@@ -610,4 +610,9 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(27)
   }
+
+  if (currentVersion < 28) {
+    db.prepare("UPDATE workspaces SET status = 'awaiting_input' WHERE status IN ('in_review', 'completed')").run()
+    db.prepare('UPDATE schema_version SET version = ?').run(28)
+  }
 }

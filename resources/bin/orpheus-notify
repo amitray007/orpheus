@@ -1,0 +1,17 @@
+#!/bin/bash
+set -u
+EVENT="${1:-}"
+[ -z "$EVENT" ] && exit 0
+[ -z "${ORPHEUS_SOCK:-}" ] && exit 0
+[ -z "${ORPHEUS_WORKSPACE_ID:-}" ] && exit 0
+[ -S "$ORPHEUS_SOCK" ] || exit 0
+
+# Drain claude's stdin so it doesn't block waiting for the hook to consume input.
+[ -t 0 ] || cat > /dev/null 2>&1
+
+curl --unix-socket "$ORPHEUS_SOCK" -fsS -o /dev/null --max-time 2 \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceId\":\"$ORPHEUS_WORKSPACE_ID\",\"event\":\"$EVENT\"}" \
+  "http://localhost/notify" 2>/dev/null || true
+
+exit 0

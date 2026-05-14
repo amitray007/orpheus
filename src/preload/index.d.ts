@@ -97,10 +97,12 @@ declare global {
         onDirtyChanged: (
           cb: (e: { workspaceId: string; dirty: boolean }) => void
         ) => () => void
-        setStatus: (id: string, status: WorkspaceStatus) => Promise<WorkspaceRecord>
         getTitle: (id: string) => Promise<string | null>
         onTitleChanged: (
           cb: (e: { workspaceId: string; title: string | null }) => void
+        ) => () => void
+        onActivityChanged: (
+          cb: (e: { workspaceId: string; status: WorkspaceStatus }) => void
         ) => () => void
       }
       pins: {

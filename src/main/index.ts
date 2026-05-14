@@ -31,7 +31,6 @@ import {
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
-  setWorkspaceStatus,
   setWorkspaceClaudeSessionId,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles
@@ -53,10 +52,10 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
+import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange } from './orpheusNotify'
 import { showContextMenu } from './contextMenu'
 import type {
   SessionStatus,
-  WorkspaceStatus,
   ClaudeGlobalSettingsPatch,
   AppUiStatePatch,
   ClaudeProjectSettingsOverrides,
@@ -77,6 +76,8 @@ import type { ClaudeLaunch } from './claudeSettings'
 // Keyed by workspaceId — snapshot of the ClaudeLaunch used at terminal:mount time.
 const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
+
+let notifyServer: { sockPath: string; close: () => void } | null = null
 
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
 const workspaceTitles = new Map<string, string>()
@@ -653,11 +654,6 @@ ipcMain.handle(
   (_e, { workspaceId }: { workspaceId: string }): boolean => dirtyWorkspaces.has(workspaceId)
 )
 
-ipcMain.handle(
-  'workspaces:setStatus',
-  (_e, { id, status }: { id: string; status: WorkspaceStatus }) => setWorkspaceStatus(id, status)
-)
-
 // ---------------------------------------------------------------------------
 // Pins IPC
 // ---------------------------------------------------------------------------
@@ -940,7 +936,10 @@ ipcMain.handle(
       ...launch.env,
       ...authEnv,  // auth env wins on conflict
       ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
-      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {})
+      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
+      ORPHEUS_WORKSPACE_ID: workspaceId,
+      ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
+      ORPHEUS_NOTIFY: shimPath()
     }
 
     // Build a redacted copy of env for logging — never log secret values
@@ -1034,6 +1033,25 @@ app.whenReady().then(() => {
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
 
+  // Start the Unix-domain socket server that hook shims post to.
+  try {
+    notifyServer = startNotifyServer()
+    onActivityChange((workspaceId, status) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send('workspace:activityChanged', { workspaceId, status })
+      }
+    })
+  } catch (err) {
+    console.error('[orpheusNotify] failed to start notify server:', err)
+  }
+
+  // Inject managed hooks into ~/.claude/settings.json (idempotent).
+  try {
+    ensureManagedHooks()
+  } catch (err) {
+    console.error('[orpheusNotify] failed to install managed hooks:', err)
+  }
+
   // Seed the in-memory workspaceTitles map from the DB so the sidebar /
   // workspace header can show the last observed prompt title immediately on
   // launch — without waiting for Claude to re-emit an OSC title.
@@ -1067,6 +1085,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  notifyServer?.close()
 })
 
 app.on('window-all-closed', () => {

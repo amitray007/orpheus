@@ -43,7 +43,7 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
-    status: row.status ?? 'in_progress',
+    status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null
   }
@@ -184,7 +184,7 @@ export function reorderWorkspaces(projectId: string, orderedIds: string[]): void
 
 export function unarchiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'in_progress' WHERE id = ?").run(id)
+  db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'idle' WHERE id = ?").run(id)
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }
@@ -212,7 +212,7 @@ export function getAllWorkspaceLastTitles(): Array<{ id: string; title: string }
 // Status
 // ---------------------------------------------------------------------------
 
-const VALID_STATUSES: WorkspaceStatus[] = ['in_progress', 'in_review', 'completed', 'archived']
+const VALID_STATUSES: WorkspaceStatus[] = ['in_progress', 'awaiting_input', 'attention', 'idle', 'archived']
 
 export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {

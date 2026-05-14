@@ -38,6 +38,10 @@ extraResources:
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Hook notification shim — invoked by Claude Code hooks to post activity events
+  # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
+  - from: resources/bin/orpheus-notify
+    to: bin/orpheus-notify
 win:
   executableName: Orpheus
 nsis:
