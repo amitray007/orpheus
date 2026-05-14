@@ -451,6 +451,15 @@ export type WorkspaceStatus =
   | 'idle'
   | 'archived'
 
+export type WorkspaceActivityDetail =
+  | 'thinking'
+  | 'tool'
+  | 'compacting'
+  | 'ready'
+  | 'attention'
+  | 'idle'
+  | 'archived'
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

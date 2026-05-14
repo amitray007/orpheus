@@ -11,7 +11,7 @@ import {
   Archive,
   Gear
 } from '@phosphor-icons/react'
-import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceStatus } from '@shared/types'
+import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -81,7 +81,7 @@ interface WorkspaceRowProps {
   workspace: WorkspaceRecord
   project: ProjectRecord
   active: boolean
-  activity: WorkspaceStatus | undefined
+  activity: WorkspaceActivityDetail | undefined
   gitStatus?: GitStatus | null
   onSelect: () => void
   renaming: boolean
@@ -175,8 +175,8 @@ function WorkspaceSubRow({
         title={workspace.cwd}
         aria-label={workspace.name}
       >
-        {activity && activity !== 'idle' && activity !== 'archived' ? (
-          <ActivityIndicator status={activity} />
+        {activity && (activity === 'thinking' || activity === 'tool' || activity === 'compacting' || activity === 'ready' || activity === 'attention') ? (
+          <ActivityIndicator detail={activity} />
         ) : (
           <Stack
             size={12}
@@ -255,7 +255,7 @@ interface ProjectRowProps {
   workspaceCount: number
   workspaceCountInline: boolean
   selectedWorkspaceId?: string | null
-  workspaceActivities: Record<string, WorkspaceStatus>
+  workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onSelect: () => void
   onToggleExpand: () => void
@@ -538,7 +538,7 @@ interface SidebarProps {
   currentViewKind: string
   expandedProjectIds: Set<string>
   workspacesByProject: Record<string, WorkspaceRecord[]>
-  workspaceActivities: Record<string, WorkspaceStatus>
+  workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean

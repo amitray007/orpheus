@@ -6,7 +6,7 @@ import { app } from 'electron'
 import { setWorkspaceStatus } from './workspaces'
 import { notifyForTransition } from './osNotifications'
 import { getAppUiState } from './uiState'
-import type { WorkspaceStatus } from '../shared/types'
+import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -50,9 +50,47 @@ const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SubagentStop: 'subagent-stop'
 }
 
+type DetailState = { toolStack: number; compacting: boolean }
+
 const activityMap = new Map<string, WorkspaceStatus>()
-const listeners = new Set<(workspaceId: string, status: WorkspaceStatus) => void>()
+const detailMap = new Map<string, DetailState>()
+const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
+const listeners = new Set<(workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void>()
 const watchdogs = new Map<string, NodeJS.Timeout>()
+
+function getDetailState(workspaceId: string): DetailState {
+  let s = detailMap.get(workspaceId)
+  if (!s) {
+    s = { toolStack: 0, compacting: false }
+    detailMap.set(workspaceId, s)
+  }
+  return s
+}
+
+export function computeDetail(workspaceId: string, status: WorkspaceStatus): WorkspaceActivityDetail {
+  if (status === 'in_progress') {
+    const s = detailMap.get(workspaceId)
+    if (s?.compacting) return 'compacting'
+    if (s && s.toolStack > 0) return 'tool'
+    return 'thinking'
+  }
+  if (status === 'awaiting_input') return 'ready'
+  if (status === 'attention') return 'attention'
+  if (status === 'idle') return 'idle'
+  return 'archived'
+}
+
+function broadcastDetailIfChanged(workspaceId: string): void {
+  const status = activityMap.get(workspaceId)
+  if (!status) return
+  const detail = computeDetail(workspaceId, status)
+  const last = lastBroadcastDetail.get(workspaceId)
+  if (last === detail) return
+  lastBroadcastDetail.set(workspaceId, detail)
+  for (const cb of listeners) {
+    try { cb(workspaceId, status, detail) } catch {}
+  }
+}
 
 function clearWatchdog(workspaceId: string): void {
   const t = watchdogs.get(workspaceId)
@@ -63,8 +101,10 @@ function clearWatchdog(workspaceId: string): void {
 
 function armWatchdog(workspaceId: string): void {
   clearWatchdog(workspaceId)
-  const seconds = getAppUiState().inProgressWatchdogSec ?? 120
-  if (seconds <= 0) return
+  const userSec = getAppUiState().inProgressWatchdogSec ?? 120
+  if (userSec <= 0) return
+  const s = detailMap.get(workspaceId)
+  const seconds = s?.compacting ? Math.max(userSec, 300) : userSec
   const t = setTimeout(() => {
     watchdogs.delete(workspaceId)
     if (activityMap.get(workspaceId) === 'in_progress') {
@@ -84,9 +124,6 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   } catch (err) {
     console.warn('[orpheusNotify] setWorkspaceStatus failed for', workspaceId, err)
   }
-  for (const cb of listeners) {
-    try { cb(workspaceId, status) } catch {}
-  }
   notifyForTransition(workspaceId, prev, status)
 
   if (status === 'in_progress') {
@@ -94,12 +131,20 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   } else {
     clearWatchdog(workspaceId)
   }
+
+  broadcastDetailIfChanged(workspaceId)
 }
 
 function heartbeat(workspaceId: string): void {
   if (activityMap.get(workspaceId) === 'in_progress') {
     armWatchdog(workspaceId)
   }
+}
+
+// Called from index.ts when a raw title begins with a spinner glyph, re-arming
+// the watchdog during pure-think turns where no tool events fire.
+export function heartbeatFromTitle(workspaceId: string): void {
+  heartbeat(workspaceId)
 }
 
 export function resetWorkspaceActivity(workspaceId: string): void {
@@ -112,7 +157,7 @@ export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
 }
 
 export function onActivityChange(
-  cb: (workspaceId: string, status: WorkspaceStatus) => void
+  cb: (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
 ): () => void {
   listeners.add(cb)
   return () => listeners.delete(cb)
@@ -233,9 +278,39 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
 
       const ev = eventName as WorkspaceActivityEvent
       if (HEARTBEAT_EVENTS.has(ev)) {
+        const ds = getDetailState(workspaceId)
+        if (ev === 'pretool') {
+          ds.toolStack++
+        } else if (ev === 'posttool') {
+          ds.toolStack = Math.max(0, ds.toolStack - 1)
+        } else if (ev === 'precompact') {
+          ds.compacting = true
+        }
+        // subagent-stop: no state mutation
         heartbeat(workspaceId)
+        broadcastDetailIfChanged(workspaceId)
         return
       }
+
+      // Status-transitioning events — apply pre-dispatch state mutations first.
+      if (ev === 'user-prompt') {
+        const ds = getDetailState(workspaceId)
+        ds.toolStack = 0
+        ds.compacting = false
+      } else if (ev === 'stop') {
+        const ds = getDetailState(workspaceId)
+        ds.toolStack = 0
+        ds.compacting = false
+      } else if (ev === 'notification') {
+        const ds = getDetailState(workspaceId)
+        ds.compacting = false
+      } else if (ev === 'session-end') {
+        const ds = getDetailState(workspaceId)
+        ds.toolStack = 0
+        ds.compacting = false
+      }
+      // session-start: leave state as-is
+
       const status = EVENT_TO_STATUS[ev]
       if (!status) return
 

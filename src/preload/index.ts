@@ -8,6 +8,7 @@ import type {
   SessionStatus,
   WorkspaceRecord,
   WorkspaceStatus,
+  WorkspaceActivityDetail,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -137,11 +138,11 @@ const api = {
       return () => ipcRenderer.removeListener('workspace:titleChanged', listener)
     },
     onActivityChanged: (
-      cb: (e: { workspaceId: string; status: WorkspaceStatus }) => void
+      cb: (e: { workspaceId: string; status: WorkspaceStatus; detail: WorkspaceActivityDetail }) => void
     ): (() => void) => {
       const listener = (
         _evt: IpcRendererEvent,
-        e: { workspaceId: string; status: WorkspaceStatus }
+        e: { workspaceId: string; status: WorkspaceStatus; detail: WorkspaceActivityDetail }
       ): void => cb(e)
       ipcRenderer.on('workspace:activityChanged', listener)
       return () => ipcRenderer.removeListener('workspace:activityChanged', listener)

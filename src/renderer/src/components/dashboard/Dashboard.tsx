@@ -3,7 +3,7 @@ import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceStatus } from '@shared/types'
+import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -29,8 +29,8 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
-  // Activity status keyed by workspaceId — driven by claude hook events via IPC
-  const [workspaceActivities, setWorkspaceActivities] = useState<Record<string, WorkspaceStatus>>({})
+  // Activity detail keyed by workspaceId — driven by claude hook events via IPC
+  const [workspaceActivities, setWorkspaceActivities] = useState<Record<string, WorkspaceActivityDetail>>({})
 
   // Git status per workspace id
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<Record<string, GitStatus | null>>({})
@@ -90,7 +90,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
 
   useEffect(() => {
     return window.api.workspaces.onActivityChanged((e) => {
-      setWorkspaceActivities((prev) => ({ ...prev, [e.workspaceId]: e.status }))
+      setWorkspaceActivities((prev) => ({ ...prev, [e.workspaceId]: e.detail }))
     })
   }, [])
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
-import type { WorkspaceRecord, WorkspaceStatus } from '@shared/types'
+import type { WorkspaceRecord, WorkspaceStatus, WorkspaceActivityDetail } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 
 interface WorkspaceViewProps {
@@ -21,6 +21,8 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
   // Activity status driven by claude hook events
   const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
+  // Detail sub-state (thinking / tool / compacting / ready / etc.)
+  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(undefined)
   // Terminal title from OSC 0/2 sequences emitted by Claude
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
@@ -29,7 +31,10 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     const workspaceId = workspace.id
     setActivity(workspace.status)
     const unsub = window.api.workspaces.onActivityChanged((e) => {
-      if (e.workspaceId === workspaceId) setActivity(e.status)
+      if (e.workspaceId === workspaceId) {
+        setActivity(e.status)
+        setDetail(e.detail)
+      }
     })
     return unsub
   }, [workspace.id, workspace.status])
@@ -250,6 +255,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
             <WorkspaceDrawer
               workspace={workspace}
               activity={activity}
+              detail={detail}
               activeTab={drawer}
               onTabChange={handleTabChange}
               onClose={handleCloseDrawer}

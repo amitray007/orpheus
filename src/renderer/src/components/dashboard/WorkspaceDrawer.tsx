@@ -7,6 +7,7 @@ import {
   CLAUDE_MODEL_OPTIONS,
   type WorkspaceRecord,
   type WorkspaceStatus,
+  type WorkspaceActivityDetail,
   type ClaudeWorkspaceSettings,
   type ClaudeWorkspaceSettingsOverrides,
   type ClaudePermissionMode,
@@ -17,29 +18,43 @@ import {
 // Status tab — read-only auto-derived activity display
 // ---------------------------------------------------------------------------
 
-const STATUS_LABELS: Record<WorkspaceStatus, string | null> = {
-  in_progress: 'working',
-  awaiting_input: 'ready for your next message',
+const DETAIL_LABELS: Record<WorkspaceActivityDetail, string | null> = {
+  thinking: 'thinking',
+  tool: 'using a tool',
+  compacting: 'compacting context',
+  ready: 'ready for your next message',
   attention: 'waiting on you',
   idle: 'not running',
   archived: null
 }
 
-const STATUS_COLORS: Partial<Record<WorkspaceStatus, string>> = {
-  in_progress: 'text-accent',
-  awaiting_input: 'text-emerald-400',
+const DETAIL_COLORS: Partial<Record<WorkspaceActivityDetail, string>> = {
+  thinking: 'text-accent',
+  tool: 'text-accent',
+  compacting: 'text-accent',
+  ready: 'text-emerald-400',
   attention: 'text-amber-400',
   idle: 'text-text-muted'
 }
 
+function statusToDetail(s: WorkspaceStatus): WorkspaceActivityDetail {
+  return s === 'in_progress' ? 'thinking'
+    : s === 'awaiting_input' ? 'ready'
+    : s === 'attention' ? 'attention'
+    : s === 'archived' ? 'archived'
+    : 'idle'
+}
+
 interface StatusTabProps {
   activity: WorkspaceStatus
+  detail: WorkspaceActivityDetail | undefined
   workspaceId: string
 }
 
-function StatusTab({ activity, workspaceId }: StatusTabProps): React.JSX.Element {
-  const label = STATUS_LABELS[activity]
-  const color = STATUS_COLORS[activity] ?? 'text-text-muted'
+function StatusTab({ activity, detail, workspaceId }: StatusTabProps): React.JSX.Element {
+  const resolved = detail ?? statusToDetail(activity)
+  const label = DETAIL_LABELS[resolved]
+  const color = DETAIL_COLORS[resolved] ?? 'text-text-muted'
   const canReset = activity === 'in_progress' || activity === 'attention'
 
   function handleReset(): void {
@@ -55,7 +70,7 @@ function StatusTab({ activity, workspaceId }: StatusTabProps): React.JSX.Element
       </span>
       {label !== null ? (
         <p className="text-xs text-text-muted flex items-center gap-1.5">
-          <ActivityIndicator status={activity} />
+          <ActivityIndicator detail={resolved} />
           Claude is{' '}
           <span className={color}>{label}</span>
         </p>
@@ -244,6 +259,7 @@ function OverridesTab({ workspaceId }: OverridesTabProps): React.JSX.Element {
 export interface WorkspaceDrawerProps {
   workspace: WorkspaceRecord
   activity: WorkspaceStatus
+  detail: WorkspaceActivityDetail | undefined
   activeTab: 'status' | 'overrides'
   onTabChange: (tab: 'status' | 'overrides') => void
   onClose: () => void
@@ -252,6 +268,7 @@ export interface WorkspaceDrawerProps {
 export function WorkspaceDrawer({
   workspace,
   activity,
+  detail,
   activeTab,
   onTabChange,
   onClose
@@ -296,7 +313,7 @@ export function WorkspaceDrawer({
       {/* Drawer body */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {activeTab === 'status' ? (
-          <StatusTab activity={activity} workspaceId={workspace.id} />
+          <StatusTab activity={activity} detail={detail} workspaceId={workspace.id} />
         ) : (
           <OverridesTab workspaceId={workspace.id} />
         )}

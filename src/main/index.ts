@@ -52,7 +52,7 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
-import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange, resetWorkspaceActivity } from './orpheusNotify'
+import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange, resetWorkspaceActivity, heartbeatFromTitle } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
 import type {
@@ -95,6 +95,14 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
     // Stripping also collapses the spinner animation to one stable string
     // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
     // dedupe below uses to avoid hammering the DB on every frame.
+
+    // If the raw title leads with a spinner glyph, re-arm the watchdog so
+    // pure-think turns (no tool events) don't falsely expire during extended thinking.
+    const rawFirst = (title ?? '')[0]
+    if (rawFirst && /^[^\p{L}\p{N}\s]/u.test(rawFirst)) {
+      heartbeatFromTitle(workspaceId)
+    }
+
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
 
     // Skip if nothing changed — guards the per-frame spinner churn.
@@ -1049,9 +1057,9 @@ app.whenReady().then(() => {
   // Start the Unix-domain socket server that hook shims post to.
   try {
     notifyServer = startNotifyServer()
-    onActivityChange((workspaceId, status) => {
+    onActivityChange((workspaceId, status, detail) => {
       for (const w of BrowserWindow.getAllWindows()) {
-        w.webContents.send('workspace:activityChanged', { workspaceId, status })
+        w.webContents.send('workspace:activityChanged', { workspaceId, status, detail })
       }
     })
   } catch (err) {
