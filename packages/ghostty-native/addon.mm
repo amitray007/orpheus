@@ -1051,8 +1051,13 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef /*displayLink*/,
     // displayLinkContext is the ghostty_surface_t pointer.
     ghostty_surface_t surface = reinterpret_cast<ghostty_surface_t>(displayLinkContext);
 
-    // Dispatch draw to the AppKit main thread.
+    // Force a needs-render flag every vsync. Without this, ghostty_surface_draw
+    // can short-circuit when its internal dirty check misses PTY output patterns
+    // (e.g. long claude compactions that rewrite cells with identical glyphs).
+    // Ghostty.app's standalone render thread handles this internally; embedders
+    // driving draw from a display link must signal refresh explicitly.
     dispatch_async(dispatch_get_main_queue(), ^{
+        ghostty_surface_refresh(surface);
         ghostty_surface_draw(surface);
     });
 
