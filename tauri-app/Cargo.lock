@@ -2790,7 +2790,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "orpheus-tauri-spike"
+name = "orpheus"
 version = "0.1.0"
 dependencies = [
  "directories",
