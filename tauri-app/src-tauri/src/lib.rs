@@ -1,5 +1,8 @@
 mod commands;
 pub mod db;
+pub mod projects;
+pub mod sessions;
+pub mod workspaces;
 
 #[cfg(target_os = "macos")]
 mod ghostty;
