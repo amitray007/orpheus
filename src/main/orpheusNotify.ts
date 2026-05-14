@@ -62,8 +62,22 @@ export function shimPath(): string {
   return nodePath.join(process.resourcesPath, 'bin', 'orpheus-notify')
 }
 
-// Managed hooks marker: any hook command starting with shimPath() is ours.
-// ensureManagedHooks() removes stale entries before re-adding them.
+// Hook commands resolve $ORPHEUS_NOTIFY at runtime from the env injected at
+// terminal:mount, so the absolute path never bakes into ~/.claude/settings.json.
+// Outside Orpheus the env is empty, the test chain short-circuits, and the
+// trailing `|| true` swallows any non-zero so claude never sees a failed hook.
+function managedCommand(event: WorkspaceActivityEvent): string {
+  return `[ -n "$ORPHEUS_NOTIFY" ] && [ -x "$ORPHEUS_NOTIFY" ] && "$ORPHEUS_NOTIFY" ${event} || true`
+}
+
+// Anything mentioning our env var is ours; the legacy absolute-path form is
+// also recognized so first-run after this change cleans up the old entries.
+function isManagedCommand(cmd: string): boolean {
+  if (cmd.includes('$ORPHEUS_NOTIFY')) return true
+  if (cmd.startsWith(shimPath())) return true
+  return false
+}
+
 export function ensureManagedHooks(): void {
   const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
   const dir = nodePath.dirname(settingsPath)
@@ -89,15 +103,12 @@ export function ensureManagedHooks(): void {
   }
   const hooksObj = parsed['hooks'] as Record<string, unknown>
 
-  const myShim = shimPath()
-
   for (const [hookEvent, activityEvent] of Object.entries(HOOK_EVENT_MAP)) {
     if (!Array.isArray(hooksObj[hookEvent])) {
       hooksObj[hookEvent] = []
     }
     const eventArr = hooksObj[hookEvent] as Array<Record<string, unknown>>
 
-    // Remove all matcher-entries whose hooks array contains our shim command
     const cleaned = eventArr.filter((entry) => {
       if (typeof entry !== 'object' || entry === null) return true
       const hookList = entry['hooks']
@@ -107,14 +118,13 @@ export function ensureManagedHooks(): void {
           typeof h === 'object' &&
           h !== null &&
           typeof (h as Record<string, unknown>)['command'] === 'string' &&
-          ((h as Record<string, unknown>)['command'] as string).startsWith(myShim)
+          isManagedCommand((h as Record<string, unknown>)['command'] as string)
       )
       return !hasOurs
     })
 
-    // Append our fresh managed entry (no matcher — these events don't use one)
     cleaned.push({
-      hooks: [{ type: 'command', command: `${myShim} ${activityEvent}` }]
+      hooks: [{ type: 'command', command: managedCommand(activityEvent) }]
     })
 
     hooksObj[hookEvent] = cleaned
