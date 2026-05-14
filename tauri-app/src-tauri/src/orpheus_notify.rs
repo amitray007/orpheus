@@ -446,15 +446,17 @@ async fn handle_connection(
 
     eprintln!("[orpheus-notify] event {:?} for {}", event, workspace_id);
 
-    let new_status = {
+    let (prev_status, new_status) = {
         let mut am = activity_map.lock().unwrap();
         let mut dm = detail_map.lock().unwrap();
-        handle_hook_event(&workspace_id, &event, &payload, &mut am, &mut dm)
+        let prev = am.get(&workspace_id).cloned();
+        let next = handle_hook_event(&workspace_id, &event, &payload, &mut am, &mut dm);
+        (prev, next)
     };
 
     if let Some(status) = new_status {
-        let db = db.lock().unwrap();
-        if let Err(e) = set_workspace_status(&db, &workspace_id, status.clone()) {
+        let db_guard = db.lock().unwrap();
+        if let Err(e) = set_workspace_status(&db_guard, &workspace_id, status.clone()) {
             eprintln!("[orpheus-notify] set_workspace_status failed for {workspace_id}: {e}");
         }
 
@@ -469,12 +471,15 @@ async fn handle_connection(
             });
         }
 
-        // Emit workspace:activityChanged so the renderer can update status badges.
+        // Compute the activity detail for both the renderer event and the
+        // notification body (so the toast text matches the sidebar glyph).
         let detail = {
             let dm = detail_map.lock().unwrap();
             let d = dm.get(&workspace_id).cloned().unwrap_or_default();
             compute_detail(&status, &d)
         };
+
+        // Emit workspace:activityChanged so the renderer can update status badges.
         let _ = app_handle.emit(
             "workspace:activityChanged",
             serde_json::json!({
@@ -484,6 +489,99 @@ async fn handle_connection(
             }),
         );
         log::debug!("[orpheus-notify] status -> {:?} for {}", status, workspace_id);
+
+        // Pull workspace + project info while we still hold the DB lock, so
+        // we can build a "Project · Workspace" label for the notification.
+        let label_and_settings = (|| -> Option<_> {
+            let ws = crate::workspaces::get_workspace(&db_guard, &workspace_id).ok().flatten()?;
+            let proj = crate::projects::list_projects(&db_guard).ok()?
+                .into_iter().find(|p| p.id == ws.project_id)?;
+            let ui = crate::ui_state::get_ui_state(&db_guard).ok()?;
+            let display_name = if ws.name_is_auto {
+                ws.last_title.clone().unwrap_or(ws.name)
+            } else {
+                ws.name
+            };
+            Some((format!("{} · {}", proj.name, display_name), ui))
+        })();
+        drop(db_guard);
+
+        if let Some((label, ui)) = label_and_settings {
+            handle_transition_notifications(
+                &app_handle,
+                &workspace_id,
+                &label,
+                prev_status.as_ref(),
+                &status,
+                &ui,
+            );
+        }
+    }
+}
+
+/// Mirror of main's `notifyForTransition` — fire OS notifications on status
+/// transitions and arm/cancel the attention retry chain.
+fn handle_transition_notifications(
+    app_handle: &tauri::AppHandle,
+    workspace_id: &str,
+    label: &str,
+    prev_status: Option<&WorkspaceStatus>,
+    next_status: &WorkspaceStatus,
+    ui: &crate::ui_state::AppUiState,
+) {
+    use tauri::Manager;
+
+    let retry_state = match app_handle.try_state::<crate::os_notifications::SharedRetryState>() {
+        Some(s) => s.inner().clone(),
+        None => return,
+    };
+    let currently_viewed = app_handle
+        .try_state::<crate::os_notifications::SharedCurrentlyViewed>()
+        .map(|s| s.inner().clone());
+
+    // Any non-attention transition cancels the in-flight retry chain.
+    if *next_status != WorkspaceStatus::Attention {
+        crate::os_notifications::cancel_for_workspace(&retry_state, workspace_id);
+    }
+
+    // Suppress notifications for the workspace the user is currently viewing,
+    // unless they've opted in via `notify_always`.
+    let is_currently_viewed = currently_viewed
+        .as_ref()
+        .and_then(|cv| cv.lock().ok().and_then(|g| g.get().map(|s| s.to_owned())))
+        .as_deref()
+        == Some(workspace_id);
+    let suppress = is_currently_viewed && !ui.notify_always;
+
+    match next_status {
+        WorkspaceStatus::Attention if ui.notify_attention && !suppress => {
+            crate::os_notifications::cancel_for_workspace(&retry_state, workspace_id);
+            let max_repeats = ui.notify_max_attention_repeats.max(0) as u32;
+            let params = crate::os_notifications::attention_params(label, None, 0, max_repeats);
+            let _ = crate::os_notifications::show_notification(&params);
+            if max_repeats > 0 {
+                if let Ok(mut s) = retry_state.lock() {
+                    s.set(workspace_id, 1);
+                }
+                crate::os_notifications::schedule_attention_retries(
+                    workspace_id.to_owned(),
+                    label.to_owned(),
+                    None,
+                    1,
+                    max_repeats,
+                    retry_state.clone(),
+                );
+            }
+        }
+        WorkspaceStatus::AwaitingInput
+            if prev_status == Some(&WorkspaceStatus::InProgress)
+                && ui.notify_stop
+                && !suppress =>
+        {
+            let params = crate::os_notifications::stop_params(label);
+            let _ = crate::os_notifications::show_notification(&params);
+        }
+        _ => {}
     }
 }
 
