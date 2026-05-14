@@ -369,7 +369,7 @@ pub fn list_all_sessions(
                 s.created_at, s.updated_at, s.archived_at, s.model, s.last_message_role
          FROM sessions s
          JOIN projects p ON p.id = s.project_id
-         WHERE p.archived_at IS NULL {status_clause}
+         WHERE 1=1 {status_clause}
          ORDER BY
            CASE s.status
              WHEN 'in_progress' THEN 0
