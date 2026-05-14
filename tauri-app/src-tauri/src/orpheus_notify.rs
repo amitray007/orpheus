@@ -24,6 +24,8 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+use tauri::Emitter;
+
 use crate::db::Db;
 use crate::workspaces::{set_workspace_status, WorkspaceStatus};
 
@@ -74,7 +76,7 @@ impl WorkspaceActivityEvent {
 }
 
 /// Detail state tracked per workspace (mirrors DetailState in TS).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct WorkspaceDetail {
     pub tool_stack: i32,
     pub compacting: bool,
@@ -277,9 +279,11 @@ fn update_status(
 
 /// Start the Unix socket server. Returns a JoinHandle the caller can abort.
 /// `db` is used for workspace status writes; `watchdog_sec` mirrors inProgressWatchdogSec.
+/// `app_handle` is used to emit `workspace:activityChanged` events to the renderer.
 pub fn start_socket_server(
     db: Arc<Mutex<Db>>,
     watchdog_sec: u64,
+    app_handle: tauri::AppHandle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let sock_path = match notify_sock_path() {
@@ -367,9 +371,10 @@ pub fn start_socket_server(
             let detail_map = detail_map.clone();
             let db = db.clone();
             let wd_tx = wd_tx.clone();
+            let app_handle = app_handle.clone();
 
             tokio::spawn(async move {
-                handle_connection(stream, activity_map, detail_map, db, wd_tx, watchdog_sec).await;
+                handle_connection(stream, activity_map, detail_map, db, wd_tx, watchdog_sec, app_handle).await;
             });
         }
     })
@@ -382,6 +387,7 @@ async fn handle_connection(
     db: Arc<Mutex<Db>>,
     wd_tx: mpsc::UnboundedSender<WatchdogMsg>,
     watchdog_sec: u64,
+    app_handle: tauri::AppHandle,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -462,8 +468,21 @@ async fn handle_connection(
             });
         }
 
-        // Phase 3: emit event to renderer via AppHandle here.
-        eprintln!("[orpheus-notify] status -> {:?} for {}", status, workspace_id);
+        // Emit workspace:activityChanged so the renderer can update status badges.
+        let detail = {
+            let dm = detail_map.lock().unwrap();
+            let d = dm.get(&workspace_id).cloned().unwrap_or_default();
+            compute_detail(&status, &d)
+        };
+        let _ = app_handle.emit(
+            "workspace:activityChanged",
+            serde_json::json!({
+                "workspaceId": workspace_id,
+                "status": status.as_str(),
+                "detail": detail,
+            }),
+        );
+        log::debug!("[orpheus-notify] status -> {:?} for {}", status, workspace_id);
     }
 }
 
