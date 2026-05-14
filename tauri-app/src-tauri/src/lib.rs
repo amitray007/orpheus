@@ -1,6 +1,7 @@
 mod commands;
 pub mod claude_agents;
 pub mod claude_auth;
+pub mod context_menu;
 pub mod claude_hooks;
 pub mod claude_project_settings;
 pub mod claude_settings;
