@@ -627,4 +627,9 @@ function migrate(db: Database.Database): void {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_max_attention_repeats INTEGER NOT NULL DEFAULT 5') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(30)
   }
+
+  if (currentVersion < 31) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN in_progress_watchdog_sec INTEGER NOT NULL DEFAULT 120') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(31)
+  }
 }

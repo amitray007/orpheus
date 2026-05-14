@@ -1279,6 +1279,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     mapsTo: [],
     keywords: ['repeat', 'reminder', 'persistent', 'nag', 'retry', 'backoff', 'exponential', 'max repeats', 'reminders', 'unattended', 'follow up', 'follow-up']
   },
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: 'inactivity-watchdog-seconds',
+    label: 'Inactivity watchdog (seconds)',
+    description: 'Auto-demote stuck in-progress workspaces to ready when no Claude hook heartbeat arrives.',
+    mapsTo: [],
+    keywords: ['watchdog', 'stuck', 'spinner', 'interrupt', 'ctrl-c', 'ctrl c', 'esc', 'abort', 'interrupted', 'hang', 'timeout', 'inactivity', 'heartbeat', 'pretooluse', 'posttooluse', 'demote', 'reset']
+  },
 
   // ---------------------------------------------------------------------------
   // Orpheus › Updates

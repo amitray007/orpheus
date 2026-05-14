@@ -96,6 +96,8 @@ export type AppUiState = {
   notifyAlways: boolean
   // Persistent attention reminders (v30) — 0 disables; cap is hardcoded backoff length.
   notifyMaxAttentionRepeats: number
+  // In-progress watchdog (v31) — seconds without a heartbeat hook before auto-demoting from in_progress. 0 disables.
+  inProgressWatchdogSec: number
   updatedAt: number
 }
 

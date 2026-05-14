@@ -119,6 +119,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               placeholder="5"
             />
           </SettingRow>
+          <SettingRow
+            label="Inactivity watchdog (seconds)"
+            description="When the working spinner has been stuck with no PreToolUse / PostToolUse / PreCompact / SubagentStop heartbeat for this many seconds, demote it to Ready. Catches user-interrupt cases (Ctrl-C, Esc) where Claude never fires Stop. Set to 0 to disable."
+          >
+            <NumberInput
+              value={uiState.inProgressWatchdogSec ?? 120}
+              onChange={(v) => patch({ inProgressWatchdogSec: Math.max(0, v ?? 0) })}
+              placeholder="120"
+            />
+          </SettingRow>
         </div>
       </section>
 

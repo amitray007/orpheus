@@ -52,7 +52,7 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
-import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange } from './orpheusNotify'
+import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange, resetWorkspaceActivity } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
 import type {
@@ -810,6 +810,10 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
 
 ipcMain.on('workspace:setCurrentlyViewed', (_e, { workspaceId }: { workspaceId: string | null }) => {
   setCurrentlyViewedWorkspace(workspaceId)
+})
+
+ipcMain.handle('workspace:resetActivity', (_e, { workspaceId }: { workspaceId: string }) => {
+  resetWorkspaceActivity(workspaceId)
 })
 
 ipcMain.handle('notifications:test', () => {

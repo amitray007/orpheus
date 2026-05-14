@@ -105,6 +105,7 @@ declare global {
           cb: (e: { workspaceId: string; status: WorkspaceStatus }) => void
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
+        resetActivity: (workspaceId: string) => Promise<void>
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
       }
       pins: {

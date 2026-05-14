@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import { app } from 'electron'
 import { setWorkspaceStatus } from './workspaces'
 import { notifyForTransition } from './osNotifications'
+import { getAppUiState } from './uiState'
 import type { WorkspaceStatus } from '../shared/types'
 
 export type WorkspaceActivityEvent =
@@ -13,8 +14,12 @@ export type WorkspaceActivityEvent =
   | 'notification'
   | 'stop'
   | 'session-end'
+  | 'pretool'
+  | 'posttool'
+  | 'precompact'
+  | 'subagent-stop'
 
-const EVENT_TO_STATUS: Record<WorkspaceActivityEvent, WorkspaceStatus> = {
+const EVENT_TO_STATUS: Partial<Record<WorkspaceActivityEvent, WorkspaceStatus>> = {
   'session-start': 'awaiting_input',
   'user-prompt': 'in_progress',
   'notification': 'attention',
@@ -22,17 +27,53 @@ const EVENT_TO_STATUS: Record<WorkspaceActivityEvent, WorkspaceStatus> = {
   'session-end': 'idle'
 }
 
-// Maps claude hook event names (PascalCase) to our kebab-case event names.
+// Heartbeat events keep an in_progress workspace alive without changing status.
+// They reset the inactivity watchdog so we don't falsely demote a still-working
+// session. Claude Code has no interrupt hook — these heartbeats plus the
+// watchdog are how we recover from Ctrl-C / Esc interruptions.
+const HEARTBEAT_EVENTS: ReadonlySet<WorkspaceActivityEvent> = new Set([
+  'pretool',
+  'posttool',
+  'precompact',
+  'subagent-stop'
+])
+
 const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SessionStart: 'session-start',
   UserPromptSubmit: 'user-prompt',
   Notification: 'notification',
   Stop: 'stop',
-  SessionEnd: 'session-end'
+  SessionEnd: 'session-end',
+  PreToolUse: 'pretool',
+  PostToolUse: 'posttool',
+  PreCompact: 'precompact',
+  SubagentStop: 'subagent-stop'
 }
 
 const activityMap = new Map<string, WorkspaceStatus>()
 const listeners = new Set<(workspaceId: string, status: WorkspaceStatus) => void>()
+const watchdogs = new Map<string, NodeJS.Timeout>()
+
+function clearWatchdog(workspaceId: string): void {
+  const t = watchdogs.get(workspaceId)
+  if (!t) return
+  clearTimeout(t)
+  watchdogs.delete(workspaceId)
+}
+
+function armWatchdog(workspaceId: string): void {
+  clearWatchdog(workspaceId)
+  const seconds = getAppUiState().inProgressWatchdogSec ?? 120
+  if (seconds <= 0) return
+  const t = setTimeout(() => {
+    watchdogs.delete(workspaceId)
+    if (activityMap.get(workspaceId) === 'in_progress') {
+      console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
+      dispatch(workspaceId, 'awaiting_input')
+    }
+  }, seconds * 1000)
+  watchdogs.set(workspaceId, t)
+}
 
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
@@ -47,6 +88,23 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     try { cb(workspaceId, status) } catch {}
   }
   notifyForTransition(workspaceId, prev, status)
+
+  if (status === 'in_progress') {
+    armWatchdog(workspaceId)
+  } else {
+    clearWatchdog(workspaceId)
+  }
+}
+
+function heartbeat(workspaceId: string): void {
+  if (activityMap.get(workspaceId) === 'in_progress') {
+    armWatchdog(workspaceId)
+  }
+}
+
+export function resetWorkspaceActivity(workspaceId: string): void {
+  clearWatchdog(workspaceId)
+  dispatch(workspaceId, 'awaiting_input')
 }
 
 export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
@@ -173,7 +231,12 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
       const eventName = typeof body.event === 'string' ? body.event : null
       if (!workspaceId || !eventName) return
 
-      const status = EVENT_TO_STATUS[eventName as WorkspaceActivityEvent]
+      const ev = eventName as WorkspaceActivityEvent
+      if (HEARTBEAT_EVENTS.has(ev)) {
+        heartbeat(workspaceId)
+        return
+      }
+      const status = EVENT_TO_STATUS[ev]
       if (!status) return
 
       dispatch(workspaceId, status)

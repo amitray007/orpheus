@@ -34,11 +34,20 @@ const STATUS_COLORS: Partial<Record<WorkspaceStatus, string>> = {
 
 interface StatusTabProps {
   activity: WorkspaceStatus
+  workspaceId: string
 }
 
-function StatusTab({ activity }: StatusTabProps): React.JSX.Element {
+function StatusTab({ activity, workspaceId }: StatusTabProps): React.JSX.Element {
   const label = STATUS_LABELS[activity]
   const color = STATUS_COLORS[activity] ?? 'text-text-muted'
+  const canReset = activity === 'in_progress' || activity === 'attention'
+
+  function handleReset(): void {
+    window.api.workspaces.resetActivity(workspaceId).catch((err) => {
+      console.error('[drawer] resetActivity failed', err)
+    })
+  }
+
   return (
     <div className="flex flex-col gap-2 p-4">
       <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
@@ -52,6 +61,16 @@ function StatusTab({ activity }: StatusTabProps): React.JSX.Element {
         </p>
       ) : (
         <p className="text-xs text-text-muted">Workspace is archived.</p>
+      )}
+      {canReset && (
+        <button
+          type="button"
+          onClick={handleReset}
+          className="self-start mt-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-overlay border border-border-default hover:border-border-hover text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+          title="Use this if Claude was interrupted (Ctrl-C / Esc) and the indicator is stuck."
+        >
+          Mark as ready
+        </button>
       )}
     </div>
   )
@@ -277,7 +296,7 @@ export function WorkspaceDrawer({
       {/* Drawer body */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {activeTab === 'status' ? (
-          <StatusTab activity={activity} />
+          <StatusTab activity={activity} workspaceId={workspace.id} />
         ) : (
           <OverridesTab workspaceId={workspace.id} />
         )}
