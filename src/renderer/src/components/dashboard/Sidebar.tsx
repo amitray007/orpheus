@@ -14,6 +14,7 @@ import {
 import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceStatus } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
+import { ActivityIndicator } from './ActivityIndicator'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -70,29 +71,6 @@ function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element
       {action}
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Activity dot — replaces ActivePulse, driven by WorkspaceStatus
-// ---------------------------------------------------------------------------
-
-function ActivityDot({ status }: { status: WorkspaceStatus | undefined }): React.JSX.Element | null {
-  if (!status || status === 'idle' || status === 'archived') return null
-  if (status === 'in_progress') {
-    return (
-      <span className="relative flex h-2 w-2 flex-shrink-0">
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-      </span>
-    )
-  }
-  if (status === 'awaiting_input') {
-    return <span className="h-2 w-2 rounded-full bg-emerald-400 flex-shrink-0" />
-  }
-  if (status === 'attention') {
-    return <span className="h-2 w-2 rounded-full bg-amber-400 flex-shrink-0 animate-pulse" />
-  }
-  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +176,7 @@ function WorkspaceSubRow({
         aria-label={workspace.name}
       >
         {activity && activity !== 'idle' && activity !== 'archived' ? (
-          <ActivityDot status={activity} />
+          <ActivityIndicator status={activity} />
         ) : (
           <Stack
             size={12}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import { X } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './settings/primitives'
+import { ActivityIndicator } from './ActivityIndicator'
 import {
   CLAUDE_MODEL_OPTIONS,
   type WorkspaceRecord,
@@ -44,7 +45,8 @@ function StatusTab({ activity }: StatusTabProps): React.JSX.Element {
         Activity
       </span>
       {label !== null ? (
-        <p className="text-xs text-text-muted">
+        <p className="text-xs text-text-muted flex items-center gap-1.5">
+          <ActivityIndicator status={activity} />
           Claude is{' '}
           <span className={color}>{label}</span>
         </p>
