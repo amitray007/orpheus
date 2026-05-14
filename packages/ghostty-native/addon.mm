@@ -671,9 +671,6 @@ struct GhosttySurfaceEntry {
     CGFloat lastScale;
 };
 
-// ensureDiagTimer() — defined later after g_surfaces / counters are declared.
-static void ensureDiagTimer();
-
 // Resolve the CGDirectDisplayID that libghostty's internal CVDisplayLink should
 // sync against. ghostty_surface_set_display_id keeps the internal vsync timer
 // matched to the actual display's refresh rate.
@@ -751,56 +748,6 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
 static ghostty_app_t g_app;
 static std::atomic<bool> g_inited;
 
-// Diagnostic counters — incremented in wakeup_cb / action_cb. Polled by a
-// 500ms NSTimer started on first mount; logged via NSLog. Lets us verify
-// libghostty's threads are alive and writing to the layer without changing
-// any production code path.
-static std::atomic<uint64_t> g_diagWakeupCount{0};
-static std::atomic<uint64_t> g_diagActionCount{0};
-static NSTimer* g_diagTimer = nil;
-static bool g_diagTimerStarted = false;
-
-// Start a 500ms NSTimer that logs per-workspace liveness: how many wakeup_cb
-// and action_cb invocations happened in the interval, the IOSurfaceLayer's
-// current contents pointer (changes whenever libghostty pushes a new IOSurface),
-// the layer class name, and whether the view is still in a window. The log
-// lines come out as `[diag]` in Console.app so we can verify whether the
-// renderer thread is alive vs whether the compositor is dropping frames.
-static void ensureDiagTimer() {
-    if (g_diagTimerStarted) return;
-    g_diagTimerStarted = true;
-    static uint64_t lastW = 0, lastA = 0;
-    g_diagTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                   repeats:YES
-                                                     block:^(NSTimer* /*t*/) {
-        uint64_t curW = g_diagWakeupCount.load(std::memory_order_relaxed);
-        uint64_t curA = g_diagActionCount.load(std::memory_order_relaxed);
-        uint64_t dW = curW - lastW;
-        uint64_t dA = curA - lastA;
-        lastW = curW;
-        lastA = curA;
-
-        for (auto& [id, entry] : g_surfaces) {
-            CALayer* layer = entry.view ? entry.view.layer : nil;
-            NSString* layerClass = layer ? NSStringFromClass([layer class]) : @"(nil)";
-            const void* contents = layer ? (__bridge const void*)layer.contents : nullptr;
-            BOOL hasWindow = entry.view && entry.view.window != nil;
-            BOOL hasSuper = entry.view && entry.view.superview != nil;
-            CGFloat scale = layer ? layer.contentsScale : 0.0;
-            NSLog(@"[diag] ws=%s attached=%d window=%d super=%d layer=%@ contents=%p scale=%.2f dWakeup=%llu dAction=%llu",
-                  id.c_str(),
-                  entry.isAttached,
-                  hasWindow,
-                  hasSuper,
-                  layerClass,
-                  contents,
-                  scale,
-                  (unsigned long long)dW,
-                  (unsigned long long)dA);
-        }
-    }];
-}
-
 // Async handle that hops from Ghostty's IO thread back to the JS main thread
 // to call ghostty_app_tick(). Per embedded.zig:1423: "Tick the event loop.
 // This should be called whenever the 'wakeup' callback is invoked for the
@@ -817,7 +764,6 @@ static void tick_async_cb(uv_async_t* /*handle*/) {
 }
 
 static void wakeup_cb(void* /*userdata*/) {
-    g_diagWakeupCount.fetch_add(1, std::memory_order_relaxed);
     // Called from Ghostty's IO thread — do not call ghostty_* here.
     // Marshal to the JS main thread, which will call ghostty_app_tick().
     if (g_tickAsyncInited.load(std::memory_order_acquire)) {
@@ -828,7 +774,6 @@ static void wakeup_cb(void* /*userdata*/) {
 static bool action_cb(ghostty_app_t /*app*/,
                       ghostty_target_s target,
                       ghostty_action_s action) {
-    g_diagActionCount.fetch_add(1, std::memory_order_relaxed);
     // Diagnostic: forward every tag NAME (string) to JS via the trace TSFN.
     if (g_actionTraceTSFNActive) {
         const char* tagName = "(unknown)";
@@ -1516,9 +1461,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect    = CGRectMake(rx, ry, rw, rh);
     entry.lastScale   = scaleFactor;
     g_surfaces[workspaceId] = entry;
-
-    // Start the liveness diagnostic on first mount.
-    ensureDiagTimer();
 
     // Activate the surface — enables cursor blink + continuous renderer wakeups.
     // Without focus, libghostty's renderer stays in a quiescent mode and only
