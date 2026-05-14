@@ -58,15 +58,6 @@ export function WorkspaceTitleBar({
         {workspace.nameIsAuto ? terminalTitle || workspace.name : workspace.name}
       </span>
 
-      <button
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
-        title="Workspace overrides"
-        className="flex-shrink-0 opacity-60 hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-      >
-        <Gear size={14} />
-      </button>
-
       <span className="text-text-muted text-xs">·</span>
       <span
         className="text-xs text-text-muted truncate flex items-center gap-1 min-w-0"
@@ -76,17 +67,38 @@ export function WorkspaceTitleBar({
         {workspace.cwd}
       </span>
 
-      {isDirty && (
-        <span className="flex items-center gap-1.5 ml-auto flex-shrink-0 text-[10px] font-mono text-amber-400">
-          Settings changed
-          <button
-            onClick={onRestart}
-            className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-          >
-            Restart to apply
-          </button>
-        </span>
-      )}
+      {/* Right cluster: dirty chip + Workspace Settings */}
+      <div className="ml-auto flex items-center gap-3 flex-shrink-0">
+        {isDirty && (
+          <span className="flex items-center gap-1.5 text-[10px] font-mono text-amber-400">
+            Settings changed
+            <button
+              onClick={onRestart}
+              className="text-[10px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
+            >
+              Restart to apply
+            </button>
+          </span>
+        )}
+
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
+          title="Workspace Settings"
+          aria-label="Workspace Settings"
+          className={[
+            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs',
+            'transition-colors duration-150',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            drawer === 'overrides'
+              ? 'bg-surface-overlay text-text-primary'
+              : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+          ].join(' ')}
+        >
+          <Gear size={14} />
+          <span>Workspace Settings</span>
+        </button>
+      </div>
     </div>
   )
 }
