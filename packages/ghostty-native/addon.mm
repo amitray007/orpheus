@@ -104,9 +104,15 @@
     return YES;
 }
 
-- (BOOL)wantsLayer {
-    return YES;
-}
+// NOTE: do NOT override wantsLayer to YES here.
+// libghostty's Metal renderer (src/renderer/Metal.zig#L122-126) makes the view
+// "layer-hosting" by calling setLayer(IOSurfaceLayer) FIRST, then setWantsLayer:YES.
+// If wantsLayer is already YES (e.g. via this override) when setLayer: is called,
+// the view becomes "layer-backed" instead — AppKit owns the layer, the
+// IOSurfaceLayer's setSurfaceCallback path doesn't drive presentation correctly,
+// and screen updates stall during heavy PTY output until input shakes the
+// layer hierarchy. Leaving wantsLayer at its default lets libghostty install
+// the layer in the right mode.
 
 - (BOOL)acceptsFirstResponder {
     return YES;
