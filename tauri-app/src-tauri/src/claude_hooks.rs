@@ -112,6 +112,8 @@ pub struct NewHook {
     pub project_id: Option<String>,
     pub event: String,
     pub matcher: Option<String>,
+    /// Serialized as "type" to match ClaudeHookDraft.type in TS
+    #[serde(rename = "type", alias = "hookType")]
     pub hook_type: Option<String>,
     pub command: String,
 }
