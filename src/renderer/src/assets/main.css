@@ -52,3 +52,16 @@ body {
 .titlebar-drag-region {
   -webkit-app-region: drag;
 }
+
+/* Flash highlight for search-result scroll-to */
+[data-flash='1'] {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+  animation: setting-flash 1.5s ease-out forwards;
+}
+
+@keyframes setting-flash {
+  0%   { outline-color: color-mix(in srgb, var(--color-accent) 60%, transparent); }
+  100% { outline-color: transparent; }
+}

@@ -13,12 +13,17 @@ export interface SettingRowProps {
   mapsTo?: string | string[]
   children: React.ReactNode
 }
+function labelToSlug(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
 export function SettingRow({ label, description, mapsTo, children }: SettingRowProps): React.JSX.Element {
   // Two-column row: label+description on the left, control on the right.
   // On narrow widths it stacks; min 480px wide it goes side-by-side.
   const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
+  const id = `setting-${labelToSlug(label)}`
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0">
+    <div id={id} className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0">
       <div className="flex flex-col gap-0.5 min-w-0 sm:max-w-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           <label className="text-sm font-medium text-text-primary">{label}</label>

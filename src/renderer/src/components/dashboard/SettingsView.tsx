@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   Gear,
+  MagnifyingGlass,
   Monitor,
   ShieldCheck,
   Key,
@@ -18,6 +19,9 @@ import {
   Command,
   Robot
 } from '@phosphor-icons/react'
+import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
+import { searchSettings } from './settings/searchMatcher'
+import type { SettingsSearchResult } from './settings/searchMatcher'
 
 import { ClaudeGeneralSection } from './settings/ClaudeGeneralSection'
 import { ClaudeDisplaySection } from './settings/ClaudeDisplaySection'
@@ -41,7 +45,7 @@ import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 // Section types
 // ---------------------------------------------------------------------------
 
-type SectionId =
+export type SectionId =
   | 'claude-general'
   | 'claude-display'
   | 'claude-permissions'
@@ -108,27 +112,162 @@ const GROUPS: SectionGroup[] = [
 
 export function SettingsView(): React.JSX.Element {
   const [activeId, setActiveId] = useState<SectionId>('claude-general')
+  const [query, setQuery] = useState('')
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
 
   const allSections = GROUPS.flatMap((g) => g.sections)
   const active = allSections.find((s) => s.id === activeId) ?? allSections[0]
   const ActiveComponent = active.Component
 
+  const results = query.trim() ? searchSettings(query, SETTINGS_SEARCH_INDEX) : []
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      const isMac = navigator.platform.toUpperCase().includes('MAC')
+      const mod = isMac ? e.metaKey : e.ctrlKey
+      if (mod && e.key === 'f') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        setQuery('')
+        searchInputRef.current?.blur()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
+  useEffect(() => {
+    if (!pendingScrollId) return
+    let flashTimer: ReturnType<typeof setTimeout> | null = null
+    // Defer until after the new section has rendered into the DOM
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(pendingScrollId)
+      if (!el) { setPendingScrollId(null); return }
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      el.setAttribute('data-flash', '1')
+      flashTimer = setTimeout(() => {
+        el.removeAttribute('data-flash')
+      }, 1500)
+      setPendingScrollId(null)
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      if (flashTimer !== null) clearTimeout(flashTimer)
+    }
+  }, [pendingScrollId, activeId])
+
+  function selectResult(result: SettingsSearchResult): void {
+    const slug = result.entry.label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+    const domId = `setting-${slug}`
+    setActiveId(result.entry.sectionId)
+    setQuery('')
+    setPendingScrollId(domId)
+  }
+
   return (
-    // Parent <main> uses overflow-hidden min-h-0 for the settings view so this
-    // flex container fills the whole pane edge-to-edge. Internal nav + content
-    // each manage their own scroll.
     <div className="flex h-full">
       <nav
         className="w-56 flex-shrink-0 bg-surface-raised border-r border-border-default py-6 overflow-y-auto"
         aria-label="Settings sections"
       >
-        <h1 className="text-base font-semibold text-text-primary px-3 mb-5">Settings</h1>
-        <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
+        <h1 className="text-base font-semibold text-text-primary px-3 mb-3">Settings</h1>
+
+        {/* Search input */}
+        <div className="px-3 mb-4">
+          <div className="relative">
+            <MagnifyingGlass
+              size={13}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+            />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search settings…"
+              className="w-full pl-7 pr-3 py-1.5 text-xs bg-surface-overlay border border-border-default rounded-md text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors cursor-text"
+            />
+          </div>
+        </div>
+
+        {query.trim() ? (
+          <SearchResults results={results} query={query} onSelect={selectResult} />
+        ) : (
+          <GroupedNav groups={GROUPS} activeId={activeId} onSelect={setActiveId} />
+        )}
       </nav>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
+      <div ref={contentRef} className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
         <ActiveComponent />
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SearchResults — replaces GroupedNav when query is non-empty
+// ---------------------------------------------------------------------------
+
+function HighlightedLabel({ label, query }: { label: string; query: string }): React.JSX.Element {
+  const idx = label.toLowerCase().indexOf(query.toLowerCase())
+  if (idx === -1) return <span>{label}</span>
+  return (
+    <span>
+      {label.slice(0, idx)}
+      <mark className="bg-accent/30 text-text-primary rounded px-0.5 not-italic font-medium">
+        {label.slice(idx, idx + query.length)}
+      </mark>
+      {label.slice(idx + query.length)}
+    </span>
+  )
+}
+
+function SearchResults(props: {
+  results: SettingsSearchResult[]
+  query: string
+  onSelect: (r: SettingsSearchResult) => void
+}): React.JSX.Element {
+  if (props.results.length === 0) {
+    return (
+      <div className="px-3 py-4">
+        <p className="text-xs text-text-muted">
+          No matches for &ldquo;{props.query}&rdquo;. Try shorter, broader terms.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {props.results.map((r) => {
+        const key = `${r.entry.sectionId}:${r.entry.settingId}`
+        return (
+          <button
+            key={key}
+            onClick={() => props.onSelect(r)}
+            className="w-full flex flex-col gap-0.5 px-3 py-2 text-left transition-colors duration-150 cursor-pointer hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40"
+          >
+            <span className="text-[10px] text-text-muted leading-none">
+              {r.entry.sectionGroup} › {r.entry.sectionLabel}
+            </span>
+            <span className="text-sm text-text-primary leading-snug">
+              <HighlightedLabel label={r.entry.label} query={props.query} />
+            </span>
+            {r.matchedField === 'mapsTo' && r.matchedText && (
+              <code className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none self-start">
+                {r.matchedText}
+              </code>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
