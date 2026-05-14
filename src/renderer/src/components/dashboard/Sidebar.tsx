@@ -491,38 +491,6 @@ function DropIndicator({ position }: { position: 'top' | 'bottom' }): React.JSX.
 }
 
 // ---------------------------------------------------------------------------
-// Recency buckets — groups projects by lastOpenedAt for the sidebar list
-// ---------------------------------------------------------------------------
-
-const DAY_MS = 24 * 60 * 60 * 1000
-
-type RecencyBucket = { label: string; key: 'today' | 'week' | 'month' | 'older'; projects: ProjectRecord[] }
-
-function bucketProjectsByRecency(projects: ProjectRecord[]): RecencyBucket[] {
-  const now = Date.now()
-  const buckets: Record<RecencyBucket['key'], ProjectRecord[]> = {
-    today: [],
-    week: [],
-    month: [],
-    older: []
-  }
-  for (const p of projects) {
-    const age = p.lastOpenedAt === null ? Infinity : now - p.lastOpenedAt
-    if (age < DAY_MS) buckets.today.push(p)
-    else if (age < 7 * DAY_MS) buckets.week.push(p)
-    else if (age < 30 * DAY_MS) buckets.month.push(p)
-    else buckets.older.push(p)
-  }
-  const ordered: RecencyBucket[] = [
-    { label: 'Today', key: 'today', projects: buckets.today },
-    { label: 'This Week', key: 'week', projects: buckets.week },
-    { label: 'This Month', key: 'month', projects: buckets.month },
-    { label: 'Older', key: 'older', projects: buckets.older }
-  ]
-  return ordered.filter((b) => b.projects.length > 0)
-}
-
-// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
@@ -783,79 +751,63 @@ export function Sidebar({
               <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
             ) : (
               <div className="flex flex-col gap-0.5 overflow-y-auto max-h-[40vh]">
-                {bucketProjectsByRecency(projects).map((bucket) => (
-                  <div key={bucket.key} className="flex flex-col">
-                    <p
-                      className={[
-                        'px-3 mt-2 mb-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted',
-                        bucket.key === 'older' ? 'opacity-60' : ''
-                      ].join(' ')}
+                {projects.map((p) => {
+                  const expanded = expandedProjectIds.has(p.id)
+                  const workspaces = (workspacesByProject[p.id] ?? []).filter(
+                    (w) => w.archivedAt === null
+                  )
+                  const showLineAbove = dropTargetId === p.id && dropPos === 'before'
+                  const showLineBelow = dropTargetId === p.id && dropPos === 'after'
+                  const isDragging = dragId === p.id
+                  return (
+                    <div
+                      key={p.id}
+                      draggable={renamingProjectId !== p.id}
+                      onDragStart={(e) => onProjectDragStart(e, p.id)}
+                      onDragOver={(e) => onProjectDragOver(e, p.id)}
+                      onDrop={(e) => onProjectDrop(e, p.id)}
+                      onDragEnd={onProjectDragEnd}
+                      className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
                     >
-                      {bucket.label}
-                    </p>
-                    {bucket.projects.map((p) => {
-                      const expanded = expandedProjectIds.has(p.id)
-                      const workspaces = (workspacesByProject[p.id] ?? []).filter(
-                        (w) => w.archivedAt === null
-                      )
-                      const showLineAbove = dropTargetId === p.id && dropPos === 'before'
-                      const showLineBelow = dropTargetId === p.id && dropPos === 'after'
-                      const isDragging = dragId === p.id
-                      return (
-                        <div
-                          key={p.id}
-                          draggable={renamingProjectId !== p.id}
-                          onDragStart={(e) => onProjectDragStart(e, p.id)}
-                          onDragOver={(e) => onProjectDragOver(e, p.id)}
-                          onDrop={(e) => onProjectDrop(e, p.id)}
-                          onDragEnd={onProjectDragEnd}
-                          className={[
-                            'relative',
-                            isDragging ? 'opacity-40' : '',
-                            bucket.key === 'older' ? 'opacity-70 hover:opacity-100 transition-opacity' : ''
-                          ].join(' ')}
-                        >
-                          {showLineAbove && <DropIndicator position="top" />}
-                          <ProjectRow
-                            project={p}
-                            active={activeView === 'project' && selectedProjectId === p.id}
-                            expanded={expanded}
-                            workspaces={workspaces}
-                            workspaceCount={workspaces.length}
-                            workspaceCountInline={workspaceCountInline}
-                            selectedWorkspaceId={selectedWorkspaceId}
-                            workspaceActivities={workspaceActivities}
-                            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-                            onSelect={() => onSelectProject(p.id)}
-                            onToggleExpand={() => onToggleProjectExpand(p.id)}
-                            onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                            currentViewKind={currentViewKind}
-                            currentWorkspaceId={selectedWorkspaceId}
-                            renaming={renamingProjectId === p.id}
-                            onBeginRename={() => handleBeginRename(p.id)}
-                            onFinishRename={(name) => handleFinishRename(p.id, name)}
-                            onCancelRename={handleCancelRename}
-                            onRequestRemove={() => onRequestRemoveProject(p)}
-                            onAddWorkspace={() => onAddWorkspace(p.id)}
-                            renamingWorkspaceId={renamingWorkspaceId}
-                            onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                            onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
-                            onCancelRenameWorkspace={handleCancelRenameWorkspace}
-                            onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
-                            wsDragId={wsDragId}
-                            wsDropTargetId={wsDropTargetId}
-                            wsDropPos={wsDropPos}
-                            onWorkspaceDragStart={onWorkspaceDragStart}
-                            onWorkspaceDragOver={onWorkspaceDragOver}
-                            onWorkspaceDrop={onWorkspaceDrop}
-                            onWorkspaceDragEnd={onWorkspaceDragEnd}
-                          />
-                          {showLineBelow && <DropIndicator position="bottom" />}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ))}
+                      {showLineAbove && <DropIndicator position="top" />}
+                      <ProjectRow
+                        project={p}
+                        active={activeView === 'project' && selectedProjectId === p.id}
+                        expanded={expanded}
+                        workspaces={workspaces}
+                        workspaceCount={workspaces.length}
+                        workspaceCountInline={workspaceCountInline}
+                        selectedWorkspaceId={selectedWorkspaceId}
+                        workspaceActivities={workspaceActivities}
+                        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+                        onSelect={() => onSelectProject(p.id)}
+                        onToggleExpand={() => onToggleProjectExpand(p.id)}
+                        onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                        currentViewKind={currentViewKind}
+                        currentWorkspaceId={selectedWorkspaceId}
+                        renaming={renamingProjectId === p.id}
+                        onBeginRename={() => handleBeginRename(p.id)}
+                        onFinishRename={(name) => handleFinishRename(p.id, name)}
+                        onCancelRename={handleCancelRename}
+                        onRequestRemove={() => onRequestRemoveProject(p)}
+                        onAddWorkspace={() => onAddWorkspace(p.id)}
+                        renamingWorkspaceId={renamingWorkspaceId}
+                        onBeginRenameWorkspace={handleBeginRenameWorkspace}
+                        onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
+                        onCancelRenameWorkspace={handleCancelRenameWorkspace}
+                        onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                        wsDragId={wsDragId}
+                        wsDropTargetId={wsDropTargetId}
+                        wsDropPos={wsDropPos}
+                        onWorkspaceDragStart={onWorkspaceDragStart}
+                        onWorkspaceDragOver={onWorkspaceDragOver}
+                        onWorkspaceDrop={onWorkspaceDrop}
+                        onWorkspaceDragEnd={onWorkspaceDragEnd}
+                      />
+                      {showLineBelow && <DropIndicator position="bottom" />}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </>
