@@ -17,11 +17,7 @@ if [[ -n "${ORPHEUS_CLAUDE_FLAGS:-}" ]]; then
 fi
 
 if [[ -n "${ORPHEUS_CLAUDE_SETTINGS_JSON:-}" ]]; then
-  claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
+  exec claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
 else
-  claude "${flags[@]}"
+  exec claude "${flags[@]}"
 fi
-
-echo
-echo "[claude exited — dropping to zsh]"
-exec zsh -i
