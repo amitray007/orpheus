@@ -1,6 +1,5 @@
 // workspaces:* commands.
 
-use serde::Deserialize;
 use tauri::State;
 
 use crate::os_notifications::{cancel_for_workspace, SharedCurrentlyViewed, SharedRetryState};
@@ -10,14 +9,6 @@ use crate::SharedDb;
 // Re-export for the title-state command (workspace:getTitle).
 // The in-memory title map lives in the events module; the command reads from it.
 use crate::commands::events::TitleMap;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateArgs {
-    pub project_id: String,
-    pub name: String,
-    pub cwd: String,
-}
 
 #[tauri::command(rename_all = "camelCase")]
 pub fn workspaces_list_for_project(
@@ -35,11 +26,15 @@ pub fn workspaces_list_for_project(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn workspaces_create(db: State<SharedDb>, args: CreateArgs) -> Result<Workspace, String> {
+#[tauri::command(rename_all = "camelCase")]
+pub fn workspaces_create(
+    db: State<SharedDb>,
+    project_id: String,
+    name: String,
+    cwd: String,
+) -> Result<Workspace, String> {
     let lock = db.lock().map_err(|e| e.to_string())?;
-    workspaces::create_workspace(&lock, &args.project_id, &args.name, &args.cwd)
-        .map_err(|e| e.to_string())
+    workspaces::create_workspace(&lock, &project_id, &name, &cwd).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
