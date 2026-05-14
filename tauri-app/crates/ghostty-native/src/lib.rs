@@ -70,16 +70,17 @@ pub fn mount(
     scale: f64,
     cwd: Option<&str>,
     command: Option<&str>,
+    env: &[(String, String)],
 ) -> Result<MountResult, GhosttyError> {
     #[cfg(target_os = "macos")]
     {
-        let created = surface::mount(window, workspace_id, rect.x, rect.y, rect.w, rect.h, scale, cwd, command)
+        let created = surface::mount(window, workspace_id, rect.x, rect.y, rect.w, rect.h, scale, cwd, command, env)
             .map_err(GhosttyError::from)?;
         Ok(MountResult { workspace_id: workspace_id.to_owned(), created })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, workspace_id, rect, scale, cwd, command);
+        let _ = (window, workspace_id, rect, scale, cwd, command, env);
         Err(GhosttyError::Msg("macOS only".into()))
     }
 }

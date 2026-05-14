@@ -72,6 +72,7 @@ pub fn mount(
     scale: f64,
     cwd: Option<&str>,
     command: Option<&str>,
+    env: &[(String, String)],
 ) -> Result<bool, String> {
     ensure_app().map_err(|e| e.to_string())?;
 
@@ -135,6 +136,22 @@ pub fn mount(
     let command_c: Option<CString> =
         command.map(|s| CString::new(s).map_err(|e| e.to_string())).transpose()?;
 
+    // Build env-var CStrings + ghostty_env_var_s array. The CStrings must
+    // outlive ghostty_surface_new — keep them in a Vec on the stack frame.
+    let env_cstrs: Vec<(CString, CString)> = env
+        .iter()
+        .map(|(k, v)| {
+            Ok::<_, String>((
+                CString::new(k.as_str()).map_err(|e| e.to_string())?,
+                CString::new(v.as_str()).map_err(|e| e.to_string())?,
+            ))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut env_arr: Vec<ghostty_env_var_s> = env_cstrs
+        .iter()
+        .map(|(k, v)| ghostty_env_var_s { key: k.as_ptr(), value: v.as_ptr() })
+        .collect();
+
     static SENTINEL: i32 = 1;
     let mut scfg = unsafe { ghostty_surface_config_new() };
     scfg.platform_tag = ghostty_platform_e_GHOSTTY_PLATFORM_MACOS;
@@ -149,8 +166,8 @@ pub fn mount(
     scfg.font_size = 13.0; // TODO(config-pass): derive from user settings, not hardcoded
     scfg.working_directory = cwd_c.as_ptr();
     scfg.command = command_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-    scfg.env_vars = std::ptr::null_mut();
-    scfg.env_var_count = 0;
+    scfg.env_vars = if env_arr.is_empty() { std::ptr::null_mut() } else { env_arr.as_mut_ptr() };
+    scfg.env_var_count = env_arr.len();
     scfg.initial_input = std::ptr::null();
     scfg.wait_after_command = true;
     scfg.context = ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW;
