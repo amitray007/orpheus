@@ -8,13 +8,12 @@
 // 'archived'. We read all five without enforcing the CHECK on writes (the DB will enforce it
 // for the three it accepts). We keep all five variants in the enum so reads don't panic.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
 use crate::projects::Project;
+use crate::util::{now_ms, uuid_v4};
 
 // ---------------------------------------------------------------------------
 // Status enum
@@ -154,13 +153,6 @@ fn row_to_workspace(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 const SELECT_COLS: &str =
     "id, project_id, name, name_is_auto, cwd, pinned_at, created_at, last_opened_at, \
      archived_at, status, sort_order, claude_session_id, last_title";
@@ -191,36 +183,6 @@ fn fetch_workspace(db: &Db, id: &str) -> Result<Workspace, DbError> {
             map_row,
         )
         .map_err(DbError::from)
-}
-
-fn uuid_v4() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{Duration, Instant};
-
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    let mut h = DefaultHasher::new();
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos()
-        .hash(&mut h);
-    seq.hash(&mut h);
-    Instant::now().hash(&mut h);
-    let h1 = h.finish();
-    seq.hash(&mut h);
-    let h2 = h.finish();
-
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (h1 >> 32) as u32,
-        (h1 >> 16) as u16,
-        h1 as u16 & 0x0fff,
-        (h2 >> 48) as u16 & 0x3fff | 0x8000,
-        h2 & 0x0000_ffff_ffff_ffff,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -299,15 +261,17 @@ pub fn archive_workspace(db: &Db, id: &str) -> Result<Workspace, DbError> {
     fetch_workspace(db, id)
 }
 
-/// Unarchive a workspace — clears archived_at, resets status to 'in_progress'.
-// TS writes 'idle' here, but the DB CHECK constraint only allows
-// 'in_progress'|'in_review'|'completed'|'archived'. 'in_progress' is the
-// correct post-unarchive state and passes the constraint.
+/// Unarchive a workspace — clears archived_at, resets status to 'idle' (matches TS).
+// The DB CHECK constraint predates 'idle'; bypass per-write with the PRAGMA the same
+// way set_workspace_status does, then restore enforcement.
 pub fn unarchive_workspace(db: &Db, id: &str) -> Result<Workspace, DbError> {
-    db.conn().execute(
-        "UPDATE workspaces SET archived_at = NULL, status = 'in_progress' WHERE id = ?1",
+    db.conn().execute_batch("PRAGMA ignore_check_constraints = 1")?;
+    let result = db.conn().execute(
+        "UPDATE workspaces SET archived_at = NULL, status = 'idle' WHERE id = ?1",
         params![id],
-    )?;
+    );
+    db.conn().execute_batch("PRAGMA ignore_check_constraints = 0")?;
+    result?;
     fetch_workspace(db, id)
 }
 
@@ -324,15 +288,16 @@ pub fn rename_workspace(db: &Db, id: &str, name: &str) -> Result<Workspace, DbEr
 /// The AND project_id guard ensures IDs from a different project silently no-op.
 pub fn reorder_workspaces(db: &Db, project_id: &str, ordered_ids: &[&str]) -> Result<(), DbError> {
     let conn = db.conn();
-    let mut sql = String::from("BEGIN;\n");
+    // Wrap all updates in a single transaction using bound parameters.
+    let tx = rusqlite::Connection::unchecked_transaction(conn).map_err(DbError::from)?;
     for (idx, id) in ordered_ids.iter().enumerate() {
-        sql.push_str(&format!(
-            "UPDATE workspaces SET sort_order = {} WHERE id = '{}' AND project_id = '{}';\n",
-            idx, id, project_id
-        ));
+        tx.execute(
+            "UPDATE workspaces SET sort_order = ?1 WHERE id = ?2 AND project_id = ?3",
+            rusqlite::params![idx as i64, id, project_id],
+        )
+        .map_err(DbError::from)?;
     }
-    sql.push_str("COMMIT;\n");
-    conn.execute_batch(&sql).map_err(DbError::from)
+    tx.commit().map_err(DbError::from)
 }
 
 /// Set workspace status, keeping archived_at consistent.
@@ -511,7 +476,7 @@ mod tests {
 
         let unarchived = unarchive_workspace(&db, &ws.id).expect("unarchive");
         assert!(unarchived.archived_at.is_none());
-        assert_eq!(unarchived.status, WorkspaceStatus::InProgress);
+        assert_eq!(unarchived.status, WorkspaceStatus::Idle);
 
         let active2 = list_workspaces_for_project(&db, &p.id, WorkspaceScope::Active).expect("list active2");
         assert_eq!(active2.len(), 1);
@@ -564,5 +529,32 @@ mod tests {
         set_workspace_last_title(&db, &ws.id, None).expect("clear title");
         let titles2 = get_all_workspace_last_titles(&db).expect("get titles2");
         assert!(titles2.is_empty());
+    }
+
+    #[test]
+    fn unarchive_yields_idle() {
+        let (db, _dir) = temp_db();
+        let p = add_test_project(&db, "/tmp/project_unarchive_idle");
+        let ws = create_workspace(&db, &p.id, "W", "/tmp/project_unarchive_idle").expect("create");
+
+        archive_workspace(&db, &ws.id).expect("archive");
+        let restored = unarchive_workspace(&db, &ws.id).expect("unarchive");
+
+        assert!(restored.archived_at.is_none(), "archived_at should be cleared");
+        assert_eq!(restored.status, WorkspaceStatus::Idle, "restored workspace must be Idle, not InProgress");
+    }
+
+    #[test]
+    fn reorder_workspaces_with_apostrophe_id() {
+        let (db, _dir) = temp_db();
+        let p = add_test_project(&db, "/tmp/project_apos");
+        let ws = create_workspace(&db, &p.id, "W", "/tmp/project_apos").expect("create");
+
+        // An ID containing a single quote must round-trip cleanly (bound params, no injection).
+        let fake_id = "foo'bar";
+        reorder_workspaces(&db, &p.id, &[&ws.id, fake_id]).expect("reorder should not error");
+
+        let ws_after = get_workspace(&db, &ws.id).expect("get").expect("some");
+        assert_eq!(ws_after.sort_order, Some(0), "real workspace gets sort_order 0");
     }
 }
