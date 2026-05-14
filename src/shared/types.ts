@@ -454,6 +454,7 @@ export type WorkspaceStatus =
 export type WorkspaceActivityDetail =
   | 'thinking'
   | 'tool'
+  | 'asking'
   | 'compacting'
   | 'ready'
   | 'attention'

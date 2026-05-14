@@ -2,7 +2,19 @@ import { Notification, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
 import { getWorkspace } from './workspaces'
 import { getDb } from './db'
+import { getBlockingTool } from './orpheusNotify'
 import type { WorkspaceStatus } from '../shared/types'
+
+function attentionCopy(workspaceId: string): { title: string; body: string } {
+  const tool = getBlockingTool(workspaceId)
+  if (tool === 'AskUserQuestion') {
+    return { title: 'Claude is asking', body: 'Has a question for you' }
+  }
+  if (tool === 'ExitPlanMode') {
+    return { title: 'Claude has a plan', body: 'Waiting for your review before continuing' }
+  }
+  return { title: 'Claude needs you', body: 'Waiting on a permission decision' }
+}
 
 let currentlyViewedWorkspaceId: string | null = null
 
@@ -73,12 +85,14 @@ function fireAttentionNotification(
 ): void {
   if (shouldSuppress(workspaceId)) return
   const label = resolveWorkspaceLabel(workspaceId)
+  const copy = attentionCopy(workspaceId)
   const body =
     count === 0
-      ? 'Waiting on a permission decision'
-      : `Still waiting on a permission decision (${count + 1} of ${maxRepeats + 1})`
+      ? copy.body
+      : `${copy.body} (${count + 1} of ${maxRepeats + 1})`
+  const title = count === 0 ? copy.title : `${copy.title} (still)`
   const notif = new Notification({
-    title: count === 0 ? 'Claude needs you' : 'Claude still needs you',
+    title,
     subtitle: label,
     body,
     silent: false

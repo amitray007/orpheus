@@ -48,5 +48,8 @@ export function ActivityIndicator({
   if (detail === 'attention') {
     return <span className={`${cls} text-amber-400 text-xs font-mono animate-pulse`}>◆</span>
   }
+  if (detail === 'asking') {
+    return <span className={`${cls} text-amber-400 text-xs font-mono font-bold animate-pulse`}>?</span>
+  }
   return null
 }

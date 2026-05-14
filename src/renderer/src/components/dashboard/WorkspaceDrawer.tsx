@@ -21,6 +21,7 @@ import {
 const DETAIL_LABELS: Record<WorkspaceActivityDetail, string | null> = {
   thinking: 'thinking',
   tool: 'using a tool',
+  asking: 'asking you a question',
   compacting: 'compacting context',
   ready: 'ready for your next message',
   attention: 'waiting on you',
@@ -31,6 +32,7 @@ const DETAIL_LABELS: Record<WorkspaceActivityDetail, string | null> = {
 const DETAIL_COLORS: Partial<Record<WorkspaceActivityDetail, string>> = {
   thinking: 'text-accent',
   tool: 'text-accent',
+  asking: 'text-amber-400',
   compacting: 'text-accent',
   ready: 'text-emerald-400',
   attention: 'text-amber-400',

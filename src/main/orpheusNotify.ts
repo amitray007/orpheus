@@ -27,17 +27,6 @@ const EVENT_TO_STATUS: Partial<Record<WorkspaceActivityEvent, WorkspaceStatus>> 
   'session-end': 'idle'
 }
 
-// Heartbeat events keep an in_progress workspace alive without changing status.
-// They reset the inactivity watchdog so we don't falsely demote a still-working
-// session. Claude Code has no interrupt hook — these heartbeats plus the
-// watchdog are how we recover from Ctrl-C / Esc interruptions.
-const HEARTBEAT_EVENTS: ReadonlySet<WorkspaceActivityEvent> = new Set([
-  'pretool',
-  'posttool',
-  'precompact',
-  'subagent-stop'
-])
-
 const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SessionStart: 'session-start',
   UserPromptSubmit: 'user-prompt',
@@ -50,7 +39,19 @@ const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SubagentStop: 'subagent-stop'
 }
 
-type DetailState = { toolStack: number; compacting: boolean }
+type DetailState = {
+  toolStack: number
+  compacting: boolean
+  // When set, claude is blocked on a tool that needs user input
+  // (AskUserQuestion, ExitPlanMode). The string is the tool_name from
+  // the PreToolUse payload so PostToolUse can unblock the matching tool.
+  blockingTool: string | null
+}
+
+// Tools that block claude until the user answers them. Treated as a
+// status=attention transition with detail=asking, so macOS notifications
+// fire and the user sees a distinct glyph.
+const BLOCKING_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
 const activityMap = new Map<string, WorkspaceStatus>()
 const detailMap = new Map<string, DetailState>()
@@ -61,21 +62,27 @@ const watchdogs = new Map<string, NodeJS.Timeout>()
 function getDetailState(workspaceId: string): DetailState {
   let s = detailMap.get(workspaceId)
   if (!s) {
-    s = { toolStack: 0, compacting: false }
+    s = { toolStack: 0, compacting: false, blockingTool: null }
     detailMap.set(workspaceId, s)
   }
   return s
 }
 
+export function getBlockingTool(workspaceId: string): string | null {
+  return detailMap.get(workspaceId)?.blockingTool ?? null
+}
+
 export function computeDetail(workspaceId: string, status: WorkspaceStatus): WorkspaceActivityDetail {
+  const s = detailMap.get(workspaceId)
+  if (status === 'attention') {
+    return s?.blockingTool ? 'asking' : 'attention'
+  }
   if (status === 'in_progress') {
-    const s = detailMap.get(workspaceId)
     if (s?.compacting) return 'compacting'
     if (s && s.toolStack > 0) return 'tool'
     return 'thinking'
   }
   if (status === 'awaiting_input') return 'ready'
-  if (status === 'attention') return 'attention'
   if (status === 'idle') return 'idle'
   return 'archived'
 }
@@ -145,6 +152,65 @@ function heartbeat(workspaceId: string): void {
 // the watchdog during pure-think turns where no tool events fire.
 export function heartbeatFromTitle(workspaceId: string): void {
   heartbeat(workspaceId)
+}
+
+function handleHookEvent(
+  workspaceId: string,
+  ev: WorkspaceActivityEvent,
+  payload: Record<string, unknown>
+): void {
+  const ds = getDetailState(workspaceId)
+
+  switch (ev) {
+    case 'pretool': {
+      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
+      if (toolName && BLOCKING_TOOLS.has(toolName)) {
+        ds.blockingTool = toolName
+        dispatch(workspaceId, 'attention')
+        return
+      }
+      ds.toolStack++
+      heartbeat(workspaceId)
+      broadcastDetailIfChanged(workspaceId)
+      return
+    }
+    case 'posttool': {
+      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
+      if (toolName && toolName === ds.blockingTool) {
+        ds.blockingTool = null
+        dispatch(workspaceId, 'in_progress')
+        return
+      }
+      ds.toolStack = Math.max(0, ds.toolStack - 1)
+      heartbeat(workspaceId)
+      broadcastDetailIfChanged(workspaceId)
+      return
+    }
+    case 'precompact':
+      ds.compacting = true
+      heartbeat(workspaceId)
+      broadcastDetailIfChanged(workspaceId)
+      return
+    case 'subagent-stop':
+      heartbeat(workspaceId)
+      return
+    case 'user-prompt':
+    case 'stop':
+    case 'session-end':
+      ds.toolStack = 0
+      ds.compacting = false
+      ds.blockingTool = null
+      break
+    case 'notification':
+      ds.compacting = false
+      break
+    case 'session-start':
+      break
+  }
+
+  const status = EVENT_TO_STATUS[ev]
+  if (!status) return
+  dispatch(workspaceId, status)
 }
 
 export function resetWorkspaceActivity(workspaceId: string): void {
@@ -259,62 +325,44 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
       return
     }
 
+    const headerWorkspaceId = req.headers['x-workspace-id']
+    const headerEvent = req.headers['x-event']
+
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
       res.writeHead(204)
       res.end()
 
-      let body: { workspaceId?: unknown; event?: unknown }
-      try {
-        body = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
-      } catch {
-        return
-      }
+      const bodyText = Buffer.concat(chunks).toString('utf-8')
 
-      const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
-      const eventName = typeof body.event === 'string' ? body.event : null
-      if (!workspaceId || !eventName) return
+      // v2 protocol: workspaceId + event in headers, body is claude's hook payload.
+      // Fallback to v1 (metadata in body) so a stale shim still works during upgrade.
+      let workspaceId: string | null = null
+      let eventName: string | null = null
+      let payload: Record<string, unknown> = {}
 
-      const ev = eventName as WorkspaceActivityEvent
-      if (HEARTBEAT_EVENTS.has(ev)) {
-        const ds = getDetailState(workspaceId)
-        if (ev === 'pretool') {
-          ds.toolStack++
-        } else if (ev === 'posttool') {
-          ds.toolStack = Math.max(0, ds.toolStack - 1)
-        } else if (ev === 'precompact') {
-          ds.compacting = true
+      if (typeof headerWorkspaceId === 'string' && typeof headerEvent === 'string') {
+        workspaceId = headerWorkspaceId
+        eventName = headerEvent
+        if (bodyText.trim()) {
+          try {
+            const parsed = JSON.parse(bodyText)
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              payload = parsed as Record<string, unknown>
+            }
+          } catch {}
         }
-        // subagent-stop: no state mutation
-        heartbeat(workspaceId)
-        broadcastDetailIfChanged(workspaceId)
-        return
+      } else if (bodyText.trim()) {
+        try {
+          const body = JSON.parse(bodyText) as { workspaceId?: unknown; event?: unknown }
+          if (typeof body.workspaceId === 'string') workspaceId = body.workspaceId
+          if (typeof body.event === 'string') eventName = body.event
+        } catch {}
       }
 
-      // Status-transitioning events — apply pre-dispatch state mutations first.
-      if (ev === 'user-prompt') {
-        const ds = getDetailState(workspaceId)
-        ds.toolStack = 0
-        ds.compacting = false
-      } else if (ev === 'stop') {
-        const ds = getDetailState(workspaceId)
-        ds.toolStack = 0
-        ds.compacting = false
-      } else if (ev === 'notification') {
-        const ds = getDetailState(workspaceId)
-        ds.compacting = false
-      } else if (ev === 'session-end') {
-        const ds = getDetailState(workspaceId)
-        ds.toolStack = 0
-        ds.compacting = false
-      }
-      // session-start: leave state as-is
-
-      const status = EVENT_TO_STATUS[ev]
-      if (!status) return
-
-      dispatch(workspaceId, status)
+      if (!workspaceId || !eventName) return
+      handleHookEvent(workspaceId, eventName as WorkspaceActivityEvent, payload)
     })
   })
 

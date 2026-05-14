@@ -6,12 +6,18 @@ EVENT="${1:-}"
 [ -z "${ORPHEUS_WORKSPACE_ID:-}" ] && exit 0
 [ -S "$ORPHEUS_SOCK" ] || exit 0
 
-# Drain claude's stdin so it doesn't block waiting for the hook to consume input.
-[ -t 0 ] || cat > /dev/null 2>&1
+PAYLOAD="{}"
+if [ ! -t 0 ]; then
+  PAYLOAD="$(cat 2>/dev/null || echo '{}')"
+  [ -z "$PAYLOAD" ] && PAYLOAD="{}"
+fi
 
 curl --unix-socket "$ORPHEUS_SOCK" -fsS -o /dev/null --max-time 2 \
+  -X POST \
   -H "Content-Type: application/json" \
-  -d "{\"workspaceId\":\"$ORPHEUS_WORKSPACE_ID\",\"event\":\"$EVENT\"}" \
+  -H "X-Workspace-ID: $ORPHEUS_WORKSPACE_ID" \
+  -H "X-Event: $EVENT" \
+  --data-binary "$PAYLOAD" \
   "http://localhost/notify" 2>/dev/null || true
 
 exit 0
