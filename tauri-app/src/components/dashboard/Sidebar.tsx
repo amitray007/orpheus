@@ -758,10 +758,11 @@ export function Sidebar({
     >
       {/* When the global TopBar is hidden (workspace terminal view), reserve
           44px at the top of the sidebar so the macOS traffic lights have a
-          drag region and don't overlap the first nav item. */}
+          drag region and don't overlap the first nav item. The border-b
+          mirrors the TopBar's divider so the line above Dashboard stays put. */}
       {activeView === 'workspace' && (
         <div
-          className="h-11 flex-shrink-0 -mt-2"
+          className="h-11 flex-shrink-0 -mt-2 mb-2 border-b border-border-default"
           data-tauri-drag-region
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
