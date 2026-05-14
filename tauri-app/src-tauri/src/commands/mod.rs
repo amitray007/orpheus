@@ -2,6 +2,8 @@
 // as commands::terminal::terminal_mount, commands::projects::projects_list, etc.
 
 pub mod app;
+#[cfg(test)]
+mod tests;
 pub mod claude_agents;
 pub mod claude_auth;
 pub mod claude_hooks;
