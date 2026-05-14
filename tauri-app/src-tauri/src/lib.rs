@@ -1,4 +1,5 @@
 mod commands;
+pub mod db;
 
 #[cfg(target_os = "macos")]
 mod ghostty;
