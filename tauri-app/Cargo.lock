@@ -1444,6 +1444,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostty-native"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "once_cell",
+ "serde",
+ "tauri",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2688,14 +2702,11 @@ dependencies = [
 name = "orpheus-tauri-spike"
 version = "0.1.0"
 dependencies = [
- "bindgen",
  "directories",
  "env_logger",
+ "ghostty-native",
  "log",
  "notify-rust",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "once_cell",
  "regex",
  "reqwest 0.12.28",
