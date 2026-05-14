@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{msg_send, ClassType, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
@@ -58,9 +58,9 @@ pub fn mount(
     let ns_window_ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
     let ns_window: &NSWindow = unsafe { &*ns_window_ptr };
     let content_view: Retained<NSView> =
-        unsafe { ns_window.contentView().ok_or("contentView missing")? };
+        ns_window.contentView().ok_or("contentView missing")?;
 
-    let parent_h = unsafe { content_view.bounds().size.height };
+    let parent_h = content_view.bounds().size.height;
 
     let mut map = SURFACES.lock().unwrap();
 
@@ -100,7 +100,7 @@ pub fn mount(
         msg_send![super(alloc, NSView::class()), initWithFrame: frame]
     };
 
-    unsafe { content_view.addSubview(&*ghost_view) };
+    content_view.addSubview(&*ghost_view);
 
     let app = {
         let g = crate::app::GLOBAL.get().unwrap().lock().unwrap();
@@ -135,7 +135,7 @@ pub fn mount(
 
     let surface = unsafe { ghostty_surface_new(app, &scfg as *const ghostty_surface_config_s) };
     if surface.is_null() {
-        unsafe { ghost_view.removeFromSuperview() };
+        ghost_view.removeFromSuperview();
         return Err("ghostty_surface_new returned null".into());
     }
 
@@ -194,7 +194,7 @@ pub fn hide(workspace_id: &str) -> Result<(), String> {
     }
     display_link::stop(entry.link);
     let view = unsafe { &*(entry.view as *const GhosttyView) };
-    unsafe { view.removeFromSuperview() };
+    view.removeFromSuperview();
     entry.attached = false;
     Ok(())
 }
@@ -224,10 +224,11 @@ pub fn destroy(workspace_id: &str) -> Result<(), String> {
     // Nil out the surface pointer in the view so any in-flight events see null.
     let view = unsafe { &*(entry.view as *const GhosttyView) };
     view.set_surface(std::ptr::null_mut());
-    unsafe { view.removeFromSuperview() };
+    view.removeFromSuperview();
     display_link::stop(entry.link);
 
     // Deferred slow teardown — ghostty_surface_free blocks main thread briefly.
+    #[allow(dead_code)]
     struct Doomed { surface: ghostty_surface_t, link: CVDisplayLinkRef }
     unsafe impl Send for Doomed {}
     let doomed = Doomed { surface: entry.surface, link: entry.link };

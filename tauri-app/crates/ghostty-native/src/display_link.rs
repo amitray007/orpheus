@@ -6,8 +6,9 @@ use crate::ffi::ghostty_surface_t;
 pub type CVDisplayLinkRef = *mut std::ffi::c_void;
 type CVReturn = i32;
 
+// CVTimeStamp is opaque; only its address is passed through the callback ABI.
 #[repr(C)]
-struct CVTimeStamp {
+pub(crate) struct CVTimeStamp {
     _pad: [u8; 80],
 }
 

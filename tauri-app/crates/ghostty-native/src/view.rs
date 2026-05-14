@@ -325,7 +325,7 @@ define_class!(
             let surface = self.surface();
             if surface.is_null() { return; }
             // Skip reset while a button is held (drag case).
-            let pressed: usize = unsafe { NSEvent::pressedMouseButtons() };
+            let pressed: usize = NSEvent::pressedMouseButtons();
             if pressed != 0 { return; }
             let flags: NSEventModifierFlags = unsafe { msg_send![event, modifierFlags] };
             unsafe { ghostty_surface_mouse_pos(surface, -1.0, -1.0, mods_from_flags(flags)) };
