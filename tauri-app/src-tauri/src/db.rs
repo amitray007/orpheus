@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 use rusqlite::Connection;
 
+use crate::util::now_ms;
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -449,14 +451,6 @@ impl Db {
 pub fn db_path() -> Option<PathBuf> {
     let dirs = ProjectDirs::from("com", "Orpheus", "Orpheus")?;
     Some(dirs.data_dir().join("orpheus.sqlite"))
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

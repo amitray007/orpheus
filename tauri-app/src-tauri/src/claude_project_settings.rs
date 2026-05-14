@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claude_settings::{Effort, PermissionMode, SettingsOverrides};
 use crate::db::{Db, DbError};
+use crate::util::now_ms;
 
 // ---------------------------------------------------------------------------
 // On-disk JSON shape (camelCase to match the v17 migration contract)
@@ -97,14 +98,6 @@ pub fn clear_project_overrides(db: &Db, project_id: &str) -> Result<(), DbError>
         [project_id],
     )?;
     Ok(())
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

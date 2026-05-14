@@ -7,12 +7,13 @@
 // here as pub fns so callers (e.g. add_project) can import sessions at project-add time.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
+use crate::util::{now_ms, uuid_v4};
 
 // ---------------------------------------------------------------------------
 // Status enum
@@ -130,13 +131,6 @@ fn map_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn fetch_session(db: &Db, id: &str) -> Result<Session, DbError> {
     db.conn()
@@ -463,40 +457,6 @@ pub fn update_session_metadata(
         params![title, model, last_message_role, now_ms(), id],
     )?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// UUID helper (same pattern as projects.rs)
-// ---------------------------------------------------------------------------
-
-fn uuid_v4() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{Duration, Instant};
-
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    let mut h = DefaultHasher::new();
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos()
-        .hash(&mut h);
-    seq.hash(&mut h);
-    Instant::now().hash(&mut h);
-    let h1 = h.finish();
-    seq.hash(&mut h);
-    let h2 = h.finish();
-
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (h1 >> 32) as u32,
-        (h1 >> 16) as u16,
-        h1 as u16 & 0x0fff,
-        (h2 >> 48) as u16 & 0x3fff | 0x8000,
-        h2 & 0x0000_ffff_ffff_ffff,
-    )
 }
 
 // ---------------------------------------------------------------------------

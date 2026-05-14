@@ -28,6 +28,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 directories = "5"
 thiserror = "1"
 tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }

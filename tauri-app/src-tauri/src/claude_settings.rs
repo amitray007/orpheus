@@ -2,12 +2,12 @@
 // Mirrors src/main/claudeSettings.ts. Schema v31.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::db::{Db, DbError};
+use crate::util::now_ms;
 
 // ---------------------------------------------------------------------------
 // Enum newtypes (mirror TS union types)
@@ -1239,17 +1239,6 @@ pub fn compose_claude_launch(
     }
 
     Ok(ClaudeLaunch { flags, settings_json, env })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

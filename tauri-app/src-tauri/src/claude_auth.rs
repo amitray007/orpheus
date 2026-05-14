@@ -8,6 +8,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
+use crate::util::now_ms;
 
 // ---------------------------------------------------------------------------
 // Provider enum
@@ -393,13 +394,6 @@ pub async fn test_anthropic_connection(db: &Db) -> ClaudeAuthTestResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 // ---------------------------------------------------------------------------
 // Tests
