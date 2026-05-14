@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use tauri::Window;
+use tokio::sync::oneshot;
 
 use ghostty_native::{MountResult, Rect};
 
@@ -20,35 +21,76 @@ pub struct ResizeArgs {
 }
 
 #[tauri::command]
-pub fn mount_terminal(window: Window, args: MountArgs) -> Result<MountResult, String> {
-    ghostty_native::mount(
-        &window,
-        &args.workspace_id,
-        &args.rect,
-        args.scale,
-        args.cwd.as_deref(),
-        args.command.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+pub async fn mount_terminal(window: Window, args: MountArgs) -> Result<MountResult, String> {
+    let (tx, rx) = oneshot::channel();
+    let win = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let res = ghostty_native::mount(
+                &win,
+                &args.workspace_id,
+                &args.rect,
+                args.scale,
+                args.cwd.as_deref(),
+                args.command.as_deref(),
+            )
+            .map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn hide_terminal(workspace_id: String) -> Result<(), String> {
-    ghostty_native::hide(&workspace_id).map_err(|e| e.to_string())
+pub async fn hide_terminal(window: Window, workspace_id: String) -> Result<(), String> {
+    let (tx, rx) = oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let res = ghostty_native::hide(&workspace_id).map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn resize_terminal(args: ResizeArgs) -> Result<(), String> {
-    ghostty_native::resize(&args.workspace_id, &args.rect, args.scale)
-        .map_err(|e| e.to_string())
+pub async fn resize_terminal(window: Window, args: ResizeArgs) -> Result<(), String> {
+    let (tx, rx) = oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let res = ghostty_native::resize(&args.workspace_id, &args.rect, args.scale)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn destroy_terminal(workspace_id: String) -> Result<(), String> {
-    ghostty_native::destroy(&workspace_id).map_err(|e| e.to_string())
+pub async fn destroy_terminal(window: Window, workspace_id: String) -> Result<(), String> {
+    let (tx, rx) = oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let res = ghostty_native::destroy(&workspace_id).map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn set_terminal_focus(workspace_id: String, focused: bool) -> Result<(), String> {
-    ghostty_native::set_focus(&workspace_id, focused).map_err(|e| e.to_string())
+pub async fn set_terminal_focus(
+    window: Window,
+    workspace_id: String,
+    focused: bool,
+) -> Result<(), String> {
+    let (tx, rx) = oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let res =
+                ghostty_native::set_focus(&workspace_id, focused).map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
 }
