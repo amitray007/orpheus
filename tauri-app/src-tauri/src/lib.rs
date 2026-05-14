@@ -26,6 +26,9 @@ use crate::os_notifications::{AttentionRetryState, CurrentlyViewed, SharedCurren
 
 pub type SharedDb = Arc<Mutex<Db>>;
 
+/// The hotkey string that was last successfully registered, for swap-out on update.
+pub type ActiveHotkey = Arc<Mutex<Option<String>>>;
+
 const SOCKET_WATCHDOG_FALLBACK_SEC: u64 = 120;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,6 +38,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let db = Db::open()?;
 
@@ -56,8 +64,20 @@ pub fn run() {
             let currently_viewed: SharedCurrentlyViewed = Arc::new(Mutex::new(CurrentlyViewed::default()));
             app.manage(currently_viewed);
 
+            // Track the currently registered hotkey string for swap-out on update.
+            let active_hotkey: ActiveHotkey = Arc::new(Mutex::new(None));
+            app.manage(active_hotkey);
+
             if let Err(e) = orpheus_notify::ensure_managed_hooks() {
                 log::warn!("ensure_managed_hooks failed: {e}");
+            }
+
+            // Apply launchAtLogin and globalHotkey from DB at startup.
+            if let Ok(db_guard) = shared.lock() {
+                if let Ok(ui) = ui_state::get_ui_state(&db_guard) {
+                    apply_launch_at_login(app.handle(), ui.launch_at_login);
+                    apply_global_hotkey(app.handle(), &ui.global_hotkey);
+                }
             }
 
             // Wire the AppHandle into ghostty-native so the C action_cb can
@@ -188,5 +208,48 @@ impl Drop for SocketGuard {
                 h.abort();
             }
         }
+    }
+}
+
+/// Enable or disable launch-at-login via tauri-plugin-autostart.
+pub fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    if enabled {
+        if let Err(e) = mgr.enable() {
+            log::warn!("autolaunch enable failed: {e}");
+        }
+    } else {
+        if let Err(e) = mgr.disable() {
+            log::warn!("autolaunch disable failed: {e}");
+        }
+    }
+}
+
+/// Register (or swap) a global hotkey string via tauri-plugin-global-shortcut.
+/// Silently skips empty strings.
+pub fn apply_global_hotkey(app: &tauri::AppHandle, hotkey: &str) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    if hotkey.is_empty() {
+        return;
+    }
+    // Unregister any previously registered shortcut first.
+    if let Some(active) = app.try_state::<ActiveHotkey>() {
+        if let Ok(mut ah) = active.lock() {
+            if let Some(ref prev) = ah.clone() {
+                let _ = app.global_shortcut().unregister(prev.as_str());
+            }
+            *ah = None;
+        }
+    }
+    match app.global_shortcut().register(hotkey) {
+        Ok(()) => {
+            if let Some(active) = app.try_state::<ActiveHotkey>() {
+                if let Ok(mut ah) = active.lock() {
+                    *ah = Some(hotkey.to_owned());
+                }
+            }
+        }
+        Err(e) => log::warn!("global_shortcut register '{hotkey}' failed: {e}"),
     }
 }
