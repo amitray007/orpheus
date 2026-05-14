@@ -39,6 +39,12 @@ extern "C" fn tick_trampoline(_ctx: *mut std::ffi::c_void) {
     }
 }
 
+/// Called on the main queue with `ctx` = `ghostty_surface_t`. Drives the
+/// host-side draw libghostty asked for via GHOSTTY_ACTION_RENDER.
+extern "C" fn render_trampoline(ctx: *mut std::ffi::c_void) {
+    unsafe { ghostty_surface_draw(ctx as ghostty_surface_t) };
+}
+
 /// Cache of the last cleaned title we emitted per workspace. Claude updates
 /// the OSC title at animation rate (~20Hz while spinning) but the cleaned
 /// text is stable across frames — emitting every action_cb floods the
@@ -53,9 +59,28 @@ unsafe extern "C" fn action_cb(
     action: ghostty_action_s,
 ) -> bool {
     use crate::ffi::{
+        ghostty_action_tag_e_GHOSTTY_ACTION_RENDER as ACTION_RENDER,
         ghostty_action_tag_e_GHOSTTY_ACTION_SET_TITLE as ACTION_SET_TITLE,
         ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE as TARGET_SURFACE,
     };
+
+    // libghostty's IO thread fires RENDER when the grid has new content and
+    // wants the host to repaint. Without acking it via a host-side draw the
+    // 60Hz CVDisplayLink tick short-circuits internally and the screen
+    // stays stale (visible as "Claude animations frozen until I type"). Push
+    // the draw onto the main queue and return true so libghostty marks the
+    // grid as presented.
+    if action.tag == ACTION_RENDER && target.tag == TARGET_SURFACE {
+        let surface_ptr = unsafe { target.target.surface };
+        unsafe {
+            dispatch_async_f(
+                main_queue(),
+                surface_ptr as *mut std::ffi::c_void,
+                render_trampoline,
+            );
+        }
+        return true;
+    }
 
     if action.tag == ACTION_SET_TITLE
         && target.tag == TARGET_SURFACE
