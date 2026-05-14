@@ -14,6 +14,7 @@ pub mod claude_workspace_settings;
 pub mod db;
 pub mod projects;
 pub mod sessions;
+pub mod util;
 pub mod workspaces;
 
 #[cfg(target_os = "macos")]
@@ -27,7 +28,8 @@ use crate::db::Db;
 
 pub type SharedDb = Arc<Mutex<Db>>;
 
-const SOCKET_WATCHDOG_SEC: u64 = 30;
+// Fallback if the DB row is missing or the column is 0.
+const SOCKET_WATCHDOG_FALLBACK_SEC: u64 = 120;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,6 +39,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let db = Db::open()?;
+
+            let watchdog_sec = ui_state::get_ui_state(&db)
+                .map(|s| s.in_progress_watchdog_sec as u64)
+                .unwrap_or(SOCKET_WATCHDOG_FALLBACK_SEC);
+
             let shared: SharedDb = Arc::new(Mutex::new(db));
             app.manage(shared.clone());
 
@@ -45,7 +52,7 @@ pub fn run() {
             }
 
             let socket_handle =
-                orpheus_notify::start_socket_server(shared, SOCKET_WATCHDOG_SEC);
+                orpheus_notify::start_socket_server(shared, watchdog_sec);
             app.manage(SocketGuard(Mutex::new(Some(socket_handle))));
 
             Ok(())
