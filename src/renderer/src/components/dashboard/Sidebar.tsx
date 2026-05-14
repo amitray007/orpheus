@@ -175,7 +175,7 @@ function WorkspaceSubRow({
         title={workspace.cwd}
         aria-label={workspace.name}
       >
-        {activity && (activity === 'thinking' || activity === 'tool' || activity === 'compacting' || activity === 'ready' || activity === 'attention') ? (
+        {activity && activity !== 'archived' ? (
           <ActivityIndicator detail={activity} />
         ) : (
           <Stack

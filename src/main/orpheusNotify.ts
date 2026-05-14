@@ -160,6 +160,8 @@ function handleHookEvent(
   payload: Record<string, unknown>
 ): void {
   const ds = getDetailState(workspaceId)
+  const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
+  console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn })
 
   switch (ev) {
     case 'pretool': {

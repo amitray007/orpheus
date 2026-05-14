@@ -28,11 +28,14 @@ export function ActivityIndicator({
   const tool = useAnimatedFrame(TOOL_FRAMES, 200)
   const compact = useAnimatedFrame(COMPACT_FRAMES, 100)
 
-  if (!detail || detail === 'idle' || detail === 'archived') return null
+  if (!detail || detail === 'archived') return null
 
   const base = 'inline-flex items-center justify-center flex-shrink-0 leading-none w-3'
   const cls = className ? `${base} ${className}` : base
 
+  if (detail === 'idle') {
+    return <span className={`${cls} text-text-muted text-xs font-mono`}>◌</span>
+  }
   if (detail === 'thinking') {
     return <span className={`${cls} text-accent text-xs font-mono`}>{braille}</span>
   }

@@ -12,12 +12,13 @@ if [ ! -t 0 ]; then
   [ -z "$PAYLOAD" ] && PAYLOAD="{}"
 fi
 
-curl --unix-socket "$ORPHEUS_SOCK" -fsS -o /dev/null --max-time 2 \
+(curl --unix-socket "$ORPHEUS_SOCK" -fsS -o /dev/null --max-time 5 \
   -X POST \
   -H "Content-Type: application/json" \
   -H "X-Workspace-ID: $ORPHEUS_WORKSPACE_ID" \
   -H "X-Event: $EVENT" \
   --data-binary "$PAYLOAD" \
-  "http://localhost/notify" 2>/dev/null || true
+  "http://localhost/notify" 2>/dev/null || true) &
+disown 2>/dev/null || true
 
 exit 0
