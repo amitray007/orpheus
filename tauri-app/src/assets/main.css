@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-surface-base: #0b0b0c;
+  --color-surface-raised: #16161a;
+  --color-surface-overlay: #1f1f24;
+  --color-border-default: #27272a;
+  --color-border-focus: #d4a847;
+
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+
+  --color-accent: #d4a847;
+  --color-accent-hover: #e0b558;
+  --color-accent-on: #0b0b0c;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--color-surface-base, #0b0b0c);
+  color: var(--color-text-primary, #f4f4f5);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  overflow: hidden;
+}
+
+.app {
+  height: 100%;
+  width: 100%;
+}
+
+/* Transparent overlay drag region — Tailwind handles position/size via utility
+   classes on the element; only the non-standard app-region property lives here. */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+}
+
+/* Flash highlight for search-result scroll-to */
+[data-flash='1'] {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+  animation: setting-flash 1.5s ease-out forwards;
+}
+
+@keyframes setting-flash {
+  0%   { outline-color: color-mix(in srgb, var(--color-accent) 60%, transparent); }
+  100% { outline-color: transparent; }
+}

@@ -3,25 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Orpheus Tauri Spike</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <title>Orpheus</title>
   </head>
   <body>
-    <div id="app">
-      <div id="toolbar">
-        <span id="status">Initialising...</span>
-        <span style="margin-left:16px">
-          <button id="btn-mount-a">Mount A</button>
-          <button id="btn-hide-a">Hide A</button>
-          <button id="btn-destroy-a">Destroy A</button>
-          &nbsp;|&nbsp;
-          <button id="btn-mount-b">Mount B</button>
-          <button id="btn-hide-b">Hide B</button>
-          <button id="btn-destroy-b">Destroy B</button>
-        </span>
-      </div>
-      <div id="terminal-slot"></div>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -5,19 +5,29 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "cargo tauri",
     "build:unpack": "bun run tauri build && node scripts/install-tauri.mjs"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-shell": "^2",
-    "@tauri-apps/plugin-dialog": "^2"
+    "minidenticons": "^4.2.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2",
-    "typescript": "^5",
+    "@types/node": "^22.19.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.3",
     "vite": "^6"
   }
 }
