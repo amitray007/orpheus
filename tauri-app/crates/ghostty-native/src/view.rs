@@ -192,6 +192,8 @@ define_class!(
                     userInfo: std::ptr::null::<AnyObject>()
                 ];
                 let _: () = msg_send![self, addTrackingArea: ta];
+                // addTrackingArea: retains; release our alloc retain to balance.
+                objc2::ffi::objc_release(ta as *mut AnyObject);
             }
         }
 
