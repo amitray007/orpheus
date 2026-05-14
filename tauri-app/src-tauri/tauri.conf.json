@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OrpheusTauriSpike",
-  "identifier": "com.orpheus.taurispike",
+  "productName": "Orpheus",
+  "identifier": "dev.orpheus.app",
   "version": "0.1.0",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -13,12 +13,12 @@
     "windows": [
       {
         "label": "main",
-        "title": "Orpheus Tauri Spike",
+        "title": "Orpheus",
         "width": 1200,
         "height": 800,
         "resizable": true,
         "fullscreen": false,
-        "transparent": true,
+        "transparent": false,
         "decorations": true
       }
     ],
@@ -30,7 +30,21 @@
     "active": true,
     "targets": "app",
     "icon": [
-      "icons/icon.png"
-    ]
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../resources/ghostty/terminfo": "terminfo",
+      "../../resources/ghostty/ghostty": "ghostty",
+      "../../resources/orpheus-claude.sh": "orpheus-claude.sh",
+      "../../resources/bin/orpheus-notify": "bin/orpheus-notify"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": "../../build/entitlements.mac.plist"
+    }
   }
 }
