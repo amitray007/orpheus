@@ -95,7 +95,8 @@ try {
   console.log(`[install-tauri] cleaning ${bundleDir}`)
   rmSync(bundleDir, { recursive: true, force: true })
 
-  console.log(`[install-tauri] done. Open with: open "${target}"`)
+  console.log(`[install-tauri] done. Opening ${target}`)
+  execSync(`open "${target}"`, { stdio: 'inherit' })
 } catch (err) {
   console.error(`[install-tauri] failed: ${err.message}`)
   process.exit(1)

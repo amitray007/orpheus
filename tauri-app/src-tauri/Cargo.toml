@@ -1,15 +1,15 @@
 [package]
-name = "orpheus-tauri-spike"
+name = "orpheus"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
 [lib]
-name = "orpheus_tauri_spike_lib"
+name = "orpheus_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "orpheus-tauri-spike"
+name = "orpheus"
 path = "src/main.rs"
 
 [build-dependencies]

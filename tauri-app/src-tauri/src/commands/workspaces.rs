@@ -12,6 +12,7 @@ use crate::SharedDb;
 use crate::commands::events::TitleMap;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateArgs {
     pub project_id: String,
     pub name: String,

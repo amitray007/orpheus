@@ -30,6 +30,7 @@ pub fn claude_agents_add_slash_command(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SlashCommandUpdateDraft {
     pub description: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
