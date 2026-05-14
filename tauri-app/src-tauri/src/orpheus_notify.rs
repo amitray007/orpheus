@@ -20,7 +20,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use tauri::Emitter;
@@ -86,9 +85,28 @@ pub struct WorkspaceDetail {
 const BLOCKING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
 // ---------------------------------------------------------------------------
-// ActivityMap — shared state across the socket server tasks
+// Combined notify state — one lock, no interleaving (fixes Bug 5)
 // ---------------------------------------------------------------------------
 
+pub struct NotifyState {
+    pub activity: HashMap<String, WorkspaceStatus>,
+    pub details: HashMap<String, WorkspaceDetail>,
+    pub watchdogs: HashMap<String, tokio::task::JoinHandle<()>>,
+}
+
+impl NotifyState {
+    fn new() -> Self {
+        Self {
+            activity: HashMap::new(),
+            details: HashMap::new(),
+            watchdogs: HashMap::new(),
+        }
+    }
+}
+
+pub type SharedNotifyState = Arc<Mutex<NotifyState>>;
+
+// Keep legacy type aliases so callers that only need the maps still compile.
 pub type ActivityMap = Arc<Mutex<HashMap<String, WorkspaceStatus>>>;
 pub type DetailMap = Arc<Mutex<HashMap<String, WorkspaceDetail>>>;
 
@@ -186,13 +204,118 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Watchdog timer management
+// Watchdog helpers (fixes Bugs 1, 2, 3, 4)
 // ---------------------------------------------------------------------------
 
-/// Message sent from watchdog tasks back to the dispatcher.
-#[derive(Debug)]
-enum WatchdogMsg {
-    Fired { workspace_id: String },
+/// Abort any existing watchdog for `workspace_id`, spawn a new one, and store the handle.
+/// Every re-arm cancels the previous timer, preventing handle accumulation (Bug 4)
+/// and resetting the deadline on heartbeat events (Bug 2).
+fn arm_watchdog(
+    state: &mut NotifyState,
+    workspace_id: &str,
+    delay: Duration,
+    db: Arc<Mutex<Db>>,
+    app_handle: tauri::AppHandle,
+    shared: SharedNotifyState,
+) {
+    cancel_watchdog(state, workspace_id);
+    let wid = workspace_id.to_owned();
+    let handle = tokio::spawn(async move {
+        sleep(delay).await;
+        fire_watchdog(wid, db, app_handle, shared).await;
+    });
+    state.watchdogs.insert(workspace_id.to_owned(), handle);
+}
+
+/// Abort and remove any existing watchdog for `workspace_id`.
+fn cancel_watchdog(state: &mut NotifyState, workspace_id: &str) {
+    if let Some(h) = state.watchdogs.remove(workspace_id) {
+        h.abort();
+    }
+}
+
+/// Called when the watchdog timer fires. Routes through the same emit/notify
+/// path as handle_connection so the UI stays in sync (fixes Bugs 1 and 3).
+async fn fire_watchdog(
+    workspace_id: String,
+    db: Arc<Mutex<Db>>,
+    app_handle: tauri::AppHandle,
+    shared: SharedNotifyState,
+) {
+    // Lock once: double-check, mutate, capture data, then drop.
+    let transition = {
+        let mut state = shared.lock().unwrap();
+        let is_in_progress = state.activity.get(&workspace_id)
+            .map(|s| s == &WorkspaceStatus::InProgress)
+            .unwrap_or(false);
+        if !is_in_progress {
+            return;
+        }
+        eprintln!("[orpheus-notify] watchdog fired for {workspace_id}");
+        {
+            let NotifyState { ref mut activity, ref mut details, .. } = *state;
+            handle_hook_event(
+                &workspace_id,
+                &WorkspaceActivityEvent::Stop,
+                &serde_json::Value::Null,
+                activity,
+                details,
+            );
+        }
+        // Watchdog transitions to AwaitingInput, so no new watchdog needed.
+        state.watchdogs.remove(&workspace_id);
+        let status = WorkspaceStatus::AwaitingInput;
+        let detail_label = state.details.get(&workspace_id)
+            .map(|d| compute_detail(&status, d))
+            .unwrap_or("ready");
+        (status, detail_label)
+    };
+
+    let (status, detail_label) = transition;
+
+    // DB write outside the lock.
+    {
+        let db_guard = db.lock().unwrap();
+        if let Err(e) = set_workspace_status(&db_guard, &workspace_id, status.clone()) {
+            eprintln!("[orpheus-notify] watchdog set_workspace_status failed for {workspace_id}: {e}");
+        }
+        // No workspace label to build a notification — watchdog fires silently for
+        // InProgress→AwaitingInput; if the user is watching the sidebar it updates.
+        // A "Claude finished" toast is best effort; skip it if workspace lookup fails.
+        let label_and_settings = (|| -> Option<_> {
+            let ws = crate::workspaces::get_workspace(&db_guard, &workspace_id).ok().flatten()?;
+            let proj = crate::projects::list_projects(&db_guard).ok()?
+                .into_iter().find(|p| p.id == ws.project_id)?;
+            let ui = crate::ui_state::get_ui_state(&db_guard).ok()?;
+            let display_name = if ws.name_is_auto {
+                ws.last_title.clone().unwrap_or(ws.name)
+            } else {
+                ws.name
+            };
+            Some((format!("{} · {}", proj.name, display_name), ui))
+        })();
+
+        let _ = app_handle.emit(
+            "workspace:activityChanged",
+            serde_json::json!({
+                "workspaceId": workspace_id,
+                "status": status.as_str(),
+                "detail": detail_label,
+            }),
+        );
+
+        if let Some((label, ui)) = label_and_settings {
+            handle_transition_notifications(
+                &app_handle,
+                &workspace_id,
+                &label,
+                Some(&WorkspaceStatus::InProgress),
+                &status,
+                &ui,
+                None,
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +397,25 @@ fn update_status(
     Some(new_status)
 }
 
+/// Pick the blocking tool to use for attention notification copy (Bug 6).
+/// Returns Some(BlockingTool) when the detail map has a known blocking tool,
+/// Some(Permission) when the trigger was a Notification hook (permission prompt),
+/// and None for generic attention.
+pub fn resolve_blocking_tool_for_notification(
+    event: &WorkspaceActivityEvent,
+    detail: &WorkspaceDetail,
+) -> Option<crate::os_notifications::BlockingTool> {
+    if let Some(ref tool_name) = detail.blocking_tool {
+        if let Some(bt) = crate::os_notifications::BlockingTool::from_str(tool_name) {
+            return Some(bt);
+        }
+    }
+    if *event == WorkspaceActivityEvent::Notification {
+        return Some(crate::os_notifications::BlockingTool::Permission);
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Socket server
 // ---------------------------------------------------------------------------
@@ -319,43 +461,7 @@ pub fn start_socket_server(
             }
         };
 
-        let activity_map: ActivityMap = Arc::new(Mutex::new(HashMap::new()));
-        let detail_map: DetailMap = Arc::new(Mutex::new(HashMap::new()));
-
-        // Watchdog fire channel
-        let (wd_tx, mut wd_rx) = mpsc::unbounded_channel::<WatchdogMsg>();
-
-        // Watchdog receiver task
-        {
-            let activity_map = activity_map.clone();
-            let detail_map = detail_map.clone();
-            let db = db.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = wd_rx.recv().await {
-                    let WatchdogMsg::Fired { workspace_id } = msg;
-                    let is_in_progress = activity_map
-                        .lock()
-                        .unwrap()
-                        .get(&workspace_id)
-                        .map(|s| s == &WorkspaceStatus::InProgress)
-                        .unwrap_or(false);
-                    if is_in_progress {
-                        eprintln!("[orpheus-notify] watchdog fired for {workspace_id}");
-                        let mut am = activity_map.lock().unwrap();
-                        let mut dm = detail_map.lock().unwrap();
-                        handle_hook_event(
-                            &workspace_id,
-                            &WorkspaceActivityEvent::Stop,
-                            &serde_json::Value::Null,
-                            &mut am,
-                            &mut dm,
-                        );
-                        let db = db.lock().unwrap();
-                        let _ = set_workspace_status(&db, &workspace_id, WorkspaceStatus::AwaitingInput);
-                    }
-                }
-            });
-        }
+        let shared: SharedNotifyState = Arc::new(Mutex::new(NotifyState::new()));
 
         eprintln!("[orpheus-notify] listening on {}", sock_path.display());
 
@@ -368,14 +474,12 @@ pub fn start_socket_server(
                 }
             };
 
-            let activity_map = activity_map.clone();
-            let detail_map = detail_map.clone();
+            let shared = shared.clone();
             let db = db.clone();
-            let wd_tx = wd_tx.clone();
             let app_handle = app_handle.clone();
 
             tokio::spawn(async move {
-                handle_connection(stream, activity_map, detail_map, db, wd_tx, watchdog_sec, app_handle).await;
+                handle_connection(stream, shared, db, watchdog_sec, app_handle).await;
             });
         }
     })
@@ -383,10 +487,8 @@ pub fn start_socket_server(
 
 async fn handle_connection(
     stream: tokio::net::UnixStream,
-    activity_map: ActivityMap,
-    detail_map: DetailMap,
+    shared: SharedNotifyState,
     db: Arc<Mutex<Db>>,
-    wd_tx: mpsc::UnboundedSender<WatchdogMsg>,
     watchdog_sec: u64,
     app_handle: tauri::AppHandle,
 ) {
@@ -446,38 +548,71 @@ async fn handle_connection(
 
     eprintln!("[orpheus-notify] event {:?} for {}", event, workspace_id);
 
-    let (prev_status, new_status) = {
-        let mut am = activity_map.lock().unwrap();
-        let mut dm = detail_map.lock().unwrap();
-        let prev = am.get(&workspace_id).cloned();
-        let next = handle_hook_event(&workspace_id, &event, &payload, &mut am, &mut dm);
-        (prev, next)
+    // Acquire one lock for the entire critical section: map mutation + watchdog
+    // arm/cancel + capture data for emit. Drop before I/O (fixes Bug 5).
+    let transition = {
+        let mut state = shared.lock().unwrap();
+        let prev = state.activity.get(&workspace_id).cloned();
+        let next = {
+            let NotifyState { ref mut activity, ref mut details, .. } = *state;
+            handle_hook_event(&workspace_id, &event, &payload, activity, details)
+        };
+
+        // Determine blocking tool for notification copy before releasing the lock (Bug 6).
+        let blocking_tool_for_notif = state.details.get(&workspace_id)
+            .map(|d| resolve_blocking_tool_for_notification(&event, d))
+            .unwrap_or(None);
+
+        if let Some(ref status) = next {
+            // Arm or cancel watchdog based on new status (fixes Bugs 2 and 4).
+            if *status == WorkspaceStatus::InProgress && watchdog_sec > 0 {
+                arm_watchdog(
+                    &mut state,
+                    &workspace_id,
+                    Duration::from_secs(watchdog_sec),
+                    db.clone(),
+                    app_handle.clone(),
+                    shared.clone(),
+                );
+            } else {
+                cancel_watchdog(&mut state, &workspace_id);
+            }
+        } else {
+            // Heartbeat event (no status change): re-arm watchdog if still InProgress (Bug 2).
+            let current_in_progress = state.activity.get(&workspace_id)
+                .map(|s| s == &WorkspaceStatus::InProgress)
+                .unwrap_or(false);
+            if current_in_progress && watchdog_sec > 0 {
+                arm_watchdog(
+                    &mut state,
+                    &workspace_id,
+                    Duration::from_secs(watchdog_sec),
+                    db.clone(),
+                    app_handle.clone(),
+                    shared.clone(),
+                );
+            }
+        }
+
+        // Capture renderer payload while still holding lock.
+        let detail_label = next.as_ref().map(|status| {
+            state.details.get(&workspace_id)
+                .map(|d| compute_detail(status, d))
+                .unwrap_or("ready")
+        });
+
+        (prev, next, detail_label, blocking_tool_for_notif)
     };
 
+    let (prev_status, new_status, detail_label, blocking_tool_for_notif) = transition;
+
     if let Some(status) = new_status {
+        let detail = detail_label.unwrap_or("ready");
+
         let db_guard = db.lock().unwrap();
         if let Err(e) = set_workspace_status(&db_guard, &workspace_id, status.clone()) {
             eprintln!("[orpheus-notify] set_workspace_status failed for {workspace_id}: {e}");
         }
-
-        // Arm watchdog when moving to in_progress
-        if status == WorkspaceStatus::InProgress && watchdog_sec > 0 {
-            let workspace_id = workspace_id.clone();
-            let wd_tx = wd_tx.clone();
-            let delay = Duration::from_secs(watchdog_sec);
-            tokio::spawn(async move {
-                sleep(delay).await;
-                let _ = wd_tx.send(WatchdogMsg::Fired { workspace_id });
-            });
-        }
-
-        // Compute the activity detail for both the renderer event and the
-        // notification body (so the toast text matches the sidebar glyph).
-        let detail = {
-            let dm = detail_map.lock().unwrap();
-            let d = dm.get(&workspace_id).cloned().unwrap_or_default();
-            compute_detail(&status, &d)
-        };
 
         // Emit workspace:activityChanged so the renderer can update status badges.
         let _ = app_handle.emit(
@@ -514,6 +649,7 @@ async fn handle_connection(
                 prev_status.as_ref(),
                 &status,
                 &ui,
+                blocking_tool_for_notif,
             );
         }
     }
@@ -528,6 +664,7 @@ fn handle_transition_notifications(
     prev_status: Option<&WorkspaceStatus>,
     next_status: &WorkspaceStatus,
     ui: &crate::ui_state::AppUiState,
+    blocking_tool: Option<crate::os_notifications::BlockingTool>,
 ) {
     use tauri::Manager;
 
@@ -566,7 +703,7 @@ fn handle_transition_notifications(
         WorkspaceStatus::Attention if ui.notify_attention && !suppress => {
             crate::os_notifications::cancel_for_workspace(&retry_state, workspace_id);
             let max_repeats = ui.notify_max_attention_repeats.max(0) as u32;
-            let params = crate::os_notifications::attention_params(label, None, 0, max_repeats);
+            let params = crate::os_notifications::attention_params(label, blocking_tool.as_ref(), 0, max_repeats);
             let _ = crate::os_notifications::show_notification(&params);
             if max_repeats > 0 {
                 if let Ok(mut s) = retry_state.lock() {
@@ -575,7 +712,7 @@ fn handle_transition_notifications(
                 crate::os_notifications::schedule_attention_retries(
                     workspace_id.to_owned(),
                     label.to_owned(),
-                    None,
+                    blocking_tool,
                     1,
                     max_repeats,
                     retry_state.clone(),
@@ -934,5 +1071,74 @@ mod tests {
             &mut dm,
         );
         assert_eq!(am.get("ws1"), Some(&WorkspaceStatus::AwaitingInput));
+    }
+
+    /// Watchdog cancel-on-heartbeat: a PreTool event while InProgress must reset
+    /// the watchdog so it doesn't fire at the original deadline.
+    #[tokio::test]
+    async fn watchdog_cancelled_by_heartbeat() {
+        let state = Arc::new(Mutex::new(NotifyState::new()));
+        {
+            let mut s = state.lock().unwrap();
+            s.activity.insert("ws1".into(), WorkspaceStatus::InProgress);
+        }
+
+        // Arm a watchdog with a very short delay that we will reset before it fires.
+        let short_delay = Duration::from_millis(80);
+        {
+            let mut s = state.lock().unwrap();
+            // arm_watchdog needs db and app_handle; we can't build those in unit tests,
+            // so we directly manage the JoinHandle to test the cancel path.
+            let wid = "ws1".to_owned();
+            let state2 = state.clone();
+            let handle = tokio::spawn(async move {
+                tokio::time::sleep(short_delay).await;
+                // If not cancelled this would set AwaitingInput.
+                let mut s = state2.lock().unwrap();
+                s.activity.insert(wid, WorkspaceStatus::AwaitingInput);
+            });
+            s.watchdogs.insert("ws1".into(), handle);
+        }
+
+        // Simulate a heartbeat (PreTool): cancel the existing watchdog.
+        {
+            let mut s = state.lock().unwrap();
+            cancel_watchdog(&mut s, "ws1");
+        }
+
+        // Wait past the original deadline — status must still be InProgress.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let status = state.lock().unwrap().activity.get("ws1").cloned();
+        assert_eq!(status, Some(WorkspaceStatus::InProgress), "watchdog should have been cancelled");
+    }
+
+    /// Notification copy resolver: PreTool with AskUserQuestion → AskUserQuestion blocking tool.
+    #[test]
+    fn resolve_blocking_tool_ask_user_question() {
+        let detail = WorkspaceDetail {
+            blocking_tool: Some("AskUserQuestion".into()),
+            ..Default::default()
+        };
+        let bt = resolve_blocking_tool_for_notification(&WorkspaceActivityEvent::Pretool, &detail);
+        assert_eq!(bt, Some(crate::os_notifications::BlockingTool::AskUserQuestion));
+    }
+
+    /// Notification copy resolver: Notification hook (no blocking_tool set) → Permission.
+    #[test]
+    fn resolve_blocking_tool_notification_hook() {
+        let detail = WorkspaceDetail::default();
+        let bt = resolve_blocking_tool_for_notification(&WorkspaceActivityEvent::Notification, &detail);
+        assert_eq!(bt, Some(crate::os_notifications::BlockingTool::Permission));
+    }
+
+    /// Notification copy resolver: unknown tool name → None (generic copy).
+    #[test]
+    fn resolve_blocking_tool_unknown() {
+        let detail = WorkspaceDetail {
+            blocking_tool: Some("SomeOtherTool".into()),
+            ..Default::default()
+        };
+        let bt = resolve_blocking_tool_for_notification(&WorkspaceActivityEvent::Pretool, &detail);
+        assert_eq!(bt, None);
     }
 }
