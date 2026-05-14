@@ -1,5 +1,6 @@
 mod commands;
 pub mod claude_auth;
+pub mod claude_hooks;
 pub mod claude_project_settings;
 pub mod claude_settings;
 pub mod claude_workspace_settings;
