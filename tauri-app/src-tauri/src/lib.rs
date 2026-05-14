@@ -17,9 +17,6 @@ pub mod sessions;
 pub mod util;
 pub mod workspaces;
 
-#[cfg(target_os = "macos")]
-mod ghostty;
-
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
@@ -58,8 +55,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::spawn_terminal,
+            commands::mount_terminal,
+            commands::hide_terminal,
             commands::resize_terminal,
+            commands::destroy_terminal,
+            commands::set_terminal_focus,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

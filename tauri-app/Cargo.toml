@@ -1,3 +1,3 @@
 [workspace]
-members = ["src-tauri"]
+members = ["src-tauri", "crates/ghostty-native"]
 resolver = "2"
