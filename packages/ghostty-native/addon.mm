@@ -819,6 +819,20 @@ static bool action_cb(ghostty_app_t /*app*/,
         );
     }
 
+    // GHOSTTY_ACTION_RENDER fires from the IO thread whenever libghostty
+    // updates the grid and wants the host to repaint. The CVDisplayLink's
+    // blind 60Hz tick doesn't compensate — the renderer expects this signal
+    // to pick up new content. Without it, screen stays stale during long
+    // operations (claude compaction, fast-streaming tool output) until user
+    // input shakes things loose.
+    if (action.tag == GHOSTTY_ACTION_RENDER && target.tag == GHOSTTY_TARGET_SURFACE) {
+        ghostty_surface_t surf = target.target.surface;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ghostty_surface_draw(surf);
+        });
+        return true;
+    }
+
     if (action.tag == GHOSTTY_ACTION_SET_TITLE ||
         action.tag == GHOSTTY_ACTION_SET_TAB_TITLE) {
         // Both share the same ghostty_action_set_title_s payload shape, but
