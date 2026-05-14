@@ -15,7 +15,7 @@ use super::state::{GlobalState, SurfaceState, GLOBAL, SURFACE};
 // -- callbacks required by ghostty_runtime_config_s --
 
 unsafe extern "C" fn wakeup_cb(_userdata: *mut std::ffi::c_void) {
-    unsafe { dispatch_async_f(dispatch_get_main_queue(), std::ptr::null_mut(), tick_trampoline) };
+    unsafe { dispatch_async_f(main_queue(), std::ptr::null_mut(), tick_trampoline) };
 }
 
 extern "C" fn tick_trampoline(_ctx: *mut std::ffi::c_void) {
@@ -61,16 +61,23 @@ unsafe extern "C" fn write_clipboard_cb(
 
 unsafe extern "C" fn close_surface_cb(_userdata: *mut std::ffi::c_void, _exited: bool) {}
 
-// -- libdispatch raw bindings (system libSystem) --
+// -- libdispatch raw bindings --
+// main_queue() is an inline C function that returns &_dispatch_main_q.
+// We bind directly to the exported symbol and dispatch_async_f.
 
-#[link(name = "System")]
 extern "C" {
-    fn dispatch_get_main_queue() -> *mut std::ffi::c_void;
+    // The main queue object — use its address as the queue pointer.
+    static _dispatch_main_q: std::ffi::c_void;
     fn dispatch_async_f(
         queue: *mut std::ffi::c_void,
         context: *mut std::ffi::c_void,
         work: extern "C" fn(*mut std::ffi::c_void),
     );
+}
+
+#[inline]
+fn main_queue() -> *mut std::ffi::c_void {
+    unsafe { &_dispatch_main_q as *const _ as *mut _ }
 }
 
 // -- CVDisplayLink raw bindings --
@@ -116,7 +123,7 @@ unsafe extern "C" fn display_link_cb(
     let surface = userdata as ghostty_surface_t;
     unsafe {
         dispatch_async_f(
-            dispatch_get_main_queue(),
+            main_queue(),
             surface as *mut std::ffi::c_void,
             draw_trampoline,
         )

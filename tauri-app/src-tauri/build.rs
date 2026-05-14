@@ -29,6 +29,7 @@ fn main() {
             "CoreText",
             "QuartzCore",
             "IOKit",
+            "IOSurface",
             "Foundation",
             "CoreFoundation",
             "CoreGraphics",
@@ -41,9 +42,25 @@ fn main() {
             println!("cargo:rustc-link-lib=framework={fw}");
         }
 
-        // Also link libresolv which ghostty needs for DNS.
+        // C++ runtime — libghostty includes simdutf and other C++ code.
+        println!("cargo:rustc-link-lib=c++");
+        // libresolv for DNS, iconv for character encoding.
         println!("cargo:rustc-link-lib=dylib=resolv");
         println!("cargo:rustc-link-lib=dylib=iconv");
+
+        // Add SDK system lib dir so the linker resolves libdispatch (part of libSystem).
+        let sdk_path = std::process::Command::new("xcrun")
+            .args(["--show-sdk-path"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
+        let sdk_path = sdk_path.trim();
+        if !sdk_path.is_empty() {
+            println!("cargo:rustc-link-search=native={sdk_path}/usr/lib/system");
+            // dispatch is a re-export of libSystem; resolved via the TBD stub above.
+            println!("cargo:rustc-link-lib=dylib=dispatch");
+        }
 
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let bindings = bindgen::Builder::default()
