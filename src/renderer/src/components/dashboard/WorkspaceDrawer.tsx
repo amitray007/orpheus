@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { X } from '@phosphor-icons/react'
-import { SettingRow, SegmentedControl } from './settings/primitives'
+import { X, ArrowCounterClockwise } from '@phosphor-icons/react'
+import { Select } from './settings/primitives'
 import { ActivityIndicator } from './ActivityIndicator'
 import {
   CLAUDE_MODEL_OPTIONS,
@@ -70,14 +70,15 @@ function ActivitySection({
   }
 
   return (
-    <section className="flex flex-col gap-2 p-4 border-b border-border-default/40">
-      <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+    <section className="flex flex-col px-4 pt-5 pb-4 border-b border-border-default/40">
+      <span className="text-xs font-semibold text-text-primary uppercase tracking-wider mb-3">
         Activity
       </span>
       {label !== null ? (
-        <p className="text-xs text-text-muted flex items-center gap-1.5">
+        <p className="text-xs text-text-muted flex items-center gap-2">
           <ActivityIndicator detail={resolved} />
-          Claude is <span className={color}>{label}</span>
+          <span>Claude is</span>
+          <span className={`${color} font-medium`}>{label}</span>
         </p>
       ) : (
         <p className="text-xs text-text-muted">Workspace is archived.</p>
@@ -86,7 +87,7 @@ function ActivitySection({
         <button
           type="button"
           onClick={handleReset}
-          className="self-start mt-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-overlay border border-border-default hover:border-border-hover text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+          className="self-start mt-3 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-overlay border border-border-default hover:border-border-hover text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           title="Use this if Claude was interrupted (Ctrl-C / Esc) and the indicator is stuck."
         >
           Mark as ready
@@ -116,9 +117,9 @@ const EFFORT_OPTIONS = [
   { value: 'default', label: 'Default' },
   { value: 'auto', label: 'Auto' },
   { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Med' },
+  { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
+  { value: 'xhigh', label: 'Extra High' },
   { value: 'max', label: 'Max' }
 ] as const
 
@@ -214,49 +215,60 @@ function OverridesSection({
   const effortValue: EffortOption =
     localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
 
+  const overrideCount =
+    (localOverrides.model !== undefined ? 1 : 0) +
+    (localOverrides.permissionMode !== undefined ? 1 : 0) +
+    (localOverrides.effort !== undefined ? 1 : 0)
+
   return (
     <section className="flex flex-col">
-      <div className="px-4 pt-4 pb-1">
+      <header className="flex items-baseline justify-between px-4 pt-5 pb-3">
         <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
           Workspace overrides
         </span>
-      </div>
+        {hasAnyOverride && (
+          <span className="text-[10px] font-mono text-text-muted">
+            {overrideCount} set
+          </span>
+        )}
+      </header>
 
-      <div className={`px-4 ${!settings ? 'opacity-50 pointer-events-none' : ''}`}>
-        <SettingRow label="Model">
-          <SegmentedControl
-            options={MODEL_OPTIONS}
-            value={modelValue}
-            onChange={handleModel}
-            ariaLabel="Workspace model override"
-          />
-        </SettingRow>
-        <SettingRow label="Permission mode">
-          <SegmentedControl
-            options={PERMISSION_OPTIONS}
-            value={permissionValue}
-            onChange={handlePermission}
-            ariaLabel="Workspace permission mode override"
-          />
-        </SettingRow>
-        <SettingRow label="Effort">
-          <SegmentedControl
-            options={EFFORT_OPTIONS}
-            value={effortValue}
-            onChange={handleEffort}
-            ariaLabel="Workspace effort override"
-          />
-        </SettingRow>
+      <div className={!settings ? 'opacity-50 pointer-events-none' : ''}>
+        <OverrideField
+          label="Model"
+          options={MODEL_OPTIONS}
+          value={modelValue}
+          onChange={handleModel}
+          isOverridden={localOverrides.model !== undefined}
+          ariaLabel="Workspace model override"
+        />
+        <OverrideField
+          label="Permission mode"
+          options={PERMISSION_OPTIONS}
+          value={permissionValue}
+          onChange={handlePermission}
+          isOverridden={localOverrides.permissionMode !== undefined}
+          ariaLabel="Workspace permission mode override"
+        />
+        <OverrideField
+          label="Effort"
+          options={EFFORT_OPTIONS}
+          value={effortValue}
+          onChange={handleEffort}
+          isOverridden={localOverrides.effort !== undefined}
+          ariaLabel="Workspace effort override"
+        />
       </div>
 
       {isDirty && (
-        <div className="mx-4 mt-2 px-3 py-2 rounded-md border border-amber-400/30 bg-amber-400/5 flex items-center gap-2">
-          <span className="text-[11px] font-mono text-amber-400 flex-shrink-0">
+        <div className="mx-4 mt-3 rounded-md border border-amber-400/30 bg-amber-400/[0.04] px-3 py-2.5 flex items-center gap-3">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+          <span className="text-[11px] text-amber-200/90 flex-shrink-0">
             Settings changed
           </span>
           <button
             onClick={onRestart}
-            className="ml-auto text-[11px] font-sans font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
+            className="ml-auto text-[11px] font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
           >
             Restart to apply
           </button>
@@ -264,16 +276,63 @@ function OverridesSection({
       )}
 
       {hasAnyOverride && (
-        <div className="px-4 py-3 mt-1">
+        <div className="px-4 py-4 mt-2">
           <button
             onClick={resetAll}
-            className="text-xs text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+            className="inline-flex items-center gap-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
           >
+            <ArrowCounterClockwise size={11} weight="bold" />
             Reset all overrides
           </button>
         </div>
       )}
     </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// OverrideField — single labeled row: label (with subtle override marker) on
+// top, full-width Select below, hairline divider beneath. Vertical stacking
+// gives both label and select the full drawer width so neither truncates.
+// ---------------------------------------------------------------------------
+
+interface OverrideFieldProps<T extends string> {
+  label: string
+  options: ReadonlyArray<{ value: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+  isOverridden: boolean
+  ariaLabel: string
+}
+
+function OverrideField<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  isOverridden,
+  ariaLabel
+}: OverrideFieldProps<T>): React.JSX.Element {
+  return (
+    <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+          {label}
+        </label>
+        {isOverridden && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-accent/80"
+            title="Overrides project default"
+          />
+        )}
+      </div>
+      <Select
+        options={options}
+        value={value}
+        onChange={onChange}
+        ariaLabel={ariaLabel}
+      />
+    </div>
   )
 }
 

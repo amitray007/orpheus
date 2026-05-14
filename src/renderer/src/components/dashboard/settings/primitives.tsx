@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import type React from 'react'
-import { X, Plus } from '@phosphor-icons/react'
+import { X, Plus, CaretDown } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -78,6 +78,61 @@ export function SegmentedControl<T extends string>({
           {opt.label}
         </button>
       ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Select — styled native <select>. Uses the OS dropdown menu so it works
+// without keyboard plumbing or focus management. Designed for compact rows
+// (e.g. the workspace drawer) where a segmented control would overflow.
+// ---------------------------------------------------------------------------
+
+export interface SelectProps<T extends string> {
+  options: ReadonlyArray<{ value: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+  ariaLabel?: string
+  className?: string
+}
+
+export function Select<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+  className
+}: SelectProps<T>): React.JSX.Element {
+  // appearance-none drops the platform chevron so the icon below can sit at
+  // the right edge with consistent metrics. Keeping the underlying <select>
+  // means the macOS popup menu still opens natively.
+  return (
+    <div className={['relative inline-flex w-full', className ?? ''].join(' ')}>
+      <select
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className={[
+          'w-full appearance-none cursor-pointer',
+          'pl-3 pr-8 py-1.5 rounded-md',
+          'text-xs text-text-primary',
+          'bg-surface-raised border border-border-default',
+          'hover:border-border-hover',
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40',
+          'transition-colors duration-150'
+        ].join(' ')}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      <CaretDown
+        size={11}
+        weight="bold"
+        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+      />
     </div>
   )
 }
