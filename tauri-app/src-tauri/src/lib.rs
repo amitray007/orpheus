@@ -19,16 +19,53 @@ pub mod workspaces;
 #[cfg(target_os = "macos")]
 mod ghostty;
 
+use std::sync::{Arc, Mutex};
+
+use tauri::Manager;
+
+use crate::db::Db;
+
+pub type SharedDb = Arc<Mutex<Db>>;
+
+const SOCKET_WATCHDOG_SEC: u64 = 30;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            let db = Db::open()?;
+            let shared: SharedDb = Arc::new(Mutex::new(db));
+            app.manage(shared.clone());
+
+            if let Err(e) = orpheus_notify::ensure_managed_hooks() {
+                log::warn!("ensure_managed_hooks failed: {e}");
+            }
+
+            let socket_handle =
+                orpheus_notify::start_socket_server(shared, SOCKET_WATCHDOG_SEC);
+            app.manage(SocketGuard(Mutex::new(Some(socket_handle))));
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::spawn_terminal,
             commands::resize_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
+}
+
+struct SocketGuard(Mutex<Option<tokio::task::JoinHandle<()>>>);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.0.lock() {
+            if let Some(h) = guard.take() {
+                h.abort();
+            }
+        }
+    }
 }
