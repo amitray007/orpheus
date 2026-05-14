@@ -574,11 +574,12 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   // -------------------------------------------------------------------------
   const flagParts: string[] = []
 
-  // --model: always pass for explicitness; 'sonnet' is claude's default but
-  // being explicit avoids any ambient ANTHROPIC_MODEL env var surprises.
-  // Only skip for the literal default 'sonnet' so bare claude is preserved
-  // when the user hasn't changed anything.
-  if (s.model && s.model !== 'sonnet') {
+  // --model: always pass when set. Skipping the flag for 'sonnet' (claude's
+  // own default) made picking "Sonnet" indistinguishable from "no override",
+  // and let an ambient ANTHROPIC_MODEL env var silently win over the user's
+  // explicit choice. Passing it always also makes the command in scrollback
+  // reflect exactly what claude will run with.
+  if (s.model) {
     flagParts.push(`--model ${s.model}`)
   }
 
