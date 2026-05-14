@@ -1305,8 +1305,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
+    // IMPORTANT: keep the view parentless until AFTER ghostty_surface_new.
+    // Electron's contentView is layer-backed; adding our view to it before
+    // libghostty does its setLayer + setWantsLayer:YES dance would implicitly
+    // promote the view to layer-backed mode, breaking the layer-hosting model
+    // libghostty's IOSurfaceLayer relies on for present (src/renderer/Metal.zig
+    // L122-126). We attach to the superview only after surface_new returns.
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    [contentView addSubview:termView];
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
@@ -1406,7 +1411,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         // Free strdup'd env var strings before returning.
         for (char* p : envVarKeys)   free(p);
         for (char* p : envVarValues) free(p);
-        [termView removeFromSuperview];
+        // termView is not in any superview yet (we attach after surface_new),
+        // so just let ARC drop it.
         Napi::Error::New(env, std::string("ghostty_surface_new threw: ") +
                          [[ex reason] UTF8String]).ThrowAsJavaScriptException();
         return env.Undefined();
@@ -1417,10 +1423,14 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     for (char* p : envVarValues) free(p);
 
     if (!surface) {
-        [termView removeFromSuperview];
         Napi::Error::New(env, "ghostty_surface_new returned NULL").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+
+    // libghostty has now installed its IOSurfaceLayer and put the view in
+    // layer-hosting mode. Safe to attach to the live view hierarchy without
+    // AppKit overriding the layer model.
+    [contentView addSubview:termView];
 
     // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
     termView.surface = surface;
