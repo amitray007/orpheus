@@ -79,8 +79,30 @@ try {
   // with mismatched Team IDs across components. macOS 15+ refuses to load any
   // framework whose Team ID doesn't match the loading process. Re-signing the whole
   // bundle as one ad-hoc unit normalizes them. Mirrors the Electron-era fix.
+  //
+  // codesign on macOS 15 occasionally returns "internal error in Code Signing
+  // subsystem" when replacing an existing signature; clearing the prior
+  // signature first and retrying a couple of times makes the install reliable.
   console.log(`[install-tauri] re-signing ${appBundle} (ad-hoc, unified Team IDs)`)
-  execSync(`codesign --force --deep --sign - "${appBundle}"`, { stdio: 'inherit' })
+  try {
+    execSync(`codesign --remove-signature "${appBundle}" 2>/dev/null`, { stdio: 'pipe' })
+  } catch {
+    // No prior signature — fine.
+  }
+
+  let lastSignError = null
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      execSync(`codesign --force --deep --sign - "${appBundle}"`, { stdio: 'inherit' })
+      lastSignError = null
+      break
+    } catch (e) {
+      lastSignError = e
+      console.warn(`[install-tauri] codesign attempt ${attempt}/3 failed; retrying after pause`)
+      execSync('sleep 0.5')
+    }
+  }
+  if (lastSignError) throw lastSignError
   execSync(`codesign --verify --deep --strict "${appBundle}"`, { stdio: 'pipe' })
 
   if (existsSync(target)) {
