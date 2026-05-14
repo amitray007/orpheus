@@ -208,19 +208,16 @@ fn spawn_session_capture(window: Window, workspace_id: String) {
             .join("projects")
             .join(encode_cwd(&cwd));
 
-        // Poll for ~120 seconds at 1s intervals.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut last_seen_id: Option<String> = None;
+        // Poll up to ~30 seconds for the first session file to appear, then
+        // stop. Claude writes the .jsonl within seconds of launch — there's
+        // no value in re-checking afterwards, and the per-second filesystem
+        // walk + DB lock churn was contending with IPC tokio workers.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
             let Some(newest_id) = newest_session_id(&projects_dir) else { continue };
-            if Some(&newest_id) == last_seen_id.as_ref() {
-                continue;
-            }
-            last_seen_id = Some(newest_id.clone());
 
-            // Persist to DB
             if let Some(db_state) = window.try_state::<crate::SharedDb>() {
                 if let Ok(db) = db_state.lock() {
                     if let Err(e) = crate::workspaces::set_workspace_claude_session_id(
@@ -232,6 +229,7 @@ fn spawn_session_capture(window: Window, workspace_id: String) {
                     }
                 }
             }
+            return; // first hit wins — stop polling
         }
     });
 }

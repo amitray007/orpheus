@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
 use notify_rust::{Notification, Timeout};
 
 /// Shell-escape a string for inclusion in an AppleScript double-quoted string.
@@ -157,28 +158,35 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 
 /// Fire a native OS notification. On macOS we route via `osascript` because
 /// notify-rust + ad-hoc signing silently no-ops (no UNUserNotificationCenter
-/// permission grant exists). On other platforms we still use notify-rust.
+/// permission grant exists). osascript is a process spawn (~100–300ms) — run
+/// it on a blocking thread so it never stalls a tokio worker that's serving
+/// terminal IPC. On other platforms we still use notify-rust.
 pub fn show_notification(params: &NotifParams) -> notify_rust::error::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        if let Err(e) = show_via_osascript(params) {
-            eprintln!("[notifications] osascript failed: {e}; falling back to notify-rust");
-        } else {
-            return Ok(());
-        }
+        let p = params.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = show_via_osascript(&p) {
+                eprintln!("[notifications] osascript failed: {e}");
+            }
+        });
+        return Ok(());
     }
 
-    let mut n = Notification::new();
-    n.summary(&params.title).body(&params.body);
-    if let Some(sub) = &params.subtitle {
-        n.subtitle(sub);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut n = Notification::new();
+        n.summary(&params.title).body(&params.body);
+        if let Some(sub) = &params.subtitle {
+            n.subtitle(sub);
+        }
+        if !params.silent {
+            n.sound_name("default");
+        }
+        n.timeout(Timeout::Default);
+        n.show()?;
+        Ok(())
     }
-    if !params.silent {
-        n.sound_name("default");
-    }
-    n.timeout(Timeout::Default);
-    n.show()?;
-    Ok(())
 }
 
 /// Fire a test notification (mirrors fireTestNotification in TS).

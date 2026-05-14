@@ -39,6 +39,14 @@ extern "C" fn tick_trampoline(_ctx: *mut std::ffi::c_void) {
     }
 }
 
+/// Cache of the last cleaned title we emitted per workspace. Claude updates
+/// the OSC title at animation rate (~20Hz while spinning) but the cleaned
+/// text is stable across frames — emitting every action_cb floods the
+/// renderer's main thread and starves CVDisplayLink. Only emit when the
+/// cleaned value actually changes.
+static LAST_TITLES: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 unsafe extern "C" fn action_cb(
     _app: ghostty_app_t,
     target: ghostty_target_s,
@@ -74,15 +82,28 @@ unsafe extern "C" fn action_cb(
                 stripped.trim().to_owned()
             }).filter(|s| !s.is_empty());
 
-            // Emit the event; the app-level TitleMap is updated by listening in lib.rs.
-            if let Some(handle) = APP_HANDLE.get() {
-                let _ = handle.emit(
-                    "workspace:titleChanged",
-                    serde_json::json!({
-                        "workspaceId": workspace_id,
-                        "title": cleaned,
-                    }),
-                );
+            // Dedup: skip the emit if the cleaned title is unchanged.
+            let changed = {
+                let mut last = LAST_TITLES.lock().unwrap();
+                let prev = last.get(&workspace_id).cloned();
+                if prev.as_ref() == Some(&cleaned) {
+                    false
+                } else {
+                    last.insert(workspace_id.clone(), cleaned.clone());
+                    true
+                }
+            };
+
+            if changed {
+                if let Some(handle) = APP_HANDLE.get() {
+                    let _ = handle.emit(
+                        "workspace:titleChanged",
+                        serde_json::json!({
+                            "workspaceId": workspace_id,
+                            "title": cleaned,
+                        }),
+                    );
+                }
             }
         }
     }

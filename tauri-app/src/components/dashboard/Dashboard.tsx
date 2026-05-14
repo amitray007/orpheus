@@ -86,14 +86,6 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       })
   }, [])
 
-  // Diagnostic: log every native action_cb tag to the console so we can debug
-  // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current
-  // ghostty.h. Should disappear in a follow-up commit once title flow is verified.
-  useEffect(() => {
-    return window.api.debug.onActionTrace((e) => {
-      console.log('[addon-trace]', e.tagName)
-    })
-  }, [])
 
   // Subscribe to the active workspace's terminal title + dirty state so the
   // TopBar can render its workspace-info section. Resets to empty when the

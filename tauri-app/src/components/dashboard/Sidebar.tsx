@@ -109,13 +109,12 @@ function WorkspaceSubRow({
 
   useEffect(() => {
     const workspaceId = workspace.id
-    window.api.workspaces.getTitle(workspaceId).then((t) => {
-      console.log('[sidebar] seeded title', workspaceId, t)
-      setTerminalTitle(t)
-    }).catch(() => {})
+    window.api.workspaces
+      .getTitle(workspaceId)
+      .then(setTerminalTitle)
+      .catch(() => {})
     const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) {
-        console.log('[sidebar] title changed', e)
         setTerminalTitle(e.title || null)
       }
     })
