@@ -50,6 +50,10 @@ interface MainContentProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
+  // Lifted workspace-view state — owned by Dashboard so the TopBar can render the workspace info section.
+  workspaceDrawerTab: null | 'status' | 'overrides'
+  onSetWorkspaceDrawerTab: (tab: null | 'status' | 'overrides') => void
+  workspaceRemountKey: number
 }
 
 export function MainContent({
@@ -64,7 +68,10 @@ export function MainContent({
   onRenameWorkspace,
   onArchiveWorkspace,
   onUnarchiveWorkspace,
-  onToggleWorkspacePin
+  onToggleWorkspacePin,
+  workspaceDrawerTab,
+  onSetWorkspaceDrawerTab,
+  workspaceRemountKey
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -99,6 +106,9 @@ export function MainContent({
       <WorkspaceView
         key={workspace.id}
         workspace={workspace}
+        drawerTab={workspaceDrawerTab}
+        onSetDrawerTab={onSetWorkspaceDrawerTab}
+        remountKey={workspaceRemountKey}
       />
     )
   }

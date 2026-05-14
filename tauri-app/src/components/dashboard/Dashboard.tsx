@@ -43,6 +43,13 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
 
+  // State for the active workspace's TopBar info section. Lifted out of
+  // WorkspaceView so the unified TopBar can render it.
+  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+  const [workspaceIsDirty, setWorkspaceIsDirty] = useState(false)
+  const [workspaceDrawerTab, setWorkspaceDrawerTab] = useState<null | 'status' | 'overrides'>(null)
+  const [workspaceRemountKey, setWorkspaceRemountKey] = useState(0)
+
   useEffect(() => {
     window.api.uiState
       .get()
@@ -87,6 +94,42 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       console.log('[addon-trace]', e.tagName)
     })
   }, [])
+
+  // Subscribe to the active workspace's terminal title + dirty state so the
+  // TopBar can render its workspace-info section. Resets to empty when the
+  // active workspace changes or we leave workspace view.
+  useEffect(() => {
+    if (view.kind !== 'workspace') {
+      setTerminalTitle(null)
+      setWorkspaceIsDirty(false)
+      setWorkspaceDrawerTab(null)
+      return
+    }
+    const workspaceId = view.workspaceId
+    setWorkspaceDrawerTab(null)
+    window.api.workspaces.getTitle(workspaceId).then(setTerminalTitle).catch(() => setTerminalTitle(null))
+    window.api.workspaces.isDirty(workspaceId).then(setWorkspaceIsDirty).catch(() => setWorkspaceIsDirty(false))
+    const unsubTitle = window.api.workspaces.onTitleChanged((e) => {
+      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
+    })
+    const unsubDirty = window.api.workspaces.onDirtyChanged((e) => {
+      if (e.workspaceId === workspaceId) setWorkspaceIsDirty(e.dirty)
+    })
+    return () => {
+      unsubTitle()
+      unsubDirty()
+    }
+  }, [view])
+
+  async function handleRestartTerminal(): Promise<void> {
+    if (view.kind !== 'workspace') return
+    try {
+      await window.api.terminal.destroy(view.workspaceId)
+    } catch (err) {
+      console.error('[dashboard] terminal.destroy on restart failed:', err)
+    }
+    setWorkspaceRemountKey((k) => k + 1)
+  }
 
   useEffect(() => {
     return window.api.workspaces.onActivityChanged((e) => {
@@ -563,7 +606,17 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
 
   return (
     <div className="flex flex-col h-screen">
-      <TopBar onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)} />
+      <TopBar
+        onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
+        sidebarCollapsed={sidebarCollapsed}
+        sidebarWidth={uiState?.sidebarWidth ?? 256}
+        workspace={activeWorkspace}
+        terminalTitle={terminalTitle}
+        isDirty={workspaceIsDirty}
+        drawerTab={workspaceDrawerTab}
+        onSetDrawerTab={setWorkspaceDrawerTab}
+        onRestart={handleRestartTerminal}
+      />
 
       <div className="flex flex-1 min-h-0">
         <Sidebar
@@ -620,6 +673,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
             onUnarchiveWorkspace={handleUnarchiveWorkspace}
             onToggleWorkspacePin={handleToggleWorkspacePin}
+            workspaceDrawerTab={workspaceDrawerTab}
+            onSetWorkspaceDrawerTab={setWorkspaceDrawerTab}
+            workspaceRemountKey={workspaceRemountKey}
           />
         </main>
       </div>
