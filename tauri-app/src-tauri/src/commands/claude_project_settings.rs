@@ -8,32 +8,49 @@ use crate::claude_settings::SettingsOverrides;
 use crate::commands::events::{DirtySet, MountSnapshots};
 use crate::SharedDb;
 
-// The renderer expects a flat object matching ClaudeProjectSettings in TS.
-// SettingsOverrides is the Rust equivalent — serialize directly.
+// The renderer expects { projectId, overrides: { model?, permissionMode?, effort? }, updatedAt }
+// matching ClaudeProjectSettings in TS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectSettingsResponse {
+pub struct ProjectOverridesInner {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
 }
 
-fn overrides_to_response(ov: Option<SettingsOverrides>) -> ProjectSettingsResponse {
-    match ov {
-        Some(o) => ProjectSettingsResponse {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSettingsResponse {
+    pub project_id: String,
+    pub overrides: ProjectOverridesInner,
+    pub updated_at: i64,
+}
+
+fn overrides_to_response(project_id: String, ov: Option<SettingsOverrides>) -> ProjectSettingsResponse {
+    let overrides = match ov {
+        Some(o) => ProjectOverridesInner {
             model: o.model,
             permission_mode: o.permission_mode.map(|m| m.as_str().to_owned()),
             effort: o.effort.map(|e| e.as_str().to_owned()),
         },
-        None => ProjectSettingsResponse {
+        None => ProjectOverridesInner {
             model: None,
             permission_mode: None,
             effort: None,
         },
+    };
+    ProjectSettingsResponse {
+        project_id,
+        overrides,
+        updated_at: crate::util::now_ms(),
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSettingsPatch {
     pub model: Option<String>,
     pub permission_mode: Option<String>,
@@ -59,7 +76,7 @@ pub fn claude_project_settings_get(
     let lock = db.lock().map_err(|e| e.to_string())?;
     let ov = claude_project_settings::get_project_overrides(&lock, &project_id)
         .map_err(|e| e.to_string())?;
-    Ok(overrides_to_response(ov))
+    Ok(overrides_to_response(project_id, ov))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -78,5 +95,5 @@ pub fn claude_project_settings_update(
     let updated = claude_project_settings::get_project_overrides(&lock, &project_id)
         .map_err(|e| e.to_string())?;
     crate::commands::events::recompute_dirty_for_all_mounted(&lock, &app, &snapshots, &dirty_set);
-    Ok(overrides_to_response(updated))
+    Ok(overrides_to_response(project_id, updated))
 }

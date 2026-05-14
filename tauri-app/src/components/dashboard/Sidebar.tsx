@@ -762,6 +762,7 @@ export function Sidebar({
       {activeView === 'workspace' && (
         <div
           className="h-11 flex-shrink-0 -mt-2"
+          data-tauri-drag-region
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
       )}

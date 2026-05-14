@@ -359,7 +359,7 @@ pub fn list_all_sessions(
     status_filter: Option<SessionStatus>,
 ) -> Result<Vec<Session>, DbError> {
     let status_clause = if status_filter.is_some() {
-        "AND s.status = ?2"
+        "AND s.status = ?1"
     } else {
         ""
     };

@@ -81,25 +81,24 @@ fn event_rank(event: &str) -> usize {
 // Public types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum HookSource {
-    User,
-    Project {
-        project_id: String,
-        project_name: String,
-    },
-}
-
+// Flat serialization matching ClaudeHookEntry in shared/types.ts.
+// source is "user" or "project" as a plain string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeHookEntry {
-    pub source: HookSource,
+    /// "user" or "project"
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
     pub file_path: String,
     pub event: String,
     pub matcher: Option<String>,
     pub matcher_entry_idx: usize,
     pub hook_idx: usize,
+    /// Serialized as "type" to match TS ClaudeHookEntry.type
+    #[serde(rename = "type")]
     pub hook_type: String,
     pub command: String,
 }
@@ -174,7 +173,10 @@ fn read_and_parse(path: &Path) -> Result<Map<String, JsonValue>, ClaudeHookError
 fn parse_hooks_from_map(
     map: &Map<String, JsonValue>,
     path_str: &str,
-    source: HookSource,
+    // Flat source fields matching ClaudeHookEntry in TS
+    source: &str,
+    project_id: Option<&str>,
+    project_name: Option<&str>,
 ) -> Vec<ClaudeHookEntry> {
     let hooks_val = match map.get("hooks") {
         Some(v) => v,
@@ -226,7 +228,9 @@ fn parse_hooks_from_map(
                     .to_owned();
 
                 entries.push(ClaudeHookEntry {
-                    source: source.clone(),
+                    source: source.to_owned(),
+                    project_id: project_id.map(str::to_owned),
+                    project_name: project_name.map(str::to_owned),
                     file_path: path_str.to_owned(),
                     event: event.clone(),
                     matcher: matcher.clone(),
@@ -256,7 +260,9 @@ pub fn list_hooks(db: &Db) -> Result<Vec<ClaudeHookEntry>, ClaudeHookError> {
     all.extend(parse_hooks_from_map(
         &user_map,
         &user_path.display().to_string(),
-        HookSource::User,
+        "user",
+        None,
+        None,
     ));
 
     for project in list_projects(db).unwrap_or_default() {
@@ -265,17 +271,16 @@ pub fn list_hooks(db: &Db) -> Result<Vec<ClaudeHookEntry>, ClaudeHookError> {
         all.extend(parse_hooks_from_map(
             &proj_map,
             &proj_path.display().to_string(),
-            HookSource::Project {
-                project_id: project.id.clone(),
-                project_name: project.name.clone(),
-            },
+            "project",
+            Some(&project.id),
+            Some(&project.name),
         ));
     }
 
     all.sort_by(|a, b| {
         // 1. user before project
-        let a_user = matches!(a.source, HookSource::User);
-        let b_user = matches!(b.source, HookSource::User);
+        let a_user = a.source == "user";
+        let b_user = b.source == "user";
         if a_user != b_user {
             return if a_user {
                 std::cmp::Ordering::Less
@@ -284,15 +289,11 @@ pub fn list_hooks(db: &Db) -> Result<Vec<ClaudeHookEntry>, ClaudeHookError> {
             };
         }
         // 2. within project: by project name
-        if let (
-            HookSource::Project { project_name: an, .. },
-            HookSource::Project { project_name: bn, .. },
-        ) = (&a.source, &b.source)
-        {
-            let pn = an.cmp(bn);
-            if pn != std::cmp::Ordering::Equal {
-                return pn;
-            }
+        let an = a.project_name.as_deref().unwrap_or("");
+        let bn = b.project_name.as_deref().unwrap_or("");
+        let pn = an.cmp(bn);
+        if pn != std::cmp::Ordering::Equal {
+            return pn;
         }
         // 3. by event order
         let er = event_rank(&a.event).cmp(&event_rank(&b.event));
@@ -579,7 +580,7 @@ mod tests {
         }"#;
         let path = write_settings(dir.path(), content);
         let map = read_and_parse(&path).expect("parse");
-        let entries = parse_hooks_from_map(&map, path.to_str().unwrap(), HookSource::User);
+        let entries = parse_hooks_from_map(&map, path.to_str().unwrap(), "user", None, None);
 
         assert_eq!(entries.len(), 2);
         let pre = entries.iter().find(|e| e.event == "PreToolUse").unwrap();
