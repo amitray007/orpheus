@@ -3,6 +3,7 @@
 use serde::Deserialize;
 use tauri::State;
 
+use crate::os_notifications::{cancel_for_workspace, SharedCurrentlyViewed, SharedRetryState};
 use crate::workspaces::{self, PinnedItem, Workspace, WorkspaceScope};
 use crate::SharedDb;
 
@@ -114,18 +115,31 @@ pub fn workspace_get_title(
 #[tauri::command]
 pub fn workspace_reset_activity(
     dirty_set: State<crate::commands::events::DirtySet>,
+    retry_state: State<SharedRetryState>,
     workspace_id: String,
 ) {
-    // Reset dirty tracking for the workspace — equivalent to TS resetWorkspaceActivity.
+    // Reset dirty tracking and cancel pending attention retries.
     if let Ok(mut s) = dirty_set.lock() {
         s.remove(&workspace_id);
     }
+    cancel_for_workspace(&retry_state, &workspace_id);
 }
 
 #[tauri::command]
-pub fn workspace_set_currently_viewed(_workspace_id: Option<String>) {
-    // Phase 3 stub: suppresses attention retries for the viewed workspace.
-    // The full implementation wires into AttentionRetryState in Phase 4.
+pub fn workspace_set_currently_viewed(
+    retry_state: State<SharedRetryState>,
+    currently_viewed: State<SharedCurrentlyViewed>,
+    workspace_id: Option<String>,
+) {
+    // Cancel retries for the newly-viewed workspace and track the current view.
+    // TODO(phase-4): show_notification and schedule_attention_retries should check
+    // currently_viewed before firing to suppress redundant alerts.
+    if let Some(ref wid) = workspace_id {
+        cancel_for_workspace(&retry_state, wid);
+    }
+    if let Ok(mut cv) = currently_viewed.lock() {
+        cv.set(workspace_id);
+    }
 }
 
 #[tauri::command]

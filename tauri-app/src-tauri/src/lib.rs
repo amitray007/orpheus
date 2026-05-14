@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Listener, Manager};
 
 use crate::db::Db;
+use crate::os_notifications::{AttentionRetryState, CurrentlyViewed, SharedCurrentlyViewed, SharedRetryState};
 
 pub type SharedDb = Arc<Mutex<Db>>;
 
@@ -47,6 +48,12 @@ pub fn run() {
             // Managed state for in-memory title and dirty tracking.
             app.manage(commands::events::new_title_map());
             app.manage(commands::events::new_dirty_set());
+
+            // Managed state for notification retry cancellation and focus suppression.
+            let retry_state: SharedRetryState = Arc::new(Mutex::new(AttentionRetryState::new()));
+            app.manage(retry_state);
+            let currently_viewed: SharedCurrentlyViewed = Arc::new(Mutex::new(CurrentlyViewed::default()));
+            app.manage(currently_viewed);
 
             if let Err(e) = orpheus_notify::ensure_managed_hooks() {
                 log::warn!("ensure_managed_hooks failed: {e}");

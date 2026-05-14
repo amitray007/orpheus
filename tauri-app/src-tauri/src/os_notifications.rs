@@ -180,6 +180,33 @@ impl AttentionRetryState {
     }
 }
 
+/// Cancel pending attention retries for a workspace (e.g. user focused it or reset activity).
+pub fn cancel_for_workspace(state: &SharedRetryState, workspace_id: &str) {
+    if let Ok(mut s) = state.lock() {
+        s.cancel(workspace_id);
+    }
+}
+
+/// Holds the workspace_id currently visible to the user.
+/// Notifications for this workspace are suppressed.
+/// TODO(phase-4): show_notification and schedule_attention_retries should consult this.
+#[derive(Debug, Default)]
+pub struct CurrentlyViewed {
+    inner: Option<String>,
+}
+
+impl CurrentlyViewed {
+    pub fn set(&mut self, workspace_id: Option<String>) {
+        self.inner = workspace_id;
+    }
+
+    pub fn get(&self) -> Option<&str> {
+        self.inner.as_deref()
+    }
+}
+
+pub type SharedCurrentlyViewed = Arc<Mutex<CurrentlyViewed>>;
+
 /// Shared handle to retry state, safe to clone and pass to async tasks.
 pub type SharedRetryState = Arc<Mutex<AttentionRetryState>>;
 
