@@ -53,6 +53,7 @@ import {
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
 import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange } from './orpheusNotify'
+import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
 import type {
   SessionStatus,
@@ -805,6 +806,14 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   return result
+})
+
+ipcMain.on('workspace:setCurrentlyViewed', (_e, { workspaceId }: { workspaceId: string | null }) => {
+  setCurrentlyViewedWorkspace(workspaceId)
+})
+
+ipcMain.handle('notifications:test', () => {
+  fireTestNotification()
 })
 
 ipcMain.handle(

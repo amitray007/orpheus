@@ -90,6 +90,10 @@ export type AppUiState = {
   globalHotkey: string
   // Archive cap (v25)
   archivedWorkspaceLimit: number
+  // Notification preferences (v29)
+  notifyAttention: boolean
+  notifyStop: boolean
+  notifyAlways: boolean
   updatedAt: number
 }
 

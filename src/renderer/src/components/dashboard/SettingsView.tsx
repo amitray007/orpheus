@@ -17,7 +17,8 @@ import {
   AppWindow,
   ArrowsClockwise,
   Command,
-  Robot
+  Robot,
+  Bell
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -37,6 +38,7 @@ import { ClaudeAboutSection } from './settings/ClaudeAboutSection'
 import { OrpheusAppearanceSection } from './settings/OrpheusAppearanceSection'
 import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
 import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
+import { OrpheusNotificationsSection } from './settings/OrpheusNotificationsSection'
 import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
@@ -60,6 +62,7 @@ export type SectionId =
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
   | 'orpheus-window'
+  | 'orpheus-notifications'
   | 'orpheus-updates'
   | 'orpheus-developer'
   | 'orpheus-about'
@@ -98,8 +101,9 @@ const GROUPS: SectionGroup[] = [
     sections: [
       { id: 'orpheus-appearance', label: 'Appearance',       icon: Palette,          Component: OrpheusAppearanceSection },
       { id: 'orpheus-sidebar',    label: 'Sidebar',          icon: SidebarSimple,    Component: OrpheusSidebarSection },
-      { id: 'orpheus-window',     label: 'Window',           icon: AppWindow,        Component: OrpheusWindowSection },
-      { id: 'orpheus-updates',    label: 'Updates',          icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
+      { id: 'orpheus-window',         label: 'Window',        icon: AppWindow,        Component: OrpheusWindowSection },
+      { id: 'orpheus-notifications',  label: 'Notifications', icon: Bell,             Component: OrpheusNotificationsSection },
+      { id: 'orpheus-updates',        label: 'Updates',       icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
       { id: 'orpheus-developer',  label: 'Developer',        icon: Code,             Component: OrpheusDeveloperSection },
       { id: 'orpheus-about',      label: 'About Orpheus',    icon: Info,             Component: OrpheusAboutSection }
     ]

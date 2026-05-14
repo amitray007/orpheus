@@ -4,6 +4,7 @@ import * as nodePath from 'node:path'
 import * as os from 'node:os'
 import { app } from 'electron'
 import { setWorkspaceStatus } from './workspaces'
+import { notifyForTransition } from './osNotifications'
 import type { WorkspaceStatus } from '../shared/types'
 
 export type WorkspaceActivityEvent =
@@ -45,6 +46,7 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   for (const cb of listeners) {
     try { cb(workspaceId, status) } catch {}
   }
+  notifyForTransition(workspaceId, prev, status)
 }
 
 export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {

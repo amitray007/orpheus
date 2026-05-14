@@ -615,4 +615,11 @@ function migrate(db: Database.Database): void {
     db.prepare("UPDATE workspaces SET status = 'awaiting_input' WHERE status IN ('in_review', 'completed')").run()
     db.prepare('UPDATE schema_version SET version = ?').run(28)
   }
+
+  if (currentVersion < 29) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_attention BOOLEAN NOT NULL DEFAULT 1') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_stop      BOOLEAN NOT NULL DEFAULT 1') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_always    BOOLEAN NOT NULL DEFAULT 0') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(29)
+  }
 }

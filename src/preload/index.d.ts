@@ -104,6 +104,8 @@ declare global {
         onActivityChanged: (
           cb: (e: { workspaceId: string; status: WorkspaceStatus }) => void
         ) => () => void
+        setCurrentlyViewed: (workspaceId: string | null) => void
+        onNavigateTo: (cb: (workspaceId: string) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
@@ -163,6 +165,9 @@ declare global {
       }
       contextMenu: {
         show: (items: ContextMenuNativeItem[]) => Promise<string | null>
+      }
+      notifications: {
+        test: () => Promise<void>
       }
     }
   }

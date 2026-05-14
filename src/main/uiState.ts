@@ -30,6 +30,10 @@ type AppUiStateRow = {
   global_hotkey: string
   // Archive cap (v25)
   archived_workspace_limit: number
+  // Notification preferences (v29)
+  notify_attention: number
+  notify_stop: number
+  notify_always: number
   updated_at: number
 }
 
@@ -61,6 +65,10 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     globalHotkey: row.global_hotkey ?? '',
     // Archive cap (v25)
     archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
+    // Notification preferences (v29)
+    notifyAttention: (row.notify_attention ?? 1) === 1,
+    notifyStop: (row.notify_stop ?? 1) === 1,
+    notifyAlways: (row.notify_always ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -133,7 +141,11 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     launchAtLogin: 'launch_at_login',
     globalHotkey: 'global_hotkey',
     // Archive cap (v25)
-    archivedWorkspaceLimit: 'archived_workspace_limit'
+    archivedWorkspaceLimit: 'archived_workspace_limit',
+    // Notification preferences (v29)
+    notifyAttention: 'notify_attention',
+    notifyStop: 'notify_stop',
+    notifyAlways: 'notify_always'
   }
 
   const setClauses: string[] = []

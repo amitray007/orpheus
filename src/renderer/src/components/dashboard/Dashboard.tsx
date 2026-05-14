@@ -69,6 +69,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
           launchAtLogin: false,
           globalHotkey: '',
           archivedWorkspaceLimit: 20,
+          notifyAttention: true,
+          notifyStop: true,
+          notifyAlways: false,
           updatedAt: 0
         })
       })
@@ -88,6 +91,30 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       setWorkspaceActivities((prev) => ({ ...prev, [e.workspaceId]: e.status }))
     })
   }, [])
+
+  useEffect(() => {
+    const id = view.kind === 'workspace' ? view.workspaceId : null
+    window.api.workspaces.setCurrentlyViewed(id)
+  }, [view])
+
+  useEffect(() => {
+    return window.api.workspaces.onNavigateTo((workspaceId) => {
+      const allWorkspaces = Object.values(workspacesByProject).flat()
+      const ws = allWorkspaces.find((w) => w.id === workspaceId)
+      if (ws) {
+        handleSelectWorkspace(ws.id, ws.projectId)
+      } else {
+        for (const [projectId, wsList] of Object.entries(workspacesByProject)) {
+          const found = wsList.find((w) => w.id === workspaceId)
+          if (found) {
+            handleSelectWorkspace(found.id, projectId)
+            return
+          }
+        }
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacesByProject])
 
   useEffect(() => {
     window.api.projects

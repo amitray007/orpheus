@@ -13,6 +13,7 @@ export type SectionId =
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
   | 'orpheus-window'
+  | 'orpheus-notifications'
   | 'orpheus-updates'
   | 'orpheus-developer'
   | 'orpheus-about'
@@ -1223,6 +1224,50 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'System-wide keyboard shortcut to bring Orpheus to the front from any app.',
     mapsTo: [],
     keywords: ['shortcut', 'keybinding', 'key combo', 'global key', 'hotkey', 'keyboard shortcut', 'bring to front', 'activate', 'global shortcut', 'system hotkey']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Notifications
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: '_section',
+    label: 'Notifications',
+    description: 'Native macOS alerts for Claude activity transitions.',
+    mapsTo: [],
+    keywords: ['notification', 'alert', 'macos notify', 'claude finished', 'claude needs you', 'do not disturb', 'notify', 'bell', 'system notification']
+  },
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: 'notify-attention',
+    label: 'Claude needs you',
+    description: 'Notify when Claude pauses on a permission request or tool-use confirmation.',
+    mapsTo: [],
+    keywords: ['attention', 'permission request', 'tool confirmation', 'claude paused', 'notify attention', 'claude needs you', 'claude waiting']
+  },
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: 'notify-stop',
+    label: 'Claude finished a response',
+    description: 'Notify when Claude\'s reply is ready for your next message.',
+    mapsTo: [],
+    keywords: ['stop', 'finished', 'claude done', 'response ready', 'claude finished', 'reply ready', 'notify stop', 'next message']
+  },
+  {
+    sectionId: 'orpheus-notifications',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Notifications',
+    settingId: 'notify-always',
+    label: 'Notify even when Orpheus is focused',
+    description: 'Always send notifications regardless of whether Orpheus is the active window.',
+    mapsTo: [],
+    keywords: ['always notify', 'focused window', 'suppress notifications', 'do not disturb', 'notification suppression', 'force notify']
   },
 
   // ---------------------------------------------------------------------------

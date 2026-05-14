@@ -145,6 +145,14 @@ const api = {
       ): void => cb(e)
       ipcRenderer.on('workspace:activityChanged', listener)
       return () => ipcRenderer.removeListener('workspace:activityChanged', listener)
+    },
+    setCurrentlyViewed: (workspaceId: string | null): void => {
+      ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
+    },
+    onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void => cb(e.workspaceId)
+      ipcRenderer.on('workspace:navigateTo', listener)
+      return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
     }
   },
   pins: {
@@ -231,6 +239,9 @@ const api = {
   contextMenu: {
     show: (items: ContextMenuNativeItem[]): Promise<string | null> =>
       ipcRenderer.invoke('contextMenu:show', items)
+  },
+  notifications: {
+    test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
   }
 }
 
