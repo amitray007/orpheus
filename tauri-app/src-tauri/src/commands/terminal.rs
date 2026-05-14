@@ -15,23 +15,30 @@ use crate::claude_settings::ClaudeLaunch;
 /// Bundles:
 /// - `ORPHEUS_CLAUDE_FLAGS` / `ORPHEUS_CLAUDE_SETTINGS_JSON` (the wrapper reads these)
 /// - `ORPHEUS_WORKSPACE_ID` so hooks and the notify shim can correlate events
+/// - `ORPHEUS_SOCK` / `ORPHEUS_NOTIFY` so the managed Claude hooks can reach
+///   the in-process notify server (drives activity status indicators)
 /// - `launch.env` (model gateway flags, perf knobs, etc.)
 /// - Claude auth provider env (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_*`, ...)
 fn build_launch_env(
     workspace_id: &str,
     launch: &ClaudeLaunch,
     auth_env: HashMap<String, String>,
+    sock_path: Option<String>,
+    notify_bin: Option<String>,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
-    env.push((
-        "ORPHEUS_CLAUDE_FLAGS".into(),
-        launch.flags.clone(),
-    ));
+    env.push(("ORPHEUS_CLAUDE_FLAGS".into(), launch.flags.clone()));
     env.push((
         "ORPHEUS_CLAUDE_SETTINGS_JSON".into(),
         launch.settings_json.clone(),
     ));
     env.push(("ORPHEUS_WORKSPACE_ID".into(), workspace_id.to_owned()));
+    if let Some(p) = sock_path {
+        env.push(("ORPHEUS_SOCK".into(), p));
+    }
+    if let Some(p) = notify_bin {
+        env.push(("ORPHEUS_NOTIFY".into(), p));
+    }
     for (k, v) in &launch.env {
         env.push((k.clone(), v.clone()));
     }
@@ -39,6 +46,18 @@ fn build_launch_env(
         env.push((k, v));
     }
     env
+}
+
+/// Resolve the bundled `orpheus-notify` shim path so Claude hooks can POST
+/// activity events back to us via the Unix socket.
+fn resolve_notify_bin(window: &Window) -> Option<String> {
+    let resource_dir = window.app_handle().path().resource_dir().ok()?;
+    let p = resource_dir.join("bin").join("orpheus-notify");
+    if !p.exists() {
+        eprintln!("[terminal_mount] orpheus-notify missing at {}", p.display());
+        return None;
+    }
+    p.to_str().map(|s| s.to_owned())
 }
 
 /// Resolve the bundled `orpheus-claude.sh` wrapper script path. In a packaged
@@ -99,7 +118,13 @@ pub async fn terminal_mount(
         let auth_env = crate::claude_auth::get_claude_auth_env(&db_guard)
             .map_err(|e| format!("get_claude_auth_env failed: {e}"))?;
 
-        let env_pairs = build_launch_env(&workspace_id, &launch, auth_env);
+        drop(db_guard); // release lock before resolving paths
+
+        let sock_path = crate::orpheus_notify::notify_sock_path()
+            .map(|p| p.to_string_lossy().into_owned());
+        let notify_bin = resolve_notify_bin(&window);
+
+        let env_pairs = build_launch_env(&workspace_id, &launch, auth_env, sock_path, notify_bin);
         (Some(launch), env_pairs, command)
     };
 
