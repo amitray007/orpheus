@@ -1,7 +1,8 @@
 // SurfaceEntry — one per workspace_id. Keyed in a global HashMap behind a Mutex.
 //
 // All operations that touch AppKit or ghostty_* must run on the main thread.
-// Tauri routes #[tauri::command] to the main thread on macOS, so this is satisfied.
+// The Tauri command layer dispatches every call via run_on_main_thread before
+// entering these functions; MainThreadMarker::new() at each entry point enforces it.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -20,12 +21,33 @@ use crate::display_link::{self, CVDisplayLinkRef};
 use crate::ffi::*;
 use crate::view::{GhosttyView, GhosttyViewIvars};
 
+// Doomed — carries surface + display link to the deferred destroy trampoline.
+struct Doomed {
+    pub surface: ghostty_surface_t,
+    pub link: CVDisplayLinkRef,
+}
+// SAFETY: Doomed is only sent to the main-thread dispatch queue.
+unsafe impl Send for Doomed {}
+
 pub struct SurfaceEntry {
     pub surface: ghostty_surface_t,
-    // Retained<GhosttyView> would prevent Send; store raw and rely on main-thread invariant.
-    pub view: usize, // *mut GhosttyView
+    // We store a raw *mut GhosttyView and manually hold one objc_retain for the entry's
+    // lifetime (Option B from the review). Retained<MainThreadOnly> is !Send, which would
+    // prevent storing it in the static Mutex<HashMap>. We call objc_retain on insert and
+    // objc_release on remove/drop, giving SurfaceEntry its own strong reference independent
+    // of whatever superview currently holds the view.
+    pub view: usize, // raw *mut GhosttyView — one retain counted here
     pub link: CVDisplayLinkRef,
     pub attached: bool,
+}
+
+impl Drop for SurfaceEntry {
+    fn drop(&mut self) {
+        // Release the retain we took in mount(). Safe: only called on main thread.
+        if self.view != 0 {
+            unsafe { objc2::ffi::objc_release(self.view as *mut AnyObject) };
+        }
+    }
 }
 
 // SAFETY: All access is serialised via the global Mutex and runs on the main thread.
@@ -162,10 +184,14 @@ pub fn mount(
         );
     }
 
-    // addSubview retains; we store the raw pointer and do NOT retain again.
+    // Take our own retain before the Retained<GhosttyView> is dropped at end of scope.
+    // addSubview holds one retain for the superview; we hold a second so that hide()
+    // calling removeFromSuperview() does not reach refcount zero and free the view.
+    let raw_view = ghost_view.as_ref() as *const GhosttyView as usize;
+    unsafe { objc2::ffi::objc_retain(raw_view as *mut AnyObject) };
     map.insert(workspace_id.to_owned(), SurfaceEntry {
         surface,
-        view: ghost_view.as_ref() as *const GhosttyView as usize,
+        view: raw_view,
         link,
         attached: true,
     });
@@ -184,6 +210,7 @@ extern "C" fn focus_trampoline(ctx: *mut std::ffi::c_void) {
 }
 
 pub fn hide(workspace_id: &str) -> Result<(), String> {
+    MainThreadMarker::new().ok_or("ghostty-native: hide must run on main thread")?;
     let mut map = SURFACES.lock().unwrap();
     let entry = map.get_mut(workspace_id).ok_or("workspace_id not found")?;
     if !entry.attached {
@@ -200,6 +227,7 @@ pub fn hide(workspace_id: &str) -> Result<(), String> {
 }
 
 pub fn resize(workspace_id: &str, x: f64, y: f64, w: f64, h: f64, scale: f64) -> Result<(), String> {
+    MainThreadMarker::new().ok_or("ghostty-native: resize must run on main thread")?;
     let map = SURFACES.lock().unwrap();
     let entry = map.get(workspace_id).ok_or("workspace_id not found")?;
     if !entry.attached { return Ok(()); }
@@ -218,6 +246,7 @@ pub fn resize(workspace_id: &str, x: f64, y: f64, w: f64, h: f64, scale: f64) ->
 }
 
 pub fn destroy(workspace_id: &str) -> Result<(), String> {
+    MainThreadMarker::new().ok_or("ghostty-native: destroy must run on main thread")?;
     let mut map = SURFACES.lock().unwrap();
     let entry = map.remove(workspace_id).ok_or("workspace_id not found")?;
 
@@ -228,9 +257,6 @@ pub fn destroy(workspace_id: &str) -> Result<(), String> {
     display_link::stop(entry.link);
 
     // Deferred slow teardown — ghostty_surface_free blocks main thread briefly.
-    #[allow(dead_code)]
-    struct Doomed { surface: ghostty_surface_t, link: CVDisplayLinkRef }
-    unsafe impl Send for Doomed {}
     let doomed = Doomed { surface: entry.surface, link: entry.link };
     let boxed = Box::into_raw(Box::new(doomed));
     unsafe {
@@ -244,7 +270,6 @@ pub fn destroy(workspace_id: &str) -> Result<(), String> {
 }
 
 extern "C" fn destroy_trampoline(ctx: *mut std::ffi::c_void) {
-    struct Doomed { surface: ghostty_surface_t, link: CVDisplayLinkRef }
     let d = unsafe { Box::from_raw(ctx as *mut Doomed) };
     display_link::stop_and_release(d.link);
     if !d.surface.is_null() {
@@ -253,6 +278,7 @@ extern "C" fn destroy_trampoline(ctx: *mut std::ffi::c_void) {
 }
 
 pub fn set_focus(workspace_id: &str, focused: bool) -> Result<(), String> {
+    MainThreadMarker::new().ok_or("ghostty-native: set_focus must run on main thread")?;
     let map = SURFACES.lock().unwrap();
     let entry = map.get(workspace_id).ok_or("workspace_id not found")?;
     if !entry.attached { return Ok(()); }
