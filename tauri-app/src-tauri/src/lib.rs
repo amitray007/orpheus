@@ -1,4 +1,6 @@
 mod commands;
+pub mod claude_auth;
+pub mod claude_settings;
 pub mod db;
 pub mod projects;
 pub mod sessions;

@@ -28,6 +28,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 directories = "5"
 thiserror = "1"
 tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
