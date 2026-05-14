@@ -39,6 +39,16 @@ const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SubagentStop: 'subagent-stop'
 }
 
+// Notification fires for several sub-types: permission_prompt, idle_prompt,
+// auth_success, elicitation_*. Without a matcher, every idle-input timeout
+// (60s+) surfaces as a macOS "permission required" notification during
+// active chats. Restrict to permission_prompt so only real permission
+// decisions wake the user.
+// https://code.claude.com/docs/en/hooks
+const HOOK_MATCHER: Partial<Record<string, string>> = {
+  Notification: 'permission_prompt'
+}
+
 type DetailState = {
   toolStack: number
   compacting: boolean
@@ -154,6 +164,15 @@ export function heartbeatFromTitle(workspaceId: string): void {
   heartbeat(workspaceId)
 }
 
+// Permission-prompt messages contain "permission" (e.g. "Claude needs your
+// permission to use Bash"). Idle/auth/elicitation messages don't. The matcher
+// in settings.json is the primary filter; this string check is defense in
+// depth for Claude versions that ignore the matcher field.
+function isPermissionMessage(payload: Record<string, unknown>): boolean {
+  const msg = typeof payload.message === 'string' ? payload.message : ''
+  return /permission/i.test(msg)
+}
+
 function handleHookEvent(
   workspaceId: string,
   ev: WorkspaceActivityEvent,
@@ -161,7 +180,8 @@ function handleHookEvent(
 ): void {
   const ds = getDetailState(workspaceId)
   const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
-  console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn })
+  const msg = typeof payload.message === 'string' ? payload.message : null
+  console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
 
   switch (ev) {
     case 'pretool': {
@@ -205,6 +225,13 @@ function handleHookEvent(
       break
     case 'notification':
       ds.compacting = false
+      // Suppress idle_prompt / auth_success / elicitation_* — only permission
+      // prompts should wake the user. Without this guard, every 60s of user
+      // think-time fires a "Waiting on a permission decision" macOS toast.
+      if (!isPermissionMessage(payload)) {
+        broadcastDetailIfChanged(workspaceId)
+        return
+      }
       break
     case 'session-start':
       break
@@ -296,9 +323,12 @@ export function ensureManagedHooks(): void {
       return !hasOurs
     })
 
-    cleaned.push({
+    const newEntry: Record<string, unknown> = {
       hooks: [{ type: 'command', command: managedCommand(activityEvent) }]
-    })
+    }
+    const matcher = HOOK_MATCHER[hookEvent]
+    if (matcher) newEntry['matcher'] = matcher
+    cleaned.push(newEntry)
 
     hooksObj[hookEvent] = cleaned
   }
