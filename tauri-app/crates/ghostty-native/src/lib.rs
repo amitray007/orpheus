@@ -62,6 +62,13 @@ pub struct MountResult {
 
 /// Mount (or re-attach) a terminal surface for the given workspace_id.
 ///
+/// `command` exec-spawns a process directly. `initial_input` instead boots
+/// the default login shell and types the string into it (effectively
+/// simulating the user). Use at most one — passing both is a contract
+/// violation. `initial_input` is the path Claude wants: it gives claude an
+/// interactive zsh as its parent, which keeps libghostty's rendering
+/// pipeline awake during spinner animations.
+///
 /// Returns `created: true` on first mount, `false` on re-attach.
 pub fn mount(
     window: &tauri::Window,
@@ -70,17 +77,27 @@ pub fn mount(
     scale: f64,
     cwd: Option<&str>,
     command: Option<&str>,
+    initial_input: Option<&str>,
     env: &[(String, String)],
 ) -> Result<MountResult, GhosttyError> {
     #[cfg(target_os = "macos")]
     {
-        let created = surface::mount(window, workspace_id, rect.x, rect.y, rect.w, rect.h, scale, cwd, command, env)
-            .map_err(GhosttyError::from)?;
+        let created = surface::mount(
+            window,
+            workspace_id,
+            rect.x, rect.y, rect.w, rect.h,
+            scale,
+            cwd,
+            command,
+            initial_input,
+            env,
+        )
+        .map_err(GhosttyError::from)?;
         Ok(MountResult { workspace_id: workspace_id.to_owned(), created })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, workspace_id, rect, scale, cwd, command, env);
+        let _ = (window, workspace_id, rect, scale, cwd, command, initial_input, env);
         Err(GhosttyError::Msg("macOS only".into()))
     }
 }

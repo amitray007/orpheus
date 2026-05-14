@@ -128,15 +128,31 @@ pub async fn terminal_mount(
         (Some(launch), env_pairs, command)
     };
 
-    // Use the wrapper script if no explicit command was supplied. The wrapper
-    // reads ORPHEUS_CLAUDE_FLAGS / ORPHEUS_CLAUDE_SETTINGS_JSON and execs claude.
-    let final_command: Option<String> = resolved_command.or_else(|| resolve_wrapper_script(&window));
+    // Two ways to start claude:
+    //  1. `command` — exec the wrapper directly; minimal latency but claude
+    //     ends up as a grandchild of `login`, which keeps libghostty's grid
+    //     stalled on first launch until a keypress shakes it loose.
+    //  2. `initial_input` — let ghostty boot the user's normal login shell,
+    //     then type `clear; exec <wrapper>\n` into it. Claude is a child of
+    //     an interactive zsh — same path as if the user typed it — and the
+    //     pipeline animates correctly. Marginally slower (~150ms zsh boot).
+    //
+    // We default to option 2. If the caller passed an explicit `command`,
+    // honor it via option 1.
+    let wrapper_path = resolve_wrapper_script(&window);
+    let (cmd_for_mount, initial_input_for_mount): (Option<String>, Option<String>) =
+        match (resolved_command, wrapper_path) {
+            (Some(cmd), _) => (Some(cmd), None),
+            (None, Some(wrapper)) => (None, Some(format!("clear; exec {wrapper}\n"))),
+            (None, None) => (None, None),
+        };
 
     let (tx, rx) = oneshot::channel();
     let win = window.clone();
     let wid = workspace_id.clone();
     let env_for_mount = env_pairs;
-    let cmd_for_mount = final_command.clone();
+    let cmd_clone = cmd_for_mount.clone();
+    let input_clone = initial_input_for_mount.clone();
     window
         .run_on_main_thread(move || {
             let res = ghostty_native::mount(
@@ -145,7 +161,8 @@ pub async fn terminal_mount(
                 &rect,
                 scale_factor,
                 cwd.as_deref(),
-                cmd_for_mount.as_deref(),
+                cmd_clone.as_deref(),
+                input_clone.as_deref(),
                 &env_for_mount,
             )
             .map_err(|e| e.to_string());

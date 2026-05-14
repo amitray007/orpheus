@@ -72,6 +72,7 @@ pub fn mount(
     scale: f64,
     cwd: Option<&str>,
     command: Option<&str>,
+    initial_input: Option<&str>,
     env: &[(String, String)],
 ) -> Result<bool, String> {
     ensure_app().map_err(|e| e.to_string())?;
@@ -135,6 +136,9 @@ pub fn mount(
     let cwd_c = CString::new(cwd_string).map_err(|e| e.to_string())?;
     let command_c: Option<CString> =
         command.map(|s| CString::new(s).map_err(|e| e.to_string())).transpose()?;
+    let initial_input_c: Option<CString> = initial_input
+        .map(|s| CString::new(s).map_err(|e| e.to_string()))
+        .transpose()?;
 
     // Build env-var CStrings + ghostty_env_var_s array. The CStrings must
     // outlive ghostty_surface_new — keep them in a Vec on the stack frame.
@@ -168,8 +172,14 @@ pub fn mount(
     scfg.command = command_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
     scfg.env_vars = if env_arr.is_empty() { std::ptr::null_mut() } else { env_arr.as_mut_ptr() };
     scfg.env_var_count = env_arr.len();
-    scfg.initial_input = std::ptr::null();
-    scfg.wait_after_command = true;
+    scfg.initial_input = initial_input_c
+        .as_ref()
+        .map(|c| c.as_ptr())
+        .unwrap_or(std::ptr::null());
+    // wait_after_command only matters when scfg.command is set; with the
+    // initial_input path the shell is just the default login shell and stays
+    // alive on its own (claude is a child of it).
+    scfg.wait_after_command = command_c.is_some();
     scfg.context = ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
     let surface = unsafe { ghostty_surface_new(app, &scfg as *const ghostty_surface_config_s) };
