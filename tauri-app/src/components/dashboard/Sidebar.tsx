@@ -226,15 +226,20 @@ function WorkspaceSubRow({
         )}
       </button>
 
-      {/* Archive affordance — visible on hover. 32x32 hit target. */}
-      {!renaming && hovered && (
+      {/* Archive affordance — always rendered to keep row layout stable;
+          fade in on hover. pointer-events-none when hidden so clicks pass through. */}
+      {!renaming && (
         <button
           onClick={(e) => {
             e.stopPropagation()
             onArchive()
           }}
-          className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          className={[
+            'flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted transition-opacity duration-150 hover:text-text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            hovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          ].join(' ')}
           aria-label="Archive workspace"
+          tabIndex={hovered ? 0 : -1}
         >
           <Archive size={13} />
         </button>
@@ -392,20 +397,23 @@ function ProjectRow({
         {/* Right controls: add workspace + chevron. Each button is 32x32. */}
         {!renaming && (
           <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
-            {/* Add workspace — visible on hover */}
-            {hovered && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onAddWorkspace()
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                title="New workspace"
-                aria-label="New workspace"
-              >
-                <Plus size={14} weight="bold" />
-              </button>
-            )}
+            {/* Add workspace — always rendered to keep layout stable;
+                fade in on hover. pointer-events-none when hidden. */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onAddWorkspace()
+              }}
+              className={[
+                'w-8 h-8 flex items-center justify-center rounded-md text-text-muted transition-opacity duration-150 hover:text-text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                hovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              ].join(' ')}
+              title="New workspace"
+              aria-label="New workspace"
+              tabIndex={hovered ? 0 : -1}
+            >
+              <Plus size={14} weight="bold" />
+            </button>
 
             {/* Expand/collapse chevron */}
             <button
