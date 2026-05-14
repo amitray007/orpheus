@@ -821,13 +821,17 @@ static bool action_cb(ghostty_app_t /*app*/,
         }
         int tagInt = (int)action.tag;
         std::string tagStr = std::string(tagName) + "(" + std::to_string(tagInt) + ")";
-        g_actionTraceTSFN.BlockingCall(
-            new std::string(tagStr),
-            [](Napi::Env env, Napi::Function jsCb, std::string* data) {
-                jsCb.Call({ Napi::String::New(env, *data) });
-                delete data;
+        // NonBlockingCall — action_cb runs on libghostty's IO/renderer threads.
+        // Blocking here back-pressures PTY reading; a dropped trace is harmless.
+        auto* data = new std::string(tagStr);
+        napi_status st = g_actionTraceTSFN.NonBlockingCall(
+            data,
+            [](Napi::Env env, Napi::Function jsCb, std::string* d) {
+                jsCb.Call({ Napi::String::New(env, *d) });
+                delete d;
             }
         );
+        if (st != napi_ok) delete data;
     }
 
     // Note: GHOSTTY_ACTION_RENDER is never dispatched in embedded apprt mode
@@ -853,8 +857,9 @@ static bool action_cb(ghostty_app_t /*app*/,
             }
             if (!workspaceId.empty()) {
                 std::string title = rawTitle ? rawTitle : "";
-                g_titleTSFN.BlockingCall(
-                    new std::pair<std::string, std::string>(workspaceId, title),
+                auto* payload = new std::pair<std::string, std::string>(workspaceId, title);
+                napi_status st = g_titleTSFN.NonBlockingCall(
+                    payload,
                     [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
                         jsCb.Call({
                             Napi::String::New(env, data->first),
@@ -863,6 +868,7 @@ static bool action_cb(ghostty_app_t /*app*/,
                         delete data;
                     }
                 );
+                if (st != napi_ok) delete payload;
             }
         }
     }
@@ -1270,6 +1276,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
                 }
             });
 
+            // Re-activate focus so the renderer wakes from its quiescent mode.
+            ghostty_surface_set_focus(entry.surface, true);
+            ghostty_app_set_focus(g_app, true);
+
             entry.lastRect = CGRectMake(rx, ry, rw, rh);
             entry.lastScale = scaleFactor;
             entry.isAttached = YES;
@@ -1436,6 +1446,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastScale   = scaleFactor;
     g_surfaces[workspaceId] = entry;
 
+    // Activate the surface — enables cursor blink + continuous renderer wakeups.
+    // Without focus, libghostty's renderer stays in a quiescent mode and only
+    // wakes on explicit refresh, which is why screen updates stalled during long
+    // PTY-only output windows like claude's auto-compaction.
+    ghostty_surface_set_focus(surface, true);
+    ghostty_app_set_focus(g_app, true);
+
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
 
@@ -1476,8 +1493,9 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
 
     NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
 
-    // Tell Ghostty the surface is now occluded — its internal renderer thread
-    // will pause its CVDisplayLink-driven draws while occluded.
+    // Tell Ghostty the surface is now occluded + unfocused — its internal
+    // renderer thread will pause its CVDisplayLink-driven draws while hidden.
+    ghostty_surface_set_focus(entry.surface, false);
     ghostty_surface_set_occlusion(entry.surface, true);
 
     // Remove from view hierarchy — view is retained in the map, not freed.
