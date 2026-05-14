@@ -16,12 +16,21 @@ if [[ -n "${ORPHEUS_CLAUDE_FLAGS:-}" ]]; then
   flags=(${=ORPHEUS_CLAUDE_FLAGS})
 fi
 
+# IMPORTANT: `exec` replaces this zsh process with claude. Without exec,
+# claude would be a child of a non-interactive zsh holding the controlling
+# TTY, which leaves claude one process away from the PTY foreground-group
+# slot it needs — symptom is stalled spinner/animation until a keystroke
+# pokes the pipeline. With exec, the process tree is just:
+#   ghostty pty → login → bash → claude   (claude IS the foreground group)
 if [[ -n "${ORPHEUS_CLAUDE_SETTINGS_JSON:-}" ]]; then
-  claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
+  exec claude --settings "${ORPHEUS_CLAUDE_SETTINGS_JSON}" "${flags[@]}"
 else
-  claude "${flags[@]}"
+  exec claude "${flags[@]}"
 fi
 
+# Only reached if exec failed (claude binary not on PATH, etc.). Drop into
+# an interactive zsh so the user can debug — and exec so we don't keep
+# a script-shell parent around.
 echo
-echo "[claude exited — dropping to zsh]"
+echo "[orpheus-claude: failed to exec claude — dropping to interactive zsh]"
 exec zsh -i
