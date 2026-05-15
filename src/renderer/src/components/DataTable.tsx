@@ -18,6 +18,8 @@ export interface DataTableColumn<R> {
   align?: 'left' | 'right' | 'center'
   /** Custom cell renderer. Falls back to String(row[key as keyof R]). */
   render?: (row: R) => React.ReactNode
+  /** Drop cell padding so icon-only buttons fit. Default true. */
+  cellPadded?: boolean
 }
 
 export interface DataTablePagination {
@@ -267,14 +269,15 @@ export function DataTable<R>({
                     key={col.key}
                     role="cell"
                     className={[
-                      'flex items-center py-2.5 px-3 min-w-0',
+                      'flex items-center min-w-0',
+                      col.cellPadded === false ? 'py-1 px-1.5' : 'py-2.5 px-3',
                       'text-sm text-text-primary',
                       alignClass(col.align)
                     ].join(' ')}
                   >
-                    <span className="truncate min-w-0">
-                      {col.render ? col.render(row) : defaultCellValue(row, col.key)}
-                    </span>
+                    {col.render
+                      ? col.render(row)
+                      : <span className="truncate min-w-0">{defaultCellValue(row, col.key)}</span>}
                   </div>
                 ))}
               </div>

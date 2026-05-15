@@ -366,7 +366,8 @@ export function WorkspacesTab({
       {
         key: 'menu',
         label: '',
-        width: '44px',
+        width: '52px',
+        cellPadded: false,
         align: 'right',
         render: (ws) => (
           <button

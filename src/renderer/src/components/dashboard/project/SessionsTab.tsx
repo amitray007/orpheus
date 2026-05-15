@@ -224,8 +224,9 @@ export function SessionsTab({
     const resumeCol: DataTableColumn<SessionRecord> = {
       key: 'resume',
       label: '',
-      width: '48px',
+      width: '56px',
       align: 'right',
+      cellPadded: false,
       render: (r) => {
         const isResuming = resumingId === r.id
         return (
@@ -257,8 +258,9 @@ export function SessionsTab({
     const deleteCol: DataTableColumn<SessionRecord> = {
       key: 'delete',
       label: '',
-      width: '40px',
+      width: '52px',
       align: 'right',
+      cellPadded: false,
       render: (r) => (
         <button
           type="button"
