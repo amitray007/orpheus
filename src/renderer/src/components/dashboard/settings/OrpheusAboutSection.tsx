@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { ArrowSquareOut } from '@phosphor-icons/react'
+import { Skeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // OrpheusAboutSection — Orpheus version, paths, links
@@ -51,7 +52,12 @@ export function OrpheusAboutSection(): React.JSX.Element {
           Version
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
-          <InfoRow label="Orpheus version" value={orpheusVersion ? `v${orpheusVersion}` : 'Loading…'} mono />
+          <InfoRow
+            label="Orpheus version"
+            value={orpheusVersion ? `v${orpheusVersion}` : null}
+            mono
+            pendingWidth="5rem"
+          />
           <InfoRow label="Ghostty version" value="v1.3.1 (Lakr233/libghostty-spm prebuilt)" mono />
           <InfoRow label="Runtime" value="Electron + libghostty (embedded terminal)" />
         </div>
@@ -91,23 +97,29 @@ export function OrpheusAboutSection(): React.JSX.Element {
 function InfoRow({
   label,
   value,
-  mono
+  mono,
+  pendingWidth
 }: {
   label: string
-  value: string
+  value: string | null
   mono?: boolean
+  pendingWidth?: string
 }): React.JSX.Element {
   return (
     <div className="flex items-start justify-between px-5 py-3 gap-4">
       <span className="text-sm text-text-secondary flex-shrink-0">{label}</span>
-      <span
-        className={[
-          'text-sm text-text-primary text-right break-all',
-          mono ? 'font-mono text-xs' : ''
-        ].join(' ')}
-      >
-        {value}
-      </span>
+      {value === null ? (
+        <Skeleton className="h-4" style={{ width: pendingWidth ?? '8rem' }} />
+      ) : (
+        <span
+          className={[
+            'text-sm text-text-primary text-right break-all',
+            mono ? 'font-mono text-xs' : ''
+          ].join(' ')}
+        >
+          {value}
+        </span>
+      )}
     </div>
   )
 }

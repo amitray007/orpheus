@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
 import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // OrpheusSidebarSection — sidebar visibility and behavior controls
@@ -69,7 +70,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
             projects.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={2} />
       </div>
     )
   }
@@ -98,18 +99,6 @@ export function OrpheusSidebarSection(): React.JSX.Element {
               onChange={(v) => patch({ workspaceCountInline: v })}
               ariaLabel="Workspace count inline"
             />
-          </SettingRow>
-          <SettingRow
-            label="Max archived workspaces"
-            description="Older archived workspaces are auto-deleted to stay under this cap."
-          >
-            <div className="flex items-center gap-1.5">
-              <NumberInput
-                value={uiState.archivedWorkspaceLimit ?? 20}
-                onChange={(v) => patch({ archivedWorkspaceLimit: Math.max(1, v ?? 20) })}
-                placeholder="20"
-              />
-            </div>
           </SettingRow>
           <SettingRow
             label="Max local sessions per project"

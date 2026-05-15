@@ -3,6 +3,7 @@ import type React from 'react'
 import { X, ArrowCounterClockwise } from '@phosphor-icons/react'
 import { Select } from './settings/primitives'
 import { ActivityIndicator } from './ActivityIndicator'
+import { WorkspaceOverridesSkeleton } from '../Skeleton'
 import {
   CLAUDE_MODEL_OPTIONS,
   type WorkspaceRecord,
@@ -233,32 +234,36 @@ function OverridesSection({
         )}
       </header>
 
-      <div className={!settings ? 'opacity-50 pointer-events-none' : ''}>
-        <OverrideField
-          label="Model"
-          options={MODEL_OPTIONS}
-          value={modelValue}
-          onChange={handleModel}
-          isOverridden={localOverrides.model !== undefined}
-          ariaLabel="Workspace model override"
-        />
-        <OverrideField
-          label="Permission mode"
-          options={PERMISSION_OPTIONS}
-          value={permissionValue}
-          onChange={handlePermission}
-          isOverridden={localOverrides.permissionMode !== undefined}
-          ariaLabel="Workspace permission mode override"
-        />
-        <OverrideField
-          label="Effort"
-          options={EFFORT_OPTIONS}
-          value={effortValue}
-          onChange={handleEffort}
-          isOverridden={localOverrides.effort !== undefined}
-          ariaLabel="Workspace effort override"
-        />
-      </div>
+      {!settings ? (
+        <WorkspaceOverridesSkeleton />
+      ) : (
+        <div>
+          <OverrideField
+            label="Model"
+            options={MODEL_OPTIONS}
+            value={modelValue}
+            onChange={handleModel}
+            isOverridden={localOverrides.model !== undefined}
+            ariaLabel="Workspace model override"
+          />
+          <OverrideField
+            label="Permission mode"
+            options={PERMISSION_OPTIONS}
+            value={permissionValue}
+            onChange={handlePermission}
+            isOverridden={localOverrides.permissionMode !== undefined}
+            ariaLabel="Workspace permission mode override"
+          />
+          <OverrideField
+            label="Effort"
+            options={EFFORT_OPTIONS}
+            value={effortValue}
+            onChange={handleEffort}
+            isOverridden={localOverrides.effort !== undefined}
+            ariaLabel="Workspace effort override"
+          />
+        </div>
+      )}
 
       {isDirty && (
         <div className="mx-4 mt-3 rounded-md border border-amber-400/30 bg-amber-400/[0.04] px-3 py-2.5 flex items-center gap-3">

@@ -1,5 +1,4 @@
 import { getDb } from './db'
-import { getAppUiState } from './uiState'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -136,71 +135,23 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
   return rowToWorkspaceRecord(row)
 }
 
-export function trimArchivedWorkspaces(limit: number): number {
-  const db = getDb()
-  const { count } = db
-    .prepare('SELECT COUNT(*) as count FROM workspaces WHERE archived_at IS NOT NULL')
-    .get() as { count: number }
-  if (count <= limit) return 0
-  const toDelete = count - limit
-  const stmt = db.prepare(
-    `DELETE FROM workspaces
-     WHERE id IN (
-       SELECT id FROM workspaces
-       WHERE archived_at IS NOT NULL
-       ORDER BY archived_at ASC
-       LIMIT ?
-     )`
-  )
-  const result = stmt.run(toDelete)
-  return result.changes
-}
-
 /**
- * Archive a workspace, or — if the workspace never did anything — drop the
- * row outright. The "Archived" list is meant to be conversations worth
- * revisiting; archiving an empty stub clutters it with placeholder rows
- * ("untitled · just now · abc123") that read as duplication and noise.
+ * "Archive" is a misnomer post-v34 — the archive concept is gone. Calling
+ * this just deletes the workspace row entirely.
  *
- * Returns the archived WorkspaceRecord, or null if the row was deleted
- * because it was empty. Either way the caller's normal refetch picks up
- * the outcome cleanly.
+ * Rationale: an Archived list of placeholder workspaces (no title, no
+ * session) reads as duplication and is impossible to make trustworthy.
+ * The underlying Claude transcripts on disk (~/.claude/projects/.../*.jsonl)
+ * are never touched — those still surface in the Sessions panel and can be
+ * resumed into a fresh workspace whenever the user wants to come back.
  *
- * A workspace counts as "empty" when it has no claude_session_id (Claude
- * never ran in it) AND no last_title (the terminal never set an OSC
- * title). Those two together mean nothing was preserved — the user
- * clearly never used it.
+ * Kept named archiveWorkspace because the IPC channel + UI action names
+ * are still "Archive" from the user's vocabulary perspective. Internally
+ * it's just deletion.
  */
-export function archiveWorkspace(id: string): WorkspaceRecord | null {
+export function archiveWorkspace(id: string): void {
   const db = getDb()
-  const current = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
-    | WorkspaceRow
-    | undefined
-  if (!current) return null
-
-  const isEmpty = !current.claude_session_id && !current.last_title
-  if (isEmpty) {
-    db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
-    console.log('[workspaces] archive on empty workspace → deleted', id)
-    return null
-  }
-
-  db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(
-    Date.now(),
-    id
-  )
-
-  // LRU cap: delete oldest archived workspaces if over the limit
-  const state = getAppUiState()
-  const trimmed = trimArchivedWorkspaces(state.archivedWorkspaceLimit ?? 20)
-  if (trimmed > 0) {
-    console.log(
-      `[workspaces] trimmed ${trimmed} oldest archived workspaces (cap=${state.archivedWorkspaceLimit})`
-    )
-  }
-
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
-  return rowToWorkspaceRecord(row)
+  db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
 }
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
@@ -217,46 +168,6 @@ export function reorderWorkspaces(projectId: string, orderedIds: string[]): void
     ids.forEach((id, idx) => stmt.run(idx, id, projectId))
   })
   tx(orderedIds)
-}
-
-export function unarchiveWorkspace(id: string): WorkspaceRecord {
-  const db = getDb()
-  // Important: the v21 CHECK constraint on workspaces.status only allows
-  // ('in_progress', 'in_review', 'completed', 'archived'). The runtime now
-  // uses 'idle' / 'awaiting_input' / 'attention' too — every dispatch()
-  // call wraps setWorkspaceStatus in try/catch so those silent CHECK
-  // rejections don't break activity.
-  //
-  // The unarchive flow used to bundle archived_at + status + sort_order into
-  // ONE atomic UPDATE. When status='idle' tripped the CHECK, the whole
-  // statement rolled back, archived_at stayed set, and the workspace
-  // remained archived even though the user expected it to come back to life.
-  //
-  // Fix: do the load-bearing field (archived_at) — plus sort_order, which
-  // has no constraint — in its own UPDATE so it always lands. Try to clear
-  // status to 'in_progress' (CHECK-allowed) as a separate, best-effort step;
-  // runtime activity events will reconcile the status field afterward.
-  const projRow = db.prepare('SELECT project_id FROM workspaces WHERE id = ?').get(id) as
-    | { project_id: string }
-    | undefined
-  if (projRow) {
-    const minRow = db
-      .prepare('SELECT MIN(sort_order) AS m FROM workspaces WHERE project_id = ?')
-      .get(projRow.project_id) as { m: number | null }
-    const nextSort = (minRow.m ?? 1) - 1
-    db.prepare(
-      'UPDATE workspaces SET archived_at = NULL, sort_order = ? WHERE id = ?'
-    ).run(nextSort, id)
-  } else {
-    db.prepare('UPDATE workspaces SET archived_at = NULL WHERE id = ?').run(id)
-  }
-  try {
-    db.prepare("UPDATE workspaces SET status = 'in_progress' WHERE id = ?").run(id)
-  } catch (err) {
-    console.warn('[workspaces] unarchive: status reset failed (CHECK)', err)
-  }
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
-  return rowToWorkspaceRecord(row)
 }
 
 // ---------------------------------------------------------------------------

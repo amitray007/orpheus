@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   SquaresFour,
@@ -15,6 +15,24 @@ import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ActivityIndicator } from './ActivityIndicator'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function relativeTime(ms: number): string {
+  const diff = Date.now() - ms
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return 'just now'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24)
+  if (d < 30) return `${d}d ago`
+  const mo = Math.floor(d / 30)
+  return `${mo}mo ago`
+}
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -83,6 +101,8 @@ interface WorkspaceRowProps {
   active: boolean
   activity: WorkspaceActivityDetail | undefined
   gitStatus?: GitStatus | null
+  /** Map from claudeSessionId → first-user-prompt title (fetched once per project). */
+  sessionTitleBySessionId: Map<string, string>
   onSelect: () => void
   renaming: boolean
   onBeginRename: () => void
@@ -96,6 +116,7 @@ function WorkspaceSubRow({
   active,
   activity,
   gitStatus,
+  sessionTitleBySessionId,
   onSelect,
   renaming,
   onBeginRename,
@@ -110,22 +131,35 @@ function WorkspaceSubRow({
   useEffect(() => {
     const workspaceId = workspace.id
     window.api.workspaces.getTitle(workspaceId).then((t) => {
-      console.log('[sidebar] seeded title', workspaceId, t)
       setTerminalTitle(t)
     }).catch(() => {})
     const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) {
-        console.log('[sidebar] title changed', e)
         setTerminalTitle(e.title || null)
       }
     })
     return unsub
   }, [workspace.id])
 
-  // If the user has manually renamed the workspace (nameIsAuto === false),
-  // the custom name takes priority — Claude's emitted title is ignored for
-  // display. Only rename can change what's shown.
-  const displayName = workspace.nameIsAuto ? (terminalTitle || workspace.name) : workspace.name
+  // Fallback ladder (mirrors WorkspacesTab.displayNameForWorkspace):
+  //   1. Manual name (nameIsAuto=false) — always wins.
+  //   2. Live terminal OSC title.
+  //   3. First user prompt from the workspace's claude session.
+  //   4. Muted italic: "untitled · <relative createdAt> · <first-6-of-id>".
+  function resolveDisplayName(): { text: string; muted: boolean } {
+    if (!workspace.nameIsAuto) return { text: workspace.name, muted: false }
+    if (terminalTitle) return { text: terminalTitle, muted: false }
+    const sessionTitle = workspace.claudeSessionId
+      ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
+      : null
+    if (sessionTitle) return { text: sessionTitle, muted: false }
+    const shortId = workspace.id.slice(0, 6)
+    const when = relativeTime(workspace.createdAt)
+    return { text: `untitled · ${when} · ${shortId}`, muted: true }
+  }
+
+  const dn = resolveDisplayName()
+  const displayName = dn.text
 
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
@@ -204,14 +238,13 @@ function WorkspaceSubRow({
           />
         ) : (
           <span
-            className="text-xs truncate min-w-0 flex-1"
-            title={
-              workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
-                ? `${workspace.name} — ${terminalTitle}`
-                : workspace.name
-            }
+            className={[
+              'text-xs truncate min-w-0 flex-1',
+              dn.muted ? 'text-text-muted italic' : ''
+            ].join(' ')}
+            title={dn.text}
           >
-            {displayName}
+            {dn.text}
           </span>
         )}
         {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
@@ -258,6 +291,8 @@ interface ProjectRowProps {
   selectedWorkspaceId?: string | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  /** Map from claudeSessionId → session title for all sessions in this project. */
+  sessionTitleBySessionId: Map<string, string>
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -293,6 +328,7 @@ function ProjectRow({
   selectedWorkspaceId,
   workspaceActivities,
   gitStatusByWorkspaceId,
+  sessionTitleBySessionId,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -461,6 +497,7 @@ function ProjectRow({
                   }
                   activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
+                  sessionTitleBySessionId={sessionTitleBySessionId}
                   onSelect={() => onSelectWorkspace(ws.id)}
                   renaming={renamingWorkspaceId === ws.id}
                   onBeginRename={() => onBeginRenameWorkspace(ws.id)}
@@ -566,6 +603,35 @@ export function Sidebar({
   const [wsDragProjectId, setWsDragProjectId] = useState<string | null>(null)
   const [wsDropTargetId, setWsDropTargetId] = useState<string | null>(null)
   const [wsDropPos, setWsDropPos] = useState<'before' | 'after'>('before')
+  // Map from projectId → (Map from claudeSessionId → session title).
+  // Fetched once per project when its workspaces first become visible.
+  const [sessionTitlesByProject, setSessionTitlesByProject] = useState<
+    Map<string, Map<string, string>>
+  >(new Map())
+  const fetchedProjectSessions = useRef<Set<string>>(new Set())
+
+  // Fetch sessions for any visible project that hasn't been loaded yet.
+  useEffect(() => {
+    const projectIds = projects.map((p) => p.id)
+    for (const projectId of projectIds) {
+      if (fetchedProjectSessions.current.has(projectId)) continue
+      fetchedProjectSessions.current.add(projectId)
+      window.api.sessions
+        .listForProject(projectId, { includeArchived: true })
+        .then((sessions) => {
+          const map = new Map<string, string>()
+          for (const s of sessions) {
+            if (s.title) map.set(s.id, s.title)
+          }
+          setSessionTitlesByProject((prev) => {
+            const next = new Map(prev)
+            next.set(projectId, map)
+            return next
+          })
+        })
+        .catch((err) => console.error('[sidebar] sessions load failed for', projectId, err))
+    }
+  }, [projects])
 
   function handleBeginRename(id: string): void {
     setRenamingProjectId(id)
@@ -781,6 +847,7 @@ export function Sidebar({
                         selectedWorkspaceId={selectedWorkspaceId}
                         workspaceActivities={workspaceActivities}
                         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+                        sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
                         onSelect={() => onSelectProject(p.id)}
                         onToggleExpand={() => onToggleProjectExpand(p.id)}
                         onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}

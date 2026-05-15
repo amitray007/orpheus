@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { ClaudeGlobalSettings } from '@shared/types'
 import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudeMemorySection — git instructions, context limits, compaction
@@ -45,7 +46,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
             compaction thresholds.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={2} />
       </div>
     )
   }

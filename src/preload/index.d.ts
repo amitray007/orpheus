@@ -98,8 +98,7 @@ declare global {
         create: (args: { projectId: string; name: string; cwd: string }) => Promise<WorkspaceRecord>
         open: (id: string) => Promise<WorkspaceRecord>
         setPinned: (id: string, pinned: boolean) => Promise<WorkspaceRecord>
-        archive: (id: string) => Promise<WorkspaceRecord | null>
-        unarchive: (id: string) => Promise<WorkspaceRecord>
+        archive: (id: string) => Promise<void>
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
         reorder: (projectId: string, orderedIds: string[]) => Promise<void>
         isDirty: (id: string) => Promise<boolean>

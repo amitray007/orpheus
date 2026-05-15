@@ -6,6 +6,7 @@ import type {
   ClaudeEffort
 } from '@shared/types'
 import { SettingRow, SegmentedControl, Toggle, ModelPicker, NumberInput } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudeGeneralSection — model, permission mode, effort, auto-memory, extended thinking
@@ -67,7 +68,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
             Defaults applied when claude launches in any workspace.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={3} />
       </div>
     )
   }

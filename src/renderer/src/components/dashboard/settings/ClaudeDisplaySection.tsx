@@ -7,6 +7,7 @@ import type {
   ClaudeEditorMode
 } from '@shared/types'
 import { SettingRow, SegmentedControl, Toggle, NumberInput } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudeDisplaySection — output style, TUI renderer, editor mode, a11y toggles
@@ -50,7 +51,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
             preferences.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={3} />
       </div>
     )
   }

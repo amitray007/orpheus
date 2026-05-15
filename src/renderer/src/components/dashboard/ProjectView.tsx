@@ -6,18 +6,18 @@ import type {
   WorkspaceActivityDetail,
   WorkspaceRecord
 } from '@shared/types'
-import { Tabs } from '../Tabs'
 import { ProjectHeader } from './project/ProjectHeader'
 import { WorkspacesTab } from './project/WorkspacesTab'
-import { SessionsTab } from './project/SessionsTab'
 import { SettingsDrawer } from './project/SettingsDrawer'
 
 // ---------------------------------------------------------------------------
-// ProjectView — orchestrates header + tabs (Workspaces / Sessions)
-// Commits live inside the Workspaces tab now.
+// ProjectView — header + project body (workspaces, sessions, commits)
+//
+// Post-v34: the top-level Workspaces/Sessions tabs are gone. Sessions live
+// next to the workspaces table inside WorkspacesTab. "Archive" is a hard
+// delete now — old conversations resurface only through the Sessions panel
+// because Claude's transcripts on disk stay intact.
 // ---------------------------------------------------------------------------
-
-type TabId = 'workspaces' | 'sessions'
 
 interface ProjectViewProps {
   project: ProjectRecord
@@ -32,7 +32,6 @@ interface ProjectViewProps {
     newName: string
   ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
-  onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   /** Called after a Sessions row click spawns a new workspace via --resume. */
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
@@ -47,13 +46,10 @@ export function ProjectView({
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
-  onUnarchiveWorkspace,
   onToggleWorkspacePin,
   onResumedInWorkspace
 }: ProjectViewProps): React.JSX.Element {
-  const [tab, setTab] = useState<TabId>('workspaces')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [sessionCount, setSessionCount] = useState(-1)
   const [projectSettings, setProjectSettings] = useState<ClaudeProjectSettings | null>(null)
 
   // Project-scope override count (for header chip).
@@ -71,8 +67,13 @@ export function ProjectView({
     // Re-pull when the drawer closes so the header chip reflects fresh edits.
   }, [project.id, settingsOpen])
 
+  // archivedAt is unused post-v34 (rows are deleted, never soft-archived),
+  // but the field still exists in the type. Filter defensively just in case
+  // a stale row sneaks through before the migration runs.
   const activeWorkspaces = (workspaces ?? []).filter((w) => w.archivedAt === null)
-  const workspaceCount = activeWorkspaces.length
+  // null = still loading; lets ProjectHeader render a skeleton chip instead
+  // of "0 workspaces" → real count on first paint.
+  const workspaceCount: number | null = workspaces === null ? null : activeWorkspaces.length
 
   const lastActivityAt = useMemo(() => {
     if (!workspaces || workspaces.length === 0) return null
@@ -99,40 +100,17 @@ export function ProjectView({
         onRequestRemove={onRequestRemove}
       />
 
-      <Tabs<TabId>
-        value={tab}
-        onChange={setTab}
-        options={[
-          { value: 'workspaces', label: 'Workspaces', count: workspaceCount },
-          {
-            value: 'sessions',
-            label: 'Sessions',
-            count: sessionCount < 0 ? undefined : sessionCount
-          }
-        ]}
+      <WorkspacesTab
+        projectId={project.id}
+        projectPath={project.path}
+        workspaces={workspaces}
+        workspaceActivities={workspaceActivities}
+        onSelectWorkspace={onSelectWorkspace}
+        onRenameWorkspace={onRenameWorkspace}
+        onArchiveWorkspace={onArchiveWorkspace}
+        onToggleWorkspacePin={onToggleWorkspacePin}
+        onResumedInWorkspace={onResumedInWorkspace}
       />
-
-      {tab === 'workspaces' && (
-        <WorkspacesTab
-          projectId={project.id}
-          projectPath={project.path}
-          workspaces={workspaces}
-          workspaceActivities={workspaceActivities}
-          onSelectWorkspace={onSelectWorkspace}
-          onRenameWorkspace={onRenameWorkspace}
-          onArchiveWorkspace={onArchiveWorkspace}
-          onUnarchiveWorkspace={onUnarchiveWorkspace}
-          onToggleWorkspacePin={onToggleWorkspacePin}
-        />
-      )}
-
-      {tab === 'sessions' && (
-        <SessionsTab
-          projectId={project.id}
-          onSessionCountChange={setSessionCount}
-          onResumedInWorkspace={onResumedInWorkspace}
-        />
-      )}
 
       <SettingsDrawer
         projectId={project.id}

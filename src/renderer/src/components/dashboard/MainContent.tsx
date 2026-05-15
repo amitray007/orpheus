@@ -52,7 +52,6 @@ interface MainContentProps {
   onAddWorkspace: (projectId: string) => void | Promise<void>
   onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
-  onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
@@ -69,7 +68,6 @@ export function MainContent({
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
-  onUnarchiveWorkspace,
   onToggleWorkspacePin,
   workspaceActivities,
   onResumedInWorkspace
@@ -130,7 +128,6 @@ export function MainContent({
       onAddWorkspace={onAddWorkspace}
       onRenameWorkspace={onRenameWorkspace}
       onArchiveWorkspace={onArchiveWorkspace}
-      onUnarchiveWorkspace={onUnarchiveWorkspace}
       onToggleWorkspacePin={onToggleWorkspacePin}
       onResumedInWorkspace={onResumedInWorkspace}
     />

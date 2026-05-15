@@ -34,7 +34,6 @@ import {
   getWorkspace,
   setWorkspacePinned,
   archiveWorkspace,
-  unarchiveWorkspace,
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
@@ -687,14 +686,12 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
   setWorkspacePinned(id, pinned)
 )
 
-ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => archiveWorkspace(id))
-
-ipcMain.handle('workspaces:unarchive', (_e, { id }: { id: string }) => {
-  const updated = unarchiveWorkspace(id)
-  // Clear any stale 'archived' runtime activity so the sidebar's activity
-  // indicator and the renderer's activity cache reflect the live state.
+ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+  archiveWorkspace(id)
+  // Drop any stale runtime activity entries for the deleted workspace so the
+  // sidebar / project view stop trying to render a dot for a row that no
+  // longer exists.
   clearWorkspaceActivity(id)
-  return updated
 })
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>

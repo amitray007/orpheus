@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { ArrowSquareOut } from '@phosphor-icons/react'
+import { Skeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudeAboutSection — claude binary info, paths, docs links
@@ -33,8 +34,8 @@ export function ClaudeAboutSection(): React.JSX.Element {
           Claude Code
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
-          <InfoRow label="Version" value={claudeVersion ?? 'Loading…'} mono />
-          <InfoRow label="Binary path" value={claudePath ?? 'Loading…'} mono />
+          <InfoRow label="Version" value={claudeVersion} mono pendingWidth="6rem" />
+          <InfoRow label="Binary path" value={claudePath} mono pendingWidth="18rem" />
           <InfoRow
             label="Runtime"
             value="Running via bundled libghostty terminal (Lakr233/libghostty-spm)"
@@ -71,13 +72,27 @@ export function ClaudeAboutSection(): React.JSX.Element {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }): React.JSX.Element {
+function InfoRow({
+  label,
+  value,
+  mono,
+  pendingWidth
+}: {
+  label: string
+  value: string | null
+  mono?: boolean
+  pendingWidth?: string
+}): React.JSX.Element {
   return (
     <div className="flex items-center justify-between px-5 py-3 gap-4">
       <span className="text-sm text-text-secondary">{label}</span>
-      <span className={['text-sm text-text-primary', mono ? 'font-mono text-xs' : ''].join(' ')}>
-        {value}
-      </span>
+      {value === null ? (
+        <Skeleton className="h-4" style={{ width: pendingWidth ?? '8rem' }} />
+      ) : (
+        <span className={['text-sm text-text-primary', mono ? 'font-mono text-xs' : ''].join(' ')}>
+          {value}
+        </span>
+      )}
     </div>
   )
 }

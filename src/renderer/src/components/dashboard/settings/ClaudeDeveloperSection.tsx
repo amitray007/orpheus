@@ -3,6 +3,7 @@ import type React from 'react'
 import { CaretDown, CaretRight, Trash, Plus } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, ClaudeLogLevel } from '@shared/types'
 import { SettingRow, Toggle, SegmentedControl, NumberInput } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // CustomEnvVarsEditor — inline key/value editor for raw env vars
@@ -247,7 +248,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
             power users.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={3} rowsPerGroup={2} />
       </div>
     )
   }

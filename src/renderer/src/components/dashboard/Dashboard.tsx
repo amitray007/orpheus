@@ -475,40 +475,27 @@ export function Dashboard({
     window.api.terminal
       .destroy(workspaceId)
       .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
+    // Optimistically drop any cached activity for the workspace — once the
+    // backend deletes the row there's nothing for the dot to track.
+    setWorkspaceActivities((prev) => {
+      if (prev[workspaceId] === undefined) return prev
+      const next = { ...prev }
+      delete next[workspaceId]
+      return next
+    })
     try {
+      // "Archive" is a hard delete now (v34+). The DB row is gone after this.
       await window.api.workspaces.archive(workspaceId)
       await fetchWorkspacesForProject(projectId)
-      // If the archived workspace was active, route back to its project view
+      // If we were viewing the workspace that just got deleted, route back to
+      // the project view — WorkspaceView can't render a row that no longer exists.
       if (selectedWorkspaceId === workspaceId) {
         setSelectedWorkspaceId(null)
         setView({ kind: 'project', projectId })
       }
       refreshPins()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('last active')) {
-        alert('Cannot archive the last active workspace in this project.')
-      } else {
-        console.error('[dashboard] workspace archive failed', err)
-      }
-    }
-  }
-
-  async function handleUnarchiveWorkspace(workspaceId: string, projectId: string): Promise<void> {
-    try {
-      // Optimistically clear any cached 'archived' activity so the activity
-      // dot doesn't stay blank while waiting for the backend broadcast.
-      setWorkspaceActivities((prev) => {
-        if (prev[workspaceId] === undefined) return prev
-        const next = { ...prev }
-        delete next[workspaceId]
-        return next
-      })
-      await window.api.workspaces.unarchive(workspaceId)
-      await fetchWorkspacesForProject(projectId)
-      refreshPins()
     } catch (err) {
-      console.error('[dashboard] workspace unarchive failed', err)
+      console.error('[dashboard] workspace archive failed', err)
     }
   }
 
@@ -676,7 +663,6 @@ export function Dashboard({
             onAddWorkspace={handleAddWorkspace}
             onRenameWorkspace={handleRenameWorkspace}
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-            onUnarchiveWorkspace={handleUnarchiveWorkspace}
             onToggleWorkspacePin={handleToggleWorkspacePin}
             workspaceActivities={workspaceActivities}
             onResumedInWorkspace={handleResumedInWorkspace}

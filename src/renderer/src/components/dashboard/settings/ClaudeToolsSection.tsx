@@ -4,6 +4,7 @@ import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, DiscoveredMcpServer, McpServerDraft, ProjectRecord } from '@shared/types'
 import { SettingRow, Toggle, NumberInput } from './primitives'
 import { ConfirmModal } from '../../ConfirmModal'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudeToolsSection — MCP servers (full CRUD), bash limits, concurrency, browser integration
@@ -449,7 +450,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
             MCP server toggles, Bash limits, tool concurrency, and browser integration.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={3} rowsPerGroup={2} />
       </div>
     )
   }

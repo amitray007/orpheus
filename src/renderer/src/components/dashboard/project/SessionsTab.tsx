@@ -4,12 +4,17 @@ import { MagnifyingGlass, ChatCircle, Play } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { Select } from '../settings/primitives'
+import { Spinner } from '../../Spinner'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const PAGE_SIZE = 20
+// Full sessions view shows 20 per page; compact embedding (next to workspaces
+// in the project view) shows fewer rows so the panel doesn't grow the page
+// out of comfortable read height.
+const PAGE_SIZE_FULL = 20
+const PAGE_SIZE_COMPACT = 10
 
 const DATE_RANGE_OPTIONS = [
   { value: 'd1', label: 'Last 24h' },
@@ -72,13 +77,22 @@ interface SessionsTabProps {
   projectId: string
   onSessionCountChange?: (count: number) => void
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
+  /**
+   * Compact column set for side-by-side embedding (e.g. next to the Active
+   * workspaces table inside the project view). Hides Model / Messages /
+   * Size / Created and keeps Prompt + Updated + resume action. Filters and
+   * pagination still render so the panel is fully usable in narrow space.
+   */
+  compact?: boolean
 }
 
 export function SessionsTab({
   projectId,
   onSessionCountChange,
-  onResumedInWorkspace
+  onResumedInWorkspace,
+  compact = false
 }: SessionsTabProps): React.JSX.Element {
+  const PAGE_SIZE = compact ? PAGE_SIZE_COMPACT : PAGE_SIZE_FULL
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [dateRange, setDateRange] = useState<DateRange>('d3')
@@ -187,18 +201,51 @@ export function SessionsTab({
     }
   }
 
-  const columns = useMemo<DataTableColumn<SessionRecord>[]>(
-    () => [
-      {
-        key: 'title',
-        label: 'Prompt',
-        sortable: true,
-        render: (r) => (
-          <span className="truncate" title={r.title ?? r.id}>
-            {r.title ?? <span className="text-text-muted italic">untitled</span>}
+  const columns = useMemo<DataTableColumn<SessionRecord>[]>(() => {
+    const promptCol: DataTableColumn<SessionRecord> = {
+      key: 'title',
+      label: 'Prompt',
+      sortable: true,
+      render: (r) => (
+        <span className="truncate" title={r.title ?? r.id}>
+          {r.title ?? <span className="text-text-muted italic">untitled</span>}
+        </span>
+      )
+    }
+    const updatedCol: DataTableColumn<SessionRecord> = {
+      key: 'updatedAt',
+      label: 'Updated',
+      sortable: true,
+      width: '110px',
+      render: (r) => <span className="text-text-muted">{relativeTime(r.updatedAt)}</span>
+    }
+    const resumeCol: DataTableColumn<SessionRecord> = {
+      key: 'resume',
+      label: '',
+      width: '44px',
+      align: 'right',
+      render: (r) => {
+        const isResuming = resumingId === r.id
+        return (
+          <span
+            className={[
+              'inline-flex items-center justify-center w-6 h-6 rounded-md',
+              isResuming ? 'text-accent' : 'text-text-muted'
+            ].join(' ')}
+            title={isResuming ? 'Opening workspace…' : 'Resume in new workspace'}
+            aria-label={isResuming ? 'Resuming' : 'Resume in new workspace'}
+          >
+            {isResuming ? <Spinner size="sm" /> : <Play size={11} weight="fill" />}
           </span>
         )
-      },
+      }
+    }
+
+    if (compact) {
+      return [promptCol, updatedCol, resumeCol]
+    }
+    return [
+      promptCol,
       {
         key: 'model',
         label: 'Model',
@@ -236,34 +283,10 @@ export function SessionsTab({
         width: '110px',
         render: (r) => <span className="text-text-muted">{relativeTime(r.createdAt)}</span>
       },
-      {
-        key: 'updatedAt',
-        label: 'Updated',
-        sortable: true,
-        width: '110px',
-        render: (r) => <span className="text-text-muted">{relativeTime(r.updatedAt)}</span>
-      },
-      {
-        key: 'resume',
-        label: '',
-        width: '44px',
-        align: 'right',
-        render: (r) => (
-          <span
-            className={[
-              'inline-flex items-center justify-center w-6 h-6 rounded-md',
-              'text-text-muted',
-              resumingId === r.id ? 'opacity-50' : ''
-            ].join(' ')}
-            title="Resume in new workspace"
-          >
-            <Play size={11} weight="fill" />
-          </span>
-        )
-      }
-    ],
-    [resumingId]
-  )
+      updatedCol,
+      resumeCol
+    ]
+  }, [resumingId, compact])
 
   const emptyState = (
     <div className="flex flex-col items-center gap-2">

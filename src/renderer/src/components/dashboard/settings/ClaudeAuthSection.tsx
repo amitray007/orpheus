@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight, CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
 import { SettingRow, SegmentedControl } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 import type { ClaudeAuthState, ClaudeAuthTestResult, ClaudeCloudProvider } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -306,7 +307,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-10 max-w-2xl">
         {header}
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={2} />
       </div>
     )
   }

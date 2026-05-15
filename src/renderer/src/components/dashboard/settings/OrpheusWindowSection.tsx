@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
 import { SettingRow, Toggle } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // HotkeyInput — inline key-capture component
@@ -169,7 +170,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
             Geometry persistence, close behavior, and what view Orpheus opens to on launch.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={2} />
       </div>
     )
   }

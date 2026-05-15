@@ -1,22 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
-  Archive,
-  ArrowUUpLeft,
   DotsThree,
-  GitMerge,
   PencilSimple,
   PushPin,
-  Terminal
+  Terminal,
+  Trash,
+  GitMerge
 } from '@phosphor-icons/react'
-import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
+import type {
+  GitStatus,
+  WorkspaceActivityDetail,
+  WorkspaceRecord
+} from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
 import { CommitsTab } from './CommitsTab'
+import { SessionsTab } from './SessionsTab'
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Project body — active workspaces on the left, sessions on the right, recent
+// commits below. Replaces the old Active|Archived split tables now that
+// archiving is a hard delete (v34+) and old conversations are reached through
+// the Sessions panel instead.
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 8
@@ -35,13 +42,9 @@ function relativeTime(ms: number): string {
   return `${mo}mo ago`
 }
 
-// ---------------------------------------------------------------------------
-// Tab
-// ---------------------------------------------------------------------------
-
 interface WorkspacesTabProps {
   projectId: string
-  /** Project filesystem path — used to feed the embedded Recent commits panel. */
+  /** Project filesystem path — used by the embedded Recent commits + Sessions panels. */
   projectPath: string
   workspaces: WorkspaceRecord[] | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
@@ -51,9 +54,10 @@ interface WorkspacesTabProps {
     projectId: string,
     newName: string
   ) => void | Promise<void>
+  /** "Archive" is a hard delete in v34+. Kept the label for user familiarity. */
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
-  onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
+  onResumedInWorkspace: (workspace: WorkspaceRecord) => void
 }
 
 export function WorkspacesTab({
@@ -64,30 +68,29 @@ export function WorkspacesTab({
   onSelectWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
-  onUnarchiveWorkspace,
-  onToggleWorkspacePin
+  onToggleWorkspacePin,
+  onResumedInWorkspace
 }: WorkspacesTabProps): React.JSX.Element {
   const loading = workspaces === null
-  // Defensive dedup-by-id: the DB enforces a PK so this should be a no-op,
-  // but it's cheap insurance against any upstream regression that might
-  // accidentally drop a duplicate workspace into the prop. With duplicates
-  // present, React would render both rows under the same key and pass the
-  // first/last write through interchangeably depending on render order.
+
+  // Defensive id-dedup over the workspaces prop. The DB enforces a PK so this
+  // is a no-op today; it's insurance against any future regression in the
+  // optimistic-update paths producing React-key collisions in this table.
   const all = useMemo(() => {
     if (!workspaces) return []
     const byId = new Map<string, WorkspaceRecord>()
     for (const w of workspaces) byId.set(w.id, w)
     return [...byId.values()]
   }, [workspaces])
+
+  // Archive is now hard delete — there are no archived rows to filter. Anything
+  // present is active. The archivedAt field can stay populated on legacy rows
+  // that survived between v33 and v34, but the v34 migration cleared those.
   const active = useMemo(() => all.filter((w) => w.archivedAt === null), [all])
-  const archived = useMemo(() => all.filter((w) => w.archivedAt !== null), [all])
 
   const [activePage, setActivePage] = useState(1)
-  const [archivedPage, setArchivedPage] = useState(1)
   const [activeSortBy, setActiveSortBy] = useState<'lastOpenedAt' | 'messages'>('lastOpenedAt')
   const [activeSortDir, setActiveSortDir] = useState<'asc' | 'desc'>('desc')
-  const [archivedSortBy, setArchivedSortBy] = useState<'archivedAt' | 'lastOpenedAt'>('archivedAt')
-  const [archivedSortDir, setArchivedSortDir] = useState<'asc' | 'desc'>('desc')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
@@ -100,9 +103,57 @@ export function WorkspacesTab({
     >
   >({})
 
-  // Refresh session metadata then load it so the Messages column reflects
-  // the current JSONL state. Cheap: refreshMetadata is idempotent and only
-  // does work where rows are stale or new.
+  // Background git status for visible active rows.
+  useEffect(() => {
+    let cancelled = false
+    for (const ws of active) {
+      if (gitByWs[ws.id] !== undefined) continue
+      window.api.git
+        .status(ws.cwd)
+        .then((s) => {
+          if (cancelled) return
+          setGitByWs((prev) => ({ ...prev, [ws.id]: s }))
+        })
+        .catch(() => {
+          if (cancelled) return
+          setGitByWs((prev) => ({ ...prev, [ws.id]: null }))
+        })
+    }
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active.map((w) => w.id).join('|')])
+
+  // Subscribe to terminal title for every workspace in the list — the Name
+  // column shows the latest OSC title when one's available.
+  useEffect(() => {
+    let cancelled = false
+    for (const ws of all) {
+      if (titleByWs[ws.id] !== undefined) continue
+      window.api.workspaces
+        .getTitle(ws.id)
+        .then((t) => {
+          if (cancelled) return
+          setTitleByWs((prev) => ({ ...prev, [ws.id]: t ?? null }))
+        })
+        .catch(() => {
+          if (cancelled) return
+          setTitleByWs((prev) => ({ ...prev, [ws.id]: null }))
+        })
+    }
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
+      if (cancelled) return
+      setTitleByWs((prev) => ({ ...prev, [e.workspaceId]: e.title || null }))
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [all.map((w) => w.id).join('|')])
+
+  // Refresh session metadata then load it for the Messages column lookup.
   useEffect(() => {
     let cancelled = false
     window.api.sessions
@@ -131,20 +182,15 @@ export function WorkspacesTab({
     return sessionStats[ws.claudeSessionId]?.messageCount ?? null
   }
 
-  // Display name resolution — auto-named workspaces (the default for anything
-  // not manually renamed) should never reveal the placeholder seed name like
-  // "Workspace 3" or "New Workspace". Order:
-  //   1. Live terminal OSC title
-  //   2. First user prompt of the workspace's session
-  //   3. A muted placeholder + creation time + short-id tail. Including the
-  //      created-time + id is load-bearing: without it, two freshly-created,
-  //      never-opened workspaces both fall through to step 3 and render as
-  //      identical "untitled" rows, which reads as duplication. With it,
-  //      each row is visually distinct even before the user ever opens it.
-  function displayNameForWorkspace(ws: WorkspaceRecord): {
-    text: string
-    muted: boolean
-  } {
+  /**
+   * Display-name resolution (mirrors the same fallback ladder used elsewhere):
+   *   1. Manual rename → the explicit name
+   *   2. Live terminal OSC title
+   *   3. First user prompt from the workspace's claude_session_id session
+   *   4. Muted "untitled · createdAt · short-id" so multiple never-opened stubs
+   *      never look identical.
+   */
+  function displayNameForWorkspace(ws: WorkspaceRecord): { text: string; muted: boolean } {
     if (!ws.nameIsAuto) return { text: ws.name, muted: false }
     const terminalTitle = titleByWs[ws.id]
     if (terminalTitle) return { text: terminalTitle, muted: false }
@@ -156,58 +202,6 @@ export function WorkspacesTab({
     const when = relativeTime(ws.createdAt)
     return { text: `untitled · ${when} · ${shortId}`, muted: true }
   }
-
-  // Seed and subscribe to terminal titles for ALL rows (active + archived)
-  // so the Workspace column shows the last OSC title even when the workspace
-  // hasn't been opened in this app session.
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of all) {
-      if (titleByWs[ws.id] !== undefined) continue
-      window.api.workspaces
-        .getTitle(ws.id)
-        .then((t) => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: t ?? null }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (cancelled) return
-      setTitleByWs((prev) => ({ ...prev, [e.workspaceId]: e.title || null }))
-    })
-    return () => {
-      cancelled = true
-      unsub()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all.map((w) => w.id).join('|')])
-
-  // Background git status for visible active rows (each call is short-timeout
-  // + error-swallowing so worst case is no branch decoration).
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of active) {
-      if (gitByWs[ws.id] !== undefined) continue
-      window.api.git
-        .status(ws.cwd)
-        .then((s) => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: s }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active.map((w) => w.id).join('|')])
 
   function openMenu(e: React.MouseEvent, ws: WorkspaceRecord): void {
     e.stopPropagation()
@@ -233,26 +227,8 @@ export function WorkspacesTab({
     if (!menu) return []
     const ws = menu.ws
     const isPinned = ws.pinnedAt !== null
-    if (ws.archivedAt !== null) {
-      return [
-        {
-          label: 'Unarchive',
-          icon: <ArrowUUpLeft size={13} />,
-          onClick: () => onUnarchiveWorkspace(ws.id, projectId)
-        },
-        {
-          label: 'Rename',
-          icon: <PencilSimple size={13} />,
-          onClick: () => beginRename(ws)
-        }
-      ]
-    }
     return [
-      {
-        label: 'Rename',
-        icon: <PencilSimple size={13} />,
-        onClick: () => beginRename(ws)
-      },
+      { label: 'Rename', icon: <PencilSimple size={13} />, onClick: () => beginRename(ws) },
       {
         label: isPinned ? 'Unpin' : 'Pin',
         icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
@@ -260,13 +236,42 @@ export function WorkspacesTab({
       },
       { divider: true, label: '', onClick: () => {} },
       {
-        label: 'Archive',
-        icon: <Archive size={13} />,
+        // v34+: archive is a hard delete. Label it honestly.
+        label: 'Delete workspace',
+        icon: <Trash size={13} />,
         onClick: () => onArchiveWorkspace(ws.id, projectId),
         destructive: true
       }
     ]
-  }, [menu, projectId, onArchiveWorkspace, onUnarchiveWorkspace, onToggleWorkspacePin])
+  }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin])
+
+  function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
+    if (a === null || a === undefined) return 1
+    if (b === null || b === undefined) return -1
+    if (a < b) return -1
+    if (a > b) return 1
+    return 0
+  }
+
+  const activeSorted = useMemo(() => {
+    const copy = [...active]
+    copy.sort((a, b) => {
+      let cmp: number
+      if (activeSortBy === 'messages') {
+        cmp = nullsLastCmp(messageCountForWorkspace(a), messageCountForWorkspace(b))
+      } else {
+        cmp = nullsLastCmp(a.lastOpenedAt, b.lastOpenedAt)
+      }
+      return activeSortDir === 'asc' ? cmp : -cmp
+    })
+    return copy
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, activeSortBy, activeSortDir, sessionStats])
+
+  const activePaginated = activeSorted.slice(
+    (activePage - 1) * PAGE_SIZE,
+    activePage * PAGE_SIZE
+  )
 
   const activeColumns: DataTableColumn<WorkspaceRecord>[] = useMemo(
     () => [
@@ -377,140 +382,19 @@ export function WorkspacesTab({
     [gitByWs, titleByWs, workspaceActivities, renamingId, renameValue, sessionStats]
   )
 
-  const archivedColumns: DataTableColumn<WorkspaceRecord>[] = useMemo(
-    () => [
-      {
-        key: 'name',
-        label: 'Workspace',
-        render: (ws) => {
-          const dn = displayNameForWorkspace(ws)
-          return (
-            <span
-              className={[
-                'truncate',
-                dn.muted ? 'text-text-muted italic' : 'text-text-secondary'
-              ].join(' ')}
-              title={dn.text}
-            >
-              {dn.text}
-            </span>
-          )
-        }
-      },
-      {
-        key: 'messages',
-        label: 'Msgs',
-        width: '70px',
-        align: 'right',
-        render: (ws) => {
-          const n = messageCountForWorkspace(ws)
-          return (
-            <span className="text-text-muted text-xs tabular-nums">
-              {typeof n === 'number' ? n : '—'}
-            </span>
-          )
-        }
-      },
-      {
-        key: 'archivedAt',
-        label: 'Archived',
-        width: '120px',
-        sortable: true,
-        render: (ws) => (
-          <span className="text-text-muted text-xs whitespace-nowrap">
-            {ws.archivedAt ? relativeTime(ws.archivedAt) : '—'}
-          </span>
-        )
-      },
-      {
-        key: 'lastOpenedAt',
-        label: 'Last opened',
-        width: '120px',
-        sortable: true,
-        render: (ws) => (
-          <span className="text-text-muted text-xs whitespace-nowrap">
-            {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
-          </span>
-        )
-      },
-      {
-        key: 'unarchive',
-        label: '',
-        width: '44px',
-        align: 'right',
-        render: (ws) => (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onUnarchiveWorkspace(ws.id, projectId)
-            }}
-            aria-label="Unarchive"
-            title="Unarchive"
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
-          >
-            <ArrowUUpLeft size={14} />
-          </button>
-        )
-      }
-    ],
-    [onUnarchiveWorkspace, projectId, sessionStats, titleByWs]
-  )
-
-  function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
-    if (a === null || a === undefined) return 1
-    if (b === null || b === undefined) return -1
-    if (a < b) return -1
-    if (a > b) return 1
-    return 0
-  }
-
-  const activeSorted = useMemo(() => {
-    const copy = [...active]
-    copy.sort((a, b) => {
-      let cmp: number
-      if (activeSortBy === 'messages') {
-        cmp = nullsLastCmp(messageCountForWorkspace(a), messageCountForWorkspace(b))
-      } else {
-        cmp = nullsLastCmp(a.lastOpenedAt, b.lastOpenedAt)
-      }
-      return activeSortDir === 'asc' ? cmp : -cmp
-    })
-    return copy
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeSortBy, activeSortDir, sessionStats])
-
-  const archivedSorted = useMemo(() => {
-    const copy = [...archived]
-    copy.sort((a, b) => {
-      const cmp =
-        archivedSortBy === 'lastOpenedAt'
-          ? nullsLastCmp(a.lastOpenedAt, b.lastOpenedAt)
-          : nullsLastCmp(a.archivedAt, b.archivedAt)
-      return archivedSortDir === 'asc' ? cmp : -cmp
-    })
-    return copy
-  }, [archived, archivedSortBy, archivedSortDir])
-
-  const activePaginated = activeSorted.slice(
-    (activePage - 1) * PAGE_SIZE,
-    activePage * PAGE_SIZE
-  )
-  const archivedPaginated = archivedSorted.slice(
-    (archivedPage - 1) * PAGE_SIZE,
-    archivedPage * PAGE_SIZE
-  )
-
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Active workspaces (left) + Sessions panel (right) — Sessions
+          replaces the archived table that lived here before v34. */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2 min-w-0">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Active{active.length > 0 && ` · ${active.length}`}
+            Workspaces{active.length > 0 && ` · ${active.length}`}
           </h3>
           {!loading && active.length === 0 ? (
             <div className="rounded-lg border border-border-default bg-surface-raised py-8 flex flex-col items-center gap-2">
               <Terminal size={20} className="text-text-muted opacity-50" />
-              <p className="text-xs text-text-muted">No active workspaces</p>
+              <p className="text-xs text-text-muted">No workspaces yet</p>
             </div>
           ) : (
             <DataTable<WorkspaceRecord>
@@ -547,46 +431,13 @@ export function WorkspacesTab({
 
         <div className="flex flex-col gap-2 min-w-0">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Archived{archived.length > 0 && ` · ${archived.length}`}
+            Sessions
           </h3>
-          {!loading && archived.length === 0 ? (
-            <div className="rounded-lg border border-border-default bg-surface-raised py-8 flex flex-col items-center gap-2">
-              <Archive size={18} className="text-text-muted opacity-50" />
-              <p className="text-xs text-text-muted">Nothing archived</p>
-            </div>
-          ) : (
-            <DataTable<WorkspaceRecord>
-              columns={archivedColumns}
-              rows={archivedPaginated}
-              rowKey={(ws) => ws.id}
-              loading={loading}
-              sortBy={archivedSortBy}
-              sortDir={archivedSortDir}
-              onSortChange={(by, dir) => {
-                if (by === 'archivedAt' || by === 'lastOpenedAt') {
-                  setArchivedSortBy(by)
-                  setArchivedSortDir(dir)
-                  setArchivedPage(1)
-                }
-              }}
-              onRowClick={async (ws) => {
-                // Opening an archived workspace promotes it to active first —
-                // the user clearly wants to keep working in it.
-                await onUnarchiveWorkspace(ws.id, projectId)
-                onSelectWorkspace(ws.id)
-              }}
-              pagination={
-                archived.length > PAGE_SIZE
-                  ? {
-                      page: archivedPage,
-                      pageSize: PAGE_SIZE,
-                      total: archived.length,
-                      onPageChange: setArchivedPage
-                    }
-                  : undefined
-              }
-            />
-          )}
+          <SessionsTab
+            projectId={projectId}
+            onResumedInWorkspace={onResumedInWorkspace}
+            compact
+          />
         </div>
       </div>
 

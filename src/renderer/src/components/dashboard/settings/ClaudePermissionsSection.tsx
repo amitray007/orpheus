@@ -3,6 +3,7 @@ import type React from 'react'
 import { CaretDown, CaretRight } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings } from '@shared/types'
 import { SettingRow, Toggle, RuleListEditor } from './primitives'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // ClaudePermissionsSection — quick toggles + permission rule editor
@@ -47,7 +48,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
             allow/ask/deny policies.
           </p>
         </div>
-        <p className="text-sm text-text-muted">Loading…</p>
+        <SettingsSectionSkeleton groups={2} rowsPerGroup={3} />
       </div>
     )
   }

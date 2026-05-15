@@ -3,6 +3,7 @@ import type React from 'react'
 import { GitBranch, GitCommit as GitCommitIcon, MagnifyingGlass } from '@phosphor-icons/react'
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
+import { CommitListSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +85,10 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
         setBranches(list)
         if (list.length === 0) {
           setBranch('')
+          // No branches means there's nothing for the commits effect to fetch,
+          // so flip the fetched flag here to surface the empty state instead
+          // of leaving the skeleton spinning forever.
+          setHasFetchedOnce(true)
           return
         }
         const current = list.find((b) => b.isCurrent)
@@ -201,6 +206,8 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
           <GitBranch size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
           <p className="text-sm text-text-muted">{error}</p>
         </div>
+      ) : !hasFetchedOnce ? (
+        <CommitListSkeleton count={5} />
       ) : hasFetchedOnce && commits.length === 0 ? (
         <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
           <GitCommitIcon size={22} className="text-text-muted opacity-50 mx-auto mb-2" />

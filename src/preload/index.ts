@@ -118,10 +118,9 @@ const api = {
     open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
-    archive: (id: string): Promise<WorkspaceRecord | null> =>
-      ipcRenderer.invoke('workspaces:archive', { id }),
-    unarchive: (id: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:unarchive', { id }),
+    // "Archive" is a hard delete in v34+. The IPC name + label stay for
+    // user-facing continuity even though there's no soft-archive anymore.
+    archive: (id: string): Promise<void> => ipcRenderer.invoke('workspaces:archive', { id }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:rename', { id, name }),
     reorder: (projectId: string, orderedIds: string[]): Promise<void> =>

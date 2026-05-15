@@ -16,6 +16,7 @@ import type { AppUiState, DetectedApp, GitStatus, ProjectRecord } from '@shared/
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { Identicon } from '../../Identicon'
 import { SplitButton } from '../../SplitButton'
+import { Skeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,9 +46,12 @@ function shortAppLabel(app: DetectedApp): string {
 
 interface ProjectHeaderProps {
   project: ProjectRecord
-  workspaceCount: number
+  /** null = still loading (ProjectHeader renders a skeleton chip in that case). */
+  /** `null` while the workspace list is still loading. */
+  workspaceCount: number | null | null
   lastActivityAt: number | null
-  overrideCount: number
+  /** `null` while project settings are still loading. */
+  overrideCount: number | null
   onNewWorkspace: () => void
   onOpenSettings: () => void
   onRequestRemove: () => void
@@ -160,7 +164,10 @@ export function ProjectHeader({
     setMenu({ x: rect.right - 200, y: rect.bottom + 4 })
   }
 
-  const workspacesLabel = `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
+  const workspacesLabel =
+    workspaceCount === null
+      ? null
+      : `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
   const activityLabel = lastActivityAt
     ? `active ${relativeTime(lastActivityAt)}`
     : 'no activity yet'
@@ -212,10 +219,19 @@ export function ProjectHeader({
                 <span aria-hidden>·</span>
               </>
             )}
-            <span>{workspacesLabel}</span>
+            {workspacesLabel ? (
+              <span>{workspacesLabel}</span>
+            ) : (
+              <Skeleton className="inline-block h-3 w-24 align-middle opacity-60" />
+            )}
             <span aria-hidden>·</span>
             <span>{activityLabel}</span>
-            {overrideCount > 0 && (
+            {overrideCount === null ? (
+              <>
+                <span aria-hidden>·</span>
+                <Skeleton className="inline-block h-3 w-20 align-middle opacity-60" />
+              </>
+            ) : overrideCount > 0 ? (
               <>
                 <span aria-hidden>·</span>
                 <button
@@ -225,7 +241,7 @@ export function ProjectHeader({
                   {overrideCount} override{overrideCount === 1 ? '' : 's'}
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         </div>
 
