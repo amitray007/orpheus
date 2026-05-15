@@ -78,7 +78,8 @@ import {
   shimPath,
   onActivityChange,
   resetWorkspaceActivity,
-  heartbeatFromTitle
+  heartbeatFromTitle,
+  clearWorkspaceActivity
 } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
@@ -688,7 +689,13 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => archiveWorkspace(id))
 
-ipcMain.handle('workspaces:unarchive', (_e, { id }: { id: string }) => unarchiveWorkspace(id))
+ipcMain.handle('workspaces:unarchive', (_e, { id }: { id: string }) => {
+  const updated = unarchiveWorkspace(id)
+  // Clear any stale 'archived' runtime activity so the sidebar's activity
+  // indicator and the renderer's activity cache reflect the live state.
+  clearWorkspaceActivity(id)
+  return updated
+})
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)

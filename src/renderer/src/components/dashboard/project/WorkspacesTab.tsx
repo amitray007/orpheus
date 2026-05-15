@@ -84,7 +84,10 @@ export function WorkspacesTab({
   const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
   const [titleByWs, setTitleByWs] = useState<Record<string, string | null>>({})
   const [sessionStats, setSessionStats] = useState<
-    Record<string, { messageCount: number | null; jsonlSizeBytes: number | null }>
+    Record<
+      string,
+      { messageCount: number | null; jsonlSizeBytes: number | null; title: string | null }
+    >
   >({})
 
   // Refresh session metadata then load it so the Messages column reflects
@@ -97,12 +100,12 @@ export function WorkspacesTab({
       .then(() => window.api.sessions.listForProject(projectId, { includeArchived: true }))
       .then((sessions) => {
         if (cancelled) return
-        const map: Record<string, { messageCount: number | null; jsonlSizeBytes: number | null }> =
-          {}
+        const map: typeof sessionStats = {}
         for (const s of sessions) {
           map[s.id] = {
             messageCount: s.messageCount ?? null,
-            jsonlSizeBytes: s.jsonlSizeBytes ?? null
+            jsonlSizeBytes: s.jsonlSizeBytes ?? null,
+            title: s.title ?? null
           }
         }
         setSessionStats(map)
@@ -118,11 +121,31 @@ export function WorkspacesTab({
     return sessionStats[ws.claudeSessionId]?.messageCount ?? null
   }
 
-  // Seed and subscribe to terminal titles for visible active rows so the
-  // Name column reflects the live OSC title (matching Sidebar behavior).
+  // Display name resolution — auto-named workspaces (the default for anything
+  // not manually renamed) should never reveal the placeholder seed name like
+  // "Workspace 3" or "New Workspace". Order: live terminal title → first user
+  // prompt of the workspace's session → muted "untitled". Manually-named
+  // workspaces always show their explicit name.
+  function displayNameForWorkspace(ws: WorkspaceRecord): {
+    text: string
+    muted: boolean
+  } {
+    if (!ws.nameIsAuto) return { text: ws.name, muted: false }
+    const terminalTitle = titleByWs[ws.id]
+    if (terminalTitle) return { text: terminalTitle, muted: false }
+    const sessionTitle = ws.claudeSessionId
+      ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+      : null
+    if (sessionTitle) return { text: sessionTitle, muted: false }
+    return { text: 'untitled', muted: true }
+  }
+
+  // Seed and subscribe to terminal titles for ALL rows (active + archived)
+  // so the Workspace column shows the last OSC title even when the workspace
+  // hasn't been opened in this app session.
   useEffect(() => {
     let cancelled = false
-    for (const ws of active) {
+    for (const ws of all) {
       if (titleByWs[ws.id] !== undefined) continue
       window.api.workspaces
         .getTitle(ws.id)
@@ -144,7 +167,7 @@ export function WorkspacesTab({
       unsub()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active.map((w) => w.id).join('|')])
+  }, [all.map((w) => w.id).join('|')])
 
   // Background git status for visible active rows (each call is short-timeout
   // + error-swallowing so worst case is no branch decoration).
@@ -236,11 +259,7 @@ export function WorkspacesTab({
         render: (ws) => {
           const activity = workspaceActivities[ws.id]
           const isPinned = ws.pinnedAt !== null
-          // Mirror Sidebar.tsx: auto-named workspaces show the live terminal
-          // title when one exists. Manually-renamed workspaces always show
-          // their persisted name.
-          const terminalTitle = titleByWs[ws.id] ?? null
-          const displayName = ws.nameIsAuto ? terminalTitle || ws.name : ws.name
+          const dn = displayNameForWorkspace(ws)
           return (
             <span className="flex items-center gap-2 min-w-0">
               <span className="flex items-center justify-center w-3 flex-shrink-0">
@@ -264,8 +283,11 @@ export function WorkspacesTab({
                   className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
                 />
               ) : (
-                <span className="truncate" title={displayName}>
-                  {displayName}
+                <span
+                  className={['truncate', dn.muted ? 'text-text-muted italic' : ''].join(' ')}
+                  title={dn.text}
+                >
+                  {dn.text}
                 </span>
               )}
               {isPinned && !renamingId && (
@@ -343,11 +365,20 @@ export function WorkspacesTab({
       {
         key: 'name',
         label: 'Workspace',
-        render: (ws) => (
-          <span className="truncate text-text-secondary" title={ws.name}>
-            {ws.name}
-          </span>
-        )
+        render: (ws) => {
+          const dn = displayNameForWorkspace(ws)
+          return (
+            <span
+              className={[
+                'truncate',
+                dn.muted ? 'text-text-muted italic' : 'text-text-secondary'
+              ].join(' ')}
+              title={dn.text}
+            >
+              {dn.text}
+            </span>
+          )
+        }
       },
       {
         key: 'messages',
@@ -405,7 +436,7 @@ export function WorkspacesTab({
         )
       }
     ],
-    [onUnarchiveWorkspace, projectId, sessionStats]
+    [onUnarchiveWorkspace, projectId, sessionStats, titleByWs]
   )
 
   function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {

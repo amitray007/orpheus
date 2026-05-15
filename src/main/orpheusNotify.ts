@@ -247,6 +247,22 @@ export function resetWorkspaceActivity(workspaceId: string): void {
   dispatch(workspaceId, 'awaiting_input')
 }
 
+/**
+ * After unarchive: forget any stale runtime activity for this workspace.
+ * Without this the in-memory activityMap (and renderer's cache) may still
+ * report 'archived', so the workspace renders without an activity dot even
+ * though it's now active again.
+ */
+export function clearWorkspaceActivity(workspaceId: string): void {
+  clearWatchdog(workspaceId)
+  // Force a fresh 'idle' broadcast even if the current cached value is also
+  // archived → avoid dispatch's early-return when prev === status.
+  activityMap.delete(workspaceId)
+  detailMap.delete(workspaceId)
+  lastBroadcastDetail.delete(workspaceId)
+  dispatch(workspaceId, 'idle')
+}
+
 export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
   return activityMap.get(workspaceId) ?? 'idle'
 }
