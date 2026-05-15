@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { MagnifyingGlass, ChatCircle, Play } from '@phosphor-icons/react'
+import { MagnifyingGlass, ChatCircle, Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { Select } from '../settings/primitives'
 import { Spinner } from '../../Spinner'
+import { ConfirmModal } from '../../ConfirmModal'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -107,6 +108,7 @@ export function SessionsTab({
   // from flashing on rapid input.
   const [loading, setLoading] = useState(true)
   const [resumingId, setResumingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<SessionRecord | null>(null)
 
   // Debounce search input
   useEffect(() => {
@@ -240,9 +242,30 @@ export function SessionsTab({
         )
       }
     }
+    const deleteCol: DataTableColumn<SessionRecord> = {
+      key: 'delete',
+      label: '',
+      width: '36px',
+      align: 'right',
+      render: (r) => (
+        <button
+          type="button"
+          onClick={(e) => {
+            // Stop the row's onClick (which would resume the session).
+            e.stopPropagation()
+            setPendingDelete(r)
+          }}
+          aria-label="Delete session"
+          title="Delete session"
+          className="inline-flex items-center justify-center w-6 h-6 rounded-md text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+        >
+          <Trash size={11} />
+        </button>
+      )
+    }
 
     if (compact) {
-      return [promptCol, updatedCol, resumeCol]
+      return [promptCol, updatedCol, deleteCol, resumeCol]
     }
     return [
       promptCol,
@@ -284,9 +307,25 @@ export function SessionsTab({
         render: (r) => <span className="text-text-muted">{relativeTime(r.createdAt)}</span>
       },
       updatedCol,
+      deleteCol,
       resumeCol
     ]
   }, [resumingId, compact])
+
+  async function confirmDelete(): Promise<void> {
+    if (!pendingDelete) return
+    const id = pendingDelete.id
+    setPendingDelete(null)
+    try {
+      await window.api.sessions.delete(id)
+      // Drop the row optimistically; a refetch follows via metadata bump.
+      setRows((prev) => prev.filter((r) => r.id !== id))
+      setTotal((prev) => Math.max(0, prev - 1))
+      setMetadataVersion((v) => v + 1)
+    } catch (err) {
+      console.error('[sessions-tab] delete failed', err)
+    }
+  }
 
   const emptyState = (
     <div className="flex flex-col items-center gap-2">
@@ -346,6 +385,30 @@ export function SessionsTab({
         }}
         onRowClick={handleRowClick}
       />
+
+      {pendingDelete && (
+        <ConfirmModal
+          title="Delete session?"
+          body={
+            <>
+              <p>
+                This will move the JSONL transcript to your Trash and remove the session
+                from Orpheus's list. You can recover from Finder Trash if you change your
+                mind.
+              </p>
+              {pendingDelete.title && (
+                <p className="mt-2 text-xs text-text-muted italic truncate">
+                  "{pendingDelete.title}"
+                </p>
+              )}
+            </>
+          }
+          confirmLabel="Delete"
+          destructive
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   )
 }

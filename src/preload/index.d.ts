@@ -89,6 +89,7 @@ declare global {
         listForProjectPaged: (req: SessionsPagedRequest) => Promise<SessionsPagedResult>
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
         refreshMetadata: (projectId: string) => Promise<void>
+        delete: (id: string) => Promise<void>
       }
       workspaces: {
         listForProject: (

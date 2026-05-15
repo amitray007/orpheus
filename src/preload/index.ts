@@ -105,7 +105,8 @@ const api = {
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('sessions:refreshMetadata', { projectId })
+      ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id })
   },
   workspaces: {
     listForProject: (

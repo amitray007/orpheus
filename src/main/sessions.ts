@@ -607,3 +607,32 @@ export function createWorkspaceResumingSession(
   }
   return refreshed
 }
+
+// ---------------------------------------------------------------------------
+// Hard delete a session — drops the DB row AND moves the JSONL transcript to
+// the OS trash. trashItem (vs fs.unlink) means the user can still recover
+// from Finder Trash if they hit delete by accident.
+// ---------------------------------------------------------------------------
+
+export async function deleteSession(id: string): Promise<void> {
+  const db = getDb()
+  const row = db.prepare('SELECT jsonl_path FROM sessions WHERE id = ?').get(id) as
+    | { jsonl_path: string | null }
+    | undefined
+
+  if (row?.jsonl_path) {
+    try {
+      // shell is imported lazily — keeping this module electron-free where it
+      // doesn't need to be (it's imported by unit-test friendly paths too).
+      const { shell } = await import('electron')
+      await shell.trashItem(row.jsonl_path)
+    } catch (err) {
+      console.warn('[sessions] failed to trash JSONL', row.jsonl_path, err)
+      // Fall through to DB delete anyway — we don't want the row stuck if
+      // the file was already gone or path access failed.
+    }
+  }
+
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+}
+
