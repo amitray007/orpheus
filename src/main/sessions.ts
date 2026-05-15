@@ -2,7 +2,15 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
-import type { ProjectRecord, SessionRecord, SessionStatus } from '../shared/types'
+import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
+import type {
+  ProjectRecord,
+  SessionRecord,
+  SessionStatus,
+  SessionsPagedRequest,
+  SessionsPagedResult,
+  WorkspaceRecord
+} from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -291,17 +299,124 @@ export function listAllSessions(filter?: { status?: SessionStatus }): SessionRec
   return rows.map(rowToRecord)
 }
 
+// Whitelist for sortBy to prevent any SQL injection via column name interpolation.
+const SORT_COLUMN_MAP: Record<string, string> = {
+  updatedAt: 'updated_at',
+  createdAt: 'created_at',
+  title: 'title'
+}
+
+export function listSessionsForProjectPaged(req: SessionsPagedRequest): SessionsPagedResult {
+  const db = getDb()
+
+  const limit = req.limit ?? 25
+  const offset = req.offset ?? 0
+  const sortDir = req.sortDir === 'asc' ? 'ASC' : 'DESC'
+  const sortCol = SORT_COLUMN_MAP[req.sortBy ?? 'updatedAt'] ?? 'updated_at'
+
+  // Build WHERE clause incrementally — archived rows excluded by default.
+  const conditions: string[] = ['project_id = ?', "status != 'archived'"]
+  const params: unknown[] = [req.projectId]
+
+  if (req.search) {
+    conditions.push("LOWER(title) LIKE '%' || LOWER(?) || '%'")
+    params.push(req.search)
+  }
+  if (req.dateFrom !== undefined) {
+    conditions.push('updated_at >= ?')
+    params.push(req.dateFrom)
+  }
+  if (req.dateTo !== undefined) {
+    conditions.push('updated_at <= ?')
+    params.push(req.dateTo)
+  }
+
+  const where = 'WHERE ' + conditions.join(' AND ')
+
+  // COUNT first, then paginated SELECT — two statements for clarity.
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM sessions ${where}`)
+    .get(...params) as { total: number }
+
+  // NULLS LAST: for title sort we want nulls at the end regardless of direction.
+  const nullsLast = sortCol === 'title' ? ' NULLS LAST' : ''
+  const rows = db
+    .prepare(
+      `SELECT * FROM sessions ${where}
+       ORDER BY ${sortCol} ${sortDir}${nullsLast}
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as SessionRow[]
+
+  return { rows: rows.map(rowToRecord), total }
+}
+
 export function setSessionStatus(id: string, status: SessionStatus): void {
   const db = getDb()
   const now = Date.now()
 
   if (status === 'archived') {
-    db.prepare(
-      `UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`
-    ).run(status, now, now, id)
+    db.prepare(`UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`).run(
+      status,
+      now,
+      now,
+      id
+    )
   } else {
     db.prepare(
       `UPDATE sessions SET status = ?, archived_at = NULL, updated_at = ? WHERE id = ?`
     ).run(status, now, id)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Resume in new workspace
+// ---------------------------------------------------------------------------
+
+type ProjectPathRow = { id: string; path: string; name: string }
+
+/**
+ * Creates a fresh workspace pre-wired with `claude_session_id = sessionId` so
+ * that the first terminal mount will launch claude with `--resume <sessionId>`.
+ * No schema changes needed — claude_session_id already exists on workspaces (v26)
+ * and composeClaudeLaunch already emits --resume when it is set.
+ */
+export function createWorkspaceResumingSession(
+  projectId: string,
+  sessionId: string
+): WorkspaceRecord {
+  const db = getDb()
+
+  const project = db.prepare('SELECT id, path, name FROM projects WHERE id = ?').get(projectId) as
+    | ProjectPathRow
+    | undefined
+
+  if (!project) {
+    throw new Error(`Project not found: ${projectId}`)
+  }
+
+  // Derive a human-readable name from the session title when available.
+  const sessionRow = db.prepare('SELECT title FROM sessions WHERE id = ?').get(sessionId) as
+    | { title: string | null }
+    | undefined
+
+  const shortId = sessionId.slice(0, 8)
+  const rawTitle = sessionRow?.title
+  const workspaceName = rawTitle
+    ? rawTitle.length > 40
+      ? rawTitle.slice(0, 40) + '…'
+      : rawTitle
+    : `Resume ${shortId}`
+
+  const ws = createWorkspace({ projectId, name: workspaceName, cwd: project.path })
+
+  // Pre-seed the session ID so composeClaudeLaunch includes --resume on first mount.
+  setWorkspaceClaudeSessionId(ws.id, sessionId)
+
+  // Re-fetch via the public accessor to get the updated claudeSessionId.
+  const refreshed = getWorkspace(ws.id)
+  if (!refreshed) {
+    throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
+  }
+  return refreshed
 }

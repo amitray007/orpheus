@@ -324,6 +324,22 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       .catch(console.error)
   }
 
+  async function handleResumedInWorkspace(workspace: WorkspaceRecord): Promise<void> {
+    // sessions:resumeInNewWorkspace already created the row; refresh + navigate.
+    await fetchWorkspacesForProject(workspace.projectId)
+    setExpandedProjectIds((prev) => {
+      const next = new Set(prev)
+      if (!next.has(workspace.projectId)) {
+        next.add(workspace.projectId)
+        window.api.projects
+          .setExpandedInSidebar(workspace.projectId, true)
+          .catch(console.error)
+      }
+      return next
+    })
+    handleSelectWorkspace(workspace.id, workspace.projectId)
+  }
+
   function handleSelectWorkspace(workspaceId: string, projectId: string): void {
     setSelectedProjectId(projectId)
     setSelectedWorkspaceId(workspaceId)
@@ -624,6 +640,8 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
             onUnarchiveWorkspace={handleUnarchiveWorkspace}
             onToggleWorkspacePin={handleToggleWorkspacePin}
+            workspaceActivities={workspaceActivities}
+            onResumedInWorkspace={handleResumedInWorkspace}
           />
         </main>
       </div>

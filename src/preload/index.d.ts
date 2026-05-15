@@ -4,6 +4,8 @@ import type {
   ProjectRecord,
   SessionRecord,
   SessionStatus,
+  SessionsPagedRequest,
+  SessionsPagedResult,
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
@@ -17,6 +19,8 @@ import type {
   AppUiState,
   AppUiStatePatch,
   GitStatus,
+  GitBranchInfo,
+  GitCommit,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -81,6 +85,8 @@ declare global {
         ) => Promise<SessionRecord[]>
         listAll: (opts?: { status?: SessionStatus }) => Promise<SessionRecord[]>
         setStatus: (id: string, status: SessionStatus) => Promise<void>
+        listForProjectPaged: (req: SessionsPagedRequest) => Promise<SessionsPagedResult>
+        resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
       }
       workspaces: {
         listForProject: (
@@ -95,15 +101,17 @@ declare global {
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
         reorder: (projectId: string, orderedIds: string[]) => Promise<void>
         isDirty: (id: string) => Promise<boolean>
-        onDirtyChanged: (
-          cb: (e: { workspaceId: string; dirty: boolean }) => void
-        ) => () => void
+        onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void) => () => void
         getTitle: (id: string) => Promise<string | null>
         onTitleChanged: (
           cb: (e: { workspaceId: string; title: string | null }) => void
         ) => () => void
         onActivityChanged: (
-          cb: (e: { workspaceId: string; status: WorkspaceStatus; detail: WorkspaceActivityDetail }) => void
+          cb: (e: {
+            workspaceId: string
+            status: WorkspaceStatus
+            detail: WorkspaceActivityDetail
+          }) => void
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
         resetActivity: (workspaceId: string) => Promise<void>
@@ -123,11 +131,17 @@ declare global {
       }
       claudeProjectSettings: {
         get: (projectId: string) => Promise<ClaudeProjectSettings>
-        update: (projectId: string, patch: ClaudeProjectSettingsOverrides) => Promise<ClaudeProjectSettings>
+        update: (
+          projectId: string,
+          patch: ClaudeProjectSettingsOverrides
+        ) => Promise<ClaudeProjectSettings>
       }
       claudeWorkspaceSettings: {
         get: (workspaceId: string) => Promise<ClaudeWorkspaceSettings>
-        update: (workspaceId: string, patch: ClaudeWorkspaceSettingsOverrides) => Promise<ClaudeWorkspaceSettings>
+        update: (
+          workspaceId: string,
+          patch: ClaudeWorkspaceSettingsOverrides
+        ) => Promise<ClaudeWorkspaceSettings>
       }
       uiState: {
         get: () => Promise<AppUiState>
@@ -135,21 +149,42 @@ declare global {
       }
       git: {
         status: (cwd: string) => Promise<GitStatus | null>
+        branches: (cwd: string) => Promise<GitBranchInfo[]>
+        log: (
+          cwd: string,
+          opts?: { branch?: string; limit?: number; offset?: number }
+        ) => Promise<GitCommit[]>
+      }
+      shell: {
+        revealInFinder: (path: string) => Promise<void>
+        openInEditor: (path: string) => Promise<void>
+        openTerminal: (path: string) => Promise<void>
+        copyToClipboard: (text: string) => Promise<void>
       }
       mcp: {
         listServers: () => Promise<DiscoveredMcpServer[]>
         add: (draft: McpServerDraft) => Promise<void>
-        update: (filePath: string, oldName: string, draft: Omit<McpServerDraft, 'source' | 'projectId'>) => Promise<void>
+        update: (
+          filePath: string,
+          oldName: string,
+          draft: Omit<McpServerDraft, 'source' | 'projectId'>
+        ) => Promise<void>
         delete: (filePath: string, name: string) => Promise<void>
       }
       claudeAgents: {
         listSlashCommands: () => Promise<ClaudeSlashCommand[]>
         listSubagents: () => Promise<ClaudeSubagent[]>
         addSlashCommand: (draft: ClaudeSlashCommandDraft) => Promise<void>
-        updateSlashCommand: (filePath: string, draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>) => Promise<void>
+        updateSlashCommand: (
+          filePath: string,
+          draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>
+        ) => Promise<void>
         deleteSlashCommand: (filePath: string) => Promise<void>
         addSubagent: (draft: ClaudeSubagentDraft) => Promise<void>
-        updateSubagent: (filePath: string, draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>) => Promise<void>
+        updateSubagent: (
+          filePath: string,
+          draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>
+        ) => Promise<void>
         deleteSubagent: (filePath: string) => Promise<void>
       }
       claudeHooks: {
@@ -163,7 +198,12 @@ declare global {
           hookIdx: number,
           draft: { event: string; matcher: string | null; type: string; command: string }
         ) => Promise<void>
-        delete: (filePath: string, event: string, matcherEntryIdx: number, hookIdx: number) => Promise<void>
+        delete: (
+          filePath: string,
+          event: string,
+          matcherEntryIdx: number,
+          hookIdx: number
+        ) => Promise<void>
       }
       contextMenu: {
         show: (items: ContextMenuNativeItem[]) => Promise<string | null>

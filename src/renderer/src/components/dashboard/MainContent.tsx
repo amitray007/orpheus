@@ -2,7 +2,11 @@ import { ProjectView } from './ProjectView'
 import { SessionsView } from './SessionsView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
-import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
+import type {
+  ProjectRecord,
+  WorkspaceActivityDetail,
+  WorkspaceRecord
+} from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // Dashboard home placeholder sections
@@ -50,6 +54,8 @@ interface MainContentProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onUnarchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
+  workspaceActivities?: Record<string, WorkspaceActivityDetail>
+  onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
 }
 
 export function MainContent({
@@ -64,7 +70,9 @@ export function MainContent({
   onRenameWorkspace,
   onArchiveWorkspace,
   onUnarchiveWorkspace,
-  onToggleWorkspacePin
+  onToggleWorkspacePin,
+  workspaceActivities,
+  onResumedInWorkspace
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -116,6 +124,7 @@ export function MainContent({
     <ProjectView
       project={project}
       workspaces={workspacesForProject}
+      workspaceActivities={workspaceActivities}
       onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onAddWorkspace={onAddWorkspace}
@@ -123,6 +132,7 @@ export function MainContent({
       onArchiveWorkspace={onArchiveWorkspace}
       onUnarchiveWorkspace={onUnarchiveWorkspace}
       onToggleWorkspacePin={onToggleWorkspacePin}
+      onResumedInWorkspace={onResumedInWorkspace}
     />
   )
 }

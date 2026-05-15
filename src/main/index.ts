@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
-import { getGitStatus } from './git'
+import { getGitStatus, listBranches, listCommits } from './git'
 import { getDb } from './db'
 import {
   listProjects,
@@ -19,7 +19,13 @@ import {
   setProjectExpandedInSidebar,
   reorderProjects
 } from './projects'
-import { listSessionsForProject, listAllSessions, setSessionStatus } from './sessions'
+import {
+  listSessionsForProject,
+  listSessionsForProjectPaged,
+  listAllSessions,
+  setSessionStatus,
+  createWorkspaceResumingSession
+} from './sessions'
 import {
   listWorkspacesForProject,
   createWorkspace,
@@ -35,11 +41,23 @@ import {
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles
 } from './workspaces'
-import { getClaudeGlobalSettings, updateClaudeGlobalSettings, composeClaudeLaunch } from './claudeSettings'
+import {
+  getClaudeGlobalSettings,
+  updateClaudeGlobalSettings,
+  composeClaudeLaunch
+} from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
-import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
+import {
+  getClaudeWorkspaceSettings,
+  updateClaudeWorkspaceSettings
+} from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import { getClaudeAuthState, updateClaudeAuth, getClaudeAuthEnv, testAnthropicConnection } from './claudeAuth'
+import {
+  getClaudeAuthState,
+  updateClaudeAuth,
+  getClaudeAuthEnv,
+  testAnthropicConnection
+} from './claudeAuth'
 import { listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer } from './mcp'
 import {
   listSlashCommands,
@@ -52,11 +70,20 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
-import { startNotifyServer, ensureManagedHooks, shimPath, onActivityChange, resetWorkspaceActivity, heartbeatFromTitle } from './orpheusNotify'
+import {
+  startNotifyServer,
+  ensureManagedHooks,
+  shimPath,
+  onActivityChange,
+  resetWorkspaceActivity,
+  heartbeatFromTitle
+} from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
+import { revealInFinder, openInEditor, openTerminal, copyToClipboard } from './shellHelpers'
 import type {
   SessionStatus,
+  SessionsPagedRequest,
   ClaudeGlobalSettingsPatch,
   AppUiStatePatch,
   ClaudeProjectSettingsOverrides,
@@ -322,7 +349,7 @@ function createWindow(): void {
     restoredBounds = {
       x: savedState.windowX,
       y: savedState.windowY,
-      width: Math.max(savedState.windowWidth, 960),  // clamp to minWidth
+      width: Math.max(savedState.windowWidth, 960), // clamp to minWidth
       height: Math.max(savedState.windowHeight, 600)
     }
   }
@@ -431,12 +458,18 @@ function createWindow(): void {
   })
 
   mainWindow.on('enter-full-screen', () => {
-    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
     updateAppUiState({ windowFullscreen: true })
   })
 
   mainWindow.on('leave-full-screen', () => {
-    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
     updateAppUiState({ windowFullscreen: false })
     // After exiting fullscreen, AppKit restores the pre-fullscreen geometry.
     // Capture it for next launch.
@@ -482,10 +515,11 @@ function getUserShellPath(): string {
     return cachedShellPath
   }
   try {
-    const output = childProcess.execSync(
-      `${shell} -ilc 'printf "%s" "$PATH"'`,
-      { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }
-    )
+    const output = childProcess.execSync(`${shell} -ilc 'printf "%s" "$PATH"'`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
     cachedShellPath = output.trim()
   } catch (err) {
     console.warn('[orpheus] failed to read user shell PATH:', err)
@@ -633,9 +667,8 @@ ipcMain.handle(
     listWorkspacesForProject(projectId, { scope })
 )
 
-ipcMain.handle(
-  'workspaces:create',
-  (_e, args: { projectId: string; name: string; cwd: string }) => createWorkspace(args)
+ipcMain.handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
+  createWorkspace(args)
 )
 
 ipcMain.handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
@@ -658,9 +691,8 @@ ipcMain.handle(
     reorderWorkspaces(projectId, orderedIds)
 )
 
-ipcMain.handle(
-  'workspace:isDirty',
-  (_e, { workspaceId }: { workspaceId: string }): boolean => dirtyWorkspaces.has(workspaceId)
+ipcMain.handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
+  dirtyWorkspaces.has(workspaceId)
 )
 
 // ---------------------------------------------------------------------------
@@ -679,13 +711,20 @@ ipcMain.handle(
     listSessionsForProject(projectId, { includeArchived })
 )
 
-ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) =>
-  listAllSessions(opts)
+ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
+
+ipcMain.handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
+  setSessionStatus(id, status)
+)
+
+ipcMain.handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
+  listSessionsForProjectPaged(req)
 )
 
 ipcMain.handle(
-  'sessions:setStatus',
-  (_e, { id, status }: { id: string; status: SessionStatus }) => setSessionStatus(id, status)
+  'sessions:resumeInNewWorkspace',
+  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
+    createWorkspaceResumingSession(projectId, sessionId)
 )
 
 // ---------------------------------------------------------------------------
@@ -706,8 +745,12 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 
 ipcMain.handle('mcp:listServers', () => listMcpServers())
 ipcMain.handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
-ipcMain.handle('mcp:update', (_e, args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }) =>
-  updateMcpServer(args.filePath, args.oldName, args.draft)
+ipcMain.handle(
+  'mcp:update',
+  (
+    _e,
+    args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }
+  ) => updateMcpServer(args.filePath, args.oldName, args.draft)
 )
 ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
   deleteMcpServer(args.filePath, args.name)
@@ -720,17 +763,23 @@ ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
 ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
 ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
 
-ipcMain.handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) => addSlashCommand(draft))
-ipcMain.handle('claudeAgents:updateSlashCommand', (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
-  updateSlashCommand(args.filePath, args.draft)
+ipcMain.handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
+  addSlashCommand(draft)
+)
+ipcMain.handle(
+  'claudeAgents:updateSlashCommand',
+  (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
+    updateSlashCommand(args.filePath, args.draft)
 )
 ipcMain.handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
   deleteSlashCommand(args.filePath)
 )
 
 ipcMain.handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
-ipcMain.handle('claudeAgents:updateSubagent', (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
-  updateSubagent(args.filePath, args.draft)
+ipcMain.handle(
+  'claudeAgents:updateSubagent',
+  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
+    updateSubagent(args.filePath, args.draft)
 )
 ipcMain.handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
   deleteSubagent(args.filePath)
@@ -745,19 +794,31 @@ ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: stri
   await shell.openPath(filePath)
 })
 ipcMain.handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
-ipcMain.handle('claudeHooks:update', (_e, args: {
-  filePath: string
-  event: string
-  matcherEntryIdx: number
-  hookIdx: number
-  draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
-}) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft))
-ipcMain.handle('claudeHooks:delete', (_e, args: {
-  filePath: string
-  event: string
-  matcherEntryIdx: number
-  hookIdx: number
-}) => deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx))
+ipcMain.handle(
+  'claudeHooks:update',
+  (
+    _e,
+    args: {
+      filePath: string
+      event: string
+      matcherEntryIdx: number
+      hookIdx: number
+      draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
+    }
+  ) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+)
+ipcMain.handle(
+  'claudeHooks:delete',
+  (
+    _e,
+    args: {
+      filePath: string
+      event: string
+      matcherEntryIdx: number
+      hookIdx: number
+    }
+  ) => deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+)
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC
@@ -816,9 +877,12 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   return result
 })
 
-ipcMain.on('workspace:setCurrentlyViewed', (_e, { workspaceId }: { workspaceId: string | null }) => {
-  setCurrentlyViewedWorkspace(workspaceId)
-})
+ipcMain.on(
+  'workspace:setCurrentlyViewed',
+  (_e, { workspaceId }: { workspaceId: string | null }) => {
+    setCurrentlyViewedWorkspace(workspaceId)
+  }
+)
 
 ipcMain.handle('workspace:resetActivity', (_e, { workspaceId }: { workspaceId: string }) => {
   resetWorkspaceActivity(workspaceId)
@@ -862,9 +926,24 @@ ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => 
 // Git IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('git:status', (_e, { cwd }: { cwd: string }): GitStatus | null =>
-  getGitStatus(cwd)
+ipcMain.handle('git:status', (_e, { cwd }: { cwd: string }): GitStatus | null => getGitStatus(cwd))
+
+ipcMain.handle('git:branches', (_e, { cwd }: { cwd: string }) => listBranches(cwd))
+
+ipcMain.handle(
+  'git:log',
+  (_e, args: { cwd: string; branch?: string; limit?: number; offset?: number }) =>
+    listCommits(args.cwd, args)
 )
+
+// ---------------------------------------------------------------------------
+// Shell helpers IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
+ipcMain.handle('shell:openInEditor', (_e, { path }: { path: string }) => openInEditor(path))
+ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => openTerminal(path))
+ipcMain.handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-native lifecycle
@@ -955,7 +1034,7 @@ ipcMain.handle(
 
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
-      ...authEnv,  // auth env wins on conflict
+      ...authEnv, // auth env wins on conflict
       ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
       ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
       ORPHEUS_WORKSPACE_ID: workspaceId,

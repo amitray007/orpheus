@@ -5,6 +5,21 @@ export type GitStatus = {
   branch: string | null
 }
 
+export type GitBranchInfo = {
+  name: string
+  isCurrent: boolean
+  lastCommitAt: number | null
+}
+
+export type GitCommit = {
+  sha: string
+  fullSha: string
+  subject: string
+  author: string
+  authorEmail: string
+  timestamp: number
+}
+
 export type ExistingProject = {
   encodedName: string // e.g. "-Users-maverick-code-projects-orpheus"
   path: string // decoded absolute path, e.g. "/Users/maverick/code/projects/orpheus"
@@ -258,27 +273,27 @@ export type ClaudeGlobalSettingsPatch = Partial<Omit<ClaudeGlobalSettings, 'upda
 // ---------------------------------------------------------------------------
 
 export type DiscoveredMcpServer = {
-  name: string              // server key from mcpServers map
+  name: string // server key from mcpServers map
   transport: 'stdio' | 'http' | 'sse' | 'unknown'
-  command?: string          // for stdio servers
-  args?: string[]           // for stdio servers
-  env?: Record<string, string>  // for stdio servers
-  url?: string              // for http/sse servers
-  source: 'user' | 'project'  // user = ~/.claude.json, project = <projectPath>/.mcp.json
-  projectId?: string        // set when source === 'project'
-  projectName?: string      // set when source === 'project'
-  filePath: string          // absolute path to the file this came from (for edit/delete)
+  command?: string // for stdio servers
+  args?: string[] // for stdio servers
+  env?: Record<string, string> // for stdio servers
+  url?: string // for http/sse servers
+  source: 'user' | 'project' // user = ~/.claude.json, project = <projectPath>/.mcp.json
+  projectId?: string // set when source === 'project'
+  projectName?: string // set when source === 'project'
+  filePath: string // absolute path to the file this came from (for edit/delete)
 }
 
 export type McpServerDraft = {
   name: string
   transport: 'stdio' | 'http' | 'sse'
-  command?: string       // stdio only
-  args?: string[]        // stdio only
-  url?: string           // http/sse only
-  env?: Record<string, string>  // stdio only
+  command?: string // stdio only
+  args?: string[] // stdio only
+  url?: string // http/sse only
+  env?: Record<string, string> // stdio only
   source: 'user' | 'project'
-  projectId?: string     // required when source === 'project'
+  projectId?: string // required when source === 'project'
 }
 
 // ---------------------------------------------------------------------------
@@ -312,26 +327,26 @@ export type ClaudeSubagent = {
 }
 
 export type ClaudeHookEntry = {
-  event: string                  // e.g. 'PreToolUse', 'Stop'
-  matcher: string | null         // e.g. 'Bash' for PreToolUse, null when omitted
-  type: string                   // typically 'command'
-  command: string                // shell command to run
+  event: string // e.g. 'PreToolUse', 'Stop'
+  matcher: string | null // e.g. 'Bash' for PreToolUse, null when omitted
+  type: string // typically 'command'
+  command: string // shell command to run
   source: 'user' | 'project'
   projectId?: string
   projectName?: string
-  filePath: string               // absolute path of the settings.json this came from
+  filePath: string // absolute path of the settings.json this came from
   // Addressing fields for edit/delete
-  matcherEntryIdx: number        // index in hooks[event] array
-  hookIdx: number                // index in hooks[event][matcherEntryIdx].hooks array
+  matcherEntryIdx: number // index in hooks[event] array
+  hookIdx: number // index in hooks[event][matcherEntryIdx].hooks array
 }
 
 export type ClaudeHookDraft = {
   event: string
   matcher: string | null
-  type: string                   // always 'command' for now
+  type: string // always 'command' for now
   command: string
   source: 'user' | 'project'
-  projectId?: string             // required when source === 'project'
+  projectId?: string // required when source === 'project'
 }
 
 export type ClaudeSlashCommandDraft = {
@@ -395,9 +410,9 @@ export type ClaudeCloudProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry'
 // Public API shape — what the renderer sees
 export type ClaudeAuthState = {
   cloudProvider: ClaudeCloudProvider
-  hasApiKey: boolean    // true if non-empty stored — renderer shows "•••" instead of the value
+  hasApiKey: boolean // true if non-empty stored — renderer shows "•••" instead of the value
   hasAuthToken: boolean
-  baseUrl: string       // not masked — base URL isn't secret
+  baseUrl: string // not masked — base URL isn't secret
   awsRegion: string
   vertexProjectId: string
   vertexRegion: string
@@ -412,18 +427,18 @@ export type ClaudeAuthState = {
 // Patch shape — partial update; only the fields the user actually changed
 export type ClaudeAuthPatch = {
   cloudProvider?: ClaudeCloudProvider
-  apiKey?: string    // empty string clears
+  apiKey?: string // empty string clears
   baseUrl?: string
   authToken?: string
   awsRegion?: string
   vertexProjectId?: string
   vertexRegion?: string
   // Foundry-specific (v22)
-  foundryApiKey?: string   // empty string clears
+  foundryApiKey?: string // empty string clears
   foundryResource?: string
   foundryBaseUrl?: string
   // Bedrock bearer token (v22)
-  bedrockBearerToken?: string  // empty string clears
+  bedrockBearerToken?: string // empty string clears
 }
 
 // Test-connection result — returned by the Auth section's "Test connection" button
@@ -438,18 +453,13 @@ export type ClaudeAuthTestResult =
 export type ContextMenuNativeItem =
   | {
       label: string
-      action: string  // identifier the renderer maps to a callback
+      action: string // identifier the renderer maps to a callback
       enabled?: boolean
       destructive?: boolean
     }
   | { divider: true }
 
-export type WorkspaceStatus =
-  | 'in_progress'
-  | 'awaiting_input'
-  | 'attention'
-  | 'idle'
-  | 'archived'
+export type WorkspaceStatus = 'in_progress' | 'awaiting_input' | 'attention' | 'idle' | 'archived'
 
 export type WorkspaceActivityDetail =
   | 'thinking'
@@ -474,4 +484,20 @@ export type SessionRecord = {
   archivedAt: number | null
   model: string | null
   lastMessageRole: string | null
+}
+
+export type SessionsPagedRequest = {
+  projectId: string
+  search?: string // substring match against title (case-insensitive)
+  dateFrom?: number // updated_at >= this (epoch ms)
+  dateTo?: number // updated_at <= this (epoch ms)
+  sortBy?: 'updatedAt' | 'createdAt' | 'title'
+  sortDir?: 'asc' | 'desc'
+  offset?: number
+  limit?: number // default 25
+}
+
+export type SessionsPagedResult = {
+  rows: SessionRecord[]
+  total: number // total matching rows before pagination
 }

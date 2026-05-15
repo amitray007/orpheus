@@ -53,15 +53,11 @@ export function getGitStatus(cwd: string): GitStatus | null {
   try {
     // `git diff --shortstat HEAD` — captures working-tree + staged vs HEAD.
     // Output looks like: " 2 files changed, 113 insertions(+), 0 deletions(-)"
-    const out = childProcess.execFileSync(
-      'git',
-      ['-C', cwd, 'diff', '--shortstat', 'HEAD'],
-      {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 2000,
-        encoding: 'utf-8'
-      }
-    )
+    const out = childProcess.execFileSync('git', ['-C', cwd, 'diff', '--shortstat', 'HEAD'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+      encoding: 'utf-8'
+    })
     const insMatch = out.match(/(\d+)\s+insertion/)
     const delMatch = out.match(/(\d+)\s+deletion/)
     if (insMatch) insertions = parseInt(insMatch[1], 10)
@@ -90,4 +86,98 @@ export function getGitStatus(cwd: string): GitStatus | null {
 
   const hasChanges = insertions > 0 || deletions > 0 || untrackedCount > 0
   return { insertions, deletions, hasChanges, branch }
+}
+
+export type GitBranchInfo = {
+  name: string
+  isCurrent: boolean
+  /** Last commit timestamp on this branch (epoch ms); null if unknown */
+  lastCommitAt: number | null
+}
+
+export type GitCommit = {
+  sha: string // short, 7 chars
+  fullSha: string
+  subject: string
+  author: string
+  authorEmail: string
+  timestamp: number // epoch ms
+}
+
+export function listBranches(cwd: string): GitBranchInfo[] {
+  if (!cwd) return []
+  try {
+    const out = childProcess.execFileSync(
+      'git',
+      [
+        '-C',
+        cwd,
+        'for-each-ref',
+        'refs/heads/',
+        '--format=%(refname:short)%09%(committerdate:unix)%09%(HEAD)'
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf-8' }
+    )
+    const branches: GitBranchInfo[] = out
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((line) => {
+        const [name, tsRaw, head] = line.split('\t')
+        const ts = parseInt(tsRaw, 10)
+        return {
+          name: name.trim(),
+          isCurrent: head?.trim() === '*',
+          lastCommitAt: isNaN(ts) ? null : ts * 1000
+        }
+      })
+    // Sort most-recently-committed first
+    branches.sort((a, b) => {
+      if (a.lastCommitAt === null) return 1
+      if (b.lastCommitAt === null) return -1
+      return b.lastCommitAt - a.lastCommitAt
+    })
+    return branches
+  } catch {
+    return []
+  }
+}
+
+export function listCommits(
+  cwd: string,
+  opts?: { branch?: string; limit?: number; offset?: number }
+): GitCommit[] {
+  if (!cwd) return []
+  const limit = opts?.limit ?? 25
+  const offset = opts?.offset ?? 0
+  const args = ['-C', cwd, 'log']
+  if (opts?.branch) args.push(opts.branch)
+  args.push(
+    `--max-count=${limit}`,
+    `--skip=${offset}`,
+    '--format=%H%x09%h%x09%s%x09%an%x09%ae%x09%ct'
+  )
+  try {
+    const out = childProcess.execFileSync('git', args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+      encoding: 'utf-8'
+    })
+    return out
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((line) => {
+        const parts = line.split('\t')
+        const ts = parseInt(parts[5], 10)
+        return {
+          fullSha: parts[0] ?? '',
+          sha: parts[1] ?? '',
+          subject: parts[2] ?? '',
+          author: parts[3] ?? '',
+          authorEmail: parts[4] ?? '',
+          timestamp: isNaN(ts) ? 0 : ts * 1000
+        }
+      })
+  } catch {
+    return []
+  }
 }
