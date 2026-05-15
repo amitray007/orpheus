@@ -68,7 +68,17 @@ export function WorkspacesTab({
   onToggleWorkspacePin
 }: WorkspacesTabProps): React.JSX.Element {
   const loading = workspaces === null
-  const all = workspaces ?? []
+  // Defensive dedup-by-id: the DB enforces a PK so this should be a no-op,
+  // but it's cheap insurance against any upstream regression that might
+  // accidentally drop a duplicate workspace into the prop. With duplicates
+  // present, React would render both rows under the same key and pass the
+  // first/last write through interchangeably depending on render order.
+  const all = useMemo(() => {
+    if (!workspaces) return []
+    const byId = new Map<string, WorkspaceRecord>()
+    for (const w of workspaces) byId.set(w.id, w)
+    return [...byId.values()]
+  }, [workspaces])
   const active = useMemo(() => all.filter((w) => w.archivedAt === null), [all])
   const archived = useMemo(() => all.filter((w) => w.archivedAt !== null), [all])
 
@@ -123,9 +133,14 @@ export function WorkspacesTab({
 
   // Display name resolution — auto-named workspaces (the default for anything
   // not manually renamed) should never reveal the placeholder seed name like
-  // "Workspace 3" or "New Workspace". Order: live terminal title → first user
-  // prompt of the workspace's session → muted "untitled". Manually-named
-  // workspaces always show their explicit name.
+  // "Workspace 3" or "New Workspace". Order:
+  //   1. Live terminal OSC title
+  //   2. First user prompt of the workspace's session
+  //   3. A muted placeholder + creation time + short-id tail. Including the
+  //      created-time + id is load-bearing: without it, two freshly-created,
+  //      never-opened workspaces both fall through to step 3 and render as
+  //      identical "untitled" rows, which reads as duplication. With it,
+  //      each row is visually distinct even before the user ever opens it.
   function displayNameForWorkspace(ws: WorkspaceRecord): {
     text: string
     muted: boolean
@@ -137,7 +152,9 @@ export function WorkspacesTab({
       ? (sessionStats[ws.claudeSessionId]?.title ?? null)
       : null
     if (sessionTitle) return { text: sessionTitle, muted: false }
-    return { text: 'untitled', muted: true }
+    const shortId = ws.id.slice(0, 6)
+    const when = relativeTime(ws.createdAt)
+    return { text: `untitled · ${when} · ${shortId}`, muted: true }
   }
 
   // Seed and subscribe to terminal titles for ALL rows (active + archived)
