@@ -24,7 +24,8 @@ import {
   listSessionsForProjectPaged,
   listAllSessions,
   setSessionStatus,
-  createWorkspaceResumingSession
+  createWorkspaceResumingSession,
+  refreshSessionMetadata
 } from './sessions'
 import {
   listWorkspacesForProject,
@@ -80,7 +81,14 @@ import {
 } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { showContextMenu } from './contextMenu'
-import { revealInFinder, openInEditor, openTerminal, copyToClipboard } from './shellHelpers'
+import {
+  revealInFinder,
+  openInEditor,
+  openTerminal,
+  copyToClipboard,
+  listEditorApps,
+  listTerminalApps
+} from './shellHelpers'
 import type {
   SessionStatus,
   SessionsPagedRequest,
@@ -727,6 +735,11 @@ ipcMain.handle(
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
+ipcMain.handle(
+  'sessions:refreshMetadata',
+  (_e, { projectId }: { projectId: string }) => refreshSessionMetadata(projectId)
+)
+
 // ---------------------------------------------------------------------------
 // Claude Settings IPC
 // ---------------------------------------------------------------------------
@@ -932,8 +945,18 @@ ipcMain.handle('git:branches', (_e, { cwd }: { cwd: string }) => listBranches(cw
 
 ipcMain.handle(
   'git:log',
-  (_e, args: { cwd: string; branch?: string; limit?: number; offset?: number }) =>
-    listCommits(args.cwd, args)
+  (
+    _e,
+    args: {
+      cwd: string
+      branch?: string
+      limit?: number
+      offset?: number
+      sinceMs?: number
+      untilMs?: number
+      grep?: string
+    }
+  ) => listCommits(args.cwd, args)
 )
 
 // ---------------------------------------------------------------------------
@@ -941,9 +964,17 @@ ipcMain.handle(
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
-ipcMain.handle('shell:openInEditor', (_e, { path }: { path: string }) => openInEditor(path))
-ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => openTerminal(path))
+ipcMain.handle('shell:openInEditor', (_e, { path }: { path: string }) => {
+  const state = getAppUiState()
+  return openInEditor(path, state.preferredEditorApp ?? undefined)
+})
+ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => {
+  const state = getAppUiState()
+  return openTerminal(path, state.preferredTerminalApp ?? undefined)
+})
 ipcMain.handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
+ipcMain.handle('shell:listEditorApps', () => listEditorApps())
+ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-native lifecycle

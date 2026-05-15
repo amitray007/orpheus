@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 27
+const CURRENT_VERSION = 32
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -631,5 +631,12 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 31) {
     try { db.exec('ALTER TABLE app_ui_state ADD COLUMN in_progress_watchdog_sec INTEGER NOT NULL DEFAULT 120') } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(31)
+  }
+
+  // Version 32: app picker preferences on app_ui_state
+  if (currentVersion < 32) {
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_editor_app TEXT') } catch {}
+    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_terminal_app TEXT') } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(32)
   }
 }

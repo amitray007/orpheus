@@ -1,3 +1,16 @@
+// ---------------------------------------------------------------------------
+// Shell app detection (re-exported from main for use in renderer via IPC)
+// ---------------------------------------------------------------------------
+
+export type DetectedApp = {
+  /** App bundle name (e.g. "Cursor", "Visual Studio Code") — used in CLI invocations. */
+  name: string
+  /** Optional display label (defaults to name). */
+  label?: string
+  /** Filesystem path of the .app bundle (for existence checks). */
+  appPath: string
+}
+
 export type GitStatus = {
   insertions: number
   deletions: number
@@ -113,6 +126,9 @@ export type AppUiState = {
   notifyMaxAttentionRepeats: number
   // In-progress watchdog (v31) — seconds without a heartbeat hook before auto-demoting from in_progress. 0 disables.
   inProgressWatchdogSec: number
+  // App picker preferences (v32) — null = auto-detect first found
+  preferredEditorApp?: string | null
+  preferredTerminalApp?: string | null
   updatedAt: number
 }
 

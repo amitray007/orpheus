@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
+  DetectedApp,
   DoctorResult,
   ProjectRecord,
   SessionRecord,
@@ -102,7 +103,9 @@ const api = {
     listForProjectPaged: (req: SessionsPagedRequest): Promise<SessionsPagedResult> =>
       ipcRenderer.invoke('sessions:listForProjectPaged', req),
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId })
+      ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+    refreshMetadata: (projectId: string): Promise<void> =>
+      ipcRenderer.invoke('sessions:refreshMetadata', { projectId })
   },
   workspaces: {
     listForProject: (
@@ -213,7 +216,14 @@ const api = {
       ipcRenderer.invoke('git:branches', { cwd }),
     log: (
       cwd: string,
-      opts?: { branch?: string; limit?: number; offset?: number }
+      opts?: {
+        branch?: string
+        limit?: number
+        offset?: number
+        sinceMs?: number
+        untilMs?: number
+        grep?: string
+      }
     ): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', { cwd, ...opts })
   },
   shell: {
@@ -224,7 +234,9 @@ const api = {
     openTerminal: (path: string): Promise<void> =>
       ipcRenderer.invoke('shell:openTerminal', { path }),
     copyToClipboard: (text: string): Promise<void> =>
-      ipcRenderer.invoke('shell:copyToClipboard', { text })
+      ipcRenderer.invoke('shell:copyToClipboard', { text }),
+    listEditorApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listEditorApps'),
+    listTerminalApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listTerminalApps')
   },
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> => ipcRenderer.invoke('mcp:listServers'),

@@ -1,5 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
+  DetectedApp,
   DoctorResult,
   ProjectRecord,
   SessionRecord,
@@ -87,6 +88,7 @@ declare global {
         setStatus: (id: string, status: SessionStatus) => Promise<void>
         listForProjectPaged: (req: SessionsPagedRequest) => Promise<SessionsPagedResult>
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
+        refreshMetadata: (projectId: string) => Promise<void>
       }
       workspaces: {
         listForProject: (
@@ -160,6 +162,8 @@ declare global {
         openInEditor: (path: string) => Promise<void>
         openTerminal: (path: string) => Promise<void>
         copyToClipboard: (text: string) => Promise<void>
+        listEditorApps: () => Promise<DetectedApp[]>
+        listTerminalApps: () => Promise<DetectedApp[]>
       }
       mcp: {
         listServers: () => Promise<DiscoveredMcpServer[]>
