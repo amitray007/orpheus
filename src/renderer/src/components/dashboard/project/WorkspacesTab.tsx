@@ -263,7 +263,7 @@ export function WorkspacesTab({
           return (
             <span className="flex items-center gap-2 min-w-0">
               <span className="flex items-center justify-center w-3 flex-shrink-0">
-                {activity ? (
+                {activity && activity !== 'archived' ? (
                   <ActivityIndicator detail={activity} />
                 ) : (
                   <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />

@@ -496,6 +496,14 @@ export function Dashboard({
 
   async function handleUnarchiveWorkspace(workspaceId: string, projectId: string): Promise<void> {
     try {
+      // Optimistically clear any cached 'archived' activity so the activity
+      // dot doesn't stay blank while waiting for the backend broadcast.
+      setWorkspaceActivities((prev) => {
+        if (prev[workspaceId] === undefined) return prev
+        const next = { ...prev }
+        delete next[workspaceId]
+        return next
+      })
       await window.api.workspaces.unarchive(workspaceId)
       await fetchWorkspacesForProject(projectId)
       refreshPins()

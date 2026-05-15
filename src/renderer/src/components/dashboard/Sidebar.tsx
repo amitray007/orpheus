@@ -159,10 +159,11 @@ function WorkspaceSubRow({
   return (
     <div
       className={[
-        'relative flex items-center rounded-md transition-colors duration-150 group',
-        // Direction D: 2px left accent bar on active rows for unambiguous selection
+        'relative flex items-center rounded-r-md transition-colors duration-150 group',
+        // 2px left bar on active rows for unambiguous selection.
+        // Workspaces use white (text-primary); projects use the yellow accent.
         active
-          ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
+          ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
       ].join(' ')}
       onMouseEnter={() => setHovered(true)}
@@ -171,7 +172,7 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-2 pl-8 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
+        className="flex items-center gap-2 pl-8 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -183,7 +184,7 @@ function WorkspaceSubRow({
             weight={active ? 'fill' : 'regular'}
             className={[
               'flex-shrink-0 transition-colors duration-150',
-              active ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
+              active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
             ].join(' ')}
           />
         )}
@@ -349,7 +350,7 @@ function ProjectRow({
     <div className="flex flex-col">
       <div
         className={[
-          'relative flex items-center rounded-md transition-colors duration-150 group',
+          'relative flex items-center rounded-r-md transition-colors duration-150 group',
           active
             ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
             : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
@@ -361,7 +362,7 @@ function ProjectRow({
         {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
         <button
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-md"
+          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
           title={project.path}
           aria-label={project.name}
         >
