@@ -118,7 +118,7 @@ const api = {
     open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
-    archive: (id: string): Promise<WorkspaceRecord> =>
+    archive: (id: string): Promise<WorkspaceRecord | null> =>
       ipcRenderer.invoke('workspaces:archive', { id }),
     unarchive: (id: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:unarchive', { id }),

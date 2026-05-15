@@ -19,6 +19,7 @@ type WorkspaceRow = {
   status: WorkspaceStatus
   sort_order: number | null
   claude_session_id: string | null
+  last_title: string | null
 }
 
 type ProjectRow = {
@@ -155,8 +156,35 @@ export function trimArchivedWorkspaces(limit: number): number {
   return result.changes
 }
 
-export function archiveWorkspace(id: string): WorkspaceRecord {
+/**
+ * Archive a workspace, or — if the workspace never did anything — drop the
+ * row outright. The "Archived" list is meant to be conversations worth
+ * revisiting; archiving an empty stub clutters it with placeholder rows
+ * ("untitled · just now · abc123") that read as duplication and noise.
+ *
+ * Returns the archived WorkspaceRecord, or null if the row was deleted
+ * because it was empty. Either way the caller's normal refetch picks up
+ * the outcome cleanly.
+ *
+ * A workspace counts as "empty" when it has no claude_session_id (Claude
+ * never ran in it) AND no last_title (the terminal never set an OSC
+ * title). Those two together mean nothing was preserved — the user
+ * clearly never used it.
+ */
+export function archiveWorkspace(id: string): WorkspaceRecord | null {
   const db = getDb()
+  const current = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+    | WorkspaceRow
+    | undefined
+  if (!current) return null
+
+  const isEmpty = !current.claude_session_id && !current.last_title
+  if (isEmpty) {
+    db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+    console.log('[workspaces] archive on empty workspace → deleted', id)
+    return null
+  }
+
   db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(
     Date.now(),
     id
