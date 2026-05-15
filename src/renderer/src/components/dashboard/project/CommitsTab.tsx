@@ -59,7 +59,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   const [branch, setBranch] = useState<string>('')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [dateRange, setDateRange] = useState<DateRange>('d30')
+  const [dateRange, setDateRange] = useState<DateRange>('d3')
 
   const [commits, setCommits] = useState<GitCommit[]>([])
   const [loadingMore, setLoadingMore] = useState(false)
