@@ -10,14 +10,14 @@ import { Tabs } from '../Tabs'
 import { ProjectHeader } from './project/ProjectHeader'
 import { WorkspacesTab } from './project/WorkspacesTab'
 import { SessionsTab } from './project/SessionsTab'
-import { CommitsTab } from './project/CommitsTab'
 import { SettingsDrawer } from './project/SettingsDrawer'
 
 // ---------------------------------------------------------------------------
-// ProjectView — orchestrates header + tabs (Workspaces / Sessions / Commits)
+// ProjectView — orchestrates header + tabs (Workspaces / Sessions)
+// Commits live inside the Workspaces tab now.
 // ---------------------------------------------------------------------------
 
-type TabId = 'workspaces' | 'sessions' | 'commits'
+type TabId = 'workspaces' | 'sessions'
 
 interface ProjectViewProps {
   project: ProjectRecord
@@ -108,14 +108,14 @@ export function ProjectView({
             value: 'sessions',
             label: 'Sessions',
             count: sessionCount < 0 ? undefined : sessionCount
-          },
-          { value: 'commits', label: 'Commits' }
+          }
         ]}
       />
 
       {tab === 'workspaces' && (
         <WorkspacesTab
           projectId={project.id}
+          projectPath={project.path}
           workspaces={workspaces}
           workspaceActivities={workspaceActivities}
           onSelectWorkspace={onSelectWorkspace}
@@ -133,8 +133,6 @@ export function ProjectView({
           onResumedInWorkspace={onResumedInWorkspace}
         />
       )}
-
-      {tab === 'commits' && <CommitsTab cwd={project.path} />}
 
       <SettingsDrawer
         projectId={project.id}

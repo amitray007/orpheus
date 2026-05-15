@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { X } from '@phosphor-icons/react'
+import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
   CLAUDE_MODEL_OPTIONS,
   type ClaudeEffort,
@@ -8,17 +8,39 @@ import {
   type ClaudeProjectSettings,
   type ClaudeProjectSettingsOverrides
 } from '@shared/types'
-import { SettingRow, SegmentedControl } from '../settings/primitives'
+import { Select } from '../settings/primitives'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
 //
-// v1 surfaces only the three knobs that are wired through composeClaudeLaunch
-// today (model / permission mode / effort). The fuller Claude-section parity
-// (hooks, tools, MCP, subagents, slash commands, memory, display) lands later
-// once the section components are made scope-agnostic so they can be reused
-// across global + project + workspace scopes.
+// Layout mirrors WorkspaceDrawer: section header on top, stacked override
+// fields (full-width label + full-width Select), hairline dividers. The drawer
+// itself is a right-aligned overlay (the project view doesn't have a dedicated
+// side panel slot like WorkspaceView does).
 // ---------------------------------------------------------------------------
+
+const MODEL_OPTIONS = [{ value: 'default', label: 'Use global' }, ...CLAUDE_MODEL_OPTIONS] as const
+
+const PERMISSION_OPTIONS = [
+  { value: 'default', label: 'Use global' },
+  { value: 'acceptEdits', label: 'Accept edits' },
+  { value: 'plan', label: 'Plan' },
+  { value: 'bypassPermissions', label: 'Bypass' }
+] as const
+
+const EFFORT_OPTIONS = [
+  { value: 'default', label: 'Use global' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+  { value: 'max', label: 'Max' }
+] as const
+
+type ModelOption = (typeof MODEL_OPTIONS)[number]['value']
+type PermissionOption = (typeof PERMISSION_OPTIONS)[number]['value']
+type EffortOption = (typeof EFFORT_OPTIONS)[number]['value']
 
 interface SettingsDrawerProps {
   projectId: string
@@ -27,9 +49,43 @@ interface SettingsDrawerProps {
   onClose: () => void
 }
 
-type ModelValue = '__global__' | (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
-type PermissionValue = '__global__' | ClaudePermissionMode
-type EffortValue = '__global__' | ClaudeEffort
+interface OverrideFieldProps<T extends string> {
+  label: string
+  options: ReadonlyArray<{ value: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+  isOverridden: boolean
+  ariaLabel: string
+  description?: string
+}
+
+function OverrideField<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  isOverridden,
+  ariaLabel,
+  description
+}: OverrideFieldProps<T>): React.JSX.Element {
+  return (
+    <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+          {label}
+        </label>
+        {isOverridden && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-accent/80"
+            title="Overrides global default"
+          />
+        )}
+      </div>
+      {description && <p className="text-xs text-text-muted mb-2">{description}</p>}
+      <Select options={options} value={value} onChange={onChange} ariaLabel={ariaLabel} />
+    </div>
+  )
+}
 
 export function SettingsDrawer({
   projectId,
@@ -38,6 +94,7 @@ export function SettingsDrawer({
   onClose
 }: SettingsDrawerProps): React.JSX.Element | null {
   const [settings, setSettings] = useState<ClaudeProjectSettings | null>(null)
+  const [localOverrides, setLocalOverrides] = useState<ClaudeProjectSettingsOverrides>({})
 
   useEffect(() => {
     if (!open) return
@@ -45,7 +102,9 @@ export function SettingsDrawer({
     window.api.claudeProjectSettings
       .get(projectId)
       .then((s) => {
-        if (!cancelled) setSettings(s)
+        if (cancelled) return
+        setSettings(s)
+        setLocalOverrides(s.overrides)
       })
       .catch((err) => console.error('[settings-drawer] failed to load', err))
     return () => {
@@ -62,24 +121,60 @@ export function SettingsDrawer({
     return () => document.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  function patch(p: ClaudeProjectSettingsOverrides): void {
-    if (!settings) return
-    const next: ClaudeProjectSettingsOverrides = { ...settings.overrides }
-    for (const [k, v] of Object.entries(p)) {
+  function patch(update: ClaudeProjectSettingsOverrides): void {
+    const next: ClaudeProjectSettingsOverrides = { ...localOverrides }
+    for (const [k, v] of Object.entries(update)) {
       if (v === undefined) delete next[k as keyof ClaudeProjectSettingsOverrides]
       else (next as Record<string, unknown>)[k] = v
     }
-    setSettings({ ...settings, overrides: next })
-    window.api.claudeProjectSettings.update(projectId, p).catch((err) => {
+    setLocalOverrides(next)
+    window.api.claudeProjectSettings.update(projectId, update).catch((err) => {
       console.error('[settings-drawer] update failed, refetching', err)
-      window.api.claudeProjectSettings.get(projectId).then(setSettings).catch(console.error)
+      window.api.claudeProjectSettings
+        .get(projectId)
+        .then((s) => {
+          setSettings(s)
+          setLocalOverrides(s.overrides)
+        })
+        .catch(console.error)
     })
+  }
+
+  function handleModel(v: ModelOption): void {
+    patch({ model: v === 'default' ? undefined : v })
+  }
+  function handlePermission(v: PermissionOption): void {
+    patch({ permissionMode: v === 'default' ? undefined : (v as ClaudePermissionMode) })
+  }
+  function handleEffort(v: EffortOption): void {
+    patch({ effort: v === 'default' ? undefined : (v as ClaudeEffort) })
+  }
+
+  function resetAll(): void {
+    patch({ model: undefined, permissionMode: undefined, effort: undefined })
   }
 
   if (!open) return null
 
-  const overrides = settings?.overrides ?? {}
-  const overrideCount = Object.keys(overrides).length
+  const modelValue: ModelOption =
+    localOverrides.model !== undefined &&
+    MODEL_OPTIONS.some((o) => o.value === localOverrides.model)
+      ? (localOverrides.model as ModelOption)
+      : 'default'
+
+  const permissionValue: PermissionOption =
+    localOverrides.permissionMode !== undefined
+      ? (localOverrides.permissionMode as PermissionOption)
+      : 'default'
+
+  const effortValue: EffortOption =
+    localOverrides.effort !== undefined ? (localOverrides.effort as EffortOption) : 'default'
+
+  const overrideCount =
+    (localOverrides.model !== undefined ? 1 : 0) +
+    (localOverrides.permissionMode !== undefined ? 1 : 0) +
+    (localOverrides.effort !== undefined ? 1 : 0)
+  const hasAnyOverride = overrideCount > 0
 
   return (
     <div
@@ -89,88 +184,87 @@ export function SettingsDrawer({
       aria-label={`Project settings — ${projectName}`}
     >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden="true" />
-      <div className="relative z-10 w-[460px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border-default">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-text-primary truncate">Project settings</h2>
-            <p className="text-xs text-text-muted truncate">
-              {projectName}
-              {overrideCount > 0 && (
-                <span className="text-accent ml-2">
-                  · {overrideCount} override{overrideCount === 1 ? '' : 's'}
-                </span>
-              )}
-            </p>
-          </div>
+      <div className="relative z-10 w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
+        {/* Header — matches WorkspaceDrawer */}
+        <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
+          <span className="text-[11px] font-medium text-text-muted px-1.5">Project Settings</span>
           <button
             onClick={onClose}
-            aria-label="Close settings"
-            className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            aria-label="Close drawer"
+            className="ml-auto w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           >
-            <X size={14} weight="bold" />
+            <X size={11} weight="bold" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5">
-          {settings === null ? (
-            <div className="py-10 text-center text-sm text-text-muted">Loading…</div>
-          ) : (
-            <>
-              <SettingRow
+        {/* Body — single scrollable column */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <section className="flex flex-col">
+            <header className="flex items-baseline justify-between px-4 pt-5 pb-3">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                {projectName}
+              </span>
+              {hasAnyOverride && (
+                <span className="text-[10px] font-mono text-text-muted">
+                  {overrideCount} override{overrideCount === 1 ? '' : 's'}
+                </span>
+              )}
+            </header>
+
+            <div className={!settings ? 'opacity-50 pointer-events-none' : ''}>
+              <OverrideField
                 label="Model"
-                description="Override the global default model for this project."
-              >
-                <SegmentedControl<ModelValue>
-                  ariaLabel="Model override"
-                  options={[{ value: '__global__', label: '(global)' }, ...CLAUDE_MODEL_OPTIONS]}
-                  value={(overrides.model ?? '__global__') as ModelValue}
-                  onChange={(v) => patch({ model: v === '__global__' ? undefined : v })}
-                />
-              </SettingRow>
-
-              <SettingRow
+                options={MODEL_OPTIONS}
+                value={modelValue}
+                onChange={handleModel}
+                isOverridden={localOverrides.model !== undefined}
+                ariaLabel="Project model override"
+                description="Default Claude model for new workspaces in this project."
+              />
+              <OverrideField
                 label="Permission mode"
-                description="Override the global permission mode for this project."
-              >
-                <SegmentedControl<PermissionValue>
-                  ariaLabel="Permission mode override"
-                  options={[
-                    { value: '__global__', label: '(global)' },
-                    { value: 'default', label: 'Default' },
-                    { value: 'acceptEdits', label: 'Accept edits' },
-                    { value: 'plan', label: 'Plan' },
-                    { value: 'bypassPermissions', label: 'Bypass' }
-                  ]}
-                  value={(overrides.permissionMode ?? '__global__') as PermissionValue}
-                  onChange={(v) =>
-                    patch({
-                      permissionMode: v === '__global__' ? undefined : v
-                    })
-                  }
-                />
-              </SettingRow>
-
-              <SettingRow
+                options={PERMISSION_OPTIONS}
+                value={permissionValue}
+                onChange={handlePermission}
+                isOverridden={localOverrides.permissionMode !== undefined}
+                ariaLabel="Project permission mode override"
+                description="How Claude handles tool permissions when this project's workspaces launch."
+              />
+              <OverrideField
                 label="Effort"
-                description="Override the global thinking effort for this project."
-              >
-                <SegmentedControl<EffortValue>
-                  ariaLabel="Effort override"
-                  options={[
-                    { value: '__global__', label: '(global)' },
-                    { value: 'auto', label: 'Auto' },
-                    { value: 'low', label: 'Low' },
-                    { value: 'medium', label: 'Med' },
-                    { value: 'high', label: 'High' },
-                    { value: 'xhigh', label: 'XH' },
-                    { value: 'max', label: 'Max' }
-                  ]}
-                  value={(overrides.effort ?? '__global__') as EffortValue}
-                  onChange={(v) => patch({ effort: v === '__global__' ? undefined : v })}
-                />
-              </SettingRow>
-            </>
-          )}
+                options={EFFORT_OPTIONS}
+                value={effortValue}
+                onChange={handleEffort}
+                isOverridden={localOverrides.effort !== undefined}
+                ariaLabel="Project effort override"
+                description="Thinking depth Claude applies by default for this project."
+              />
+            </div>
+
+            {hasAnyOverride && (
+              <div className="px-4 py-4 mt-2">
+                <button
+                  onClick={resetAll}
+                  className="inline-flex items-center gap-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
+                >
+                  <ArrowCounterClockwise size={11} weight="bold" />
+                  Reset all overrides
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="flex flex-col mt-4 border-t border-border-default/40">
+            <header className="px-4 pt-5 pb-2">
+              <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                More coming
+              </span>
+            </header>
+            <p className="px-4 pb-5 text-xs text-text-muted">
+              Hooks, tools, MCP servers, subagents, and slash commands at project scope will land in
+              a follow-up — they currently live under global Settings.
+            </p>
+          </section>
         </div>
       </div>
     </div>

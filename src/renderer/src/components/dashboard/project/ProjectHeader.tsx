@@ -8,7 +8,6 @@ import {
   DotsThree,
   FolderOpen,
   GearSix,
-  GitBranch,
   Plus,
   Terminal
 } from '@phosphor-icons/react'
@@ -173,46 +172,48 @@ export function ProjectHeader({
         </div>
 
         <div className="flex-1 min-w-0 flex flex-col gap-1">
-          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
             <h1 className="text-xl font-semibold text-text-primary truncate">{project.name}</h1>
-            <span className="text-text-muted" aria-hidden>
-              ·
+            {/* Path + copy as a single unit so they never wrap apart. */}
+            <span className="inline-flex items-center gap-1 min-w-0 flex-1">
+              <p
+                className="text-xs text-text-muted font-mono truncate min-w-0"
+                title={project.path}
+              >
+                {project.path}
+              </p>
+              <button
+                onClick={copyPath}
+                aria-label={pathCopied ? 'Copied' : 'Copy path'}
+                title={pathCopied ? 'Copied' : 'Copy path'}
+                className={[
+                  'flex-shrink-0 p-0.5 rounded transition-colors duration-150 cursor-pointer',
+                  pathCopied
+                    ? 'text-emerald-400'
+                    : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+                ].join(' ')}
+              >
+                {pathCopied ? <Check size={11} weight="bold" /> : <Copy size={11} />}
+              </button>
             </span>
-            <p
-              className="text-xs text-text-muted font-mono truncate min-w-0 flex-1"
-              title={project.path}
-            >
-              {project.path}
-            </p>
-            <button
-              onClick={copyPath}
-              aria-label={pathCopied ? 'Copied' : 'Copy path'}
-              title={pathCopied ? 'Copied' : 'Copy path'}
-              className={[
-                'flex-shrink-0 p-0.5 rounded transition-colors duration-150 cursor-pointer',
-                pathCopied
-                  ? 'text-emerald-400'
-                  : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-              ].join(' ')}
-            >
-              {pathCopied ? <Check size={11} weight="bold" /> : <Copy size={11} />}
-            </button>
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-text-muted flex-wrap">
+          <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
             {gitStatus?.branch && (
-              <span className="inline-flex items-center gap-1">
-                <GitBranch size={11} />
-                <span className="font-mono">{gitStatus.branch}</span>
-                {gitStatus.hasChanges && (
-                  <span
-                    className="text-amber-400/80"
-                    title={`+${gitStatus.insertions} −${gitStatus.deletions}`}
-                  >
-                    ●
-                  </span>
-                )}
-              </span>
+              <>
+                <span className="inline-flex items-center gap-1">
+                  <span className="font-mono">{gitStatus.branch}</span>
+                  {gitStatus.hasChanges && (
+                    <span
+                      className="text-amber-400/80"
+                      title={`+${gitStatus.insertions} −${gitStatus.deletions}`}
+                    >
+                      ●
+                    </span>
+                  )}
+                </span>
+                <span aria-hidden>·</span>
+              </>
             )}
             <span>{workspacesLabel}</span>
             <span aria-hidden>·</span>

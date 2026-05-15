@@ -47,6 +47,12 @@ function relativeTime(ms: number): string {
   return `${mo}mo ago`
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function shortModel(model: string | null): string {
   if (!model) return '—'
   const m = model.toLowerCase()
@@ -196,23 +202,45 @@ export function SessionsTab({
       {
         key: 'model',
         label: 'Model',
-        width: '120px',
+        width: '90px',
         render: (r) => (
           <span className="text-xs font-mono text-text-secondary">{shortModel(r.model)}</span>
+        )
+      },
+      {
+        key: 'messageCount',
+        label: 'Messages',
+        width: '90px',
+        align: 'right',
+        render: (r) => (
+          <span className="text-xs text-text-muted tabular-nums">
+            {typeof r.messageCount === 'number' ? r.messageCount : '—'}
+          </span>
+        )
+      },
+      {
+        key: 'jsonlSizeBytes',
+        label: 'Size',
+        width: '80px',
+        align: 'right',
+        render: (r) => (
+          <span className="text-xs text-text-muted tabular-nums">
+            {typeof r.jsonlSizeBytes === 'number' ? formatBytes(r.jsonlSizeBytes) : '—'}
+          </span>
         )
       },
       {
         key: 'createdAt',
         label: 'Created',
         sortable: true,
-        width: '120px',
+        width: '110px',
         render: (r) => <span className="text-text-muted">{relativeTime(r.createdAt)}</span>
       },
       {
         key: 'updatedAt',
         label: 'Updated',
         sortable: true,
-        width: '120px',
+        width: '110px',
         render: (r) => <span className="text-text-muted">{relativeTime(r.updatedAt)}</span>
       },
       {

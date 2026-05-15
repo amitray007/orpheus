@@ -114,7 +114,9 @@ export function listWorkspacesForProject(
 
 export function getWorkspace(id: string): WorkspaceRecord | null {
   const db = getDb()
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow | undefined
+  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+    | WorkspaceRow
+    | undefined
   return row ? rowToWorkspaceRecord(row) : null
 }
 
@@ -135,7 +137,9 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
 
 export function trimArchivedWorkspaces(limit: number): number {
   const db = getDb()
-  const { count } = db.prepare('SELECT COUNT(*) as count FROM workspaces WHERE archived_at IS NOT NULL').get() as { count: number }
+  const { count } = db
+    .prepare('SELECT COUNT(*) as count FROM workspaces WHERE archived_at IS NOT NULL')
+    .get() as { count: number }
   if (count <= limit) return 0
   const toDelete = count - limit
   const stmt = db.prepare(
@@ -153,13 +157,18 @@ export function trimArchivedWorkspaces(limit: number): number {
 
 export function archiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(Date.now(), id)
+  db.prepare("UPDATE workspaces SET archived_at = ?, status = 'archived' WHERE id = ?").run(
+    Date.now(),
+    id
+  )
 
   // LRU cap: delete oldest archived workspaces if over the limit
   const state = getAppUiState()
   const trimmed = trimArchivedWorkspaces(state.archivedWorkspaceLimit ?? 20)
   if (trimmed > 0) {
-    console.log(`[workspaces] trimmed ${trimmed} oldest archived workspaces (cap=${state.archivedWorkspaceLimit})`)
+    console.log(
+      `[workspaces] trimmed ${trimmed} oldest archived workspaces (cap=${state.archivedWorkspaceLimit})`
+    )
   }
 
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
@@ -203,7 +212,9 @@ export function setWorkspaceLastTitle(id: string, title: string | null): void {
 export function getAllWorkspaceLastTitles(): Array<{ id: string; title: string }> {
   const db = getDb()
   const rows = db
-    .prepare("SELECT id, last_title FROM workspaces WHERE last_title IS NOT NULL AND last_title != ''")
+    .prepare(
+      "SELECT id, last_title FROM workspaces WHERE last_title IS NOT NULL AND last_title != ''"
+    )
     .all() as Array<{ id: string; last_title: string }>
   return rows.map((r) => ({ id: r.id, title: r.last_title }))
 }
@@ -212,7 +223,27 @@ export function getAllWorkspaceLastTitles(): Array<{ id: string; title: string }
 // Status
 // ---------------------------------------------------------------------------
 
-const VALID_STATUSES: WorkspaceStatus[] = ['in_progress', 'awaiting_input', 'attention', 'idle', 'archived']
+const VALID_STATUSES: WorkspaceStatus[] = [
+  'in_progress',
+  'awaiting_input',
+  'attention',
+  'idle',
+  'archived'
+]
+
+/**
+ * On app launch no claude processes are running yet, so any workspace still
+ * persisted as 'in_progress' or 'attention' is left over from a prior session
+ * (e.g. crash, hard quit). Reset them to 'idle' so the UI doesn't show a
+ * forever-spinning "thinking" indicator. Archived workspaces are untouched.
+ */
+export function resetTransientStatusesOnStartup(): number {
+  const db = getDb()
+  const res = db
+    .prepare("UPDATE workspaces SET status = 'idle' WHERE status IN ('in_progress', 'attention')")
+    .run()
+  return res.changes
+}
 
 export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
@@ -222,11 +253,11 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
   // transitioning AWAY from 'archived' clears it.
   if (status === 'archived') {
-    db.prepare("UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ?")
-      .run(status, Date.now(), id)
+    db.prepare(
+      'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ?'
+    ).run(status, Date.now(), id)
   } else {
-    db.prepare("UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ?")
-      .run(status, id)
+    db.prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ?').run(status, id)
   }
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
@@ -262,15 +293,15 @@ export function listAllPinned(): PinnedItem[] {
        ORDER BY w.pinned_at DESC`
     )
     .all() as (WorkspaceRow & {
-      p_id: string
-      p_path: string
-      p_name: string
-      p_claude_encoded_name: string | null
-      p_added_at: number
-      p_last_opened_at: number | null
-      p_expanded_in_sidebar: number
-      p_sort_order: number | null
-    })[]
+    p_id: string
+    p_path: string
+    p_name: string
+    p_claude_encoded_name: string | null
+    p_added_at: number
+    p_last_opened_at: number | null
+    p_expanded_in_sidebar: number
+    p_sort_order: number | null
+  })[]
 
   return rows.map((row) => ({
     workspace: rowToWorkspaceRecord(row),

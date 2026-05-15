@@ -129,6 +129,8 @@ export type AppUiState = {
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
+  // Auto-prune cap (v33) — null = unlimited; positive integer = max non-archived sessions per project
+  maxLocalSessions?: number | null
   updatedAt: number
 }
 
@@ -500,6 +502,9 @@ export type SessionRecord = {
   archivedAt: number | null
   model: string | null
   lastMessageRole: string | null
+  // Populated by refreshSessionMetadata (v33)
+  messageCount?: number | null
+  jsonlSizeBytes?: number | null
 }
 
 export type SessionsPagedRequest = {

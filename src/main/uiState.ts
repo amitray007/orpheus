@@ -41,6 +41,8 @@ type AppUiStateRow = {
   // App picker preferences (v32)
   preferred_editor_app: string | null
   preferred_terminal_app: string | null
+  // Auto-prune cap (v33)
+  max_local_sessions: number | null
   updated_at: number
 }
 
@@ -81,6 +83,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // App picker preferences (v32) — undefined when column absent (old DB pre-migration)
     preferredEditorApp: row.preferred_editor_app ?? null,
     preferredTerminalApp: row.preferred_terminal_app ?? null,
+    // Auto-prune cap (v33) — null = unlimited
+    maxLocalSessions: row.max_local_sessions ?? null,
     updatedAt: row.updated_at
   }
 }
@@ -94,9 +98,7 @@ const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'wo
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
     if (!VALID_VIEW_KINDS.includes(patch.lastViewKind as AppViewKind)) {
-      throw new Error(
-        `uiState: lastViewKind must be one of ${VALID_VIEW_KINDS.join(', ')}`
-      )
+      throw new Error(`uiState: lastViewKind must be one of ${VALID_VIEW_KINDS.join(', ')}`)
     }
   }
   if ('lastProjectId' in patch) {
@@ -117,9 +119,7 @@ function validatePatch(patch: AppUiStatePatch): void {
 
 export function getAppUiState(): AppUiState {
   const db = getDb()
-  const row = db
-    .prepare('SELECT * FROM app_ui_state WHERE id = 1')
-    .get() as AppUiStateRow
+  const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
   return rowToRecord(row)
 }
 
@@ -164,7 +164,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     inProgressWatchdogSec: 'in_progress_watchdog_sec',
     // App picker preferences (v32)
     preferredEditorApp: 'preferred_editor_app',
-    preferredTerminalApp: 'preferred_terminal_app'
+    preferredTerminalApp: 'preferred_terminal_app',
+    // Auto-prune cap (v33)
+    maxLocalSessions: 'max_local_sessions'
   }
 
   const setClauses: string[] = []
@@ -188,12 +190,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   values.push(now)
   values.push(1) // WHERE id = 1
 
-  db.prepare(
-    `UPDATE app_ui_state SET ${setClauses.join(', ')} WHERE id = ?`
-  ).run(...values)
+  db.prepare(`UPDATE app_ui_state SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
 
-  const row = db
-    .prepare('SELECT * FROM app_ui_state WHERE id = 1')
-    .get() as AppUiStateRow
+  const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
   return rowToRecord(row)
 }

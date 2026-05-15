@@ -3,13 +3,21 @@ import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-import type { AppUiState, ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
+import type {
+  AppUiState,
+  ProjectRecord,
+  WorkspaceRecord,
+  GitStatus,
+  WorkspaceActivityDetail
+} from '@shared/types'
 
 interface DashboardProps {
   claudeInstalled: boolean
 }
 
-export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps): React.JSX.Element {
+export function Dashboard({
+  claudeInstalled: _claudeInstalled
+}: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state hydration
@@ -30,10 +38,14 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
   // Activity detail keyed by workspaceId — driven by claude hook events via IPC
-  const [workspaceActivities, setWorkspaceActivities] = useState<Record<string, WorkspaceActivityDetail>>({})
+  const [workspaceActivities, setWorkspaceActivities] = useState<
+    Record<string, WorkspaceActivityDetail>
+  >({})
 
   // Git status per workspace id
-  const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<Record<string, GitStatus | null>>({})
+  const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<
+    Record<string, GitStatus | null>
+  >({})
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'dashboard' })
@@ -115,7 +127,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
         }
       }
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspacesByProject])
 
   useEffect(() => {
@@ -247,7 +259,9 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       window.api.projects.setExpandedInSidebar(id, nowExpanded).catch(console.error)
       // Keep local projects state in sync so any subsequent setProjects() call
       // (e.g. from handleRenameProject revert) doesn't clobber the expandedInSidebar field.
-      setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, expandedInSidebar: nowExpanded } : p)))
+      setProjects((arr) =>
+        arr.map((p) => (p.id === id ? { ...p, expandedInSidebar: nowExpanded } : p))
+      )
       return next
     })
   }
@@ -331,9 +345,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       const next = new Set(prev)
       if (!next.has(workspace.projectId)) {
         next.add(workspace.projectId)
-        window.api.projects
-          .setExpandedInSidebar(workspace.projectId, true)
-          .catch(console.error)
+        window.api.projects.setExpandedInSidebar(workspace.projectId, true).catch(console.error)
       }
       return next
     })
@@ -358,7 +370,17 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
     if (!workspacesByProject[projectId]) {
       fetchWorkspacesForProject(projectId)
     }
-    window.api.workspaces.open(workspaceId).catch(console.error)
+    // workspaces.open updates last_opened_at server-side; merge the returned
+    // record back into local cache so the project view shows fresh activity.
+    window.api.workspaces
+      .open(workspaceId)
+      .then((updated) => {
+        setWorkspacesByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
+        }))
+      })
+      .catch(console.error)
     window.api.uiState
       .update({ lastViewKind: 'workspace', lastProjectId: projectId, lastWorkspaceId: workspaceId })
       .catch(console.error)
@@ -384,10 +406,22 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
   async function handleAddWorkspace(projectId: string): Promise<void> {
     const project = projects.find((p) => p.id === projectId)
     if (!project) return
+    // Generate a sequential default name like "Workspace 3" so each new
+    // workspace is identifiable in the list without forcing the user to rename.
+    const existing = workspacesByProject[projectId] ?? []
+    const usedNumbers = new Set(
+      existing
+        .map((w) => /^Workspace\s+(\d+)$/.exec(w.name)?.[1])
+        .filter((s): s is string => typeof s === 'string')
+        .map((s) => parseInt(s, 10))
+    )
+    let n = 1
+    while (usedNumbers.has(n)) n++
+    const defaultName = `Workspace ${n}`
     try {
       const newWs = await window.api.workspaces.create({
         projectId,
-        name: 'New Workspace',
+        name: defaultName,
         cwd: project.path
       })
       // Refresh workspace list for this project
@@ -557,9 +591,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
       : undefined
 
   const activeProjectForWorkspace =
-    view.kind === 'workspace'
-      ? projects.find((p) => p.id === view.projectId)
-      : undefined
+    view.kind === 'workspace' ? projects.find((p) => p.id === view.projectId) : undefined
 
   const activeWorkspace =
     view.kind === 'workspace'
@@ -628,9 +660,7 @@ export function Dashboard({ claudeInstalled: _claudeInstalled }: DashboardProps)
             project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
             workspace={activeWorkspace}
             workspacesForProject={
-              view.kind === 'project'
-                ? (workspacesByProject[view.projectId] ?? null)
-                : null
+              view.kind === 'project' ? (workspacesByProject[view.projectId] ?? null) : null
             }
             onRequestRemoveProject={handleRequestRemoveProject}
             onNavigateToProject={handleNavigateToProject}

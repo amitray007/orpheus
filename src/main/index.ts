@@ -40,7 +40,8 @@ import {
   listAllPinned,
   setWorkspaceClaudeSessionId,
   setWorkspaceLastTitle,
-  getAllWorkspaceLastTitles
+  getAllWorkspaceLastTitles,
+  resetTransientStatusesOnStartup
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -1162,6 +1163,18 @@ app.whenReady().then(() => {
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+
+  // Clear stale in_progress / attention statuses left over from a prior
+  // session (crash, hard quit). Without this, the WorkspaceView would show a
+  // forever-spinning "thinking" indicator until a fresh activity event lands.
+  try {
+    const cleared = resetTransientStatusesOnStartup()
+    if (cleared > 0) {
+      console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
+    }
+  } catch (err) {
+    console.error('[startup] failed to clear stale activity statuses:', err)
+  }
 
   // Start the Unix-domain socket server that hook shims post to.
   try {

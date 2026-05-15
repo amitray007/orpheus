@@ -4,7 +4,6 @@ import {
   Archive,
   ArrowUUpLeft,
   DotsThree,
-  GitBranch,
   PencilSimple,
   PushPin,
   Terminal
@@ -13,6 +12,7 @@ import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@share
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
+import { CommitsTab } from './CommitsTab'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,6 +40,8 @@ function relativeTime(ms: number): string {
 
 interface WorkspacesTabProps {
   projectId: string
+  /** Project filesystem path — used to feed the embedded Recent commits panel. */
+  projectPath: string
   workspaces: WorkspaceRecord[] | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   onSelectWorkspace: (workspaceId: string) => void
@@ -55,6 +57,7 @@ interface WorkspacesTabProps {
 
 export function WorkspacesTab({
   projectId,
+  projectPath,
   workspaces,
   workspaceActivities,
   onSelectWorkspace,
@@ -202,13 +205,12 @@ export function WorkspacesTab({
       {
         key: 'branch',
         label: 'Branch',
-        width: '140px',
+        width: '130px',
         render: (ws) => {
           const gs = gitByWs[ws.id]
           if (!gs?.branch) return <span className="text-text-muted">—</span>
           return (
-            <span className="inline-flex items-center gap-1 text-xs">
-              <GitBranch size={10} className="flex-shrink-0" />
+            <span className="inline-flex items-center gap-1 text-xs min-w-0">
               <span className="font-mono truncate">{gs.branch}</span>
               {gs.hasChanges && (
                 <span
@@ -223,9 +225,9 @@ export function WorkspacesTab({
       {
         key: 'lastOpenedAt',
         label: 'Last opened',
-        width: '110px',
+        width: '140px',
         render: (ws) => (
-          <span className="text-text-muted text-xs">
+          <span className="text-text-muted text-xs whitespace-nowrap">
             {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
           </span>
         )
@@ -233,15 +235,15 @@ export function WorkspacesTab({
       {
         key: 'menu',
         label: '',
-        width: '36px',
+        width: '44px',
         align: 'right',
         render: (ws) => (
           <button
             onClick={(e) => openMenu(e, ws)}
             aria-label="Row actions"
-            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
           >
-            <DotsThree size={14} weight="bold" />
+            <DotsThree size={18} weight="bold" />
           </button>
         )
       }
@@ -263,9 +265,9 @@ export function WorkspacesTab({
       {
         key: 'lastOpenedAt',
         label: 'Last opened',
-        width: '110px',
+        width: '140px',
         render: (ws) => (
-          <span className="text-text-muted text-xs">
+          <span className="text-text-muted text-xs whitespace-nowrap">
             {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
           </span>
         )
@@ -273,7 +275,7 @@ export function WorkspacesTab({
       {
         key: 'unarchive',
         label: '',
-        width: '36px',
+        width: '44px',
         align: 'right',
         render: (ws) => (
           <button
@@ -283,9 +285,9 @@ export function WorkspacesTab({
             }}
             aria-label="Unarchive"
             title="Unarchive"
-            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
           >
-            <ArrowUUpLeft size={12} />
+            <ArrowUUpLeft size={14} />
           </button>
         )
       }
@@ -361,6 +363,13 @@ export function WorkspacesTab({
             />
           )}
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2 mt-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+          Recent commits
+        </h3>
+        <CommitsTab cwd={projectPath} />
       </div>
 
       {menu && (

@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
+import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
 import type {
   ProjectRecord,
@@ -27,6 +28,9 @@ type SessionRow = {
   archived_at: number | null
   model: string | null
   last_message_role: string | null
+  // v33
+  message_count: number | null
+  jsonl_size_bytes: number | null
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
@@ -40,7 +44,9 @@ function rowToRecord(row: SessionRow): SessionRecord {
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
     model: row.model,
-    lastMessageRole: row.last_message_role
+    lastMessageRole: row.last_message_role,
+    messageCount: row.message_count,
+    jsonlSizeBytes: row.jsonl_size_bytes
   }
 }
 
@@ -200,6 +206,40 @@ function extractLastMessageRole(jsonlPath: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Message count + file size extraction (v33)
+// ---------------------------------------------------------------------------
+
+function extractMessageCount(jsonlPath: string): number | null {
+  try {
+    const text = fs.readFileSync(jsonlPath, 'utf-8')
+    const lines = text.split('\n')
+    let count = 0
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>
+        const type = parsed['type']
+        if (type === 'user' || type === 'assistant') count++
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+    return count
+  } catch {
+    return null
+  }
+}
+
+function extractFileSize(jsonlPath: string): number | null {
+  try {
+    return fs.statSync(jsonlPath).size
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
@@ -207,15 +247,12 @@ function extractLastMessageRole(jsonlPath: string): string | null {
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
  * not yet in the sessions table. Returns the list of inserted session IDs.
  */
-function upsertSessionFilesForProject(
-  projectId: string,
-  dir: string
-): void {
+function upsertSessionFilesForProject(projectId: string, dir: string): void {
   const db = getDb()
   const insert = db.prepare(
     `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role)
-     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?)`
+       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes)
+     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?)`
   )
 
   let entries: fs.Dirent[]
@@ -241,9 +278,22 @@ function upsertSessionFilesForProject(
     const title = extractTitle(jsonlPath)
     const model = extractModel(jsonlPath)
     const lastMessageRole = extractLastMessageRole(jsonlPath)
+    const messageCount = extractMessageCount(jsonlPath)
+    const jsonlSizeBytes = extractFileSize(jsonlPath)
 
     try {
-      insert.run(sessionId, projectId, jsonlPath, title, mtime, mtime, model, lastMessageRole)
+      insert.run(
+        sessionId,
+        projectId,
+        jsonlPath,
+        title,
+        mtime,
+        mtime,
+        model,
+        lastMessageRole,
+        messageCount,
+        jsonlSizeBytes
+      )
     } catch {
       // Ignore individual row failures (e.g. malformed UUID)
     }
@@ -292,7 +342,8 @@ export function refreshSessionMetadata(projectId: string): void {
     .prepare(
       `SELECT id, jsonl_path FROM sessions
        WHERE project_id = ?
-         AND (title IS NULL OR model IS NULL OR last_message_role IS NULL)`
+         AND (title IS NULL OR model IS NULL OR last_message_role IS NULL
+              OR message_count IS NULL OR jsonl_size_bytes IS NULL)`
     )
     .all(projectId) as NullMetaRow[]
 
@@ -300,7 +351,9 @@ export function refreshSessionMetadata(projectId: string): void {
     `UPDATE sessions
      SET title              = COALESCE(title,              ?),
          model              = COALESCE(model,              ?),
-         last_message_role  = COALESCE(last_message_role,  ?)
+         last_message_role  = COALESCE(last_message_role,  ?),
+         message_count      = COALESCE(message_count,      ?),
+         jsonl_size_bytes   = COALESCE(jsonl_size_bytes,   ?)
      WHERE id = ?`
   )
 
@@ -308,12 +361,67 @@ export function refreshSessionMetadata(projectId: string): void {
     const title = extractTitle(row.jsonl_path)
     const model = extractModel(row.jsonl_path)
     const lastMessageRole = extractLastMessageRole(row.jsonl_path)
+    const messageCount = extractMessageCount(row.jsonl_path)
+    const jsonlSizeBytes = extractFileSize(row.jsonl_path)
     try {
-      updateStmt.run(title, model, lastMessageRole, row.id)
+      updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
     } catch {
       // Ignore individual row failures
     }
   }
+
+  // Auto-prune: drop oldest non-archived rows if a cap is configured.
+  const uiState = getAppUiState()
+  const max = uiState.maxLocalSessions
+  if (typeof max === 'number' && max > 0) {
+    pruneOldSessions(projectId, max)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Prune (v33)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deletes session rows beyond `max`, oldest-first by updated_at.
+ * Only non-archived rows count against the cap; archived rows are excluded
+ * because they're already intentionally user-removed from the active list.
+ * IMPORTANT: only deletes DB rows — JSONL files on disk are never touched.
+ * Returns the number of rows deleted.
+ */
+export function pruneOldSessions(projectId: string, max: number): number {
+  const db = getDb()
+
+  const { total } = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM sessions
+       WHERE project_id = ? AND status != 'archived'`
+    )
+    .get(projectId) as { total: number }
+
+  if (total <= max) return 0
+
+  const excess = total - max
+
+  // Identify the IDs to delete (oldest updated_at first, skipping the newest `max` rows).
+  type IdRow = { id: string }
+  const toDelete = db
+    .prepare(
+      `SELECT id FROM sessions
+       WHERE project_id = ? AND status != 'archived'
+       ORDER BY updated_at ASC
+       LIMIT ?`
+    )
+    .all(projectId, excess) as IdRow[]
+
+  if (toDelete.length === 0) return 0
+
+  const placeholders = toDelete.map(() => '?').join(', ')
+  const ids = toDelete.map((r) => r.id)
+
+  db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...ids)
+
+  return toDelete.length
 }
 
 // ---------------------------------------------------------------------------

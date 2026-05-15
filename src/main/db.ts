@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 32
+const CURRENT_VERSION = 33
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -324,9 +324,9 @@ function migrate(db: Database.Database): void {
   if (currentVersion < 5) {
     // Table is already created unconditionally above via CLAUDE_SETTINGS_SCHEMA_SQL.
     // Seed the singleton row (other columns use schema DEFAULT values).
-    db.prepare(
-      `INSERT OR IGNORE INTO claude_global_settings (id, updated_at) VALUES (1, ?)`
-    ).run(Date.now())
+    db.prepare(`INSERT OR IGNORE INTO claude_global_settings (id, updated_at) VALUES (1, ?)`).run(
+      Date.now()
+    )
 
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(5)
@@ -343,9 +343,7 @@ function migrate(db: Database.Database): void {
     }
 
     // Seed the app_ui_state singleton row
-    db.prepare(
-      `INSERT OR IGNORE INTO app_ui_state (id, updated_at) VALUES (1, ?)`
-    ).run(Date.now())
+    db.prepare(`INSERT OR IGNORE INTO app_ui_state (id, updated_at) VALUES (1, ?)`).run(Date.now())
 
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(6)
@@ -354,11 +352,21 @@ function migrate(db: Database.Database): void {
 
   // Version 7: window geometry columns on app_ui_state
   if (currentVersion < 7) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_x INTEGER') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_y INTEGER') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_width INTEGER') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_height INTEGER') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN window_fullscreen INTEGER NOT NULL DEFAULT 0') } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN window_x INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN window_y INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN window_width INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN window_height INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN window_fullscreen INTEGER NOT NULL DEFAULT 0')
+    } catch {}
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(7)
     }
@@ -366,12 +374,36 @@ function migrate(db: Database.Database): void {
 
   // Version 8: Display section columns on claude_global_settings
   if (currentVersion < 8) {
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN output_style TEXT NOT NULL DEFAULT 'default' CHECK (output_style IN ('default', 'explanatory', 'proactive', 'learning'))") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN tui_mode TEXT NOT NULL DEFAULT 'default' CHECK (tui_mode IN ('default', 'fullscreen'))") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN editor_mode TEXT NOT NULL DEFAULT 'normal' CHECK (editor_mode IN ('normal', 'vim'))") } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN reduce_motion INTEGER NOT NULL DEFAULT 0 CHECK (reduce_motion IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN native_cursor INTEGER NOT NULL DEFAULT 0 CHECK (native_cursor IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN hide_cwd INTEGER NOT NULL DEFAULT 0 CHECK (hide_cwd IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN output_style TEXT NOT NULL DEFAULT 'default' CHECK (output_style IN ('default', 'explanatory', 'proactive', 'learning'))"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN tui_mode TEXT NOT NULL DEFAULT 'default' CHECK (tui_mode IN ('default', 'fullscreen'))"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN editor_mode TEXT NOT NULL DEFAULT 'normal' CHECK (editor_mode IN ('normal', 'vim'))"
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN reduce_motion INTEGER NOT NULL DEFAULT 0 CHECK (reduce_motion IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN native_cursor INTEGER NOT NULL DEFAULT 0 CHECK (native_cursor IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN hide_cwd INTEGER NOT NULL DEFAULT 0 CHECK (hide_cwd IN (0, 1))'
+      )
+    } catch {}
     if (row) {
       db.prepare('UPDATE schema_version SET version = ?').run(8)
     }
@@ -380,27 +412,97 @@ function migrate(db: Database.Database): void {
   // Version 9: Memory, Developer, Permissions columns on claude_global_settings
   if (currentVersion < 9) {
     // Memory section
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_git_instructions INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_output_tokens INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_context_tokens INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN compaction_threshold INTEGER') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_git_instructions INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_output_tokens INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_context_tokens INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN compaction_threshold INTEGER')
+    } catch {}
     // Developer section
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN debug_logging INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN log_level TEXT NOT NULL DEFAULT 'info'") } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_telemetry INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_error_reporting INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_autoupdater INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN experimental_agent_teams INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN experimental_forked_subagents INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN simple_system_prompt INTEGER NOT NULL DEFAULT 0') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN debug_logging INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN log_level TEXT NOT NULL DEFAULT 'info'"
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_telemetry INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_error_reporting INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_autoupdater INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN experimental_agent_teams INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN experimental_forked_subagents INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN simple_system_prompt INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
     // Permissions section
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_approve_edits INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN ask_destructive_bash INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN plan_mode_default INTEGER NOT NULL DEFAULT 0') } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_allow_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_ask_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_deny_rules TEXT NOT NULL DEFAULT '[]'") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN permission_additional_dirs TEXT NOT NULL DEFAULT '[]'") } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN auto_approve_edits INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN ask_destructive_bash INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN plan_mode_default INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN permission_allow_rules TEXT NOT NULL DEFAULT '[]'"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN permission_ask_rules TEXT NOT NULL DEFAULT '[]'"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN permission_deny_rules TEXT NOT NULL DEFAULT '[]'"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN permission_additional_dirs TEXT NOT NULL DEFAULT '[]'"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(9)
   }
 
@@ -416,38 +518,92 @@ function migrate(db: Database.Database): void {
   // Version 11: window behavior columns on app_ui_state + fallback_model on claude_global_settings
   if (currentVersion < 11) {
     // app_ui_state new columns (window behavior preferences)
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN restore_geometry INTEGER NOT NULL DEFAULT 1 CHECK (restore_geometry IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN close_hides INTEGER NOT NULL DEFAULT 1 CHECK (close_hides IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN open_at_last_view INTEGER NOT NULL DEFAULT 1 CHECK (open_at_last_view IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN restore_geometry INTEGER NOT NULL DEFAULT 1 CHECK (restore_geometry IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN close_hides INTEGER NOT NULL DEFAULT 1 CHECK (close_hides IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN open_at_last_view INTEGER NOT NULL DEFAULT 1 CHECK (open_at_last_view IN (0, 1))'
+      )
+    } catch {}
     // claude_global_settings new column (fallback model)
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN fallback_model TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN fallback_model TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(11)
   }
 
   // Version 12: sidebar behavior columns on app_ui_state
   if (currentVersion < 12) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN pinned_section_visible INTEGER NOT NULL DEFAULT 1 CHECK (pinned_section_visible IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN workspace_count_inline INTEGER NOT NULL DEFAULT 1 CHECK (workspace_count_inline IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480)') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN pinned_section_visible INTEGER NOT NULL DEFAULT 1 CHECK (pinned_section_visible IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN workspace_count_inline INTEGER NOT NULL DEFAULT 1 CHECK (workspace_count_inline IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 256 CHECK (sidebar_width BETWEEN 200 AND 480)'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN default_project_expanded INTEGER NOT NULL DEFAULT 0 CHECK (default_project_expanded IN (0, 1))'
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(12)
   }
 
   // Version 13: auth columns on claude_global_settings
   if (currentVersion < 13) {
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN cloud_provider TEXT NOT NULL DEFAULT 'anthropic' CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry'))") } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auth_encrypted_blob BLOB') } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN cloud_provider TEXT NOT NULL DEFAULT 'anthropic' CHECK (cloud_provider IN ('anthropic', 'bedrock', 'vertex', 'foundry'))"
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN auth_encrypted_blob BLOB')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(13)
   }
 
   // Version 14: Tools section columns on claude_global_settings
   if (currentVersion < 14) {
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_default_timeout_ms INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_timeout_ms INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_output_length INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN tool_concurrency INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1))') } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN disabled_mcp_servers TEXT NOT NULL DEFAULT '[]'") } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_default_timeout_ms INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_timeout_ms INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_max_output_length INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN tool_concurrency INTEGER')
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN browser_integration INTEGER NOT NULL DEFAULT 1 CHECK (browser_integration IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN disabled_mcp_servers TEXT NOT NULL DEFAULT '[]'"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(14)
   }
 
@@ -462,9 +618,17 @@ function migrate(db: Database.Database): void {
 
   // Version 16: plaintext auth columns replace safeStorage-encrypted blob
   if (currentVersion < 16) {
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_api_key TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_token TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_base_url TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_api_key TEXT NOT NULL DEFAULT ''")
+    } catch {}
+    try {
+      db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_token TEXT NOT NULL DEFAULT ''")
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_base_url TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
     // Clear the old encrypted blob — we can't decrypt it without the original signing identity
     db.prepare('UPDATE claude_global_settings SET auth_encrypted_blob = NULL WHERE id = 1').run()
     db.prepare('UPDATE schema_version SET version = ?').run(16)
@@ -472,133 +636,363 @@ function migrate(db: Database.Database): void {
 
   // Version 17: provider-specific config columns for Bedrock and Vertex
   if (currentVersion < 17) {
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_aws_region TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_project_id TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_region TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_aws_region TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_project_id TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_vertex_region TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(17)
   }
 
   // Version 18: launch at login + global hotkey on app_ui_state
   if (currentVersion < 18) {
-    try { db.exec("ALTER TABLE app_ui_state ADD COLUMN launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1))") } catch {}
-    try { db.exec("ALTER TABLE app_ui_state ADD COLUMN global_hotkey TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN launch_at_login INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_login IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN global_hotkey TEXT NOT NULL DEFAULT ''")
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(18)
   }
 
   // Version 19: projects.sort_order for drag-to-reorder
   if (currentVersion < 19) {
-    try { db.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER') } catch {}
+    try {
+      db.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(19)
   }
 
   // Version 20: workspaces.sort_order for drag-to-reorder within a project
   if (currentVersion < 20) {
-    try { db.exec('ALTER TABLE workspaces ADD COLUMN sort_order INTEGER') } catch {}
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN sort_order INTEGER')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(20)
   }
 
   // Version 21: workspaces.status — four-stage workflow status
   if (currentVersion < 21) {
-    try { db.exec("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived'))") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived'))"
+      )
+    } catch {}
     // Backfill: archived workspaces should have status='archived'
-    db.prepare("UPDATE workspaces SET status = 'archived' WHERE archived_at IS NOT NULL AND status != 'archived'").run()
+    db.prepare(
+      "UPDATE workspaces SET status = 'archived' WHERE archived_at IS NOT NULL AND status != 'archived'"
+    ).run()
     db.prepare('UPDATE schema_version SET version = ?').run(21)
   }
 
   // Version 22: Foundry-specific auth fields, Bedrock bearer token, custom env vars
   if (currentVersion < 22) {
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_api_key TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_resource TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_base_url TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN auth_bedrock_bearer_token TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN custom_env_vars TEXT NOT NULL DEFAULT '{}'") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_api_key TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_resource TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_foundry_base_url TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN auth_bedrock_bearer_token TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN custom_env_vars TEXT NOT NULL DEFAULT '{}'"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(22)
   }
 
   // Version 23: Typed env-var controls (General, Memory & Context, Tools, Developer)
   if (currentVersion < 23) {
     // General
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_thinking IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_fast_mode INTEGER NOT NULL DEFAULT 0 CHECK (disable_fast_mode IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_turns INTEGER') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_thinking IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_fast_mode INTEGER NOT NULL DEFAULT 0 CHECK (disable_fast_mode IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_turns INTEGER')
+    } catch {}
     // Memory & Context
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_thinking_tokens INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN file_read_max_output_tokens INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_claude_mds INTEGER NOT NULL DEFAULT 0 CHECK (disable_claude_mds IN (0, 1))') } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_thinking_tokens INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN file_read_max_output_tokens INTEGER')
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_claude_mds INTEGER NOT NULL DEFAULT 0 CHECK (disable_claude_mds IN (0, 1))'
+      )
+    } catch {}
     // Tools
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN bash_maintain_cwd INTEGER NOT NULL DEFAULT 0 CHECK (bash_maintain_cwd IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN perforce_mode INTEGER NOT NULL DEFAULT 0 CHECK (perforce_mode IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_hidden INTEGER NOT NULL DEFAULT 0 CHECK (glob_hidden IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_no_ignore INTEGER NOT NULL DEFAULT 0 CHECK (glob_no_ignore IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_timeout_seconds INTEGER') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN bash_maintain_cwd INTEGER NOT NULL DEFAULT 0 CHECK (bash_maintain_cwd IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN perforce_mode INTEGER NOT NULL DEFAULT 0 CHECK (perforce_mode IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN glob_hidden INTEGER NOT NULL DEFAULT 0 CHECK (glob_hidden IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN glob_no_ignore INTEGER NOT NULL DEFAULT 0 CHECK (glob_no_ignore IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN glob_timeout_seconds INTEGER')
+    } catch {}
     // Developer / Network
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN api_timeout_ms INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_retries INTEGER') } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN http_proxy TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN https_proxy TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN api_timeout_ms INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_retries INTEGER')
+    } catch {}
+    try {
+      db.exec("ALTER TABLE claude_global_settings ADD COLUMN http_proxy TEXT NOT NULL DEFAULT ''")
+    } catch {}
+    try {
+      db.exec("ALTER TABLE claude_global_settings ADD COLUMN https_proxy TEXT NOT NULL DEFAULT ''")
+    } catch {}
     // Developer / Privacy & background
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_nonessential_traffic INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonessential_traffic IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN do_not_track INTEGER NOT NULL DEFAULT 0 CHECK (do_not_track IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (disable_background_tasks IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_agent_view INTEGER NOT NULL DEFAULT 0 CHECK (disable_agent_view IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_nonessential_traffic INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonessential_traffic IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN do_not_track INTEGER NOT NULL DEFAULT 0 CHECK (do_not_track IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (disable_background_tasks IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_agent_view INTEGER NOT NULL DEFAULT 0 CHECK (disable_agent_view IN (0, 1))'
+      )
+    } catch {}
     // Developer / Advanced
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN anthropic_betas TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN extra_body_json TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN anthropic_betas TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN extra_body_json TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(23)
   }
 
   // Version 24: More env-var controls (Display rendering, General model capabilities, Memory, Tools, Developer)
   if (currentVersion < 24) {
     // Display / Rendering
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN no_flicker INTEGER NOT NULL DEFAULT 0 CHECK (no_flicker IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_alternate_screen INTEGER NOT NULL DEFAULT 0 CHECK (disable_alternate_screen IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_virtual_scroll INTEGER NOT NULL DEFAULT 0 CHECK (disable_virtual_scroll IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_mouse INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_terminal_title INTEGER NOT NULL DEFAULT 0 CHECK (disable_terminal_title IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN scroll_speed INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN code_accessibility INTEGER NOT NULL DEFAULT 0 CHECK (code_accessibility IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN omit_attribution_header INTEGER NOT NULL DEFAULT 0 CHECK (omit_attribution_header IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN force_sync_output INTEGER NOT NULL DEFAULT 0 CHECK (force_sync_output IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_prompt_suggestion INTEGER NOT NULL DEFAULT 0 CHECK (enable_prompt_suggestion IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN no_flicker INTEGER NOT NULL DEFAULT 0 CHECK (no_flicker IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_alternate_screen INTEGER NOT NULL DEFAULT 0 CHECK (disable_alternate_screen IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_virtual_scroll INTEGER NOT NULL DEFAULT 0 CHECK (disable_virtual_scroll IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_mouse INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_terminal_title INTEGER NOT NULL DEFAULT 0 CHECK (disable_terminal_title IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN scroll_speed INTEGER')
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN code_accessibility INTEGER NOT NULL DEFAULT 0 CHECK (code_accessibility IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN omit_attribution_header INTEGER NOT NULL DEFAULT 0 CHECK (omit_attribution_header IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN force_sync_output INTEGER NOT NULL DEFAULT 0 CHECK (force_sync_output IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_prompt_suggestion INTEGER NOT NULL DEFAULT 0 CHECK (enable_prompt_suggestion IN (0, 1))'
+      )
+    } catch {}
     // General / Model capabilities
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_1m_context INTEGER NOT NULL DEFAULT 0 CHECK (disable_1m_context IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_adaptive_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_adaptive_thinking IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_legacy_model_remap INTEGER NOT NULL DEFAULT 0 CHECK (disable_legacy_model_remap IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_1m_context INTEGER NOT NULL DEFAULT 0 CHECK (disable_1m_context IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_adaptive_thinking INTEGER NOT NULL DEFAULT 0 CHECK (disable_adaptive_thinking IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_legacy_model_remap INTEGER NOT NULL DEFAULT 0 CHECK (disable_legacy_model_remap IN (0, 1))'
+      )
+    } catch {}
     // Memory & Context
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_compact_window INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN autocompact_pct_override INTEGER') } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_compact_window INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN autocompact_pct_override INTEGER')
+    } catch {}
     // Tools / File operations
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_file_checkpointing INTEGER NOT NULL DEFAULT 0 CHECK (disable_file_checkpointing IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_attachments INTEGER NOT NULL DEFAULT 0 CHECK (disable_attachments IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_file_checkpointing INTEGER NOT NULL DEFAULT 0 CHECK (disable_file_checkpointing IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_attachments INTEGER NOT NULL DEFAULT 0 CHECK (disable_attachments IN (0, 1))'
+      )
+    } catch {}
     // Tools / Shell
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN shell_override TEXT NOT NULL DEFAULT ''") } catch {}
-    try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN shell_prefix TEXT NOT NULL DEFAULT ''") } catch {}
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN shell_override TEXT NOT NULL DEFAULT ''"
+      )
+    } catch {}
+    try {
+      db.exec("ALTER TABLE claude_global_settings ADD COLUMN shell_prefix TEXT NOT NULL DEFAULT ''")
+    } catch {}
     // Developer / Network
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_fine_grained_tool_streaming INTEGER NOT NULL DEFAULT 0 CHECK (enable_fine_grained_tool_streaming IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_nonstreaming_fallback INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonstreaming_fallback IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN proxy_resolves_hosts INTEGER NOT NULL DEFAULT 0 CHECK (proxy_resolves_hosts IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_gateway_model_discovery INTEGER NOT NULL DEFAULT 0 CHECK (enable_gateway_model_discovery IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_fine_grained_tool_streaming INTEGER NOT NULL DEFAULT 0 CHECK (enable_fine_grained_tool_streaming IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_nonstreaming_fallback INTEGER NOT NULL DEFAULT 0 CHECK (disable_nonstreaming_fallback IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN proxy_resolves_hosts INTEGER NOT NULL DEFAULT 0 CHECK (proxy_resolves_hosts IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_gateway_model_discovery INTEGER NOT NULL DEFAULT 0 CHECK (enable_gateway_model_discovery IN (0, 1))'
+      )
+    } catch {}
     // Developer / Privacy & background tasks
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN auto_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (auto_background_tasks IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN async_agent_stall_timeout_ms INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN enable_tasks INTEGER NOT NULL DEFAULT 0 CHECK (enable_tasks IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_cron INTEGER NOT NULL DEFAULT 0 CHECK (disable_cron IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN exit_after_stop_delay INTEGER') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1))') } catch {}
-    try { db.exec('ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1))') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN auto_background_tasks INTEGER NOT NULL DEFAULT 0 CHECK (auto_background_tasks IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN async_agent_stall_timeout_ms INTEGER')
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_tasks INTEGER NOT NULL DEFAULT 0 CHECK (enable_tasks IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_cron INTEGER NOT NULL DEFAULT 0 CHECK (disable_cron IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN exit_after_stop_delay INTEGER')
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1))'
+      )
+    } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1))'
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(24)
   }
 
   // Version 25: archived_workspace_limit on app_ui_state (LRU cap)
   if (currentVersion < 25) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN archived_workspace_limit INTEGER NOT NULL DEFAULT 20') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN archived_workspace_limit INTEGER NOT NULL DEFAULT 20'
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(25)
   }
 
   // Version 26: claude_session_id on workspaces — persists the session ID so
   // subsequent mounts can pass --resume and pick up the conversation.
   if (currentVersion < 26) {
-    try { db.exec('ALTER TABLE workspaces ADD COLUMN claude_session_id TEXT') } catch {}
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN claude_session_id TEXT')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(26)
   }
 
@@ -607,36 +1001,72 @@ function migrate(db: Database.Database): void {
   // so users see the prior prompt title instead of the default workspace name
   // until Claude (re)emits a fresh title.
   if (currentVersion < 27) {
-    try { db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT') } catch {}
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(27)
   }
 
   if (currentVersion < 28) {
-    db.prepare("UPDATE workspaces SET status = 'awaiting_input' WHERE status IN ('in_review', 'completed')").run()
+    db.prepare(
+      "UPDATE workspaces SET status = 'awaiting_input' WHERE status IN ('in_review', 'completed')"
+    ).run()
     db.prepare('UPDATE schema_version SET version = ?').run(28)
   }
 
   if (currentVersion < 29) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_attention BOOLEAN NOT NULL DEFAULT 1') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_stop      BOOLEAN NOT NULL DEFAULT 1') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_always    BOOLEAN NOT NULL DEFAULT 0') } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_attention BOOLEAN NOT NULL DEFAULT 1')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_stop      BOOLEAN NOT NULL DEFAULT 1')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_always    BOOLEAN NOT NULL DEFAULT 0')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(29)
   }
 
   if (currentVersion < 30) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_max_attention_repeats INTEGER NOT NULL DEFAULT 5') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN notify_max_attention_repeats INTEGER NOT NULL DEFAULT 5'
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(30)
   }
 
   if (currentVersion < 31) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN in_progress_watchdog_sec INTEGER NOT NULL DEFAULT 120') } catch {}
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN in_progress_watchdog_sec INTEGER NOT NULL DEFAULT 120'
+      )
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(31)
   }
 
   // Version 32: app picker preferences on app_ui_state
   if (currentVersion < 32) {
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_editor_app TEXT') } catch {}
-    try { db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_terminal_app TEXT') } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_editor_app TEXT')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN preferred_terminal_app TEXT')
+    } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(32)
+  }
+
+  // Version 33: session stats (message_count, jsonl_size_bytes) + auto-prune cap (max_local_sessions)
+  if (currentVersion < 33) {
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN message_count INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN jsonl_size_bytes INTEGER')
+    } catch {}
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN max_local_sessions INTEGER')
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(33)
   }
 }
