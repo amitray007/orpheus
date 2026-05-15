@@ -234,11 +234,15 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
           ))}
           {hasMore && (
             <button
+              type="button"
               onClick={loadMore}
               disabled={loadingMore}
+              aria-label={loadingMore ? 'Loading more commits' : 'Load more commits'}
               className={[
-                'self-center mt-2 px-3 py-1.5 rounded-md text-xs',
+                'self-center mt-2 inline-flex items-center px-3 h-8 rounded-md text-xs',
                 'border border-border-default text-text-secondary',
+                'transition-colors duration-150',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                 loadingMore
                   ? 'opacity-50 cursor-wait'
                   : 'hover:text-text-primary hover:bg-surface-overlay cursor-pointer'

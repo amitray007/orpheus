@@ -191,17 +191,20 @@ export function ProjectHeader({
                 {project.path}
               </p>
               <button
+                type="button"
                 onClick={copyPath}
-                aria-label={pathCopied ? 'Copied' : 'Copy path'}
+                aria-label={pathCopied ? 'Path copied' : 'Copy path to clipboard'}
                 title={pathCopied ? 'Copied' : 'Copy path'}
                 className={[
-                  'flex-shrink-0 p-0.5 rounded transition-colors duration-150 cursor-pointer',
+                  'flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md',
+                  'transition-colors duration-150 cursor-pointer',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                   pathCopied
                     ? 'text-emerald-400'
                     : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
                 ].join(' ')}
               >
-                {pathCopied ? <Check size={11} weight="bold" /> : <Copy size={11} />}
+                {pathCopied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
               </button>
             </span>
           </div>
@@ -248,9 +251,17 @@ export function ProjectHeader({
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {/* Show in Finder — no picker, single OS app */}
           <button
+            type="button"
             onClick={() => window.api.shell.revealInFinder(project.path).catch(console.error)}
+            aria-label="Show project in Finder"
             title="Show in Finder"
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-text-secondary border border-border-default hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className={[
+              'inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs',
+              'text-text-secondary border border-border-default',
+              'transition-colors duration-150 cursor-pointer',
+              'hover:text-text-primary hover:bg-surface-overlay',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+            ].join(' ')}
           >
             <FolderOpen size={12} weight="regular" />
             Finder
@@ -291,27 +302,50 @@ export function ProjectHeader({
           <span className="w-px h-5 bg-border-default mx-1" aria-hidden />
 
           <button
+            type="button"
             onClick={onNewWorkspace}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 border border-accent/30 text-text-primary hover:bg-accent/25 transition-colors cursor-pointer"
+            aria-label="Create new workspace"
+            className={[
+              'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium',
+              'bg-accent/15 border border-accent/30 text-text-primary',
+              'transition-colors duration-150 cursor-pointer',
+              'hover:bg-accent/25',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+            ].join(' ')}
           >
-            <Plus size={11} weight="bold" />
+            <Plus size={12} weight="bold" />
             New workspace
           </button>
           <button
+            type="button"
             onClick={onOpenSettings}
             aria-label="Project settings"
             title="Project settings"
-            className="p-1.5 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className={[
+              'inline-flex items-center justify-center w-8 h-8 rounded-md',
+              'border border-border-default text-text-secondary',
+              'transition-colors duration-150 cursor-pointer',
+              'hover:text-text-primary hover:bg-surface-overlay',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+            ].join(' ')}
           >
-            <GearSix size={13} />
+            <GearSix size={14} />
           </button>
           <button
+            type="button"
             onClick={openMenu}
             aria-label="More actions"
+            aria-haspopup="menu"
             title="More actions"
-            className="p-1.5 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className={[
+              'inline-flex items-center justify-center w-8 h-8 rounded-md',
+              'border border-border-default text-text-secondary',
+              'transition-colors duration-150 cursor-pointer',
+              'hover:text-text-primary hover:bg-surface-overlay',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+            ].join(' ')}
           >
-            <DotsThree size={14} weight="bold" />
+            <DotsThree size={16} weight="bold" />
           </button>
         </div>
       </div>

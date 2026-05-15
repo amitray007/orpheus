@@ -372,7 +372,12 @@ export function WorkspacesTab({
           <button
             onClick={(e) => openMenu(e, ws)}
             aria-label="Row actions"
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+            className={[
+              'inline-flex items-center justify-center w-8 h-8 rounded-md',
+              'text-text-muted transition-colors duration-150 cursor-pointer',
+              'hover:text-text-primary hover:bg-surface-overlay',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+            ].join(' ')}
           >
             <DotsThree size={18} weight="bold" />
           </button>

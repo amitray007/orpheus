@@ -224,28 +224,40 @@ export function SessionsTab({
     const resumeCol: DataTableColumn<SessionRecord> = {
       key: 'resume',
       label: '',
-      width: '44px',
+      width: '48px',
       align: 'right',
       render: (r) => {
         const isResuming = resumingId === r.id
         return (
-          <span
-            className={[
-              'inline-flex items-center justify-center w-6 h-6 rounded-md',
-              isResuming ? 'text-accent' : 'text-text-muted'
-            ].join(' ')}
+          <button
+            type="button"
+            onClick={(e) => {
+              // Row's onClick also triggers resume; stopping here so the
+              // button is a no-op-duplicate rather than a double-fire path.
+              e.stopPropagation()
+              if (!isResuming) void handleRowClick(r)
+            }}
+            disabled={isResuming}
+            aria-label={isResuming ? 'Resuming session' : 'Resume in new workspace'}
             title={isResuming ? 'Opening workspace…' : 'Resume in new workspace'}
-            aria-label={isResuming ? 'Resuming' : 'Resume in new workspace'}
+            className={[
+              'inline-flex items-center justify-center w-8 h-8 rounded-md',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+              isResuming
+                ? 'text-accent cursor-wait'
+                : 'text-text-muted hover:text-accent hover:bg-accent/10 cursor-pointer'
+            ].join(' ')}
           >
-            {isResuming ? <Spinner size="sm" /> : <Play size={11} weight="fill" />}
-          </span>
+            {isResuming ? <Spinner size="sm" /> : <Play size={13} weight="fill" />}
+          </button>
         )
       }
     }
     const deleteCol: DataTableColumn<SessionRecord> = {
       key: 'delete',
       label: '',
-      width: '36px',
+      width: '40px',
       align: 'right',
       render: (r) => (
         <button
@@ -255,11 +267,16 @@ export function SessionsTab({
             e.stopPropagation()
             setPendingDelete(r)
           }}
-          aria-label="Delete session"
+          aria-label={`Delete session${r.title ? ` "${r.title}"` : ''}`}
           title="Delete session"
-          className="inline-flex items-center justify-center w-6 h-6 rounded-md text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+          className={[
+            'inline-flex items-center justify-center w-8 h-8 rounded-md',
+            'text-text-muted transition-colors duration-150 cursor-pointer',
+            'hover:text-red-400 hover:bg-red-500/10',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50'
+          ].join(' ')}
         >
-          <Trash size={11} />
+          <Trash size={13} />
         </button>
       )
     }

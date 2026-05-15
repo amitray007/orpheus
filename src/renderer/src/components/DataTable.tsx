@@ -122,35 +122,37 @@ function PaginationFooter({
       </span>
       <div className="flex items-center gap-2">
         <button
+          type="button"
           onClick={() => onPageChange(page - 1)}
           disabled={!hasPrev}
           aria-label="Previous page"
           className={[
-            'inline-flex items-center justify-center w-6 h-6 rounded transition-colors duration-100',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            'inline-flex items-center justify-center w-8 h-8 rounded-md transition-colors duration-150',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
             hasPrev
               ? 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
               : 'opacity-40 cursor-not-allowed text-text-muted'
           ].join(' ')}
         >
-          <CaretLeft size={11} weight="bold" />
+          <CaretLeft size={13} weight="bold" />
         </button>
-        <span className="text-xs text-text-muted tabular-nums">
+        <span className="text-xs text-text-muted tabular-nums" aria-live="polite">
           Page {page} of {totalPages}
         </span>
         <button
+          type="button"
           onClick={() => onPageChange(page + 1)}
           disabled={!hasNext}
           aria-label="Next page"
           className={[
-            'inline-flex items-center justify-center w-6 h-6 rounded transition-colors duration-100',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            'inline-flex items-center justify-center w-8 h-8 rounded-md transition-colors duration-150',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
             hasNext
               ? 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
               : 'opacity-40 cursor-not-allowed text-text-muted'
           ].join(' ')}
         >
-          <CaretRight size={11} weight="bold" />
+          <CaretRight size={13} weight="bold" />
         </button>
       </div>
     </div>

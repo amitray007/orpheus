@@ -69,38 +69,47 @@ export function SplitButton<T extends string>({
   return (
     <div ref={rootRef} className="relative inline-flex">
       <button
+        type="button"
         onClick={onClick}
         disabled={primaryDisabled}
         aria-label={primaryAriaLabel}
         className={[
-          'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-md',
+          'inline-flex items-center gap-1.5 px-2.5 h-8 rounded-l-md',
           'text-xs text-text-secondary border border-r-0 border-border-default',
+          'transition-colors duration-150',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:z-10 focus-visible:relative',
           primaryDisabled
             ? 'opacity-40 cursor-not-allowed'
-            : 'hover:text-text-primary hover:bg-surface-overlay cursor-pointer',
-          'transition-colors duration-150'
+            : 'hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
         ].join(' ')}
       >
         {children}
       </button>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-label="Pick app"
+        aria-label="Choose app"
+        aria-haspopup="menu"
+        aria-expanded={open}
         disabled={options.length === 0}
         className={[
-          'inline-flex items-center justify-center w-6 py-1.5 rounded-r-md',
+          'inline-flex items-center justify-center w-7 h-8 rounded-r-md',
           'border border-border-default',
+          'transition-colors duration-150',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:z-10 focus-visible:relative',
           options.length === 0
             ? 'opacity-40 cursor-not-allowed text-text-muted'
-            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay cursor-pointer',
-          'transition-colors duration-150'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
         ].join(' ')}
       >
-        <CaretDown size={9} weight="bold" />
+        <CaretDown size={10} weight="bold" />
       </button>
 
       {open && options.length > 0 && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1">
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
+        >
           {popoverHeader && (
             <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted border-b border-border-default/60">
               {popoverHeader}
@@ -115,7 +124,15 @@ export function SplitButton<T extends string>({
                   onChange(opt.value)
                   setOpen(false)
                 }}
-                className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-left text-text-primary hover:bg-surface-raised transition-colors duration-100 cursor-pointer"
+                type="button"
+                role="menuitem"
+                className={[
+                  'w-full flex items-center justify-between gap-2',
+                  'px-3 py-2 text-sm text-left text-text-primary',
+                  'transition-colors duration-100 cursor-pointer',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:bg-surface-raised'
+                ].join(' ')}
               >
                 <span className="flex flex-col min-w-0">
                   <span className="truncate">{opt.label}</span>
