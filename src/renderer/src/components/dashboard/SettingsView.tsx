@@ -12,7 +12,6 @@ import {
   FlowArrow,
   Code,
   Info,
-  Palette,
   SidebarSimple,
   AppWindow,
   ArrowsClockwise,
@@ -81,6 +80,21 @@ interface SectionGroup {
 
 const GROUPS: SectionGroup[] = [
   {
+    label: 'Orpheus',
+    sections: [
+      // First entry is the default landing section — Orpheus → General.
+      // (Keeps the existing 'orpheus-appearance' id so the searchIndex and
+      //  any deep-link slugs continue resolving.)
+      { id: 'orpheus-appearance', label: 'General',          icon: Gear,             Component: OrpheusAppearanceSection },
+      { id: 'orpheus-sidebar',    label: 'Sidebar',          icon: SidebarSimple,    Component: OrpheusSidebarSection },
+      { id: 'orpheus-window',         label: 'Window',        icon: AppWindow,        Component: OrpheusWindowSection },
+      { id: 'orpheus-notifications',  label: 'Notifications', icon: Bell,             Component: OrpheusNotificationsSection },
+      { id: 'orpheus-updates',        label: 'Updates',       icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
+      { id: 'orpheus-developer',  label: 'Developer',        icon: Code,             Component: OrpheusDeveloperSection },
+      { id: 'orpheus-about',      label: 'About Orpheus',    icon: Info,             Component: OrpheusAboutSection }
+    ]
+  },
+  {
     label: 'Claude',
     sections: [
       { id: 'claude-general',     label: 'General',          icon: Gear,        Component: ClaudeGeneralSection },
@@ -95,18 +109,6 @@ const GROUPS: SectionGroup[] = [
       { id: 'claude-developer',   label: 'Developer',        icon: Code,        Component: ClaudeDeveloperSection },
       { id: 'claude-about',       label: 'About Claude',     icon: Info,        Component: ClaudeAboutSection }
     ]
-  },
-  {
-    label: 'Orpheus',
-    sections: [
-      { id: 'orpheus-appearance', label: 'Appearance',       icon: Palette,          Component: OrpheusAppearanceSection },
-      { id: 'orpheus-sidebar',    label: 'Sidebar',          icon: SidebarSimple,    Component: OrpheusSidebarSection },
-      { id: 'orpheus-window',         label: 'Window',        icon: AppWindow,        Component: OrpheusWindowSection },
-      { id: 'orpheus-notifications',  label: 'Notifications', icon: Bell,             Component: OrpheusNotificationsSection },
-      { id: 'orpheus-updates',        label: 'Updates',       icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
-      { id: 'orpheus-developer',  label: 'Developer',        icon: Code,             Component: OrpheusDeveloperSection },
-      { id: 'orpheus-about',      label: 'About Orpheus',    icon: Info,             Component: OrpheusAboutSection }
-    ]
   }
 ]
 
@@ -115,7 +117,8 @@ const GROUPS: SectionGroup[] = [
 // ---------------------------------------------------------------------------
 
 export function SettingsView(): React.JSX.Element {
-  const [activeId, setActiveId] = useState<SectionId>('claude-general')
+  // Default to Orpheus → General (the first section in the first group).
+  const [activeId, setActiveId] = useState<SectionId>('orpheus-appearance')
   const [query, setQuery] = useState('')
   const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
