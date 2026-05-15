@@ -349,7 +349,12 @@ export function WorkspacesTab({
               rows={archivedPaginated}
               rowKey={(ws) => ws.id}
               loading={loading}
-              onRowClick={(ws) => onSelectWorkspace(ws.id)}
+              onRowClick={async (ws) => {
+                // Opening an archived workspace promotes it to active first —
+                // the user clearly wants to keep working in it.
+                await onUnarchiveWorkspace(ws.id, projectId)
+                onSelectWorkspace(ws.id)
+              }}
               pagination={
                 archived.length > PAGE_SIZE
                   ? {

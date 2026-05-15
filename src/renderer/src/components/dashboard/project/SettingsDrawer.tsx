@@ -178,22 +178,30 @@ export function SettingsDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex justify-end"
+      className="fixed inset-0 z-40 flex"
       role="dialog"
       aria-modal="true"
       aria-label={`Project settings — ${projectName}`}
     >
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden="true" />
-      <div className="relative z-10 w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
+      {/* Backdrop is a flex sibling, not an absolute overlay, so it can't
+          intercept clicks on the drawer body. */}
+      <button
+        type="button"
+        aria-label="Close project settings"
+        onClick={onClose}
+        className="flex-1 bg-black/40 cursor-default"
+      />
+      <div className="w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
         {/* Header — matches WorkspaceDrawer */}
         <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
           <span className="text-[11px] font-medium text-text-muted px-1.5">Project Settings</span>
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close drawer"
-            className="ml-auto w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="ml-auto w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
           >
-            <X size={11} weight="bold" />
+            <X size={12} weight="bold" />
           </button>
         </div>
 
