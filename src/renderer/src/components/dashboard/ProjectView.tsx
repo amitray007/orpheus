@@ -92,7 +92,6 @@ export function ProjectView({
       <ProjectHeader
         project={project}
         workspaceCount={workspaceCount}
-        sessionCount={sessionCount}
         lastActivityAt={lastActivityAt}
         overrideCount={overrideCount}
         onNewWorkspace={() => onAddWorkspace(project.id)}
@@ -119,7 +118,6 @@ export function ProjectView({
           projectId={project.id}
           workspaces={workspaces}
           workspaceActivities={workspaceActivities}
-          onAddWorkspace={onAddWorkspace}
           onSelectWorkspace={onSelectWorkspace}
           onRenameWorkspace={onRenameWorkspace}
           onArchiveWorkspace={onArchiveWorkspace}

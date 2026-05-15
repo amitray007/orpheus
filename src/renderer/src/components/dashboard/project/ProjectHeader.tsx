@@ -2,19 +2,20 @@ import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import {
   Archive,
+  Check,
   Code,
   Copy,
   DotsThree,
-  Folder,
   FolderOpen,
   GearSix,
   GitBranch,
   Plus,
-  Terminal,
-  Check
+  Terminal
 } from '@phosphor-icons/react'
-import type { GitStatus, ProjectRecord } from '@shared/types'
+import type { AppUiState, DetectedApp, GitStatus, ProjectRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
+import { Identicon } from '../../Identicon'
+import { SplitButton } from '../../SplitButton'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,19 +35,18 @@ function relativeTime(ms: number): string {
   return `${mo}mo ago`
 }
 
+function shortAppLabel(app: DetectedApp): string {
+  return app.label ?? app.name
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
 
 interface ProjectHeaderProps {
   project: ProjectRecord
-  /** Active workspace count (excludes archived). */
   workspaceCount: number
-  /** Total local sessions count, from the sessions paged IPC. -1 means unknown. */
-  sessionCount: number
-  /** Max(lastOpenedAt) across all workspaces in the project; null if none. */
   lastActivityAt: number | null
-  /** Number of overrides applied at project scope. 0 hides the override chip. */
   overrideCount: number
   onNewWorkspace: () => void
   onOpenSettings: () => void
@@ -56,7 +56,6 @@ interface ProjectHeaderProps {
 export function ProjectHeader({
   project,
   workspaceCount,
-  sessionCount,
   lastActivityAt,
   overrideCount,
   onNewWorkspace,
@@ -66,6 +65,9 @@ export function ProjectHeader({
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [pathCopied, setPathCopied] = useState(false)
+  const [editors, setEditors] = useState<DetectedApp[]>([])
+  const [terminals, setTerminals] = useState<DetectedApp[]>([])
+  const [uiState, setUiState] = useState<AppUiState | null>(null)
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -82,6 +84,25 @@ export function ProjectHeader({
       cancelled = true
     }
   }, [project.path])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      window.api.shell.listEditorApps(),
+      window.api.shell.listTerminalApps(),
+      window.api.uiState.get()
+    ])
+      .then(([eds, tms, ui]) => {
+        if (cancelled) return
+        setEditors(eds)
+        setTerminals(tms)
+        setUiState(ui)
+      })
+      .catch((err) => console.error('[project-header] failed to load app prefs', err))
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -101,36 +122,31 @@ export function ProjectHeader({
     }
   }
 
+  async function pickEditor(name: string): Promise<void> {
+    setUiState((prev) => (prev ? { ...prev, preferredEditorApp: name } : prev))
+    try {
+      await window.api.uiState.update({ preferredEditorApp: name })
+    } catch (err) {
+      console.error('[project-header] persist editor pref failed', err)
+    }
+  }
+
+  async function pickTerminal(name: string): Promise<void> {
+    setUiState((prev) => (prev ? { ...prev, preferredTerminalApp: name } : prev))
+    try {
+      await window.api.uiState.update({ preferredTerminalApp: name })
+    } catch (err) {
+      console.error('[project-header] persist terminal pref failed', err)
+    }
+  }
+
+  const preferredEditor = uiState?.preferredEditorApp ?? null
+  const preferredTerminal = uiState?.preferredTerminalApp ?? null
+
+  const activeEditor = editors.find((e) => e.name === preferredEditor) ?? editors[0] ?? null
+  const activeTerminal = terminals.find((t) => t.name === preferredTerminal) ?? terminals[0] ?? null
+
   const overflowMenu: ContextMenuItem[] = [
-    {
-      label: 'Show in Finder',
-      icon: <FolderOpen size={13} />,
-      onClick: () => {
-        window.api.shell.revealInFinder(project.path).catch(console.error)
-      }
-    },
-    {
-      label: 'Open in editor',
-      icon: <Code size={13} />,
-      onClick: () => {
-        window.api.shell.openInEditor(project.path).catch(console.error)
-      }
-    },
-    {
-      label: 'Open in terminal',
-      icon: <Terminal size={13} />,
-      onClick: () => {
-        window.api.shell.openTerminal(project.path).catch(console.error)
-      }
-    },
-    {
-      label: 'Copy path',
-      icon: <Copy size={13} />,
-      onClick: () => {
-        copyPath()
-      }
-    },
-    { divider: true, label: '', onClick: () => {} },
     {
       label: 'Remove from Orpheus',
       icon: <Archive size={13} />,
@@ -144,8 +160,6 @@ export function ProjectHeader({
     setMenu({ x: rect.right - 200, y: rect.bottom + 4 })
   }
 
-  const sessionsLabel =
-    sessionCount < 0 ? '— sessions' : `${sessionCount} session${sessionCount === 1 ? '' : 's'}`
   const workspacesLabel = `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
   const activityLabel = lastActivityAt
     ? `active ${relativeTime(lastActivityAt)}`
@@ -153,16 +167,21 @@ export function ProjectHeader({
 
   return (
     <header className="flex flex-col gap-3">
-      <div className="flex items-start gap-4">
-        <div className="mt-0.5 p-2.5 rounded-lg bg-surface-raised border border-border-default flex-shrink-0">
-          <Folder size={20} weight="fill" className="text-accent" />
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex-shrink-0">
+          <Identicon seed={project.path} size={28} />
         </div>
 
-        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-          <h1 className="text-xl font-semibold text-text-primary truncate">{project.name}</h1>
-
-          <div className="flex items-center gap-1.5 min-w-0">
-            <p className="text-xs text-text-muted font-mono truncate min-w-0" title={project.path}>
+        <div className="flex-1 min-w-0 flex flex-col gap-1">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+            <h1 className="text-xl font-semibold text-text-primary truncate">{project.name}</h1>
+            <span className="text-text-muted" aria-hidden>
+              ·
+            </span>
+            <p
+              className="text-xs text-text-muted font-mono truncate min-w-0 flex-1"
+              title={project.path}
+            >
               {project.path}
             </p>
             <button
@@ -197,8 +216,6 @@ export function ProjectHeader({
             )}
             <span>{workspacesLabel}</span>
             <span aria-hidden>·</span>
-            <span>{sessionsLabel}</span>
-            <span aria-hidden>·</span>
             <span>{activityLabel}</span>
             {overrideCount > 0 && (
               <>
@@ -215,6 +232,50 @@ export function ProjectHeader({
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Show in Finder — no picker, single OS app */}
+          <button
+            onClick={() => window.api.shell.revealInFinder(project.path).catch(console.error)}
+            title="Show in Finder"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-text-secondary border border-border-default hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+          >
+            <FolderOpen size={12} weight="regular" />
+            Finder
+          </button>
+
+          {/* Open in editor — picker */}
+          <SplitButton<string>
+            options={editors.map((e) => ({
+              value: e.name,
+              label: shortAppLabel(e)
+            }))}
+            value={activeEditor?.name ?? null}
+            onChange={pickEditor}
+            onClick={() => window.api.shell.openInEditor(project.path).catch(console.error)}
+            popoverHeader="Open in"
+            primaryDisabled={editors.length === 0}
+          >
+            <Code size={12} weight="regular" />
+            <span>{activeEditor ? shortAppLabel(activeEditor) : 'Editor'}</span>
+          </SplitButton>
+
+          {/* Open in terminal — picker */}
+          <SplitButton<string>
+            options={terminals.map((t) => ({
+              value: t.name,
+              label: shortAppLabel(t)
+            }))}
+            value={activeTerminal?.name ?? null}
+            onChange={pickTerminal}
+            onClick={() => window.api.shell.openTerminal(project.path).catch(console.error)}
+            popoverHeader="Open in"
+            primaryDisabled={terminals.length === 0}
+          >
+            <Terminal size={12} weight="regular" />
+            <span>{activeTerminal ? shortAppLabel(activeTerminal) : 'Terminal'}</span>
+          </SplitButton>
+
+          <span className="w-px h-5 bg-border-default mx-1" aria-hidden />
+
           <button
             onClick={onNewWorkspace}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 border border-accent/30 text-text-primary hover:bg-accent/25 transition-colors cursor-pointer"

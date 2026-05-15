@@ -154,7 +154,14 @@ declare global {
         branches: (cwd: string) => Promise<GitBranchInfo[]>
         log: (
           cwd: string,
-          opts?: { branch?: string; limit?: number; offset?: number }
+          opts?: {
+            branch?: string
+            limit?: number
+            offset?: number
+            sinceMs?: number
+            untilMs?: number
+            grep?: string
+          }
         ) => Promise<GitCommit[]>
       }
       shell: {

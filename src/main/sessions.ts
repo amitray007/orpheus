@@ -54,6 +54,10 @@ const MAX_TITLE_LENGTH = 60
 /**
  * Reads up to MAX_BYTES from the JSONL file, scans line-by-line for the first
  * user message, and extracts a title string from its content.
+ *
+ * Handles Claude Code transcript shape:
+ *   { "type": "user", "message": { "role": "user", "content": "..." | [{type,text,...}] } }
+ *
  * Returns null on any failure so the caller can use the session UUID prefix.
  */
 function extractTitle(jsonlPath: string): string | null {
@@ -80,12 +84,15 @@ function extractTitle(jsonlPath: string): string | null {
       if (
         typeof parsed !== 'object' ||
         parsed === null ||
-        (parsed as Record<string, unknown>)['role'] !== 'user'
+        (parsed as Record<string, unknown>)['type'] !== 'user'
       ) {
         continue
       }
 
-      const content = (parsed as Record<string, unknown>)['content']
+      const message = (parsed as Record<string, unknown>)['message']
+      if (typeof message !== 'object' || message === null) continue
+
+      const content = (message as Record<string, unknown>)['content']
       let raw: string | null = null
 
       if (typeof content === 'string') {
@@ -138,7 +145,12 @@ function extractModel(jsonlPath: string): string | null {
       if (!trimmed) continue
       try {
         const parsed = JSON.parse(trimmed) as Record<string, unknown>
-        if (typeof parsed['model'] === 'string') return parsed['model']
+        // Claude Code shape: { "type": "assistant", "message": { "model": "claude-..." } }
+        if (parsed['type'] !== 'assistant') continue
+        const message = parsed['message']
+        if (typeof message !== 'object' || message === null) continue
+        const model = (message as Record<string, unknown>)['model']
+        if (typeof model === 'string' && model.length > 0) return model
       } catch {
         continue
       }
@@ -170,7 +182,13 @@ function extractLastMessageRole(jsonlPath: string): string | null {
       if (!trimmed) continue
       try {
         const parsed = JSON.parse(trimmed) as Record<string, unknown>
-        if (typeof parsed['role'] === 'string') return parsed['role']
+        // Claude Code shape: top-level "type" is "user" | "assistant"
+        const type = parsed['type']
+        if (type !== 'user' && type !== 'assistant') continue
+        const message = parsed['message']
+        if (typeof message !== 'object' || message === null) continue
+        const role = (message as Record<string, unknown>)['role']
+        if (typeof role === 'string') return role
       } catch {
         continue
       }
@@ -186,16 +204,13 @@ function extractLastMessageRole(jsonlPath: string): string | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Scans the Claude Code project directory for .jsonl session files and
- * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
- * Wrapped in a transaction by the caller (addProject).
+ * Shared helper: scan a Claude project directory and INSERT any .jsonl files
+ * not yet in the sessions table. Returns the list of inserted session IDs.
  */
-export function importSessionsForProject(project: ProjectRecord): SessionRecord[] {
-  if (!project.claudeEncodedName) return []
-
-  const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
-  if (!fs.existsSync(dir)) return []
-
+function upsertSessionFilesForProject(
+  projectId: string,
+  dir: string
+): void {
   const db = getDb()
   const insert = db.prepare(
     `INSERT OR IGNORE INTO sessions
@@ -207,7 +222,7 @@ export function importSessionsForProject(project: ProjectRecord): SessionRecord[
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch {
-    return []
+    return
   }
 
   for (const entry of entries) {
@@ -228,13 +243,77 @@ export function importSessionsForProject(project: ProjectRecord): SessionRecord[
     const lastMessageRole = extractLastMessageRole(jsonlPath)
 
     try {
-      insert.run(sessionId, project.id, jsonlPath, title, mtime, mtime, model, lastMessageRole)
+      insert.run(sessionId, projectId, jsonlPath, title, mtime, mtime, model, lastMessageRole)
     } catch {
       // Ignore individual row failures (e.g. malformed UUID)
     }
   }
+}
+
+/**
+ * Scans the Claude Code project directory for .jsonl session files and
+ * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
+ * Wrapped in a transaction by the caller (addProject).
+ */
+export function importSessionsForProject(project: ProjectRecord): SessionRecord[] {
+  if (!project.claudeEncodedName) return []
+
+  const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
+  if (!fs.existsSync(dir)) return []
+
+  upsertSessionFilesForProject(project.id, dir)
 
   return listSessionsForProject(project.id)
+}
+
+/**
+ * For all sessions in a project where title / model / last_message_role is NULL,
+ * re-runs the extractors and fills in the missing values.
+ * Also scans for new .jsonl files not yet in the sessions table and inserts them.
+ */
+export function refreshSessionMetadata(projectId: string): void {
+  const db = getDb()
+
+  // Pull the claudeEncodedName for this project so we can scan for new files.
+  const projectRow = db
+    .prepare('SELECT claude_encoded_name FROM projects WHERE id = ?')
+    .get(projectId) as { claude_encoded_name: string | null } | undefined
+
+  if (projectRow?.claude_encoded_name) {
+    const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
+    if (fs.existsSync(dir)) {
+      upsertSessionFilesForProject(projectId, dir)
+    }
+  }
+
+  // Now backfill any NULL metadata columns.
+  type NullMetaRow = { id: string; jsonl_path: string }
+  const rows = db
+    .prepare(
+      `SELECT id, jsonl_path FROM sessions
+       WHERE project_id = ?
+         AND (title IS NULL OR model IS NULL OR last_message_role IS NULL)`
+    )
+    .all(projectId) as NullMetaRow[]
+
+  const updateStmt = db.prepare(
+    `UPDATE sessions
+     SET title              = COALESCE(title,              ?),
+         model              = COALESCE(model,              ?),
+         last_message_role  = COALESCE(last_message_role,  ?)
+     WHERE id = ?`
+  )
+
+  for (const row of rows) {
+    const title = extractTitle(row.jsonl_path)
+    const model = extractModel(row.jsonl_path)
+    const lastMessageRole = extractLastMessageRole(row.jsonl_path)
+    try {
+      updateStmt.run(title, model, lastMessageRole, row.id)
+    } catch {
+      // Ignore individual row failures
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

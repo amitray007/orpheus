@@ -144,13 +144,33 @@ export function listBranches(cwd: string): GitBranchInfo[] {
 
 export function listCommits(
   cwd: string,
-  opts?: { branch?: string; limit?: number; offset?: number }
+  opts?: {
+    branch?: string
+    limit?: number
+    offset?: number
+    /** Unix-epoch-ms lower bound for committer date. */
+    sinceMs?: number
+    /** Unix-epoch-ms upper bound for committer date. */
+    untilMs?: number
+    /** Substring filter against commit subject (case-insensitive). */
+    grep?: string
+  }
 ): GitCommit[] {
   if (!cwd) return []
   const limit = opts?.limit ?? 25
   const offset = opts?.offset ?? 0
   const args = ['-C', cwd, 'log']
   if (opts?.branch) args.push(opts.branch)
+  if (opts?.sinceMs !== undefined) {
+    args.push(`--since=${Math.floor(opts.sinceMs / 1000)}`)
+  }
+  if (opts?.untilMs !== undefined) {
+    args.push(`--until=${Math.floor(opts.untilMs / 1000)}`)
+  }
+  if (opts?.grep) {
+    // Case-insensitive subject grep; git matches against the commit message.
+    args.push('-i', `--grep=${opts.grep}`)
+  }
   args.push(
     `--max-count=${limit}`,
     `--skip=${offset}`,

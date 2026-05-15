@@ -12,11 +12,12 @@ import { Select } from '../settings/primitives'
 const PAGE_SIZE = 20
 
 const DATE_RANGE_OPTIONS = [
-  { value: 'all', label: 'All time' },
   { value: 'd1', label: 'Last 24h' },
+  { value: 'd3', label: 'Last 3 days' },
   { value: 'd7', label: 'Last 7 days' },
   { value: 'd30', label: 'Last 30 days' },
-  { value: 'd90', label: 'Last 90 days' }
+  { value: 'd90', label: 'Last 90 days' },
+  { value: 'all', label: 'All time' }
 ] as const
 
 type DateRange = (typeof DATE_RANGE_OPTIONS)[number]['value']
@@ -25,6 +26,7 @@ function dateRangeToFrom(range: DateRange): number | undefined {
   if (range === 'all') return undefined
   const day = 24 * 60 * 60 * 1000
   if (range === 'd1') return Date.now() - 1 * day
+  if (range === 'd3') return Date.now() - 3 * day
   if (range === 'd7') return Date.now() - 7 * day
   if (range === 'd30') return Date.now() - 30 * day
   if (range === 'd90') return Date.now() - 90 * day
@@ -73,7 +75,7 @@ export function SessionsTab({
 }: SessionsTabProps): React.JSX.Element {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [dateRange, setDateRange] = useState<DateRange>('all')
+  const [dateRange, setDateRange] = useState<DateRange>('d3')
   const [sortBy, setSortBy] = useState<SortBy>('updatedAt')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [page, setPage] = useState(1)
@@ -91,6 +93,23 @@ export function SessionsTab({
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
     return () => clearTimeout(t)
   }, [search])
+
+  // One-shot metadata backfill on project change — fills in any null titles
+  // and models from JSONL files. Then the next paged query picks up the
+  // freshly-extracted values.
+  const [metadataVersion, setMetadataVersion] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    window.api.sessions
+      .refreshMetadata(projectId)
+      .then(() => {
+        if (!cancelled) setMetadataVersion((v) => v + 1)
+      })
+      .catch((err) => console.error('[sessions-tab] refresh failed', err))
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
 
   // Snapshot the IPC call so a stale request can be ignored once it returns.
   const reqIdRef = useRef(0)
@@ -122,7 +141,16 @@ export function SessionsTab({
         setTotal(0)
         setLoading(false)
       })
-  }, [projectId, debouncedSearch, dateRange, sortBy, sortDir, page, onSessionCountChange])
+  }, [
+    projectId,
+    debouncedSearch,
+    dateRange,
+    sortBy,
+    sortDir,
+    page,
+    metadataVersion,
+    onSessionCountChange
+  ])
 
   // Filter changes reset to page 1; these go through handlers so we never set
   // state synchronously from an effect.
@@ -174,10 +202,17 @@ export function SessionsTab({
         )
       },
       {
+        key: 'createdAt',
+        label: 'Created',
+        sortable: true,
+        width: '120px',
+        render: (r) => <span className="text-text-muted">{relativeTime(r.createdAt)}</span>
+      },
+      {
         key: 'updatedAt',
         label: 'Updated',
         sortable: true,
-        width: '140px',
+        width: '120px',
         render: (r) => <span className="text-text-muted">{relativeTime(r.updatedAt)}</span>
       },
       {

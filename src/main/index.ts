@@ -735,9 +735,8 @@ ipcMain.handle(
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
-ipcMain.handle(
-  'sessions:refreshMetadata',
-  (_e, { projectId }: { projectId: string }) => refreshSessionMetadata(projectId)
+ipcMain.handle('sessions:refreshMetadata', (_e, { projectId }: { projectId: string }) =>
+  refreshSessionMetadata(projectId)
 )
 
 // ---------------------------------------------------------------------------

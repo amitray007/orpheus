@@ -1,24 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
   Archive,
   ArrowUUpLeft,
-  CaretDown,
-  CaretRight,
-  Folder,
+  DotsThree,
   GitBranch,
   PencilSimple,
-  Plus,
   PushPin,
   Terminal
 } from '@phosphor-icons/react'
 import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
+import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const PAGE_SIZE = 8
 
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms
@@ -35,168 +35,6 @@ function relativeTime(ms: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Row
-// ---------------------------------------------------------------------------
-
-interface RowProps {
-  workspace: WorkspaceRecord
-  archived?: boolean
-  activity?: WorkspaceActivityDetail
-  gitStatus?: GitStatus | null
-  renaming: boolean
-  onSelect: () => void
-  onBeginRename: () => void
-  onFinishRename: (newName: string) => void
-  onCancelRename: () => void
-  onTogglePin: () => void
-  onArchive: () => void
-  onUnarchive?: () => void
-}
-
-function WorkspaceRow({
-  workspace,
-  archived = false,
-  activity,
-  gitStatus,
-  renaming,
-  onSelect,
-  onBeginRename,
-  onFinishRename,
-  onCancelRename,
-  onTogglePin,
-  onArchive,
-  onUnarchive
-}: RowProps): React.JSX.Element {
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const [renameValue, setRenameValue] = useState(workspace.name)
-
-  if (!renaming && renameValue !== workspace.name) {
-    setRenameValue(workspace.name)
-  }
-
-  const isPinned = workspace.pinnedAt !== null
-
-  function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== workspace.name) onFinishRename(trimmed)
-    else onCancelRename()
-  }
-
-  const menuItems: ContextMenuItem[] = archived
-    ? [
-        {
-          label: 'Unarchive',
-          icon: <ArrowUUpLeft size={13} />,
-          onClick: () => onUnarchive?.()
-        },
-        { label: 'Rename', icon: <PencilSimple size={13} />, onClick: onBeginRename }
-      ]
-    : [
-        { label: 'Rename', icon: <PencilSimple size={13} />, onClick: onBeginRename },
-        {
-          label: isPinned ? 'Unpin' : 'Pin',
-          icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
-          onClick: onTogglePin
-        },
-        { divider: true, label: '', onClick: () => {} },
-        {
-          label: 'Archive',
-          icon: <Archive size={13} />,
-          onClick: onArchive,
-          destructive: true
-        }
-      ]
-
-  return (
-    <div
-      onClick={renaming ? undefined : onSelect}
-      onContextMenu={(e) => {
-        e.preventDefault()
-        setMenu({ x: e.clientX, y: e.clientY })
-      }}
-      className={[
-        'group relative flex items-start gap-3 px-4 py-3',
-        'border-b border-border-default/40 last:border-b-0',
-        'transition-colors duration-100',
-        renaming
-          ? 'cursor-default bg-surface-overlay/30'
-          : 'cursor-pointer hover:bg-surface-overlay/40',
-        archived ? 'opacity-60 hover:opacity-90' : ''
-      ].join(' ')}
-    >
-      {/* Status dot / activity */}
-      <div className="flex items-center h-5 mt-0.5 flex-shrink-0 w-3">
-        {archived ? (
-          <span
-            className="w-1.5 h-1.5 rounded-full bg-text-muted opacity-50"
-            aria-label="Archived"
-          />
-        ) : activity ? (
-          <ActivityIndicator detail={activity} />
-        ) : (
-          <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" aria-label="Idle" />
-        )}
-      </div>
-
-      {/* Main content */}
-      <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-        <div className="flex items-center gap-2 min-w-0">
-          {renaming ? (
-            <input
-              autoFocus
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameCommit()
-                if (e.key === 'Escape') onCancelRename()
-              }}
-              onBlur={handleRenameCommit}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="text-sm font-medium bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-text-primary min-w-0 flex-1 max-w-xs"
-            />
-          ) : (
-            <span className="text-sm font-medium text-text-primary truncate">{workspace.name}</span>
-          )}
-          {isPinned && !archived && !renaming && (
-            <PushPin size={11} weight="fill" className="text-accent flex-shrink-0" />
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-xs text-text-muted min-w-0">
-          {gitStatus?.branch && (
-            <span className="inline-flex items-center gap-1 flex-shrink-0">
-              <GitBranch size={10} />
-              <span className="font-mono">{gitStatus.branch}</span>
-              {gitStatus.hasChanges && (
-                <span
-                  className="w-1.5 h-1.5 rounded-full bg-amber-400/80"
-                  title={`+${gitStatus.insertions} −${gitStatus.deletions}`}
-                />
-              )}
-            </span>
-          )}
-          <span className="inline-flex items-center gap-1 min-w-0 truncate" title={workspace.cwd}>
-            <Folder size={10} className="flex-shrink-0" />
-            <span className="truncate">{workspace.cwd}</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Right meta */}
-      <div className="flex flex-col items-end gap-0.5 flex-shrink-0 text-xs text-text-muted">
-        <span>
-          {workspace.lastOpenedAt ? relativeTime(workspace.lastOpenedAt) : 'never opened'}
-        </span>
-      </div>
-
-      {menu && (
-        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={menuItems} />
-      )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
 
@@ -204,7 +42,6 @@ interface WorkspacesTabProps {
   projectId: string
   workspaces: WorkspaceRecord[] | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
-  onAddWorkspace: (projectId: string) => void | Promise<void>
   onSelectWorkspace: (workspaceId: string) => void
   onRenameWorkspace: (
     workspaceId: string,
@@ -220,7 +57,6 @@ export function WorkspacesTab({
   projectId,
   workspaces,
   workspaceActivities,
-  onAddWorkspace,
   onSelectWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
@@ -229,16 +65,18 @@ export function WorkspacesTab({
 }: WorkspacesTabProps): React.JSX.Element {
   const loading = workspaces === null
   const all = workspaces ?? []
-  const active = all.filter((w) => w.archivedAt === null)
-  const archived = all.filter((w) => w.archivedAt !== null)
+  const active = useMemo(() => all.filter((w) => w.archivedAt === null), [all])
+  const archived = useMemo(() => all.filter((w) => w.archivedAt !== null), [all])
 
+  const [activePage, setActivePage] = useState(1)
+  const [archivedPage, setArchivedPage] = useState(1)
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
   const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
 
-  // Light-touch git status fetch for visible (active) workspaces. We use the
-  // existing git:status IPC which itself has a 2s timeout and swallows errors,
-  // so the worst case is a row without branch decoration.
+  // Background git status for visible active rows (each call is short-timeout
+  // + error-swallowing so worst case is no branch decoration).
   useEffect(() => {
     let cancelled = false
     for (const ws of active) {
@@ -260,112 +98,273 @@ export function WorkspacesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active.map((w) => w.id).join('|')])
 
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-text-muted">
-          {loading ? '…' : `${active.length} active`}
-          {archived.length > 0 && !loading && ` · ${archived.length} archived`}
-        </p>
-        <button
-          onClick={() => onAddWorkspace(projectId)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 border border-accent/30 text-text-primary hover:bg-accent/25 transition-colors duration-150 cursor-pointer"
-        >
-          <Plus size={11} weight="bold" />
-          New workspace
-        </button>
-      </div>
+  function openMenu(e: React.MouseEvent, ws: WorkspaceRecord): void {
+    e.stopPropagation()
+    e.preventDefault()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setMenu({ x: rect.right - 180, y: rect.bottom + 4, ws })
+  }
 
-      <div className="rounded-lg border border-border-default bg-surface-raised overflow-hidden">
-        {loading ? (
-          <div className="flex flex-col">
-            {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 px-4 py-3 border-b border-border-default/40 last:border-b-0"
-                style={{ opacity: 0.4 + i * 0.2 }}
-              >
-                <div className="w-2 h-2 rounded-full bg-surface-overlay" />
-                <div className="flex-1 flex flex-col gap-1">
-                  <div className="h-3 bg-surface-overlay rounded w-32" />
-                  <div className="h-2.5 bg-surface-overlay rounded w-48" />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : active.length === 0 && archived.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-10">
-            <Terminal size={22} className="text-text-muted opacity-50" />
-            <p className="text-sm text-text-muted">No workspaces yet</p>
-            <p className="text-xs text-text-muted max-w-xs text-center">
-              Create a workspace to start working in this project.
-            </p>
-          </div>
-        ) : active.length === 0 ? (
-          <div className="py-8 text-center text-sm text-text-muted">
-            All workspaces are archived.
-          </div>
-        ) : (
-          active.map((ws) => (
-            <WorkspaceRow
-              key={ws.id}
-              workspace={ws}
-              activity={workspaceActivities[ws.id]}
-              gitStatus={gitByWs[ws.id]}
-              renaming={renamingId === ws.id}
-              onBeginRename={() => setRenamingId(ws.id)}
-              onFinishRename={(newName) => {
-                onRenameWorkspace(ws.id, projectId, newName)
-                setRenamingId(null)
-              }}
-              onCancelRename={() => setRenamingId(null)}
-              onSelect={() => onSelectWorkspace(ws.id)}
-              onTogglePin={() => onToggleWorkspacePin(ws.id, projectId)}
-              onArchive={() => onArchiveWorkspace(ws.id, projectId)}
-            />
-          ))
-        )}
-      </div>
+  function beginRename(ws: WorkspaceRecord): void {
+    setRenamingId(ws.id)
+    setRenameValue(ws.name)
+  }
 
-      {archived.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={() => setArchivedExpanded((v) => !v)}
-            className="self-start flex items-center gap-1.5 px-1 py-1 cursor-pointer hover:text-text-primary transition-colors duration-150"
-          >
-            {archivedExpanded ? (
-              <CaretDown size={11} className="text-text-muted" />
-            ) : (
-              <CaretRight size={11} className="text-text-muted" />
-            )}
-            <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-              Archived
-            </span>
-            <span className="text-xs text-text-muted ml-1">({archived.length})</span>
-          </button>
-          {archivedExpanded && (
-            <div className="rounded-lg border border-border-default bg-surface-raised overflow-hidden">
-              {archived.map((ws) => (
-                <WorkspaceRow
-                  key={ws.id}
-                  workspace={ws}
-                  archived
-                  renaming={renamingId === ws.id}
-                  onBeginRename={() => setRenamingId(ws.id)}
-                  onFinishRename={(newName) => {
-                    onRenameWorkspace(ws.id, projectId, newName)
-                    setRenamingId(null)
+  function commitRename(ws: WorkspaceRecord): void {
+    const trimmed = renameValue.trim()
+    if (trimmed && trimmed !== ws.name) {
+      onRenameWorkspace(ws.id, projectId, trimmed)
+    }
+    setRenamingId(null)
+  }
+
+  const menuItems: ContextMenuItem[] = useMemo(() => {
+    if (!menu) return []
+    const ws = menu.ws
+    const isPinned = ws.pinnedAt !== null
+    if (ws.archivedAt !== null) {
+      return [
+        {
+          label: 'Unarchive',
+          icon: <ArrowUUpLeft size={13} />,
+          onClick: () => onUnarchiveWorkspace(ws.id, projectId)
+        },
+        {
+          label: 'Rename',
+          icon: <PencilSimple size={13} />,
+          onClick: () => beginRename(ws)
+        }
+      ]
+    }
+    return [
+      {
+        label: 'Rename',
+        icon: <PencilSimple size={13} />,
+        onClick: () => beginRename(ws)
+      },
+      {
+        label: isPinned ? 'Unpin' : 'Pin',
+        icon: <PushPin size={13} weight={isPinned ? 'fill' : 'regular'} />,
+        onClick: () => onToggleWorkspacePin(ws.id, projectId)
+      },
+      { divider: true, label: '', onClick: () => {} },
+      {
+        label: 'Archive',
+        icon: <Archive size={13} />,
+        onClick: () => onArchiveWorkspace(ws.id, projectId),
+        destructive: true
+      }
+    ]
+  }, [menu, projectId, onArchiveWorkspace, onUnarchiveWorkspace, onToggleWorkspacePin])
+
+  const activeColumns: DataTableColumn<WorkspaceRecord>[] = useMemo(
+    () => [
+      {
+        key: 'name',
+        label: 'Workspace',
+        render: (ws) => {
+          const activity = workspaceActivities[ws.id]
+          const isPinned = ws.pinnedAt !== null
+          return (
+            <span className="flex items-center gap-2 min-w-0">
+              <span className="flex items-center justify-center w-3 flex-shrink-0">
+                {activity ? (
+                  <ActivityIndicator detail={activity} />
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
+                )}
+              </span>
+              {renamingId === ws.id ? (
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(ws)
+                    if (e.key === 'Escape') setRenamingId(null)
                   }}
-                  onCancelRename={() => setRenamingId(null)}
-                  onSelect={() => onSelectWorkspace(ws.id)}
-                  onTogglePin={() => onToggleWorkspacePin(ws.id, projectId)}
-                  onArchive={() => onArchiveWorkspace(ws.id, projectId)}
-                  onUnarchive={() => onUnarchiveWorkspace(ws.id, projectId)}
+                  onBlur={() => commitRename(ws)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
                 />
-              ))}
+              ) : (
+                <span className="truncate" title={ws.name}>
+                  {ws.name}
+                </span>
+              )}
+              {isPinned && !renamingId && (
+                <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
+              )}
+            </span>
+          )
+        }
+      },
+      {
+        key: 'branch',
+        label: 'Branch',
+        width: '140px',
+        render: (ws) => {
+          const gs = gitByWs[ws.id]
+          if (!gs?.branch) return <span className="text-text-muted">—</span>
+          return (
+            <span className="inline-flex items-center gap-1 text-xs">
+              <GitBranch size={10} className="flex-shrink-0" />
+              <span className="font-mono truncate">{gs.branch}</span>
+              {gs.hasChanges && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-amber-400/80 flex-shrink-0"
+                  title={`+${gs.insertions} −${gs.deletions}`}
+                />
+              )}
+            </span>
+          )
+        }
+      },
+      {
+        key: 'lastOpenedAt',
+        label: 'Last opened',
+        width: '110px',
+        render: (ws) => (
+          <span className="text-text-muted text-xs">
+            {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
+          </span>
+        )
+      },
+      {
+        key: 'menu',
+        label: '',
+        width: '36px',
+        align: 'right',
+        render: (ws) => (
+          <button
+            onClick={(e) => openMenu(e, ws)}
+            aria-label="Row actions"
+            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+          >
+            <DotsThree size={14} weight="bold" />
+          </button>
+        )
+      }
+    ],
+    [gitByWs, workspaceActivities, renamingId, renameValue]
+  )
+
+  const archivedColumns: DataTableColumn<WorkspaceRecord>[] = useMemo(
+    () => [
+      {
+        key: 'name',
+        label: 'Workspace',
+        render: (ws) => (
+          <span className="truncate text-text-secondary" title={ws.name}>
+            {ws.name}
+          </span>
+        )
+      },
+      {
+        key: 'lastOpenedAt',
+        label: 'Last opened',
+        width: '110px',
+        render: (ws) => (
+          <span className="text-text-muted text-xs">
+            {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
+          </span>
+        )
+      },
+      {
+        key: 'unarchive',
+        label: '',
+        width: '36px',
+        align: 'right',
+        render: (ws) => (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onUnarchiveWorkspace(ws.id, projectId)
+            }}
+            aria-label="Unarchive"
+            title="Unarchive"
+            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors cursor-pointer"
+          >
+            <ArrowUUpLeft size={12} />
+          </button>
+        )
+      }
+    ],
+    [onUnarchiveWorkspace, projectId]
+  )
+
+  const activePaginated = active.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE)
+  const archivedPaginated = archived.slice((archivedPage - 1) * PAGE_SIZE, archivedPage * PAGE_SIZE)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="flex flex-col gap-2 min-w-0">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+            Active{active.length > 0 && ` · ${active.length}`}
+          </h3>
+          {!loading && active.length === 0 ? (
+            <div className="rounded-lg border border-border-default bg-surface-raised py-8 flex flex-col items-center gap-2">
+              <Terminal size={20} className="text-text-muted opacity-50" />
+              <p className="text-xs text-text-muted">No active workspaces</p>
             </div>
+          ) : (
+            <DataTable<WorkspaceRecord>
+              columns={activeColumns}
+              rows={activePaginated}
+              rowKey={(ws) => ws.id}
+              loading={loading}
+              onRowClick={(ws) => {
+                if (renamingId === ws.id) return
+                onSelectWorkspace(ws.id)
+              }}
+              pagination={
+                active.length > PAGE_SIZE
+                  ? {
+                      page: activePage,
+                      pageSize: PAGE_SIZE,
+                      total: active.length,
+                      onPageChange: setActivePage
+                    }
+                  : undefined
+              }
+            />
           )}
         </div>
+
+        <div className="flex flex-col gap-2 min-w-0">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+            Archived{archived.length > 0 && ` · ${archived.length}`}
+          </h3>
+          {!loading && archived.length === 0 ? (
+            <div className="rounded-lg border border-border-default bg-surface-raised py-8 flex flex-col items-center gap-2">
+              <Archive size={18} className="text-text-muted opacity-50" />
+              <p className="text-xs text-text-muted">Nothing archived</p>
+            </div>
+          ) : (
+            <DataTable<WorkspaceRecord>
+              columns={archivedColumns}
+              rows={archivedPaginated}
+              rowKey={(ws) => ws.id}
+              loading={loading}
+              onRowClick={(ws) => onSelectWorkspace(ws.id)}
+              pagination={
+                archived.length > PAGE_SIZE
+                  ? {
+                      page: archivedPage,
+                      pageSize: PAGE_SIZE,
+                      total: archived.length,
+                      onPageChange: setArchivedPage
+                    }
+                  : undefined
+              }
+            />
+          )}
+        </div>
+      </div>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={menuItems} />
       )}
     </div>
   )

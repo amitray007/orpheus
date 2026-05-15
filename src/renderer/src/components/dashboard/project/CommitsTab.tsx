@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { GitBranch, GitCommit as GitCommitIcon } from '@phosphor-icons/react'
+import { GitBranch, GitCommit as GitCommitIcon, MagnifyingGlass } from '@phosphor-icons/react'
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 
@@ -9,6 +9,28 @@ import { Select } from '../settings/primitives'
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 25
+
+const DATE_RANGE_OPTIONS = [
+  { value: 'd1', label: 'Last 24h' },
+  { value: 'd3', label: 'Last 3 days' },
+  { value: 'd7', label: 'Last 7 days' },
+  { value: 'd30', label: 'Last 30 days' },
+  { value: 'd90', label: 'Last 90 days' },
+  { value: 'all', label: 'All time' }
+] as const
+
+type DateRange = (typeof DATE_RANGE_OPTIONS)[number]['value']
+
+function dateRangeToSinceMs(range: DateRange): number | undefined {
+  if (range === 'all') return undefined
+  const day = 24 * 60 * 60 * 1000
+  if (range === 'd1') return Date.now() - 1 * day
+  if (range === 'd3') return Date.now() - 3 * day
+  if (range === 'd7') return Date.now() - 7 * day
+  if (range === 'd30') return Date.now() - 30 * day
+  if (range === 'd90') return Date.now() - 90 * day
+  return undefined
+}
 
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms
@@ -35,15 +57,23 @@ interface CommitsTabProps {
 export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   const [branches, setBranches] = useState<GitBranchInfo[]>([])
   const [branch, setBranch] = useState<string>('')
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [dateRange, setDateRange] = useState<DateRange>('d30')
+
   const [commits, setCommits] = useState<GitCommit[]>([])
-  const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
 
-  // Load branch list (and pre-select the current branch).
-  // Loading stays true from initial state — branch fetch on cwd change reuses
-  // the initial loading state from the parent mount.
+  // Debounce search
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
+    return () => clearTimeout(t)
+  }, [search])
+
+  // Load branch list (and pre-select current branch)
   useEffect(() => {
     let cancelled = false
     window.api.git
@@ -54,7 +84,6 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
         setBranches(list)
         if (list.length === 0) {
           setBranch('')
-          setLoading(false)
           return
         }
         const current = list.find((b) => b.isCurrent)
@@ -64,36 +93,41 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
         if (cancelled) return
         console.error('[commits-tab] failed to load branches', err)
         setError('Could not read git branches for this project.')
-        setLoading(false)
       })
     return () => {
       cancelled = true
     }
   }, [cwd])
 
-  // Load commits for the chosen branch
+  // Load commits when filters change
   useEffect(() => {
     if (!branch) return
     let cancelled = false
     window.api.git
-      .log(cwd, { branch, limit: PAGE_SIZE, offset: 0 })
+      .log(cwd, {
+        branch,
+        limit: PAGE_SIZE,
+        offset: 0,
+        sinceMs: dateRangeToSinceMs(dateRange),
+        grep: debouncedSearch || undefined
+      })
       .then((list) => {
         if (cancelled) return
         setError(null)
         setCommits(list)
         setHasMore(list.length === PAGE_SIZE)
-        setLoading(false)
+        setHasFetchedOnce(true)
       })
       .catch((err) => {
         if (cancelled) return
         console.error('[commits-tab] failed to load commits', err)
         setError('Could not read git log for this branch.')
-        setLoading(false)
+        setHasFetchedOnce(true)
       })
     return () => {
       cancelled = true
     }
-  }, [cwd, branch])
+  }, [cwd, branch, dateRange, debouncedSearch])
 
   async function loadMore(): Promise<void> {
     if (loadingMore || !hasMore) return
@@ -102,7 +136,9 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
       const more = await window.api.git.log(cwd, {
         branch,
         limit: PAGE_SIZE,
-        offset: commits.length
+        offset: commits.length,
+        sinceMs: dateRangeToSinceMs(dateRange),
+        grep: debouncedSearch || undefined
       })
       setCommits((prev) => [...prev, ...more])
       setHasMore(more.length === PAGE_SIZE)
@@ -117,48 +153,60 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Branch selector */}
-      <div className="flex items-center justify-end gap-2">
-        <span className="text-xs text-text-muted">Branch</span>
-        <div className="w-56">
-          {branches.length > 0 ? (
-            <Select
-              ariaLabel="Branch"
-              options={branchOptions}
-              value={branch}
-              onChange={(v) => setBranch(v)}
-            />
-          ) : (
-            <div className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted">
-              —
-            </div>
-          )}
+      {/* Filter bar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[180px] max-w-sm">
+          <MagnifyingGlass
+            size={12}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search commits"
+            className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+          />
+        </div>
+        <div className="w-44">
+          <Select<DateRange>
+            ariaLabel="Date range"
+            options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
+            value={dateRange}
+            onChange={setDateRange}
+          />
+        </div>
+        <div className="ml-auto inline-flex items-center gap-2">
+          <span className="text-xs text-text-muted">Branch</span>
+          <div className="w-44">
+            {branches.length > 0 ? (
+              <Select
+                ariaLabel="Branch"
+                options={branchOptions}
+                value={branch}
+                onChange={(v) => setBranch(v)}
+              />
+            ) : (
+              <div className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted">
+                —
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Commits */}
+      {/* Commits list */}
       {error ? (
         <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
           <GitBranch size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
           <p className="text-sm text-text-muted">{error}</p>
         </div>
-      ) : loading ? (
-        <div className="flex flex-col gap-2">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="rounded-lg border border-border-default bg-surface-raised px-4 py-3"
-              style={{ opacity: 0.5 - i * 0.1 }}
-            >
-              <div className="h-3 bg-surface-overlay rounded w-2/3 mb-2" />
-              <div className="h-2.5 bg-surface-overlay rounded w-1/3" />
-            </div>
-          ))}
-        </div>
-      ) : commits.length === 0 ? (
+      ) : hasFetchedOnce && commits.length === 0 ? (
         <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
           <GitCommitIcon size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
-          <p className="text-sm text-text-muted">No commits on this branch yet.</p>
+          <p className="text-sm text-text-muted">
+            {debouncedSearch ? 'No commits match your search' : 'No commits in this range'}
+          </p>
         </div>
       ) : (
         <div className="flex flex-col gap-2">
