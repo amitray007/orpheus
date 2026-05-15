@@ -8,6 +8,7 @@ import {
   DotsThree,
   FolderOpen,
   GearSix,
+  GitMerge,
   Plus,
   Terminal
 } from '@phosphor-icons/react'
@@ -201,7 +202,13 @@ export function ProjectHeader({
           <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
             {gitStatus?.branch && (
               <>
-                <span className="font-mono">{gitStatus.branch}</span>
+                <span
+                  className="inline-flex items-center gap-1"
+                  title={`Current git branch: ${gitStatus.branch}`}
+                >
+                  <GitMerge size={11} />
+                  <span className="font-mono">{gitStatus.branch}</span>
+                </span>
                 <span aria-hidden>·</span>
               </>
             )}

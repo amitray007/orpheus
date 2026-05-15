@@ -193,7 +193,24 @@ export function reorderWorkspaces(projectId: string, orderedIds: string[]): void
 
 export function unarchiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'idle' WHERE id = ?").run(id)
+  // Bump sort_order so the just-unarchived workspace lands at the top of the
+  // sidebar list (which sorts ASC by sort_order). Falls back to 0 when the
+  // project has no other workspaces (edge case after the only active one is
+  // archived).
+  const projRow = db.prepare('SELECT project_id FROM workspaces WHERE id = ?').get(id) as
+    | { project_id: string }
+    | undefined
+  if (projRow) {
+    const minRow = db
+      .prepare('SELECT MIN(sort_order) AS m FROM workspaces WHERE project_id = ?')
+      .get(projRow.project_id) as { m: number | null }
+    const nextSort = (minRow.m ?? 1) - 1
+    db.prepare(
+      "UPDATE workspaces SET archived_at = NULL, status = 'idle', sort_order = ? WHERE id = ?"
+    ).run(nextSort, id)
+  } else {
+    db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'idle' WHERE id = ?").run(id)
+  }
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
 }

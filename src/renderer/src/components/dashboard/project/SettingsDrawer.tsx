@@ -182,6 +182,11 @@ export function SettingsDrawer({
       role="dialog"
       aria-modal="true"
       aria-label={`Project settings — ${projectName}`}
+      // The TopBar above this drawer has WebkitAppRegion: drag, which on
+      // macOS captures clicks before they reach React. Explicitly mark the
+      // whole drawer overlay as no-drag so the X (and any other interactive
+      // element near the top) receives clicks normally.
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       {/* Backdrop is a flex sibling, not an absolute overlay, so it can't
           intercept clicks on the drawer body. */}
