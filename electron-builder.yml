@@ -17,8 +17,6 @@ asarUnpack:
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.
-  - from: packages/ghostty-spike1/build/Release/ghostty_spike1.node
-    to: packages/ghostty-spike1/ghostty_spike1.node
   - from: packages/ghostty-native/build/Release/ghostty_native.node
     to: packages/ghostty-native/ghostty_native.node
   # Ghostty terminfo sentinel — must live at Contents/Resources/terminfo/78/xterm-ghostty
