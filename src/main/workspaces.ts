@@ -193,10 +193,21 @@ export function reorderWorkspaces(projectId: string, orderedIds: string[]): void
 
 export function unarchiveWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  // Bump sort_order so the just-unarchived workspace lands at the top of the
-  // sidebar list (which sorts ASC by sort_order). Falls back to 0 when the
-  // project has no other workspaces (edge case after the only active one is
-  // archived).
+  // Important: the v21 CHECK constraint on workspaces.status only allows
+  // ('in_progress', 'in_review', 'completed', 'archived'). The runtime now
+  // uses 'idle' / 'awaiting_input' / 'attention' too — every dispatch()
+  // call wraps setWorkspaceStatus in try/catch so those silent CHECK
+  // rejections don't break activity.
+  //
+  // The unarchive flow used to bundle archived_at + status + sort_order into
+  // ONE atomic UPDATE. When status='idle' tripped the CHECK, the whole
+  // statement rolled back, archived_at stayed set, and the workspace
+  // remained archived even though the user expected it to come back to life.
+  //
+  // Fix: do the load-bearing field (archived_at) — plus sort_order, which
+  // has no constraint — in its own UPDATE so it always lands. Try to clear
+  // status to 'in_progress' (CHECK-allowed) as a separate, best-effort step;
+  // runtime activity events will reconcile the status field afterward.
   const projRow = db.prepare('SELECT project_id FROM workspaces WHERE id = ?').get(id) as
     | { project_id: string }
     | undefined
@@ -206,10 +217,15 @@ export function unarchiveWorkspace(id: string): WorkspaceRecord {
       .get(projRow.project_id) as { m: number | null }
     const nextSort = (minRow.m ?? 1) - 1
     db.prepare(
-      "UPDATE workspaces SET archived_at = NULL, status = 'idle', sort_order = ? WHERE id = ?"
+      'UPDATE workspaces SET archived_at = NULL, sort_order = ? WHERE id = ?'
     ).run(nextSort, id)
   } else {
-    db.prepare("UPDATE workspaces SET archived_at = NULL, status = 'idle' WHERE id = ?").run(id)
+    db.prepare('UPDATE workspaces SET archived_at = NULL WHERE id = ?').run(id)
+  }
+  try {
+    db.prepare("UPDATE workspaces SET status = 'in_progress' WHERE id = ?").run(id)
+  } catch (err) {
+    console.warn('[workspaces] unarchive: status reset failed (CHECK)', err)
   }
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)
