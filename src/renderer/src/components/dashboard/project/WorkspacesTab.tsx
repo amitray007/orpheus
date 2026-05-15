@@ -209,17 +209,7 @@ export function WorkspacesTab({
         render: (ws) => {
           const gs = gitByWs[ws.id]
           if (!gs?.branch) return <span className="text-text-muted">—</span>
-          return (
-            <span className="inline-flex items-center gap-1 text-xs min-w-0">
-              <span className="font-mono truncate">{gs.branch}</span>
-              {gs.hasChanges && (
-                <span
-                  className="w-1.5 h-1.5 rounded-full bg-amber-400/80 flex-shrink-0"
-                  title={`+${gs.insertions} −${gs.deletions}`}
-                />
-              )}
-            </span>
-          )
+          return <span className="font-mono text-xs truncate">{gs.branch}</span>
         }
       },
       {

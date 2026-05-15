@@ -201,17 +201,7 @@ export function ProjectHeader({
           <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
             {gitStatus?.branch && (
               <>
-                <span className="inline-flex items-center gap-1">
-                  <span className="font-mono">{gitStatus.branch}</span>
-                  {gitStatus.hasChanges && (
-                    <span
-                      className="text-amber-400/80"
-                      title={`+${gitStatus.insertions} −${gitStatus.deletions}`}
-                    >
-                      ●
-                    </span>
-                  )}
-                </span>
+                <span className="font-mono">{gitStatus.branch}</span>
                 <span aria-hidden>·</span>
               </>
             )}
