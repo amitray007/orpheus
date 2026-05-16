@@ -6,6 +6,7 @@ import { ConfirmModal } from '../ConfirmModal'
 import type {
   AppUiState,
   ProjectRecord,
+  SessionRecord,
   WorkspaceRecord,
   GitStatus,
   WorkspaceActivityDetail
@@ -46,6 +47,10 @@ export function Dashboard({
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<
     Record<string, GitStatus | null>
   >({})
+
+  // Sessions list — fetched at Dashboard level so WorkspacesView can look up
+  // session metadata (model, msg count, preview) via workspace.claudeSessionId
+  const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'dashboard' })
@@ -110,6 +115,24 @@ export function Dashboard({
     const id = view.kind === 'workspace' ? view.workspaceId : null
     window.api.workspaces.setCurrentlyViewed(id)
   }, [view])
+
+  // Fetch all sessions on mount and refresh whenever the Workspaces view is opened
+  useEffect(() => {
+    let cancelled = false
+    window.api.sessions
+      .listAll()
+      .then((list) => {
+        if (!cancelled) setAllSessions(list)
+      })
+      .catch((err) => {
+        console.error('[dashboard] failed to load sessions', err)
+      })
+    return () => {
+      cancelled = true
+    }
+    // Re-fetch when navigating to the sessions/workspaces view so data is fresh
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.kind === 'sessions'])
 
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
@@ -673,6 +696,7 @@ export function Dashboard({
             onResumedInWorkspace={handleResumedInWorkspace}
             projects={projects}
             allWorkspaces={allWorkspaces}
+            allSessions={allSessions}
           />
         </main>
       </div>

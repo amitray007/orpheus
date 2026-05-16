@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   SquaresFour,
-  ChatsCircle,
+  Columns,
   Plus,
   CaretDown,
   CaretRight,
@@ -799,9 +799,10 @@ export function Sidebar({
         collapsed={collapsed}
         onClick={() => onSelectNav('dashboard')}
       />
+      {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label changed to Workspaces */}
       <NavItem
-        Icon={ChatsCircle}
-        label="Sessions"
+        Icon={Columns}
+        label="Workspaces"
         active={activeView === 'sessions'}
         collapsed={collapsed}
         onClick={() => onSelectNav('sessions')}

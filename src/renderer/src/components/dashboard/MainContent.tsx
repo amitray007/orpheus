@@ -1,9 +1,10 @@
 import { ProjectView } from './ProjectView'
-import { SessionsView } from './SessionsView'
+import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import type {
   ProjectRecord,
+  SessionRecord,
   WorkspaceActivityDetail,
   WorkspaceRecord
 } from '@shared/types'
@@ -55,9 +56,10 @@ interface MainContentProps {
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
-  // Sessions view props
+  // Workspaces view props
   projects?: ProjectRecord[]
   allWorkspaces?: WorkspaceRecord[]
+  allSessions?: SessionRecord[]
 }
 
 export function MainContent({
@@ -66,7 +68,7 @@ export function MainContent({
   workspace,
   workspacesForProject,
   onRequestRemoveProject,
-  onNavigateToProject,
+  onNavigateToProject: _onNavigateToProject,
   onSelectWorkspace,
   onAddWorkspace,
   onRenameWorkspace,
@@ -75,7 +77,8 @@ export function MainContent({
   workspaceActivities,
   onResumedInWorkspace,
   projects,
-  allWorkspaces
+  allWorkspaces,
+  allSessions
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -92,12 +95,15 @@ export function MainContent({
   }
 
   if (view.kind === 'sessions') {
+    // Route key stays 'sessions' for back-compat with uiState serialisation;
+    // the visible label and component are now "Workspaces".
     return (
-      <SessionsView
-        onNavigateToProject={onNavigateToProject}
+      <WorkspacesView
+        onNavigateToWorkspace={onSelectWorkspace}
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}
         workspaceActivities={workspaceActivities ?? {}}
+        sessions={allSessions ?? []}
       />
     )
   }

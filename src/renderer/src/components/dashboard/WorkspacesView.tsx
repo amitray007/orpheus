@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { CaretRight } from '@phosphor-icons/react'
 import type {
   SessionRecord,
@@ -6,7 +6,6 @@ import type {
   WorkspaceActivityDetail,
   ProjectRecord
 } from '@shared/types'
-import { SessionListSkeleton } from '../Skeleton'
 import { ActivityIndicator } from './ActivityIndicator'
 
 // ---------------------------------------------------------------------------
@@ -36,24 +35,44 @@ function shortModel(model: string | null): string {
   return model
 }
 
+// Derive the basename from a posix-style path without importing path
+function basename(cwdPath: string): string {
+  const parts = cwdPath.replace(/\/+$/, '').split('/')
+  return parts[parts.length - 1] || cwdPath
+}
+
 // ---------------------------------------------------------------------------
-// Group derivation
+// Group derivation — workspace-first.
+// Live activity wins; persisted workspace.status is the fallback so
+// workspaces are placed correctly before any live activity event fires.
 // ---------------------------------------------------------------------------
 
 type GroupKey = 'in_review' | 'in_progress' | 'done' | 'waiting'
 
 function deriveGroup(
-  session: SessionRecord,
-  workspaces: WorkspaceRecord[],
+  ws: WorkspaceRecord,
   activities: Record<string, WorkspaceActivityDetail>
 ): GroupKey {
-  const ws = workspaces.find((w) => w.claudeSessionId === session.id)
-  if (!ws) return 'waiting'
+  // Live activity wins
   const a = activities[ws.id]
   if (a === 'attention' || a === 'asking') return 'in_review'
   if (a === 'thinking' || a === 'tool' || a === 'compacting') return 'in_progress'
   if (a === 'ready') return 'done'
-  return 'waiting'
+  if (a === 'idle') return 'waiting'
+
+  // Fall back to persisted status when no live activity is known
+  if (ws.status === 'attention' || ws.status === 'awaiting_input') return 'in_review'
+  if (ws.status === 'in_progress') return 'in_progress'
+  return 'waiting' // idle (and any unexpected value) → Waiting
+}
+
+// Map persisted workspace status → a display activity for rows where no
+// live event has fired yet (gives the ActivityIndicator something to show)
+function fallbackActivity(ws: WorkspaceRecord): WorkspaceActivityDetail {
+  if (ws.status === 'attention') return 'attention'
+  if (ws.status === 'awaiting_input') return 'asking'
+  if (ws.status === 'in_progress') return 'thinking'
+  return 'idle'
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +94,7 @@ const GROUP_CONFIGS: GroupConfig[] = [
     label: 'In Review',
     tagline: 'needs you',
     defaultExpanded: true,
-    emptyText: 'No sessions need your attention.',
+    emptyText: 'No workspaces need your attention.',
     indicatorDetail: 'attention'
   },
   {
@@ -83,7 +102,7 @@ const GROUP_CONFIGS: GroupConfig[] = [
     label: 'In Progress',
     tagline: 'working',
     defaultExpanded: true,
-    emptyText: 'No sessions currently running.',
+    emptyText: 'No workspaces currently running.',
     indicatorDetail: 'thinking'
   },
   {
@@ -91,7 +110,7 @@ const GROUP_CONFIGS: GroupConfig[] = [
     label: 'Done',
     tagline: '',
     defaultExpanded: false,
-    emptyText: 'No completed sessions.',
+    emptyText: 'No completed workspaces.',
     indicatorDetail: 'ready'
   },
   {
@@ -99,7 +118,7 @@ const GROUP_CONFIGS: GroupConfig[] = [
     label: 'Waiting',
     tagline: '',
     defaultExpanded: false,
-    emptyText: 'No sessions waiting.',
+    emptyText: 'No workspaces waiting.',
     indicatorDetail: 'idle'
   }
 ]
@@ -119,43 +138,36 @@ const FILTERS: { label: string; value: Filter }[] = [
 ]
 
 // ---------------------------------------------------------------------------
-// Session row
+// Workspace row
 // ---------------------------------------------------------------------------
 
-interface SessionRowProps {
-  session: SessionRecord
+interface WorkspaceRowProps {
+  workspace: WorkspaceRecord
   projectName: string
-  group: GroupKey
-  workspaces: WorkspaceRecord[]
+  session: SessionRecord | undefined
   activities: Record<string, WorkspaceActivityDetail>
   onClick: () => void
 }
 
-function SessionRow({
-  session,
+function WorkspaceRow({
+  workspace,
   projectName,
-  group,
-  workspaces,
+  session,
   activities,
   onClick
-}: SessionRowProps): React.JSX.Element {
-  const displayTitle = session.title ?? `Session ${session.id.slice(0, 8)}`
-  const ws = workspaces.find((w) => w.claudeSessionId === session.id)
-  const activity: WorkspaceActivityDetail | undefined = ws ? activities[ws.id] : undefined
+}: WorkspaceRowProps): React.JSX.Element {
+  // Primary label: workspace name, with cwd basename as fallback
+  const displayName =
+    workspace.name.trim() !== '' ? workspace.name : basename(workspace.cwd)
 
-  // Effective indicator: use live activity when available, otherwise fall back
-  // to a static representation that matches the group
-  const effectiveActivity: WorkspaceActivityDetail | undefined =
-    activity ??
-    (group === 'in_review'
-      ? 'attention'
-      : group === 'in_progress'
-        ? 'thinking'
-        : group === 'done'
-          ? 'ready'
-          : 'idle')
+  // Effective indicator: live activity wins; fall back to persisted status glyph
+  const liveActivity = activities[workspace.id]
+  const effectiveActivity: WorkspaceActivityDetail = liveActivity ?? fallbackActivity(workspace)
 
-  const msgCount = session.messageCount ?? null
+  // Subline metadata from attached session (if any)
+  const model = session ? shortModel(session.model) : null
+  const msgCount = session?.messageCount ?? null
+  const timestamp = workspace.lastOpenedAt ?? workspace.createdAt
 
   return (
     <button
@@ -171,8 +183,8 @@ function SessionRow({
       <span className="flex-1 min-w-0 flex flex-col gap-0.5">
         {/* Title row */}
         <span className="flex items-center justify-between gap-2">
-          <span className="text-sm text-text-primary truncate" title={displayTitle}>
-            {displayTitle}
+          <span className="text-sm text-text-primary truncate" title={displayName}>
+            {displayName}
           </span>
           {/* Project chip */}
           <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate max-w-[120px]">
@@ -180,21 +192,25 @@ function SessionRow({
           </span>
         </span>
 
-        {/* Subline: model · msgs · time */}
+        {/* Subline: model · msgs · time (model/msgs omitted when no session attached) */}
         <span className="text-[11px] text-text-muted flex items-center gap-1.5 flex-wrap">
-          <span className="font-mono">{shortModel(session.model)}</span>
-          {msgCount !== null && (
+          {model !== null && (
             <>
+              <span className="font-mono">{model}</span>
               <span className="opacity-30">·</span>
-              <span>{msgCount} msgs</span>
             </>
           )}
-          <span className="opacity-30">·</span>
-          <span>{relativeTime(session.updatedAt)}</span>
+          {msgCount !== null && (
+            <>
+              <span>{msgCount} msgs</span>
+              <span className="opacity-30">·</span>
+            </>
+          )}
+          <span>{relativeTime(timestamp)}</span>
         </span>
 
-        {/* Last-message preview snippet (Chunk B) */}
-        {session.lastMessagePreview && (
+        {/* Last-message preview snippet — italic curly quotes */}
+        {session?.lastMessagePreview && (
           <span
             className="text-[11px] text-text-muted italic truncate"
             title={session.lastMessagePreview}
@@ -213,28 +229,28 @@ function SessionRow({
 
 interface GroupSectionProps {
   config: GroupConfig
-  sessions: SessionRecord[]
-  projectsById: Map<string, ProjectRecord>
   workspaces: WorkspaceRecord[]
+  projectsById: Map<string, ProjectRecord>
+  sessionsById: Map<string, SessionRecord>
   activities: Record<string, WorkspaceActivityDetail>
-  onNavigateToProject: (projectId: string) => void
+  onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
   forceExpanded?: boolean
 }
 
 function GroupSection({
   config,
-  sessions,
-  projectsById,
   workspaces,
+  projectsById,
+  sessionsById,
   activities,
-  onNavigateToProject,
+  onNavigateToWorkspace,
   forceExpanded
 }: GroupSectionProps): React.JSX.Element | null {
   const [expanded, setExpanded] = useState(config.defaultExpanded)
 
   const isExpanded = forceExpanded !== undefined ? forceExpanded : expanded
 
-  if (sessions.length === 0) return null
+  if (workspaces.length === 0) return null
 
   return (
     <div className="flex flex-col">
@@ -246,7 +262,7 @@ function GroupSection({
         <ActivityIndicator detail={config.indicatorDetail} className="w-3 text-xs font-mono" />
         <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary flex-1 text-left">
           {config.label}
-          <span className="font-normal text-text-muted ml-1.5">{sessions.length}</span>
+          <span className="font-normal text-text-muted ml-1.5">{workspaces.length}</span>
           {config.tagline && (
             <span className="ml-2 text-[10px] font-normal normal-case tracking-normal text-text-muted opacity-60">
               {config.tagline}
@@ -263,20 +279,22 @@ function GroupSection({
         </span>
       </button>
 
-      {/* Session rows */}
+      {/* Workspace rows */}
       {isExpanded && (
         <div className="divide-y divide-border-default/40">
-          {sessions.map((session) => {
-            const project = projectsById.get(session.projectId)
+          {workspaces.map((ws) => {
+            const project = projectsById.get(ws.projectId)
+            const session = ws.claudeSessionId
+              ? sessionsById.get(ws.claudeSessionId)
+              : undefined
             return (
-              <SessionRow
-                key={session.id}
-                session={session}
+              <WorkspaceRow
+                key={ws.id}
+                workspace={ws}
                 projectName={project?.name ?? 'Unknown'}
-                group={config.key}
-                workspaces={workspaces}
+                session={session}
                 activities={activities}
-                onClick={() => onNavigateToProject(session.projectId)}
+                onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
             )
           })}
@@ -287,88 +305,78 @@ function GroupSection({
 }
 
 // ---------------------------------------------------------------------------
-// SessionsView
+// WorkspacesView
+// (File was SessionsView.tsx — renamed to WorkspacesView.tsx in Chunk C;
+// the route key remains 'sessions' for back-compat with uiState serialisation)
 // ---------------------------------------------------------------------------
 
-export interface SessionsViewProps {
-  onNavigateToProject: (projectId: string) => void
+export interface WorkspacesViewProps {
+  onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
   projects: ProjectRecord[]
   workspaces: WorkspaceRecord[]
   workspaceActivities: Record<string, WorkspaceActivityDetail>
+  sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
 }
 
-export function SessionsView({
-  onNavigateToProject,
+export function WorkspacesView({
+  onNavigateToWorkspace,
   projects,
   workspaces,
-  workspaceActivities
-}: SessionsViewProps): React.JSX.Element {
+  workspaceActivities,
+  sessions
+}: WorkspacesViewProps): React.JSX.Element {
   const [filter, setFilter] = useState<Filter>('all')
-  const [sessions, setSessions] = useState<SessionRecord[] | null>(null)
 
-  // Build a fast lookup from projectId → ProjectRecord
+  // Build fast lookups
   const projectsById = useMemo(
     () => new Map(projects.map((p) => [p.id, p])),
     [projects]
   )
-
-  // Load all sessions once on mount; filter archived in renderer
-  useEffect(() => {
-    let cancelled = false
-    window.api.sessions
-      .listAll()
-      .then((list) => {
-        if (!cancelled) setSessions(list)
-      })
-      .catch((err) => {
-        console.error('[sessions-view] failed to load sessions', err)
-        if (!cancelled) setSessions([])
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // Filter archived sessions out entirely (Chunk A — DB stays untouched)
-  const activeSessions = useMemo(
-    () => (sessions ?? []).filter((s) => s.status !== 'archived'),
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((s) => [s.id, s])),
     [sessions]
   )
 
-  // Derive groups — recomputes whenever activities or sessions change
-  const grouped = useMemo<Record<GroupKey, SessionRecord[]>>(() => {
-    const result: Record<GroupKey, SessionRecord[]> = {
+  // Exclude archived workspaces from all views
+  const activeWorkspaces = useMemo(
+    () => workspaces.filter((w) => w.archivedAt === null),
+    [workspaces]
+  )
+
+  // Derive groups — recomputes whenever activities or workspaces change
+  const grouped = useMemo<Record<GroupKey, WorkspaceRecord[]>>(() => {
+    const result: Record<GroupKey, WorkspaceRecord[]> = {
       in_review: [],
       in_progress: [],
       done: [],
       waiting: []
     }
-    for (const s of activeSessions) {
-      const g = deriveGroup(s, workspaces, workspaceActivities)
-      result[g].push(s)
+    for (const ws of activeWorkspaces) {
+      const g = deriveGroup(ws, workspaceActivities)
+      result[g].push(ws)
     }
     return result
-  }, [activeSessions, workspaces, workspaceActivities])
+  }, [activeWorkspaces, workspaceActivities])
 
-  const loading = sessions === null
-
-  // Flat list used when a specific filter is active
+  // Flat list used when a specific filter chip is active
   const filteredFlat = useMemo(() => {
-    if (filter === 'all') return activeSessions
+    if (filter === 'all') return activeWorkspaces
     return grouped[filter] ?? []
-  }, [filter, activeSessions, grouped])
+  }, [filter, activeWorkspaces, grouped])
 
   return (
     <div className="flex flex-col gap-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-text-primary">Sessions</h1>
+        <h1 className="text-xl font-semibold text-text-primary">Workspaces</h1>
 
         {/* Filter chips */}
         <div className="flex items-center gap-1">
           {FILTERS.map((f) => {
             const count =
-              f.value === 'all' ? activeSessions.length : (grouped[f.value as GroupKey]?.length ?? 0)
+              f.value === 'all'
+                ? activeWorkspaces.length
+                : (grouped[f.value as GroupKey]?.length ?? 0)
             return (
               <button
                 key={f.value}
@@ -381,7 +389,7 @@ export function SessionsView({
                 ].join(' ')}
               >
                 {f.label}
-                {!loading && count > 0 && (
+                {count > 0 && (
                   <span
                     className={[
                       'text-[10px] font-semibold px-1 rounded',
@@ -398,15 +406,11 @@ export function SessionsView({
       </div>
 
       {/* Content */}
-      {loading ? (
-        <div className="bg-surface-raised border border-border-default rounded-lg py-3">
-          <SessionListSkeleton />
-        </div>
-      ) : activeSessions.length === 0 ? (
+      {activeWorkspaces.length === 0 ? (
         <div className="bg-surface-raised border border-border-default rounded-lg p-8 flex flex-col items-center gap-2">
-          <p className="text-sm text-text-muted">No sessions found</p>
+          <p className="text-sm text-text-muted">No workspaces found</p>
           <p className="text-xs text-text-muted">
-            Start Claude Code in any project folder to create sessions.
+            Add a project and create a workspace to get started.
           </p>
         </div>
       ) : filter !== 'all' ? (
@@ -415,22 +419,24 @@ export function SessionsView({
           {filteredFlat.length === 0 ? (
             <div className="p-8 flex flex-col items-center gap-2">
               <p className="text-sm text-text-muted">
-                {GROUP_CONFIGS.find((c) => c.key === filter)?.emptyText ?? 'No sessions.'}
+                {GROUP_CONFIGS.find((c) => c.key === filter)?.emptyText ?? 'No workspaces.'}
               </p>
             </div>
           ) : (
             <div className="divide-y divide-border-default/40">
-              {filteredFlat.map((session) => {
-                const project = projectsById.get(session.projectId)
+              {filteredFlat.map((ws) => {
+                const project = projectsById.get(ws.projectId)
+                const session = ws.claudeSessionId
+                  ? sessionsById.get(ws.claudeSessionId)
+                  : undefined
                 return (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
+                  <WorkspaceRow
+                    key={ws.id}
+                    workspace={ws}
                     projectName={project?.name ?? 'Unknown'}
-                    group={filter as GroupKey}
-                    workspaces={workspaces}
+                    session={session}
                     activities={workspaceActivities}
-                    onClick={() => onNavigateToProject(session.projectId)}
+                    onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
                   />
                 )
               })}
@@ -444,11 +450,11 @@ export function SessionsView({
             <GroupSection
               key={config.key}
               config={config}
-              sessions={grouped[config.key]}
+              workspaces={grouped[config.key]}
               projectsById={projectsById}
-              workspaces={workspaces}
+              sessionsById={sessionsById}
               activities={workspaceActivities}
-              onNavigateToProject={onNavigateToProject}
+              onNavigateToWorkspace={onNavigateToWorkspace}
             />
           ))}
         </div>
