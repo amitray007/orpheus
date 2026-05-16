@@ -244,15 +244,16 @@ function WorkspaceSubRow({
             )}
           </span>
 
-          {/* Line 2: last user message preview (only when available and not renaming) */}
-          {!renaming && lastUserMsgPreview && (
-            <span
-              className="text-[10px] text-text-muted italic truncate leading-snug"
-              title={lastUserMsgPreview}
-            >
-              {lastUserMsgPreview}
-            </span>
-          )}
+          {/* Line 2: last user message preview — always renders to keep the
+              row height stable. Shows a non-breaking space when there's no
+              preview yet, so the row doesn't grow vertically the moment the
+              first message lands (avoids visible CLS). */}
+          <span
+            className="text-[10px] text-text-muted italic truncate leading-snug"
+            title={lastUserMsgPreview ?? undefined}
+          >
+            {!renaming && lastUserMsgPreview ? lastUserMsgPreview : ' '}
+          </span>
         </span>
       </button>
 
