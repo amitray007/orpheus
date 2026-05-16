@@ -248,7 +248,11 @@ const api = {
         untilMs?: number
         grep?: string
       }
-    ): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', { cwd, ...opts })
+    ): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', { cwd, ...opts }),
+    count: (
+      cwd: string,
+      opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>

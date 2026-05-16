@@ -142,6 +142,36 @@ export function listBranches(cwd: string): GitBranchInfo[] {
   }
 }
 
+export function countCommits(
+  cwd: string,
+  opts?: {
+    branch?: string
+    sinceMs?: number
+    untilMs?: number
+    grep?: string
+  }
+): number {
+  if (!cwd) return 0
+  // `git rev-list --count` accepts the same date / grep filters as `git log`,
+  // so the count tracks the listCommits view 1:1 (modulo pagination).
+  const args = ['-C', cwd, 'rev-list', '--count']
+  if (opts?.sinceMs !== undefined) args.push(`--since=${Math.floor(opts.sinceMs / 1000)}`)
+  if (opts?.untilMs !== undefined) args.push(`--until=${Math.floor(opts.untilMs / 1000)}`)
+  if (opts?.grep) args.push('-i', `--grep=${opts.grep}`)
+  args.push(opts?.branch ?? 'HEAD')
+  try {
+    const out = childProcess.execFileSync('git', args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+      encoding: 'utf-8'
+    })
+    const n = parseInt(out.trim(), 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0
+  }
+}
+
 export function listCommits(
   cwd: string,
   opts?: {

@@ -105,7 +105,7 @@ interface PaginationProps {
   onPageChange: (page: number) => void
 }
 
-function PaginationFooter({
+export function PaginationFooter({
   page,
   pageSize,
   total,

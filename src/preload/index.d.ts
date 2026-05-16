@@ -173,6 +173,10 @@ declare global {
             grep?: string
           }
         ) => Promise<GitCommit[]>
+        count: (
+          cwd: string,
+          opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+        ) => Promise<number>
       }
       shell: {
         revealInFinder: (path: string) => Promise<void>

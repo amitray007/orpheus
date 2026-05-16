@@ -4,12 +4,14 @@ import { GitBranch, GitCommit as GitCommitIcon, MagnifyingGlass } from '@phospho
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { CommitListSkeleton } from '../../Skeleton'
+import { PaginationFooter } from '../../DataTable'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const PAGE_SIZE = 25
+// Show 10 commits per page, paged with prev/next like the tables above.
+const PAGE_SIZE = 10
 
 const DATE_RANGE_OPTIONS = [
   { value: 'd1', label: 'Last 24h' },
@@ -63,8 +65,8 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   const [dateRange, setDateRange] = useState<DateRange>('d3')
 
   const [commits, setCommits] = useState<GitCommit[]>([])
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(false)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
 
@@ -104,23 +106,33 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
     }
   }, [cwd])
 
-  // Load commits when filters change
+  // Reset to page 1 whenever the filters change (branch / search / date range)
+  useEffect(() => {
+    setPage(1)
+  }, [branch, dateRange, debouncedSearch])
+
+  // Load commits + total whenever filters or page change
   useEffect(() => {
     if (!branch) return
     let cancelled = false
-    window.api.git
-      .log(cwd, {
+    const sinceMs = dateRangeToSinceMs(dateRange)
+    const grep = debouncedSearch || undefined
+
+    Promise.all([
+      window.api.git.log(cwd, {
         branch,
         limit: PAGE_SIZE,
-        offset: 0,
-        sinceMs: dateRangeToSinceMs(dateRange),
-        grep: debouncedSearch || undefined
-      })
-      .then((list) => {
+        offset: (page - 1) * PAGE_SIZE,
+        sinceMs,
+        grep
+      }),
+      window.api.git.count(cwd, { branch, sinceMs, grep })
+    ])
+      .then(([list, count]) => {
         if (cancelled) return
         setError(null)
         setCommits(list)
-        setHasMore(list.length === PAGE_SIZE)
+        setTotal(count)
         setHasFetchedOnce(true)
       })
       .catch((err) => {
@@ -132,27 +144,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [cwd, branch, dateRange, debouncedSearch])
-
-  async function loadMore(): Promise<void> {
-    if (loadingMore || !hasMore) return
-    setLoadingMore(true)
-    try {
-      const more = await window.api.git.log(cwd, {
-        branch,
-        limit: PAGE_SIZE,
-        offset: commits.length,
-        sinceMs: dateRangeToSinceMs(dateRange),
-        grep: debouncedSearch || undefined
-      })
-      setCommits((prev) => [...prev, ...more])
-      setHasMore(more.length === PAGE_SIZE)
-    } catch (err) {
-      console.error('[commits-tab] failed to load more commits', err)
-    } finally {
-      setLoadingMore(false)
-    }
-  }
+  }, [cwd, branch, dateRange, debouncedSearch, page])
 
   const branchOptions = branches.map((b) => ({ value: b.name, label: b.name }))
 
@@ -232,24 +224,15 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
               </p>
             </div>
           ))}
-          {hasMore && (
-            <button
-              type="button"
-              onClick={loadMore}
-              disabled={loadingMore}
-              aria-label={loadingMore ? 'Loading more commits' : 'Load more commits'}
-              className={[
-                'self-center mt-2 inline-flex items-center px-3 h-8 rounded-md text-xs',
-                'border border-border-default text-text-secondary',
-                'transition-colors duration-150',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                loadingMore
-                  ? 'opacity-50 cursor-wait'
-                  : 'hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
-              ].join(' ')}
-            >
-              {loadingMore ? 'Loading…' : 'Show more'}
-            </button>
+          {total > PAGE_SIZE && (
+            <div className="rounded-lg border border-border-default bg-surface-raised mt-1">
+              <PaginationFooter
+                page={page}
+                pageSize={PAGE_SIZE}
+                total={total}
+                onPageChange={setPage}
+              />
+            </div>
           )}
         </div>
       )}

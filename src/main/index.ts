@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
-import { getGitStatus, listBranches, listCommits } from './git'
+import { getGitStatus, listBranches, listCommits, countCommits } from './git'
 import { getDb } from './db'
 import {
   listProjects,
@@ -969,6 +969,14 @@ ipcMain.handle(
       grep?: string
     }
   ) => listCommits(args.cwd, args)
+)
+
+ipcMain.handle(
+  'git:count',
+  (
+    _e,
+    args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+  ) => countCommits(args.cwd, args)
 )
 
 // ---------------------------------------------------------------------------
