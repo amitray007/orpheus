@@ -1,0 +1,155 @@
+name: Release
+
+# Manual-trigger release pipeline. Two ways to use:
+#   1. Pick a bump type (patch/minor/major) — workflow bumps package.json,
+#      tags, releases, and pushes a cask update to homebrew-tap.
+#   2. Pass an explicit version (e.g. "0.0.1") that overrides the bump.
+#
+# Secrets required on this repo:
+#   HOMEBREW_TAP_TOKEN  — fine-grained PAT with `contents: write` on
+#                         amitray007/homebrew-tap. Used to push the cask.
+#
+# Branch protection: this workflow pushes the version-bump commit back to
+# main. If main is protected against direct pushes, allow bypass for the
+# Actions bot OR replace the push with a "release PR" pattern (release-please
+# does this; out of scope for v1).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump (ignored if `version` is set)'
+        required: false
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: 'Explicit version, e.g. 0.0.1 (overrides bump)'
+        required: false
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can push the bump commit
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve target version
+        id: ver
+        run: |
+          node <<'EOF'
+          const fs = require('fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'))
+          const explicit = process.env.INPUT_VERSION?.trim()
+          const bump = process.env.INPUT_BUMP || 'patch'
+          let next
+          if (explicit) {
+            next = explicit.replace(/^v/, '')
+          } else {
+            const [maj, min, pat] = pkg.version.split('.').map(Number)
+            if (bump === 'major') next = `${maj + 1}.0.0`
+            else if (bump === 'minor') next = `${maj}.${min + 1}.0`
+            else next = `${maj}.${min}.${pat + 1}`
+          }
+          pkg.version = next
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
+          const out = process.env.GITHUB_OUTPUT
+          fs.appendFileSync(out, `version=${next}\n`)
+          fs.appendFileSync(out, `tag=v${next}\n`)
+          console.log(`[release] bumped to ${next}`)
+          EOF
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (gate)
+        run: bun run typecheck
+
+      - name: Build native + renderer
+        run: |
+          bun run build:native
+          bun run build
+
+      - name: Build .dmg
+        run: bunx electron-builder --mac
+
+      - name: Compute sha256
+        id: sha
+        run: |
+          DMG="dist/orpheus-${{ steps.ver.outputs.version }}.dmg"
+          if [ ! -f "$DMG" ]; then
+            echo "::error::expected dmg not found at $DMG"
+            ls -la dist || true
+            exit 1
+          fi
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG"   >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump + tag
+        run: |
+          git add package.json
+          git commit -m "chore(release): ${{ steps.ver.outputs.tag }}"
+          git tag "${{ steps.ver.outputs.tag }}"
+          git push origin HEAD --tags
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            "${{ steps.sha.outputs.dmg }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --notes "Orpheus ${{ steps.ver.outputs.tag }}
+
+          Install:
+          \`\`\`
+          export HOMEBREW_GITHUB_API_TOKEN=\"\$(gh auth token)\"
+          brew tap amitray007/tap
+          brew install --cask orpheus
+          \`\`\`
+
+          Upgrade:
+          \`\`\`
+          brew upgrade --cask orpheus
+          \`\`\`"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: amitray007/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Render and push cask
+        run: |
+          sed -e "s/{{VERSION}}/${{ steps.ver.outputs.version }}/g" \
+              -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
+              scripts/orpheus-cask.template.rb > homebrew-tap/Casks/orpheus.rb
+
+          cd homebrew-tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/orpheus.rb
+          git commit -m "orpheus: bump to ${{ steps.ver.outputs.version }}"
+          git push origin HEAD
