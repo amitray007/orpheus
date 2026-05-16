@@ -314,7 +314,7 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
       if (!raw) continue
 
       // Strip markdown noise: code fences, inline backticks, headers, bold/italic stars
-      let cleaned = raw
+      const cleaned = raw
         .replace(/```[\s\S]*?```/g, '') // fenced code blocks
         .replace(/`[^`]*`/g, '') // inline code
         .replace(/^#{1,6}\s+/gm, '') // ATX headers
@@ -409,7 +409,7 @@ function extractLastUserMessagePreview(jsonlPath: string): string | null {
 
       if (!raw) continue
 
-      let cleaned = raw
+      const cleaned = raw
         .replace(/```[\s\S]*?```/g, '')
         .replace(/`[^`]*`/g, '')
         .replace(/^#{1,6}\s+/gm, '')

@@ -412,12 +412,12 @@ export function SessionsTab({
             <>
               <p>
                 This will move the JSONL transcript to your Trash and remove the session
-                from Orpheus's list. You can recover from Finder Trash if you change your
+                from Orpheus&apos;s list. You can recover from Finder Trash if you change your
                 mind.
               </p>
               {pendingDelete.title && (
                 <p className="mt-2 text-xs text-text-muted italic truncate">
-                  "{pendingDelete.title}"
+                  &quot;{pendingDelete.title}&quot;
                 </p>
               )}
             </>

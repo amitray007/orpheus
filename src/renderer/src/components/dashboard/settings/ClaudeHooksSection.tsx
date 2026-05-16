@@ -329,7 +329,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <p className="text-sm text-text-secondary leading-relaxed">
             Hooks let you run arbitrary shell commands at lifecycle events — before a tool fires,
-            after a session ends, when Claude stops, and more. They're defined in{' '}
+            after a session ends, when Claude stops, and more. They&apos;re defined in{' '}
             <code className="text-xs font-mono bg-surface-overlay px-1 py-0.5 rounded">
               ~/.claude/settings.json
             </code>{' '}
@@ -379,7 +379,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
             <div className="rounded-md border border-dashed border-border-default/60 bg-surface-overlay px-4 py-6 text-center">
               <p className="text-xs text-text-muted">No hooks configured</p>
               <p className="text-xs text-text-muted mt-1">
-                Use "Add hook" above or edit{' '}
+                Use &quot;Add hook&quot; above or edit{' '}
                 <code className="font-mono bg-surface-overlay px-1 py-0.5 rounded">
                   ~/.claude/settings.json
                 </code>{' '}

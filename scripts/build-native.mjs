@@ -30,7 +30,7 @@ try {
   const req = createRequire(import.meta.url)
   napiInclude = req('node-addon-api').include
   console.log(`[build-native] node-addon-api include: ${napiInclude}`)
-} catch (e) {
+} catch {
   // node-addon-api may not be installed; try to install it locally per package.
   console.warn('[build-native] node-addon-api not found at root — will attempt per-package install')
   napiInclude = null
@@ -49,7 +49,7 @@ for (const target of TARGETS) {
         cwd: pkgDir,
         stdio: 'inherit',
       })
-    } catch (_) {
+    } catch {
       // ignore
     }
   }
@@ -67,7 +67,7 @@ for (const target of TARGETS) {
   try {
     execSync(cmd, { cwd: pkgDir, stdio: 'inherit' })
     console.log(`[build-native] ${target} OK`)
-  } catch (err) {
+  } catch {
     console.error(`[build-native] ${target} FAILED`)
     anyFailed = true
   }
@@ -81,7 +81,7 @@ console.log(`\n[build-native] building packages/terminal-vt-native (napi-rs)`)
 try {
   execSync('bun run build', { cwd: RUST_DIR, stdio: 'inherit' })
   console.log('[build-native] terminal-vt-native OK')
-} catch (err) {
+} catch {
   console.error('[build-native] terminal-vt-native FAILED')
   anyFailed = true
 }

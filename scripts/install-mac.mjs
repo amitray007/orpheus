@@ -22,7 +22,7 @@ if (existsSync(distDir)) {
   }
 }
 
-function findAppBundle(dir) {
+const findAppBundle = (dir) => {
   if (!existsSync(dir)) return null
   for (const entry of readdirSync(dir)) {
     const full = resolve(dir, entry)
@@ -50,7 +50,7 @@ if (!appBundle) {
 const appName = appBundle.split('/').pop()
 const target = `/Applications/${appName}`
 
-function isAppRunning() {
+const isAppRunning = () => {
   try {
     execSync(`pgrep -fl "/Applications/${appName}/Contents/MacOS/"`, { stdio: 'pipe' })
     return true

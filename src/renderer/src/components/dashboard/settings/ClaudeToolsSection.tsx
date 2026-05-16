@@ -462,7 +462,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Tools</h2>
         <p className="text-xs text-text-muted mt-1">
-          MCP server toggles (auto-discovered from ~/.claude.json and each project's .mcp.json),
+          MCP server toggles (auto-discovered from ~/.claude.json and each project&apos;s .mcp.json),
           Bash limits, tool concurrency, and browser integration. Changes save automatically.
         </p>
       </div>
@@ -502,10 +502,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
           ) : servers.length === 0 && !adding ? (
             <div className="rounded-md border border-dashed border-border-default/60 bg-surface-overlay px-4 py-6 text-center">
               <p className="text-xs text-text-muted">
-                No MCP servers configured in ~/.claude.json or any project's .mcp.json
+                No MCP servers configured in ~/.claude.json or any project&apos;s .mcp.json
               </p>
               <p className="text-xs text-text-muted mt-1">
-                Use "Add server" above or edit the files directly.
+                Use &quot;Add server&quot; above or edit the files directly.
               </p>
             </div>
           ) : (

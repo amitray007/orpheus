@@ -105,7 +105,7 @@ function broadcastDetailIfChanged(workspaceId: string): void {
   if (last === detail) return
   lastBroadcastDetail.set(workspaceId, detail)
   for (const cb of listeners) {
-    try { cb(workspaceId, status, detail) } catch {}
+    try { cb(workspaceId, status, detail) } catch { /* ignore */ }
   }
 }
 
@@ -364,7 +364,7 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
   }
 
   // Remove stale socket file if it exists
-  try { fs.unlinkSync(sockPath) } catch {}
+  try { fs.unlinkSync(sockPath) } catch { /* ignore */ }
 
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/notify') {
@@ -399,14 +399,14 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
               payload = parsed as Record<string, unknown>
             }
-          } catch {}
+          } catch { /* ignore */ }
         }
       } else if (bodyText.trim()) {
         try {
           const body = JSON.parse(bodyText) as { workspaceId?: unknown; event?: unknown }
           if (typeof body.workspaceId === 'string') workspaceId = body.workspaceId
           if (typeof body.event === 'string') eventName = body.event
-        } catch {}
+        } catch { /* ignore */ }
       }
 
       if (!workspaceId || !eventName) return
@@ -420,7 +420,7 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
     sockPath,
     close(): void {
       server.close()
-      try { fs.unlinkSync(sockPath) } catch {}
+      try { fs.unlinkSync(sockPath) } catch { /* ignore */ }
     }
   }
 }

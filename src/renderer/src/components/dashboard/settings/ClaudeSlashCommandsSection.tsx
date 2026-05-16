@@ -358,7 +358,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Slash commands</h2>
         <p className="text-xs text-text-muted mt-1">
-          Custom commands from ~/.claude/commands/ and each project's .claude/commands/.
+          Custom commands from ~/.claude/commands/ and each project&apos;s .claude/commands/.
         </p>
       </div>
 
@@ -396,10 +396,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
         ) : commands.length === 0 ? (
           <div className="rounded-md border border-dashed border-border-default/60 bg-surface-overlay px-4 py-6 text-center">
             <p className="text-xs text-text-muted">
-              No slash commands found in ~/.claude/commands/ or any project's .claude/commands/
+              No slash commands found in ~/.claude/commands/ or any project&apos;s .claude/commands/
             </p>
             <p className="text-xs text-text-muted mt-1">
-              Use "Add command" above to create one.
+              Use &quot;Add command&quot; above to create one.
             </p>
           </div>
         ) : (

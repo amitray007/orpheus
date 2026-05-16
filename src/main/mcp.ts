@@ -151,12 +151,7 @@ function readAndParseUserFile(filePath: string): Record<string, unknown> {
 function readAndParseProjectFile(filePath: string): Record<string, unknown> {
   // Per-project .mcp.json: create empty if missing, abort on parse failure
   if (!fs.existsSync(filePath)) return {}
-  let raw: string
-  try {
-    raw = fs.readFileSync(filePath, 'utf-8')
-  } catch (err) {
-    throw err
-  }
+  const raw = fs.readFileSync(filePath, 'utf-8')
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)

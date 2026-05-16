@@ -360,7 +360,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Subagents</h2>
         <p className="text-xs text-text-muted mt-1">
-          Custom subagents from ~/.claude/agents/ and each project's .claude/agents/.
+          Custom subagents from ~/.claude/agents/ and each project&apos;s .claude/agents/.
         </p>
       </div>
 
@@ -398,10 +398,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
         ) : agents.length === 0 ? (
           <div className="rounded-md border border-dashed border-border-default/60 bg-surface-overlay px-4 py-6 text-center">
             <p className="text-xs text-text-muted">
-              No subagents found in ~/.claude/agents/ or any project's .claude/agents/
+              No subagents found in ~/.claude/agents/ or any project&apos;s .claude/agents/
             </p>
             <p className="text-xs text-text-muted mt-1">
-              Use "Add subagent" above to create one.
+              Use &quot;Add subagent&quot; above to create one.
             </p>
           </div>
         ) : (

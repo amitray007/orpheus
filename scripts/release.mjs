@@ -33,7 +33,7 @@ const TAP_REPO_PATH =
   process.env.ORPHEUS_TAP_PATH ?? resolve(projectRoot, '..', 'homebrew-tap')
 const CASK_RELPATH = 'Casks/orpheus.rb'
 
-function run(cmd, args, opts = {}) {
+const run = (cmd, args, opts = {}) => {
   console.log(`\n$ ${cmd} ${args.join(' ')}${opts.cwd ? `  (cwd: ${opts.cwd})` : ''}`)
   const result = spawnSync(cmd, args, { stdio: 'inherit', cwd: projectRoot, ...opts })
   if (result.status !== 0) {
@@ -41,7 +41,7 @@ function run(cmd, args, opts = {}) {
   }
 }
 
-function ghJson(args) {
+const ghJson = (args) => {
   const result = spawnSync('gh', args, { encoding: 'utf-8', cwd: projectRoot })
   if (result.status !== 0) return null
   try {
