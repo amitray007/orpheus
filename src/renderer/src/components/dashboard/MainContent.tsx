@@ -2,6 +2,7 @@ import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
+import { DashboardView } from './DashboardView'
 import type {
   GitStatus,
   ProjectRecord,
@@ -11,7 +12,7 @@ import type {
 } from '@shared/types'
 
 // ---------------------------------------------------------------------------
-// Dashboard home placeholder sections
+// Fallback placeholder (used for error states only)
 // ---------------------------------------------------------------------------
 
 function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
@@ -21,7 +22,7 @@ function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
         {title}
       </h2>
       <div className="bg-surface-raised border border-border-default rounded-lg p-8 text-sm text-text-muted text-center">
-        Coming soon
+        Not found
       </div>
     </section>
   )
@@ -70,7 +71,7 @@ export function MainContent({
   workspace,
   workspacesForProject,
   onRequestRemoveProject,
-  onNavigateToProject: _onNavigateToProject,
+  onNavigateToProject,
   onSelectWorkspace,
   onAddWorkspace,
   onRenameWorkspace,
@@ -89,11 +90,11 @@ export function MainContent({
 
   if (view.kind === 'dashboard') {
     return (
-      <div className="flex flex-col gap-6">
-        <PlaceholderSection title="Activity" />
-        <PlaceholderSection title="Recent Projects" />
-        <PlaceholderSection title="Recent Sessions" />
-      </div>
+      <DashboardView
+        onNavigateToProject={onNavigateToProject}
+        onNavigateToWorkspace={onSelectWorkspace}
+        workspaceActivities={workspaceActivities ?? {}}
+      />
     )
   }
 

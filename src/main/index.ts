@@ -91,6 +91,7 @@ import {
   listEditorApps,
   listTerminalApps
 } from './shellHelpers'
+import { getActivityHeatmap, listRecentProjects, listRecentWorkspaces } from './dashboard'
 import type {
   SessionStatus,
   SessionsPagedRequest,
@@ -982,6 +983,22 @@ ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => {
 ipcMain.handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
 ipcMain.handle('shell:listEditorApps', () => listEditorApps())
 ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
+
+// ---------------------------------------------------------------------------
+// Dashboard IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('dashboard:getActivityHeatmap', (_e, days?: number) =>
+  getActivityHeatmap(days)
+)
+
+ipcMain.handle('dashboard:getRecentProjects', (_e, limit?: number) =>
+  listRecentProjects(limit)
+)
+
+ipcMain.handle('dashboard:getRecentWorkspaces', (_e, limit?: number) =>
+  listRecentWorkspaces(limit)
+)
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-native lifecycle

@@ -27,7 +27,8 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@phosphor-icons/react": "^2.1.10",
     "better-sqlite3": "^12.9.0",
-    "minidenticons": "^4.2.1"
+    "minidenticons": "^4.2.1",
+    "react-activity-calendar": "^3.2.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

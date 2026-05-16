@@ -526,3 +526,13 @@ export type SessionsPagedResult = {
   rows: SessionRecord[]
   total: number // total matching rows before pagination
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard (heatmap + recents)
+// ---------------------------------------------------------------------------
+
+export type HeatmapEntry = {
+  date: string // 'YYYY-MM-DD'
+  count: number
+  level: 0 | 1 | 2 | 3 | 4
+}
