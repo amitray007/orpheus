@@ -6,6 +6,7 @@
       "package-name": "orpheus",
       "include-component-in-tag": false,
       "include-v-in-tag": true,
+      "skip-changelog": true,
       "pull-request-title-pattern": "chore(release): orpheus v${version}",
       "release-as": "0.0.1",
       "changelog-sections": [
