@@ -183,11 +183,11 @@ function WorkspaceSubRow({
       <button
         onClick={onSelect}
         className="flex items-center gap-2 pl-8 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
-        title={workspace.cwd}
+        title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
         aria-label={workspace.name}
       >
-        {/* Left: activity glyph (fixed width, vertically centered on first line) */}
-        <span className="flex-shrink-0 self-start mt-0.5">
+        {/* Left: activity glyph (vertically centered with single-line title) */}
+        <span className="flex-shrink-0">
           {activity && activity !== 'archived' ? (
             <ActivityIndicator detail={activity} />
           ) : (
@@ -202,55 +202,44 @@ function WorkspaceSubRow({
           )}
         </span>
 
-        {/* Right: two-line column */}
-        <span className="flex flex-col min-w-0 flex-1 gap-0">
-          {/* Line 1: name + optional git chip */}
-          <span className="flex items-center gap-1 min-w-0">
-            {renaming ? (
-              <input
-                autoFocus
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleRenameCommit()
-                  if (e.key === 'Escape') onCancelRename()
-                }}
-                onBlur={handleRenameCommit}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
-              />
-            ) : (
-              <span
-                className={[
-                  'text-xs truncate min-w-0 flex-1 leading-snug',
-                  dn.muted ? 'text-text-muted italic' : ''
-                ].join(' ')}
-                title={dn.text}
-              >
-                {dn.text}
-              </span>
-            )}
-            {/* Git diff chip */}
-            {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
-              <span className="text-[10px] font-mono flex items-center gap-1 flex-shrink-0">
-                {gitStatus.insertions > 0 && (
-                  <span className="text-emerald-400">+{gitStatus.insertions}</span>
-                )}
-                {gitStatus.deletions > 0 && (
-                  <span className="text-red-400">−{gitStatus.deletions}</span>
-                )}
-              </span>
-            )}
-          </span>
-
-          {/* Line 2: last user message preview (only when available and not renaming) */}
-          {!renaming && lastUserMsgPreview && (
+        {/* Right: single-line name + optional git chip.
+            Preview lives on the Workspaces kanban view (and in this row's
+            title tooltip); the sidebar stays compact navigation. */}
+        <span className="flex items-center gap-1 min-w-0 flex-1">
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameCommit()
+                if (e.key === 'Escape') onCancelRename()
+              }}
+              onBlur={handleRenameCommit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+            />
+          ) : (
             <span
-              className="text-[10px] text-text-muted italic truncate leading-snug"
-              title={lastUserMsgPreview}
+              className={[
+                'text-xs truncate min-w-0 flex-1 leading-snug',
+                dn.muted ? 'text-text-muted italic' : ''
+              ].join(' ')}
+              title={dn.text}
             >
-              {lastUserMsgPreview}
+              {dn.text}
+            </span>
+          )}
+          {/* Git diff chip */}
+          {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
+            <span className="text-[10px] font-mono flex items-center gap-1 flex-shrink-0">
+              {gitStatus.insertions > 0 && (
+                <span className="text-emerald-400">+{gitStatus.insertions}</span>
+              )}
+              {gitStatus.deletions > 0 && (
+                <span className="text-red-400">−{gitStatus.deletions}</span>
+              )}
             </span>
           )}
         </span>
