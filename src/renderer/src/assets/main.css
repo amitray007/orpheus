@@ -1,5 +1,26 @@
 @import 'tailwindcss';
 
+/*
+ * Geist Sans and Geist Mono variable fonts
+ * © Vercel Inc. — licensed under the SIL Open Font License 1.1
+ * https://github.com/vercel/geist-font
+ */
+@font-face {
+  font-family: 'Geist';
+  src: url('./fonts/GeistVariableVF.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./fonts/GeistMonoVariableVF.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   --color-surface-base: #0b0b0c;
   --color-surface-raised: #16161a;
@@ -14,6 +35,9 @@
   --color-accent: #d4a847;
   --color-accent-hover: #e0b558;
   --color-accent-on: #0b0b0c;
+
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 *,
@@ -34,7 +58,7 @@ body,
 body {
   background: var(--color-surface-base, #0b0b0c);
   color: var(--color-text-primary, #f4f4f5);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
