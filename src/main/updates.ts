@@ -79,6 +79,13 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
       signal: AbortSignal.timeout(10_000)
     })
 
+    // 404 from /releases/latest means the repo has zero published releases.
+    // Treat that as "you're already on the latest" rather than an error so
+    // the UI doesn't yell during the period before the first release ships.
+    if (res.status === 404) {
+      return { current, latest: null, available: false, checkedAt }
+    }
+
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       return {
