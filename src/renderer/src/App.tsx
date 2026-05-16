@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
-import { DotmSquare3 } from './components/ui/dotm-square-3'
+import { DotmSquare11 } from './components/ui/dotm-square-11'
 import type { DoctorResult } from '@shared/types'
 
 function App(): React.JSX.Element {
@@ -30,9 +30,15 @@ function App(): React.JSX.Element {
   return (
     <main className="app h-full">
       {doctor === null ? (
-        // Boot splash — Core Spiral, shown briefly while doctor IPC resolves
-        <div className="h-full flex items-center justify-center text-text-muted">
-          <DotmSquare3 size={96} dotSize={8} speed={1} animated />
+        // Boot splash — Geist Pixel wordmark + Echo Ring, shown briefly
+        // while the doctor IPC resolves on first paint.
+        <div className="h-full flex items-center justify-center">
+          <div className="flex flex-col items-center gap-6">
+            <h1 className="text-6xl tracking-tight text-text-primary leading-none select-none">
+              Orpheus<span className="text-accent">.</span>
+            </h1>
+            <DotmSquare11 size={32} dotSize={3} speed={1.25} animated />
+          </div>
         </div>
       ) : (
         <>
