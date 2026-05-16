@@ -1,5 +1,5 @@
 import { forwardRef, type ButtonHTMLAttributes } from 'react'
-import { Spinner } from './Spinner'
+import { DotmSquare13 } from './ui/dotm-square-13'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'destructive'
 export type ButtonSize = 'md' | 'sm'
@@ -47,9 +47,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {...rest}
     >
       {loading ? (
-        <span className="inline-flex items-center">
-          <Spinner size={size === 'sm' ? 'sm' : 'md'} />
-          <span className="ml-2">{children}</span>
+        <span className="inline-flex items-center gap-2">
+          <DotmSquare13 size={size === 'sm' ? 14 : 18} dotSize={size === 'sm' ? 2 : 3} speed={1.4} animated />
+          {children}
         </span>
       ) : (
         children

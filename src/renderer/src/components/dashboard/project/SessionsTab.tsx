@@ -4,7 +4,7 @@ import { MagnifyingGlass, ChatCircle, Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { Select } from '../settings/primitives'
-import { Spinner } from '../../Spinner'
+import { DotmSquare13 } from '../../ui/dotm-square-13'
 import { ConfirmModal } from '../../ConfirmModal'
 
 // ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ export function SessionsTab({
                 : 'text-text-muted hover:text-accent hover:bg-accent/10 cursor-pointer'
             ].join(' ')}
           >
-            {isResuming ? <Spinner size="sm" /> : <Play size={13} weight="fill" />}
+            {isResuming ? <DotmSquare13 size={14} dotSize={2} speed={1.4} animated /> : <Play size={13} weight="fill" />}
           </button>
         )
       }

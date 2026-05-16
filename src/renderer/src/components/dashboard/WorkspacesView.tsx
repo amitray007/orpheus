@@ -9,6 +9,7 @@ import type {
 import { GitMerge } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
+import { DotmSquare18 } from '../ui/dotm-square-18'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -300,9 +301,17 @@ export function WorkspacesView({
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-      {/* Header */}
-      <div className="flex-shrink-0">
+      {/* Header — Sound Bars (DotmSquare18) in top-right signals "live activity tracking".
+          Persistent-pulse approach: wiring a sessionsLoading bool down through
+          MainContent → WorkspacesView is possible but hairy since the kanban also
+          reacts to real-time IPC events (onActivityChanged), not just the initial fetch.
+          A persistent, faint indicator communicates "always listening" semantics more
+          accurately and avoids a loading flicker on every navigation. */}
+      <div className="flex-shrink-0 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-text-primary">Workspaces</h1>
+        <span className="text-text-muted opacity-50" title="Live activity">
+          <DotmSquare18 size={16} dotSize={2} speed={0.8} animated />
+        </span>
       </div>
 
       {/* Kanban board — always render the 4-column shell; per-column "No workspaces"
