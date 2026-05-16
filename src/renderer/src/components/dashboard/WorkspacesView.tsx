@@ -305,30 +305,22 @@ export function WorkspacesView({
         <h1 className="text-xl font-semibold text-text-primary">Workspaces</h1>
       </div>
 
-      {/* Kanban board — 4 equal columns */}
-      {activeWorkspaces.length === 0 ? (
-        <div className="bg-surface-raised border border-border-default rounded-lg p-8 flex flex-col items-center gap-2">
-          <p className="text-sm text-text-muted">No workspaces found</p>
-          <p className="text-xs text-text-muted">
-            Add a project and create a workspace to get started.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
-          {COLUMN_CONFIGS.map((config) => (
-            <KanbanColumn
-              key={config.key}
-              config={config}
-              workspaces={grouped[config.key]}
-              projectsById={projectsById}
-              sessionsById={sessionsById}
-              activities={workspaceActivities}
-              gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-              onNavigateToWorkspace={onNavigateToWorkspace}
-            />
-          ))}
-        </div>
-      )}
+      {/* Kanban board — always render the 4-column shell; per-column "No workspaces"
+          handles the empty case so the layout stays consistent. */}
+      <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
+        {COLUMN_CONFIGS.map((config) => (
+          <KanbanColumn
+            key={config.key}
+            config={config}
+            workspaces={grouped[config.key]}
+            projectsById={projectsById}
+            sessionsById={sessionsById}
+            activities={workspaceActivities}
+            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            onNavigateToWorkspace={onNavigateToWorkspace}
+          />
+        ))}
+      </div>
     </div>
   )
 }
