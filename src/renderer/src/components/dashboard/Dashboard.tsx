@@ -749,6 +749,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onAddWorkspace={handleAddWorkspace}
           onRenameWorkspace={handleRenameWorkspace}
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+          onTogglePinWorkspace={handleToggleWorkspacePin}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}
           onRefreshPins={refreshPins}

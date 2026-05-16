@@ -95,6 +95,7 @@ interface WorkspaceRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onArchive: () => void
+  onTogglePin: () => void
 }
 
 function WorkspaceSubRow({
@@ -109,7 +110,8 @@ function WorkspaceSubRow({
   onBeginRename,
   onFinishRename,
   onCancelRename,
-  onArchive
+  onArchive,
+  onTogglePin
 }: WorkspaceRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
@@ -152,13 +154,16 @@ function WorkspaceSubRow({
 
   async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()
+    const isPinned = workspace.pinnedAt !== null
     const action = await window.api.contextMenu.show([
+      { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
       { label: 'Rename', action: 'rename' },
       { divider: true },
       { label: 'Archive', action: 'archive' }
     ])
     if (!action) return
-    if (action === 'rename') onBeginRename()
+    if (action === 'togglePin') onTogglePin()
+    else if (action === 'rename') onBeginRename()
     else if (action === 'archive') onArchive()
   }
 
@@ -288,6 +293,25 @@ function PinnedRow({
   onUnpin
 }: PinnedRowProps): React.JSX.Element {
   const { workspace, project } = item
+  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+
+  useEffect(() => {
+    const workspaceId = workspace.id
+    window.api.workspaces
+      .getTitle(workspaceId)
+      .then(setTerminalTitle)
+      .catch(() => {})
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
+      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
+    })
+    return unsub
+  }, [workspace.id])
+
+  // Session title is per-project; we don't pull it for cross-project pinned
+  // rows. Terminal title (live OSC + persisted last_title from getTitle)
+  // covers the common case — falls through to the workspace's stored name
+  // (or "New workspace") otherwise.
+  const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle: null })
 
   async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()
@@ -326,7 +350,15 @@ function PinnedRow({
           )}
         </span>
         <span className="flex flex-col min-w-0 flex-1">
-          <span className="text-xs truncate leading-snug">{workspace.name}</span>
+          <span
+            className={[
+              'text-xs truncate leading-snug',
+              dn.muted ? 'text-text-muted italic' : ''
+            ].join(' ')}
+            title={dn.text}
+          >
+            {dn.text}
+          </span>
           <span className="text-[10px] text-text-muted truncate leading-none">{project.name}</span>
         </span>
       </button>
@@ -369,6 +401,7 @@ interface ProjectRowProps {
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
   onCancelRenameWorkspace: () => void
   onArchiveWorkspace: (workspaceId: string) => void
+  onTogglePinWorkspace: (workspaceId: string) => void
   wsDragId: string | null
   wsDropTargetId: string | null
   wsDropPos: 'before' | 'after'
@@ -416,6 +449,7 @@ function ProjectRow({
   onFinishRenameWorkspace,
   onCancelRenameWorkspace,
   onArchiveWorkspace,
+  onTogglePinWorkspace,
   wsDragId,
   wsDropTargetId,
   wsDropPos,
@@ -580,6 +614,7 @@ function ProjectRow({
                   onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
                   onCancelRename={onCancelRenameWorkspace}
                   onArchive={() => onArchiveWorkspace(ws.id)}
+                  onTogglePin={() => onTogglePinWorkspace(ws.id)}
                 />
                 {showLineBelow && <DropIndicator position="bottom" />}
               </div>
@@ -644,6 +679,7 @@ interface SidebarProps {
     newName: string
   ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
   onRefreshPins: () => void
@@ -676,6 +712,7 @@ export function Sidebar({
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
+  onTogglePinWorkspace,
   onReorderProjects,
   onReorderWorkspaces,
   pinnedItems,
@@ -987,6 +1024,7 @@ export function Sidebar({
                         }
                         onCancelRenameWorkspace={handleCancelRenameWorkspace}
                         onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                        onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
                         wsDragId={wsDragId}
                         wsDropTargetId={wsDropTargetId}
                         wsDropPos={wsDropPos}
