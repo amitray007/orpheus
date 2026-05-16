@@ -27,6 +27,8 @@ on:
         description: 'Explicit version, e.g. 0.0.1 (overrides bump)'
         required: false
         type: string
+  push:
+    branches: [main]
 
 concurrency:
   group: release
@@ -34,6 +36,19 @@ concurrency:
 
 jobs:
   release:
+    # Two ways to trigger:
+    #   1. workflow_dispatch (manual button in the Actions tab) — always runs.
+    #   2. push to main with [release] in the head commit message — runs, with
+    #      bump type parsed from [release patch|minor|major] (defaults to patch).
+    # Skip the self-push that this workflow itself makes (`chore(release): vX`),
+    # otherwise the bump push would re-trigger the workflow in a loop.
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' &&
+         contains(github.event.head_commit.message, '[release') &&
+         !startsWith(github.event.head_commit.message, 'chore(release):'))
+      }}
     runs-on: macos-14
     permissions:
       contents: write
@@ -51,8 +66,26 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Parse bump type from commit (push trigger only)
+        id: parse_commit
+        if: github.event_name == 'push'
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          BUMP=patch
+          if echo "$MSG" | grep -qE "\[release[[:space:]]+major\]"; then
+            BUMP=major
+          elif echo "$MSG" | grep -qE "\[release[[:space:]]+minor\]"; then
+            BUMP=minor
+          fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "[parse_commit] bump=$BUMP (from commit message)"
+
       - name: Resolve target version
         id: ver
+        env:
+          INPUT_BUMP: ${{ inputs.bump || steps.parse_commit.outputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           node <<'EOF'
           const fs = require('fs')
@@ -75,9 +108,6 @@ jobs:
           fs.appendFileSync(out, `tag=v${next}\n`)
           console.log(`[release] bumped to ${next}`)
           EOF
-        env:
-          INPUT_BUMP: ${{ inputs.bump }}
-          INPUT_VERSION: ${{ inputs.version }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -113,6 +143,13 @@ jobs:
           git tag "${{ steps.ver.outputs.tag }}"
           git push origin HEAD --tags
 
+      - name: Generate release notes
+        run: |
+          chmod +x scripts/release-changelog.sh
+          bash scripts/release-changelog.sh "${{ steps.ver.outputs.tag }}" > release-notes.md
+          echo "--- preview (first 50 lines) ---"
+          head -n 50 release-notes.md
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,19 +157,7 @@ jobs:
           gh release create "${{ steps.ver.outputs.tag }}" \
             "${{ steps.sha.outputs.dmg }}" \
             --title "${{ steps.ver.outputs.tag }}" \
-            --notes "Orpheus ${{ steps.ver.outputs.tag }}
-
-          Install:
-          \`\`\`
-          export HOMEBREW_GITHUB_API_TOKEN=\"\$(gh auth token)\"
-          brew tap amitray007/tap
-          brew install --cask orpheus
-          \`\`\`
-
-          Upgrade:
-          \`\`\`
-          brew upgrade --cask orpheus
-          \`\`\`"
+            --notes-file release-notes.md
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -141,7 +166,7 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Render and push cask
+      - name: Render and push cask + scoped tag
         run: |
           sed -e "s/{{VERSION}}/${{ steps.ver.outputs.version }}/g" \
               -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
@@ -152,4 +177,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/orpheus.rb
           git commit -m "orpheus: bump to ${{ steps.ver.outputs.version }}"
-          git push origin HEAD
+
+          # Per-cask scoped tag: `orpheus/v0.0.2`. Gives git-level traceability
+          # per app without colliding with future casks that might share a vX.Y.Z.
+          SCOPED_TAG="orpheus/${{ steps.ver.outputs.tag }}"
+          git tag "$SCOPED_TAG"
+          git push origin HEAD "$SCOPED_TAG"

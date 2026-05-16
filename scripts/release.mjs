@@ -104,6 +104,18 @@ console.log(`[release] sha256 ${sha256}`)
 // 4. GitHub release on source repo
 // ---------------------------------------------------------------------------
 
+const notesPath = resolve(projectRoot, 'release-notes.md')
+const notesResult = spawnSync('bash', ['scripts/release-changelog.sh', tag], {
+  cwd: projectRoot,
+  encoding: 'utf-8'
+})
+if (notesResult.status !== 0) {
+  console.error(notesResult.stderr)
+  throw new Error('release-changelog.sh failed')
+}
+writeFileSync(notesPath, notesResult.stdout, 'utf-8')
+console.log(`[release] generated ${notesPath}`)
+
 run('gh', [
   'release',
   'create',
@@ -113,8 +125,8 @@ run('gh', [
   SOURCE_REPO,
   '--title',
   tag,
-  '--notes',
-  `Orpheus ${tag}\n\nInstall:\n\n\`\`\`\nbrew tap amitray007/tap\nbrew install --cask orpheus\n\`\`\``
+  '--notes-file',
+  notesPath
 ])
 
 // ---------------------------------------------------------------------------
@@ -133,7 +145,12 @@ console.log(`[release] wrote ${caskAbs}`)
 run('git', ['pull', '--ff-only'], { cwd: TAP_REPO_PATH })
 run('git', ['add', CASK_RELPATH], { cwd: TAP_REPO_PATH })
 run('git', ['commit', '-m', `orpheus: bump to ${version}`], { cwd: TAP_REPO_PATH })
-run('git', ['push', 'origin', 'HEAD'], { cwd: TAP_REPO_PATH })
+
+// Per-cask scoped tag (`orpheus/v0.0.2`): git-level traceability per app,
+// no collision with future casks that might share a vX.Y.Z.
+const scopedTag = `orpheus/${tag}`
+run('git', ['tag', scopedTag], { cwd: TAP_REPO_PATH })
+run('git', ['push', 'origin', 'HEAD', scopedTag], { cwd: TAP_REPO_PATH })
 
 // ---------------------------------------------------------------------------
 // 6. Done
@@ -151,9 +168,9 @@ Upgrade after future releases:
   brew upgrade --cask orpheus
 `)
 
-// Clean up dist/ now that the upload is complete.
+// Clean up dist/ and release-notes.md now that the upload is complete.
 try {
-  execFileSync('rm', ['-rf', resolve(projectRoot, 'dist')], { stdio: 'inherit' })
+  execFileSync('rm', ['-rf', resolve(projectRoot, 'dist'), notesPath], { stdio: 'inherit' })
 } catch (err) {
-  console.warn(`[release] failed to clean dist/: ${err.message}`)
+  console.warn(`[release] failed to clean dist/ + release-notes.md: ${err.message}`)
 }
