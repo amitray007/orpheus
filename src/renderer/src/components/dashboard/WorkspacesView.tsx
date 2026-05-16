@@ -1,5 +1,4 @@
-import { useState, useMemo } from 'react'
-import { CaretRight } from '@phosphor-icons/react'
+import { useMemo } from 'react'
 import type {
   SessionRecord,
   WorkspaceRecord,
@@ -76,72 +75,27 @@ function fallbackActivity(ws: WorkspaceRecord): WorkspaceActivityDetail {
 }
 
 // ---------------------------------------------------------------------------
-// Group config
+// Column config
 // ---------------------------------------------------------------------------
 
-interface GroupConfig {
+interface ColumnConfig {
   key: GroupKey
   label: string
-  tagline: string
-  defaultExpanded: boolean
-  emptyText: string
   indicatorDetail: WorkspaceActivityDetail
 }
 
-const GROUP_CONFIGS: GroupConfig[] = [
-  {
-    key: 'in_review',
-    label: 'In Review',
-    tagline: 'needs you',
-    defaultExpanded: true,
-    emptyText: 'No workspaces need your attention.',
-    indicatorDetail: 'attention'
-  },
-  {
-    key: 'in_progress',
-    label: 'In Progress',
-    tagline: 'working',
-    defaultExpanded: true,
-    emptyText: 'No workspaces currently running.',
-    indicatorDetail: 'thinking'
-  },
-  {
-    key: 'done',
-    label: 'Done',
-    tagline: '',
-    defaultExpanded: false,
-    emptyText: 'No completed workspaces.',
-    indicatorDetail: 'ready'
-  },
-  {
-    key: 'waiting',
-    label: 'Waiting',
-    tagline: '',
-    defaultExpanded: false,
-    emptyText: 'No workspaces waiting.',
-    indicatorDetail: 'idle'
-  }
+const COLUMN_CONFIGS: ColumnConfig[] = [
+  { key: 'in_review', label: 'In Review', indicatorDetail: 'attention' },
+  { key: 'in_progress', label: 'In Progress', indicatorDetail: 'thinking' },
+  { key: 'done', label: 'Done', indicatorDetail: 'ready' },
+  { key: 'waiting', label: 'Waiting', indicatorDetail: 'idle' }
 ]
 
 // ---------------------------------------------------------------------------
-// Filter chips
+// Workspace card
 // ---------------------------------------------------------------------------
 
-type Filter = 'all' | GroupKey
-
-const FILTERS: { label: string; value: Filter }[] = [
-  { label: 'All', value: 'all' },
-  { label: 'In Review', value: 'in_review' },
-  { label: 'In Progress', value: 'in_progress' },
-  { label: 'Done', value: 'done' },
-  { label: 'Waiting', value: 'waiting' }
-]
-
-// ---------------------------------------------------------------------------
-// Workspace row
-// ---------------------------------------------------------------------------
-
-interface WorkspaceRowProps {
+interface WorkspaceCardProps {
   workspace: WorkspaceRecord
   projectName: string
   session: SessionRecord | undefined
@@ -149,13 +103,13 @@ interface WorkspaceRowProps {
   onClick: () => void
 }
 
-function WorkspaceRow({
+function WorkspaceCard({
   workspace,
   projectName,
   session,
   activities,
   onClick
-}: WorkspaceRowProps): React.JSX.Element {
+}: WorkspaceCardProps): React.JSX.Element {
   // Primary label: workspace name, with cwd basename as fallback
   const displayName =
     workspace.name.trim() !== '' ? workspace.name : basename(workspace.cwd)
@@ -172,123 +126,101 @@ function WorkspaceRow({
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-start gap-3 px-4 py-3 hover:bg-surface-overlay transition-colors duration-100 text-left group cursor-pointer"
+      className="w-full p-3 rounded-md bg-surface-raised border border-border-default/60 hover:bg-surface-overlay hover:border-border-default transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
     >
-      {/* Activity glyph */}
-      <span className="mt-0.5 flex-shrink-0">
-        <ActivityIndicator detail={effectiveActivity} />
+      {/* Title row: glyph + name */}
+      <span className="flex items-center gap-2 min-w-0">
+        <span className="flex-shrink-0">
+          <ActivityIndicator detail={effectiveActivity} />
+        </span>
+        <span
+          className="text-sm font-medium text-text-primary truncate leading-snug"
+          title={displayName}
+        >
+          {displayName}
+        </span>
       </span>
 
-      {/* Main content */}
-      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-        {/* Title row */}
-        <span className="flex items-center justify-between gap-2">
-          <span className="text-sm text-text-primary truncate" title={displayName}>
-            {displayName}
-          </span>
-          {/* Project chip */}
-          <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate max-w-[120px]">
-            {projectName}
-          </span>
-        </span>
+      {/* Project chip */}
+      <span className="self-start text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary max-w-full truncate">
+        {projectName}
+      </span>
 
-        {/* Subline: model · msgs · time (model/msgs omitted when no session attached) */}
-        <span className="text-[11px] text-text-muted flex items-center gap-1.5 flex-wrap">
-          {model !== null && (
-            <>
-              <span className="font-mono">{model}</span>
-              <span className="opacity-30">·</span>
-            </>
-          )}
-          {msgCount !== null && (
-            <>
-              <span>{msgCount} msgs</span>
-              <span className="opacity-30">·</span>
-            </>
-          )}
-          <span>{relativeTime(timestamp)}</span>
+      {/* Preview snippet — two-line clamp with curly quotes */}
+      {session?.lastMessagePreview && (
+        <span className="text-[11px] text-text-muted italic line-clamp-2 leading-relaxed">
+          &ldquo;{session.lastMessagePreview}&rdquo;
         </span>
+      )}
 
-        {/* Last-message preview snippet — italic curly quotes */}
-        {session?.lastMessagePreview && (
-          <span
-            className="text-[11px] text-text-muted italic truncate"
-            title={session.lastMessagePreview}
-          >
-            &ldquo;{session.lastMessagePreview}&rdquo;
-          </span>
+      {/* Footer: model · msgs · time */}
+      <span className="text-[11px] text-text-muted flex items-center gap-1 flex-wrap mt-0.5">
+        {model !== null && (
+          <>
+            <span className="font-mono">{model}</span>
+            <span className="opacity-30">·</span>
+          </>
         )}
+        {msgCount !== null && (
+          <>
+            <span>{msgCount} msgs</span>
+            <span className="opacity-30">·</span>
+          </>
+        )}
+        <span>{relativeTime(timestamp)}</span>
       </span>
     </button>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Group section
+// Kanban column
 // ---------------------------------------------------------------------------
 
-interface GroupSectionProps {
-  config: GroupConfig
+interface KanbanColumnProps {
+  config: ColumnConfig
   workspaces: WorkspaceRecord[]
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
   activities: Record<string, WorkspaceActivityDetail>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
-  forceExpanded?: boolean
 }
 
-function GroupSection({
+function KanbanColumn({
   config,
   workspaces,
   projectsById,
   sessionsById,
   activities,
-  onNavigateToWorkspace,
-  forceExpanded
-}: GroupSectionProps): React.JSX.Element | null {
-  const [expanded, setExpanded] = useState(config.defaultExpanded)
-
-  const isExpanded = forceExpanded !== undefined ? forceExpanded : expanded
-
-  if (workspaces.length === 0) return null
-
+  onNavigateToWorkspace
+}: KanbanColumnProps): React.JSX.Element {
   return (
-    <div className="flex flex-col">
-      {/* Group header */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-2 px-4 py-2 hover:bg-surface-overlay/50 transition-colors duration-100 cursor-pointer group"
-      >
-        <ActivityIndicator detail={config.indicatorDetail} className="w-3 text-xs font-mono" />
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary flex-1 text-left">
+    <div className="flex flex-col min-h-0 bg-surface-raised rounded-lg border border-border-default overflow-hidden">
+      {/* Column header — sticky when the column body scrolls */}
+      <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border-default bg-surface-raised sticky top-0 z-10">
+        <ActivityIndicator detail={config.indicatorDetail} className="flex-shrink-0" />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
           {config.label}
-          <span className="font-normal text-text-muted ml-1.5">{workspaces.length}</span>
-          {config.tagline && (
-            <span className="ml-2 text-[10px] font-normal normal-case tracking-normal text-text-muted opacity-60">
-              {config.tagline}
-            </span>
-          )}
+          <span className="font-normal text-text-muted normal-case tracking-normal">
+            · {workspaces.length}
+          </span>
         </span>
-        <span
-          className={[
-            'text-text-muted opacity-50 transition-transform duration-200',
-            isExpanded ? 'rotate-90' : ''
-          ].join(' ')}
-        >
-          <CaretRight size={11} weight="bold" />
-        </span>
-      </button>
+      </div>
 
-      {/* Workspace rows */}
-      {isExpanded && (
-        <div className="divide-y divide-border-default/40">
-          {workspaces.map((ws) => {
+      {/* Column body — vertically scrollable */}
+      <div className="flex-1 overflow-y-auto min-h-0 p-2 flex flex-col gap-2">
+        {workspaces.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center py-8">
+            <span className="text-xs text-text-muted">No workspaces</span>
+          </div>
+        ) : (
+          workspaces.map((ws) => {
             const project = projectsById.get(ws.projectId)
             const session = ws.claudeSessionId
               ? sessionsById.get(ws.claudeSessionId)
               : undefined
             return (
-              <WorkspaceRow
+              <WorkspaceCard
                 key={ws.id}
                 workspace={ws}
                 projectName={project?.name ?? 'Unknown'}
@@ -297,9 +229,9 @@ function GroupSection({
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
             )
-          })}
-        </div>
-      )}
+          })
+        )}
+      </div>
     </div>
   )
 }
@@ -325,8 +257,6 @@ export function WorkspacesView({
   workspaceActivities,
   sessions
 }: WorkspacesViewProps): React.JSX.Element {
-  const [filter, setFilter] = useState<Filter>('all')
-
   // Build fast lookups
   const projectsById = useMemo(
     () => new Map(projects.map((p) => [p.id, p])),
@@ -358,54 +288,14 @@ export function WorkspacesView({
     return result
   }, [activeWorkspaces, workspaceActivities])
 
-  // Flat list used when a specific filter chip is active
-  const filteredFlat = useMemo(() => {
-    if (filter === 'all') return activeWorkspaces
-    return grouped[filter] ?? []
-  }, [filter, activeWorkspaces, grouped])
-
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex-shrink-0">
         <h1 className="text-xl font-semibold text-text-primary">Workspaces</h1>
-
-        {/* Filter chips */}
-        <div className="flex items-center gap-1">
-          {FILTERS.map((f) => {
-            const count =
-              f.value === 'all'
-                ? activeWorkspaces.length
-                : (grouped[f.value as GroupKey]?.length ?? 0)
-            return (
-              <button
-                key={f.value}
-                onClick={() => setFilter(f.value)}
-                className={[
-                  'px-3 py-1 rounded-md text-xs font-medium transition-colors duration-150 cursor-pointer flex items-center gap-1.5',
-                  filter === f.value
-                    ? 'bg-accent/15 text-text-primary border border-accent/30'
-                    : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay border border-transparent'
-                ].join(' ')}
-              >
-                {f.label}
-                {count > 0 && (
-                  <span
-                    className={[
-                      'text-[10px] font-semibold px-1 rounded',
-                      filter === f.value ? 'text-accent' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {count}
-                  </span>
-                )}
-              </button>
-            )
-          })}
-        </div>
       </div>
 
-      {/* Content */}
+      {/* Kanban board — 4 equal columns */}
       {activeWorkspaces.length === 0 ? (
         <div className="bg-surface-raised border border-border-default rounded-lg p-8 flex flex-col items-center gap-2">
           <p className="text-sm text-text-muted">No workspaces found</p>
@@ -413,41 +303,10 @@ export function WorkspacesView({
             Add a project and create a workspace to get started.
           </p>
         </div>
-      ) : filter !== 'all' ? (
-        /* Single-filter flat view */
-        <div className="bg-surface-raised border border-border-default rounded-lg overflow-hidden">
-          {filteredFlat.length === 0 ? (
-            <div className="p-8 flex flex-col items-center gap-2">
-              <p className="text-sm text-text-muted">
-                {GROUP_CONFIGS.find((c) => c.key === filter)?.emptyText ?? 'No workspaces.'}
-              </p>
-            </div>
-          ) : (
-            <div className="divide-y divide-border-default/40">
-              {filteredFlat.map((ws) => {
-                const project = projectsById.get(ws.projectId)
-                const session = ws.claudeSessionId
-                  ? sessionsById.get(ws.claudeSessionId)
-                  : undefined
-                return (
-                  <WorkspaceRow
-                    key={ws.id}
-                    workspace={ws}
-                    projectName={project?.name ?? 'Unknown'}
-                    session={session}
-                    activities={workspaceActivities}
-                    onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
-                  />
-                )
-              })}
-            </div>
-          )}
-        </div>
       ) : (
-        /* All groups view */
-        <div className="bg-surface-raised border border-border-default rounded-lg overflow-hidden divide-y divide-border-default/50">
-          {GROUP_CONFIGS.map((config) => (
-            <GroupSection
+        <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
+          {COLUMN_CONFIGS.map((config) => (
+            <KanbanColumn
               key={config.key}
               config={config}
               workspaces={grouped[config.key]}
