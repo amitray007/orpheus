@@ -124,7 +124,7 @@ export function listWorkspacesForProject(
     .prepare(
       `SELECT * FROM workspaces
        WHERE project_id = ? ${archiveFilter}
-       ORDER BY sort_order ASC NULLS LAST, created_at ASC`
+       ORDER BY sort_order ASC NULLS LAST, created_at DESC`
     )
     .all(projectId) as WorkspaceRow[]
 
