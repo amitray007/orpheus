@@ -44,11 +44,9 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
           Claude Code to continue.
         </p>
 
-        {/* Install command */}
-        {/* TODO: verify the exact install URL — https://claude.ai/install.sh is a placeholder.
-            Confirm the real command at https://docs.claude.com/en/docs/claude-code/setup */}
+        {/* Install command — canonical source: https://code.claude.com/docs/en/setup */}
         <pre className="bg-surface-raised border border-border-default rounded px-3 py-2 text-xs font-mono text-text-primary overflow-x-auto">
-          curl -fsSL https://claude.ai/install.sh | sh
+          curl -fsSL https://claude.ai/install.sh | bash
         </pre>
 
         {/* Action row */}
@@ -57,7 +55,7 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
             Re-check
           </Button>
           <a
-            href="https://docs.claude.com/en/docs/claude-code"
+            href="https://code.claude.com/docs/en/setup"
             target="_blank"
             rel="noreferrer"
             className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150 cursor-pointer"
