@@ -57,13 +57,15 @@ jobs:
             exit 0
           fi
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
-          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\]' &&
+          # Anchor the marker at end-of-subject so prose mentions of the
+          # token (e.g. "fix the marker check") don't trigger releases.
+          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\][[:space:]]*$' &&
              ! echo "$SUBJECT" | grep -qE '^chore\(release\)'; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject '$SUBJECT' has [release] marker → run"
+            echo "[preflight] subject ends with release marker → run"
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject '$SUBJECT' → skip"
+            echo "[preflight] subject does not end with release marker → skip"
           fi
 
   release:

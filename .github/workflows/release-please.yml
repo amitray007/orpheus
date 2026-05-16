@@ -63,12 +63,15 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
-          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\]'; then
+          # Anchor the marker at end-of-subject so prose mentions of the
+          # token (e.g. "fix the marker check") don't get treated as
+          # manual-release commits that we'd skip.
+          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\][[:space:]]*$'; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject '$SUBJECT' has [release] marker → skip (release.yml handles it)"
+            echo "[preflight] subject ends with release marker → skip (release.yml handles it)"
           else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject '$SUBJECT' → run release-please"
+            echo "[preflight] subject does not end with release marker → run release-please"
           fi
 
   release-please:
