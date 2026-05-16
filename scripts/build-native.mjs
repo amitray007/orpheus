@@ -73,23 +73,6 @@ for (const target of TARGETS) {
   }
 }
 
-// Rust addon (terminal-vt-native) — built via napi-rs, not node-gyp.
-// libghostty-vt port in progress; this addon is the future replacement for
-// packages/ghostty-native. For now it's built alongside the legacy C++ addon.
-//
-// CI runners may lack the `napi` CLI on PATH even with devDependencies
-// installed (bun workspace symlink quirk). Since this package is WIP and
-// not yet shipped in production builds, a failure here is soft — we log
-// and continue rather than failing the whole build pipeline.
-const RUST_DIR = resolve(ROOT, 'packages/terminal-vt-native')
-console.log(`\n[build-native] building packages/terminal-vt-native (napi-rs)`)
-try {
-  execSync('bun run build', { cwd: RUST_DIR, stdio: 'inherit' })
-  console.log('[build-native] terminal-vt-native OK')
-} catch {
-  console.warn('[build-native] terminal-vt-native FAILED — skipping (WIP, not shipped)')
-}
-
 if (anyFailed) {
   process.exit(1)
 }
