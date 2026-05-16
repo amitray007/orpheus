@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 33
+const CURRENT_VERSION = 34
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1068,5 +1068,13 @@ function migrate(db: Database.Database): void {
       db.exec('ALTER TABLE app_ui_state ADD COLUMN max_local_sessions INTEGER')
     } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(33)
+  }
+
+  // Version 34: last-message preview snippet for Sessions page
+  if (currentVersion < 34) {
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN last_message_preview TEXT')
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(34)
   }
 }

@@ -180,7 +180,7 @@ function SessionRow({
           </span>
         </span>
 
-        {/* Subline: model · msgs · time — Chunk B snippet placeholder sits below this */}
+        {/* Subline: model · msgs · time */}
         <span className="text-[11px] text-text-muted flex items-center gap-1.5 flex-wrap">
           <span className="font-mono">{shortModel(session.model)}</span>
           {msgCount !== null && (
@@ -193,8 +193,15 @@ function SessionRow({
           <span>{relativeTime(session.updatedAt)}</span>
         </span>
 
-        {/* Placeholder space for Chunk B last-message snippet */}
-        {/* One line reserved — will be filled in Chunk B */}
+        {/* Last-message preview snippet (Chunk B) */}
+        {session.lastMessagePreview && (
+          <span
+            className="text-[11px] text-text-muted italic truncate"
+            title={session.lastMessagePreview}
+          >
+            &ldquo;{session.lastMessagePreview}&rdquo;
+          </span>
+        )}
       </span>
     </button>
   )

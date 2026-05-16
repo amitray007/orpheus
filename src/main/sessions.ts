@@ -31,6 +31,8 @@ type SessionRow = {
   // v33
   message_count: number | null
   jsonl_size_bytes: number | null
+  // v34
+  last_message_preview: string | null
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
@@ -46,7 +48,8 @@ function rowToRecord(row: SessionRow): SessionRecord {
     model: row.model,
     lastMessageRole: row.last_message_role,
     messageCount: row.message_count,
-    jsonlSizeBytes: row.jsonl_size_bytes
+    jsonlSizeBytes: row.jsonl_size_bytes,
+    lastMessagePreview: row.last_message_preview
   }
 }
 
@@ -240,6 +243,107 @@ function extractFileSize(jsonlPath: string): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Last-message preview extraction (v34)
+// ---------------------------------------------------------------------------
+
+const MAX_PREVIEW_LENGTH = 100
+
+/**
+ * Reads the last chunk of the JSONL, finds the most recent assistant message,
+ * and returns a cleaned preview string (≤100 chars). Falls back to the most
+ * recent user message if no assistant content is found.
+ */
+function extractLastMessagePreview(jsonlPath: string): string | null {
+  try {
+    const stat = fs.statSync(jsonlPath)
+    const fileSize = stat.size
+    const readSize = Math.min(fileSize, MAX_BYTES)
+    const offset = fileSize - readSize
+
+    const fd = fs.openSync(jsonlPath, 'r')
+    const buf = Buffer.allocUnsafe(readSize)
+    fs.readSync(fd, buf, 0, readSize, offset)
+    fs.closeSync(fd)
+
+    const text = buf.toString('utf-8')
+    const lines = text.split('\n').reverse()
+
+    let fallbackUserText: string | null = null
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+
+      if (typeof parsed !== 'object' || parsed === null) continue
+      const p = parsed as Record<string, unknown>
+      const type = p['type']
+      if (type !== 'assistant' && type !== 'user') continue
+
+      const message = p['message']
+      if (typeof message !== 'object' || message === null) continue
+      const content = (message as Record<string, unknown>)['content']
+
+      let raw: string | null = null
+
+      if (typeof content === 'string') {
+        raw = content
+      } else if (Array.isArray(content)) {
+        const parts: string[] = []
+        for (const part of content) {
+          if (
+            typeof part === 'object' &&
+            part !== null &&
+            (part as Record<string, unknown>)['type'] === 'text'
+          ) {
+            const t = (part as Record<string, unknown>)['text']
+            if (typeof t === 'string' && t.trim()) parts.push(t)
+          }
+        }
+        if (parts.length > 0) raw = parts.join(' ')
+      }
+
+      if (!raw) continue
+
+      // Strip markdown noise: code fences, inline backticks, headers, bold/italic stars
+      let cleaned = raw
+        .replace(/```[\s\S]*?```/g, '') // fenced code blocks
+        .replace(/`[^`]*`/g, '') // inline code
+        .replace(/^#{1,6}\s+/gm, '') // ATX headers
+        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1') // bold/italic
+        .replace(/_([^_]+)_/g, '$1') // underline italic
+        .replace(/\s+/g, ' ') // collapse whitespace
+        .trim()
+
+      if (!cleaned) continue
+
+      const preview =
+        cleaned.length > MAX_PREVIEW_LENGTH
+          ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…'
+          : cleaned
+
+      if (type === 'assistant') {
+        return preview
+      }
+
+      // Save user message as fallback but keep scanning for an assistant message
+      if (fallbackUserText === null) {
+        fallbackUserText = preview
+      }
+    }
+
+    return fallbackUserText
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
@@ -251,8 +355,8 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
   const db = getDb()
   const insert = db.prepare(
     `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes)
-     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?)`
+       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes, last_message_preview)
+     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?, ?)`
   )
 
   let entries: fs.Dirent[]
@@ -280,6 +384,7 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     const lastMessageRole = extractLastMessageRole(jsonlPath)
     const messageCount = extractMessageCount(jsonlPath)
     const jsonlSizeBytes = extractFileSize(jsonlPath)
+    const lastMessagePreview = extractLastMessagePreview(jsonlPath)
 
     try {
       insert.run(
@@ -292,7 +397,8 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
         model,
         lastMessageRole,
         messageCount,
-        jsonlSizeBytes
+        jsonlSizeBytes,
+        lastMessagePreview
       )
     } catch {
       // Ignore individual row failures (e.g. malformed UUID)
@@ -336,9 +442,9 @@ export function refreshSessionMetadata(projectId: string): void {
     }
   }
 
-  // Now backfill any NULL metadata columns.
+  // Backfill any NULL metadata columns (title, model, role, counts).
   type NullMetaRow = { id: string; jsonl_path: string }
-  const rows = db
+  const nullRows = db
     .prepare(
       `SELECT id, jsonl_path FROM sessions
        WHERE project_id = ?
@@ -357,7 +463,7 @@ export function refreshSessionMetadata(projectId: string): void {
      WHERE id = ?`
   )
 
-  for (const row of rows) {
+  for (const row of nullRows) {
     const title = extractTitle(row.jsonl_path)
     const model = extractModel(row.jsonl_path)
     const lastMessageRole = extractLastMessageRole(row.jsonl_path)
@@ -365,6 +471,29 @@ export function refreshSessionMetadata(projectId: string): void {
     const jsonlSizeBytes = extractFileSize(row.jsonl_path)
     try {
       updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
+    } catch {
+      // Ignore individual row failures
+    }
+  }
+
+  // Always re-extract last_message_preview for non-archived sessions so the
+  // snippet stays fresh as sessions accumulate more messages.
+  type ActiveRow = { id: string; jsonl_path: string }
+  const activeRows = db
+    .prepare(
+      `SELECT id, jsonl_path FROM sessions
+       WHERE project_id = ? AND status != 'archived'`
+    )
+    .all(projectId) as ActiveRow[]
+
+  const previewStmt = db.prepare(
+    `UPDATE sessions SET last_message_preview = ? WHERE id = ?`
+  )
+
+  for (const row of activeRows) {
+    const preview = extractLastMessagePreview(row.jsonl_path)
+    try {
+      previewStmt.run(preview, row.id)
     } catch {
       // Ignore individual row failures
     }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
@@ -580,6 +580,11 @@ export function Dashboard({
     })
   }
 
+  const allWorkspaces = useMemo(
+    () => Object.values(workspacesByProject).flat(),
+    [workspacesByProject]
+  )
+
   const activeProject =
     view.kind === 'project' || view.kind === 'workspace'
       ? projects.find((p) => p.id === (view.kind === 'project' ? view.projectId : view.projectId))
@@ -667,7 +672,7 @@ export function Dashboard({
             workspaceActivities={workspaceActivities}
             onResumedInWorkspace={handleResumedInWorkspace}
             projects={projects}
-            allWorkspaces={Object.values(workspacesByProject).flat()}
+            allWorkspaces={allWorkspaces}
           />
         </main>
       </div>
