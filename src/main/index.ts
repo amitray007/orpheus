@@ -92,6 +92,7 @@ import {
   listTerminalApps
 } from './shellHelpers'
 import { getActivityHeatmap, listRecentProjects, listRecentWorkspaces } from './dashboard'
+import { getClaudeUsage } from './claudeUsage'
 import type {
   SessionStatus,
   SessionsPagedRequest,
@@ -999,6 +1000,8 @@ ipcMain.handle('dashboard:getRecentProjects', (_e, limit?: number) =>
 ipcMain.handle('dashboard:getRecentWorkspaces', (_e, limit?: number) =>
   listRecentWorkspaces(limit)
 )
+
+ipcMain.handle('dashboard:getClaudeUsage', () => getClaudeUsage())
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-native lifecycle

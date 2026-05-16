@@ -36,7 +36,8 @@ import type {
   ClaudeHookEntry,
   ClaudeHookDraft,
   ContextMenuNativeItem,
-  HeatmapEntry
+  HeatmapEntry,
+  ClaudeUsageResult
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -312,7 +313,9 @@ const api = {
     getRecentProjects: (limit?: number): Promise<ProjectRecord[]> =>
       ipcRenderer.invoke('dashboard:getRecentProjects', limit),
     getRecentWorkspaces: (limit?: number): Promise<WorkspaceRecord[]> =>
-      ipcRenderer.invoke('dashboard:getRecentWorkspaces', limit)
+      ipcRenderer.invoke('dashboard:getRecentWorkspaces', limit),
+    getClaudeUsage: (): Promise<ClaudeUsageResult> =>
+      ipcRenderer.invoke('dashboard:getClaudeUsage')
   }
 }
 
