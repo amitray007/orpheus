@@ -57,7 +57,20 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
   function patch(p: Partial<AppUiState>): void {
     if (!uiState) return
-    setUiState({ ...uiState, ...p })
+    const next = { ...uiState, ...p }
+    setUiState(next)
+
+    // Apply to document root immediately so theme/accent/scale switches feel
+    // instant. Dashboard.tsx also applies on its own uiState load (for the
+    // mount-time / cross-launch case) — both writers stay in sync.
+    const root = document.documentElement
+    if ('theme' in p && next.theme) root.dataset.theme = next.theme
+    if ('accentColor' in p) {
+      if (next.accentColor) root.dataset.accent = next.accentColor
+      else delete root.dataset.accent
+    }
+    if ('uiFontScale' in p && next.uiFontScale) root.dataset.fontScale = next.uiFontScale
+
     window.api.uiState.update(p).catch((err) => {
       console.error('[settings] uiState update failed; refetching to reconcile', err)
       window.api.uiState
