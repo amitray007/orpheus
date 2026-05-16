@@ -49,10 +49,14 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
 
 export function listProjects(): ProjectRecord[] {
   const db = getDb()
+  // Stable ordering: explicit sort_order first (NULLS LAST), then added_at DESC.
+  // last_opened_at is intentionally NOT a tiebreaker — using it reshuffles the
+  // sidebar every time a project is opened, which makes positions feel random
+  // across restarts. added_at never changes after insert.
   const rows = db
     .prepare(
       `SELECT * FROM projects
-       ORDER BY sort_order ASC NULLS LAST, last_opened_at DESC NULLS LAST, added_at DESC`
+       ORDER BY sort_order ASC NULLS LAST, added_at DESC`
     )
     .all() as ProjectRow[]
   return rows.map(rowToRecord)

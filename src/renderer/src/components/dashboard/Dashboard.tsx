@@ -347,19 +347,35 @@ export function Dashboard({
       const result = await window.api.projects.pickAndAdd()
       if (result) {
         setProjects((arr) => [result, ...arr.filter((p) => p.id !== result.id)])
-        setSelectedProjectId(result.id)
-        setSelectedWorkspaceId(null)
-        setView({ kind: 'project', projectId: result.id })
-        // Fetch the auto-created Default workspace
-        await fetchWorkspacesForProject(result.id)
-        // Auto-expand if defaultProjectExpanded is on
-        if (uiState?.defaultProjectExpanded) {
-          setExpandedProjectIds((prev) => new Set(prev).add(result.id))
-          window.api.projects.setExpandedInSidebar(result.id, true).catch(console.error)
+        // Fetch the auto-created Default workspace directly so we can navigate
+        // into it. fetchWorkspacesForProject only writes state and doesn't
+        // return the workspaces, hence the inline call here.
+        const workspaces = await window.api.workspaces
+          .listForProject(result.id, { scope: 'all' })
+          .catch(() => [] as WorkspaceRecord[])
+        setWorkspacesByProject((prev) => ({ ...prev, [result.id]: workspaces }))
+
+        // Always expand the new project's row in the sidebar so the workspace
+        // is visible (regardless of the defaultProjectExpanded preference —
+        // we just navigated into it, hiding it would be confusing).
+        setExpandedProjectIds((prev) => new Set(prev).add(result.id))
+        window.api.projects.setExpandedInSidebar(result.id, true).catch(console.error)
+
+        if (workspaces.length > 0) {
+          // Navigate straight into the Default workspace so Claude launches
+          // automatically. Skips the project view as an intermediate stop.
+          const defaultWs = workspaces[0]
+          handleSelectWorkspace(defaultWs.id, result.id)
+        } else {
+          // Fallback: no workspace was created (shouldn't happen — addProject
+          // always creates a Default). Land on the project view.
+          setSelectedProjectId(result.id)
+          setSelectedWorkspaceId(null)
+          setView({ kind: 'project', projectId: result.id })
+          window.api.uiState
+            .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
+            .catch(console.error)
         }
-        window.api.uiState
-          .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
-          .catch(console.error)
       }
     } catch (err) {
       console.error('[dashboard] pickAndAdd failed', err)
