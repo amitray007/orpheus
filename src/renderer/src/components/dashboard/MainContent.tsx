@@ -3,6 +3,7 @@ import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import type {
+  GitStatus,
   ProjectRecord,
   SessionRecord,
   WorkspaceActivityDetail,
@@ -60,6 +61,7 @@ interface MainContentProps {
   projects?: ProjectRecord[]
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
+  gitStatusByWorkspaceId?: Record<string, GitStatus | null>
 }
 
 export function MainContent({
@@ -78,7 +80,8 @@ export function MainContent({
   onResumedInWorkspace,
   projects,
   allWorkspaces,
-  allSessions
+  allSessions,
+  gitStatusByWorkspaceId
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -104,6 +107,7 @@ export function MainContent({
         workspaces={allWorkspaces ?? []}
         workspaceActivities={workspaceActivities ?? {}}
         sessions={allSessions ?? []}
+        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
       />
     )
   }

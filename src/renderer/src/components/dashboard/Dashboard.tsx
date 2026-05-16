@@ -697,6 +697,7 @@ export function Dashboard({
             projects={projects}
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
+            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
           />
         </main>
       </div>

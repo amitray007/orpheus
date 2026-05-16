@@ -3,8 +3,10 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   WorkspaceActivityDetail,
-  ProjectRecord
+  ProjectRecord,
+  GitStatus
 } from '@shared/types'
+import { GitMerge } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 
@@ -24,15 +26,6 @@ function relativeTime(ms: number): string {
   if (d < 30) return `${d}d ago`
   const mo = Math.floor(d / 30)
   return `${mo}mo ago`
-}
-
-function shortModel(model: string | null): string {
-  if (!model) return '—'
-  const m = model.toLowerCase()
-  if (m.includes('opus')) return 'Opus'
-  if (m.includes('sonnet')) return 'Sonnet'
-  if (m.includes('haiku')) return 'Haiku'
-  return model
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +91,7 @@ interface WorkspaceCardProps {
   projectName: string
   session: SessionRecord | undefined
   activities: Record<string, WorkspaceActivityDetail>
+  gitStatus: GitStatus | null
   onClick: () => void
 }
 
@@ -106,6 +100,7 @@ function WorkspaceCard({
   projectName,
   session,
   activities,
+  gitStatus,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
@@ -130,18 +125,17 @@ function WorkspaceCard({
   const liveActivity = activities[workspace.id]
   const effectiveActivity: WorkspaceActivityDetail = liveActivity ?? fallbackActivity(workspace)
 
-  // Subline metadata from attached session (if any)
-  const model = session ? shortModel(session.model) : null
-  const msgCount = session?.messageCount ?? null
   const timestamp = workspace.lastOpenedAt ?? workspace.createdAt
+  const branch = gitStatus?.branch ?? null
+  const userPrompt = session?.lastUserMessagePreview ?? null
 
   return (
     <button
       onClick={onClick}
-      className="w-full p-3 rounded-md bg-surface-raised border border-dotted border-border-default/60 hover:bg-surface-overlay hover:border-border-default transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
+      className="w-full p-3 rounded-md bg-surface-raised border-2 border-dotted border-border-default/70 hover:bg-surface-overlay hover:border-accent/60 transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
     >
-      {/* Title row: glyph + name */}
-      <span className="flex items-center gap-2 min-w-0">
+      {/* Row 1: activity glyph + workspace title */}
+      <span className="flex items-center gap-1.5 min-w-0">
         <span className="flex-shrink-0">
           <ActivityIndicator detail={effectiveActivity} />
         </span>
@@ -156,34 +150,30 @@ function WorkspaceCard({
         </span>
       </span>
 
-      {/* Project chip */}
-      <span className="self-start text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary max-w-full truncate">
-        {projectName}
+      {/* Row 2: project name (left) + relative time (right) */}
+      <span className="flex items-center justify-between gap-2 min-w-0">
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
+          {projectName}
+        </span>
+        <span className="text-[11px] text-text-muted flex-shrink-0">
+          {relativeTime(timestamp)}
+        </span>
       </span>
 
-      {/* Preview snippet — two-line clamp with curly quotes */}
-      {session?.lastMessagePreview && (
-        <span className="text-[11px] text-text-muted italic line-clamp-2 leading-relaxed">
-          &ldquo;{session.lastMessagePreview}&rdquo;
+      {/* Row 3: git branch (only when available) */}
+      {branch && (
+        <span className="flex items-center gap-1 text-[11px] text-text-muted min-w-0">
+          <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
+          <span className="truncate font-mono">{branch}</span>
         </span>
       )}
 
-      {/* Footer: model · msgs · time */}
-      <span className="text-[11px] text-text-muted flex items-center gap-1 flex-wrap mt-0.5">
-        {model !== null && (
-          <>
-            <span className="font-mono">{model}</span>
-            <span className="opacity-30">·</span>
-          </>
-        )}
-        {msgCount !== null && (
-          <>
-            <span>{msgCount} msgs</span>
-            <span className="opacity-30">·</span>
-          </>
-        )}
-        <span>{relativeTime(timestamp)}</span>
-      </span>
+      {/* Row 4: user prompt preview — up to 2 lines, italic, muted */}
+      {userPrompt && (
+        <span className="text-[11px] text-text-muted italic line-clamp-2 leading-relaxed">
+          &ldquo;{userPrompt}&rdquo;
+        </span>
+      )}
     </button>
   )
 }
@@ -198,6 +188,7 @@ interface KanbanColumnProps {
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
   activities: Record<string, WorkspaceActivityDetail>
+  gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
 }
 
@@ -207,6 +198,7 @@ function KanbanColumn({
   projectsById,
   sessionsById,
   activities,
+  gitStatusByWorkspaceId,
   onNavigateToWorkspace
 }: KanbanColumnProps): React.JSX.Element {
   return (
@@ -241,6 +233,7 @@ function KanbanColumn({
                 projectName={project?.name ?? 'Unknown'}
                 session={session}
                 activities={activities}
+                gitStatus={gitStatusByWorkspaceId[ws.id] ?? null}
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
             )
@@ -263,6 +256,7 @@ export interface WorkspacesViewProps {
   workspaces: WorkspaceRecord[]
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
+  gitStatusByWorkspaceId?: Record<string, GitStatus | null>
 }
 
 export function WorkspacesView({
@@ -270,7 +264,8 @@ export function WorkspacesView({
   projects,
   workspaces,
   workspaceActivities,
-  sessions
+  sessions,
+  gitStatusByWorkspaceId = {}
 }: WorkspacesViewProps): React.JSX.Element {
   // Build fast lookups
   const projectsById = useMemo(
@@ -328,6 +323,7 @@ export function WorkspacesView({
               projectsById={projectsById}
               sessionsById={sessionsById}
               activities={workspaceActivities}
+              gitStatusByWorkspaceId={gitStatusByWorkspaceId}
               onNavigateToWorkspace={onNavigateToWorkspace}
             />
           ))}
