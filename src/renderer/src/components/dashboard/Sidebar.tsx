@@ -182,7 +182,7 @@ function WorkspaceSubRow({
     >
       <button
         onClick={onSelect}
-        className="flex items-center gap-2 pl-8 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2 pl-8 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
         title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
         aria-label={workspace.name}
       >
