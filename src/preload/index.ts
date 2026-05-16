@@ -35,7 +35,8 @@ import type {
   ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft,
-  ContextMenuNativeItem
+  ContextMenuNativeItem,
+  UpdateCheckResult
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -332,6 +333,26 @@ const api = {
   },
   notifications: {
     test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
+  },
+  updates: {
+    check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
+    install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
+    restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
+    onProgress: (cb: (e: { line: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { line: string }): void => cb(e)
+      ipcRenderer.on('updates:progress', listener)
+      return () => ipcRenderer.removeListener('updates:progress', listener)
+    },
+    onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { success: boolean; code: number | null }): void => cb(e)
+      ipcRenderer.on('updates:done', listener)
+      return () => ipcRenderer.removeListener('updates:done', listener)
+    },
+    onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, result: UpdateCheckResult): void => cb(result)
+      ipcRenderer.on('updates:checkResult', listener)
+      return () => ipcRenderer.removeListener('updates:checkResult', listener)
+    }
   },
 }
 

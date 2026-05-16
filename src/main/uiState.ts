@@ -1,6 +1,5 @@
 import { getDb } from './db'
 import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale, SoundPack } from '../shared/types'
-// Note: AppUiStatePatch is Partial<Omit<AppUiState, 'updatedAt'>>, so fetchGithubAvatars is included automatically.
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -54,6 +53,8 @@ type AppUiStateRow = {
   play_interaction_sounds: number | null
   // Sound pack (v39)
   sound_pack: string | null
+  // Updates (v40)
+  auto_check_updates: number | null
   updated_at: number
 }
 
@@ -107,6 +108,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     playInteractionSounds: (row.play_interaction_sounds ?? 1) === 1,
     // Sound pack (v39) — default 'core'
     soundPack: (row.sound_pack ?? 'core') as SoundPack,
+    // Updates (v40) — default true
+    autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -222,7 +225,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Sound (v38)
     playInteractionSounds: 'play_interaction_sounds',
     // Sound pack (v39)
-    soundPack: 'sound_pack'
+    soundPack: 'sound_pack',
+    // Updates (v40)
+    autoCheckUpdates: 'auto_check_updates'
   }
 
   const setClauses: string[] = []

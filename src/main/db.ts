@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 39
+const CURRENT_VERSION = 40
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1127,5 +1127,13 @@ function migrate(db: Database.Database): void {
       db.exec("ALTER TABLE app_ui_state ADD COLUMN sound_pack TEXT NOT NULL DEFAULT 'core' CHECK (sound_pack IN ('core', 'minimal', 'mechanical', 'retro', 'playful', 'crisp', 'organic', 'soft'))")
     } catch { /* ignore */ }
     db.prepare('UPDATE schema_version SET version = ?').run(39)
+  }
+
+  // Version 40: auto-check for updates toggle
+  if (currentVersion < 40) {
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN auto_check_updates INTEGER NOT NULL DEFAULT 1 CHECK (auto_check_updates IN (0, 1))')
+    } catch { /* ignore */ }
+    db.prepare('UPDATE schema_version SET version = ?').run(40)
   }
 }

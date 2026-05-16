@@ -1,4 +1,16 @@
 // ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+export type UpdateCheckResult = {
+  current: string
+  latest: string | null
+  available: boolean
+  checkedAt: number
+  error?: string
+}
+
+// ---------------------------------------------------------------------------
 // Shell app detection (re-exported from main for use in renderer via IPC)
 // ---------------------------------------------------------------------------
 
@@ -151,6 +163,8 @@ export type AppUiState = {
   playInteractionSounds: boolean
   // Sound pack (v39)
   soundPack: SoundPack
+  // Updates (v40)
+  autoCheckUpdates: boolean
   updatedAt: number
 }
 

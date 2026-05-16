@@ -33,7 +33,8 @@ import type {
   ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft,
-  ContextMenuNativeItem
+  ContextMenuNativeItem,
+  UpdateCheckResult
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -235,6 +236,14 @@ declare global {
       }
       notifications: {
         test: () => Promise<void>
+      }
+      updates: {
+        check: () => Promise<UpdateCheckResult>
+        install: () => Promise<void>
+        restart: () => Promise<void>
+        onProgress: (cb: (e: { line: string }) => void) => () => void
+        onDone: (cb: (e: { success: boolean; code: number | null }) => void) => () => void
+        onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
       }
     }
   }

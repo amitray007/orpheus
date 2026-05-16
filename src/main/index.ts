@@ -83,6 +83,12 @@ import {
   clearWorkspaceActivity
 } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
+import {
+  checkForUpdates,
+  installUpdate,
+  relaunchApp,
+  startAutoCheckLoop
+} from './updates'
 import { showContextMenu } from './contextMenu'
 import {
   revealInFinder,
@@ -913,6 +919,14 @@ ipcMain.handle('notifications:test', () => {
   fireTestNotification()
 })
 
+// ---------------------------------------------------------------------------
+// Updates IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('updates:check', () => checkForUpdates())
+ipcMain.handle('updates:install', () => { installUpdate() })
+ipcMain.handle('updates:restart', () => { relaunchApp() })
+
 ipcMain.handle(
   'projects:setExpandedInSidebar',
   (_e, { id, expanded }: { id: string; expanded: boolean }) =>
@@ -1240,6 +1254,10 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('[startup] failed to apply launch/hotkey settings:', err)
   }
+
+  // Start the update auto-check loop (30s initial delay, then every 6h).
+  // Gated internally on the autoCheckUpdates setting.
+  startAutoCheckLoop()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

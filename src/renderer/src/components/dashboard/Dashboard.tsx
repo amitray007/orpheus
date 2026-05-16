@@ -97,6 +97,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           fetchGithubAvatars: true,
           playInteractionSounds: true,
           soundPack: 'core',
+          autoCheckUpdates: true,
           updatedAt: 0
         })
       })
