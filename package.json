@@ -26,6 +26,7 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@phosphor-icons/react": "^2.1.10",
+    "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
     "geist": "^1.7.0",
     "minidenticons": "^4.2.1"

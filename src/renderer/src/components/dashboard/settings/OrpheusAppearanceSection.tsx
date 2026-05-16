@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, Theme, AccentColor, UiFontScale } from '@shared/types'
-import { SettingRow } from './primitives'
+import { SettingRow, Toggle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
+import { playSound } from '../../../lib/sound'
 
 // ---------------------------------------------------------------------------
 // OrpheusAppearanceSection — theme, accent color, font size
@@ -103,7 +104,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
             Theme, accent color, and font size scale for the Orpheus UI.
           </p>
         </div>
-        <SettingsSectionSkeleton groups={3} rowsPerGroup={1} />
+        <SettingsSectionSkeleton groups={4} rowsPerGroup={1} />
       </div>
     )
   }
@@ -136,7 +137,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => patch({ theme: opt.value })}
+                  onClick={() => { playSound('swoosh'); patch({ theme: opt.value }) }}
                   className={[
                     'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
                     opt.value === currentTheme
@@ -175,7 +176,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                       key={c.value}
                       type="button"
                       title={c.label}
-                      onClick={() => patch({ accentColor: c.value })}
+                      onClick={() => { playSound('tick'); patch({ accentColor: c.value }) }}
                       className={[
                         'w-6 h-6 rounded-full border-2 transition-all cursor-pointer',
                         'hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-1 focus:ring-offset-transparent',
@@ -191,7 +192,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   type="button"
                   title="Reset to theme default"
-                  onClick={() => patch({ accentColor: null })}
+                  onClick={() => { playSound('tick'); patch({ accentColor: null }) }}
                   className="ml-1 text-[10px] text-text-muted hover:text-text-secondary border border-border-default rounded px-1.5 py-0.5 transition-colors cursor-pointer leading-tight"
                 >
                   Reset
@@ -217,7 +218,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => patch({ uiFontScale: opt.value })}
+                  onClick={() => { playSound('tick'); patch({ uiFontScale: opt.value }) }}
                   className={[
                     'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
                     opt.value === currentScale
@@ -229,6 +230,25 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 </button>
               ))}
             </div>
+          </SettingRow>
+        </div>
+      </section>
+
+      {/* Sound */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Sound
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Interaction sounds"
+            description="Subtle audio feedback for clicks, toggles, modals, and Claude activity transitions."
+          >
+            <Toggle
+              value={uiState.playInteractionSounds ?? true}
+              onChange={(v) => patch({ playInteractionSounds: v })}
+              ariaLabel="Enable interaction sounds"
+            />
           </SettingRow>
         </div>
       </section>

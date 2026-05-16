@@ -146,6 +146,8 @@ export type AppUiState = {
   uiFontScale: UiFontScale
   // Privacy (v37)
   fetchGithubAvatars: boolean
+  // Sound (v38)
+  playInteractionSounds: boolean
   updatedAt: number
 }
 

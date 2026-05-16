@@ -89,10 +89,19 @@ export function createWorkspace({
   const id = crypto.randomUUID()
   const createdAt = Date.now()
 
+  // Pre-generate the claude session UUID at workspace creation so that the
+  // very first launch can pass --session-id <uuid> to claude (deterministic).
+  // Subsequent launches detect that ~/.claude/projects/<cwd>/<uuid>.jsonl
+  // exists and switch to --resume <uuid>. This eliminates the prior race
+  // where quitting Orpheus within ~2s of the first message orphaned the
+  // session (the post-mount filesystem poll never completed and the row's
+  // claudeSessionId stayed null, so the next launch started fresh).
+  const claudeSessionId = crypto.randomUUID()
+
   db.prepare(
-    `INSERT INTO workspaces (id, project_id, name, cwd, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(id, projectId, name, cwd, createdAt)
+    `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, projectId, name, cwd, createdAt, claudeSessionId)
 
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
   return rowToWorkspaceRecord(row)

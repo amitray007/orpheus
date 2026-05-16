@@ -1,6 +1,7 @@
 import type React from 'react'
 import { useEffect, useState } from 'react'
 import { Button } from './Button'
+import { playSound } from '../lib/sound'
 
 export interface ConfirmModalProps {
   title: string
@@ -23,10 +24,18 @@ export function ConfirmModal({
 }: ConfirmModalProps): React.JSX.Element {
   const [loading, setLoading] = useState(false)
 
+  // Sound on mount
+  useEffect(() => {
+    playSound('modal-open')
+  }, [])
+
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape') {
+        playSound('modal-close')
+        onCancel()
+      }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -37,15 +46,24 @@ export function ConfirmModal({
     setLoading(true)
     try {
       await onConfirm()
+      playSound('success')
+    } catch (err) {
+      playSound('error')
+      throw err
     } finally {
       setLoading(false)
     }
   }
 
+  function handleBackdropMouseDown(): void {
+    playSound('modal-close')
+    onCancel()
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onMouseDown={onCancel}
+      onMouseDown={handleBackdropMouseDown}
     >
       <div
         className="relative max-w-md w-full mx-4 bg-surface-overlay border border-border-default rounded-lg p-6 flex flex-col gap-4 pointer-events-auto"
@@ -65,7 +83,7 @@ export function ConfirmModal({
             {confirmLabel}
           </Button>
           <button
-            onClick={onCancel}
+            onClick={() => { playSound('modal-close'); onCancel() }}
             className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150 cursor-pointer"
           >
             {cancelLabel}

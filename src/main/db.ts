@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 37
+const CURRENT_VERSION = 38
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1111,5 +1111,13 @@ function migrate(db: Database.Database): void {
       db.exec('ALTER TABLE app_ui_state ADD COLUMN fetch_github_avatars INTEGER NOT NULL DEFAULT 1 CHECK (fetch_github_avatars IN (0, 1))')
     } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(37)
+  }
+
+  // Version 38: interaction sounds toggle
+  if (currentVersion < 38) {
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN play_interaction_sounds INTEGER NOT NULL DEFAULT 1 CHECK (play_interaction_sounds IN (0, 1))")
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(38)
   }
 }

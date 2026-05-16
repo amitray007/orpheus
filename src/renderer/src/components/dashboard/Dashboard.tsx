@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { playSound, setSoundEnabled } from '../../lib/sound'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
@@ -95,6 +96,7 @@ export function Dashboard({
           accentColor: null,
           uiFontScale: 'default',
           fetchGithubAvatars: true,
+          playInteractionSounds: true,
           updatedAt: 0
         })
       })
@@ -115,6 +117,12 @@ export function Dashboard({
     root.dataset.fontScale = uiState.uiFontScale ?? 'default'
   }, [uiState?.theme, uiState?.accentColor, uiState?.uiFontScale])
 
+  // Bridge the playInteractionSounds uiState flag into the sound module.
+  useEffect(() => {
+    if (!uiState) return
+    setSoundEnabled(uiState.playInteractionSounds ?? true)
+  }, [uiState?.playInteractionSounds])
+
   // Diagnostic: log every native action_cb tag to the console so we can debug
   // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current
   // ghostty.h. Should disappear in a follow-up commit once title flow is verified.
@@ -126,7 +134,16 @@ export function Dashboard({
 
   useEffect(() => {
     return window.api.workspaces.onActivityChanged((e) => {
-      setWorkspaceActivities((prev) => ({ ...prev, [e.workspaceId]: e.detail }))
+      setWorkspaceActivities((prev) => {
+        const prevDetail = prev[e.workspaceId]
+        const next = { ...prev, [e.workspaceId]: e.detail }
+        // Play only on TRANSITION into a new state
+        if (prevDetail !== e.detail) {
+          if (e.detail === 'ready') playSound('ding')
+          else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+        }
+        return next
+      })
     })
   }, [])
 
@@ -304,6 +321,7 @@ export function Dashboard({
 
   function setSidebarCollapsedAndPersist(collapsed: boolean): void {
     setSidebarCollapsed(collapsed)
+    playSound(collapsed ? 'drawer-close' : 'drawer-open')
     window.api.uiState.update({ sidebarCollapsed: collapsed }).catch(console.error)
   }
 
@@ -367,6 +385,7 @@ export function Dashboard({
     try {
       const result = await window.api.projects.pickAndAdd()
       if (result) {
+        playSound('success')
         setProjects((arr) => [result, ...arr.filter((p) => p.id !== result.id)])
         // Fetch the auto-created Default workspace directly so we can navigate
         // into it. fetchWorkspacesForProject only writes state and doesn't
@@ -491,6 +510,7 @@ export function Dashboard({
         name: defaultName,
         cwd: project.path
       })
+      playSound('pop')
       // Refresh workspace list for this project
       await fetchWorkspacesForProject(projectId)
       // Expand the project row so the new workspace is visible.
@@ -553,6 +573,7 @@ export function Dashboard({
     try {
       // "Archive" is a hard delete now (v34+). The DB row is gone after this.
       await window.api.workspaces.archive(workspaceId)
+      playSound('archive')
       await fetchWorkspacesForProject(projectId)
       // If we were viewing the workspace that just got deleted, route back to
       // the project view — WorkspaceView can't render a row that no longer exists.
@@ -598,6 +619,7 @@ export function Dashboard({
         )
     }
     await window.api.projects.remove(target.id)
+    playSound('delete')
     setRemoveConfirmTarget(null)
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
     setExpandedProjectIds((prev) => {

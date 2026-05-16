@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type React from 'react'
 import { X, Plus, CaretDown } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
+import { playSound } from '../../../lib/sound'
 
 // ---------------------------------------------------------------------------
 // Shared form primitives for Settings sections
@@ -149,7 +150,7 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
       role="switch"
       aria-checked={value}
       aria-label={ariaLabel}
-      onClick={() => onChange(!value)}
+      onClick={() => { playSound(!value ? 'toggle-on' : 'toggle-off'); onChange(!value) }}
       className={[
         'relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-base',

@@ -17,6 +17,7 @@ import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { Identicon } from '../../Identicon'
 import { SplitButton } from '../../SplitButton'
 import { Skeleton } from '../../Skeleton'
+import { playSound } from '../../../lib/sound'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,6 +122,7 @@ export function ProjectHeader({
   async function copyPath(): Promise<void> {
     try {
       await window.api.shell.copyToClipboard(project.path)
+      playSound('copy')
       setPathCopied(true)
       if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
       copyResetTimer.current = setTimeout(() => setPathCopied(false), 1500)

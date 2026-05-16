@@ -1,3 +1,6 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as nodePath from 'node:path'
 import { getDb } from './db'
 import type {
   ClaudeGlobalSettings,
@@ -12,6 +15,18 @@ import type {
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
+
+// Returns true if claude's transcript file for this session already exists on
+// disk. The path follows claude's encoding: slashes in the cwd become dashes.
+function sessionJsonlExists(cwd: string, sessionId: string): boolean {
+  const encoded = cwd.replace(/\//g, '-')
+  const path = nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
+  try {
+    return fs.statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -618,12 +633,21 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   //   flagParts.push('--no-chrome')
   // }
 
-  // --resume: resume the stored session so this workspace picks up where it
-  // left off. Populated by captureWorkspaceSessionId in index.ts after first mount.
+  // Session continuity: every workspace ships with a pre-generated UUID
+  // (assigned in createWorkspace). On first launch, no .jsonl exists yet, so
+  // we pass --session-id <uuid> to tell claude "create a new session with
+  // this ID". On every subsequent launch the .jsonl exists, so we switch to
+  // --resume <uuid> which attaches to the existing transcript. This is
+  // deterministic and survives Orpheus restarts even if the user quits
+  // immediately after the first message.
   if (workspaceId) {
     const ws = getWorkspace(workspaceId)
     if (ws?.claudeSessionId) {
-      flagParts.push(`--resume ${ws.claudeSessionId}`)
+      if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
+        flagParts.push(`--resume ${ws.claudeSessionId}`)
+      } else {
+        flagParts.push(`--session-id ${ws.claudeSessionId}`)
+      }
     }
   }
 

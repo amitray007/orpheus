@@ -50,6 +50,8 @@ type AppUiStateRow = {
   ui_font_scale: string
   // Privacy (v37)
   fetch_github_avatars: number | null
+  // Sound (v38)
+  play_interaction_sounds: number | null
   updated_at: number
 }
 
@@ -99,6 +101,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     uiFontScale: (row.ui_font_scale ?? 'default') as UiFontScale,
     // Privacy (v37) — default true (enabled)
     fetchGithubAvatars: (row.fetch_github_avatars ?? 1) === 1,
+    // Sound (v38) — default true (enabled)
+    playInteractionSounds: (row.play_interaction_sounds ?? 1) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -204,7 +208,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     accentColor: 'accent_color',
     uiFontScale: 'ui_font_scale',
     // Privacy (v37)
-    fetchGithubAvatars: 'fetch_github_avatars'
+    fetchGithubAvatars: 'fetch_github_avatars',
+    // Sound (v38)
+    playInteractionSounds: 'play_interaction_sounds'
   }
 
   const setClauses: string[] = []
