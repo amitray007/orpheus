@@ -666,6 +666,8 @@ export function Dashboard({
             onToggleWorkspacePin={handleToggleWorkspacePin}
             workspaceActivities={workspaceActivities}
             onResumedInWorkspace={handleResumedInWorkspace}
+            projects={projects}
+            allWorkspaces={Object.values(workspacesByProject).flat()}
           />
         </main>
       </div>

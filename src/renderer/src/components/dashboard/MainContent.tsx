@@ -55,6 +55,9 @@ interface MainContentProps {
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
+  // Sessions view props
+  projects?: ProjectRecord[]
+  allWorkspaces?: WorkspaceRecord[]
 }
 
 export function MainContent({
@@ -70,7 +73,9 @@ export function MainContent({
   onArchiveWorkspace,
   onToggleWorkspacePin,
   workspaceActivities,
-  onResumedInWorkspace
+  onResumedInWorkspace,
+  projects,
+  allWorkspaces
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -87,7 +92,14 @@ export function MainContent({
   }
 
   if (view.kind === 'sessions') {
-    return <SessionsView onNavigateToProject={onNavigateToProject} />
+    return (
+      <SessionsView
+        onNavigateToProject={onNavigateToProject}
+        projects={projects ?? []}
+        workspaces={allWorkspaces ?? []}
+        workspaceActivities={workspaceActivities ?? {}}
+      />
+    )
   }
 
   if (view.kind === 'workspace') {
