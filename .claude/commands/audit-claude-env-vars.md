@@ -11,7 +11,7 @@ Default behavior: report-only. The subagent fetches:
 - `https://code.claude.com/docs/en/claude_code_docs_map.md`
 - `claude --help` for CLI flags
 
-Diffs against `docs/snapshots/env-vars.json` and the actual emissions in `src/main/claudeSettings.ts` + `src/main/claudeAuth.ts`. Produces a short report of new / deferred / removed / broken-wired items, plus a suggested next chunk to ship.
+Diffs against `.claude/snapshots/env-vars.json` and the actual emissions in `src/main/claudeSettings.ts` + `src/main/claudeAuth.ts`. Produces a short report of new / deferred / removed / broken-wired items, plus a suggested next chunk to ship.
 
 If your prompt includes "wire" / "scaffold" / "ship", the subagent will also scaffold the schema + types + emission + UI for new vars, then run `bun run typecheck`. It won't commit — you commit after reviewing.
 

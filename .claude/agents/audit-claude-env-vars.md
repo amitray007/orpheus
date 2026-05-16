@@ -23,7 +23,7 @@ If a URL 404s or moves, fall back to crawling from the docs map.
 - **Compose**: `src/main/claudeSettings.ts` — `composeClaudeLaunch` returns `{ flags, settingsJson, env }`. The `env` block emits each var with `if (s.<field>) env['ENV_NAME'] = '1'` for booleans, `if (s.<field> !== null) env['ENV_NAME'] = String(s.<field>)` for numbers, `if (s.<field>) env['ENV_NAME'] = s.<field>` for strings. ALL new emissions must go BEFORE the `customEnvVars` merge so user overrides still win.
 - **Auth-specific env**: `src/main/claudeAuth.ts` — provider-routing + secret emissions live there.
 - **UI**: `src/renderer/src/components/dashboard/settings/Claude{General,Display,Permissions,Auth,Memory,Tools,Hooks,Developer,About,SlashCommands,Subagents}Section.tsx`. Each row uses `SettingRow` with a `mapsTo` chip carrying the env-var name.
-- **Snapshot**: `docs/snapshots/env-vars.json` — single source of truth. Each documented var has `{ wired: true | false | "indirect", via?: "where it lives in the UI", note?: "why deferred" }`.
+- **Snapshot**: `.claude/snapshots/env-vars.json` — single source of truth. Each documented var has `{ wired: true | false | "indirect", via?: "where it lives in the UI", note?: "why deferred" }`.
 
 ## Procedure
 
@@ -36,7 +36,7 @@ Fetch the env-vars doc. Extract:
 
 ### Phase 2 — Compare against the snapshot
 
-Read `docs/snapshots/env-vars.json`. For each documented var, determine its status:
+Read `.claude/snapshots/env-vars.json`. For each documented var, determine its status:
 
 | Status                    | Meaning                                                                                  |
 | ------------------------- | ---------------------------------------------------------------------------------------- |
@@ -68,7 +68,7 @@ Produce a concise report (target: under 400 words). Sections:
 
 ### Phase 5 — Snapshot update
 
-If new vars were found, update `docs/snapshots/env-vars.json` to add them with `wired: false` and a note. Bump `_meta.lastUpdated` to today's date. Do not change `wired: true` claims — those reflect code state, not docs state.
+If new vars were found, update `.claude/snapshots/env-vars.json` to add them with `wired: false` and a note. Bump `_meta.lastUpdated` to today's date. Do not change `wired: true` claims — those reflect code state, not docs state.
 
 ### Phase 6 — Scaffold (only when user requests)
 
@@ -80,7 +80,7 @@ If the user explicitly asks you to wire a new var:
 4. Add to `ClaudeSettingsRow`, `rowToRecord`, `BOOLEAN_KEYS` / number validator / string validator in `validatePatch`, and `columnMap` in `src/main/claudeSettings.ts`.
 5. Add the env emission in `composeClaudeLaunch` before the customEnvVars merge.
 6. Add a `SettingRow` in the appropriate `Claude*Section.tsx` with the `mapsTo` chip. Use existing primitives (`Toggle`, `NumberInput`, plain `<input>` text). Match the existing visual rhythm.
-7. Update `docs/snapshots/env-vars.json` to flip `wired: true` and remove the `note`.
+7. Update `.claude/snapshots/env-vars.json` to flip `wired: true` and remove the `note`.
 8. Run `bun run typecheck` and report any errors. Do not commit — let the parent agent / user commit.
 
 ## Style + constraints

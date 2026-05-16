@@ -69,7 +69,7 @@ global (claude_global_settings)
 
 When **any** layer mutates, `recomputeDirty()` in `src/main/index.ts` compares the snapshot taken at `terminal:mount` time against the freshly composed launch. If they differ, the workspace is marked `dirty` and a "Restart to apply" chip appears in the UI.
 
-**When wiring a new claude setting:** see `.claude/agents/audit-claude-env-vars.md` — it is the canonical procedure (schema column → type field → row→record mapping → BOOLEAN_KEYS/validator → `composeClaudeLaunch` emission **before the `customEnvVars` merge** → UI `SettingRow` with `mapsTo` chip → `docs/snapshots/env-vars.json` flipped to `wired: true`).
+**When wiring a new claude setting:** see `.claude/agents/audit-claude-env-vars.md` — it is the canonical procedure (schema column → type field → row→record mapping → BOOLEAN_KEYS/validator → `composeClaudeLaunch` emission **before the `customEnvVars` merge** → UI `SettingRow` with `mapsTo` chip → `.claude/snapshots/env-vars.json` flipped to `wired: true`).
 
 ### SQLite schema + migrations
 
@@ -109,4 +109,4 @@ Ad-hoc codesigning is re-applied to the whole bundle in `scripts/install-mac.mjs
 - **Workspace surfaces are sticky.** `hide` ≠ `destroy`. Renderer navigation must call `terminal:hide` then `terminal:mount` again on return; never `destroy` unless the workspace is being archived/removed.
 - **Settings are layered.** Any UI control that maps to claude settings must compose through `composeClaudeLaunch` and carry a `mapsTo` chip pointing to the env var or settings key it produces.
 - **Commits use Conventional Commits, no emoji.** `feat(scope):`, `fix(scope):`, `chore(scope):`. No `Co-Authored-By: Claude` lines unless explicitly requested.
-- **Audit env vars before adding new settings.** The `.claude/agents/audit-claude-env-vars.md` agent diffs `https://code.claude.com/docs/en/env-vars.md` against `docs/snapshots/env-vars.json` — run it (or invoke it as a subagent) before guessing whether something is already wired.
+- **Audit env vars before adding new settings.** The `.claude/agents/audit-claude-env-vars.md` agent diffs `https://code.claude.com/docs/en/env-vars.md` against `.claude/snapshots/env-vars.json` — run it (or invoke it as a subagent) before guessing whether something is already wired.
