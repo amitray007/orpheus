@@ -1,5 +1,5 @@
 import { getDb } from './db'
-import type { AppUiState, AppUiStatePatch, AppViewKind } from '../shared/types'
+import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -43,6 +43,10 @@ type AppUiStateRow = {
   preferred_terminal_app: string | null
   // Auto-prune cap (v33)
   max_local_sessions: number | null
+  // Appearance (v36)
+  theme: string
+  accent_color: string | null
+  ui_font_scale: string
   updated_at: number
 }
 
@@ -86,6 +90,10 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     preferredTerminalApp: row.preferred_terminal_app ?? null,
     // Auto-prune cap (v33) — null = unlimited
     maxLocalSessions: row.max_local_sessions ?? null,
+    // Appearance (v36) — use defaults if column absent (pre-migration reads)
+    theme: (row.theme ?? 'midnight') as Theme,
+    accentColor: (row.accent_color ?? null) as AccentColor | null,
+    uiFontScale: (row.ui_font_scale ?? 'default') as UiFontScale,
     updatedAt: row.updated_at
   }
 }
@@ -95,6 +103,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // ---------------------------------------------------------------------------
 
 const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
+const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
+const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
+const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -110,6 +121,21 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('lastWorkspaceId' in patch) {
     if (patch.lastWorkspaceId !== null && typeof patch.lastWorkspaceId !== 'string') {
       throw new Error('uiState: lastWorkspaceId must be a string or null')
+    }
+  }
+  if ('theme' in patch && patch.theme !== undefined) {
+    if (!VALID_THEMES.includes(patch.theme as Theme)) {
+      throw new Error(`uiState: theme must be one of ${VALID_THEMES.join(', ')}`)
+    }
+  }
+  if ('accentColor' in patch && patch.accentColor !== undefined) {
+    if (patch.accentColor !== null && !VALID_ACCENT_COLORS.includes(patch.accentColor as AccentColor)) {
+      throw new Error(`uiState: accentColor must be one of ${VALID_ACCENT_COLORS.join(', ')} or null`)
+    }
+  }
+  if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {
+    if (!VALID_FONT_SCALES.includes(patch.uiFontScale as UiFontScale)) {
+      throw new Error(`uiState: uiFontScale must be one of ${VALID_FONT_SCALES.join(', ')}`)
     }
   }
 }
@@ -167,7 +193,11 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     preferredEditorApp: 'preferred_editor_app',
     preferredTerminalApp: 'preferred_terminal_app',
     // Auto-prune cap (v33)
-    maxLocalSessions: 'max_local_sessions'
+    maxLocalSessions: 'max_local_sessions',
+    // Appearance (v36)
+    theme: 'theme',
+    accentColor: 'accent_color',
+    uiFontScale: 'ui_font_scale'
   }
 
   const setClauses: string[] = []

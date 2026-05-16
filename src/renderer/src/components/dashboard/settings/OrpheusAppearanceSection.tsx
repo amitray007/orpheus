@@ -1,26 +1,104 @@
+import { useEffect, useState } from 'react'
 import type React from 'react'
+import type { AppUiState, Theme, AccentColor, UiFontScale } from '@shared/types'
 import { SettingRow } from './primitives'
-import { ComingSoonChip } from './ClaudeGeneralSection'
+import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
 // OrpheusAppearanceSection — theme, accent color, font size
 // ---------------------------------------------------------------------------
 
-const THEME_OPTIONS = [
-  { value: 'dark', label: 'Dark' },
-  { value: 'light', label: 'Light' },
-  { value: 'system', label: 'System' }
-] as const
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: 'midnight', label: 'Midnight' },
+  { value: 'daylight', label: 'Daylight' },
+  { value: 'eclipse', label: 'Eclipse' }
+]
 
-const ACCENT_COLORS = [
-  { value: 'purple', label: 'Purple', hex: '#9B6CFF' },
-  { value: 'blue', label: 'Blue', hex: '#3B8EFF' },
-  { value: 'teal', label: 'Teal', hex: '#2CC3A8' },
-  { value: 'orange', label: 'Orange', hex: '#FF8C42' },
-  { value: 'pink', label: 'Pink', hex: '#FF5FA0' }
-] as const
+const ACCENT_COLORS: { value: AccentColor; label: string; hex: string }[] = [
+  { value: 'gold', label: 'Gold', hex: '#d4a847' },
+  { value: 'blue', label: 'Blue', hex: '#3b8eff' },
+  { value: 'teal', label: 'Teal', hex: '#2cc3a8' },
+  { value: 'orange', label: 'Orange', hex: '#ff8c42' },
+  { value: 'pink', label: 'Pink', hex: '#ff5fa0' }
+]
+
+// Theme-default accents for the "no explicit pick" active-state indicator
+const THEME_DEFAULT_ACCENT: Record<Theme, string> = {
+  midnight: '#d4a847',
+  daylight: '#b8902f',
+  eclipse: '#e8c060'
+}
+
+const FONT_SCALE_OPTIONS: { value: UiFontScale; label: string }[] = [
+  { value: 'small', label: 'Small' },
+  { value: 'default', label: 'Default' },
+  { value: 'large', label: 'Large' }
+]
 
 export function OrpheusAppearanceSection(): React.JSX.Element {
+  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.uiState
+      .get()
+      .then((s) => {
+        if (!cancelled) setUiState(s)
+      })
+      .catch((err) => {
+        console.error('[settings] failed to load uiState', err)
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function patch(p: Partial<AppUiState>): void {
+    if (!uiState) return
+    setUiState({ ...uiState, ...p })
+    window.api.uiState.update(p).catch((err) => {
+      console.error('[settings] uiState update failed; refetching to reconcile', err)
+      window.api.uiState
+        .get()
+        .then((s) => setUiState(s))
+        .catch(console.error)
+    })
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6 max-w-2xl">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+          <p className="text-xs text-text-muted mt-1">
+            Theme, accent color, and font size scale for the Orpheus UI.
+          </p>
+        </div>
+        <p className="text-sm text-red-400">Failed to load settings: {error}</p>
+      </div>
+    )
+  }
+
+  if (!uiState) {
+    return (
+      <div className="flex flex-col gap-6 max-w-2xl">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+          <p className="text-xs text-text-muted mt-1">
+            Theme, accent color, and font size scale for the Orpheus UI.
+          </p>
+        </div>
+        <SettingsSectionSkeleton groups={3} rowsPerGroup={1} />
+      </div>
+    )
+  }
+
+  const currentTheme = uiState.theme ?? 'midnight'
+  const currentAccent = uiState.accentColor ?? null
+  const currentScale = uiState.uiFontScale ?? 'default'
+
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
@@ -38,23 +116,24 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Color theme"
-            description="Dark is the only available theme for now. Light and System auto-switch are planned."
+            description="Choose between Midnight (dark), Daylight (warm light), and Eclipse (AMOLED pure black)."
           >
-            <div className="flex items-center gap-2">
-              <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5 opacity-50 pointer-events-none select-none">
-                {THEME_OPTIONS.map((opt) => (
-                  <span
-                    key={opt.value}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded',
-                      opt.value === 'dark' ? 'bg-accent/15 text-text-primary' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {opt.label}
-                  </span>
-                ))}
-              </div>
-              <ComingSoonChip />
+            <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5">
+              {THEME_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => patch({ theme: opt.value })}
+                  className={[
+                    'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
+                    opt.value === currentTheme
+                      ? 'bg-accent/15 text-text-primary'
+                      : 'text-text-muted hover:text-text-secondary'
+                  ].join(' ')}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </SettingRow>
         </div>
@@ -68,25 +147,43 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Accent"
-            description="Used for active states, highlights, and interactive elements throughout the UI."
+            description="Used for active states, highlights, and interactive elements. Overrides the theme's default accent. Reset to restore the theme default."
           >
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 opacity-50 pointer-events-none">
-                {ACCENT_COLORS.map((c) => (
-                  <div
-                    key={c.value}
-                    title={c.label}
-                    className={[
-                      'w-6 h-6 rounded-full border-2',
-                      c.value === 'purple'
-                        ? 'border-white/60 ring-1 ring-white/30'
-                        : 'border-transparent'
-                    ].join(' ')}
-                    style={{ backgroundColor: c.hex }}
-                  />
-                ))}
+              <div className="flex items-center gap-1.5">
+                {ACCENT_COLORS.map((c) => {
+                  // Active when: user explicitly picked this color, OR no
+                  // explicit pick and this swatch matches the theme default.
+                  const isActive = currentAccent
+                    ? currentAccent === c.value
+                    : c.hex.toLowerCase() === THEME_DEFAULT_ACCENT[currentTheme].toLowerCase()
+                  return (
+                    <button
+                      key={c.value}
+                      type="button"
+                      title={c.label}
+                      onClick={() => patch({ accentColor: c.value })}
+                      className={[
+                        'w-6 h-6 rounded-full border-2 transition-all cursor-pointer',
+                        'hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-1 focus:ring-offset-transparent',
+                        isActive ? 'border-white/70 scale-110' : 'border-transparent'
+                      ].join(' ')}
+                      style={{ backgroundColor: c.hex }}
+                    />
+                  )
+                })}
               </div>
-              <ComingSoonChip />
+              {/* Reset to theme default */}
+              {currentAccent !== null && (
+                <button
+                  type="button"
+                  title="Reset to theme default"
+                  onClick={() => patch({ accentColor: null })}
+                  className="ml-1 text-[10px] text-text-muted hover:text-text-secondary border border-border-default rounded px-1.5 py-0.5 transition-colors cursor-pointer leading-tight"
+                >
+                  Reset
+                </button>
+              )}
             </div>
           </SettingRow>
         </div>
@@ -100,23 +197,24 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="UI font size scale"
-            description="Scales all text in the Orpheus chrome (sidebar, settings, panels). Does not affect the terminal."
+            description="Scales rem-based text in the Orpheus chrome (sidebar, settings, panels). Does not affect the terminal. Arbitrary-px spots (e.g. badge labels) are unaffected."
           >
-            <div className="flex items-center gap-2">
-              <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5 opacity-50 pointer-events-none select-none">
-                {(['Small', 'Default', 'Large'] as const).map((s) => (
-                  <span
-                    key={s}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded',
-                      s === 'Default' ? 'bg-accent/15 text-text-primary' : 'text-text-muted'
-                    ].join(' ')}
-                  >
-                    {s}
-                  </span>
-                ))}
-              </div>
-              <ComingSoonChip />
+            <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5">
+              {FONT_SCALE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => patch({ uiFontScale: opt.value })}
+                  className={[
+                    'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
+                    opt.value === currentScale
+                      ? 'bg-accent/15 text-text-primary'
+                      : 'text-text-muted hover:text-text-secondary'
+                  ].join(' ')}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </SettingRow>
         </div>

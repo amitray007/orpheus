@@ -91,10 +91,28 @@ export function Dashboard({
           notifyAlways: false,
           notifyMaxAttentionRepeats: 5,
           inProgressWatchdogSec: 120,
+          theme: 'midnight',
+          accentColor: null,
+          uiFontScale: 'default',
           updatedAt: 0
         })
       })
   }, [])
+
+  // Apply appearance data attributes to document root whenever uiState changes.
+  // This drives [data-theme], [data-accent], and [data-font-scale] CSS selectors
+  // in main.css without any flash because :root carries Midnight defaults.
+  useEffect(() => {
+    if (!uiState) return
+    const root = document.documentElement
+    root.dataset.theme = uiState.theme ?? 'midnight'
+    if (uiState.accentColor) {
+      root.dataset.accent = uiState.accentColor
+    } else {
+      delete root.dataset.accent
+    }
+    root.dataset.fontScale = uiState.uiFontScale ?? 'default'
+  }, [uiState?.theme, uiState?.accentColor, uiState?.uiFontScale])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug
   // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current

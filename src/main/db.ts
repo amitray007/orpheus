@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 35
+const CURRENT_VERSION = 36
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1084,5 +1084,19 @@ function migrate(db: Database.Database): void {
       db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_preview TEXT')
     } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(35)
+  }
+
+  // Version 36: appearance — theme, accent color, font scale
+  if (currentVersion < 36) {
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN theme TEXT NOT NULL DEFAULT 'midnight' CHECK (theme IN ('midnight', 'daylight', 'eclipse'))")
+    } catch {}
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN accent_color TEXT CHECK (accent_color IS NULL OR accent_color IN ('gold', 'blue', 'teal', 'orange', 'pink'))")
+    } catch {}
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN ui_font_scale TEXT NOT NULL DEFAULT 'default' CHECK (ui_font_scale IN ('small', 'default', 'large'))")
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(36)
   }
 }

@@ -94,6 +94,10 @@ export type PinnedItem = {
 
 export type AppViewKind = 'sessions' | 'project' | 'workspace'
 
+export type Theme = 'midnight' | 'daylight' | 'eclipse'
+export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
+export type UiFontScale = 'small' | 'default' | 'large'
+
 export type AppUiState = {
   sidebarCollapsed: boolean
   lastViewKind: AppViewKind
@@ -131,6 +135,10 @@ export type AppUiState = {
   preferredTerminalApp?: string | null
   // Auto-prune cap (v33) — null = unlimited; positive integer = max non-archived sessions per project
   maxLocalSessions?: number | null
+  // Appearance (v36)
+  theme: Theme
+  accentColor: AccentColor | null  // null = use theme's built-in default accent
+  uiFontScale: UiFontScale
   updatedAt: number
 }
 
