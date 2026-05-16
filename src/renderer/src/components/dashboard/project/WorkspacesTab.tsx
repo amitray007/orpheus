@@ -29,7 +29,10 @@ import { SessionsTab } from './SessionsTab'
 // the Sessions panel instead.
 // ---------------------------------------------------------------------------
 
-const PAGE_SIZE = 8
+// Matches SessionsTab's compact PAGE_SIZE (10) so the two side-by-side panels
+// land at the same vertical extent and the Recent commits row below stays
+// aligned with both footers.
+const PAGE_SIZE = 10
 
 // ---------------------------------------------------------------------------
 // Filter helpers
