@@ -16,3 +16,7 @@ packages/terminal-vt-native/index.d.ts
 # worktree clones (each one contains a .git pointer file that would otherwise
 # be added as a submodule) are ignored.
 .claude/worktrees/
+# TypeScript incremental build cache
+*.tsbuildinfo
+# Stray bundle extracts (e.g. from asar debugging) — never commit these
+/index-*.js
