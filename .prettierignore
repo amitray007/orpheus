@@ -1,6 +1,12 @@
 out
 dist
+node_modules
+bun.lock
 pnpm-lock.yaml
+package-lock.json
 LICENSE.md
 tsconfig.json
 tsconfig.*.json
+vendor
+resources/ghostty
+packages/ghostty-native/build
