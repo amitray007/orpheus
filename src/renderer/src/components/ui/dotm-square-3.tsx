@@ -1,50 +1,54 @@
-"use client";
+'use client'
 
-import type React from "react";
-import type { CSSProperties } from "react";
+import type React from 'react'
+import type { CSSProperties } from 'react'
 
-import { DotMatrixBase } from "@/components/ui/dotmatrix-core";
-import { useDotMatrixPhases } from "@/components/ui/dotmatrix-hooks";
-import { spiralInwardNormFromIndex, spiralInwardOrderValue } from "@/components/ui/dotmatrix-core";
-import { usePrefersReducedMotion } from "@/components/ui/dotmatrix-hooks";
-import type { DotAnimationResolver, DotMatrixCommonProps } from "@/components/ui/dotmatrix-core";
+import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
+import { useDotMatrixPhases } from '@/components/ui/dotmatrix-hooks'
+import { spiralInwardNormFromIndex, spiralInwardOrderValue } from '@/components/ui/dotmatrix-core'
+import { usePrefersReducedMotion } from '@/components/ui/dotmatrix-hooks'
+import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core'
 
-export type DotmSquare3Props = DotMatrixCommonProps;
+export type DotmSquare3Props = DotMatrixCommonProps
 
 const animationResolver: DotAnimationResolver = ({ isActive, index, reducedMotion, phase }) => {
   if (!isActive) {
-    return { className: "dmx-inactive" };
+    return { className: 'dmx-inactive' }
   }
 
-  const order = spiralInwardOrderValue(index);
-  const pathNorm = spiralInwardNormFromIndex(index);
-  const style = { "--dmx-spiral-order": order } as CSSProperties;
+  const order = spiralInwardOrderValue(index)
+  const pathNorm = spiralInwardNormFromIndex(index)
+  const style = { '--dmx-spiral-order': order } as CSSProperties
 
-  if (reducedMotion || phase === "idle") {
+  if (reducedMotion || phase === 'idle') {
     return {
       style: {
         ...style,
         opacity: 0.16 + pathNorm * 0.78
       }
-    };
+    }
   }
 
-  return { className: "dmx-spiral-snake", style };
-};
+  return { className: 'dmx-spiral-snake', style }
+}
 
 export function DotmSquare3({
   speed = 1.35,
-  pattern = "full",
+  pattern = 'full',
   animated = true,
   hoverAnimated = false,
   ...rest
 }: DotmSquare3Props): React.JSX.Element {
-  const reducedMotion = usePrefersReducedMotion();
-  const { phase: matrixPhase, onMouseEnter, onMouseLeave } = useDotMatrixPhases({
+  const reducedMotion = usePrefersReducedMotion()
+  const {
+    phase: matrixPhase,
+    onMouseEnter,
+    onMouseLeave
+  } = useDotMatrixPhases({
     animated: Boolean(animated && !reducedMotion),
     hoverAnimated: Boolean(hoverAnimated && !reducedMotion),
     speed
-  });
+  })
 
   return (
     <DotMatrixBase
@@ -60,6 +64,5 @@ export function DotmSquare3({
       reducedMotion={reducedMotion}
       animationResolver={animationResolver}
     />
-  );
+  )
 }
-

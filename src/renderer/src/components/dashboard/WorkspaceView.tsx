@@ -173,11 +173,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     <>
       {titleBarHost &&
         createPortal(
-          <WorkspaceTitleBar
-            workspace={workspace}
-            drawer={drawer}
-            onSetDrawer={setDrawer}
-          />,
+          <WorkspaceTitleBar workspace={workspace} drawer={drawer} onSetDrawer={setDrawer} />,
           titleBarHost
         )}
 
@@ -196,9 +192,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
               detail={detail}
               onClose={handleCloseDrawer}
               onRestart={() => {
-                handleRestart().catch((e) =>
-                  console.error('[WorkspaceView] restart failed:', e)
-                )
+                handleRestart().catch((e) => console.error('[WorkspaceView] restart failed:', e))
               }}
             />
           </div>

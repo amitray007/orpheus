@@ -29,8 +29,7 @@ import { fileURLToPath } from 'node:url'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SOURCE_REPO = 'amitray007/orpheus'
-const TAP_REPO_PATH =
-  process.env.ORPHEUS_TAP_PATH ?? resolve(projectRoot, '..', 'homebrew-tap')
+const TAP_REPO_PATH = process.env.ORPHEUS_TAP_PATH ?? resolve(projectRoot, '..', 'homebrew-tap')
 const CASK_RELPATH = 'Casks/orpheus.rb'
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type -- JS file, cannot use TS return type syntax

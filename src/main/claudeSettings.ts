@@ -284,26 +284,66 @@ const VALID_EDITOR_MODES: ClaudeEditorMode[] = ['normal', 'vim']
 const VALID_LOG_LEVELS: ClaudeLogLevel[] = ['debug', 'info', 'warn', 'error']
 
 const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
-  'autoMemory', 'alwaysThinking', 'reduceMotion', 'nativeCursor', 'hideCwd',
-  'disableGitInstructions', 'debugLogging', 'disableTelemetry', 'disableErrorReporting',
-  'disableAutoupdater', 'experimentalAgentTeams', 'experimentalForkedSubagents',
-  'simpleSystemPrompt', 'autoApproveEdits', 'askDestructiveBash', 'planModeDefault',
+  'autoMemory',
+  'alwaysThinking',
+  'reduceMotion',
+  'nativeCursor',
+  'hideCwd',
+  'disableGitInstructions',
+  'debugLogging',
+  'disableTelemetry',
+  'disableErrorReporting',
+  'disableAutoupdater',
+  'experimentalAgentTeams',
+  'experimentalForkedSubagents',
+  'simpleSystemPrompt',
+  'autoApproveEdits',
+  'askDestructiveBash',
+  'planModeDefault',
   'browserIntegration',
   // Env-var controls (v23)
-  'disableThinking', 'disableFastMode', 'disableClaudeMds',
-  'bashMaintainCwd', 'perforceMode', 'globHidden', 'globNoIgnore',
-  'disableNonessentialTraffic', 'doNotTrack', 'disableBackgroundTasks', 'disableAgentView',
+  'disableThinking',
+  'disableFastMode',
+  'disableClaudeMds',
+  'bashMaintainCwd',
+  'perforceMode',
+  'globHidden',
+  'globNoIgnore',
+  'disableNonessentialTraffic',
+  'doNotTrack',
+  'disableBackgroundTasks',
+  'disableAgentView',
   // Env-var controls (v24)
-  'noFlicker', 'disableAlternateScreen', 'disableVirtualScroll', 'disableMouse',
-  'disableTerminalTitle', 'codeAccessibility', 'omitAttributionHeader', 'forceSyncOutput',
-  'enablePromptSuggestion', 'disable1mContext', 'disableAdaptiveThinking', 'disableLegacyModelRemap',
-  'disableFileCheckpointing', 'disableAttachments', 'enableFineGrainedToolStreaming',
-  'disableNonstreamingFallback', 'proxyResolvesHosts', 'enableGatewayModelDiscovery',
-  'autoBackgroundTasks', 'enableTasks', 'disableCron', 'disableFeedbackCommand', 'disableFeedbackSurvey'
+  'noFlicker',
+  'disableAlternateScreen',
+  'disableVirtualScroll',
+  'disableMouse',
+  'disableTerminalTitle',
+  'codeAccessibility',
+  'omitAttributionHeader',
+  'forceSyncOutput',
+  'enablePromptSuggestion',
+  'disable1mContext',
+  'disableAdaptiveThinking',
+  'disableLegacyModelRemap',
+  'disableFileCheckpointing',
+  'disableAttachments',
+  'enableFineGrainedToolStreaming',
+  'disableNonstreamingFallback',
+  'proxyResolvesHosts',
+  'enableGatewayModelDiscovery',
+  'autoBackgroundTasks',
+  'enableTasks',
+  'disableCron',
+  'disableFeedbackCommand',
+  'disableFeedbackSurvey'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
-  'permissionAllowRules', 'permissionAskRules', 'permissionDenyRules', 'permissionAdditionalDirs',
+  'permissionAllowRules',
+  'permissionAskRules',
+  'permissionDenyRules',
+  'permissionAdditionalDirs',
   'disabledMcpServers'
 ]
 
@@ -327,7 +367,9 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
   }
   if ('outputStyle' in patch) {
     if (!VALID_OUTPUT_STYLES.includes(patch.outputStyle as ClaudeOutputStyle)) {
-      throw new Error(`claudeSettings: outputStyle must be one of ${VALID_OUTPUT_STYLES.join(', ')}`)
+      throw new Error(
+        `claudeSettings: outputStyle must be one of ${VALID_OUTPUT_STYLES.join(', ')}`
+      )
     }
   }
   if ('tuiMode' in patch) {
@@ -601,11 +643,7 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   // --permission-mode: skip 'default' (claude's default mode)
   // planModeDefault quick-toggle overrides if General permissionMode is still 'default'
   const effectivePermissionMode =
-    s.permissionMode !== 'default'
-      ? s.permissionMode
-      : s.planModeDefault
-        ? 'plan'
-        : 'default'
+    s.permissionMode !== 'default' ? s.permissionMode : s.planModeDefault ? 'plan' : 'default'
   if (effectivePermissionMode !== 'default') {
     flagParts.push(`--permission-mode ${effectivePermissionMode}`)
   }
@@ -711,7 +749,7 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
       'Bash(git push --force*)',
       'Bash(git clean *)',
       'Bash(DROP TABLE*)',
-      'Bash(truncate *)',
+      'Bash(truncate *)'
     ]
     for (const p of destructivePatterns) {
       if (!askRules.includes(p)) askRules.push(p)
@@ -814,7 +852,8 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
 
   // Env-var controls (v23) — Memory & Context
   if (s.maxThinkingTokens !== null) env['MAX_THINKING_TOKENS'] = String(s.maxThinkingTokens)
-  if (s.fileReadMaxOutputTokens !== null) env['CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS'] = String(s.fileReadMaxOutputTokens)
+  if (s.fileReadMaxOutputTokens !== null)
+    env['CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS'] = String(s.fileReadMaxOutputTokens)
   if (s.disableClaudeMds) env['CLAUDE_CODE_DISABLE_CLAUDE_MDS'] = '1'
 
   // Env-var controls (v23) — Tools
@@ -822,7 +861,8 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   if (s.perforceMode) env['CLAUDE_CODE_PERFORCE_MODE'] = '1'
   if (s.globHidden) env['CLAUDE_CODE_GLOB_HIDDEN'] = '1'
   if (s.globNoIgnore) env['CLAUDE_CODE_GLOB_NO_IGNORE'] = '1'
-  if (s.globTimeoutSeconds !== null) env['CLAUDE_CODE_GLOB_TIMEOUT_SECONDS'] = String(s.globTimeoutSeconds)
+  if (s.globTimeoutSeconds !== null)
+    env['CLAUDE_CODE_GLOB_TIMEOUT_SECONDS'] = String(s.globTimeoutSeconds)
 
   // Env-var controls (v23) — Developer / Network
   if (s.apiTimeoutMs !== null) env['API_TIMEOUT_MS'] = String(s.apiTimeoutMs)
@@ -858,8 +898,10 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
   if (s.disableLegacyModelRemap) env['CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP'] = '1'
 
   // Env-var controls (v24) — Memory & Context
-  if (s.autoCompactWindow !== null) env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = String(s.autoCompactWindow)
-  if (s.autocompactPctOverride !== null) env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = String(s.autocompactPctOverride)
+  if (s.autoCompactWindow !== null)
+    env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = String(s.autoCompactWindow)
+  if (s.autocompactPctOverride !== null)
+    env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = String(s.autocompactPctOverride)
 
   // Env-var controls (v24) — Tools / File operations & Shell
   if (s.disableFileCheckpointing) env['CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING'] = '1'
@@ -875,10 +917,12 @@ export function composeClaudeLaunch(projectId?: string, workspaceId?: string): C
 
   // Env-var controls (v24) — Developer / Privacy & background tasks
   if (s.autoBackgroundTasks) env['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'] = '1'
-  if (s.asyncAgentStallTimeoutMs !== null) env['CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS'] = String(s.asyncAgentStallTimeoutMs)
+  if (s.asyncAgentStallTimeoutMs !== null)
+    env['CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS'] = String(s.asyncAgentStallTimeoutMs)
   if (s.enableTasks) env['CLAUDE_CODE_ENABLE_TASKS'] = '1'
   if (s.disableCron) env['CLAUDE_CODE_DISABLE_CRON'] = '1'
-  if (s.exitAfterStopDelay !== null) env['CLAUDE_CODE_EXIT_AFTER_STOP_DELAY'] = String(s.exitAfterStopDelay)
+  if (s.exitAfterStopDelay !== null)
+    env['CLAUDE_CODE_EXIT_AFTER_STOP_DELAY'] = String(s.exitAfterStopDelay)
   if (s.disableFeedbackCommand) env['DISABLE_FEEDBACK_COMMAND'] = '1'
   if (s.disableFeedbackSurvey) env['CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY'] = '1'
 
@@ -902,9 +946,7 @@ export function getClaudeGlobalSettings(): ClaudeGlobalSettings {
   return rowToRecord(row)
 }
 
-export function updateClaudeGlobalSettings(
-  patch: ClaudeGlobalSettingsPatch
-): ClaudeGlobalSettings {
+export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): ClaudeGlobalSettings {
   validatePatch(patch)
 
   const db = getDb()
@@ -1039,9 +1081,9 @@ export function updateClaudeGlobalSettings(
   values.push(now)
   values.push(1) // WHERE id = 1
 
-  db.prepare(
-    `UPDATE claude_global_settings SET ${setClauses.join(', ')} WHERE id = ?`
-  ).run(...values)
+  db.prepare(`UPDATE claude_global_settings SET ${setClauses.join(', ')} WHERE id = ?`).run(
+    ...values
+  )
 
   const row = db
     .prepare('SELECT * FROM claude_global_settings WHERE id = 1')

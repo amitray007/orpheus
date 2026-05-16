@@ -50,7 +50,11 @@ interface MainContentProps {
   onRequestRemoveProject: (project: ProjectRecord) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
-  onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
+  onRenameWorkspace: (
+    workspaceId: string,
+    projectId: string,
+    newName: string
+  ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   workspaceActivities?: Record<string, WorkspaceActivityDetail>
@@ -113,12 +117,7 @@ export function MainContent({
     // key forces React to unmount the old WorkspaceView and mount a fresh
     // one when the workspace changes — without this the useEffect with []
     // deps doesn't re-run and terminal:hide/mount never fires.
-    return (
-      <WorkspaceView
-        key={workspace.id}
-        workspace={workspace}
-      />
-    )
+    return <WorkspaceView key={workspace.id} workspace={workspace} />
   }
 
   // project view

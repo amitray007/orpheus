@@ -59,7 +59,12 @@
     },
     "checkbox": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 3500, "resonance": 4, "envelope": { "attack": 0, "peak": 5000, "decay": 0.03 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 3500,
+        "resonance": 4,
+        "envelope": { "attack": 0, "peak": 5000, "decay": 0.03 }
+      },
       "envelope": { "attack": 0, "decay": 0.025, "sustain": 0, "release": 0.008 },
       "gain": 0.13
     },
@@ -83,31 +88,56 @@
     },
     "tab-switch": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 2500, "resonance": 2.5, "envelope": { "attack": 0.005, "peak": 5000, "decay": 0.04 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 2500,
+        "resonance": 2.5,
+        "envelope": { "attack": 0.005, "peak": 5000, "decay": 0.04 }
+      },
       "envelope": { "attack": 0, "decay": 0.04, "sustain": 0, "release": 0.012 },
       "gain": 0.1
     },
     "expand": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 500, "resonance": 2, "envelope": { "attack": 0.01, "peak": 4000, "decay": 0.08 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 500,
+        "resonance": 2,
+        "envelope": { "attack": 0.01, "peak": 4000, "decay": 0.08 }
+      },
       "envelope": { "attack": 0.005, "decay": 0.1, "sustain": 0, "release": 0.03 },
       "gain": 0.08
     },
     "collapse": {
       "source": { "type": "noise", "color": "pink" },
-      "filter": { "type": "bandpass", "frequency": 3500, "resonance": 2, "envelope": { "decay": 0.08, "peak": 500 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 3500,
+        "resonance": 2,
+        "envelope": { "decay": 0.08, "peak": 500 }
+      },
       "envelope": { "attack": 0, "decay": 0.1, "sustain": 0, "release": 0.03 },
       "gain": 0.08
     },
     "page-enter": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 400, "resonance": 1.5, "envelope": { "attack": 0.02, "peak": 3500, "decay": 0.12 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 400,
+        "resonance": 1.5,
+        "envelope": { "attack": 0.02, "peak": 3500, "decay": 0.12 }
+      },
       "envelope": { "attack": 0.01, "decay": 0.15, "sustain": 0, "release": 0.05 },
       "gain": 0.07
     },
     "page-exit": {
       "source": { "type": "noise", "color": "pink" },
-      "filter": { "type": "bandpass", "frequency": 3000, "resonance": 1.5, "envelope": { "decay": 0.12, "peak": 400 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 3000,
+        "resonance": 1.5,
+        "envelope": { "decay": 0.12, "peak": 400 }
+      },
       "envelope": { "attack": 0, "decay": 0.15, "sustain": 0, "release": 0.05 },
       "gain": 0.06
     },
@@ -211,19 +241,34 @@
     },
     "send": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 500, "resonance": 2, "envelope": { "attack": 0.005, "peak": 5000, "decay": 0.1 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 500,
+        "resonance": 2,
+        "envelope": { "attack": 0.005, "peak": 5000, "decay": 0.1 }
+      },
       "envelope": { "attack": 0, "decay": 0.12, "sustain": 0, "release": 0.04 },
       "gain": 0.1
     },
     "delete": {
       "source": { "type": "noise", "color": "pink" },
-      "filter": { "type": "bandpass", "frequency": 2000, "resonance": 3, "envelope": { "decay": 0.1, "peak": 400 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 2000,
+        "resonance": 3,
+        "envelope": { "decay": 0.1, "peak": 400 }
+      },
       "envelope": { "attack": 0, "decay": 0.12, "sustain": 0, "release": 0.04 },
       "gain": 0.12
     },
     "undo": {
       "source": { "type": "noise", "color": "pink" },
-      "filter": { "type": "bandpass", "frequency": 3000, "resonance": 2.5, "envelope": { "decay": 0.06, "peak": 1500 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 3000,
+        "resonance": 2.5,
+        "envelope": { "decay": 0.06, "peak": 1500 }
+      },
       "envelope": { "attack": 0, "decay": 0.08, "sustain": 0, "release": 0.025 },
       "gain": 0.09
     },
@@ -235,13 +280,23 @@
     },
     "swoosh": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 300, "resonance": 1.8, "envelope": { "attack": 0.01, "peak": 4000, "decay": 0.08 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 300,
+        "resonance": 1.8,
+        "envelope": { "attack": 0.01, "peak": 4000, "decay": 0.08 }
+      },
       "envelope": { "attack": 0.01, "decay": 0.12, "sustain": 0, "release": 0.04 },
       "gain": 0.1
     },
     "slide": {
       "source": { "type": "noise", "color": "white" },
-      "filter": { "type": "bandpass", "frequency": 500, "resonance": 1.5, "envelope": { "attack": 0.015, "peak": 3500, "decay": 0.08 } },
+      "filter": {
+        "type": "bandpass",
+        "frequency": 500,
+        "resonance": 1.5,
+        "envelope": { "attack": 0.015, "peak": 3500, "decay": 0.08 }
+      },
       "envelope": { "attack": 0.008, "decay": 0.1, "sustain": 0, "release": 0.035 },
       "gain": 0.08
     }

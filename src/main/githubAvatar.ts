@@ -31,28 +31,24 @@ export function extractGithubInfo(
   repoPath: string
 ): Promise<{ owner: string; repo: string } | null> {
   return new Promise((resolve) => {
-    exec(
-      'git config --get remote.origin.url',
-      { cwd: repoPath, timeout: 3000 },
-      (err, stdout) => {
-        if (err || !stdout) {
-          resolve(null)
-          return
-        }
-        const url = stdout.trim()
-        const sshMatch = SSH_RE.exec(url)
-        if (sshMatch) {
-          resolve({ owner: sshMatch[1], repo: sshMatch[2] })
-          return
-        }
-        const httpsMatch = HTTPS_RE.exec(url)
-        if (httpsMatch) {
-          resolve({ owner: httpsMatch[1], repo: httpsMatch[2] })
-          return
-        }
+    exec('git config --get remote.origin.url', { cwd: repoPath, timeout: 3000 }, (err, stdout) => {
+      if (err || !stdout) {
         resolve(null)
+        return
       }
-    )
+      const url = stdout.trim()
+      const sshMatch = SSH_RE.exec(url)
+      if (sshMatch) {
+        resolve({ owner: sshMatch[1], repo: sshMatch[2] })
+        return
+      }
+      const httpsMatch = HTTPS_RE.exec(url)
+      if (httpsMatch) {
+        resolve({ owner: httpsMatch[1], repo: httpsMatch[2] })
+        return
+      }
+      resolve(null)
+    })
   })
 }
 
@@ -62,10 +58,11 @@ export function extractGithubInfo(
 
 export async function fetchAvatarUrl(owner: string): Promise<string | null> {
   try {
-    const res = await fetch(
-      `https://github.com/${encodeURIComponent(owner)}.png?size=120`,
-      { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(5000) }
-    )
+    const res = await fetch(`https://github.com/${encodeURIComponent(owner)}.png?size=120`, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(5000)
+    })
     if (res.ok) return res.url
     return null
   } catch {

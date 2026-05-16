@@ -47,7 +47,7 @@ const PROMOTED_KEYS = new Set(['name', 'description', 'allowed-tools', 'argument
 interface SlashCommandFormValues {
   name: string
   description: string
-  allowedToolsRaw: string  // comma-separated
+  allowedToolsRaw: string // comma-separated
   argumentHint: string
   body: string
   source: 'user' | 'project'
@@ -99,7 +99,10 @@ function SlashCommandForm({
     return () => document.removeEventListener('keydown', onKey)
   }, [onCancel, addButtonRef])
 
-  function set<K extends keyof SlashCommandFormValues>(key: K, val: SlashCommandFormValues[K]): void {
+  function set<K extends keyof SlashCommandFormValues>(
+    key: K,
+    val: SlashCommandFormValues[K]
+  ): void {
     setValues((prev) => ({ ...prev, [key]: val }))
   }
 
@@ -129,7 +132,9 @@ function SlashCommandForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="cmd-source" className={labelClass}>Source</label>
+          <label htmlFor="cmd-source" className={labelClass}>
+            Source
+          </label>
           <select
             id="cmd-source"
             ref={firstFocusableRef}
@@ -179,7 +184,9 @@ function SlashCommandForm({
 
       {/* Description */}
       <div>
-        <label htmlFor="cmd-description" className={labelClass}>Description</label>
+        <label htmlFor="cmd-description" className={labelClass}>
+          Description
+        </label>
         <textarea
           id="cmd-description"
           rows={2}
@@ -193,7 +200,9 @@ function SlashCommandForm({
       {/* Argument hint + Allowed tools */}
       <div className="flex gap-3">
         <div className="flex-1 min-w-0">
-          <label htmlFor="cmd-arg-hint" className={labelClass}>Argument hint</label>
+          <label htmlFor="cmd-arg-hint" className={labelClass}>
+            Argument hint
+          </label>
           <input
             id="cmd-arg-hint"
             type="text"
@@ -205,8 +214,7 @@ function SlashCommandForm({
         </div>
         <div className="flex-1 min-w-0">
           <label htmlFor="cmd-tools" className={labelClass}>
-            Allowed tools{' '}
-            <span className="normal-case text-text-muted/60">(comma-separated)</span>
+            Allowed tools <span className="normal-case text-text-muted/60">(comma-separated)</span>
           </label>
           <input
             id="cmd-tools"
@@ -221,7 +229,9 @@ function SlashCommandForm({
 
       {/* Body */}
       <div>
-        <label htmlFor="cmd-body" className={labelClass}>Body (markdown)</label>
+        <label htmlFor="cmd-body" className={labelClass}>
+          Body (markdown)
+        </label>
         <textarea
           id="cmd-body"
           rows={10}
@@ -233,7 +243,10 @@ function SlashCommandForm({
       </div>
 
       {error && (
-        <p role="alert" className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2">
+        <p
+          role="alert"
+          className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2"
+        >
           {error}
         </p>
       )}
@@ -241,7 +254,9 @@ function SlashCommandForm({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => { handleSave().catch(() => {}) }}
+          onClick={() => {
+            handleSave().catch(() => {})
+          }}
           disabled={saving}
           className="text-xs px-3 py-1.5 rounded-md bg-accent text-white font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -249,7 +264,10 @@ function SlashCommandForm({
         </button>
         <button
           type="button"
-          onClick={() => { onCancel(); addButtonRef?.current?.focus() }}
+          onClick={() => {
+            onCancel()
+            addButtonRef?.current?.focus()
+          }}
           className="text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
         >
           Cancel
@@ -285,8 +303,14 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
   useEffect(() => {
     window.api.claudeAgents
       .listSlashCommands()
-      .then((c) => { setCommands(c); setLoading(false) })
-      .catch((err) => { console.error('[slash-commands] load failed', err); setLoading(false) })
+      .then((c) => {
+        setCommands(c)
+        setLoading(false)
+      })
+      .catch((err) => {
+        console.error('[slash-commands] load failed', err)
+        setLoading(false)
+      })
     window.api.projects
       .list()
       .then(setProjects)
@@ -298,7 +322,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       allowedTools: values.allowedToolsRaw.trim()
-        ? values.allowedToolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        ? values.allowedToolsRaw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null,
       argumentHint: values.argumentHint.trim(),
       body: values.body,
@@ -310,12 +337,18 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
     setAdding(false)
   }
 
-  async function handleUpdate(cmd: ClaudeSlashCommand, values: SlashCommandFormValues): Promise<void> {
+  async function handleUpdate(
+    cmd: ClaudeSlashCommand,
+    values: SlashCommandFormValues
+  ): Promise<void> {
     const draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> = {
       name: values.name.trim(),
       description: values.description.trim(),
       allowedTools: values.allowedToolsRaw.trim()
-        ? values.allowedToolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        ? values.allowedToolsRaw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null,
       argumentHint: values.argumentHint.trim(),
       body: values.body
@@ -347,7 +380,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
       description: cmd.description ?? '',
       allowedToolsRaw: cmd.allowedTools ? cmd.allowedTools.join(', ') : '',
       argumentHint: cmd.argumentHint ?? '',
-      body: cmd.bodyPreview,  // bodyPreview has the full body (up to 600 chars)
+      body: cmd.bodyPreview, // bodyPreview has the full body (up to 600 chars)
       source: cmd.source,
       projectId: cmd.projectId ?? ''
     }
@@ -371,7 +404,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
           ref={addButtonRef}
           type="button"
           aria-label="Add slash command"
-          onClick={() => { setAdding(true); setEditingPath(null) }}
+          onClick={() => {
+            setAdding(true)
+            setEditingPath(null)
+          }}
           className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
           <Plus size={12} weight="bold" aria-hidden="true" />
@@ -385,7 +421,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
           initial={defaultAddDraft}
           projects={projects}
           onSave={handleAdd}
-          onCancel={() => { setAdding(false); addButtonRef.current?.focus() }}
+          onCancel={() => {
+            setAdding(false)
+            addButtonRef.current?.focus()
+          }}
           addButtonRef={addButtonRef}
         />
       )}
@@ -441,14 +480,18 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                       <div className="flex items-start justify-between py-2.5 gap-3">
                         <button
                           type="button"
-                          onClick={() => setExpandedPath((cur) => (cur === cmd.path ? null : cmd.path))}
+                          onClick={() =>
+                            setExpandedPath((cur) => (cur === cmd.path ? null : cmd.path))
+                          }
                           className="flex-1 flex items-start justify-between gap-3 text-left cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
                           aria-expanded={isExpanded}
                           aria-label={`/${cmd.name} — ${isExpanded ? 'collapse' : 'expand'}`}
                         >
                           <div className="flex flex-col min-w-0 gap-0.5">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm text-text-primary font-medium">/{cmd.name}</span>
+                              <span className="text-sm text-text-primary font-medium">
+                                /{cmd.name}
+                              </span>
                               {cmd.argumentHint && (
                                 <span className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
                                   {cmd.argumentHint}
@@ -459,7 +502,8 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                                   className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
                                   title={cmd.allowedTools.join(', ')}
                                 >
-                                  {cmd.allowedTools.length} tool{cmd.allowedTools.length !== 1 ? 's' : ''}
+                                  {cmd.allowedTools.length} tool
+                                  {cmd.allowedTools.length !== 1 ? 's' : ''}
                                 </span>
                               )}
                             </div>
@@ -480,7 +524,11 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                           <button
                             type="button"
                             aria-label={`Edit /${cmd.name}`}
-                            onClick={() => { setEditingPath(cmd.path); setAdding(false); setExpandedPath(null) }}
+                            onClick={() => {
+                              setEditingPath(cmd.path)
+                              setAdding(false)
+                              setExpandedPath(null)
+                            }}
                             className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                           >
                             <Pencil size={12} aria-hidden="true" />
@@ -511,7 +559,9 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                                 const display = Array.isArray(v) ? v.join(', ') : v
                                 return (
                                   <div key={k} className="flex gap-2 text-[11px]">
-                                    <span className="text-text-muted font-mono flex-shrink-0">{k}:</span>
+                                    <span className="text-text-muted font-mono flex-shrink-0">
+                                      {k}:
+                                    </span>
                                     <span className="text-text-secondary break-all">{display}</span>
                                   </div>
                                 )
@@ -519,13 +569,17 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                             </div>
                           )}
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-text-muted">Body</span>
+                            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                              Body
+                            </span>
                             {cmd.bodyPreview ? (
                               <div className="font-mono whitespace-pre-wrap text-[11px] text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
                                 {cmd.bodyPreview}
                               </div>
                             ) : (
-                              <p className="text-[11px] text-text-muted italic">(no body content)</p>
+                              <p className="text-[11px] text-text-muted italic">
+                                (no body content)
+                              </p>
                             )}
                           </div>
                         </div>

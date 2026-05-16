@@ -44,7 +44,7 @@ const SOUND_PACK_OPTIONS: { value: SoundPack; label: string }[] = [
   { value: 'playful', label: 'Playful' },
   { value: 'crisp', label: 'Crisp' },
   { value: 'organic', label: 'Organic' },
-  { value: 'soft', label: 'Soft' },
+  { value: 'soft', label: 'Soft' }
 ]
 
 export function OrpheusAppearanceSection(): React.JSX.Element {
@@ -152,7 +152,10 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => { playSound('swoosh'); patch({ theme: opt.value }) }}
+                  onClick={() => {
+                    playSound('swoosh')
+                    patch({ theme: opt.value })
+                  }}
                   className={[
                     'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
                     opt.value === currentTheme
@@ -191,7 +194,10 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                       key={c.value}
                       type="button"
                       title={c.label}
-                      onClick={() => { playSound('tick'); patch({ accentColor: c.value }) }}
+                      onClick={() => {
+                        playSound('tick')
+                        patch({ accentColor: c.value })
+                      }}
                       className={[
                         'w-6 h-6 rounded-full border-2 transition-all cursor-pointer',
                         'hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-1 focus:ring-offset-transparent',
@@ -207,7 +213,10 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   type="button"
                   title="Reset to theme default"
-                  onClick={() => { playSound('tick'); patch({ accentColor: null }) }}
+                  onClick={() => {
+                    playSound('tick')
+                    patch({ accentColor: null })
+                  }}
                   className="ml-1 text-[10px] text-text-muted hover:text-text-secondary border border-border-default rounded px-1.5 py-0.5 transition-colors cursor-pointer leading-tight"
                 >
                   Reset
@@ -233,7 +242,10 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => { playSound('tick'); patch({ uiFontScale: opt.value }) }}
+                  onClick={() => {
+                    playSound('tick')
+                    patch({ uiFontScale: opt.value })
+                  }}
                   className={[
                     'px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer',
                     opt.value === currentScale
@@ -301,7 +313,9 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
               onClick={() => patch({ fetchGithubAvatars: !(uiState.fetchGithubAvatars ?? true) })}
               className={[
                 'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                (uiState.fetchGithubAvatars ?? true) ? 'bg-accent' : 'bg-surface-overlay border border-border-default'
+                (uiState.fetchGithubAvatars ?? true)
+                  ? 'bg-accent'
+                  : 'bg-surface-overlay border border-border-default'
               ].join(' ')}
             >
               <span

@@ -170,9 +170,7 @@ export function ProjectHeader({
   }
 
   const workspacesLabel =
-    workspaceCount === null
-      ? null
-      : `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
+    workspaceCount === null ? null : `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
   const activityLabel = lastActivityAt
     ? `active ${relativeTime(lastActivityAt)}`
     : 'no activity yet'

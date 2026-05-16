@@ -295,9 +295,11 @@ export function DataTable<R>({
                         alignClass(col.align)
                       ].join(' ')}
                     >
-                      {col.render
-                        ? col.render(row)
-                        : <span className="truncate min-w-0">{defaultCellValue(row, col.key)}</span>}
+                      {col.render ? (
+                        col.render(row)
+                      ) : (
+                        <span className="truncate min-w-0">{defaultCellValue(row, col.key)}</span>
+                      )}
                     </div>
                   ))}
                 </div>

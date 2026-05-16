@@ -14,6 +14,7 @@ An Objective-C++ Node-API addon (NAPI, no raw V8) that exports two functions:
 - **`unmount()`** — removes the SpikeHostView from its superview and clears the strong reference. Idempotent.
 
 `SpikeHostView` is a custom `NSView` subclass with:
+
 - `isFlipped → YES` (y=0 is the top-left, matching CSS/renderer coordinates)
 - `acceptsFirstResponder → YES`
 - `mouseDown:`, `mouseUp:`, `mouseDragged:`, `rightMouseDown:` overrides that call `NSLog(@"[spike-zorder] <event> @ (x, y)")`
@@ -47,19 +48,25 @@ An Objective-C++ Node-API addon (NAPI, no raw V8) that exports two functions:
 ## Gotchas Encountered
 
 ### ARC ownership on raw pointer cast
+
 ARC (Objective-C Automatic Reference Counting) rejects `NSView** reinterpret_cast` without explicit ownership. Fix:
+
 ```objc
 NSView* __unsafe_unretained contentView = (__bridge NSView*)(*reinterpret_cast<void**>(bufData));
 ```
+
 The contentView is owned by `NSWindow`; `__unsafe_unretained` is correct — we must not influence its retain count.
 
 ### electron-builder `files` glob whitelist trap
+
 Adding explicit positive globs to the `files` array in `electron-builder.yml` turns the list into a whitelist, silently excluding `out/` (electron-vite's build output). The error manifests as `out/main/index.js not found in archive`. **Fix**: use `extraResources` for native addons instead of adding them to `files`. This copies the .node to `Contents/Resources/` outside the asar cleanly.
 
 ### AppKit coordinate flip
+
 Electron's WKWebView-containing `contentView` is NOT flipped (y=0 at bottom, standard AppKit). CSS/renderer coordinates are top-left-origin. Mismatch means a naive `NSMakeRect(x, y, w, h)` draws the view at the wrong position. The addon converts: `flippedY = contentView.bounds.height - (y + h)`.
 
 ### `dispatch_async` is mandatory
+
 All NSView mutations must run on the AppKit main thread. The NAPI function is called from Node's main thread, which on macOS is the AppKit main thread — but the call arrives _synchronously_ from JS. Wrapping in `dispatch_async(dispatch_get_main_queue(), ^{…})` is still the safe pattern because it allows the JS call to return immediately and avoids any re-entrancy issues with the Electron event loop.
 
 ---
@@ -69,20 +76,25 @@ All NSView mutations must run on the AppKit main thread. The NAPI function is ca
 After `bun run build:unpack` completes:
 
 ### 1. Open the app
+
 ```
 open /Applications/Orpheus.app
 ```
 
 ### 2. Visual check
+
 - A translucent red rounded rectangle should appear at approximately x=80, y=80, 400×300 points from the top-left of the window content area.
 - The top strip (title bar / drag area) should be clear — no red panel in the top ~36px.
 - The three traffic light buttons (close/min/zoom) in the top-left should be fully visible and unobstructed.
 
 ### 3. Mouse event routing — NSView
+
 Open a Terminal alongside Orpheus and run:
+
 ```
 log stream --predicate 'process == "Orpheus"' --info
 ```
+
 Or open Console.app, filter by process "Orpheus", enable Info messages.
 
 - Click inside the red panel → expect log lines:
@@ -94,22 +106,29 @@ Or open Console.app, filter by process "Orpheus", enable Info messages.
 - Drag within the panel → expect `[spike-zorder] mouseDragged @ (…)` lines.
 
 ### 4. Drag region
+
 Click and drag the top strip of the window (above the red panel) — the window should move normally.
 
 ### 5. Traffic lights
+
 Click Close (red dot), Minimize (yellow), Zoom (green) — all should respond normally.
 
 ### 6. Web layer outside the panel
+
 Click in any area of the window outside the red panel — the web layer should be hit (right-click shows the Electron web context menu, or `Cmd+Option+I` opens DevTools).
 
 ### 7. Unmount button
+
 Click the "Hide spike panel" button in the top-right corner of the window.
+
 - The red panel should disappear.
 - The area it occupied should now be web-clickable (right-click there → web context menu).
 - The button label changes to "Panel hidden" and becomes disabled.
 
 ### 8. NSLog confirmation at mount time
+
 On app launch, the log stream should show:
+
 ```
 [spike-zorder] mounted SpikeHostView at (80,80) size 400x300
 ```

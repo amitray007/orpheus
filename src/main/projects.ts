@@ -76,9 +76,9 @@ export function addProject(path: string): ProjectRecord {
 
   // Dedup: if a project with this path already exists, bump last_opened_at
   // and return it instead of inserting a duplicate.
-  const existing = db
-    .prepare('SELECT * FROM projects WHERE path = ?')
-    .get(path) as ProjectRow | undefined
+  const existing = db.prepare('SELECT * FROM projects WHERE path = ?').get(path) as
+    | ProjectRow
+    | undefined
 
   if (existing) {
     db.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), existing.id)
@@ -144,4 +144,3 @@ export function setProjectExpandedInSidebar(id: string, expanded: boolean): void
   const db = getDb()
   db.prepare('UPDATE projects SET expanded_in_sidebar = ? WHERE id = ?').run(expanded ? 1 : 0, id)
 }
-

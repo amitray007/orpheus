@@ -28,7 +28,10 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
   while (i < lines.length && lines[i]?.trim() !== '---') {
     const line = lines[i]!
     const colonIdx = line.indexOf(':')
-    if (colonIdx === -1) { i++; continue }
+    if (colonIdx === -1) {
+      i++
+      continue
+    }
 
     const key = line.slice(0, colonIdx).trim()
     const rest = line.slice(colonIdx + 1)
@@ -53,7 +56,10 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
     // Inline flow sequence: [a, b, c]
     if (value.startsWith('[') && value.endsWith(']')) {
       const inner = value.slice(1, -1)
-      result[key] = inner.split(',').map((s) => s.trim()).filter(Boolean)
+      result[key] = inner
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
       i++
       continue
     }
@@ -70,7 +76,9 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
 // Frontmatter serialization (inverse of parseFrontmatter)
 // ---------------------------------------------------------------------------
 
-function serializeFrontmatter(record: Record<string, string | string[] | null | undefined>): string {
+function serializeFrontmatter(
+  record: Record<string, string | string[] | null | undefined>
+): string {
   const lines: string[] = []
   for (const [key, value] of Object.entries(record)) {
     if (value === null || value === undefined) continue
@@ -96,7 +104,10 @@ function serializeFrontmatter(record: Record<string, string | string[] | null | 
   return lines.join('\n')
 }
 
-function buildMdFile(frontmatter: Record<string, string | string[] | null | undefined>, body: string): string {
+function buildMdFile(
+  frontmatter: Record<string, string | string[] | null | undefined>,
+  body: string
+): string {
   const fm = serializeFrontmatter(frontmatter)
   if (fm) {
     return `---\n${fm}\n---\n${body}\n`
@@ -114,7 +125,10 @@ function atomicWrite(filePath: string, content: string): void {
   fs.renameSync(tmp, filePath)
 }
 
-function parseFile(filePath: string): { frontmatter: Record<string, string | string[]>; bodyPreview: string } {
+function parseFile(filePath: string): {
+  frontmatter: Record<string, string | string[]>
+  bodyPreview: string
+} {
   try {
     const content = fs.readFileSync(filePath, 'utf-8')
     const frontmatter = parseFrontmatter(content)
@@ -124,13 +138,19 @@ function parseFile(filePath: string): { frontmatter: Record<string, string | str
     let closingIdx = -1
     if (lines[0]?.trim() === '---') {
       for (let i = 1; i < lines.length; i++) {
-        if (lines[i]?.trim() === '---') { closingIdx = i; break }
+        if (lines[i]?.trim() === '---') {
+          closingIdx = i
+          break
+        }
       }
     }
 
     let bodyPreview = ''
     if (closingIdx !== -1) {
-      const raw = lines.slice(closingIdx + 1).join('\n').trim()
+      const raw = lines
+        .slice(closingIdx + 1)
+        .join('\n')
+        .trim()
       if (raw.length > 600) {
         bodyPreview = raw.slice(0, 600) + '\n…'
       } else {
@@ -312,7 +332,8 @@ export function addSlashCommand(draft: ClaudeSlashCommandDraft): void {
   const content = buildMdFile(
     {
       description: draft.description || null,
-      'allowed-tools': draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
+      'allowed-tools':
+        draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
       'argument-hint': draft.argumentHint || null
     },
     draft.body
@@ -342,7 +363,8 @@ export function updateSlashCommand(
   const content = buildMdFile(
     {
       description: draft.description || null,
-      'allowed-tools': draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
+      'allowed-tools':
+        draft.allowedTools && draft.allowedTools.length > 0 ? draft.allowedTools : null,
       'argument-hint': draft.argumentHint || null
     },
     draft.body

@@ -34,11 +34,13 @@ Our `Cargo.toml` had to comment out the dep and roll back the link-directive cha
 ## Paths forward
 
 ### A. Wait for upstream (lowest effort, indeterminate timeline)
+
 - Either Zig 0.15.3+ ships with macOS 26 SDK fixes
 - Or `libghostty-rs` updates to support Zig 0.16
 - Track: github.com/ziglang/zig releases, github.com/Uzaaft/libghostty-rs commits
 
 ### B. Vendor a prebuilt `libghostty-vt.a` (medium effort)
+
 - Build the `.a` on a Linux/older-macOS machine where Zig 0.15.2 + SDK align
 - Vendor the static lib + ghostty.h header into our repo
 - Skip `libghostty-vt-sys`'s build.rs entirely; write our own thin FFI bindings
@@ -46,12 +48,14 @@ Our `Cargo.toml` had to comment out the dep and roll back the link-directive cha
 - Maintenance: re-vendor when bumping Ghostty version
 
 ### C. Pivot to xterm.js (recommended right now)
+
 - 1–2 days of focused work to ship a working terminal stack
 - Title, clipboard, drag/drop, overlays all work out of the box
 - Lose Metal rendering, gain reliability + much smaller code surface
 - The libghostty-vt port stays as a future option once toolchain blockers clear
 
 ### D. Stay with current libghostty + accept missing titles
+
 - No work, no progress on the title issue
 - Other terminal functionality works fine
 

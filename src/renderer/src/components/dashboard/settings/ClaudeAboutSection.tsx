@@ -13,10 +13,13 @@ export function ClaudeAboutSection(): React.JSX.Element {
 
   useEffect(() => {
     // Doctor IPC already runs `claude --version` and `which claude`; reuse it.
-    window.api.doctor.check().then((result) => {
-      setClaudeVersion(result.claudeVersion)
-      setClaudePath(result.claudePath)
-    }).catch(console.error)
+    window.api.doctor
+      .check()
+      .then((result) => {
+        setClaudeVersion(result.claudeVersion)
+        setClaudePath(result.claudePath)
+      })
+      .catch(console.error)
   }, [])
 
   return (
@@ -50,10 +53,7 @@ export function ClaudeAboutSection(): React.JSX.Element {
           Documentation
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
-          <ExternalLinkRow
-            label="Claude Code docs"
-            url="https://code.claude.com/docs"
-          />
+          <ExternalLinkRow label="Claude Code docs" url="https://code.claude.com/docs" />
           <ExternalLinkRow
             label="Claude Code changelog"
             url="https://code.claude.com/docs/changelog"

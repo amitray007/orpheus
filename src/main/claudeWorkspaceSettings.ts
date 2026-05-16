@@ -1,5 +1,10 @@
 import { getDb } from './db'
-import type { ClaudeWorkspaceSettings, ClaudeWorkspaceSettingsOverrides, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
+import type {
+  ClaudeWorkspaceSettings,
+  ClaudeWorkspaceSettingsOverrides,
+  ClaudePermissionMode,
+  ClaudeEffort
+} from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -22,11 +27,19 @@ function rowToRecord(row: Row): ClaudeWorkspaceSettings {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_PERMISSION_MODES: ClaudePermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions'
+]
 const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
 
 function validatePatch(patch: ClaudeWorkspaceSettingsOverrides): void {
-  if (patch.permissionMode !== undefined && !VALID_PERMISSION_MODES.includes(patch.permissionMode)) {
+  if (
+    patch.permissionMode !== undefined &&
+    !VALID_PERMISSION_MODES.includes(patch.permissionMode)
+  ) {
     throw new Error(`Invalid permissionMode: ${patch.permissionMode}`)
   }
   if (patch.effort !== undefined && !VALID_EFFORTS.includes(patch.effort)) {
@@ -67,7 +80,7 @@ export function updateClaudeWorkspaceSettings(
     if (value === undefined || value === null) {
       delete merged[key as keyof ClaudeWorkspaceSettingsOverrides]
     } else {
-      (merged as Record<string, unknown>)[key] = value
+      ;(merged as Record<string, unknown>)[key] = value
     }
   }
 

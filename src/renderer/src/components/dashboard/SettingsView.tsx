@@ -85,29 +85,74 @@ const GROUPS: SectionGroup[] = [
       // First entry is the default landing section — Orpheus → General.
       // (Keeps the existing 'orpheus-appearance' id so the searchIndex and
       //  any deep-link slugs continue resolving.)
-      { id: 'orpheus-appearance', label: 'General',          icon: Gear,             Component: OrpheusAppearanceSection },
-      { id: 'orpheus-sidebar',    label: 'Sidebar',          icon: SidebarSimple,    Component: OrpheusSidebarSection },
-      { id: 'orpheus-window',         label: 'Window',        icon: AppWindow,        Component: OrpheusWindowSection },
-      { id: 'orpheus-notifications',  label: 'Notifications', icon: Bell,             Component: OrpheusNotificationsSection },
-      { id: 'orpheus-updates',        label: 'Updates',       icon: ArrowsClockwise,  Component: OrpheusUpdatesSection },
-      { id: 'orpheus-developer',  label: 'Developer',        icon: Code,             Component: OrpheusDeveloperSection },
-      { id: 'orpheus-about',      label: 'About Orpheus',    icon: Info,             Component: OrpheusAboutSection }
+      {
+        id: 'orpheus-appearance',
+        label: 'General',
+        icon: Gear,
+        Component: OrpheusAppearanceSection
+      },
+      {
+        id: 'orpheus-sidebar',
+        label: 'Sidebar',
+        icon: SidebarSimple,
+        Component: OrpheusSidebarSection
+      },
+      { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
+      {
+        id: 'orpheus-notifications',
+        label: 'Notifications',
+        icon: Bell,
+        Component: OrpheusNotificationsSection
+      },
+      {
+        id: 'orpheus-updates',
+        label: 'Updates',
+        icon: ArrowsClockwise,
+        Component: OrpheusUpdatesSection
+      },
+      {
+        id: 'orpheus-developer',
+        label: 'Developer',
+        icon: Code,
+        Component: OrpheusDeveloperSection
+      },
+      { id: 'orpheus-about', label: 'About Orpheus', icon: Info, Component: OrpheusAboutSection }
     ]
   },
   {
     label: 'Claude',
     sections: [
-      { id: 'claude-general',     label: 'General',          icon: Gear,        Component: ClaudeGeneralSection },
-      { id: 'claude-display',     label: 'Display',          icon: Monitor,     Component: ClaudeDisplaySection },
-      { id: 'claude-permissions', label: 'Permissions',      icon: ShieldCheck, Component: ClaudePermissionsSection },
-      { id: 'claude-auth',        label: 'Authentication',   icon: Key,         Component: ClaudeAuthSection },
-      { id: 'claude-memory',      label: 'Memory & Context', icon: Brain,       Component: ClaudeMemorySection },
-      { id: 'claude-tools',          label: 'Tools',          icon: Wrench,   Component: ClaudeToolsSection },
-      { id: 'claude-slash-commands', label: 'Slash commands', icon: Command,  Component: ClaudeSlashCommandsSection },
-      { id: 'claude-subagents',      label: 'Subagents',      icon: Robot,    Component: ClaudeSubagentsSection },
-      { id: 'claude-hooks',          label: 'Hooks',          icon: FlowArrow, Component: ClaudeHooksSection },
-      { id: 'claude-developer',   label: 'Developer',        icon: Code,        Component: ClaudeDeveloperSection },
-      { id: 'claude-about',       label: 'About Claude',     icon: Info,        Component: ClaudeAboutSection }
+      { id: 'claude-general', label: 'General', icon: Gear, Component: ClaudeGeneralSection },
+      { id: 'claude-display', label: 'Display', icon: Monitor, Component: ClaudeDisplaySection },
+      {
+        id: 'claude-permissions',
+        label: 'Permissions',
+        icon: ShieldCheck,
+        Component: ClaudePermissionsSection
+      },
+      { id: 'claude-auth', label: 'Authentication', icon: Key, Component: ClaudeAuthSection },
+      {
+        id: 'claude-memory',
+        label: 'Memory & Context',
+        icon: Brain,
+        Component: ClaudeMemorySection
+      },
+      { id: 'claude-tools', label: 'Tools', icon: Wrench, Component: ClaudeToolsSection },
+      {
+        id: 'claude-slash-commands',
+        label: 'Slash commands',
+        icon: Command,
+        Component: ClaudeSlashCommandsSection
+      },
+      {
+        id: 'claude-subagents',
+        label: 'Subagents',
+        icon: Robot,
+        Component: ClaudeSubagentsSection
+      },
+      { id: 'claude-hooks', label: 'Hooks', icon: FlowArrow, Component: ClaudeHooksSection },
+      { id: 'claude-developer', label: 'Developer', icon: Code, Component: ClaudeDeveloperSection },
+      { id: 'claude-about', label: 'About Claude', icon: Info, Component: ClaudeAboutSection }
     ]
   }
 ]
@@ -153,7 +198,10 @@ export function SettingsView(): React.JSX.Element {
     // Defer until after the new section has rendered into the DOM
     const raf = requestAnimationFrame(() => {
       const el = document.getElementById(pendingScrollId)
-      if (!el) { setPendingScrollId(null); return }
+      if (!el) {
+        setPendingScrollId(null)
+        return
+      }
       el.scrollIntoView({ block: 'center', behavior: 'smooth' })
       el.setAttribute('data-flash', '1')
       flashTimer = setTimeout(() => {
@@ -293,9 +341,7 @@ function GroupedNav(props: {
       {props.groups.map((group, groupIdx) => (
         <div key={group.label}>
           {/* Divider between groups */}
-          {groupIdx > 0 && (
-            <div className="my-3 mx-3 border-t border-border-default/60" />
-          )}
+          {groupIdx > 0 && <div className="my-3 mx-3 border-t border-border-default/60" />}
           {/* Group label */}
           <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-text-muted select-none">
             {group.label}

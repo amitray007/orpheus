@@ -30,6 +30,7 @@ If a URL 404s or moves, fall back to crawling from the docs map.
 ### Phase 1 — Fetch + normalize
 
 Fetch the env-vars doc. Extract:
+
 - Every variable name matching `[A-Z][A-Z0-9_]+` that appears under an Environment Variables section heading or in an `export ENV=...` example.
 - Categorize into the same buckets used in `env-vars.json` (auth, endpoint, model, request, bedrock, context, effort, fastMode, capabilities, bash, fileOps, git, memory, display, background, tasks, telemetry, otel, mcp, ide, plugins, session, remote, tls, network, tools, internal, packageManager, providerFlags). If a new category is needed, propose its name in your report.
 
@@ -37,14 +38,15 @@ Fetch the env-vars doc. Extract:
 
 Read `docs/snapshots/env-vars.json`. For each documented var, determine its status:
 
-| Status | Meaning |
-|---|---|
-| **New** | In docs, not in snapshot. → Suggest wiring or deferral. |
-| **Existing-and-wired** | In snapshot with `wired: true`. → No action. |
+| Status                    | Meaning                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| **New**                   | In docs, not in snapshot. → Suggest wiring or deferral.                                  |
+| **Existing-and-wired**    | In snapshot with `wired: true`. → No action.                                             |
 | **Existing-and-deferred** | In snapshot with `wired: false` + a `note`. → No action unless user asks to wire it now. |
-| **Removed** | In snapshot but not in latest docs. → Note for removal/deprecation. |
+| **Removed**               | In snapshot but not in latest docs. → Note for removal/deprecation.                      |
 
 For each **New** var, decide:
+
 - Is it auto-managed by claude (e.g. OAuth tokens, session IDs, REMOTE flags)? → mark `wired: false, note: "Auto-set by claude"` in the snapshot. Skip wiring.
 - Is it system-managed but a user might want to read (e.g. CLAUDECODE)? → `wired: false, note: "Set in subprocesses"`. Skip.
 - Is it part of an advanced subsystem (OTEL, plugins, IDE, mTLS, custom model defaults)? → `wired: false, note: "Use Custom env vars editor"`. Skip typed wiring.

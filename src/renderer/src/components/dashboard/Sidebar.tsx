@@ -1,16 +1,14 @@
 import type React from 'react'
 import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
-import {
-  Kanban,
-  Plus,
-  CaretDown,
-  CaretRight,
-  Stack,
-  Archive,
-  Gear
-} from '@phosphor-icons/react'
-import type { ProjectRecord, SessionRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
+import { Kanban, Plus, CaretDown, CaretRight, Stack, Archive, Gear } from '@phosphor-icons/react'
+import type {
+  ProjectRecord,
+  SessionRecord,
+  WorkspaceRecord,
+  GitStatus,
+  WorkspaceActivityDetail
+} from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -115,9 +113,12 @@ function WorkspaceSubRow({
 
   useEffect(() => {
     const workspaceId = workspace.id
-    window.api.workspaces.getTitle(workspaceId).then((t) => {
-      setTerminalTitle(t)
-    }).catch(() => {})
+    window.api.workspaces
+      .getTitle(workspaceId)
+      .then((t) => {
+        setTerminalTitle(t)
+      })
+      .catch(() => {})
     const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) {
         setTerminalTitle(e.title || null)
@@ -301,9 +302,18 @@ interface ProjectRowProps {
   wsDragId: string | null
   wsDropTargetId: string | null
   wsDropPos: 'before' | 'after'
-  onWorkspaceDragStart: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
+  onWorkspaceDragStart: (
+    e: React.DragEvent<HTMLDivElement>,
+    wsId: string,
+    projectId: string
+  ) => void
   onWorkspaceDragOver: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
-  onWorkspaceDrop: (e: React.DragEvent<HTMLDivElement>, targetId: string, projectId: string, workspaces: WorkspaceRecord[]) => void
+  onWorkspaceDrop: (
+    e: React.DragEvent<HTMLDivElement>,
+    targetId: string,
+    projectId: string,
+    workspaces: WorkspaceRecord[]
+  ) => void
   onWorkspaceDragEnd: () => void
 }
 
@@ -557,7 +567,11 @@ interface SidebarProps {
   onRenameProject: (id: string, newName: string) => void | Promise<void>
   onRequestRemoveProject: (project: ProjectRecord) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
-  onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
+  onRenameWorkspace: (
+    workspaceId: string,
+    projectId: string,
+    newName: string
+  ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
@@ -660,7 +674,11 @@ export function Sidebar({
     setRenamingWorkspaceId(id)
   }
 
-  function handleFinishRenameWorkspace(workspaceId: string, projectId: string, newName: string): void {
+  function handleFinishRenameWorkspace(
+    workspaceId: string,
+    projectId: string,
+    newName: string
+  ): void {
     onRenameWorkspace(workspaceId, projectId, newName)
     setRenamingWorkspaceId(null)
   }
@@ -853,7 +871,9 @@ export function Sidebar({
                         workspaceActivities={workspaceActivities}
                         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
                         sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
-                        sessionUserPreviewBySessionId={sessionUserPreviewsByProject.get(p.id) ?? new Map()}
+                        sessionUserPreviewBySessionId={
+                          sessionUserPreviewsByProject.get(p.id) ?? new Map()
+                        }
                         onSelect={() => onSelectProject(p.id)}
                         onToggleExpand={() => onToggleProjectExpand(p.id)}
                         onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
@@ -867,7 +887,9 @@ export function Sidebar({
                         onAddWorkspace={() => onAddWorkspace(p.id)}
                         renamingWorkspaceId={renamingWorkspaceId}
                         onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                        onFinishRenameWorkspace={(wsId, name) => handleFinishRenameWorkspace(wsId, p.id, name)}
+                        onFinishRenameWorkspace={(wsId, name) =>
+                          handleFinishRenameWorkspace(wsId, p.id, name)
+                        }
                         onCancelRenameWorkspace={handleCancelRenameWorkspace}
                         onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
                         wsDragId={wsDragId}

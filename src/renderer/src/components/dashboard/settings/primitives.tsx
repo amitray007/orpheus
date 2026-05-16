@@ -15,16 +15,27 @@ export interface SettingRowProps {
   children: React.ReactNode
 }
 function labelToSlug(label: string): string {
-  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
 }
 
-export function SettingRow({ label, description, mapsTo, children }: SettingRowProps): React.JSX.Element {
+export function SettingRow({
+  label,
+  description,
+  mapsTo,
+  children
+}: SettingRowProps): React.JSX.Element {
   // Two-column row: label+description on the left, control on the right.
   // On narrow widths it stacks; min 480px wide it goes side-by-side.
   const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
   const id = `setting-${labelToSlug(label)}`
   return (
-    <div id={id} className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0">
+    <div
+      id={id}
+      className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6 py-4 border-b border-border-default/40 last:border-b-0"
+    >
       <div className="flex flex-col gap-0.5 min-w-0 sm:max-w-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           <label className="text-sm font-medium text-text-primary">{label}</label>
@@ -150,7 +161,10 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
       role="switch"
       aria-checked={value}
       aria-label={ariaLabel}
-      onClick={() => { playSound(!value ? 'toggle-on' : 'toggle-off'); onChange(!value) }}
+      onClick={() => {
+        playSound(!value ? 'toggle-on' : 'toggle-off')
+        onChange(!value)
+      }}
       className={[
         'relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-base',
@@ -178,18 +192,19 @@ export interface NumberInputProps {
   className?: string
 }
 
-export function NumberInput({ value, onChange, placeholder, className }: NumberInputProps): React.JSX.Element {
+export function NumberInput({
+  value,
+  onChange,
+  placeholder,
+  className
+}: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
   const hasFocus = useRef(false)
 
   // Sync external value changes when not focused
   // eslint-disable-next-line react-hooks/refs -- read-only ref check to derive display value; focus tracking avoids wiping user input
-  const displayValue = hasFocus.current
-    ? local
-    : value === null
-      ? ''
-      : String(value)
+  const displayValue = hasFocus.current ? local : value === null ? '' : String(value)
 
   function commit(): void {
     hasFocus.current = false
@@ -244,7 +259,13 @@ export interface RuleListEditorProps {
   mapsTo?: string | string[]
 }
 
-export function RuleListEditor({ value, onChange, placeholder, label, mapsTo }: RuleListEditorProps): React.JSX.Element {
+export function RuleListEditor({
+  value,
+  onChange,
+  placeholder,
+  label,
+  mapsTo
+}: RuleListEditorProps): React.JSX.Element {
   const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
   const [localItems, setLocalItems] = useState<string[]>(value)
   // Keep in sync with external changes (e.g. initial load)
@@ -389,7 +410,9 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
           onClick={() => setShowCustom(true)}
           className={[
             'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            isCustom ? 'bg-accent/15 text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
+            isCustom
+              ? 'bg-accent/15 text-text-primary'
+              : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
           ].join(' ')}
         >
           Custom…

@@ -29,7 +29,9 @@ function TestConnectionButton({ disabled }: TestConnectionButtonProps): React.JS
   return (
     <div className="flex items-center gap-3">
       <button
-        onClick={() => { run().catch(() => {}) }}
+        onClick={() => {
+          run().catch(() => {})
+        }}
         disabled={disabled || state === 'pending'}
         className="text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
@@ -48,10 +50,7 @@ function TestConnectionButton({ disabled }: TestConnectionButtonProps): React.JS
         </span>
       )}
       {state !== 'idle' && state !== 'pending' && !state.ok && (
-        <span
-          className="flex items-center gap-1.5 text-xs text-red-400"
-          title={state.reason}
-        >
+        <span className="flex items-center gap-1.5 text-xs text-red-400" title={state.reason}>
           <XCircle size={13} weight="fill" />
           {state.status === 401 ? 'Key rejected' : state.reason}
         </span>
@@ -70,14 +69,9 @@ interface ApiKeyInputProps {
   onClear: () => void
 }
 
-function ApiKeyInput({
-  hasKey,
-  onSave,
-  onClear
-}: ApiKeyInputProps): React.JSX.Element {
+function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.Element {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
-
 
   if (hasKey && !editing) {
     return (
@@ -201,7 +195,11 @@ interface ProviderTextInputProps {
   onSave: (value: string) => void
 }
 
-function ProviderTextInput({ value, placeholder, onSave }: ProviderTextInputProps): React.JSX.Element {
+function ProviderTextInput({
+  value,
+  placeholder,
+  onSave
+}: ProviderTextInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value)
 
   useEffect(() => {
@@ -263,9 +261,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
     }
   }, [])
 
-  function applyPatch(
-    patch: Parameters<typeof window.api.claudeAuth.update>[0]
-  ): void {
+  function applyPatch(patch: Parameters<typeof window.api.claudeAuth.update>[0]): void {
     if (!state) return
     window.api.claudeAuth
       .update(patch)
@@ -283,8 +279,8 @@ export function ClaudeAuthSection(): React.JSX.Element {
     <div>
       <h2 className="text-base font-semibold text-text-primary">Authentication</h2>
       <p className="text-xs text-text-muted mt-1">
-        API key, auth token, base URL, and cloud provider selection. Stored locally in the
-        Orpheus database (single-user macOS).
+        API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
+        database (single-user macOS).
       </p>
     </div>
   )
@@ -329,7 +325,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
       </section>
 
       {/* Credentials — shown for anthropic only; Foundry and Bedrock use provider-specific fields */}
-      {(state.cloudProvider === 'anthropic') && (
+      {state.cloudProvider === 'anthropic' && (
         <section className="flex flex-col">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
             Credentials
@@ -357,10 +353,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
               description="Proxy or local model endpoint. Leave blank to use the provider default."
               mapsTo="ANTHROPIC_BASE_URL"
             >
-              <BaseUrlInput
-                value={state.baseUrl}
-                onSave={(url) => applyPatch({ baseUrl: url })}
-              />
+              <BaseUrlInput value={state.baseUrl} onSave={(url) => applyPatch({ baseUrl: url })} />
             </SettingRow>
           </div>
         </section>

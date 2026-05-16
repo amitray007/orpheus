@@ -48,7 +48,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     >
       {loading ? (
         <span className="inline-flex items-center gap-2">
-          <DotmSquare13 size={size === 'sm' ? 14 : 18} dotSize={size === 'sm' ? 2 : 3} speed={1.4} animated />
+          <DotmSquare13
+            size={size === 'sm' ? 14 : 18}
+            dotSize={size === 'sm' ? 2 : 3}
+            speed={1.4}
+            animated
+          />
           {children}
         </span>
       ) : (

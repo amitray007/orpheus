@@ -84,33 +84,39 @@ Sidebar collapse transitions from 240px ↔ 56px via CSS `transition-[width] dur
 ## Elements
 
 ### Topbar (36px)
+
 - Existing `TitleBarDragRegion` (36px transparent overlay with `-webkit-app-region: drag`) stays as-is
 - Left: hamburger `☰` button (~36px hit area), `WebkitAppRegion: 'no-drag'`, hover state, accessible label "Toggle sidebar"
 - Center: **Orpheus.** wordmark (small — `text-base font-semibold tracking-tight text-text-primary` with the `.` in `text-accent`). Smaller than `MainPage`'s `text-4xl` — this is identity, not the main feature.
 - Right: settings gear `⚙` button, `WebkitAppRegion: 'no-drag'`, hover state, accessible label "Settings". Placeholder for v0 — clicking does nothing yet.
 
 ### Sidebar
+
 - Width: 240px expanded / 56px collapsed. CSS transition on width.
 - Background: `bg-surface-raised`. Right border: `border-r border-border-default`.
 - Padding: `px-2 py-4` expanded, `px-2 py-4` collapsed (icons stay centered)
 
 Top nav items (each ~36–40px tall, `rounded-md`, hover `bg-surface-overlay`):
-- **▣  Dashboard** — active state: `bg-accent/10 border-l-2 border-accent text-text-primary`
-- **⌕  Sessions** — inactive: `text-text-secondary hover:text-text-primary`
+
+- **▣ Dashboard** — active state: `bg-accent/10 border-l-2 border-accent text-text-primary`
+- **⌕ Sessions** — inactive: `text-text-secondary hover:text-text-primary`
 
 In collapsed mode: only the glyph shows, label hides. Tooltip on hover (defer to a later polish chunk).
 
 Below nav, `mt-6`:
+
 - **PINNED** section header — `text-xs font-medium uppercase tracking-wide text-text-muted`. Empty state shows nothing below the header. Header label hides when sidebar is collapsed.
 - **PROJECTS** section header — same styling. Includes a small `[+]` button (right-aligned in the header row, accessible label "Add project") — placeholder, non-functional in shell chunk. Below header: "(coming soon)" text in `text-text-muted text-sm` (also hides when collapsed).
 
 ### Main content area
+
 - Padding: `px-8 py-6`
 - Three vertical sections, each composed of:
   - Section heading: `text-xs font-medium uppercase tracking-wider text-text-secondary mb-2`
   - Placeholder card: `bg-surface-raised border border-border-default rounded-lg p-8 text-sm text-text-muted` — body is just `(coming soon)` centered
 
 Sections in order:
+
 1. **ACTIVITY** — will host the contribution heatmap (W2)
 2. **RECENT PROJECTS** — will host a 3–5 row recent projects list (W2)
 3. **RECENT SESSIONS** — will host a 3–5 row recent sessions list (W2)
@@ -118,6 +124,7 @@ Sections in order:
 Gap between sections: `gap-6`.
 
 ### Footer (~28px)
+
 - Background: `bg-surface-raised`, top border: `border-t border-border-default`
 - Padding: `px-4 py-1.5`, `flex items-center justify-between`
 - Left: `Orpheus 0.0.1` — `text-xs text-text-muted`. Version pulls from `package.json` (via Electron's `app.getVersion()` over IPC, or hardcode for v0 — see Build notes).
@@ -144,19 +151,19 @@ Gap between sections: `gap-6`.
 
 ## Design tokens
 
-| Region | Token |
-|---|---|
-| Page bg | `bg-surface-base` |
-| Topbar | transparent over `bg-surface-base` (drag region overlays) |
-| Sidebar bg | `bg-surface-raised` |
-| Sidebar border | `border-r border-border-default` |
-| Footer bg | `bg-surface-raised` |
-| Footer border | `border-t border-border-default` |
-| Section heading | `text-xs font-medium uppercase tracking-wider text-text-secondary` |
+| Region           | Token                                                                                   |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| Page bg          | `bg-surface-base`                                                                       |
+| Topbar           | transparent over `bg-surface-base` (drag region overlays)                               |
+| Sidebar bg       | `bg-surface-raised`                                                                     |
+| Sidebar border   | `border-r border-border-default`                                                        |
+| Footer bg        | `bg-surface-raised`                                                                     |
+| Footer border    | `border-t border-border-default`                                                        |
+| Section heading  | `text-xs font-medium uppercase tracking-wider text-text-secondary`                      |
 | Placeholder card | `bg-surface-raised border border-border-default rounded-lg p-8 text-sm text-text-muted` |
-| Active nav | `bg-accent/10 border-l-2 border-accent text-text-primary` |
-| Inactive nav | `text-text-secondary hover:text-text-primary hover:bg-surface-overlay` |
-| Connected dot | `text-accent` or `bg-green-500` (green felt more "live" than gold for status) |
+| Active nav       | `bg-accent/10 border-l-2 border-accent text-text-primary`                               |
+| Inactive nav     | `text-text-secondary hover:text-text-primary hover:bg-surface-overlay`                  |
+| Connected dot    | `text-accent` or `bg-green-500` (green felt more "live" than gold for status)           |
 
 ---
 

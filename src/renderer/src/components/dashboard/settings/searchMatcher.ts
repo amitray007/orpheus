@@ -23,9 +23,7 @@ function exactSubstring(target: string, query: string): boolean {
 function tokenPrefixMatch(target: string, query: string): boolean {
   const queryTokens = query.split(' ').filter(Boolean)
   const targetWords = target.split(' ').filter(Boolean)
-  return queryTokens.every((qt) =>
-    targetWords.some((tw) => tw.startsWith(qt))
-  )
+  return queryTokens.every((qt) => targetWords.some((tw) => tw.startsWith(qt)))
 }
 
 function subsequenceScore(target: string, query: string): number {

@@ -25,10 +25,7 @@ export function TopBar({
       className="h-11 flex items-stretch bg-surface-raised border-b border-border-default flex-shrink-0"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <div
-        className="flex items-center flex-shrink-0"
-        style={{ width: leftWidth }}
-      >
+      <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
         {/* Traffic-light spacer — reserves 80px on the left */}
         <div className="w-[80px] flex-shrink-0" />
 
@@ -47,10 +44,7 @@ export function TopBar({
       </div>
 
       {/* Workspace title bar gets portaled into here when in workspace view */}
-      <div
-        id="topbar-workspace-slot"
-        className="flex-1 flex items-center min-w-0"
-      />
+      <div id="topbar-workspace-slot" className="flex-1 flex items-center min-w-0" />
     </header>
   )
 }

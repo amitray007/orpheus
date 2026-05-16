@@ -47,7 +47,7 @@ for (const target of TARGETS) {
     try {
       execSync('npm install node-addon-api --no-save', {
         cwd: pkgDir,
-        stdio: 'inherit',
+        stdio: 'inherit'
       })
     } catch {
       // ignore
@@ -60,7 +60,7 @@ for (const target of TARGETS) {
     `--target=${electronVersion}`,
     '--dist-url=https://electronjs.org/headers',
     '--arch=arm64',
-    '--verbose',
+    '--verbose'
   ].join(' ')
 
   console.log(`[build-native] $ ${cmd}`)

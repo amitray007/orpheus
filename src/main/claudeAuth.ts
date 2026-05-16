@@ -1,5 +1,10 @@
 import { getDb } from './db'
-import type { ClaudeAuthState, ClaudeAuthPatch, ClaudeAuthTestResult, ClaudeCloudProvider } from '../shared/types'
+import type {
+  ClaudeAuthState,
+  ClaudeAuthPatch,
+  ClaudeAuthTestResult,
+  ClaudeCloudProvider
+} from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,7 +33,9 @@ type Row = {
 function readRow(): Row | undefined {
   const db = getDb()
   return db
-    .prepare('SELECT cloud_provider, auth_api_key, auth_token, auth_base_url, auth_aws_region, auth_vertex_project_id, auth_vertex_region, auth_foundry_api_key, auth_foundry_resource, auth_foundry_base_url, auth_bedrock_bearer_token FROM claude_global_settings WHERE id = 1')
+    .prepare(
+      'SELECT cloud_provider, auth_api_key, auth_token, auth_base_url, auth_aws_region, auth_vertex_project_id, auth_vertex_region, auth_foundry_api_key, auth_foundry_resource, auth_foundry_base_url, auth_bedrock_bearer_token FROM claude_global_settings WHERE id = 1'
+    )
     .get() as Row | undefined
 }
 
@@ -64,13 +71,30 @@ export function updateClaudeAuth(patch: ClaudeAuthPatch): ClaudeAuthState {
     auth_api_key: patch.apiKey !== undefined ? patch.apiKey : (existing?.auth_api_key ?? ''),
     auth_token: patch.authToken !== undefined ? patch.authToken : (existing?.auth_token ?? ''),
     auth_base_url: patch.baseUrl !== undefined ? patch.baseUrl : (existing?.auth_base_url ?? ''),
-    auth_aws_region: patch.awsRegion !== undefined ? patch.awsRegion : (existing?.auth_aws_region ?? ''),
-    auth_vertex_project_id: patch.vertexProjectId !== undefined ? patch.vertexProjectId : (existing?.auth_vertex_project_id ?? ''),
-    auth_vertex_region: patch.vertexRegion !== undefined ? patch.vertexRegion : (existing?.auth_vertex_region ?? ''),
-    auth_foundry_api_key: patch.foundryApiKey !== undefined ? patch.foundryApiKey : (existing?.auth_foundry_api_key ?? ''),
-    auth_foundry_resource: patch.foundryResource !== undefined ? patch.foundryResource : (existing?.auth_foundry_resource ?? ''),
-    auth_foundry_base_url: patch.foundryBaseUrl !== undefined ? patch.foundryBaseUrl : (existing?.auth_foundry_base_url ?? ''),
-    auth_bedrock_bearer_token: patch.bedrockBearerToken !== undefined ? patch.bedrockBearerToken : (existing?.auth_bedrock_bearer_token ?? '')
+    auth_aws_region:
+      patch.awsRegion !== undefined ? patch.awsRegion : (existing?.auth_aws_region ?? ''),
+    auth_vertex_project_id:
+      patch.vertexProjectId !== undefined
+        ? patch.vertexProjectId
+        : (existing?.auth_vertex_project_id ?? ''),
+    auth_vertex_region:
+      patch.vertexRegion !== undefined ? patch.vertexRegion : (existing?.auth_vertex_region ?? ''),
+    auth_foundry_api_key:
+      patch.foundryApiKey !== undefined
+        ? patch.foundryApiKey
+        : (existing?.auth_foundry_api_key ?? ''),
+    auth_foundry_resource:
+      patch.foundryResource !== undefined
+        ? patch.foundryResource
+        : (existing?.auth_foundry_resource ?? ''),
+    auth_foundry_base_url:
+      patch.foundryBaseUrl !== undefined
+        ? patch.foundryBaseUrl
+        : (existing?.auth_foundry_base_url ?? ''),
+    auth_bedrock_bearer_token:
+      patch.bedrockBearerToken !== undefined
+        ? patch.bedrockBearerToken
+        : (existing?.auth_bedrock_bearer_token ?? '')
   }
   const now = Date.now()
   db.prepare(
@@ -81,10 +105,18 @@ export function updateClaudeAuth(patch: ClaudeAuthPatch): ClaudeAuthState {
          auth_bedrock_bearer_token = ?, updated_at = ?
      WHERE id = 1`
   ).run(
-    next.cloud_provider, next.auth_api_key, next.auth_token, next.auth_base_url,
-    next.auth_aws_region, next.auth_vertex_project_id, next.auth_vertex_region,
-    next.auth_foundry_api_key, next.auth_foundry_resource, next.auth_foundry_base_url,
-    next.auth_bedrock_bearer_token, now
+    next.cloud_provider,
+    next.auth_api_key,
+    next.auth_token,
+    next.auth_base_url,
+    next.auth_aws_region,
+    next.auth_vertex_project_id,
+    next.auth_vertex_region,
+    next.auth_foundry_api_key,
+    next.auth_foundry_resource,
+    next.auth_foundry_base_url,
+    next.auth_bedrock_bearer_token,
+    now
   )
   return getClaudeAuthState()
 }
@@ -146,8 +178,7 @@ export async function testAnthropicConnection(): Promise<ClaudeAuthTestResult> {
 
   // Prefer the user's configured base URL, then their shell env override, then
   // the canonical API endpoint as a final fallback.
-  const base =
-    row.auth_base_url || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
+  const base = row.auth_base_url || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
   const url = base.replace(/\/+$/, '') + '/v1/models'
   const started = Date.now()
 

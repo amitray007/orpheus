@@ -46,7 +46,16 @@ function parseMcpServers(
       }
     }
 
-    const entry: DiscoveredMcpServer = { name, transport, command, args, env, url, source, filePath }
+    const entry: DiscoveredMcpServer = {
+      name,
+      transport,
+      command,
+      args,
+      env,
+      url,
+      source,
+      filePath
+    }
     if (ctx) {
       entry.projectId = ctx.projectId
       entry.projectName = ctx.projectName
@@ -183,7 +192,9 @@ function validateDraft(draft: McpServerDraft): void {
   }
 }
 
-function buildServerDef(draft: Omit<McpServerDraft, 'source' | 'projectId'>): Record<string, unknown> {
+function buildServerDef(
+  draft: Omit<McpServerDraft, 'source' | 'projectId'>
+): Record<string, unknown> {
   const def: Record<string, unknown> = {}
   if (draft.transport === 'stdio') {
     def.command = draft.command!.trim()
@@ -209,7 +220,11 @@ export function addMcpServer(draft: McpServerDraft): void {
     const dir = nodePath.dirname(filePath)
     fs.mkdirSync(dir, { recursive: true })
     const parsed = readAndParseProjectFile(filePath)
-    if (typeof parsed['mcpServers'] !== 'object' || parsed['mcpServers'] === null || Array.isArray(parsed['mcpServers'])) {
+    if (
+      typeof parsed['mcpServers'] !== 'object' ||
+      parsed['mcpServers'] === null ||
+      Array.isArray(parsed['mcpServers'])
+    ) {
       parsed['mcpServers'] = {}
     }
     const servers = parsed['mcpServers'] as Record<string, unknown>
@@ -221,7 +236,11 @@ export function addMcpServer(draft: McpServerDraft): void {
   } else {
     // user source — touch only mcpServers key, preserve everything else
     const parsed = readAndParseUserFile(filePath)
-    if (typeof parsed['mcpServers'] !== 'object' || parsed['mcpServers'] === null || Array.isArray(parsed['mcpServers'])) {
+    if (
+      typeof parsed['mcpServers'] !== 'object' ||
+      parsed['mcpServers'] === null ||
+      Array.isArray(parsed['mcpServers'])
+    ) {
       parsed['mcpServers'] = {}
     }
     const servers = parsed['mcpServers'] as Record<string, unknown>
@@ -238,12 +257,16 @@ export function updateMcpServer(
   oldName: string,
   draft: Omit<McpServerDraft, 'source' | 'projectId'>
 ): void {
-  validateDraft({ ...draft, source: 'user' })  // source not used for validation
+  validateDraft({ ...draft, source: 'user' }) // source not used for validation
 
   const isUserFile = filePath === nodePath.join(os.homedir(), '.claude.json')
   const parsed = isUserFile ? readAndParseUserFile(filePath) : readAndParseProjectFile(filePath)
 
-  if (typeof parsed['mcpServers'] !== 'object' || parsed['mcpServers'] === null || Array.isArray(parsed['mcpServers'])) {
+  if (
+    typeof parsed['mcpServers'] !== 'object' ||
+    parsed['mcpServers'] === null ||
+    Array.isArray(parsed['mcpServers'])
+  ) {
     throw new Error(`mcpServers missing in ${filePath}`)
   }
   const servers = parsed['mcpServers'] as Record<string, unknown>
@@ -267,7 +290,11 @@ export function deleteMcpServer(filePath: string, name: string): void {
   const isUserFile = filePath === nodePath.join(os.homedir(), '.claude.json')
   const parsed = isUserFile ? readAndParseUserFile(filePath) : readAndParseProjectFile(filePath)
 
-  if (typeof parsed['mcpServers'] !== 'object' || parsed['mcpServers'] === null || Array.isArray(parsed['mcpServers'])) {
+  if (
+    typeof parsed['mcpServers'] !== 'object' ||
+    parsed['mcpServers'] === null ||
+    Array.isArray(parsed['mcpServers'])
+  ) {
     throw new Error(`mcpServers missing in ${filePath}`)
   }
   const servers = parsed['mcpServers'] as Record<string, unknown>

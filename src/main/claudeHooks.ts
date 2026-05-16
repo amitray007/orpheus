@@ -23,7 +23,10 @@ function eventRank(event: string): number {
 
 function parseHooksFile(
   filePath: string,
-  base: Omit<ClaudeHookEntry, 'event' | 'matcher' | 'type' | 'command' | 'matcherEntryIdx' | 'hookIdx'>
+  base: Omit<
+    ClaudeHookEntry,
+    'event' | 'matcher' | 'type' | 'command' | 'matcherEntryIdx' | 'hookIdx'
+  >
 ): ClaudeHookEntry[] {
   let raw: string
   try {
@@ -67,7 +70,15 @@ function parseHooksFile(
         if (typeof h['command'] !== 'string' || h['command'].length === 0) continue
         const type = typeof h['type'] === 'string' ? h['type'] : 'command'
 
-        entries.push({ ...base, event, matcher, type, command: h['command'], matcherEntryIdx, hookIdx })
+        entries.push({
+          ...base,
+          event,
+          matcher,
+          type,
+          command: h['command'],
+          matcherEntryIdx,
+          hookIdx
+        })
       }
     }
   }
@@ -176,7 +187,11 @@ export function addHook(draft: ClaudeHookDraft): void {
 
   const parsed = readAndParse(filePath)
 
-  if (typeof parsed['hooks'] !== 'object' || parsed['hooks'] === null || Array.isArray(parsed['hooks'])) {
+  if (
+    typeof parsed['hooks'] !== 'object' ||
+    parsed['hooks'] === null ||
+    Array.isArray(parsed['hooks'])
+  ) {
     parsed['hooks'] = {}
   }
   const hooksObj = parsed['hooks'] as Record<string, unknown>

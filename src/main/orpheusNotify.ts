@@ -22,8 +22,8 @@ export type WorkspaceActivityEvent =
 const EVENT_TO_STATUS: Partial<Record<WorkspaceActivityEvent, WorkspaceStatus>> = {
   'session-start': 'awaiting_input',
   'user-prompt': 'in_progress',
-  'notification': 'attention',
-  'stop': 'awaiting_input',
+  notification: 'attention',
+  stop: 'awaiting_input',
   'session-end': 'idle'
 }
 
@@ -66,7 +66,9 @@ const BLOCKING_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPla
 const activityMap = new Map<string, WorkspaceStatus>()
 const detailMap = new Map<string, DetailState>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
-const listeners = new Set<(workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void>()
+const listeners = new Set<
+  (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
+>()
 const watchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
@@ -82,7 +84,10 @@ export function getBlockingTool(workspaceId: string): string | null {
   return detailMap.get(workspaceId)?.blockingTool ?? null
 }
 
-export function computeDetail(workspaceId: string, status: WorkspaceStatus): WorkspaceActivityDetail {
+export function computeDetail(
+  workspaceId: string,
+  status: WorkspaceStatus
+): WorkspaceActivityDetail {
   const s = detailMap.get(workspaceId)
   if (status === 'attention') {
     return s?.blockingTool ? 'asking' : 'attention'
@@ -105,7 +110,11 @@ function broadcastDetailIfChanged(workspaceId: string): void {
   if (last === detail) return
   lastBroadcastDetail.set(workspaceId, detail)
   for (const cb of listeners) {
-    try { cb(workspaceId, status, detail) } catch { /* ignore */ }
+    try {
+      cb(workspaceId, status, detail)
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -309,12 +318,19 @@ export function ensureManagedHooks(): void {
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code
     if (code !== 'ENOENT') {
-      console.warn('[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:', err)
+      console.warn(
+        '[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:',
+        err
+      )
       return
     }
   }
 
-  if (typeof parsed['hooks'] !== 'object' || parsed['hooks'] === null || Array.isArray(parsed['hooks'])) {
+  if (
+    typeof parsed['hooks'] !== 'object' ||
+    parsed['hooks'] === null ||
+    Array.isArray(parsed['hooks'])
+  ) {
     parsed['hooks'] = {}
   }
   const hooksObj = parsed['hooks'] as Record<string, unknown>
@@ -364,7 +380,11 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
   }
 
   // Remove stale socket file if it exists
-  try { fs.unlinkSync(sockPath) } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(sockPath)
+  } catch {
+    /* ignore */
+  }
 
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/notify') {
@@ -399,14 +419,18 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
               payload = parsed as Record<string, unknown>
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
       } else if (bodyText.trim()) {
         try {
           const body = JSON.parse(bodyText) as { workspaceId?: unknown; event?: unknown }
           if (typeof body.workspaceId === 'string') workspaceId = body.workspaceId
           if (typeof body.event === 'string') eventName = body.event
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       if (!workspaceId || !eventName) return
@@ -420,7 +444,11 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
     sockPath,
     close(): void {
       server.close()
-      try { fs.unlinkSync(sockPath) } catch { /* ignore */ }
+      try {
+        fs.unlinkSync(sockPath)
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

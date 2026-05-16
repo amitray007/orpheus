@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
-import type { ClaudeGlobalSettings, DiscoveredMcpServer, McpServerDraft, ProjectRecord } from '@shared/types'
+import type {
+  ClaudeGlobalSettings,
+  DiscoveredMcpServer,
+  McpServerDraft,
+  ProjectRecord
+} from '@shared/types'
 import { SettingRow, Toggle, NumberInput } from './primitives'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SettingsSectionSkeleton } from '../../Skeleton'
@@ -58,8 +63,8 @@ interface McpFormValues {
   name: string
   transport: 'stdio' | 'http' | 'sse'
   command: string
-  argsRaw: string   // comma-separated string for stdio args
-  envRaw: string    // KEY=VALUE lines for stdio env
+  argsRaw: string // comma-separated string for stdio args
+  envRaw: string // KEY=VALUE lines for stdio env
   url: string
   source: 'user' | 'project'
   projectId: string
@@ -75,7 +80,14 @@ interface McpServerFormProps {
   addButtonRef?: React.RefObject<HTMLButtonElement | null>
 }
 
-function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addButtonRef }: McpServerFormProps): React.JSX.Element {
+function McpServerForm({
+  initial,
+  projects,
+  sourceFixed,
+  onSave,
+  onCancel,
+  addButtonRef
+}: McpServerFormProps): React.JSX.Element {
   const [values, setValues] = useState<McpFormValues>(initial)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -127,7 +139,9 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="mcp-source" className={labelClass}>Source</label>
+          <label htmlFor="mcp-source" className={labelClass}>
+            Source
+          </label>
           <select
             id="mcp-source"
             disabled={sourceFixed}
@@ -155,7 +169,9 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
 
         {/* Name */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="mcp-name" className={labelClass}>Name</label>
+          <label htmlFor="mcp-name" className={labelClass}>
+            Name
+          </label>
           <input
             id="mcp-name"
             ref={firstInputRef}
@@ -163,14 +179,20 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
             placeholder="my-server"
             value={values.name}
             onChange={(e) => set('name', e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { handleSave().catch(() => {}) } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleSave().catch(() => {})
+              }
+            }}
             className={inputClass}
           />
         </div>
 
         {/* Transport */}
         <div className="w-28 flex-shrink-0">
-          <label htmlFor="mcp-transport" className={labelClass}>Transport</label>
+          <label htmlFor="mcp-transport" className={labelClass}>
+            Transport
+          </label>
           <select
             id="mcp-transport"
             value={values.transport}
@@ -187,7 +209,9 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
       {/* Stdio: Command */}
       {isStdio && (
         <div>
-          <label htmlFor="mcp-command" className={labelClass}>Command</label>
+          <label htmlFor="mcp-command" className={labelClass}>
+            Command
+          </label>
           <input
             id="mcp-command"
             type="text"
@@ -202,7 +226,9 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
       {/* HTTP/SSE: URL */}
       {!isStdio && (
         <div>
-          <label htmlFor="mcp-url" className={labelClass}>URL</label>
+          <label htmlFor="mcp-url" className={labelClass}>
+            URL
+          </label>
           <input
             id="mcp-url"
             type="text"
@@ -232,8 +258,7 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
         <div className="flex flex-col gap-3 border-l-2 border-border-default/40 pl-3">
           <div>
             <label htmlFor="mcp-args" className={labelClass}>
-              Args{' '}
-              <span className="normal-case text-text-muted/60">(comma-separated)</span>
+              Args <span className="normal-case text-text-muted/60">(comma-separated)</span>
             </label>
             <input
               id="mcp-args"
@@ -262,7 +287,10 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
       )}
 
       {error && (
-        <p role="alert" className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2">
+        <p
+          role="alert"
+          className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2"
+        >
           {error}
         </p>
       )}
@@ -270,7 +298,9 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => { handleSave().catch(() => {}) }}
+          onClick={() => {
+            handleSave().catch(() => {})
+          }}
           disabled={saving}
           className="text-xs px-3 py-1.5 rounded-md bg-accent text-white font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -278,7 +308,10 @@ function McpServerForm({ initial, projects, sourceFixed, onSave, onCancel, addBu
         </button>
         <button
           type="button"
-          onClick={() => { onCancel(); addButtonRef?.current?.focus() }}
+          onClick={() => {
+            onCancel()
+            addButtonRef?.current?.focus()
+          }}
           className="text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
         >
           Cancel
@@ -307,8 +340,14 @@ function parseEnvRaw(raw: string): Record<string, string> {
 }
 
 function serverToFormValues(s: DiscoveredMcpServer): McpFormValues {
-  const envEntries = s.env ? Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join('\n') : ''
-  const hasAdvanced = Boolean((s.args && s.args.length > 0) || (s.env && Object.keys(s.env).length > 0))
+  const envEntries = s.env
+    ? Object.entries(s.env)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('\n')
+    : ''
+  const hasAdvanced = Boolean(
+    (s.args && s.args.length > 0) || (s.env && Object.keys(s.env).length > 0)
+  )
   return {
     name: s.name,
     transport: s.transport === 'unknown' ? 'stdio' : s.transport,
@@ -340,16 +379,26 @@ export function ClaudeToolsSection(): React.JSX.Element {
     let cancelled = false
     window.api.claudeSettings
       .get()
-      .then((s) => { if (!cancelled) setSettings(s) })
+      .then((s) => {
+        if (!cancelled) setSettings(s)
+      })
       .catch((err) => console.error('[tools-settings] load failed', err))
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
     window.api.mcp
       .listServers()
-      .then((s) => { setServers(s); setServersLoading(false) })
-      .catch((err) => { console.error('[tools-settings] mcp list failed', err); setServersLoading(false) })
+      .then((s) => {
+        setServers(s)
+        setServersLoading(false)
+      })
+      .catch((err) => {
+        console.error('[tools-settings] mcp list failed', err)
+        setServersLoading(false)
+      })
     window.api.projects
       .list()
       .then(setProjects)
@@ -390,12 +439,17 @@ export function ClaudeToolsSection(): React.JSX.Element {
       name: values.name.trim(),
       transport: values.transport,
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
-      args: values.transport === 'stdio' && values.argsRaw.trim()
-        ? values.argsRaw.split(',').map((s) => s.trim()).filter(Boolean)
-        : undefined,
-      env: values.transport === 'stdio' && values.envRaw.trim()
-        ? parseEnvRaw(values.envRaw)
-        : undefined,
+      args:
+        values.transport === 'stdio' && values.argsRaw.trim()
+          ? values.argsRaw
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
+      env:
+        values.transport === 'stdio' && values.envRaw.trim()
+          ? parseEnvRaw(values.envRaw)
+          : undefined,
       url: values.transport !== 'stdio' ? values.url.trim() : undefined,
       source: values.source,
       projectId: values.source === 'project' ? values.projectId : undefined
@@ -410,12 +464,17 @@ export function ClaudeToolsSection(): React.JSX.Element {
       name: values.name.trim(),
       transport: values.transport,
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
-      args: values.transport === 'stdio' && values.argsRaw.trim()
-        ? values.argsRaw.split(',').map((s) => s.trim()).filter(Boolean)
-        : undefined,
-      env: values.transport === 'stdio' && values.envRaw.trim()
-        ? parseEnvRaw(values.envRaw)
-        : undefined,
+      args:
+        values.transport === 'stdio' && values.argsRaw.trim()
+          ? values.argsRaw
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
+      env:
+        values.transport === 'stdio' && values.envRaw.trim()
+          ? parseEnvRaw(values.envRaw)
+          : undefined,
       url: values.transport !== 'stdio' ? values.url.trim() : undefined
     }
     await window.api.mcp.update(server.filePath, server.name, draft)
@@ -462,8 +521,9 @@ export function ClaudeToolsSection(): React.JSX.Element {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Tools</h2>
         <p className="text-xs text-text-muted mt-1">
-          MCP server toggles (auto-discovered from ~/.claude.json and each project&apos;s .mcp.json),
-          Bash limits, tool concurrency, and browser integration. Changes save automatically.
+          MCP server toggles (auto-discovered from ~/.claude.json and each project&apos;s
+          .mcp.json), Bash limits, tool concurrency, and browser integration. Changes save
+          automatically.
         </p>
       </div>
 
@@ -477,7 +537,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
             ref={addButtonRef}
             type="button"
             aria-label="Add MCP server"
-            onClick={() => { setAdding(true); setEditingServer(null) }}
+            onClick={() => {
+              setAdding(true)
+              setEditingServer(null)
+            }}
             className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           >
             <Plus size={12} weight="bold" aria-hidden="true" />
@@ -491,7 +554,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
             initial={defaultAddDraft}
             projects={projects}
             onSave={handleAdd}
-            onCancel={() => { setAdding(false); addButtonRef.current?.focus() }}
+            onCancel={() => {
+              setAdding(false)
+              addButtonRef.current?.focus()
+            }}
             addButtonRef={addButtonRef}
           />
         )}
@@ -516,7 +582,8 @@ export function ClaudeToolsSection(): React.JSX.Element {
                     {group.label}
                   </div>
                   {group.servers.map((s) => {
-                    const isEditing = editingServer?.name === s.name && editingServer?.filePath === s.filePath
+                    const isEditing =
+                      editingServer?.name === s.name && editingServer?.filePath === s.filePath
 
                     if (isEditing) {
                       return (
@@ -544,12 +611,18 @@ export function ClaudeToolsSection(): React.JSX.Element {
                             {s.transport}
                           </span>
                           {s.command && (
-                            <span className="text-[10px] text-text-muted font-mono truncate max-w-[180px]" title={s.command}>
+                            <span
+                              className="text-[10px] text-text-muted font-mono truncate max-w-[180px]"
+                              title={s.command}
+                            >
                               {s.command}
                             </span>
                           )}
                           {s.url && (
-                            <span className="text-[10px] text-text-muted font-mono truncate max-w-[180px]" title={s.url}>
+                            <span
+                              className="text-[10px] text-text-muted font-mono truncate max-w-[180px]"
+                              title={s.url}
+                            >
                               {s.url}
                             </span>
                           )}
@@ -560,7 +633,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
                             <button
                               type="button"
                               aria-label={`Edit ${s.name}`}
-                              onClick={() => { setEditingServer(s); setAdding(false) }}
+                              onClick={() => {
+                                setEditingServer(s)
+                                setAdding(false)
+                              }}
                               className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                             >
                               <Pencil size={12} aria-hidden="true" />

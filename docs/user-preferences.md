@@ -74,7 +74,7 @@ If something can't be verified (e.g., a long-running UI flow requires user inter
 
 ## Code style
 
-- **No comments unless genuinely non-obvious.** No multi-paragraph docstrings. No comments that re-state what well-named identifiers already say. One short line max, and only for the *why* (hidden constraint, subtle invariant, workaround for a specific bug).
+- **No comments unless genuinely non-obvious.** No multi-paragraph docstrings. No comments that re-state what well-named identifiers already say. One short line max, and only for the _why_ (hidden constraint, subtle invariant, workaround for a specific bug).
 - **No emoji** in code or commit messages.
 - **No hardcoded paths / URLs / lists.** Use env, config, OS APIs, shell PATH. Curated keyword catalogs for search are acceptable — they're the spec of a feature, not an environmental assumption.
 - **Don't add error handling for impossible cases.** Trust internal code and framework guarantees. Validate at system boundaries (user input, external APIs) only.

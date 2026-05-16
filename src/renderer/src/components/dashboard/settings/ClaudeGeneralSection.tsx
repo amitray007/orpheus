@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type {
-  ClaudeGlobalSettings,
-  ClaudePermissionMode,
-  ClaudeEffort
-} from '@shared/types'
+import type { ClaudeGlobalSettings, ClaudePermissionMode, ClaudeEffort } from '@shared/types'
 import { SettingRow, SegmentedControl, Toggle, ModelPicker, NumberInput } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -87,7 +83,11 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           Claude defaults
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow label="Model" description="Which Claude model launches by default." mapsTo={['--model', 'ANTHROPIC_MODEL']}>
+          <SettingRow
+            label="Model"
+            description="Which Claude model launches by default."
+            mapsTo={['--model', 'ANTHROPIC_MODEL']}
+          >
             <ModelPicker value={settings.model} onChange={(v) => patch({ model: v })} />
           </SettingRow>
           <SettingRow
@@ -107,7 +107,11 @@ export function ClaudeGeneralSection(): React.JSX.Element {
               onChange={(v) => patch({ permissionMode: v })}
             />
           </SettingRow>
-          <SettingRow label="Effort" description="Trade-off between speed and thoroughness." mapsTo={['--effort', 'CLAUDE_CODE_EFFORT_LEVEL']}>
+          <SettingRow
+            label="Effort"
+            description="Trade-off between speed and thoroughness."
+            mapsTo={['--effort', 'CLAUDE_CODE_EFFORT_LEVEL']}
+          >
             <SegmentedControl<ClaudeEffort>
               ariaLabel="Effort level"
               options={[

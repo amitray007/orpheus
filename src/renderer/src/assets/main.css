@@ -37,7 +37,8 @@
   --color-accent-hover: var(--color-accent-hover);
   --color-accent-on: var(--color-accent-on);
 
-  --font-sans: 'Geist Pixel', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-sans:
+    'Geist Pixel', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono: 'Geist Pixel', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
@@ -49,43 +50,43 @@
 
 :root,
 [data-theme='midnight'] {
-  --color-surface-base:    #0b0b0c;
-  --color-surface-raised:  #16161a;
+  --color-surface-base: #0b0b0c;
+  --color-surface-raised: #16161a;
   --color-surface-overlay: #1f1f24;
-  --color-border-default:  #27272a;
-  --color-text-primary:    #f4f4f5;
-  --color-text-secondary:  #a1a1aa;
-  --color-text-muted:      #71717a;
+  --color-border-default: #27272a;
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
   /* theme-default accent; may be overridden by [data-accent] below */
-  --color-accent:          #d4a847;
-  --color-accent-hover:    #e0b558;
-  --color-accent-on:       #0b0b0c;
+  --color-accent: #d4a847;
+  --color-accent-hover: #e0b558;
+  --color-accent-on: #0b0b0c;
 }
 
 [data-theme='daylight'] {
-  --color-surface-base:    #fafaf7;
-  --color-surface-raised:  #ffffff;
+  --color-surface-base: #fafaf7;
+  --color-surface-raised: #ffffff;
   --color-surface-overlay: #f0f0eb;
-  --color-border-default:  #d4d4d0;
-  --color-text-primary:    #18181b;
-  --color-text-secondary:  #52525b;
-  --color-text-muted:      #8b8b8e;
-  --color-accent:          #b8902f;
-  --color-accent-hover:    #c9a040;
-  --color-accent-on:       #ffffff;
+  --color-border-default: #d4d4d0;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #8b8b8e;
+  --color-accent: #b8902f;
+  --color-accent-hover: #c9a040;
+  --color-accent-on: #ffffff;
 }
 
 [data-theme='eclipse'] {
-  --color-surface-base:    #000000;
-  --color-surface-raised:  #0a0a0a;
+  --color-surface-base: #000000;
+  --color-surface-raised: #0a0a0a;
   --color-surface-overlay: #141414;
-  --color-border-default:  #1f1f1f;
-  --color-text-primary:    #ffffff;
-  --color-text-secondary:  #b4b4b4;
-  --color-text-muted:      #6b6b6b;
-  --color-accent:          #e8c060;
-  --color-accent-hover:    #f0cc72;
-  --color-accent-on:       #000000;
+  --color-border-default: #1f1f1f;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #b4b4b4;
+  --color-text-muted: #6b6b6b;
+  --color-accent: #e8c060;
+  --color-accent-hover: #f0cc72;
+  --color-accent-on: #000000;
 }
 
 /* ---------------------------------------------------------------------------
@@ -93,20 +94,41 @@
  * These are set on [data-accent=...] on the html element.
  * --------------------------------------------------------------------------- */
 
-[data-accent='gold']   { --color-accent: #d4a847; --color-accent-hover: #e0b558; }
-[data-accent='blue']   { --color-accent: #3b8eff; --color-accent-hover: #5ca0ff; }
-[data-accent='teal']   { --color-accent: #2cc3a8; --color-accent-hover: #4dd3ba; }
-[data-accent='orange'] { --color-accent: #ff8c42; --color-accent-hover: #ff9f5c; }
-[data-accent='pink']   { --color-accent: #ff5fa0; --color-accent-hover: #ff7eb4; }
+[data-accent='gold'] {
+  --color-accent: #d4a847;
+  --color-accent-hover: #e0b558;
+}
+[data-accent='blue'] {
+  --color-accent: #3b8eff;
+  --color-accent-hover: #5ca0ff;
+}
+[data-accent='teal'] {
+  --color-accent: #2cc3a8;
+  --color-accent-hover: #4dd3ba;
+}
+[data-accent='orange'] {
+  --color-accent: #ff8c42;
+  --color-accent-hover: #ff9f5c;
+}
+[data-accent='pink'] {
+  --color-accent: #ff5fa0;
+  --color-accent-hover: #ff7eb4;
+}
 
 /* ---------------------------------------------------------------------------
  * Font scale — applied to html so Tailwind rem-based utilities scale.
  * Note: arbitrary px values (text-[11px] etc.) are NOT affected — known limit.
  * --------------------------------------------------------------------------- */
 
-[data-font-scale='small']   { font-size: 12px; }
-[data-font-scale='default'] { font-size: 14px; }
-[data-font-scale='large']   { font-size: 16px; }
+[data-font-scale='small'] {
+  font-size: 12px;
+}
+[data-font-scale='default'] {
+  font-size: 14px;
+}
+[data-font-scale='large'] {
+  font-size: 16px;
+}
 
 *,
 *::before,
@@ -154,6 +176,10 @@ body {
 }
 
 @keyframes setting-flash {
-  0%   { outline-color: color-mix(in srgb, var(--color-accent) 60%, transparent); }
-  100% { outline-color: transparent; }
+  0% {
+    outline-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  }
+  100% {
+    outline-color: transparent;
+  }
 }

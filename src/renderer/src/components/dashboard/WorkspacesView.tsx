@@ -108,9 +108,12 @@ function WorkspaceCard({
 
   useEffect(() => {
     const workspaceId = workspace.id
-    window.api.workspaces.getTitle(workspaceId).then((t) => {
-      setTerminalTitle(t)
-    }).catch(() => {})
+    window.api.workspaces
+      .getTitle(workspaceId)
+      .then((t) => {
+        setTerminalTitle(t)
+      })
+      .catch(() => {})
     const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) {
         setTerminalTitle(e.title || null)
@@ -156,9 +159,7 @@ function WorkspaceCard({
         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
           {projectName}
         </span>
-        <span className="text-[11px] text-text-muted flex-shrink-0">
-          {relativeTime(timestamp)}
-        </span>
+        <span className="text-[11px] text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
       </span>
 
       {/* Row 3: git branch (only when available) */}
@@ -224,9 +225,7 @@ function KanbanColumn({
         ) : (
           workspaces.map((ws) => {
             const project = projectsById.get(ws.projectId)
-            const session = ws.claudeSessionId
-              ? sessionsById.get(ws.claudeSessionId)
-              : undefined
+            const session = ws.claudeSessionId ? sessionsById.get(ws.claudeSessionId) : undefined
             return (
               <WorkspaceCard
                 key={ws.id}
@@ -269,14 +268,8 @@ export function WorkspacesView({
   gitStatusByWorkspaceId = {}
 }: WorkspacesViewProps): React.JSX.Element {
   // Build fast lookups
-  const projectsById = useMemo(
-    () => new Map(projects.map((p) => [p.id, p])),
-    [projects]
-  )
-  const sessionsById = useMemo(
-    () => new Map(sessions.map((s) => [s.id, s])),
-    [sessions]
-  )
+  const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects])
+  const sessionsById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions])
 
   // Exclude archived workspaces from all views
   const activeWorkspaces = useMemo(

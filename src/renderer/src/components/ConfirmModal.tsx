@@ -83,7 +83,10 @@ export function ConfirmModal({
             {confirmLabel}
           </Button>
           <button
-            onClick={() => { playSound('modal-close'); onCancel() }}
+            onClick={() => {
+              playSound('modal-close')
+              onCancel()
+            }}
             className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-150 cursor-pointer"
           >
             {cancelLabel}

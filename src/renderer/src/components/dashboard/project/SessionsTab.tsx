@@ -250,7 +250,11 @@ export function SessionsTab({
                 : 'text-text-muted hover:text-accent hover:bg-accent/10 cursor-pointer'
             ].join(' ')}
           >
-            {isResuming ? <DotmSquare13 size={14} dotSize={2} speed={1.4} animated /> : <Play size={13} weight="fill" />}
+            {isResuming ? (
+              <DotmSquare13 size={14} dotSize={2} speed={1.4} animated />
+            ) : (
+              <Play size={13} weight="fill" />
+            )}
           </button>
         )
       }
@@ -411,9 +415,8 @@ export function SessionsTab({
           body={
             <>
               <p>
-                This will move the JSONL transcript to your Trash and remove the session
-                from Orpheus&apos;s list. You can recover from Finder Trash if you change your
-                mind.
+                This will move the JSONL transcript to your Trash and remove the session from
+                Orpheus&apos;s list. You can recover from Finder Trash if you change your mind.
               </p>
               {pendingDelete.title && (
                 <p className="mt-2 text-xs text-text-muted italic truncate">

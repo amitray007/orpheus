@@ -47,7 +47,7 @@ const PROMOTED_KEYS = new Set(['name', 'description', 'tools', 'model'])
 interface SubagentFormValues {
   name: string
   description: string
-  toolsRaw: string   // comma-separated
+  toolsRaw: string // comma-separated
   model: string
   body: string
   source: 'user' | 'project'
@@ -128,7 +128,9 @@ function SubagentForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="agent-source" className={labelClass}>Source</label>
+          <label htmlFor="agent-source" className={labelClass}>
+            Source
+          </label>
           <select
             id="agent-source"
             ref={firstSelectRef}
@@ -178,8 +180,7 @@ function SubagentForm({
         {/* Model */}
         <div className="w-36 flex-shrink-0">
           <label htmlFor="agent-model" className={labelClass}>
-            Model{' '}
-            <span className="normal-case text-text-muted/60">(empty = inherit)</span>
+            Model <span className="normal-case text-text-muted/60">(empty = inherit)</span>
           </label>
           <input
             id="agent-model"
@@ -194,7 +195,9 @@ function SubagentForm({
 
       {/* Description */}
       <div>
-        <label htmlFor="agent-description" className={labelClass}>Description</label>
+        <label htmlFor="agent-description" className={labelClass}>
+          Description
+        </label>
         <textarea
           id="agent-description"
           rows={2}
@@ -209,7 +212,9 @@ function SubagentForm({
       <div>
         <label htmlFor="agent-tools" className={labelClass}>
           Tools{' '}
-          <span className="normal-case text-text-muted/60">(comma-separated, empty = all tools)</span>
+          <span className="normal-case text-text-muted/60">
+            (comma-separated, empty = all tools)
+          </span>
         </label>
         <input
           id="agent-tools"
@@ -223,7 +228,9 @@ function SubagentForm({
 
       {/* Body */}
       <div>
-        <label htmlFor="agent-body" className={labelClass}>Body / system prompt (markdown)</label>
+        <label htmlFor="agent-body" className={labelClass}>
+          Body / system prompt (markdown)
+        </label>
         <textarea
           id="agent-body"
           rows={10}
@@ -235,7 +242,10 @@ function SubagentForm({
       </div>
 
       {error && (
-        <p role="alert" className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2">
+        <p
+          role="alert"
+          className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-md px-3 py-2"
+        >
           {error}
         </p>
       )}
@@ -243,7 +253,9 @@ function SubagentForm({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => { handleSave().catch(() => {}) }}
+          onClick={() => {
+            handleSave().catch(() => {})
+          }}
           disabled={saving}
           className="text-xs px-3 py-1.5 rounded-md bg-accent text-white font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -251,7 +263,10 @@ function SubagentForm({
         </button>
         <button
           type="button"
-          onClick={() => { onCancel(); addButtonRef?.current?.focus() }}
+          onClick={() => {
+            onCancel()
+            addButtonRef?.current?.focus()
+          }}
           className="text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
         >
           Cancel
@@ -287,8 +302,14 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
   useEffect(() => {
     window.api.claudeAgents
       .listSubagents()
-      .then((a) => { setAgents(a); setLoading(false) })
-      .catch((err) => { console.error('[subagents] load failed', err); setLoading(false) })
+      .then((a) => {
+        setAgents(a)
+        setLoading(false)
+      })
+      .catch((err) => {
+        console.error('[subagents] load failed', err)
+        setLoading(false)
+      })
     window.api.projects
       .list()
       .then(setProjects)
@@ -300,7 +321,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        ? values.toolsRaw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null,
       model: values.model.trim(),
       body: values.body,
@@ -317,7 +341,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        ? values.toolsRaw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null,
       model: values.model.trim(),
       body: values.body
@@ -373,7 +400,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
           ref={addButtonRef}
           type="button"
           aria-label="Add subagent"
-          onClick={() => { setAdding(true); setEditingPath(null) }}
+          onClick={() => {
+            setAdding(true)
+            setEditingPath(null)
+          }}
           className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
           <Plus size={12} weight="bold" aria-hidden="true" />
@@ -387,7 +417,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
           initial={defaultAddDraft}
           projects={projects}
           onSave={handleAdd}
-          onCancel={() => { setAdding(false); addButtonRef.current?.focus() }}
+          onCancel={() => {
+            setAdding(false)
+            addButtonRef.current?.focus()
+          }}
           addButtonRef={addButtonRef}
         />
       )}
@@ -443,14 +476,18 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                       <div className="flex items-start justify-between py-2.5 gap-3">
                         <button
                           type="button"
-                          onClick={() => setExpandedPath((cur) => (cur === agent.path ? null : agent.path))}
+                          onClick={() =>
+                            setExpandedPath((cur) => (cur === agent.path ? null : agent.path))
+                          }
                           className="flex-1 flex items-start justify-between gap-3 text-left cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
                           aria-expanded={isExpanded}
                           aria-label={`${agent.name} — ${isExpanded ? 'collapse' : 'expand'}`}
                         >
                           <div className="flex flex-col min-w-0 gap-0.5">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm text-text-primary font-medium">{agent.name}</span>
+                              <span className="text-sm text-text-primary font-medium">
+                                {agent.name}
+                              </span>
                               {agent.model && (
                                 <span className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
                                   {agent.model}
@@ -466,7 +503,9 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                               )}
                             </div>
                             {agent.description && (
-                              <p className="text-xs text-text-muted truncate">{agent.description}</p>
+                              <p className="text-xs text-text-muted truncate">
+                                {agent.description}
+                              </p>
                             )}
                           </div>
                           <CaretDown
@@ -482,7 +521,11 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                           <button
                             type="button"
                             aria-label={`Edit ${agent.name}`}
-                            onClick={() => { setEditingPath(agent.path); setAdding(false); setExpandedPath(null) }}
+                            onClick={() => {
+                              setEditingPath(agent.path)
+                              setAdding(false)
+                              setExpandedPath(null)
+                            }}
                             className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                           >
                             <Pencil size={12} aria-hidden="true" />
@@ -513,7 +556,9 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                                 const display = Array.isArray(v) ? v.join(', ') : v
                                 return (
                                   <div key={k} className="flex gap-2 text-[11px]">
-                                    <span className="text-text-muted font-mono flex-shrink-0">{k}:</span>
+                                    <span className="text-text-muted font-mono flex-shrink-0">
+                                      {k}:
+                                    </span>
                                     <span className="text-text-secondary break-all">{display}</span>
                                   </div>
                                 )
@@ -521,13 +566,17 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                             </div>
                           )}
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-text-muted">Body</span>
+                            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                              Body
+                            </span>
                             {agent.bodyPreview ? (
                               <div className="font-mono whitespace-pre-wrap text-[11px] text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
                                 {agent.bodyPreview}
                               </div>
                             ) : (
-                              <p className="text-[11px] text-text-muted italic">(no body content)</p>
+                              <p className="text-[11px] text-text-muted italic">
+                                (no body content)
+                              </p>
                             )}
                           </div>
                         </div>

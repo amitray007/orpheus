@@ -11,7 +11,11 @@
       "gain": 0.2
     },
     "click": {
-      "source": { "type": "sine", "frequency": { "start": 200, "end": 700 }, "fm": { "ratio": 0.5, "depth": 80 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 200, "end": 700 },
+        "fm": { "ratio": 0.5, "depth": 80 }
+      },
       "envelope": { "attack": 0, "decay": 0.06, "sustain": 0, "release": 0.02 },
       "gain": 0.22
     },
@@ -51,7 +55,11 @@
       ]
     },
     "checkbox": {
-      "source": { "type": "sine", "frequency": { "start": 300, "end": 900 }, "fm": { "ratio": 0.5, "depth": 60 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 300, "end": 900 },
+        "fm": { "ratio": 0.5, "depth": 60 }
+      },
       "envelope": { "attack": 0, "decay": 0.05, "sustain": 0, "release": 0.015 },
       "gain": 0.2
     },
@@ -71,27 +79,47 @@
       "gain": 0.06
     },
     "tab-switch": {
-      "source": { "type": "sine", "frequency": { "start": 1000, "end": 1400 }, "fm": { "ratio": 0.5, "depth": 50 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 1000, "end": 1400 },
+        "fm": { "ratio": 0.5, "depth": 50 }
+      },
       "envelope": { "attack": 0, "decay": 0.04, "sustain": 0, "release": 0.012 },
       "gain": 0.16
     },
     "expand": {
-      "source": { "type": "sine", "frequency": { "start": 600, "end": 900 }, "fm": { "ratio": 1, "depth": 50 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 600, "end": 900 },
+        "fm": { "ratio": 1, "depth": 50 }
+      },
       "envelope": { "attack": 0, "decay": 0.06, "sustain": 0, "release": 0.02 },
       "gain": 0.12
     },
     "collapse": {
-      "source": { "type": "sine", "frequency": { "start": 900, "end": 600 }, "fm": { "ratio": 1, "depth": 50 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 900, "end": 600 },
+        "fm": { "ratio": 1, "depth": 50 }
+      },
       "envelope": { "attack": 0, "decay": 0.06, "sustain": 0, "release": 0.02 },
       "gain": 0.12
     },
     "page-enter": {
-      "source": { "type": "sine", "frequency": { "start": 500, "end": 900 }, "fm": { "ratio": 0.5, "depth": 60 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 500, "end": 900 },
+        "fm": { "ratio": 0.5, "depth": 60 }
+      },
       "envelope": { "attack": 0.003, "decay": 0.08, "sustain": 0, "release": 0.025 },
       "gain": 0.1
     },
     "page-exit": {
-      "source": { "type": "sine", "frequency": { "start": 900, "end": 500 }, "fm": { "ratio": 0.5, "depth": 60 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 900, "end": 500 },
+        "fm": { "ratio": 0.5, "depth": 60 }
+      },
       "envelope": { "attack": 0, "decay": 0.08, "sustain": 0, "release": 0.025 },
       "gain": 0.08
     },
@@ -119,12 +147,20 @@
     "error": {
       "layers": [
         {
-          "source": { "type": "sine", "frequency": { "start": 400, "end": 200 }, "fm": { "ratio": 1.5, "depth": 150 } },
+          "source": {
+            "type": "sine",
+            "frequency": { "start": 400, "end": 200 },
+            "fm": { "ratio": 1.5, "depth": 150 }
+          },
           "envelope": { "attack": 0, "decay": 0.1, "sustain": 0, "release": 0.03 },
           "gain": 0.22
         },
         {
-          "source": { "type": "sine", "frequency": { "start": 250, "end": 120 }, "fm": { "ratio": 1.5, "depth": 120 } },
+          "source": {
+            "type": "sine",
+            "frequency": { "start": 250, "end": 120 },
+            "fm": { "ratio": 1.5, "depth": 120 }
+          },
           "envelope": { "attack": 0, "decay": 0.08, "sustain": 0, "release": 0.025 },
           "delay": 0.03,
           "gain": 0.15
@@ -182,32 +218,56 @@
       ]
     },
     "send": {
-      "source": { "type": "sine", "frequency": { "start": 500, "end": 1200 }, "fm": { "ratio": 1, "depth": 80 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 500, "end": 1200 },
+        "fm": { "ratio": 1, "depth": 80 }
+      },
       "envelope": { "attack": 0, "decay": 0.1, "sustain": 0, "release": 0.03 },
       "gain": 0.16
     },
     "delete": {
-      "source": { "type": "sine", "frequency": { "start": 500, "end": 180 }, "fm": { "ratio": 1.5, "depth": 130 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 500, "end": 180 },
+        "fm": { "ratio": 1.5, "depth": 130 }
+      },
       "envelope": { "attack": 0, "decay": 0.12, "sustain": 0, "release": 0.04 },
       "gain": 0.2
     },
     "undo": {
-      "source": { "type": "sine", "frequency": { "start": 900, "end": 600 }, "fm": { "ratio": 0.5, "depth": 60 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 900, "end": 600 },
+        "fm": { "ratio": 0.5, "depth": 60 }
+      },
       "envelope": { "attack": 0, "decay": 0.08, "sustain": 0, "release": 0.025 },
       "gain": 0.14
     },
     "pop": {
-      "source": { "type": "sine", "frequency": { "start": 500, "end": 200 }, "fm": { "ratio": 0.5, "depth": 80 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 500, "end": 200 },
+        "fm": { "ratio": 0.5, "depth": 80 }
+      },
       "envelope": { "attack": 0, "decay": 0.06, "sustain": 0, "release": 0.02 },
       "gain": 0.22
     },
     "swoosh": {
-      "source": { "type": "sine", "frequency": { "start": 400, "end": 1800 }, "fm": { "ratio": 0.5, "depth": 50 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 400, "end": 1800 },
+        "fm": { "ratio": 0.5, "depth": 50 }
+      },
       "envelope": { "attack": 0.005, "decay": 0.08, "sustain": 0, "release": 0.025 },
       "gain": 0.1
     },
     "slide": {
-      "source": { "type": "sine", "frequency": { "start": 600, "end": 1000 }, "fm": { "ratio": 0.5, "depth": 50 } },
+      "source": {
+        "type": "sine",
+        "frequency": { "start": 600, "end": 1000 },
+        "fm": { "ratio": 0.5, "depth": 50 }
+      },
       "envelope": { "attack": 0.003, "decay": 0.06, "sustain": 0, "release": 0.02 },
       "gain": 0.08
     }

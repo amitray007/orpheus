@@ -43,17 +43,20 @@
 ## Elements
 
 ### Backdrop
+
 - Full window-area overlay (`fixed inset-0`)
 - `bg-black/60` (or `bg-surface-base/80` for a brand-tinted variant)
 - Optional: `backdrop-blur-sm` for depth
 - Click handlers: **none** — clicks pass through to the modal, not to MainPage. (`pointer-events-auto` on modal, `pointer-events-none` on MainPage below? No — backdrop captures clicks so the underlying content is visually present but not interactive.)
 
 ### Modal card
+
 - `relative max-w-md w-full bg-surface-overlay border border-border-default rounded-lg p-6 flex flex-col gap-4`
 - Centered horizontally and vertically within the backdrop
 - No close button, no X in any corner
 
 ### Content
+
 - **Icon + headline row**: ⚠ icon (`text-yellow-400`) + "Claude Code required" (`text-lg font-semibold text-text-primary`)
 - **Body**: "Orpheus runs on the `claude` CLI. Install Claude Code to continue." — `text-sm text-text-secondary`, with `claude` styled as inline code (`text-accent font-mono`)
 - **Install command**: monospaced `<pre>` block with `bg-surface-raised border border-border-default rounded px-3 py-2 text-xs font-mono text-text-primary`. Content: `curl -fsSL https://claude.ai/install.sh | sh` (placeholder — verify exact URL/command from Claude Code docs).
@@ -83,16 +86,16 @@
 
 ## Design tokens
 
-| Region | Token |
-|---|---|
-| Backdrop | `bg-black/60` (optional `backdrop-blur-sm`) |
-| Modal card | `bg-surface-overlay`, `border-border-default`, `rounded-lg` |
-| Install command block | `bg-surface-raised`, `border-border-default` |
-| Headline icon | `text-yellow-400` (warning) |
-| Inline code `claude` | `text-accent font-mono` |
-| Primary button (Re-check) | `bg-accent text-accent-on` |
-| Docs link | `text-text-secondary hover:text-text-primary` |
-| Escape-hatch hint | `text-text-muted text-xs` |
+| Region                    | Token                                                       |
+| ------------------------- | ----------------------------------------------------------- |
+| Backdrop                  | `bg-black/60` (optional `backdrop-blur-sm`)                 |
+| Modal card                | `bg-surface-overlay`, `border-border-default`, `rounded-lg` |
+| Install command block     | `bg-surface-raised`, `border-border-default`                |
+| Headline icon             | `text-yellow-400` (warning)                                 |
+| Inline code `claude`      | `text-accent font-mono`                                     |
+| Primary button (Re-check) | `bg-accent text-accent-on`                                  |
+| Docs link                 | `text-text-secondary hover:text-text-primary`               |
+| Escape-hatch hint         | `text-text-muted text-xs`                                   |
 
 ---
 

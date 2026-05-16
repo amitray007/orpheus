@@ -82,9 +82,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps): React.J
               onClose()
             }}
           >
-            {item.icon && (
-              <span className="flex-shrink-0 flex items-center">{item.icon}</span>
-            )}
+            {item.icon && <span className="flex-shrink-0 flex items-center">{item.icon}</span>}
             {item.label}
           </button>
         )

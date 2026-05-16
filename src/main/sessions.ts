@@ -326,9 +326,7 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
       if (!cleaned) continue
 
       const preview =
-        cleaned.length > MAX_PREVIEW_LENGTH
-          ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…'
-          : cleaned
+        cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
 
       if (type === 'assistant') {
         return preview
@@ -575,9 +573,7 @@ export function refreshSessionMetadata(projectId: string): void {
     )
     .all(projectId) as ActiveRow[]
 
-  const previewStmt = db.prepare(
-    `UPDATE sessions SET last_message_preview = ? WHERE id = ?`
-  )
+  const previewStmt = db.prepare(`UPDATE sessions SET last_message_preview = ? WHERE id = ?`)
   const userPreviewStmt = db.prepare(
     `UPDATE sessions SET last_user_message_preview = ? WHERE id = ?`
   )
@@ -862,4 +858,3 @@ export async function deleteSession(id: string): Promise<void> {
 
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
 }
-

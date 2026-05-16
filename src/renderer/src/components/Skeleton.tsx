@@ -109,10 +109,7 @@ export function WorkspaceOverridesSkeleton(): React.JSX.Element {
   return (
     <div>
       {[0, 1, 2].map((i) => (
-        <div
-          key={i}
-          className="px-4 py-3 border-t border-border-default/30 first:border-t-0"
-        >
+        <div key={i} className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
           <Skeleton className="h-3 w-20 mb-2 opacity-60" />
           <Skeleton className="h-7 w-full opacity-70" />
         </div>

@@ -35,7 +35,10 @@ type HookSourceGroup = {
 }
 
 function groupHooks(hooks: ClaudeHookEntry[]): HookSourceGroup[] {
-  const groupMap = new Map<string, { label: string; filePath: string; entries: ClaudeHookEntry[] }>()
+  const groupMap = new Map<
+    string,
+    { label: string; filePath: string; entries: ClaudeHookEntry[] }
+  >()
 
   for (const h of hooks) {
     const key = h.source === 'user' ? 'user' : `project:${h.projectId}`
@@ -87,7 +90,13 @@ interface HookFormProps {
   onCancel: () => void
 }
 
-function HookForm({ initial, projects, sourceFixed, onSave, onCancel }: HookFormProps): React.JSX.Element {
+function HookForm({
+  initial,
+  projects,
+  sourceFixed,
+  onSave,
+  onCancel
+}: HookFormProps): React.JSX.Element {
   const [values, setValues] = useState<HookFormValues>(initial)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -203,7 +212,9 @@ function HookForm({ initial, projects, sourceFixed, onSave, onCancel }: HookForm
 
       <div className="flex items-center gap-2">
         <button
-          onClick={() => { handleSave().catch(() => {}) }}
+          onClick={() => {
+            handleSave().catch(() => {})
+          }}
           disabled={saving}
           className="text-xs px-3 py-1.5 rounded-md bg-accent text-white font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -254,7 +265,10 @@ export function ClaudeHooksSection(): React.JSX.Element {
   useEffect(() => {
     window.api.claudeHooks
       .list()
-      .then((h) => { setHooks(h); setLoading(false) })
+      .then((h) => {
+        setHooks(h)
+        setLoading(false)
+      })
       .catch((err) => {
         setLoadError(err instanceof Error ? err.message : 'Failed to load hooks')
         setLoading(false)
@@ -271,7 +285,8 @@ export function ClaudeHooksSection(): React.JSX.Element {
   async function handleAdd(values: HookFormValues): Promise<void> {
     const draft: ClaudeHookDraft = {
       event: values.event,
-      matcher: MATCHER_EVENTS.has(values.event) && values.matcher.trim() ? values.matcher.trim() : null,
+      matcher:
+        MATCHER_EVENTS.has(values.event) && values.matcher.trim() ? values.matcher.trim() : null,
       type: 'command',
       command: values.command.trim(),
       source: values.source,
@@ -285,7 +300,8 @@ export function ClaudeHooksSection(): React.JSX.Element {
   async function handleUpdate(entry: ClaudeHookEntry, values: HookFormValues): Promise<void> {
     const draft = {
       event: values.event,
-      matcher: MATCHER_EVENTS.has(values.event) && values.matcher.trim() ? values.matcher.trim() : null,
+      matcher:
+        MATCHER_EVENTS.has(values.event) && values.matcher.trim() ? values.matcher.trim() : null,
       type: 'command',
       command: values.command.trim()
     }
@@ -335,9 +351,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
             </code>{' '}
             and scoped per event type.
           </p>
-          <p className="text-xs text-text-muted mt-2">
-            Supported events: {HOOK_EVENTS.join(', ')}
-          </p>
+          <p className="text-xs text-text-muted mt-2">Supported events: {HOOK_EVENTS.join(', ')}</p>
         </div>
       </section>
 
@@ -349,7 +363,10 @@ export function ClaudeHooksSection(): React.JSX.Element {
           </h3>
           <button
             type="button"
-            onClick={() => { setAdding(true); setEditingKey(null) }}
+            onClick={() => {
+              setAdding(true)
+              setEditingKey(null)
+            }}
             className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           >
             <Plus size={12} weight="bold" />

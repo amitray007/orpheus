@@ -8,7 +8,9 @@
     "name": "terminal-vt-native",
     "triples": {
       "defaults": false,
-      "additional": ["aarch64-apple-darwin"]
+      "additional": [
+        "aarch64-apple-darwin"
+      ]
     }
   },
   "scripts": {

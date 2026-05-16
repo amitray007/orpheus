@@ -20,7 +20,7 @@ const PACKS: Record<SoundPack, SoundPatch> = {
   playful: playfulSoundsJson as SoundPatch,
   crisp: crispSoundsJson as SoundPatch,
   organic: organicSoundsJson as SoundPatch,
-  soft: softSoundsJson as SoundPatch,
+  soft: softSoundsJson as SoundPatch
 }
 
 // Build all patches once at module load — definePatch is synchronous and cheap.
@@ -32,7 +32,7 @@ const BUILT_PATCHES: Record<SoundPack, AudioPatch> = {
   playful: definePatch(PACKS.playful),
   crisp: definePatch(PACKS.crisp),
   organic: definePatch(PACKS.organic),
-  soft: definePatch(PACKS.soft),
+  soft: definePatch(PACKS.soft)
 }
 
 // Active patch — starts with core; swapped by setSoundPack().

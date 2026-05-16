@@ -46,14 +46,14 @@ function resolveWorkspaceLabel(workspaceId: string): string {
   if (!ws) return workspaceId
 
   const db = getDb()
-  const wsRow = db
-    .prepare('SELECT last_title FROM workspaces WHERE id = ?')
-    .get(workspaceId) as { last_title: string | null } | undefined
+  const wsRow = db.prepare('SELECT last_title FROM workspaces WHERE id = ?').get(workspaceId) as
+    | { last_title: string | null }
+    | undefined
   const displayTitle = wsRow?.last_title || ws.name
 
-  const projectRow = db
-    .prepare('SELECT name FROM projects WHERE id = ?')
-    .get(ws.projectId) as { name: string } | undefined
+  const projectRow = db.prepare('SELECT name FROM projects WHERE id = ?').get(ws.projectId) as
+    | { name: string }
+    | undefined
   const projectName = projectRow?.name ?? ws.projectId
 
   return `${projectName} · ${displayTitle}`
@@ -78,18 +78,11 @@ function focusAndNavigate(workspaceId: string): void {
   win.webContents.send('workspace:navigateTo', { workspaceId })
 }
 
-function fireAttentionNotification(
-  workspaceId: string,
-  count: number,
-  maxRepeats: number
-): void {
+function fireAttentionNotification(workspaceId: string, count: number, maxRepeats: number): void {
   if (shouldSuppress(workspaceId)) return
   const label = resolveWorkspaceLabel(workspaceId)
   const copy = attentionCopy(workspaceId)
-  const body =
-    count === 0
-      ? copy.body
-      : `${copy.body} (${count + 1} of ${maxRepeats + 1})`
+  const body = count === 0 ? copy.body : `${copy.body} (${count + 1} of ${maxRepeats + 1})`
   const title = count === 0 ? copy.title : `${copy.title} (still)`
   const notif = new Notification({
     title,
@@ -139,11 +132,7 @@ export function notifyForTransition(
     return
   }
 
-  if (
-    nextStatus === 'awaiting_input' &&
-    prevStatus === 'in_progress' &&
-    state.notifyStop
-  ) {
+  if (nextStatus === 'awaiting_input' && prevStatus === 'in_progress' && state.notifyStop) {
     if (shouldSuppress(workspaceId)) return
     const label = resolveWorkspaceLabel(workspaceId)
     const notif = new Notification({

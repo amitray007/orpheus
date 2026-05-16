@@ -9,11 +9,7 @@ import {
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
-import type {
-  GitStatus,
-  WorkspaceActivityDetail,
-  WorkspaceRecord
-} from '@shared/types'
+import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -41,10 +37,10 @@ const PAGE_SIZE = 10
 type ActivityFilterKey = 'all' | 'in_review' | 'in_progress' | 'waiting'
 
 const FILTER_OPTIONS: ReadonlyArray<{ value: ActivityFilterKey; label: string }> = [
-  { value: 'all',         label: 'All' },
-  { value: 'in_review',   label: 'In Review' },
+  { value: 'all', label: 'All' },
+  { value: 'in_review', label: 'In Review' },
   { value: 'in_progress', label: 'In Progress' },
-  { value: 'waiting',     label: 'Waiting' }
+  { value: 'waiting', label: 'Waiting' }
 ]
 
 /**
@@ -288,7 +284,9 @@ export function WorkspacesTab({
         const dn = resolveWorkspaceName({
           workspace: ws,
           terminalTitle: titleByWs[ws.id] ?? null,
-          sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+          sessionTitle: ws.claudeSessionId
+            ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+            : null
         }).text.toLowerCase()
         const basename = ws.cwd.split('/').pop()?.toLowerCase() ?? ''
         return dn.includes(q) || basename.includes(q)
@@ -330,7 +328,9 @@ export function WorkspacesTab({
           const dn = resolveWorkspaceName({
             workspace: ws,
             terminalTitle: titleByWs[ws.id] ?? null,
-            sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+            sessionTitle: ws.claudeSessionId
+              ? (sessionStats[ws.claudeSessionId]?.title ?? null)
+              : null
           })
           return (
             <span className="flex items-center gap-2 min-w-0">
@@ -445,7 +445,8 @@ export function WorkspacesTab({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2 min-w-0">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Workspaces · {filtered.length}{filtered.length !== active.length && ` of ${active.length}`}
+            Workspaces · {filtered.length}
+            {filtered.length !== active.length && ` of ${active.length}`}
           </h3>
 
           {/* Filter bar */}
@@ -520,11 +521,7 @@ export function WorkspacesTab({
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
             Sessions
           </h3>
-          <SessionsTab
-            projectId={projectId}
-            onResumedInWorkspace={onResumedInWorkspace}
-            compact
-          />
+          <SessionsTab projectId={projectId} onResumedInWorkspace={onResumedInWorkspace} compact />
         </div>
       </div>
 

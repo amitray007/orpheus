@@ -77,13 +77,20 @@ export function OrpheusAboutSection(): React.JSX.Element {
 
       {/* Links */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Links
-        </h3>
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">Links</h3>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
-          <ExternalLinkRow label="GitHub repository (private)" url="https://github.com/amitray007/orpheus" />
-          <ExternalLinkRow label="Report a bug" url="https://github.com/amitray007/orpheus/issues/new" />
-          <ExternalLinkRow label="libghostty-spm (Ghostty bindings)" url="https://github.com/Lakr233/libghostty-spm" />
+          <ExternalLinkRow
+            label="GitHub repository (private)"
+            url="https://github.com/amitray007/orpheus"
+          />
+          <ExternalLinkRow
+            label="Report a bug"
+            url="https://github.com/amitray007/orpheus/issues/new"
+          />
+          <ExternalLinkRow
+            label="libghostty-spm (Ghostty bindings)"
+            url="https://github.com/Lakr233/libghostty-spm"
+          />
         </div>
       </section>
     </div>

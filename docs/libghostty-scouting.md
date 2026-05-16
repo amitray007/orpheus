@@ -24,9 +24,9 @@ Source: [ghostty-org/ghostty — include/](https://github.com/ghostty-org/ghostt
 
 There are **two distinct library surfaces**:
 
-| Library | What it provides | GPU rendering? | Stability |
-|---|---|---|---|
-| `libghostty-vt` | VT parser, terminal state, render-state query API, key/mouse encoders | No — caller draws | Public alpha, API in flux |
+| Library             | What it provides                                                      | GPU rendering?     | Stability                            |
+| ------------------- | --------------------------------------------------------------------- | ------------------ | ------------------------------------ |
+| `libghostty-vt`     | VT parser, terminal state, render-state query API, key/mouse encoders | No — caller draws  | Public alpha, API in flux            |
 | `libghostty` (full) | Everything above + Metal renderer, PTY lifecycle, real NSView surface | Yes — Metal-backed | Unstable, macOS-only consumer so far |
 
 For Orpheus (target: full Metal rendering, not roll-your-own renderer), the relevant library is the **full `libghostty`** — `ghostty_app_new` / `ghostty_surface_new` path. This is what the Ghostty macOS app uses internally.
@@ -129,25 +129,26 @@ From Ghostty source and Kytos implementation:
 
 ### 2a. Prior art
 
-| App | Renderer approach | Embedding style |
-|---|---|---|
-| Hyper | xterm.js (Canvas) | Web-only, no native view |
-| Tabby | xterm.js | Web-only |
-| VS Code integrated terminal | xterm.js + CanvasRenderer / WebGL | Web-only |
-| Wave Terminal | Electron + xterm.js | Web-only |
-| Warp | Standalone native app (Rust/Metal, custom UI framework) | Not Electron at all |
-| Zed | Standalone native app (Rust/GPUI) | Not Electron at all |
-| Ghostty (standalone) | Native Metal/AppKit, Zig core | Not Electron |
-| Kytos | Native macOS (Swift + libghostty xcframework) | Not Electron |
-| **electron-libghostty** | npm 0.0.0 skeleton, no source | Unknown |
+| App                         | Renderer approach                                       | Embedding style          |
+| --------------------------- | ------------------------------------------------------- | ------------------------ |
+| Hyper                       | xterm.js (Canvas)                                       | Web-only, no native view |
+| Tabby                       | xterm.js                                                | Web-only                 |
+| VS Code integrated terminal | xterm.js + CanvasRenderer / WebGL                       | Web-only                 |
+| Wave Terminal               | Electron + xterm.js                                     | Web-only                 |
+| Warp                        | Standalone native app (Rust/Metal, custom UI framework) | Not Electron at all      |
+| Zed                         | Standalone native app (Rust/GPUI)                       | Not Electron at all      |
+| Ghostty (standalone)        | Native Metal/AppKit, Zig core                           | Not Electron             |
+| Kytos                       | Native macOS (Swift + libghostty xcframework)           | Not Electron             |
+| **electron-libghostty**     | npm 0.0.0 skeleton, no source                           | Unknown                  |
 
-No production Electron app is known to embed a Metal-backed NSView terminal. The closest public reference for the *pattern* is embedding wgpu (a Rust Metal renderer) inside Electron: [Using wgpu with Electron on macOS](https://www.monkeynut.org/wgpu-electron/).
+No production Electron app is known to embed a Metal-backed NSView terminal. The closest public reference for the _pattern_ is embedding wgpu (a Rust Metal renderer) inside Electron: [Using wgpu with Electron on macOS](https://www.monkeynut.org/wgpu-electron/).
 
 ### 2b. What `getNativeWindowHandle()` actually returns
 
 On macOS, `BrowserWindow.getNativeWindowHandle()` returns a `Buffer` containing the pointer value of the `NSView*` that is the **contentView** of the `NSWindow`. Source: [Electron issue #7460](https://github.com/electron/electron/issues/7460).
 
 In Objective-C++:
+
 ```objc
 NSView* contentView = *reinterpret_cast<NSView**>(buffer.Data());
 ```
@@ -170,9 +171,9 @@ GhosttyHostView* termView = [[GhosttyHostView alloc] initWithFrame: terminalRect
 Positioning: the renderer tells the main process the terminal rect (in logical pixels) via IPC. The native addon converts to screen coordinates and calls `[termView setFrame:]`.
 
 **Pros**: simplest, no separate NSWindow to manage, resize/z-order works naturally.
-**Cons**: The WKWebView (Electron's web layer) sits in the same view hierarchy. By default, the WKWebView's `CALayer` composite sits on top of any sibling subview added *before* it. To punch a hole, the renderer must render the terminal area with `background: transparent` and the native view must be positioned *behind* the web layer in z-order (use `[contentView sortSubviewsUsingFunction:...]` or insert below the WKWebView subview).
+**Cons**: The WKWebView (Electron's web layer) sits in the same view hierarchy. By default, the WKWebView's `CALayer` composite sits on top of any sibling subview added _before_ it. To punch a hole, the renderer must render the terminal area with `background: transparent` and the native view must be positioned _behind_ the web layer in z-order (use `[contentView sortSubviewsUsingFunction:...]` or insert below the WKWebView subview).
 
-**Z-order nuance**: Electron's contentView contains the WKWebView as a direct child. Subviews added to contentView are layered in insertion order. Adding termView *before* the WKWebView (not straightforward since WKWebView is already there) puts it beneath; adding it after puts it on top. For a "hole" effect, you want it **beneath** the WKWebView with web content transparent in the terminal region. Alternatively, add it **on top** and accept that it will receive all mouse/keyboard events in its frame (which you want for the terminal anyway).
+**Z-order nuance**: Electron's contentView contains the WKWebView as a direct child. Subviews added to contentView are layered in insertion order. Adding termView _before_ the WKWebView (not straightforward since WKWebView is already there) puts it beneath; adding it after puts it on top. For a "hole" effect, you want it **beneath** the WKWebView with web content transparent in the terminal region. Alternatively, add it **on top** and accept that it will receive all mouse/keyboard events in its frame (which you want for the terminal anyway).
 
 Recommended: add the terminal NSView **on top** of the WKWebView in the terminal region. The renderer leaves that region transparent/empty (no DOM content there). Clicks and keyboard events for the terminal area route to the native NSView, not to WKWebView.
 
@@ -306,17 +307,17 @@ For splits: multiple `ghostty_surface_t` instances with non-overlapping `setFram
 
 ### 3e. Event ownership summary
 
-| Event | Owner | Mechanism |
-|---|---|---|
-| Keyboard down/up | Native NSView | `NSResponder.keyDown:` → `ghostty_surface_key()` |
-| IME composition | Native NSView | `NSTextInputClient` → `ghostty_surface_preedit()` / `ghostty_surface_text()` |
-| Mouse button | Native NSView | `NSResponder.mouseDown:` → `ghostty_surface_mouse_button()` |
-| Mouse scroll | Native NSView | `NSResponder.scrollWheel:` → `ghostty_surface_mouse_scroll()` |
-| Resize | NSView `setFrameSize:` override | → `ghostty_surface_set_size()` + `ghostty_surface_set_content_scale()` |
-| Font size | IPC `terminal:setFontSize` | Config update: `ghostty_config_*` + `ghostty_surface_update_config()` |
-| Frame draw | CVDisplayLink or CADisplayLink | → `ghostty_surface_draw()` on renderer thread |
-| Title / CWD change | Ghostty action_cb | → IPC push to renderer |
-| Clipboard | Ghostty read/write clipboard_cb | → IPC to renderer, which uses `navigator.clipboard` API |
+| Event              | Owner                           | Mechanism                                                                    |
+| ------------------ | ------------------------------- | ---------------------------------------------------------------------------- |
+| Keyboard down/up   | Native NSView                   | `NSResponder.keyDown:` → `ghostty_surface_key()`                             |
+| IME composition    | Native NSView                   | `NSTextInputClient` → `ghostty_surface_preedit()` / `ghostty_surface_text()` |
+| Mouse button       | Native NSView                   | `NSResponder.mouseDown:` → `ghostty_surface_mouse_button()`                  |
+| Mouse scroll       | Native NSView                   | `NSResponder.scrollWheel:` → `ghostty_surface_mouse_scroll()`                |
+| Resize             | NSView `setFrameSize:` override | → `ghostty_surface_set_size()` + `ghostty_surface_set_content_scale()`       |
+| Font size          | IPC `terminal:setFontSize`      | Config update: `ghostty_config_*` + `ghostty_surface_update_config()`        |
+| Frame draw         | CVDisplayLink or CADisplayLink  | → `ghostty_surface_draw()` on renderer thread                                |
+| Title / CWD change | Ghostty action_cb               | → IPC push to renderer                                                       |
+| Clipboard          | Ghostty read/write clipboard_cb | → IPC to renderer, which uses `navigator.clipboard` API                      |
 
 ### 3f. Font loading
 
@@ -359,7 +360,7 @@ Caveat: this adds 2–4 weeks of throwaway code. Only worth it if other UI work 
 ### 4d. License / IP risk
 
 - Ghostty: MIT, no surprises. Closed-source commercial app using MIT code is textbook-fine.
-- Ghostty's Zig dependencies (listed in `build.zig.zon`): need a one-time audit pass. The main suspects (freetype, harfbuzz, etc.) are typically MIT/FreeType/LGPL. LGPL *could* be a concern for static linking in a closed-source app — unknown without the full dependency audit. **Action item**: run `zig build --fetch` and inspect each dependency's license.
+- Ghostty's Zig dependencies (listed in `build.zig.zon`): need a one-time audit pass. The main suspects (freetype, harfbuzz, etc.) are typically MIT/FreeType/LGPL. LGPL _could_ be a concern for static linking in a closed-source app — unknown without the full dependency audit. **Action item**: run `zig build --fetch` and inspect each dependency's license.
 - The Ghostty resource bundle (terminfo, shell integration scripts) ships with Ghostty under MIT. Including it in Orpheus's app bundle is permitted.
 
 ---
@@ -393,7 +394,7 @@ Start the Ghostty `ghostty_app_t` inside the Electron process and verify it find
 - [Using wgpu with Electron on macOS](https://www.monkeynut.org/wgpu-electron/) — definitive guide for NSView subview inside Electron
 - [Electron — Native Code and Electron (macOS / Objective-C)](https://www.electronjs.org/docs/latest/tutorial/native-code-and-electron-objc-macos)
 - [Electron — Using Native Node Modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules)
-- [Electron issue #7460 — getNativeWindowHandle returns NSView*](https://github.com/electron/electron/issues/7460)
+- [Electron issue #7460 — getNativeWindowHandle returns NSView\*](https://github.com/electron/electron/issues/7460)
 - [Ghostty macOS release requirements](https://ghostty.org/docs/install/release-notes/1-3-0)
 - [ghostty-org/ghostty — LICENSE (MIT)](https://github.com/ghostty-org/ghostty/blob/main/LICENSE)
 - [Ghostty architecture — DeepWiki](https://deepwiki.com/ghostty-org/ghostty)

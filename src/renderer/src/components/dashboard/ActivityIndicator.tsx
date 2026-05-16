@@ -2,9 +2,24 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
-const BRAILLE_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'] as const
-const TOOL_FRAMES = ['◐','◓','◑','◒'] as const
-const COMPACT_FRAMES = ['▁','▂','▃','▄','▅','▆','▇','█','▇','▆','▅','▄','▃','▂'] as const
+const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+const TOOL_FRAMES = ['◐', '◓', '◑', '◒'] as const
+const COMPACT_FRAMES = [
+  '▁',
+  '▂',
+  '▃',
+  '▄',
+  '▅',
+  '▆',
+  '▇',
+  '█',
+  '▇',
+  '▆',
+  '▅',
+  '▄',
+  '▃',
+  '▂'
+] as const
 
 function useAnimatedFrame(frames: readonly string[], intervalMs: number): string {
   const [index, setIndex] = useState(0)
@@ -52,7 +67,9 @@ export function ActivityIndicator({
     return <span className={`${cls} text-amber-400 text-xs font-mono animate-pulse`}>◆</span>
   }
   if (detail === 'asking') {
-    return <span className={`${cls} text-amber-400 text-xs font-mono font-bold animate-pulse`}>?</span>
+    return (
+      <span className={`${cls} text-amber-400 text-xs font-mono font-bold animate-pulse`}>?</span>
+    )
   }
   return null
 }

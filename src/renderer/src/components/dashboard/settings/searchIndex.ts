@@ -41,7 +41,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Model',
     description: 'Which Claude model launches by default.',
     mapsTo: ['--model', 'ANTHROPIC_MODEL'],
-    keywords: ['claude model', 'engine', 'version', 'llm', 'ai model', 'sonnet', 'opus', 'haiku', 'default model']
+    keywords: [
+      'claude model',
+      'engine',
+      'version',
+      'llm',
+      'ai model',
+      'sonnet',
+      'opus',
+      'haiku',
+      'default model'
+    ]
   },
   {
     sectionId: 'claude-general',
@@ -51,7 +61,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Permission mode',
     description: 'How claude handles tool-use permission requests.',
     mapsTo: ['--permission-mode'],
-    keywords: ['auto-approve', 'perms', 'tool permissions', 'yolo', 'accept', 'bypass', 'plan mode', 'approve', 'safety']
+    keywords: [
+      'auto-approve',
+      'perms',
+      'tool permissions',
+      'yolo',
+      'accept',
+      'bypass',
+      'plan mode',
+      'approve',
+      'safety'
+    ]
   },
   {
     sectionId: 'claude-general',
@@ -71,7 +91,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Auto-load memory',
     description: 'Automatically include CLAUDE.md context files when claude starts.',
     mapsTo: ['CLAUDE_CODE_DISABLE_AUTO_MEMORY'],
-    keywords: ['claude md', 'context files', 'memory files', 'project context', 'auto memory', 'disable memory']
+    keywords: [
+      'claude md',
+      'context files',
+      'memory files',
+      'project context',
+      'auto memory',
+      'disable memory'
+    ]
   },
   {
     sectionId: 'claude-general',
@@ -81,7 +108,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Extended thinking',
     description: 'Always allow claude to think before responding. Slower but more thorough.',
     mapsTo: ['alwaysThinkingEnabled'],
-    keywords: ['thinking', 'reasoning', 'slow response', 'deliberation', 'chain of thought', 'always think']
+    keywords: [
+      'thinking',
+      'reasoning',
+      'slow response',
+      'deliberation',
+      'chain of thought',
+      'always think'
+    ]
   },
   {
     sectionId: 'claude-general',
@@ -139,7 +173,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'General',
     settingId: 'disable-adaptive-thinking',
     label: 'Disable adaptive thinking',
-    description: 'Turn off adaptive thinking optimizations that adjust reasoning depth based on prompt complexity.',
+    description:
+      'Turn off adaptive thinking optimizations that adjust reasoning depth based on prompt complexity.',
     mapsTo: ['CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'],
     keywords: ['adaptive', 'reasoning depth', 'dynamic thinking', 'smart mode']
   },
@@ -149,7 +184,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'General',
     settingId: 'disable-legacy-model-remap',
     label: 'Disable legacy model remap',
-    description: 'Stop Claude from automatically remapping legacy model identifiers to their current equivalents.',
+    description:
+      'Stop Claude from automatically remapping legacy model identifiers to their current equivalents.',
     mapsTo: ['CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP'],
     keywords: ['model alias', 'legacy model', 'model remap', 'model migration']
   },
@@ -163,9 +199,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'output-style',
     label: 'Output style',
-    description: 'Influences how verbose and proactive Claude\'s responses are.',
+    description: "Influences how verbose and proactive Claude's responses are.",
     mapsTo: ['outputStyle'],
-    keywords: ['verbosity', 'response style', 'explanatory', 'proactive', 'learning mode', 'response format']
+    keywords: [
+      'verbosity',
+      'response style',
+      'explanatory',
+      'proactive',
+      'learning mode',
+      'response format'
+    ]
   },
   {
     sectionId: 'claude-display',
@@ -173,7 +216,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'tui-renderer',
     label: 'TUI renderer',
-    description: 'Whether Claude\'s terminal UI fills the pane or stays in a scrollable default view.',
+    description:
+      "Whether Claude's terminal UI fills the pane or stays in a scrollable default view.",
     mapsTo: ['tui'],
     keywords: ['terminal ui', 'fullscreen', 'tui mode', 'scrollable', 'terminal view']
   },
@@ -193,7 +237,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'native-cursor',
     label: 'Native cursor',
-    description: 'Use the system cursor style inside the embedded terminal instead of the block cursor.',
+    description:
+      'Use the system cursor style inside the embedded terminal instead of the block cursor.',
     mapsTo: ['CLAUDE_CODE_NATIVE_CURSOR'],
     keywords: ['cursor style', 'block cursor', 'system cursor', 'terminal cursor']
   },
@@ -203,7 +248,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'hide-cwd-in-logo',
     label: 'Hide cwd in logo',
-    description: 'Remove the current working directory line from Claude\'s session banner.',
+    description: "Remove the current working directory line from Claude's session banner.",
     mapsTo: ['CLAUDE_CODE_HIDE_CWD'],
     keywords: ['working directory', 'cwd', 'banner', 'session header', 'hide path']
   },
@@ -243,7 +288,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'disable-virtual-scroll',
     label: 'Disable virtual scroll',
-    description: 'Turn off Claude\'s virtual scrolling implementation.',
+    description: "Turn off Claude's virtual scrolling implementation.",
     mapsTo: ['CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL'],
     keywords: ['virtual scroll', 'scrolling', 'scroll behavior']
   },
@@ -253,7 +298,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'disable-mouse',
     label: 'Disable mouse',
-    description: 'Disable mouse event handling inside Claude\'s terminal UI.',
+    description: "Disable mouse event handling inside Claude's terminal UI.",
     mapsTo: ['CLAUDE_CODE_DISABLE_MOUSE'],
     keywords: ['mouse events', 'mouse support', 'terminal mouse', 'click events']
   },
@@ -273,7 +318,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'scroll-speed',
     label: 'Scroll speed (1–20)',
-    description: 'Override the scroll speed inside Claude\'s TUI.',
+    description: "Override the scroll speed inside Claude's TUI.",
     mapsTo: ['CLAUDE_CODE_SCROLL_SPEED'],
     keywords: ['scroll speed', 'scroll rate', 'terminal scroll', 'scrolling speed']
   },
@@ -283,7 +328,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Display',
     settingId: 'code-accessibility',
     label: 'Code accessibility',
-    description: 'Enable accessibility enhancements for code blocks in Claude\'s output.',
+    description: "Enable accessibility enhancements for code blocks in Claude's output.",
     mapsTo: ['CLAUDE_CODE_CODE_ACCESSIBILITY'],
     keywords: ['a11y', 'accessibility', 'code blocks', 'screen reader']
   },
@@ -327,7 +372,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Permissions',
     settingId: 'auto-approve-file-edits',
     label: 'Auto-approve file edits',
-    description: 'Adds "Edit" to the allow list at launch — claude may edit files without prompting.',
+    description:
+      'Adds "Edit" to the allow list at launch — claude may edit files without prompting.',
     mapsTo: ['permissions.allow[Edit]'],
     keywords: ['allow edits', 'file permission', 'edit permission', 'auto allow', 'approve edits']
   },
@@ -337,9 +383,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Permissions',
     settingId: 'ask-before-destructive-bash-commands',
     label: 'Ask before destructive Bash commands',
-    description: 'Injects ask-rules for rm, git reset, force-push, DROP TABLE, and similar at launch.',
+    description:
+      'Injects ask-rules for rm, git reset, force-push, DROP TABLE, and similar at launch.',
     mapsTo: ['permissions.ask[Bash(...)]'],
-    keywords: ['destructive commands', 'rm', 'delete', 'dangerous bash', 'confirm', 'ask permission']
+    keywords: [
+      'destructive commands',
+      'rm',
+      'delete',
+      'dangerous bash',
+      'confirm',
+      'ask permission'
+    ]
   },
   {
     sectionId: 'claude-permissions',
@@ -347,7 +401,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Permissions',
     settingId: 'plan-mode-by-default',
     label: 'Plan mode by default',
-    description: 'Sets --permission-mode plan at launch so Claude always produces a plan before executing.',
+    description:
+      'Sets --permission-mode plan at launch so Claude always produces a plan before executing.',
     mapsTo: ['--permission-mode plan'],
     keywords: ['plan first', 'planning mode', 'safe mode', 'review before execute']
   },
@@ -389,7 +444,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Additional directories',
     description: 'Extra directories Claude is allowed to access.',
     mapsTo: ['permissions.additionalDirectories'],
-    keywords: ['allowed paths', 'directory access', 'file access', 'extra paths', 'folder permission']
+    keywords: [
+      'allowed paths',
+      'directory access',
+      'file access',
+      'extra paths',
+      'folder permission'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -403,7 +464,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Provider',
     description: 'Which cloud backend Claude Code connects to.',
     mapsTo: [],
-    keywords: ['cloud provider', 'anthropic', 'bedrock', 'vertex', 'foundry', 'backend', 'aws', 'gcp', 'azure']
+    keywords: [
+      'cloud provider',
+      'anthropic',
+      'bedrock',
+      'vertex',
+      'foundry',
+      'backend',
+      'aws',
+      'gcp',
+      'azure'
+    ]
   },
   {
     sectionId: 'claude-auth',
@@ -413,7 +484,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'API key',
     description: 'Stored in the local Orpheus database.',
     mapsTo: ['ANTHROPIC_API_KEY'],
-    keywords: ['anthropic key', 'auth', 'credential', 'secret', 'env key', 'api-key', 'sk-ant', 'token', 'auth key', 'api credential']
+    keywords: [
+      'anthropic key',
+      'auth',
+      'credential',
+      'secret',
+      'env key',
+      'api-key',
+      'sk-ant',
+      'token',
+      'auth key',
+      'api credential'
+    ]
   },
   {
     sectionId: 'claude-auth',
@@ -433,7 +515,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Base URL override',
     description: 'Proxy or local model endpoint. Leave blank to use the provider default.',
     mapsTo: ['ANTHROPIC_BASE_URL'],
-    keywords: ['proxy url', 'custom endpoint', 'base url', 'local model', 'api endpoint', 'override url']
+    keywords: [
+      'proxy url',
+      'custom endpoint',
+      'base url',
+      'local model',
+      'api endpoint',
+      'override url'
+    ]
   },
   {
     sectionId: 'claude-auth',
@@ -589,9 +678,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Tools',
     settingId: '_section',
     label: 'MCP servers',
-    description: 'MCP server toggles, auto-discovered from ~/.claude.json and each project\'s .mcp.json.',
+    description:
+      "MCP server toggles, auto-discovered from ~/.claude.json and each project's .mcp.json.",
     mapsTo: [],
-    keywords: ['mcp', 'integration', 'external tools', 'model context protocol', 'server', 'plugin', 'tool server']
+    keywords: [
+      'mcp',
+      'integration',
+      'external tools',
+      'model context protocol',
+      'server',
+      'plugin',
+      'tool server'
+    ]
   },
   {
     sectionId: 'claude-tools',
@@ -639,7 +737,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Tools',
     settingId: 'browser-integration',
     label: 'Browser integration',
-    description: 'Enable claude\'s Chrome browser integration for web browsing and interaction.',
+    description: "Enable claude's Chrome browser integration for web browsing and interaction.",
     mapsTo: [],
     keywords: ['browser', 'chrome', 'web browsing', 'web automation', 'browser tool']
   },
@@ -679,7 +777,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Tools',
     settingId: 'glob-ignores-gitignore',
     label: 'Glob ignores .gitignore (override)',
-    description: 'When enabled, sets CLAUDE_CODE_GLOB_NO_IGNORE=1 so globs skip .gitignore patterns.',
+    description:
+      'When enabled, sets CLAUDE_CODE_GLOB_NO_IGNORE=1 so globs skip .gitignore patterns.',
     mapsTo: ['CLAUDE_CODE_GLOB_NO_IGNORE'],
     keywords: ['gitignore', 'glob ignore', 'ignore patterns', 'file exclusion']
   },
@@ -743,9 +842,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Slash commands',
     settingId: '_section',
     label: 'Slash commands',
-    description: 'Custom commands from ~/.claude/commands/ and each project\'s .claude/commands/.',
+    description: "Custom commands from ~/.claude/commands/ and each project's .claude/commands/.",
     mapsTo: [],
-    keywords: ['slash command', 'custom command', 'shortcuts', 'command alias', 'user commands', 'project commands']
+    keywords: [
+      'slash command',
+      'custom command',
+      'shortcuts',
+      'command alias',
+      'user commands',
+      'project commands'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -757,9 +863,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Subagents',
     settingId: '_section',
     label: 'Subagents',
-    description: 'Custom subagents from ~/.claude/agents/ and each project\'s .claude/agents/.',
+    description: "Custom subagents from ~/.claude/agents/ and each project's .claude/agents/.",
     mapsTo: [],
-    keywords: ['subagent', 'sub agent', 'agent', 'worker agent', 'parallel agent', 'specialized agent', 'claude agent']
+    keywords: [
+      'subagent',
+      'sub agent',
+      'agent',
+      'worker agent',
+      'parallel agent',
+      'specialized agent',
+      'claude agent'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -771,9 +885,22 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Hooks',
     settingId: '_section',
     label: 'Hooks',
-    description: 'Lifecycle event handlers — run shell scripts or commands at key points in every Claude Code session.',
+    description:
+      'Lifecycle event handlers — run shell scripts or commands at key points in every Claude Code session.',
     mapsTo: [],
-    keywords: ['hooks', 'events', 'callbacks', 'scripts', 'pretooluse', 'posttooluse', 'lifecycle', 'session start', 'session end', 'automation', 'trigger']
+    keywords: [
+      'hooks',
+      'events',
+      'callbacks',
+      'scripts',
+      'pretooluse',
+      'posttooluse',
+      'lifecycle',
+      'session start',
+      'session end',
+      'automation',
+      'trigger'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -807,7 +934,15 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Disable telemetry',
     description: 'Opt out of anonymous usage statistics sent to Anthropic.',
     mapsTo: ['DISABLE_TELEMETRY'],
-    keywords: ['telemetry', 'analytics', 'tracking', 'privacy', 'usage stats', 'data collection', 'opt out']
+    keywords: [
+      'telemetry',
+      'analytics',
+      'tracking',
+      'privacy',
+      'usage stats',
+      'data collection',
+      'opt out'
+    ]
   },
   {
     sectionId: 'claude-developer',
@@ -877,7 +1012,15 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'HTTPS_PROXY',
     description: 'HTTPS proxy for outbound requests from claude.',
     mapsTo: ['HTTPS_PROXY'],
-    keywords: ['proxy', 'network', 'corporate proxy', 'https proxy', 'ssl proxy', 'secure proxy', 'env var']
+    keywords: [
+      'proxy',
+      'network',
+      'corporate proxy',
+      'https proxy',
+      'ssl proxy',
+      'secure proxy',
+      'env var'
+    ]
   },
   {
     sectionId: 'claude-developer',
@@ -985,7 +1128,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Developer',
     settingId: 'auto-background-tasks',
     label: 'Auto background tasks',
-    description: 'Allow Claude to automatically schedule background tasks without explicit user approval.',
+    description:
+      'Allow Claude to automatically schedule background tasks without explicit user approval.',
     mapsTo: ['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'],
     keywords: ['auto schedule', 'automatic tasks', 'background schedule']
   },
@@ -1005,7 +1149,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Developer',
     settingId: 'enable-tasks',
     label: 'Enable tasks',
-    description: 'Enable Claude\'s task management system for tracking long-running work items.',
+    description: "Enable Claude's task management system for tracking long-running work items.",
     mapsTo: ['CLAUDE_CODE_ENABLE_TASKS'],
     keywords: ['tasks', 'task management', 'work items', 'long running tasks']
   },
@@ -1035,7 +1179,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Developer',
     settingId: 'disable-feedback-command',
     label: 'Disable feedback command',
-    description: 'Remove the /feedback slash command from Claude\'s UI.',
+    description: "Remove the /feedback slash command from Claude's UI.",
     mapsTo: ['DISABLE_FEEDBACK_COMMAND'],
     keywords: ['feedback', 'feedback command', 'slash feedback', 'disable feedback']
   },
@@ -1077,7 +1221,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Custom environment variables',
     description: 'Raw key/value pairs merged into the claude launch env.',
     mapsTo: [],
-    keywords: ['env vars', 'environment variables', 'custom env', 'launch env', 'env key', 'env value', 'key value', 'env override']
+    keywords: [
+      'env vars',
+      'environment variables',
+      'custom env',
+      'launch env',
+      'env key',
+      'env value',
+      'key value',
+      'env override'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -1091,7 +1244,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'About Claude',
     description: 'Claude Code version, binary path, and links to documentation.',
     mapsTo: [],
-    keywords: ['about', 'version', 'binary path', 'docs', 'documentation', 'changelog', 'claude version', 'which claude']
+    keywords: [
+      'about',
+      'version',
+      'binary path',
+      'docs',
+      'documentation',
+      'changelog',
+      'claude version',
+      'which claude'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -1103,9 +1265,20 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Appearance',
     settingId: 'color-theme',
     label: 'Color theme',
-    description: 'Dark is the only available theme for now. Light and System auto-switch are planned.',
+    description:
+      'Dark is the only available theme for now. Light and System auto-switch are planned.',
     mapsTo: [],
-    keywords: ['theme', 'dark', 'light', 'appearance', 'colors', 'color scheme', 'ui theme', 'dark mode', 'light mode']
+    keywords: [
+      'theme',
+      'dark',
+      'light',
+      'appearance',
+      'colors',
+      'color scheme',
+      'ui theme',
+      'dark mode',
+      'light mode'
+    ]
   },
   {
     sectionId: 'orpheus-appearance',
@@ -1115,7 +1288,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Accent',
     description: 'Used for active states, highlights, and interactive elements throughout the UI.',
     mapsTo: [],
-    keywords: ['accent color', 'highlight color', 'brand color', 'purple', 'blue', 'teal', 'pink', 'orange', 'color picker']
+    keywords: [
+      'accent color',
+      'highlight color',
+      'brand color',
+      'purple',
+      'blue',
+      'teal',
+      'pink',
+      'orange',
+      'color picker'
+    ]
   },
   {
     sectionId: 'orpheus-appearance',
@@ -1149,7 +1332,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Max archived workspaces',
     description: 'Older archived workspaces are auto-deleted to stay under this cap.',
     mapsTo: [],
-    keywords: ['archived workspaces', 'archive limit', 'workspace history', 'auto delete', 'cleanup']
+    keywords: [
+      'archived workspaces',
+      'archive limit',
+      'workspace history',
+      'auto delete',
+      'cleanup'
+    ]
   },
   {
     sectionId: 'orpheus-sidebar',
@@ -1183,7 +1372,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Restore window geometry on launch',
     description: 'Reopen at the same size and position as last quit.',
     mapsTo: [],
-    keywords: ['window size', 'window position', 'restore window', 'geometry', 'window state', 'remember size']
+    keywords: [
+      'window size',
+      'window position',
+      'restore window',
+      'geometry',
+      'window state',
+      'remember size'
+    ]
   },
   {
     sectionId: 'orpheus-window',
@@ -1193,7 +1389,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Close button hides Orpheus',
     description: 'On macOS, clicking the red close button hides the app instead of quitting.',
     mapsTo: [],
-    keywords: ['close button', 'hide window', 'macos close', 'quit vs hide', 'red button', 'close behavior']
+    keywords: [
+      'close button',
+      'hide window',
+      'macos close',
+      'quit vs hide',
+      'red button',
+      'close behavior'
+    ]
   },
   {
     sectionId: 'orpheus-window',
@@ -1201,7 +1404,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Window',
     settingId: 'open-at-last-view',
     label: 'Open at last view',
-    description: 'Re-open the project, workspace, or dashboard you had active when Orpheus last closed.',
+    description:
+      'Re-open the project, workspace, or dashboard you had active when Orpheus last closed.',
     mapsTo: [],
     keywords: ['restore view', 'last view', 'session restore', 'open state', 'last session']
   },
@@ -1213,7 +1417,15 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Launch at login',
     description: 'Start Orpheus automatically when you log into macOS.',
     mapsTo: [],
-    keywords: ['startup', 'boot', 'auto-start', 'login items', 'launch on startup', 'open on login', 'autostart']
+    keywords: [
+      'startup',
+      'boot',
+      'auto-start',
+      'login items',
+      'launch on startup',
+      'open on login',
+      'autostart'
+    ]
   },
   {
     sectionId: 'orpheus-window',
@@ -1223,7 +1435,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Global hotkey',
     description: 'System-wide keyboard shortcut to bring Orpheus to the front from any app.',
     mapsTo: [],
-    keywords: ['shortcut', 'keybinding', 'key combo', 'global key', 'hotkey', 'keyboard shortcut', 'bring to front', 'activate', 'global shortcut', 'system hotkey']
+    keywords: [
+      'shortcut',
+      'keybinding',
+      'key combo',
+      'global key',
+      'hotkey',
+      'keyboard shortcut',
+      'bring to front',
+      'activate',
+      'global shortcut',
+      'system hotkey'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -1237,7 +1460,17 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Notifications',
     description: 'Native macOS alerts for Claude activity transitions.',
     mapsTo: [],
-    keywords: ['notification', 'alert', 'macos notify', 'claude finished', 'claude needs you', 'do not disturb', 'notify', 'bell', 'system notification']
+    keywords: [
+      'notification',
+      'alert',
+      'macos notify',
+      'claude finished',
+      'claude needs you',
+      'do not disturb',
+      'notify',
+      'bell',
+      'system notification'
+    ]
   },
   {
     sectionId: 'orpheus-notifications',
@@ -1247,7 +1480,15 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Claude needs you',
     description: 'Notify when Claude pauses on a permission request or tool-use confirmation.',
     mapsTo: [],
-    keywords: ['attention', 'permission request', 'tool confirmation', 'claude paused', 'notify attention', 'claude needs you', 'claude waiting']
+    keywords: [
+      'attention',
+      'permission request',
+      'tool confirmation',
+      'claude paused',
+      'notify attention',
+      'claude needs you',
+      'claude waiting'
+    ]
   },
   {
     sectionId: 'orpheus-notifications',
@@ -1255,9 +1496,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Notifications',
     settingId: 'notify-stop',
     label: 'Claude finished a response',
-    description: 'Notify when Claude\'s reply is ready for your next message.',
+    description: "Notify when Claude's reply is ready for your next message.",
     mapsTo: [],
-    keywords: ['stop', 'finished', 'claude done', 'response ready', 'claude finished', 'reply ready', 'notify stop', 'next message']
+    keywords: [
+      'stop',
+      'finished',
+      'claude done',
+      'response ready',
+      'claude finished',
+      'reply ready',
+      'notify stop',
+      'next message'
+    ]
   },
   {
     sectionId: 'orpheus-notifications',
@@ -1267,7 +1517,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Notify even when Orpheus is focused',
     description: 'Always send notifications regardless of whether Orpheus is the active window.',
     mapsTo: [],
-    keywords: ['always notify', 'focused window', 'suppress notifications', 'do not disturb', 'notification suppression', 'force notify']
+    keywords: [
+      'always notify',
+      'focused window',
+      'suppress notifications',
+      'do not disturb',
+      'notification suppression',
+      'force notify'
+    ]
   },
   {
     sectionId: 'orpheus-notifications',
@@ -1275,9 +1532,23 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Notifications',
     settingId: 'repeat-attention-reminders',
     label: 'Repeat attention reminders',
-    description: 'When Claude is waiting on you, keep re-notifying on an exponential schedule until you view that workspace.',
+    description:
+      'When Claude is waiting on you, keep re-notifying on an exponential schedule until you view that workspace.',
     mapsTo: [],
-    keywords: ['repeat', 'reminder', 'persistent', 'nag', 'retry', 'backoff', 'exponential', 'max repeats', 'reminders', 'unattended', 'follow up', 'follow-up']
+    keywords: [
+      'repeat',
+      'reminder',
+      'persistent',
+      'nag',
+      'retry',
+      'backoff',
+      'exponential',
+      'max repeats',
+      'reminders',
+      'unattended',
+      'follow up',
+      'follow-up'
+    ]
   },
   {
     sectionId: 'orpheus-notifications',
@@ -1285,9 +1556,28 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Notifications',
     settingId: 'inactivity-watchdog-seconds',
     label: 'Inactivity watchdog (seconds)',
-    description: 'Auto-demote stuck in-progress workspaces to ready when no Claude hook heartbeat arrives.',
+    description:
+      'Auto-demote stuck in-progress workspaces to ready when no Claude hook heartbeat arrives.',
     mapsTo: [],
-    keywords: ['watchdog', 'stuck', 'spinner', 'interrupt', 'ctrl-c', 'ctrl c', 'esc', 'abort', 'interrupted', 'hang', 'timeout', 'inactivity', 'heartbeat', 'pretooluse', 'posttooluse', 'demote', 'reset']
+    keywords: [
+      'watchdog',
+      'stuck',
+      'spinner',
+      'interrupt',
+      'ctrl-c',
+      'ctrl c',
+      'esc',
+      'abort',
+      'interrupted',
+      'hang',
+      'timeout',
+      'inactivity',
+      'heartbeat',
+      'pretooluse',
+      'posttooluse',
+      'demote',
+      'reset'
+    ]
   },
 
   // ---------------------------------------------------------------------------
@@ -1345,7 +1635,14 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Open DevTools',
     description: 'Open Chromium DevTools in a detached window.',
     mapsTo: [],
-    keywords: ['devtools', 'chromium devtools', 'inspector', 'debug renderer', 'console', 'developer tools']
+    keywords: [
+      'devtools',
+      'chromium devtools',
+      'inspector',
+      'debug renderer',
+      'console',
+      'developer tools'
+    ]
   },
   {
     sectionId: 'orpheus-developer',
@@ -1369,6 +1666,15 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'About Orpheus',
     description: 'Version info, key file paths, and project links.',
     mapsTo: [],
-    keywords: ['about', 'version', 'orpheus version', 'database path', 'log path', 'config dir', 'app info', 'github']
+    keywords: [
+      'about',
+      'version',
+      'orpheus version',
+      'database path',
+      'log path',
+      'config dir',
+      'app info',
+      'github'
+    ]
   }
 ]

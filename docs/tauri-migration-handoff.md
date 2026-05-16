@@ -5,6 +5,7 @@
 **Orpheus** is a closed-source macOS IDE built around Claude Code. Mac-only v0. Repo at `/Users/maverick/code/projects/orpheus` (private, `github.com/amitray007/orpheus`). Currently on Electron 39 + React 19 + TypeScript 5 + bun 1.3 + better-sqlite3, native libghostty terminal via an ObjC++ N-API addon. Main branch is `main`, last commit `7036aad`. SQLite schema is at v31.
 
 **Read these auto-memory files FIRST**:
+
 - `/Users/maverick/.claude/projects/-Users-maverick-code-projects-orpheus/memory/MEMORY.md` (index)
 - `/Users/maverick/.claude/projects/-Users-maverick-code-projects-orpheus/memory/project_orpheus_revamp.md` (direction lock)
 - `/Users/maverick/.claude/projects/-Users-maverick-code-projects-orpheus/memory/feedback_use_sonnet_subagents.md` (delegation rule)
@@ -14,7 +15,7 @@
 
 We spent a long session trying to make libghostty render claude's continuous animations (cursor blink, spinner, progress reports, compaction updates) in our Electron-hosted setup. After **9 different fixes** — display-link contention, `GHOSTTY_ACTION_RENDER` routing, focus state, TSFN blocking, `wantsLayer` override, layer-hosting view-attachment ordering, `setHidden` instead of `removeFromSuperview`, etc. — none restored continuous rendering. Diagnosis converged on:
 
-**Chromium's compositor owns Electron's contentView layer tree.** When libghostty's `IOSurfaceLayer` lives inside Chromium's compositor topology, CoreAnimation doesn't autonomously schedule `display` passes for it — only incidental main-runloop activity (key events) triggers presents. The smoking gun was that a *500ms main-thread NSTimer broke previously-working keyDown-driven renders*, confirming CoreAnimation isn't doing autonomous display passes in this topology.
+**Chromium's compositor owns Electron's contentView layer tree.** When libghostty's `IOSurfaceLayer` lives inside Chromium's compositor topology, CoreAnimation doesn't autonomously schedule `display` passes for it — only incidental main-runloop activity (key events) triggers presents. The smoking gun was that a _500ms main-thread NSTimer broke previously-working keyDown-driven renders_, confirming CoreAnimation isn't doing autonomous display passes in this topology.
 
 A WKWebView-based shell (Tauri) doesn't have this problem because the window's `contentView` is a plain AppKit `NSView` — WKWebView is just one subview. We can put libghostty's surface as a sibling subview, and CoreAnimation will run normal display passes the way it does in Ghostty.app.
 
@@ -55,11 +56,13 @@ NSWindow (Tauri-managed)
 ## Phased plan (suggested chunks — each ends with a working app + a commit)
 
 ### Phase 0: spike (don't merge yet)
+
 - Create `tauri-spike/` branch off `main`.
 - Scaffold a Tauri 2 app (`bun create tauri-app` or `cargo create-tauri-app`).
 - Goal: prove libghostty can be embedded as a sibling NSView under contentView, with autonomous animations working. Build the simplest possible app: one window, one workspace, one libghostty surface spawning `claude`. If cursor blinks and claude's spinner animates, the architecture is proven.
 
 ### Phase 1: Rust scaffold
+
 - New Rust crate replacing `src/main/` (TypeScript). Modules:
   - `src/main.rs` — Tauri entrypoint
   - `src/db.rs` — SQLite via `rusqlite`, port schema migrations from `src/main/db.ts`
@@ -72,25 +75,30 @@ NSWindow (Tauri-managed)
   - `src/mcp.rs`, `src/context_menu.rs`
 
 ### Phase 2: libghostty native binding
+
 - New crate `crates/ghostty-native/` with bindgen against `vendor/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h`.
 - Rust-side NSView creation via `objc2` + `objc2-app-kit`.
 - Surface mount/hide/destroy commands exposed to JS via Tauri `#[tauri::command]`.
 
 ### Phase 3: IPC layer
+
 - Map every existing `window.api.*` call (see `src/preload/index.ts` + `src/preload/index.d.ts`) to a Tauri command or event.
 - Tauri's `invoke` for request/response; `listen`/`emit` for streams (title changes, activity changes, dirty changes).
 
 ### Phase 4: Renderer adaptation
+
 - `src/renderer/` mostly unchanged — but `window.api` becomes a thin wrapper around `@tauri-apps/api/core` `invoke` and `event` modules.
 - Build a `src/renderer/src/api.ts` shim that exports the exact same surface as today's `window.api`, calling Tauri under the hood. This lets every component file stay untouched.
 
 ### Phase 5: Build pipeline
+
 - Replace `electron-builder` with Tauri's bundler.
 - Migrate `scripts/install-mac.mjs` — Tauri produces an `.app`; we still need the post-build ad-hoc re-sign + install to `/Applications/Orpheus.app`.
 - Keep `bun run build:unpack` as the user-facing alias.
 - Ship `resources/bin/orpheus-notify` into the bundle's `Contents/Resources/bin/`.
 
 ### Phase 6: Cutover
+
 - Bring `tauri-spike/` to feature parity with `main`.
 - One-time DB migration test: copy a real user's `orpheus.sqlite`, open in Tauri build, verify all data reads correctly.
 - Merge.
@@ -123,6 +131,7 @@ Commit `7036aad` — addon.mm rolled back to dcbd1f9 baseline. Everything else (
 **Phase 0 spike**: prove libghostty animations work in Tauri before touching the rest of the codebase.
 
 Concretely:
+
 1. Create branch `tauri-spike` off `main`.
 2. In a sibling directory (`/Users/maverick/code/projects/orpheus-tauri-spike/` or similar — keep it OUT of `orpheus/`), scaffold a minimal Tauri 2 app.
 3. Add a `crates/ghostty-native/` Rust crate that:

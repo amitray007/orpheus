@@ -16,7 +16,7 @@ function normalizeKey(key: string): string {
     ArrowUp: 'Up',
     ArrowDown: 'Down',
     Enter: 'Return',
-    ' ': 'Space',
+    ' ': 'Space'
   }
   return map[key] ?? key
 }

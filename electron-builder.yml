@@ -25,13 +25,13 @@ extraResources:
   - from: resources/ghostty/terminfo
     to: terminfo
     filter:
-      - "**/*"
+      - '**/*'
   # Ghostty resources dir — shell-integration scripts etc.
   # Ghostty sets app_path = Contents/Resources/ghostty after the sentinel walk.
   - from: resources/ghostty/ghostty
     to: ghostty
     filter:
-      - "**/*"
+      - '**/*'
   # Wrapper script: runs claude in a login zsh, then exec's interactive zsh
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
