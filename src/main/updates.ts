@@ -22,7 +22,10 @@ function resolveToken(): string {
   if (process.env['HOMEBREW_GITHUB_API_TOKEN']) return process.env['HOMEBREW_GITHUB_API_TOKEN']
   if (process.env['GH_TOKEN']) return process.env['GH_TOKEN']
   try {
-    return execSync('gh auth token', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim()
+    return execSync('gh auth token', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8'
+    }).trim()
   } catch {
     return ''
   }
@@ -78,10 +81,16 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
-      return { current, latest: null, available: false, checkedAt, error: `GitHub API ${res.status}: ${text.slice(0, 120)}` }
+      return {
+        current,
+        latest: null,
+        available: false,
+        checkedAt,
+        error: `GitHub API ${res.status}: ${text.slice(0, 120)}`
+      }
     }
 
-    const data = await res.json() as { tag_name?: string }
+    const data = (await res.json()) as { tag_name?: string }
     const tag = data.tag_name ?? ''
     const latest = tag.replace(/^v/, '')
 
@@ -150,7 +159,9 @@ export function startAutoCheckLoop(): void {
   stopAutoCheckLoop()
   autoCheckTimer = setTimeout(() => {
     void runAutoCheck()
-    autoCheckTimer = setInterval(() => { void runAutoCheck() }, SIX_HOURS_MS)
+    autoCheckTimer = setInterval(() => {
+      void runAutoCheck()
+    }, SIX_HOURS_MS)
   }, INITIAL_DELAY_MS)
 }
 

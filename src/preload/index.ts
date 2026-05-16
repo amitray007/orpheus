@@ -344,7 +344,10 @@ const api = {
       return () => ipcRenderer.removeListener('updates:progress', listener)
     },
     onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { success: boolean; code: number | null }): void => cb(e)
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { success: boolean; code: number | null }
+      ): void => cb(e)
       ipcRenderer.on('updates:done', listener)
       return () => ipcRenderer.removeListener('updates:done', listener)
     },
@@ -353,7 +356,7 @@ const api = {
       ipcRenderer.on('updates:checkResult', listener)
       return () => ipcRenderer.removeListener('updates:checkResult', listener)
     }
-  },
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

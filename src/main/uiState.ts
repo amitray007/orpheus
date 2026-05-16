@@ -1,5 +1,13 @@
 import { getDb } from './db'
-import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale, SoundPack } from '../shared/types'
+import type {
+  AppUiState,
+  AppUiStatePatch,
+  AppViewKind,
+  Theme,
+  AccentColor,
+  UiFontScale,
+  SoundPack
+} from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -65,7 +73,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
     // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
-    lastViewKind: (row.last_view_kind === 'dashboard' ? 'sessions' : row.last_view_kind) as AppViewKind,
+    lastViewKind: (row.last_view_kind === 'dashboard'
+      ? 'sessions'
+      : row.last_view_kind) as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
     windowX: row.window_x,
@@ -122,7 +132,16 @@ const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
 const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
-const VALID_SOUND_PACKS: SoundPack[] = ['core', 'minimal', 'mechanical', 'retro', 'playful', 'crisp', 'organic', 'soft']
+const VALID_SOUND_PACKS: SoundPack[] = [
+  'core',
+  'minimal',
+  'mechanical',
+  'retro',
+  'playful',
+  'crisp',
+  'organic',
+  'soft'
+]
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -146,8 +165,13 @@ function validatePatch(patch: AppUiStatePatch): void {
     }
   }
   if ('accentColor' in patch && patch.accentColor !== undefined) {
-    if (patch.accentColor !== null && !VALID_ACCENT_COLORS.includes(patch.accentColor as AccentColor)) {
-      throw new Error(`uiState: accentColor must be one of ${VALID_ACCENT_COLORS.join(', ')} or null`)
+    if (
+      patch.accentColor !== null &&
+      !VALID_ACCENT_COLORS.includes(patch.accentColor as AccentColor)
+    ) {
+      throw new Error(
+        `uiState: accentColor must be one of ${VALID_ACCENT_COLORS.join(', ')} or null`
+      )
     }
   }
   if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {

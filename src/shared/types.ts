@@ -114,7 +114,15 @@ export type AppViewKind = 'sessions' | 'project' | 'workspace'
 export type Theme = 'midnight' | 'daylight' | 'eclipse'
 export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
 export type UiFontScale = 'small' | 'default' | 'large'
-export type SoundPack = 'core' | 'minimal' | 'mechanical' | 'retro' | 'playful' | 'crisp' | 'organic' | 'soft'
+export type SoundPack =
+  | 'core'
+  | 'minimal'
+  | 'mechanical'
+  | 'retro'
+  | 'playful'
+  | 'crisp'
+  | 'organic'
+  | 'soft'
 
 export type AppUiState = {
   sidebarCollapsed: boolean
@@ -155,7 +163,7 @@ export type AppUiState = {
   maxLocalSessions?: number | null
   // Appearance (v36)
   theme: Theme
-  accentColor: AccentColor | null  // null = use theme's built-in default accent
+  accentColor: AccentColor | null // null = use theme's built-in default accent
   uiFontScale: UiFontScale
   // Privacy (v37)
   fetchGithubAvatars: boolean
@@ -560,4 +568,3 @@ export type SessionsPagedResult = {
   rows: SessionRecord[]
   total: number // total matching rows before pagination
 }
-

@@ -83,12 +83,7 @@ import {
   clearWorkspaceActivity
 } from './orpheusNotify'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
-import {
-  checkForUpdates,
-  installUpdate,
-  relaunchApp,
-  startAutoCheckLoop
-} from './updates'
+import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
 import { showContextMenu } from './contextMenu'
 import {
   revealInFinder,
@@ -924,8 +919,12 @@ ipcMain.handle('notifications:test', () => {
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('updates:check', () => checkForUpdates())
-ipcMain.handle('updates:install', () => { installUpdate() })
-ipcMain.handle('updates:restart', () => { relaunchApp() })
+ipcMain.handle('updates:install', () => {
+  installUpdate()
+})
+ipcMain.handle('updates:restart', () => {
+  relaunchApp()
+})
 
 ipcMain.handle(
   'projects:setExpandedInSidebar',
@@ -937,9 +936,7 @@ ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }
   reorderProjects(orderedIds)
 )
 
-ipcMain.handle('projects:refreshGithub', (_e, projectId: string) =>
-  refreshGithubData(projectId)
-)
+ipcMain.handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
 
 ipcMain.handle('doctor:check', (): DoctorResult => {
   const { installed, version, path: claudePath } = checkClaude()
@@ -987,10 +984,8 @@ ipcMain.handle(
 
 ipcMain.handle(
   'git:count',
-  (
-    _e,
-    args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-  ) => countCommits(args.cwd, args)
+  (_e, args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }) =>
+    countCommits(args.cwd, args)
 )
 
 // ---------------------------------------------------------------------------
