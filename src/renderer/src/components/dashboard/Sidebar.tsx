@@ -73,11 +73,6 @@ function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element
   )
 }
 
-// How long (ms) to hide a freshly-created workspace row before showing the
-// "New workspace" fallback. Claude's OSC title typically arrives in <1 s;
-// 3 s is a comfortable buffer. Kept in sync with WorkspacesView.tsx.
-const FRESH_HIDE_MS = 3000
-
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
 // ---------------------------------------------------------------------------
@@ -117,9 +112,6 @@ function WorkspaceSubRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-  // Trigger a re-render once the fresh-hide window expires so the row
-  // appears automatically when Claude hasn't sent a title yet.
-  const [, setTick] = useState(0)
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -133,14 +125,6 @@ function WorkspaceSubRow({
     })
     return unsub
   }, [workspace.id])
-
-  useEffect(() => {
-    const age = Date.now() - workspace.createdAt
-    const remaining = FRESH_HIDE_MS - age
-    if (remaining <= 0) return
-    const id = window.setTimeout(() => setTick((n) => n + 1), remaining)
-    return () => window.clearTimeout(id)
-  }, [workspace.createdAt])
 
   const sessionTitle = workspace.claudeSessionId
     ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
@@ -159,12 +143,6 @@ function WorkspaceSubRow({
     if (renaming) setRenameValue(displayName)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])
-
-  // Hide fresh workspaces with no real title yet. Once the window expires
-  // (or a real title arrives), the row renders normally. Legacy workspaces
-  // with old createdAt values are never affected.
-  const isFresh = Date.now() - workspace.createdAt < FRESH_HIDE_MS
-  if (isFresh && dn.muted) return <></>
 
   async function handleContextMenu(e: React.MouseEvent): Promise<void> {
     e.preventDefault()

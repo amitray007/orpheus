@@ -83,11 +83,6 @@ const COLUMN_CONFIGS: ColumnConfig[] = [
   { key: 'waiting', label: 'Waiting', indicatorDetail: 'idle' }
 ]
 
-// How long (ms) to hide a freshly-created workspace card before showing the
-// "New workspace" fallback. Claude's OSC title typically arrives in <1 s;
-// 3 s is a comfortable buffer. Kept in sync with the same constant in Sidebar.tsx.
-const FRESH_HIDE_MS = 3000
-
 // ---------------------------------------------------------------------------
 // Workspace card
 // ---------------------------------------------------------------------------
@@ -110,9 +105,6 @@ function WorkspaceCard({
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-  // Trigger a re-render once the fresh-hide window expires so the card
-  // appears automatically when Claude hasn't sent a title yet.
-  const [, setTick] = useState(0)
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -127,22 +119,8 @@ function WorkspaceCard({
     return unsub
   }, [workspace.id])
 
-  useEffect(() => {
-    const age = Date.now() - workspace.createdAt
-    const remaining = FRESH_HIDE_MS - age
-    if (remaining <= 0) return
-    const id = window.setTimeout(() => setTick((n) => n + 1), remaining)
-    return () => window.clearTimeout(id)
-  }, [workspace.createdAt])
-
   const sessionTitle = session?.title ?? null
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
-
-  // Hide fresh workspaces with no real title yet. Once the window expires
-  // (or a real title arrives), the card renders normally. Legacy workspaces
-  // with old createdAt values are never affected.
-  const isFresh = Date.now() - workspace.createdAt < FRESH_HIDE_MS
-  if (isFresh && dn.muted) return <></>
 
   // Effective indicator: live activity wins; fall back to persisted status glyph
   const liveActivity = activities[workspace.id]
