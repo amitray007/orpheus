@@ -23,6 +23,7 @@ interface NavItemProps {
   label: string
   active?: boolean
   collapsed: boolean
+  flushTop?: boolean
   onClick?: () => void
 }
 
@@ -31,12 +32,14 @@ function NavItem({
   label,
   active = false,
   collapsed,
+  flushTop = false,
   onClick
 }: NavItemProps): React.JSX.Element {
   return (
     <button
       className={[
-        'w-full flex items-center rounded-md transition-colors duration-150',
+        'w-full flex items-center transition-colors duration-150',
+        flushTop ? 'rounded-b-md' : 'rounded-md',
         collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2 gap-3',
         active
           ? 'bg-accent/15 text-text-primary font-medium'
@@ -815,7 +818,7 @@ export function Sidebar({
         collapsed ? 'w-14' : '',
         'transition-[width] duration-150 ease-out',
         'bg-surface-raised border-r border-border-default',
-        'pt-2 flex flex-col gap-1 overflow-hidden shrink-0 h-full'
+        'flex flex-col gap-1 overflow-hidden shrink-0 h-full'
       ].join(' ')}
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
@@ -826,6 +829,7 @@ export function Sidebar({
         label="Workspaces"
         active={activeView === 'sessions'}
         collapsed={collapsed}
+        flushTop
         onClick={() => onSelectNav('sessions')}
       />
 
