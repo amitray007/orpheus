@@ -1,22 +1,14 @@
 @import 'tailwindcss';
 
 /*
- * Geist Sans and Geist Mono variable fonts
+ * Geist Pixel (Square variant) — used for every font role in the app.
  * © Vercel Inc. — licensed under the SIL Open Font License 1.1
- * https://github.com/vercel/geist-font
+ * https://github.com/vercel/geist-pixel-font
  */
 @font-face {
-  font-family: 'Geist';
-  src: url('./fonts/GeistVariableVF.woff2') format('woff2-variations');
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Geist Mono';
-  src: url('./fonts/GeistMonoVariableVF.woff2') format('woff2-variations');
-  font-weight: 100 900;
+  font-family: 'Geist Pixel';
+  src: url('./fonts/GeistPixel-Square.woff2') format('woff2');
+  font-weight: normal;
   font-style: normal;
   font-display: swap;
 }
@@ -36,8 +28,8 @@
   --color-accent-hover: #e0b558;
   --color-accent-on: #0b0b0c;
 
-  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Geist Pixel', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'Geist Pixel', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 *,
