@@ -88,7 +88,9 @@ const api = {
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
       ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded }),
     reorder: (orderedIds: string[]): Promise<void> =>
-      ipcRenderer.invoke('projects:reorder', { orderedIds })
+      ipcRenderer.invoke('projects:reorder', { orderedIds }),
+    refreshGithub: (projectId: string): Promise<void> =>
+      ipcRenderer.invoke('projects:refreshGithub', projectId)
   },
   sessions: {
     listForProject: (

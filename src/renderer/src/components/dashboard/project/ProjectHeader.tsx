@@ -55,6 +55,8 @@ interface ProjectHeaderProps {
   onNewWorkspace: () => void
   onOpenSettings: () => void
   onRequestRemove: () => void
+  /** Privacy toggle — suppresses avatar even when URL is cached in the project record. */
+  fetchGithubAvatars?: boolean
 }
 
 export function ProjectHeader({
@@ -64,7 +66,8 @@ export function ProjectHeader({
   overrideCount,
   onNewWorkspace,
   onOpenSettings,
-  onRequestRemove
+  onRequestRemove,
+  fetchGithubAvatars
 }: ProjectHeaderProps): React.JSX.Element {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -176,7 +179,15 @@ export function ProjectHeader({
     <header className="flex flex-col gap-3">
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex-shrink-0">
-          <Identicon seed={project.path} size={28} />
+          <Identicon
+            seed={project.path}
+            size={28}
+            avatarUrl={
+              (fetchGithubAvatars ?? uiState?.fetchGithubAvatars ?? true)
+                ? project.githubAvatarUrl
+                : null
+            }
+          />
         </div>
 
         <div className="flex-1 min-w-0 flex flex-col gap-1">

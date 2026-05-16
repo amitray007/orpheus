@@ -30,6 +30,11 @@ type ProjectRow = {
   last_opened_at: number | null
   expanded_in_sidebar: number
   sort_order: number | null
+  // v37
+  github_owner: string | null
+  github_repo: string | null
+  github_avatar_url: string | null
+  github_checked_at: number | null
 }
 
 function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
@@ -58,7 +63,12 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
     expandedInSidebar: row.expanded_in_sidebar === 1,
-    sortOrder: row.sort_order ?? null
+    sortOrder: row.sort_order ?? null,
+    // v37
+    githubOwner: row.github_owner ?? null,
+    githubRepo: row.github_repo ?? null,
+    githubAvatarUrl: row.github_avatar_url ?? null,
+    githubCheckedAt: row.github_checked_at ?? null
   }
 }
 
@@ -285,7 +295,11 @@ export function listAllPinned(): PinnedItem[] {
       added_at: row.p_added_at,
       last_opened_at: row.p_last_opened_at,
       expanded_in_sidebar: row.p_expanded_in_sidebar,
-      sort_order: row.p_sort_order
+      sort_order: row.p_sort_order,
+      github_owner: null,
+      github_repo: null,
+      github_avatar_url: null,
+      github_checked_at: null
     })
   }))
 }

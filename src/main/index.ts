@@ -19,6 +19,7 @@ import {
   setProjectExpandedInSidebar,
   reorderProjects
 } from './projects'
+import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
   listSessionsForProjectPaged,
@@ -920,6 +921,10 @@ ipcMain.handle(
 
 ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
   reorderProjects(orderedIds)
+)
+
+ipcMain.handle('projects:refreshGithub', (_e, projectId: string) =>
+  refreshGithubData(projectId)
 )
 
 ipcMain.handle('doctor:check', (): DoctorResult => {

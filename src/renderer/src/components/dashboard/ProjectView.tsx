@@ -35,6 +35,8 @@ interface ProjectViewProps {
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   /** Called after a Sessions row click spawns a new workspace via --resume. */
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
+  // Privacy (v37)
+  fetchGithubAvatars?: boolean
 }
 
 export function ProjectView({
@@ -47,7 +49,8 @@ export function ProjectView({
   onRenameWorkspace,
   onArchiveWorkspace,
   onToggleWorkspacePin,
-  onResumedInWorkspace
+  onResumedInWorkspace,
+  fetchGithubAvatars = true
 }: ProjectViewProps): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [projectSettings, setProjectSettings] = useState<ClaudeProjectSettings | null>(null)
@@ -66,6 +69,17 @@ export function ProjectView({
     }
     // Re-pull when the drawer closes so the header chip reflects fresh edits.
   }, [project.id, settingsOpen])
+
+  // If GitHub data is stale (>30 days) or never checked, refresh in background.
+  useEffect(() => {
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000
+    const stale = project.githubCheckedAt === null || Date.now() - project.githubCheckedAt > THIRTY_DAYS
+    if (stale) {
+      void window.api.projects
+        .refreshGithub(project.id)
+        .catch((err) => console.warn('[project-view] github refresh failed', err))
+    }
+  }, [project.id])
 
   // archivedAt is unused post-v34 (rows are deleted, never soft-archived),
   // but the field still exists in the type. Filter defensively just in case
@@ -98,6 +112,7 @@ export function ProjectView({
         onNewWorkspace={() => onAddWorkspace(project.id)}
         onOpenSettings={() => setSettingsOpen(true)}
         onRequestRemove={onRequestRemove}
+        fetchGithubAvatars={fetchGithubAvatars}
       />
 
       <WorkspacesTab

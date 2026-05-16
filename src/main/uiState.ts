@@ -1,5 +1,6 @@
 import { getDb } from './db'
 import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale } from '../shared/types'
+// Note: AppUiStatePatch is Partial<Omit<AppUiState, 'updatedAt'>>, so fetchGithubAvatars is included automatically.
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -47,6 +48,8 @@ type AppUiStateRow = {
   theme: string
   accent_color: string | null
   ui_font_scale: string
+  // Privacy (v37)
+  fetch_github_avatars: number | null
   updated_at: number
 }
 
@@ -94,6 +97,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     theme: (row.theme ?? 'midnight') as Theme,
     accentColor: (row.accent_color ?? null) as AccentColor | null,
     uiFontScale: (row.ui_font_scale ?? 'default') as UiFontScale,
+    // Privacy (v37) — default true (enabled)
+    fetchGithubAvatars: (row.fetch_github_avatars ?? 1) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -197,7 +202,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Appearance (v36)
     theme: 'theme',
     accentColor: 'accent_color',
-    uiFontScale: 'ui_font_scale'
+    uiFontScale: 'ui_font_scale',
+    // Privacy (v37)
+    fetchGithubAvatars: 'fetch_github_avatars'
   }
 
   const setClauses: string[] = []

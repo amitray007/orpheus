@@ -60,6 +60,8 @@ interface MainContentProps {
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
+  // Privacy (v37)
+  fetchGithubAvatars?: boolean
 }
 
 export function MainContent({
@@ -78,7 +80,8 @@ export function MainContent({
   projects,
   allWorkspaces,
   allSessions,
-  gitStatusByWorkspaceId
+  gitStatusByWorkspaceId,
+  fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
@@ -139,6 +142,7 @@ export function MainContent({
       onArchiveWorkspace={onArchiveWorkspace}
       onToggleWorkspacePin={onToggleWorkspacePin}
       onResumedInWorkspace={onResumedInWorkspace}
+      fetchGithubAvatars={fetchGithubAvatars}
     />
   )
 }

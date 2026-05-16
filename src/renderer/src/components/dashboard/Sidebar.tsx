@@ -284,6 +284,7 @@ interface ProjectRowProps {
   workspaces: WorkspaceRecord[]
   workspaceCount: number
   workspaceCountInline: boolean
+  fetchGithubAvatars: boolean
   selectedWorkspaceId?: string | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
@@ -323,6 +324,7 @@ function ProjectRow({
   workspaces,
   workspaceCount,
   workspaceCountInline,
+  fetchGithubAvatars,
   selectedWorkspaceId,
   workspaceActivities,
   gitStatusByWorkspaceId,
@@ -401,7 +403,11 @@ function ProjectRow({
           title={project.path}
           aria-label={project.name}
         >
-          <Identicon seed={project.path} size={20} />
+          <Identicon
+            seed={project.path}
+            size={20}
+            avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
+          />
           {renaming ? (
             <input
               autoFocus
@@ -549,6 +555,8 @@ interface SidebarProps {
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
+  // Privacy (v37)
+  fetchGithubAvatars: boolean
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'sessions') => void
   onSelectSettings: () => void
@@ -579,6 +587,7 @@ export function Sidebar({
   gitStatusByWorkspaceId,
   workspaceCountInline,
   sidebarWidth,
+  fetchGithubAvatars,
   onSelectProject,
   onSelectNav,
   onSelectSettings,
@@ -849,6 +858,7 @@ export function Sidebar({
                         workspaces={workspaces}
                         workspaceCount={workspaces.length}
                         workspaceCountInline={workspaceCountInline}
+                        fetchGithubAvatars={fetchGithubAvatars}
                         selectedWorkspaceId={selectedWorkspaceId}
                         workspaceActivities={workspaceActivities}
                         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
@@ -905,7 +915,11 @@ export function Sidebar({
                       isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
                     ].join(' ')}
                   >
-                    <Identicon seed={p.path} size={22} />
+                    <Identicon
+                      seed={p.path}
+                      size={22}
+                      avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
+                    />
                   </button>
                 )
               })}

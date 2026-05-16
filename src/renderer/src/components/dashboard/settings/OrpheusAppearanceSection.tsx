@@ -232,6 +232,37 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      {/* Privacy */}
+      <section className="flex flex-col">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
+          Privacy
+        </h3>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="GitHub avatars"
+            description="Fetch profile pictures from GitHub for projects whose origin remote is on github.com. Disable to use identicons for all projects."
+          >
+            <button
+              type="button"
+              role="switch"
+              aria-checked={uiState.fetchGithubAvatars ?? true}
+              onClick={() => patch({ fetchGithubAvatars: !(uiState.fetchGithubAvatars ?? true) })}
+              className={[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                (uiState.fetchGithubAvatars ?? true) ? 'bg-accent' : 'bg-surface-overlay border border-border-default'
+              ].join(' ')}
+            >
+              <span
+                className={[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  (uiState.fetchGithubAvatars ?? true) ? 'translate-x-4' : 'translate-x-0'
+                ].join(' ')}
+              />
+            </button>
+          </SettingRow>
+        </div>
+      </section>
     </div>
   )
 }

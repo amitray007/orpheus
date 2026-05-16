@@ -94,6 +94,7 @@ export function Dashboard({
           theme: 'midnight',
           accentColor: null,
           uiFontScale: 'default',
+          fetchGithubAvatars: true,
           updatedAt: 0
         })
       })
@@ -659,6 +660,7 @@ export function Dashboard({
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
+          fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           onSelectProject={handleSelectProject}
           onSelectNav={handleSelectNav}
           onSelectSettings={handleSelectSettings}
@@ -701,6 +703,7 @@ export function Dashboard({
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           />
         </main>
       </div>

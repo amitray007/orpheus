@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 36
+const CURRENT_VERSION = 37
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1098,5 +1098,18 @@ function migrate(db: Database.Database): void {
       db.exec("ALTER TABLE app_ui_state ADD COLUMN ui_font_scale TEXT NOT NULL DEFAULT 'default' CHECK (ui_font_scale IN ('small', 'default', 'large'))")
     } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(36)
+  }
+
+  // Version 37: per-project GitHub data + global avatar-fetch toggle
+  if (currentVersion < 37) {
+    try { db.exec('ALTER TABLE projects ADD COLUMN github_owner TEXT') } catch {}
+    try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT') } catch {}
+    try { db.exec('ALTER TABLE projects ADD COLUMN github_avatar_url TEXT') } catch {}
+    try { db.exec('ALTER TABLE projects ADD COLUMN github_checked_at INTEGER') } catch {}
+    // Global privacy toggle — default 1 (enabled)
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN fetch_github_avatars INTEGER NOT NULL DEFAULT 1 CHECK (fetch_github_avatars IN (0, 1))')
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(37)
   }
 }

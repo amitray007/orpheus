@@ -2,6 +2,7 @@ import { getDb } from './db'
 import type { ProjectRecord } from '../shared/types'
 import { importSessionsForProject } from './sessions'
 import { createWorkspace } from './workspaces'
+import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -17,6 +18,11 @@ type ProjectRow = {
   last_opened_at: number | null
   expanded_in_sidebar: number
   sort_order: number | null
+  // v37
+  github_owner: string | null
+  github_repo: string | null
+  github_avatar_url: string | null
+  github_checked_at: number | null
 }
 
 function rowToRecord(row: ProjectRow): ProjectRecord {
@@ -28,7 +34,12 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     addedAt: row.added_at,
     lastOpenedAt: row.last_opened_at,
     expandedInSidebar: row.expanded_in_sidebar === 1,
-    sortOrder: row.sort_order ?? null
+    sortOrder: row.sort_order ?? null,
+    // v37
+    githubOwner: row.github_owner ?? null,
+    githubRepo: row.github_repo ?? null,
+    githubAvatarUrl: row.github_avatar_url ?? null,
+    githubCheckedAt: row.github_checked_at ?? null
   }
 }
 
@@ -97,7 +108,14 @@ export function addProject(path: string): ProjectRecord {
     return newProject
   })
 
-  return insertProjectAndSessions()
+  const project = insertProjectAndSessions()
+
+  // Fire-and-forget: fetch GitHub avatar in the background after insert.
+  void refreshGithubData(project.id).catch((err) => {
+    console.warn('[github] initial avatar fetch failed for', project.id, err)
+  })
+
+  return project
 }
 
 export function openProject(id: string): ProjectRecord {
