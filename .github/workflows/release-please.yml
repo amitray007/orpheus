@@ -1,0 +1,146 @@
+name: Release Please
+
+# How this works:
+#
+#   On every push to main, release-please-action inspects the conventional-
+#   commit history since the last tag and:
+#     - If a "Release PR" with label `autorelease: pending` is already open,
+#       updates it in place (force-pushes its branch). NEVER opens a duplicate.
+#     - Otherwise opens a fresh Release PR with the proposed version + an
+#       auto-generated CHANGELOG.md entry.
+#
+#   When you merge that Release PR, the same workflow runs again and this
+#   time release-please creates the git tag + GitHub release. The second
+#   job (build-and-attach) then builds the .dmg, uploads it to the release
+#   as an asset, and pushes the matching cask to amitray007/homebrew-tap.
+#
+# Coexistence with the existing release.yml:
+#
+#   release.yml owns the manual / explicit path (workflow_dispatch and
+#   pushes containing `[release]` in the commit message). This workflow
+#   handles everything else by opening a Release PR. The `if:` below skips
+#   commits with `[release]` markers so the two never fight over the same
+#   commit.
+#
+# Required secrets:
+#
+#   RELEASE_PLEASE_TOKEN (optional, falls back to GITHUB_TOKEN) — fine-
+#     grained PAT with `contents: write` + `pull-requests: write` on this
+#     repo. Needed if `main` is branch-protected and `github-actions[bot]`
+#     can't bypass.
+#   HOMEBREW_TAP_TOKEN — fine-grained PAT with `contents: write` on
+#     amitray007/homebrew-tap (already set, reused by release.yml).
+
+on:
+  push:
+    branches: [main]
+
+# Sequential runs only — release-please writes git state (the Release PR
+# branch) and multiple concurrent runs would race. cancel-in-progress:false
+# preserves an in-flight Release PR update if a newer commit lands.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    # Skip commits that explicitly invoke the manual release pipeline via
+    # release.yml's [release] marker — those ship through that workflow,
+    # not through a Release PR.
+    if: >-
+      ${{
+        !contains(github.event.head_commit.message, '[release')
+      }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-and-attach:
+    # Only fire when the previous job actually created a release (i.e. the
+    # Release PR was merged on this run). Most runs just update the PR and
+    # this whole job is skipped.
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the tag release-please just created so the build sees
+          # the bumped package.json + CHANGELOG.md.
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (gate)
+        run: bun run typecheck
+
+      - name: Build native + renderer
+        run: |
+          bun run build:native
+          bun run build
+
+      - name: Build .dmg
+        run: bunx electron-builder --mac
+
+      - name: Compute sha256
+        id: sha
+        run: |
+          DMG="dist/orpheus-${{ needs.release-please.outputs.version }}.dmg"
+          if [ ! -f "$DMG" ]; then
+            echo "::error::expected dmg not found at $DMG"
+            ls -la dist || true
+            exit 1
+          fi
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .dmg to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            "${{ steps.sha.outputs.dmg }}" --clobber
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: amitray007/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Render and push cask + scoped tag
+        run: |
+          sed -e "s/{{VERSION}}/${{ needs.release-please.outputs.version }}/g" \
+              -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
+              scripts/orpheus-cask.template.rb > homebrew-tap/Casks/orpheus.rb
+
+          cd homebrew-tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/orpheus.rb
+          git commit -m "orpheus: bump to ${{ needs.release-please.outputs.version }}"
+
+          SCOPED_TAG="orpheus/${{ needs.release-please.outputs.tag_name }}"
+          git tag "$SCOPED_TAG"
+          git push origin HEAD "$SCOPED_TAG"
