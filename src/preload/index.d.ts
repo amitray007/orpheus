@@ -79,6 +79,15 @@ declare global {
         setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
         reorder: (orderedIds: string[]) => Promise<void>
         refreshGithub: (projectId: string) => Promise<void>
+        onGithubDataUpdated: (
+          cb: (e: {
+            projectId: string
+            githubOwner: string | null
+            githubRepo: string | null
+            githubAvatarUrl: string | null
+            githubCheckedAt: number
+          }) => void
+        ) => () => void
       }
       sessions: {
         listForProject: (

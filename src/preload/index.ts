@@ -90,7 +90,29 @@ const api = {
     reorder: (orderedIds: string[]): Promise<void> =>
       ipcRenderer.invoke('projects:reorder', { orderedIds }),
     refreshGithub: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('projects:refreshGithub', projectId)
+      ipcRenderer.invoke('projects:refreshGithub', projectId),
+    onGithubDataUpdated: (
+      cb: (e: {
+        projectId: string
+        githubOwner: string | null
+        githubRepo: string | null
+        githubAvatarUrl: string | null
+        githubCheckedAt: number
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        payload: {
+          projectId: string
+          githubOwner: string | null
+          githubRepo: string | null
+          githubAvatarUrl: string | null
+          githubCheckedAt: number
+        }
+      ): void => cb(payload)
+      ipcRenderer.on('projects:githubDataUpdated', listener)
+      return () => ipcRenderer.off('projects:githubDataUpdated', listener)
+    }
   },
   sessions: {
     listForProject: (

@@ -1,5 +1,21 @@
 import { exec } from 'node:child_process'
+import { BrowserWindow } from 'electron'
 import { getDb } from './db'
+
+// Broadcast a partial update so the renderer can patch its local projects
+// state in-place without re-fetching the whole list. Sends only the four
+// GitHub fields plus the projectId so the renderer can `map` and merge.
+function broadcastGithubUpdate(payload: {
+  projectId: string
+  githubOwner: string | null
+  githubRepo: string | null
+  githubAvatarUrl: string | null
+  githubCheckedAt: number
+}): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('projects:githubDataUpdated', payload)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // GitHub info extraction
@@ -88,6 +104,13 @@ export async function refreshGithubData(projectId: string): Promise<void> {
          SET github_owner = NULL, github_repo = NULL, github_avatar_url = NULL, github_checked_at = ?
          WHERE id = ?`
       ).run(now, projectId)
+      broadcastGithubUpdate({
+        projectId,
+        githubOwner: null,
+        githubRepo: null,
+        githubAvatarUrl: null,
+        githubCheckedAt: now
+      })
       return
     }
 
@@ -100,6 +123,13 @@ export async function refreshGithubData(projectId: string): Promise<void> {
        SET github_owner = ?, github_repo = ?, github_avatar_url = ?, github_checked_at = ?
        WHERE id = ?`
     ).run(info.owner, info.repo, avatarUrl, now, projectId)
+    broadcastGithubUpdate({
+      projectId,
+      githubOwner: info.owner,
+      githubRepo: info.repo,
+      githubAvatarUrl: avatarUrl,
+      githubCheckedAt: now
+    })
   } catch (err) {
     console.warn('[github] refreshGithubData failed for', projectId, err)
   }

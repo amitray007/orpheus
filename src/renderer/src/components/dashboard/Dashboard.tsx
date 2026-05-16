@@ -130,6 +130,27 @@ export function Dashboard({
     })
   }, [])
 
+  // GitHub avatar fetches are async + fire-and-forget on the main side. When
+  // they land we patch the local projects state in-place so the sidebar swaps
+  // identicon → avatar without waiting for a restart or a full list refetch.
+  useEffect(() => {
+    return window.api.projects.onGithubDataUpdated((e) => {
+      setProjects((arr) =>
+        arr.map((p) =>
+          p.id === e.projectId
+            ? {
+                ...p,
+                githubOwner: e.githubOwner,
+                githubRepo: e.githubRepo,
+                githubAvatarUrl: e.githubAvatarUrl,
+                githubCheckedAt: e.githubCheckedAt
+              }
+            : p
+        )
+      )
+    })
+  }, [])
+
   useEffect(() => {
     const id = view.kind === 'workspace' ? view.workspaceId : null
     window.api.workspaces.setCurrentlyViewed(id)

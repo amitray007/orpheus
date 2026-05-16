@@ -70,16 +70,30 @@ export function ProjectView({
     // Re-pull when the drawer closes so the header chip reflects fresh edits.
   }, [project.id, settingsOpen])
 
-  // If GitHub data is stale (>30 days) or never checked, refresh in background.
+  // Background GitHub refresh on mount. Two cadences based on prior result:
+  //  - Never checked → always refresh
+  //  - Last check found NO GitHub remote → recheck every hour, so projects that
+  //    later gain a remote (push to GitHub, add origin manually) pick it up
+  //    without waiting 30 days.
+  //  - Last check found a GitHub remote → recheck every 30 days; URL is stable.
   useEffect(() => {
-    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000
-    const stale = project.githubCheckedAt === null || Date.now() - project.githubCheckedAt > THIRTY_DAYS
+    const HOUR_MS = 60 * 60 * 1000
+    const THIRTY_DAYS_MS = 30 * 24 * HOUR_MS
+    const checkedAt = project.githubCheckedAt
+    let stale: boolean
+    if (checkedAt === null) {
+      stale = true
+    } else if (project.githubOwner === null) {
+      stale = Date.now() - checkedAt > HOUR_MS
+    } else {
+      stale = Date.now() - checkedAt > THIRTY_DAYS_MS
+    }
     if (stale) {
       void window.api.projects
         .refreshGithub(project.id)
         .catch((err) => console.warn('[project-view] github refresh failed', err))
     }
-  }, [project.id])
+  }, [project.id, project.githubCheckedAt, project.githubOwner])
 
   // archivedAt is unused post-v34 (rows are deleted, never soft-archived),
   // but the field still exists in the type. Filter defensively just in case
