@@ -108,6 +108,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
 
   // Reset to page 1 whenever the filters change (branch / search / date range)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- pagination reset on filter change; this is the idiomatic pattern
     setPage(1)
   }, [branch, dateRange, debouncedSearch])
 

@@ -184,6 +184,7 @@ export function NumberInput({ value, onChange, placeholder, className }: NumberI
   const hasFocus = useRef(false)
 
   // Sync external value changes when not focused
+  // eslint-disable-next-line react-hooks/refs -- read-only ref check to derive display value; focus tracking avoids wiping user input
   const displayValue = hasFocus.current
     ? local
     : value === null
@@ -249,7 +250,9 @@ export function RuleListEditor({ value, onChange, placeholder, label, mapsTo }: 
   // Keep in sync with external changes (e.g. initial load)
   // Only update if external value reference changed and we're not mid-edit
   const prevValueRef = useRef(value)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time comparison to avoid a sync effect
   if (prevValueRef.current !== value) {
+    // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track previous value
     prevValueRef.current = value
     // Only sync if our local state doesn't match — this avoids fighting user edits
     if (JSON.stringify(localItems) !== JSON.stringify(value)) {

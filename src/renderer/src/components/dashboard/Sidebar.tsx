@@ -140,6 +140,7 @@ function WorkspaceSubRow({
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when renaming mode activates
     if (renaming) setRenameValue(displayName)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])

@@ -26,12 +26,14 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
   useLayoutEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
 
   // Subscribe to live activity changes for this workspace.
   useEffect(() => {
     const workspaceId = workspace.id
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync initial status when workspace changes, then subscribe
     setActivity(workspace.status)
     const unsub = window.api.workspaces.onActivityChanged((e) => {
       if (e.workspaceId === workspaceId) {

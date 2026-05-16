@@ -17,9 +17,8 @@ interface DashboardProps {
   claudeInstalled: boolean
 }
 
-export function Dashboard({
-  claudeInstalled: _claudeInstalled
-}: DashboardProps): React.JSX.Element {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop forwarded from App.tsx but not yet used in this component
+export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state hydration
@@ -272,6 +271,7 @@ export function Dashboard({
 
   // Hydrate UI state from DB once both projects and uiState are loaded.
   // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
+  /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration effect; all setState calls guarded by hydratedRef */
   useEffect(() => {
     if (!uiState || projectsLoading) return
     if (hydratedRef.current) return
@@ -312,6 +312,7 @@ export function Dashboard({
     setView({ kind: 'sessions' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Stores all workspaces (active + archived) per project. Callers filter by
   // archivedAt at render time. One source of truth — keeps ProjectView in

@@ -33,6 +33,7 @@ const TAP_REPO_PATH =
   process.env.ORPHEUS_TAP_PATH ?? resolve(projectRoot, '..', 'homebrew-tap')
 const CASK_RELPATH = 'Casks/orpheus.rb'
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type -- JS file, cannot use TS return type syntax
 const run = (cmd, args, opts = {}) => {
   console.log(`\n$ ${cmd} ${args.join(' ')}${opts.cwd ? `  (cwd: ${opts.cwd})` : ''}`)
   const result = spawnSync(cmd, args, { stdio: 'inherit', cwd: projectRoot, ...opts })
@@ -41,6 +42,7 @@ const run = (cmd, args, opts = {}) => {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type -- JS file, cannot use TS return type syntax
 const ghJson = (args) => {
   const result = spawnSync('gh', args, { encoding: 'utf-8', cwd: projectRoot })
   if (result.status !== 0) return null

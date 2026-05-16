@@ -22,6 +22,7 @@ if (existsSync(distDir)) {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type -- JS file, cannot use TS return type syntax
 const findAppBundle = (dir) => {
   if (!existsSync(dir)) return null
   for (const entry of readdirSync(dir)) {
@@ -50,6 +51,7 @@ if (!appBundle) {
 const appName = appBundle.split('/').pop()
 const target = `/Applications/${appName}`
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type -- JS file, cannot use TS return type syntax
 const isAppRunning = () => {
   try {
     execSync(`pgrep -fl "/Applications/${appName}/Contents/MacOS/"`, { stdio: 'pipe' })

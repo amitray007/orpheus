@@ -76,11 +76,15 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
     // instant. Dashboard.tsx also applies on its own uiState load (for the
     // mount-time / cross-launch case) — both writers stay in sync.
     const root = document.documentElement
+    // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
     if ('theme' in p && next.theme) root.dataset.theme = next.theme
     if ('accentColor' in p) {
+      // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
       if (next.accentColor) root.dataset.accent = next.accentColor
+      // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
       else delete root.dataset.accent
     }
+    // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
     if ('uiFontScale' in p && next.uiFontScale) root.dataset.fontScale = next.uiFontScale
 
     window.api.uiState.update(p).catch((err) => {

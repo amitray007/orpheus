@@ -1,5 +1,7 @@
+/* eslint-disable react-refresh/only-export-components -- file mixes component and utility exports by design */
 "use client";
 
+import type React from "react";
 import type { CSSProperties } from "react";
 
 import "@/components/dotmatrix-loader.css";
@@ -275,7 +277,7 @@ export function trBlPathNormFromIndex(index: number): number {
 
 function buildSnakeOrderToIndexMap(): number[] {
   const pathOrder = new Array<number>(CELLS);
-  const key = (row: number, col: number) => rowMajorIndex(row, col);
+  const key = (row: number, col: number): number => rowMajorIndex(row, col);
   let t = 0;
   for (let row = 0; row < N; row += 1) {
     if (row % 2 === 0) {
@@ -670,7 +672,7 @@ function resolveDmxBoxOuterDim(
   return { outerDim: b, useWrapper: true };
 }
 
-function clamp01Dmx(n: number | undefined) {
+function clamp01Dmx(n: number | undefined): number | undefined {
   if (n == null) {
     return;
   }
@@ -713,7 +715,7 @@ export function DotMatrixBase({
   cellPadding,
   boxSize,
   minSize
-}: DotMatrixBaseProps) {
+}: DotMatrixBaseProps): React.JSX.Element {
   const patternIndexes = new Set(getPatternIndexes(pattern));
   const safeSpeed = speed > 0 ? speed : 1;
   const speedScale = 1 / safeSpeed;
@@ -922,7 +924,7 @@ export function createPathWaveResolver(getPathNorm: NormFn): DotAnimationResolve
 
 type PathWaveComponentProps = DotMatrixCommonProps;
 
-export function createPathWaveComponent(displayName: string, getPathNorm: NormFn) {
+export function createPathWaveComponent(displayName: string, getPathNorm: NormFn): React.ComponentType<PathWaveComponentProps> {
   const resolve = createPathWaveResolver(getPathNorm);
 
   function PathWaveComponent({
@@ -931,7 +933,7 @@ export function createPathWaveComponent(displayName: string, getPathNorm: NormFn
     hoverAnimated = false,
     speed = 1,
     ...rest
-  }: PathWaveComponentProps) {
+  }: PathWaveComponentProps): React.JSX.Element {
     const reducedMotion = usePrefersReducedMotion();
     const { phase: matrixPhase, onMouseEnter, onMouseLeave } = useDotMatrixPhases({
       animated: Boolean(animated && !reducedMotion),

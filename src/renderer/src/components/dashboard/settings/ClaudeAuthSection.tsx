@@ -78,13 +78,6 @@ function ApiKeyInput({
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
 
-  // When hasKey flips to false (after a clear), exit editing state
-  useEffect(() => {
-    if (!hasKey) {
-      setEditing(false)
-      setValue('')
-    }
-  }, [hasKey])
 
   if (hasKey && !editing) {
     return (
@@ -172,6 +165,7 @@ function BaseUrlInput({ value, onSave }: BaseUrlInputProps): React.JSX.Element {
 
   // Sync when external value changes (e.g. after provider switch clears it)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- controlled input sync from prop; key= reset would require caller changes
     setLocal(value)
   }, [value])
 
@@ -211,6 +205,7 @@ function ProviderTextInput({ value, placeholder, onSave }: ProviderTextInputProp
   const [local, setLocal] = useState(value)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- controlled input sync from prop; key= reset would require caller changes
     setLocal(value)
   }, [value])
 

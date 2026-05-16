@@ -34,6 +34,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
   const [rows, setRows] = useState<EnvRow[]>(() => recordToRows(value))
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- controlled input sync from prop; key= reset would require caller changes
     setRows(recordToRows(value))
   }, [value])
 
@@ -155,8 +156,12 @@ function ExtraBodyJsonInput({ value, onChange }: ExtraBodyJsonInputProps): React
   const [jsonError, setJsonError] = useState<string | null>(null)
 
   // Sync when external value changes (e.g. initial load, revert after failed save)
+  // React docs endorse this "update during render" pattern for derived state:
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
   const prevValueRef = useRef(value)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time comparison to avoid a sync effect
   if (prevValueRef.current !== value) {
+    // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track previous value
     prevValueRef.current = value
     setLocal(value)
     setJsonError(null)

@@ -10,7 +10,7 @@ export function usePrefersReducedMotion(): boolean {
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-    const update = () => {
+    const update = (): void => {
       setPrefersReducedMotion(query.matches);
     };
 
@@ -36,6 +36,7 @@ export function useCyclePhase({ active, cycleMsBase, speed = 1 }: UseCyclePhaseO
 
   useEffect(() => {
     if (!active) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset animation phase when deactivated
       setPhase(0);
       return;
     }
@@ -46,7 +47,7 @@ export function useCyclePhase({ active, cycleMsBase, speed = 1 }: UseCyclePhaseO
     const start = performance.now();
     let rafId = 0;
 
-    const tick = (now: number) => {
+    const tick = (now: number): void => {
       const elapsed = ((now - start) % cycleMs + cycleMs) % cycleMs;
       setPhase(elapsed / cycleMs);
       rafId = requestAnimationFrame(tick);
@@ -72,13 +73,13 @@ type FrameListener = (now: number) => void;
 const listeners = new Set<FrameListener>();
 let rafId: number | null = null;
 
-function emit(now: number) {
+function emit(now: number): void {
   listeners.forEach((listener) => {
     listener(now);
   });
 }
 
-function tick(now: number) {
+function tick(now: number): void {
   emit(now);
   if (listeners.size > 0) {
     rafId = window.requestAnimationFrame(tick);
@@ -124,11 +125,12 @@ export function useSteppedCycle({
     if (!active) {
       activeRef.current = false;
       currentStepRef.current = idleStep;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset step to idle when deactivated
       setStep(idleStep);
       return;
     }
 
-    const updateStep = (now: number) => {
+    const updateStep = (now: number): void => {
       if (!activeRef.current) {
         startMsRef.current = now;
         activeRef.current = true;
