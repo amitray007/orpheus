@@ -243,47 +243,68 @@ export function DataTable<R>({
           })}
         </div>
 
-        {/* Body */}
-        <div role="rowgroup">
-          {loading ? (
-            <SkeletonRows columns={columns} count={skeletonCount} />
-          ) : rows.length === 0 ? (
-            <div className="flex items-center justify-center py-8 px-4">
-              {emptyState ?? <span className="text-sm text-text-muted">No data</span>}
-            </div>
-          ) : (
-            rows.map((row) => (
-              <div
-                key={rowKey(row)}
-                role="row"
-                onClick={() => onRowClick?.(row)}
-                style={{ gridTemplateColumns: gridTemplate }}
-                className={[
-                  'grid border-b border-border-default/40 last:border-b-0',
-                  'transition-colors duration-100',
-                  onRowClick ? 'cursor-pointer hover:bg-surface-overlay/50' : ''
-                ].join(' ')}
-              >
-                {columns.map((col) => (
-                  <div
-                    key={col.key}
-                    role="cell"
-                    className={[
-                      'flex items-center min-w-0',
-                      col.cellPadded === false ? 'py-1 px-1.5' : 'py-2.5 px-3',
-                      'text-sm text-text-primary',
-                      alignClass(col.align)
-                    ].join(' ')}
-                  >
-                    {col.render
-                      ? col.render(row)
-                      : <span className="truncate min-w-0">{defaultCellValue(row, col.key)}</span>}
-                  </div>
-                ))}
+        {/* Body — always reserves pageSize rows of height to prevent CLS.
+            Each row is py-2.5 + text-sm line height + border ≈ 41px. */}
+        {(() => {
+          const ROW_HEIGHT_PX = 41
+          const reservedRows = pagination?.pageSize ?? skeletonCount
+          const minBodyHeight = reservedRows * ROW_HEIGHT_PX
+
+          if (loading) {
+            return (
+              <div role="rowgroup" style={{ minHeight: minBodyHeight }}>
+                <SkeletonRows columns={columns} count={skeletonCount} />
               </div>
-            ))
-          )}
-        </div>
+            )
+          }
+
+          if (rows.length === 0) {
+            return (
+              <div
+                role="rowgroup"
+                style={{ minHeight: minBodyHeight }}
+                className="flex items-center justify-center px-4"
+              >
+                {emptyState ?? <span className="text-sm text-text-muted">No data</span>}
+              </div>
+            )
+          }
+
+          return (
+            <div role="rowgroup" style={{ minHeight: minBodyHeight }}>
+              {rows.map((row) => (
+                <div
+                  key={rowKey(row)}
+                  role="row"
+                  onClick={() => onRowClick?.(row)}
+                  style={{ gridTemplateColumns: gridTemplate }}
+                  className={[
+                    'grid border-b border-border-default/40 last:border-b-0',
+                    'transition-colors duration-100',
+                    onRowClick ? 'cursor-pointer hover:bg-surface-overlay/50' : ''
+                  ].join(' ')}
+                >
+                  {columns.map((col) => (
+                    <div
+                      key={col.key}
+                      role="cell"
+                      className={[
+                        'flex items-center min-w-0',
+                        col.cellPadded === false ? 'py-1 px-1.5' : 'py-2.5 px-3',
+                        'text-sm text-text-primary',
+                        alignClass(col.align)
+                      ].join(' ')}
+                    >
+                      {col.render
+                        ? col.render(row)
+                        : <span className="truncate min-w-0">{defaultCellValue(row, col.key)}</span>}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )
+        })()}
       </div>
 
       {/* Pagination */}

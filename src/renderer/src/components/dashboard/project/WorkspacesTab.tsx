@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
   DotsThree,
+  MagnifyingGlass,
   PencilSimple,
   PushPin,
   Terminal,
@@ -16,6 +17,8 @@ import type {
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
+import { Select } from '../settings/primitives'
+import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
 
@@ -27,6 +30,32 @@ import { SessionsTab } from './SessionsTab'
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 8
+
+// ---------------------------------------------------------------------------
+// Filter helpers
+// ---------------------------------------------------------------------------
+
+type ActivityFilterKey = 'all' | 'in_review' | 'in_progress' | 'waiting'
+
+const FILTER_OPTIONS: ReadonlyArray<{ value: ActivityFilterKey; label: string }> = [
+  { value: 'all',         label: 'All' },
+  { value: 'in_review',   label: 'In Review' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'waiting',     label: 'Waiting' }
+]
+
+/**
+ * Maps persisted workspace status to a filter group without requiring live
+ * activity data. Mirrors the persisted-status branch of deriveGroup in
+ * WorkspacesView.tsx but intentionally excludes 'done' (not tracked in
+ * persisted status — only known via live activity events).
+ */
+function statusToGroup(ws: WorkspaceRecord): ActivityFilterKey {
+  if (!ws.claudeSessionId) return 'waiting'
+  if (ws.status === 'attention' || ws.status === 'awaiting_input') return 'in_review'
+  if (ws.status === 'in_progress') return 'in_progress'
+  return 'waiting'
+}
 
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms
@@ -102,6 +131,16 @@ export function WorkspacesTab({
       { messageCount: number | null; jsonlSizeBytes: number | null; title: string | null }
     >
   >({})
+
+  // Search + filter state
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [activityFilter, setActivityFilter] = useState<ActivityFilterKey>('all')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim().toLowerCase()), 250)
+    return () => clearTimeout(t)
+  }, [search])
 
   // Background git status for visible active rows.
   useEffect(() => {
@@ -182,27 +221,6 @@ export function WorkspacesTab({
     return sessionStats[ws.claudeSessionId]?.messageCount ?? null
   }
 
-  /**
-   * Display-name resolution (mirrors the same fallback ladder used elsewhere):
-   *   1. Manual rename → the explicit name
-   *   2. Live terminal OSC title
-   *   3. First user prompt from the workspace's claude_session_id session
-   *   4. Muted "untitled · createdAt · short-id" so multiple never-opened stubs
-   *      never look identical.
-   */
-  function displayNameForWorkspace(ws: WorkspaceRecord): { text: string; muted: boolean } {
-    if (!ws.nameIsAuto) return { text: ws.name, muted: false }
-    const terminalTitle = titleByWs[ws.id]
-    if (terminalTitle) return { text: terminalTitle, muted: false }
-    const sessionTitle = ws.claudeSessionId
-      ? (sessionStats[ws.claudeSessionId]?.title ?? null)
-      : null
-    if (sessionTitle) return { text: sessionTitle, muted: false }
-    const shortId = ws.id.slice(0, 6)
-    const when = relativeTime(ws.createdAt)
-    return { text: `untitled · ${when} · ${shortId}`, muted: true }
-  }
-
   function openMenu(e: React.MouseEvent, ws: WorkspaceRecord): void {
     e.stopPropagation()
     e.preventDefault()
@@ -253,8 +271,33 @@ export function WorkspacesTab({
     return 0
   }
 
+  // Filter active workspaces by activity group and search term.
+  const filtered = useMemo(() => {
+    let out = active
+
+    if (activityFilter !== 'all') {
+      out = out.filter((ws) => statusToGroup(ws) === activityFilter)
+    }
+
+    if (debouncedSearch) {
+      const q = debouncedSearch // already lowercased
+      out = out.filter((ws) => {
+        const dn = resolveWorkspaceName({
+          workspace: ws,
+          terminalTitle: titleByWs[ws.id] ?? null,
+          sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+        }).text.toLowerCase()
+        const basename = ws.cwd.split('/').pop()?.toLowerCase() ?? ''
+        return dn.includes(q) || basename.includes(q)
+      })
+    }
+
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, activityFilter, debouncedSearch, titleByWs, sessionStats])
+
   const activeSorted = useMemo(() => {
-    const copy = [...active]
+    const copy = [...filtered]
     copy.sort((a, b) => {
       let cmp: number
       if (activeSortBy === 'messages') {
@@ -266,11 +309,11 @@ export function WorkspacesTab({
     })
     return copy
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeSortBy, activeSortDir, sessionStats])
+  }, [filtered, activeSortBy, activeSortDir, sessionStats])
 
-  const activePaginated = activeSorted.slice(
-    (activePage - 1) * PAGE_SIZE,
-    activePage * PAGE_SIZE
+  const activePaginated = useMemo(
+    () => activeSorted.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
+    [activeSorted, activePage]
   )
 
   const activeColumns: DataTableColumn<WorkspaceRecord>[] = useMemo(
@@ -281,7 +324,11 @@ export function WorkspacesTab({
         render: (ws) => {
           const activity = workspaceActivities[ws.id]
           const isPinned = ws.pinnedAt !== null
-          const dn = displayNameForWorkspace(ws)
+          const dn = resolveWorkspaceName({
+            workspace: ws,
+            terminalTitle: titleByWs[ws.id] ?? null,
+            sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+          })
           return (
             <span className="flex items-center gap-2 min-w-0">
               <span className="flex items-center justify-center w-3 flex-shrink-0">
@@ -395,44 +442,75 @@ export function WorkspacesTab({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2 min-w-0">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Workspaces{active.length > 0 && ` · ${active.length}`}
+            Workspaces · {filtered.length}{filtered.length !== active.length && ` of ${active.length}`}
           </h3>
-          {!loading && active.length === 0 ? (
-            <div className="rounded-lg border border-border-default bg-surface-raised py-8 flex flex-col items-center gap-2">
-              <Terminal size={20} className="text-text-muted opacity-50" />
-              <p className="text-xs text-text-muted">No workspaces yet</p>
-            </div>
-          ) : (
-            <DataTable<WorkspaceRecord>
-              columns={activeColumns}
-              rows={activePaginated}
-              rowKey={(ws) => ws.id}
-              loading={loading}
-              sortBy={activeSortBy}
-              sortDir={activeSortDir}
-              onSortChange={(by, dir) => {
-                if (by === 'lastOpenedAt' || by === 'messages') {
-                  setActiveSortBy(by)
-                  setActiveSortDir(dir)
+
+          {/* Filter bar */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 min-w-0">
+              <MagnifyingGlass
+                size={12}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value)
                   setActivePage(1)
-                }
-              }}
-              onRowClick={(ws) => {
-                if (renamingId === ws.id) return
-                onSelectWorkspace(ws.id)
-              }}
-              pagination={
-                active.length > PAGE_SIZE
-                  ? {
-                      page: activePage,
-                      pageSize: PAGE_SIZE,
-                      total: active.length,
-                      onPageChange: setActivePage
-                    }
-                  : undefined
+                }}
+                placeholder="Search workspaces"
+                className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+              />
+            </div>
+            <div className="w-44 flex-shrink-0">
+              <Select<ActivityFilterKey>
+                ariaLabel="Activity filter"
+                options={FILTER_OPTIONS}
+                value={activityFilter}
+                onChange={(v) => {
+                  setActivityFilter(v)
+                  setActivePage(1)
+                }}
+              />
+            </div>
+          </div>
+
+          <DataTable<WorkspaceRecord>
+            columns={activeColumns}
+            rows={activePaginated}
+            rowKey={(ws) => ws.id}
+            loading={loading}
+            emptyState={
+              <div className="flex flex-col items-center gap-2">
+                <Terminal size={20} className="text-text-muted opacity-50" />
+                <p className="text-xs text-text-muted">
+                  {debouncedSearch || activityFilter !== 'all'
+                    ? 'No workspaces match your filter'
+                    : 'No workspaces yet'}
+                </p>
+              </div>
+            }
+            sortBy={activeSortBy}
+            sortDir={activeSortDir}
+            onSortChange={(by, dir) => {
+              if (by === 'lastOpenedAt' || by === 'messages') {
+                setActiveSortBy(by)
+                setActiveSortDir(dir)
+                setActivePage(1)
               }
-            />
-          )}
+            }}
+            onRowClick={(ws) => {
+              if (renamingId === ws.id) return
+              onSelectWorkspace(ws.id)
+            }}
+            pagination={{
+              page: activePage,
+              pageSize: PAGE_SIZE,
+              total: filtered.length,
+              onPageChange: setActivePage
+            }}
+          />
         </div>
 
         <div className="flex flex-col gap-2 min-w-0">
