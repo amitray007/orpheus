@@ -67,6 +67,7 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
+# Distribution: Homebrew Cask via amitray007/homebrew-tap.
+# Releases are published manually via `bun run release`, which uploads the
+# .dmg to amitray007/orpheus releases and bumps the cask file in the tap.
+# No electron-builder auto-publish; no electron-updater. See scripts/release.mjs.

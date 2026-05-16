@@ -20,7 +20,8 @@
     "build:win": "bun run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac && bun run install:mac",
     "build:linux": "electron-vite build && electron-builder --linux",
-    "fetch:libghostty": "bash scripts/fetch-libghostty.sh"
+    "fetch:libghostty": "bash scripts/fetch-libghostty.sh",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
