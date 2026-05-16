@@ -788,7 +788,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
       {removeConfirmTarget && (
         <ConfirmModal
-          title="Remove from Orpheus?"
+          title="Remove?"
           body={
             <>
               <p className="mb-2">

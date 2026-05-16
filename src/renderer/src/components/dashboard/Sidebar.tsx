@@ -12,8 +12,11 @@ import type {
 } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
+import { ContextMenu } from '../ContextMenu'
+import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
+import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -116,6 +119,8 @@ function WorkspaceSubRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const sidebarBoundsRef = useSidebarBounds()
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -152,20 +157,36 @@ function WorkspaceSubRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])
 
-  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
+  function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const isPinned = workspace.pinnedAt !== null
-    const action = await window.api.contextMenu.show([
-      { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
-      { label: 'Rename', action: 'rename' },
-      { divider: true },
-      { label: 'Archive', action: 'archive' }
-    ])
-    if (!action) return
-    if (action === 'togglePin') onTogglePin()
-    else if (action === 'rename') onBeginRename()
-    else if (action === 'archive') onArchive()
+    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    if (!rect || rect.width < 200) {
+      const isPinned = workspace.pinnedAt !== null
+      void window.api.contextMenu
+        .show([
+          { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
+          { label: 'Rename', action: 'rename' },
+          { divider: true },
+          { label: 'Archive', action: 'archive' }
+        ])
+        .then((action) => {
+          if (!action) return
+          if (action === 'togglePin') onTogglePin()
+          else if (action === 'rename') onBeginRename()
+          else if (action === 'archive') onArchive()
+        })
+      return
+    }
+    setMenu({ x: e.clientX, y: e.clientY })
   }
+
+  const isPinned = workspace.pinnedAt !== null
+  const wsMenuItems: ContextMenuItem[] = [
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePin },
+    { label: 'Rename', onClick: onBeginRename },
+    { label: '', divider: true, onClick: () => {} },
+    { label: 'Archive', onClick: onArchive }
+  ]
 
   function handleRenameCommit(): void {
     const trimmed = renameValue.trim()
@@ -269,6 +290,15 @@ function WorkspaceSubRow({
           <Archive size={13} />
         </button>
       )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={wsMenuItems}
+          onClose={() => setMenu(null)}
+          boundsRef={sidebarBoundsRef ?? undefined}
+        />
+      )}
     </div>
   )
 }
@@ -294,6 +324,8 @@ function PinnedRow({
 }: PinnedRowProps): React.JSX.Element {
   const { workspace, project } = item
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const sidebarBoundsRef = useSidebarBounds()
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -313,11 +345,19 @@ function PinnedRow({
   // (or "New workspace") otherwise.
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle: null })
 
-  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
+  function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const action = await window.api.contextMenu.show([{ label: 'Unpin', action: 'unpin' }])
-    if (action === 'unpin') onUnpin()
+    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    if (!rect || rect.width < 200) {
+      void window.api.contextMenu.show([{ label: 'Unpin', action: 'unpin' }]).then((action) => {
+        if (action === 'unpin') onUnpin()
+      })
+      return
+    }
+    setMenu({ x: e.clientX, y: e.clientY })
   }
+
+  const pinnedMenuItems: ContextMenuItem[] = [{ label: 'Unpin', onClick: onUnpin }]
 
   return (
     <div
@@ -362,6 +402,15 @@ function PinnedRow({
           <span className="text-[10px] text-text-muted truncate leading-none">{project.name}</span>
         </span>
       </button>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={pinnedMenuItems}
+          onClose={() => setMenu(null)}
+          boundsRef={sidebarBoundsRef ?? undefined}
+        />
+      )}
     </div>
   )
 }
@@ -460,23 +509,39 @@ function ProjectRow({
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(project.name)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const sidebarBoundsRef = useSidebarBounds()
 
   // Sync rename input when project name changes externally
   if (!renaming && renameValue !== project.name) {
     setRenameValue(project.name)
   }
 
-  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
+  function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const action = await window.api.contextMenu.show([
-      { label: 'Rename', action: 'rename' },
-      { divider: true },
-      { label: 'Remove from Orpheus…', action: 'remove' }
-    ])
-    if (!action) return
-    if (action === 'rename') onBeginRename()
-    else if (action === 'remove') onRequestRemove()
+    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    if (!rect || rect.width < 200) {
+      void window.api.contextMenu
+        .show([
+          { label: 'Rename', action: 'rename' },
+          { divider: true },
+          { label: 'Remove', action: 'remove' }
+        ])
+        .then((action) => {
+          if (!action) return
+          if (action === 'rename') onBeginRename()
+          else if (action === 'remove') onRequestRemove()
+        })
+      return
+    }
+    setMenu({ x: e.clientX, y: e.clientY })
   }
+
+  const projectMenuItems: ContextMenuItem[] = [
+    { label: 'Rename', onClick: onBeginRename },
+    { label: '', divider: true, onClick: () => {} },
+    { label: 'Remove', onClick: onRequestRemove }
+  ]
 
   function handleRenameCommit(): void {
     const trimmed = renameValue.trim()
@@ -566,6 +631,15 @@ function ProjectRow({
               {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
             </button>
           </div>
+        )}
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            items={projectMenuItems}
+            onClose={() => setMenu(null)}
+            boundsRef={sidebarBoundsRef ?? undefined}
+          />
         )}
       </div>
 
@@ -737,6 +811,7 @@ export function Sidebar({
     Map<string, Map<string, string>>
   >(new Map())
   const fetchedProjectSessions = useRef<Set<string>>(new Set())
+  const sidebarRef = useRef<HTMLElement>(null)
 
   // Fetch sessions for any visible project that hasn't been loaded yet.
   useEffect(() => {
@@ -921,168 +996,171 @@ export function Sidebar({
   )
 
   return (
-    <aside
-      className={[
-        collapsed ? 'w-14' : '',
-        'transition-[width] duration-150 ease-out',
-        'bg-surface-raised border-r border-border-default',
-        'flex flex-col gap-1 overflow-hidden shrink-0 h-full'
-      ].join(' ')}
-      style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
-    >
-      {/* Top nav */}
-      {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label is Workspaces */}
-      <NavItem
-        Icon={Kanban}
-        label="Workspaces"
-        active={activeView === 'sessions'}
-        collapsed={collapsed}
-        flushTop
-        onClick={() => onSelectNav('sessions')}
-      />
+    <SidebarBoundsContext.Provider value={sidebarRef}>
+      <aside
+        ref={sidebarRef}
+        className={[
+          collapsed ? 'w-14' : '',
+          'transition-[width] duration-150 ease-out',
+          'bg-surface-raised border-r border-border-default',
+          'flex flex-col gap-1 overflow-hidden shrink-0 h-full'
+        ].join(' ')}
+        style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
+      >
+        {/* Top nav */}
+        {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label is Workspaces */}
+        <NavItem
+          Icon={Kanban}
+          label="Workspaces"
+          active={activeView === 'sessions'}
+          collapsed={collapsed}
+          flushTop
+          onClick={() => onSelectNav('sessions')}
+        />
 
-      {/* Pinned section — only rendered when at least one workspace is pinned */}
-      {!collapsed && pinnedItems.length > 0 && (
-        <div className="mt-4 flex flex-col gap-0.5">
-          <SectionHeader label="Pinned" />
-          {pinnedItems.map((item) => (
-            <PinnedRow
-              key={item.workspace.id}
-              item={item}
-              active={selectedWorkspaceId === item.workspace.id}
-              activity={workspaceActivities[item.workspace.id]}
-              onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
-              onUnpin={async () => {
-                await window.api.workspaces.setPinned(item.workspace.id, false)
-                onRefreshPins()
-              }}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Projects section */}
-      <div className="mt-4 flex flex-col gap-0.5">
-        {!collapsed ? (
-          <>
-            <SectionHeader label="Projects" action={addProjectButton} />
-            {projectsLoading ? (
-              <ProjectListSkeleton />
-            ) : projects.length === 0 ? (
-              <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
-            ) : (
-              <div className="flex flex-col gap-0.5 overflow-y-auto max-h-[40vh]">
-                {projects.map((p) => {
-                  const expanded = expandedProjectIds.has(p.id)
-                  const workspaces = (workspacesByProject[p.id] ?? []).filter(
-                    (w) => w.archivedAt === null
-                  )
-                  const showLineAbove = dropTargetId === p.id && dropPos === 'before'
-                  const showLineBelow = dropTargetId === p.id && dropPos === 'after'
-                  const isDragging = dragId === p.id
-                  return (
-                    <div
-                      key={p.id}
-                      draggable={renamingProjectId !== p.id}
-                      onDragStart={(e) => onProjectDragStart(e, p.id)}
-                      onDragOver={(e) => onProjectDragOver(e, p.id)}
-                      onDrop={(e) => onProjectDrop(e, p.id)}
-                      onDragEnd={onProjectDragEnd}
-                      className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
-                    >
-                      {showLineAbove && <DropIndicator position="top" />}
-                      <ProjectRow
-                        project={p}
-                        active={activeView === 'project' && selectedProjectId === p.id}
-                        expanded={expanded}
-                        workspaces={workspaces}
-                        workspaceCount={workspaces.length}
-                        workspaceCountInline={workspaceCountInline}
-                        fetchGithubAvatars={fetchGithubAvatars}
-                        selectedWorkspaceId={selectedWorkspaceId}
-                        workspaceActivities={workspaceActivities}
-                        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-                        sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
-                        sessionUserPreviewBySessionId={
-                          sessionUserPreviewsByProject.get(p.id) ?? new Map()
-                        }
-                        onSelect={() => onSelectProject(p.id)}
-                        onToggleExpand={() => onToggleProjectExpand(p.id)}
-                        onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                        currentViewKind={currentViewKind}
-                        currentWorkspaceId={selectedWorkspaceId}
-                        renaming={renamingProjectId === p.id}
-                        onBeginRename={() => handleBeginRename(p.id)}
-                        onFinishRename={(name) => handleFinishRename(p.id, name)}
-                        onCancelRename={handleCancelRename}
-                        onRequestRemove={() => onRequestRemoveProject(p)}
-                        onAddWorkspace={() => onAddWorkspace(p.id)}
-                        renamingWorkspaceId={renamingWorkspaceId}
-                        onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                        onFinishRenameWorkspace={(wsId, name) =>
-                          handleFinishRenameWorkspace(wsId, p.id, name)
-                        }
-                        onCancelRenameWorkspace={handleCancelRenameWorkspace}
-                        onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
-                        onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
-                        wsDragId={wsDragId}
-                        wsDropTargetId={wsDropTargetId}
-                        wsDropPos={wsDropPos}
-                        onWorkspaceDragStart={onWorkspaceDragStart}
-                        onWorkspaceDragOver={onWorkspaceDragOver}
-                        onWorkspaceDrop={onWorkspaceDrop}
-                        onWorkspaceDragEnd={onWorkspaceDragEnd}
-                      />
-                      {showLineBelow && <DropIndicator position="bottom" />}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </>
-        ) : (
-          /* Collapsed: show identicons only */
-          <div className="flex flex-col gap-1 items-center">
-            <div className="flex justify-center mb-1">{addProjectButton}</div>
-            {!projectsLoading &&
-              projects.map((p) => {
-                const isActive =
-                  (activeView === 'project' || activeView === 'workspace') &&
-                  selectedProjectId === p.id
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => onSelectProject(p.id)}
-                    title={p.name}
-                    aria-label={p.name}
-                    className={[
-                      'p-1 rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-                      isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
-                    ].join(' ')}
-                  >
-                    <Identicon
-                      seed={p.path}
-                      size={22}
-                      avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
-                    />
-                  </button>
-                )
-              })}
+        {/* Pinned section — only rendered when at least one workspace is pinned */}
+        {!collapsed && pinnedItems.length > 0 && (
+          <div className="mt-4 flex flex-col gap-0.5">
+            <SectionHeader label="Pinned" />
+            {pinnedItems.map((item) => (
+              <PinnedRow
+                key={item.workspace.id}
+                item={item}
+                active={selectedWorkspaceId === item.workspace.id}
+                activity={workspaceActivities[item.workspace.id]}
+                onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
+                onUnpin={async () => {
+                  await window.api.workspaces.setPinned(item.workspace.id, false)
+                  onRefreshPins()
+                }}
+              />
+            ))}
           </div>
         )}
-      </div>
 
-      {/* Spacer pushes Settings to the bottom */}
-      <div className="flex-1" />
+        {/* Projects section */}
+        <div className="mt-4 flex flex-col gap-0.5">
+          {!collapsed ? (
+            <>
+              <SectionHeader label="Projects" action={addProjectButton} />
+              {projectsLoading ? (
+                <ProjectListSkeleton />
+              ) : projects.length === 0 ? (
+                <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
+              ) : (
+                <div className="flex flex-col gap-0.5 overflow-y-auto max-h-[40vh]">
+                  {projects.map((p) => {
+                    const expanded = expandedProjectIds.has(p.id)
+                    const workspaces = (workspacesByProject[p.id] ?? []).filter(
+                      (w) => w.archivedAt === null
+                    )
+                    const showLineAbove = dropTargetId === p.id && dropPos === 'before'
+                    const showLineBelow = dropTargetId === p.id && dropPos === 'after'
+                    const isDragging = dragId === p.id
+                    return (
+                      <div
+                        key={p.id}
+                        draggable={renamingProjectId !== p.id}
+                        onDragStart={(e) => onProjectDragStart(e, p.id)}
+                        onDragOver={(e) => onProjectDragOver(e, p.id)}
+                        onDrop={(e) => onProjectDrop(e, p.id)}
+                        onDragEnd={onProjectDragEnd}
+                        className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
+                      >
+                        {showLineAbove && <DropIndicator position="top" />}
+                        <ProjectRow
+                          project={p}
+                          active={activeView === 'project' && selectedProjectId === p.id}
+                          expanded={expanded}
+                          workspaces={workspaces}
+                          workspaceCount={workspaces.length}
+                          workspaceCountInline={workspaceCountInline}
+                          fetchGithubAvatars={fetchGithubAvatars}
+                          selectedWorkspaceId={selectedWorkspaceId}
+                          workspaceActivities={workspaceActivities}
+                          gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+                          sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
+                          sessionUserPreviewBySessionId={
+                            sessionUserPreviewsByProject.get(p.id) ?? new Map()
+                          }
+                          onSelect={() => onSelectProject(p.id)}
+                          onToggleExpand={() => onToggleProjectExpand(p.id)}
+                          onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                          currentViewKind={currentViewKind}
+                          currentWorkspaceId={selectedWorkspaceId}
+                          renaming={renamingProjectId === p.id}
+                          onBeginRename={() => handleBeginRename(p.id)}
+                          onFinishRename={(name) => handleFinishRename(p.id, name)}
+                          onCancelRename={handleCancelRename}
+                          onRequestRemove={() => onRequestRemoveProject(p)}
+                          onAddWorkspace={() => onAddWorkspace(p.id)}
+                          renamingWorkspaceId={renamingWorkspaceId}
+                          onBeginRenameWorkspace={handleBeginRenameWorkspace}
+                          onFinishRenameWorkspace={(wsId, name) =>
+                            handleFinishRenameWorkspace(wsId, p.id, name)
+                          }
+                          onCancelRenameWorkspace={handleCancelRenameWorkspace}
+                          onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                          onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
+                          wsDragId={wsDragId}
+                          wsDropTargetId={wsDropTargetId}
+                          wsDropPos={wsDropPos}
+                          onWorkspaceDragStart={onWorkspaceDragStart}
+                          onWorkspaceDragOver={onWorkspaceDragOver}
+                          onWorkspaceDrop={onWorkspaceDrop}
+                          onWorkspaceDragEnd={onWorkspaceDragEnd}
+                        />
+                        {showLineBelow && <DropIndicator position="bottom" />}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            /* Collapsed: show identicons only */
+            <div className="flex flex-col gap-1 items-center">
+              <div className="flex justify-center mb-1">{addProjectButton}</div>
+              {!projectsLoading &&
+                projects.map((p) => {
+                  const isActive =
+                    (activeView === 'project' || activeView === 'workspace') &&
+                    selectedProjectId === p.id
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => onSelectProject(p.id)}
+                      title={p.name}
+                      aria-label={p.name}
+                      className={[
+                        'p-1 rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
+                      ].join(' ')}
+                    >
+                      <Identicon
+                        seed={p.path}
+                        size={22}
+                        avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
+                      />
+                    </button>
+                  )
+                })}
+            </div>
+          )}
+        </div>
 
-      {/* Bottom: Settings */}
-      <NavItem
-        Icon={Gear}
-        label="Settings"
-        active={activeView === 'settings'}
-        collapsed={collapsed}
-        onClick={onSelectSettings}
-      />
-    </aside>
+        {/* Spacer pushes Settings to the bottom */}
+        <div className="flex-1" />
+
+        {/* Bottom: Settings */}
+        <NavItem
+          Icon={Gear}
+          label="Settings"
+          active={activeView === 'settings'}
+          collapsed={collapsed}
+          onClick={onSelectSettings}
+        />
+      </aside>
+    </SidebarBoundsContext.Provider>
   )
 }

@@ -15,23 +15,39 @@ export interface ContextMenuProps {
   y: number
   items: ContextMenuItem[]
   onClose: () => void
+  /** When provided, clamps the menu inside this element's bounding rect instead of the viewport. */
+  boundsRef?: React.RefObject<HTMLElement | null>
 }
 
-export function ContextMenu({ x, y, items, onClose }: ContextMenuProps): React.JSX.Element {
+export function ContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+  boundsRef
+}: ContextMenuProps): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y })
 
-  // Shift the menu left/up if it would overflow the viewport edges.
+  // Shift the menu left/up if it would overflow the clamp boundary.
   useLayoutEffect(() => {
     const el = menuRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     let nx = x
     let ny = y
-    if (nx + rect.width > window.innerWidth) nx = window.innerWidth - rect.width - 4
-    if (ny + rect.height > window.innerHeight) ny = window.innerHeight - rect.height - 4
+    const bounds = boundsRef?.current?.getBoundingClientRect() ?? {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight
+    }
+    if (nx + rect.width > bounds.right) nx = bounds.right - rect.width - 4
+    if (ny + rect.height > bounds.bottom) ny = bounds.bottom - rect.height - 4
+    if (nx < bounds.left) nx = bounds.left + 4
+    if (ny < bounds.top) ny = bounds.top + 4
     setPos({ x: nx, y: ny })
-  }, [x, y])
+  }, [x, y, boundsRef])
 
   // Close on Escape
   useEffect(() => {

@@ -157,7 +157,7 @@ export function ProjectHeader({
 
   const overflowMenu: ContextMenuItem[] = [
     {
-      label: 'Remove from Orpheus',
+      label: 'Remove',
       icon: <Archive size={13} />,
       onClick: onRequestRemove,
       destructive: true
