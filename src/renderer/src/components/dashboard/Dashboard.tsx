@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { playSound, setSoundEnabled } from '../../lib/sound'
+import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
 import { Sidebar, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent, type View } from './MainContent'
@@ -97,6 +97,7 @@ export function Dashboard({
           uiFontScale: 'default',
           fetchGithubAvatars: true,
           playInteractionSounds: true,
+          soundPack: 'core',
           updatedAt: 0
         })
       })
@@ -122,6 +123,12 @@ export function Dashboard({
     if (!uiState) return
     setSoundEnabled(uiState.playInteractionSounds ?? true)
   }, [uiState?.playInteractionSounds])
+
+  // Bridge the soundPack uiState field into the sound module.
+  useEffect(() => {
+    if (!uiState) return
+    setSoundPack(uiState.soundPack ?? 'core')
+  }, [uiState?.soundPack])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug
   // the title flow. Tag 37 = SET_TITLE, 38 = SET_TAB_TITLE in the current

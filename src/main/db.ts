@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 38
+const CURRENT_VERSION = 39
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1119,5 +1119,13 @@ function migrate(db: Database.Database): void {
       db.exec("ALTER TABLE app_ui_state ADD COLUMN play_interaction_sounds INTEGER NOT NULL DEFAULT 1 CHECK (play_interaction_sounds IN (0, 1))")
     } catch {}
     db.prepare('UPDATE schema_version SET version = ?').run(38)
+  }
+
+  // Version 39: sound pack picker
+  if (currentVersion < 39) {
+    try {
+      db.exec("ALTER TABLE app_ui_state ADD COLUMN sound_pack TEXT NOT NULL DEFAULT 'core' CHECK (sound_pack IN ('core', 'minimal', 'mechanical', 'retro', 'playful', 'crisp', 'organic', 'soft'))")
+    } catch {}
+    db.prepare('UPDATE schema_version SET version = ?').run(39)
   }
 }

@@ -102,6 +102,7 @@ export type AppViewKind = 'sessions' | 'project' | 'workspace'
 export type Theme = 'midnight' | 'daylight' | 'eclipse'
 export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
 export type UiFontScale = 'small' | 'default' | 'large'
+export type SoundPack = 'core' | 'minimal' | 'mechanical' | 'retro' | 'playful' | 'crisp' | 'organic' | 'soft'
 
 export type AppUiState = {
   sidebarCollapsed: boolean
@@ -148,6 +149,8 @@ export type AppUiState = {
   fetchGithubAvatars: boolean
   // Sound (v38)
   playInteractionSounds: boolean
+  // Sound pack (v39)
+  soundPack: SoundPack
   updatedAt: number
 }
 

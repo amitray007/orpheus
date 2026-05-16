@@ -1,5 +1,5 @@
 import { getDb } from './db'
-import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale } from '../shared/types'
+import type { AppUiState, AppUiStatePatch, AppViewKind, Theme, AccentColor, UiFontScale, SoundPack } from '../shared/types'
 // Note: AppUiStatePatch is Partial<Omit<AppUiState, 'updatedAt'>>, so fetchGithubAvatars is included automatically.
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,8 @@ type AppUiStateRow = {
   fetch_github_avatars: number | null
   // Sound (v38)
   play_interaction_sounds: number | null
+  // Sound pack (v39)
+  sound_pack: string | null
   updated_at: number
 }
 
@@ -103,6 +105,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     fetchGithubAvatars: (row.fetch_github_avatars ?? 1) === 1,
     // Sound (v38) — default true (enabled)
     playInteractionSounds: (row.play_interaction_sounds ?? 1) === 1,
+    // Sound pack (v39) — default 'core'
+    soundPack: (row.sound_pack ?? 'core') as SoundPack,
     updatedAt: row.updated_at
   }
 }
@@ -115,6 +119,7 @@ const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
 const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
+const VALID_SOUND_PACKS: SoundPack[] = ['core', 'minimal', 'mechanical', 'retro', 'playful', 'crisp', 'organic', 'soft']
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -145,6 +150,11 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {
     if (!VALID_FONT_SCALES.includes(patch.uiFontScale as UiFontScale)) {
       throw new Error(`uiState: uiFontScale must be one of ${VALID_FONT_SCALES.join(', ')}`)
+    }
+  }
+  if ('soundPack' in patch && patch.soundPack !== undefined) {
+    if (!VALID_SOUND_PACKS.includes(patch.soundPack as SoundPack)) {
+      throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
     }
   }
 }
@@ -210,7 +220,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Privacy (v37)
     fetchGithubAvatars: 'fetch_github_avatars',
     // Sound (v38)
-    playInteractionSounds: 'play_interaction_sounds'
+    playInteractionSounds: 'play_interaction_sounds',
+    // Sound pack (v39)
+    soundPack: 'sound_pack'
   }
 
   const setClauses: string[] = []

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, Theme, AccentColor, UiFontScale } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import type { AppUiState, Theme, AccentColor, UiFontScale, SoundPack } from '@shared/types'
+import { SettingRow, Toggle, Select } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
-import { playSound } from '../../../lib/sound'
+import { playSound, setSoundPack } from '../../../lib/sound'
 
 // ---------------------------------------------------------------------------
-// OrpheusAppearanceSection — theme, accent color, font size
+// OrpheusAppearanceSection — theme, accent color, font size, sound
 // ---------------------------------------------------------------------------
 
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
@@ -34,6 +34,17 @@ const FONT_SCALE_OPTIONS: { value: UiFontScale; label: string }[] = [
   { value: 'small', label: 'Small' },
   { value: 'default', label: 'Default' },
   { value: 'large', label: 'Large' }
+]
+
+const SOUND_PACK_OPTIONS: { value: SoundPack; label: string }[] = [
+  { value: 'core', label: 'Core' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'mechanical', label: 'Mechanical' },
+  { value: 'retro', label: 'Retro' },
+  { value: 'playful', label: 'Playful' },
+  { value: 'crisp', label: 'Crisp' },
+  { value: 'organic', label: 'Organic' },
+  { value: 'soft', label: 'Soft' },
 ]
 
 export function OrpheusAppearanceSection(): React.JSX.Element {
@@ -248,6 +259,22 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
               value={uiState.playInteractionSounds ?? true}
               onChange={(v) => patch({ playInteractionSounds: v })}
               ariaLabel="Enable interaction sounds"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Sound pack"
+            description="Each pack has a different sonic character. Core is the most complete (62 sounds); themed packs have 26 focused on common interactions."
+          >
+            <Select
+              options={SOUND_PACK_OPTIONS}
+              value={(uiState.soundPack ?? 'core') as SoundPack}
+              onChange={(v) => {
+                patch({ soundPack: v })
+                setSoundPack(v)
+                playSound('toggle-on')
+              }}
+              ariaLabel="Sound pack"
+              className="w-36"
             />
           </SettingRow>
         </div>
