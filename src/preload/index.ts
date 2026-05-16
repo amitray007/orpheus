@@ -35,9 +35,7 @@ import type {
   ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft,
-  ContextMenuNativeItem,
-  HeatmapEntry,
-  ClaudeUsageResult
+  ContextMenuNativeItem
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -307,16 +305,6 @@ const api = {
   notifications: {
     test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
   },
-  dashboard: {
-    getActivityHeatmap: (days?: number): Promise<HeatmapEntry[]> =>
-      ipcRenderer.invoke('dashboard:getActivityHeatmap', days),
-    getRecentProjects: (limit?: number): Promise<ProjectRecord[]> =>
-      ipcRenderer.invoke('dashboard:getRecentProjects', limit),
-    getRecentWorkspaces: (limit?: number): Promise<WorkspaceRecord[]> =>
-      ipcRenderer.invoke('dashboard:getRecentWorkspaces', limit),
-    getClaudeUsage: (): Promise<ClaudeUsageResult> =>
-      ipcRenderer.invoke('dashboard:getClaudeUsage')
-  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

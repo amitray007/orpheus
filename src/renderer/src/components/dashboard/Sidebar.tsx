@@ -2,7 +2,6 @@ import type React from 'react'
 import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
-  SquaresFour,
   Kanban,
   Plus,
   CaretDown,
@@ -533,7 +532,7 @@ function DropIndicator({ position }: { position: 'top' | 'bottom' }): React.JSX.
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'settings'
+export type SidebarActiveView = 'sessions' | 'project' | 'workspace' | 'settings'
 
 interface SidebarProps {
   collapsed: boolean
@@ -551,7 +550,7 @@ interface SidebarProps {
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
   onSelectProject: (id: string) => void
-  onSelectNav: (view: 'dashboard' | 'sessions') => void
+  onSelectNav: (view: 'sessions') => void
   onSelectSettings: () => void
   onAddProject: () => void
   addingProject?: boolean
@@ -804,14 +803,7 @@ export function Sidebar({
       style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
     >
       {/* Top nav */}
-      <NavItem
-        Icon={SquaresFour}
-        label="Dashboard"
-        active={activeView === 'dashboard'}
-        collapsed={collapsed}
-        onClick={() => onSelectNav('dashboard')}
-      />
-      {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label changed to Workspaces */}
+      {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label is Workspaces */}
       <NavItem
         Icon={Kanban}
         label="Workspaces"

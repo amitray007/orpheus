@@ -53,7 +53,7 @@ export function Dashboard({
   const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
 
   // View routing
-  const [view, setView] = useState<View>({ kind: 'dashboard' })
+  const [view, setView] = useState<View>({ kind: 'sessions' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -68,7 +68,7 @@ export function Dashboard({
         console.error('[dashboard] failed to load ui state', err)
         setUiState({
           sidebarCollapsed: false,
-          lastViewKind: 'dashboard',
+          lastViewKind: 'sessions',
           lastProjectId: null,
           lastWorkspaceId: null,
           windowX: null,
@@ -240,11 +240,12 @@ export function Dashboard({
         return
       }
     }
-    if (uiState.lastViewKind === 'sessions') {
+    if (uiState.lastViewKind === 'sessions' || (uiState.lastViewKind as string) === 'dashboard') {
       setView({ kind: 'sessions' })
       return
     }
-    // default — dashboard, initial state already handles this
+    // default — Workspaces is the fallback landing
+    setView({ kind: 'sessions' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
 
@@ -302,7 +303,7 @@ export function Dashboard({
       .catch(console.error)
   }
 
-  function handleSelectNav(nav: 'dashboard' | 'sessions'): void {
+  function handleSelectNav(nav: 'sessions'): void {
     setView({ kind: nav })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -315,9 +316,9 @@ export function Dashboard({
     setView({ kind: 'settings' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    // Persist as 'dashboard' — 'settings' is not in the DB enum
+    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
     window.api.uiState
-      .update({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
+      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
       .catch(console.error)
   }
 
@@ -346,19 +347,6 @@ export function Dashboard({
     } finally {
       setAddingProject(false)
     }
-  }
-
-  function handleNavigateToProject(id: string): void {
-    setSelectedProjectId(id)
-    setSelectedWorkspaceId(null)
-    setView({ kind: 'project', projectId: id })
-    if (!workspacesByProject[id]) {
-      fetchWorkspacesForProject(id)
-    }
-    window.api.projects.open(id).catch(console.error)
-    window.api.uiState
-      .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
-      .catch(console.error)
   }
 
   async function handleResumedInWorkspace(workspace: WorkspaceRecord): Promise<void> {
@@ -564,7 +552,7 @@ export function Dashboard({
     if (selectedProjectId === target.id) {
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
-      setView({ kind: 'dashboard' })
+      setView({ kind: 'sessions' })
     }
     refreshPins()
   }
@@ -626,11 +614,9 @@ export function Dashboard({
       ? 'workspace'
       : view.kind === 'project'
         ? 'project'
-        : view.kind === 'sessions'
-          ? 'sessions'
-          : view.kind === 'settings'
-            ? 'settings'
-            : 'dashboard'
+        : view.kind === 'settings'
+          ? 'settings'
+          : 'sessions'
 
   return (
     <div className="flex flex-col h-screen">
@@ -686,7 +672,6 @@ export function Dashboard({
               view.kind === 'project' ? (workspacesByProject[view.projectId] ?? null) : null
             }
             onRequestRemoveProject={handleRequestRemoveProject}
-            onNavigateToProject={handleNavigateToProject}
             onSelectWorkspace={handleSelectWorkspace}
             onAddWorkspace={handleAddWorkspace}
             onRenameWorkspace={handleRenameWorkspace}

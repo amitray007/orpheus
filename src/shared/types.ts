@@ -92,7 +92,7 @@ export type PinnedItem = {
 // App UI state
 // ---------------------------------------------------------------------------
 
-export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace'
+export type AppViewKind = 'sessions' | 'project' | 'workspace'
 
 export type AppUiState = {
   sidebarCollapsed: boolean
@@ -527,37 +527,3 @@ export type SessionsPagedResult = {
   total: number // total matching rows before pagination
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard (heatmap + recents)
-// ---------------------------------------------------------------------------
-
-export type HeatmapEntry = {
-  date: string // 'YYYY-MM-DD'
-  count: number
-  level: 0 | 1 | 2 | 3 | 4
-}
-
-// ---------------------------------------------------------------------------
-// Claude Usage (rate-limit utilization via OAuth usage endpoint)
-// ---------------------------------------------------------------------------
-
-export type ClaudeUsageBucket = {
-  utilization: number // 0-100
-  resetsAt: string | null // ISO timestamp (null if not provided)
-}
-
-export type ClaudeUsageSnapshot = {
-  fiveHour: ClaudeUsageBucket | null
-  sevenDay: ClaudeUsageBucket | null
-  sevenDaySonnet: ClaudeUsageBucket | null
-  sevenDayOpus: ClaudeUsageBucket | null // API key is "seven_day_omelette" — surfaced as Opus
-  fetchedAt: number // epoch ms
-  rateLimitedUntil: number | null // epoch ms; null when not rate-limited
-}
-
-export type ClaudeUsageResult =
-  | { kind: 'ok'; snapshot: ClaudeUsageSnapshot }
-  | { kind: 'no_credentials' }
-  | { kind: 'auth_failed'; message: string }
-  | { kind: 'rate_limited'; retryAfterMs: number; snapshot: ClaudeUsageSnapshot | null }
-  | { kind: 'error'; message: string }

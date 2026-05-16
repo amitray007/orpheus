@@ -52,7 +52,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
   const clampedWidth = Math.min(480, Math.max(200, rawWidth))
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
-    lastViewKind: row.last_view_kind as AppViewKind,
+    // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
+    lastViewKind: (row.last_view_kind === 'dashboard' ? 'sessions' : row.last_view_kind) as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
     windowX: row.window_x,
@@ -93,7 +94,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'workspace']
+const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {

@@ -33,9 +33,7 @@ import type {
   ClaudeSubagentDraft,
   ClaudeHookEntry,
   ClaudeHookDraft,
-  ContextMenuNativeItem,
-  HeatmapEntry,
-  ClaudeUsageResult
+  ContextMenuNativeItem
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -223,12 +221,6 @@ declare global {
       }
       notifications: {
         test: () => Promise<void>
-      }
-      dashboard: {
-        getActivityHeatmap: (days?: number) => Promise<HeatmapEntry[]>
-        getRecentProjects: (limit?: number) => Promise<ProjectRecord[]>
-        getRecentWorkspaces: (limit?: number) => Promise<WorkspaceRecord[]>
-        getClaudeUsage: () => Promise<ClaudeUsageResult>
       }
     }
   }

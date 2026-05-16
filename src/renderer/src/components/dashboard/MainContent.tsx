@@ -2,7 +2,6 @@ import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
-import { DashboardView } from './DashboardView'
 import type {
   GitStatus,
   ProjectRecord,
@@ -33,7 +32,6 @@ function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
 // ---------------------------------------------------------------------------
 
 export type View =
-  | { kind: 'dashboard' }
   | { kind: 'project'; projectId: string }
   | { kind: 'sessions' }
   | { kind: 'workspace'; workspaceId: string; projectId: string }
@@ -50,7 +48,6 @@ interface MainContentProps {
   // null = not yet fetched; [] = fetched, empty
   workspacesForProject: WorkspaceRecord[] | null
   onRequestRemoveProject: (project: ProjectRecord) => void
-  onNavigateToProject: (id: string) => void
   onSelectWorkspace: (workspaceId: string, projectId: string) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
   onRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void | Promise<void>
@@ -71,7 +68,6 @@ export function MainContent({
   workspace,
   workspacesForProject,
   onRequestRemoveProject,
-  onNavigateToProject,
   onSelectWorkspace,
   onAddWorkspace,
   onRenameWorkspace,
@@ -86,16 +82,6 @@ export function MainContent({
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
     return <SettingsView />
-  }
-
-  if (view.kind === 'dashboard') {
-    return (
-      <DashboardView
-        onNavigateToProject={onNavigateToProject}
-        onNavigateToWorkspace={onSelectWorkspace}
-        workspaceActivities={workspaceActivities ?? {}}
-      />
-    )
   }
 
   if (view.kind === 'sessions') {
