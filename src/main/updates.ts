@@ -44,7 +44,7 @@ function isNewerVersion(latest: string, current: string): boolean {
   const [lMaj, lMin, lPat] = parse(latest)
   const [cMaj, cMin, cPat] = parse(current)
   if (lMaj !== cMaj) return (lMaj ?? 0) > (cMaj ?? 0)
-  if (lMin !== lMin) return (lMin ?? 0) > (cMin ?? 0)
+  if (lMin !== cMin) return (lMin ?? 0) > (cMin ?? 0)
   return (lPat ?? 0) > (cPat ?? 0)
 }
 
