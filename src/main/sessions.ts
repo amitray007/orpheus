@@ -33,6 +33,8 @@ type SessionRow = {
   jsonl_size_bytes: number | null
   // v34
   last_message_preview: string | null
+  // v35
+  last_user_message_preview: string | null
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
@@ -49,7 +51,8 @@ function rowToRecord(row: SessionRow): SessionRecord {
     lastMessageRole: row.last_message_role,
     messageCount: row.message_count,
     jsonlSizeBytes: row.jsonl_size_bytes,
-    lastMessagePreview: row.last_message_preview
+    lastMessagePreview: row.last_message_preview,
+    lastUserMessagePreview: row.last_user_message_preview
   }
 }
 
@@ -344,6 +347,90 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Last user-message preview extraction (v35)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads the last chunk of the JSONL, walks backward, and returns the most
+ * recent *user* message as a cleaned preview (≤100 chars). Returns null if
+ * no user message is found.
+ */
+function extractLastUserMessagePreview(jsonlPath: string): string | null {
+  try {
+    const stat = fs.statSync(jsonlPath)
+    const fileSize = stat.size
+    const readSize = Math.min(fileSize, MAX_BYTES)
+    const offset = fileSize - readSize
+
+    const fd = fs.openSync(jsonlPath, 'r')
+    const buf = Buffer.allocUnsafe(readSize)
+    fs.readSync(fd, buf, 0, readSize, offset)
+    fs.closeSync(fd)
+
+    const text = buf.toString('utf-8')
+    const lines = text.split('\n').reverse()
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+
+      if (typeof parsed !== 'object' || parsed === null) continue
+      const p = parsed as Record<string, unknown>
+      if (p['type'] !== 'user') continue
+
+      const message = p['message']
+      if (typeof message !== 'object' || message === null) continue
+      const content = (message as Record<string, unknown>)['content']
+
+      let raw: string | null = null
+
+      if (typeof content === 'string') {
+        raw = content
+      } else if (Array.isArray(content)) {
+        const parts: string[] = []
+        for (const part of content) {
+          if (
+            typeof part === 'object' &&
+            part !== null &&
+            (part as Record<string, unknown>)['type'] === 'text'
+          ) {
+            const t = (part as Record<string, unknown>)['text']
+            if (typeof t === 'string' && t.trim()) parts.push(t)
+          }
+        }
+        if (parts.length > 0) raw = parts.join(' ')
+      }
+
+      if (!raw) continue
+
+      let cleaned = raw
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/`[^`]*`/g, '')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+        .replace(/_([^_]+)_/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      if (!cleaned) continue
+
+      return cleaned.length > MAX_PREVIEW_LENGTH
+        ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…'
+        : cleaned
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
@@ -355,8 +442,8 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
   const db = getDb()
   const insert = db.prepare(
     `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes, last_message_preview)
-     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?, ?)`
+       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes, last_message_preview, last_user_message_preview)
+     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?, ?, ?)`
   )
 
   let entries: fs.Dirent[]
@@ -385,6 +472,7 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     const messageCount = extractMessageCount(jsonlPath)
     const jsonlSizeBytes = extractFileSize(jsonlPath)
     const lastMessagePreview = extractLastMessagePreview(jsonlPath)
+    const lastUserMessagePreview = extractLastUserMessagePreview(jsonlPath)
 
     try {
       insert.run(
@@ -398,7 +486,8 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
         lastMessageRole,
         messageCount,
         jsonlSizeBytes,
-        lastMessagePreview
+        lastMessagePreview,
+        lastUserMessagePreview
       )
     } catch {
       // Ignore individual row failures (e.g. malformed UUID)
@@ -476,8 +565,8 @@ export function refreshSessionMetadata(projectId: string): void {
     }
   }
 
-  // Always re-extract last_message_preview for non-archived sessions so the
-  // snippet stays fresh as sessions accumulate more messages.
+  // Always re-extract last_message_preview and last_user_message_preview for
+  // non-archived sessions so the snippets stay fresh as sessions accumulate more messages.
   type ActiveRow = { id: string; jsonl_path: string }
   const activeRows = db
     .prepare(
@@ -489,11 +578,20 @@ export function refreshSessionMetadata(projectId: string): void {
   const previewStmt = db.prepare(
     `UPDATE sessions SET last_message_preview = ? WHERE id = ?`
   )
+  const userPreviewStmt = db.prepare(
+    `UPDATE sessions SET last_user_message_preview = ? WHERE id = ?`
+  )
 
   for (const row of activeRows) {
     const preview = extractLastMessagePreview(row.jsonl_path)
     try {
       previewStmt.run(preview, row.id)
+    } catch {
+      // Ignore individual row failures
+    }
+    const userPreview = extractLastUserMessagePreview(row.jsonl_path)
+    try {
+      userPreviewStmt.run(userPreview, row.id)
     } catch {
       // Ignore individual row failures
     }

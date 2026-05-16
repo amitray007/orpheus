@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import type {
   SessionRecord,
   WorkspaceRecord,
@@ -6,6 +6,7 @@ import type {
   ProjectRecord
 } from '@shared/types'
 import { ActivityIndicator } from './ActivityIndicator'
+import { resolveWorkspaceName } from './resolveWorkspaceName'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,12 +35,6 @@ function shortModel(model: string | null): string {
   return model
 }
 
-// Derive the basename from a posix-style path without importing path
-function basename(cwdPath: string): string {
-  const parts = cwdPath.replace(/\/+$/, '').split('/')
-  return parts[parts.length - 1] || cwdPath
-}
-
 // ---------------------------------------------------------------------------
 // Group derivation — workspace-first.
 // Live activity wins; persisted workspace.status is the fallback so
@@ -59,10 +54,13 @@ function deriveGroup(
   if (a === 'ready') return 'done'
   if (a === 'idle') return 'waiting'
 
-  // Fall back to persisted status when no live activity is known
+  // No live activity — if workspace was never activated (no claude session), it's just waiting.
+  if (!ws.claudeSessionId) return 'waiting'
+
+  // Workspace has run before — fall back to persisted status.
   if (ws.status === 'attention' || ws.status === 'awaiting_input') return 'in_review'
   if (ws.status === 'in_progress') return 'in_progress'
-  return 'waiting' // idle (and any unexpected value) → Waiting
+  return 'waiting'
 }
 
 // Map persisted workspace status → a display activity for rows where no
@@ -110,9 +108,23 @@ function WorkspaceCard({
   activities,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
-  // Primary label: workspace name, with cwd basename as fallback
-  const displayName =
-    workspace.name.trim() !== '' ? workspace.name : basename(workspace.cwd)
+  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
+
+  useEffect(() => {
+    const workspaceId = workspace.id
+    window.api.workspaces.getTitle(workspaceId).then((t) => {
+      setTerminalTitle(t)
+    }).catch(() => {})
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
+      if (e.workspaceId === workspaceId) {
+        setTerminalTitle(e.title || null)
+      }
+    })
+    return unsub
+  }, [workspace.id])
+
+  const sessionTitle = session?.title ?? null
+  const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
 
   // Effective indicator: live activity wins; fall back to persisted status glyph
   const liveActivity = activities[workspace.id]
@@ -126,7 +138,7 @@ function WorkspaceCard({
   return (
     <button
       onClick={onClick}
-      className="w-full p-3 rounded-md bg-surface-raised border border-border-default/60 hover:bg-surface-overlay hover:border-border-default transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
+      className="w-full p-3 rounded-md bg-surface-raised border border-dotted border-border-default/60 hover:bg-surface-overlay hover:border-border-default transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
     >
       {/* Title row: glyph + name */}
       <span className="flex items-center gap-2 min-w-0">
@@ -134,10 +146,13 @@ function WorkspaceCard({
           <ActivityIndicator detail={effectiveActivity} />
         </span>
         <span
-          className="text-sm font-medium text-text-primary truncate leading-snug"
-          title={displayName}
+          className={[
+            'text-sm font-medium truncate leading-snug',
+            dn.muted ? 'text-text-muted italic font-normal' : 'text-text-primary'
+          ].join(' ')}
+          title={dn.text}
         >
-          {displayName}
+          {dn.text}
         </span>
       </span>
 

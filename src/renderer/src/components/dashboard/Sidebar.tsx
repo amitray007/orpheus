@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   SquaresFour,
-  Columns,
+  Kanban,
   Plus,
   CaretDown,
   CaretRight,
@@ -11,28 +11,11 @@ import {
   Archive,
   Gear
 } from '@phosphor-icons/react'
-import type { ProjectRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
+import type { ProjectRecord, SessionRecord, WorkspaceRecord, GitStatus, WorkspaceActivityDetail } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ActivityIndicator } from './ActivityIndicator'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms
-  const s = Math.floor(diff / 1000)
-  if (s < 60) return 'just now'
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d ago`
-  const mo = Math.floor(d / 30)
-  return `${mo}mo ago`
-}
+import { resolveWorkspaceName } from './resolveWorkspaceName'
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -103,6 +86,8 @@ interface WorkspaceRowProps {
   gitStatus?: GitStatus | null
   /** Map from claudeSessionId → first-user-prompt title (fetched once per project). */
   sessionTitleBySessionId: Map<string, string>
+  /** Map from claudeSessionId → last user message preview (fetched once per project). */
+  sessionUserPreviewBySessionId: Map<string, string>
   onSelect: () => void
   renaming: boolean
   onBeginRename: () => void
@@ -117,6 +102,7 @@ function WorkspaceSubRow({
   activity,
   gitStatus,
   sessionTitleBySessionId,
+  sessionUserPreviewBySessionId,
   onSelect,
   renaming,
   onBeginRename,
@@ -141,25 +127,16 @@ function WorkspaceSubRow({
     return unsub
   }, [workspace.id])
 
-  // Fallback ladder (mirrors WorkspacesTab.displayNameForWorkspace):
-  //   1. Manual name (nameIsAuto=false) — always wins.
-  //   2. Live terminal OSC title.
-  //   3. First user prompt from the workspace's claude session.
-  //   4. Muted italic: "untitled · <relative createdAt> · <first-6-of-id>".
-  function resolveDisplayName(): { text: string; muted: boolean } {
-    if (!workspace.nameIsAuto) return { text: workspace.name, muted: false }
-    if (terminalTitle) return { text: terminalTitle, muted: false }
-    const sessionTitle = workspace.claudeSessionId
-      ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
-      : null
-    if (sessionTitle) return { text: sessionTitle, muted: false }
-    const shortId = workspace.id.slice(0, 6)
-    const when = relativeTime(workspace.createdAt)
-    return { text: `untitled · ${when} · ${shortId}`, muted: true }
-  }
+  const sessionTitle = workspace.claudeSessionId
+    ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
+    : null
 
-  const dn = resolveDisplayName()
+  const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
   const displayName = dn.text
+
+  const lastUserMsgPreview = workspace.claudeSessionId
+    ? (sessionUserPreviewBySessionId.get(workspace.claudeSessionId) ?? null)
+    : null
 
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
@@ -210,54 +187,74 @@ function WorkspaceSubRow({
         title={workspace.cwd}
         aria-label={workspace.name}
       >
-        {activity && activity !== 'archived' ? (
-          <ActivityIndicator detail={activity} />
-        ) : (
-          <Stack
-            size={12}
-            weight={active ? 'fill' : 'regular'}
-            className={[
-              'flex-shrink-0 transition-colors duration-150',
-              active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
-            ].join(' ')}
-          />
-        )}
-        {renaming ? (
-          <input
-            autoFocus
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleRenameCommit()
-              if (e.key === 'Escape') onCancelRename()
-            }}
-            onBlur={handleRenameCommit}
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
-          />
-        ) : (
-          <span
-            className={[
-              'text-xs truncate min-w-0 flex-1',
-              dn.muted ? 'text-text-muted italic' : ''
-            ].join(' ')}
-            title={dn.text}
-          >
-            {dn.text}
-          </span>
-        )}
-        {/* Git diff chip — only when there are real tracked changes (ins or del > 0) */}
-        {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
-          <span className="text-[10px] font-mono flex items-center gap-1 ml-1 flex-shrink-0">
-            {gitStatus.insertions > 0 && (
-              <span className="text-emerald-400">+{gitStatus.insertions}</span>
+        {/* Left: activity glyph (fixed width, vertically centered on first line) */}
+        <span className="flex-shrink-0 self-start mt-0.5">
+          {activity && activity !== 'archived' ? (
+            <ActivityIndicator detail={activity} />
+          ) : (
+            <Stack
+              size={12}
+              weight={active ? 'fill' : 'regular'}
+              className={[
+                'transition-colors duration-150',
+                active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
+              ].join(' ')}
+            />
+          )}
+        </span>
+
+        {/* Right: two-line column */}
+        <span className="flex flex-col min-w-0 flex-1 gap-0">
+          {/* Line 1: name + optional git chip */}
+          <span className="flex items-center gap-1 min-w-0">
+            {renaming ? (
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRenameCommit()
+                  if (e.key === 'Escape') onCancelRename()
+                }}
+                onBlur={handleRenameCommit}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+              />
+            ) : (
+              <span
+                className={[
+                  'text-xs truncate min-w-0 flex-1 leading-snug',
+                  dn.muted ? 'text-text-muted italic' : ''
+                ].join(' ')}
+                title={dn.text}
+              >
+                {dn.text}
+              </span>
             )}
-            {gitStatus.deletions > 0 && (
-              <span className="text-red-400">−{gitStatus.deletions}</span>
+            {/* Git diff chip */}
+            {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
+              <span className="text-[10px] font-mono flex items-center gap-1 flex-shrink-0">
+                {gitStatus.insertions > 0 && (
+                  <span className="text-emerald-400">+{gitStatus.insertions}</span>
+                )}
+                {gitStatus.deletions > 0 && (
+                  <span className="text-red-400">−{gitStatus.deletions}</span>
+                )}
+              </span>
             )}
           </span>
-        )}
+
+          {/* Line 2: last user message preview (only when available and not renaming) */}
+          {!renaming && lastUserMsgPreview && (
+            <span
+              className="text-[10px] text-text-muted italic truncate leading-snug"
+              title={lastUserMsgPreview}
+            >
+              {lastUserMsgPreview}
+            </span>
+          )}
+        </span>
       </button>
 
       {/* Archive affordance — visible on hover. 32x32 hit target. */}
@@ -293,6 +290,8 @@ interface ProjectRowProps {
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   /** Map from claudeSessionId → session title for all sessions in this project. */
   sessionTitleBySessionId: Map<string, string>
+  /** Map from claudeSessionId → last user message preview for all sessions in this project. */
+  sessionUserPreviewBySessionId: Map<string, string>
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -329,6 +328,7 @@ function ProjectRow({
   workspaceActivities,
   gitStatusByWorkspaceId,
   sessionTitleBySessionId,
+  sessionUserPreviewBySessionId,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -498,6 +498,7 @@ function ProjectRow({
                   activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
                   sessionTitleBySessionId={sessionTitleBySessionId}
+                  sessionUserPreviewBySessionId={sessionUserPreviewBySessionId}
                   onSelect={() => onSelectWorkspace(ws.id)}
                   renaming={renamingWorkspaceId === ws.id}
                   onBeginRename={() => onBeginRenameWorkspace(ws.id)}
@@ -608,6 +609,10 @@ export function Sidebar({
   const [sessionTitlesByProject, setSessionTitlesByProject] = useState<
     Map<string, Map<string, string>>
   >(new Map())
+  // Map from projectId → (Map from claudeSessionId → last user message preview).
+  const [sessionUserPreviewsByProject, setSessionUserPreviewsByProject] = useState<
+    Map<string, Map<string, string>>
+  >(new Map())
   const fetchedProjectSessions = useRef<Set<string>>(new Set())
 
   // Fetch sessions for any visible project that hasn't been loaded yet.
@@ -618,14 +623,21 @@ export function Sidebar({
       fetchedProjectSessions.current.add(projectId)
       window.api.sessions
         .listForProject(projectId, { includeArchived: true })
-        .then((sessions) => {
-          const map = new Map<string, string>()
+        .then((sessions: SessionRecord[]) => {
+          const titleMap = new Map<string, string>()
+          const userPreviewMap = new Map<string, string>()
           for (const s of sessions) {
-            if (s.title) map.set(s.id, s.title)
+            if (s.title) titleMap.set(s.id, s.title)
+            if (s.lastUserMessagePreview) userPreviewMap.set(s.id, s.lastUserMessagePreview)
           }
           setSessionTitlesByProject((prev) => {
             const next = new Map(prev)
-            next.set(projectId, map)
+            next.set(projectId, titleMap)
+            return next
+          })
+          setSessionUserPreviewsByProject((prev) => {
+            const next = new Map(prev)
+            next.set(projectId, userPreviewMap)
             return next
           })
         })
@@ -801,7 +813,7 @@ export function Sidebar({
       />
       {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label changed to Workspaces */}
       <NavItem
-        Icon={Columns}
+        Icon={Kanban}
         label="Workspaces"
         active={activeView === 'sessions'}
         collapsed={collapsed}
@@ -849,6 +861,7 @@ export function Sidebar({
                         workspaceActivities={workspaceActivities}
                         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
                         sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
+                        sessionUserPreviewBySessionId={sessionUserPreviewsByProject.get(p.id) ?? new Map()}
                         onSelect={() => onSelectProject(p.id)}
                         onToggleExpand={() => onToggleProjectExpand(p.id)}
                         onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}

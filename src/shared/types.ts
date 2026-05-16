@@ -507,6 +507,8 @@ export type SessionRecord = {
   jsonlSizeBytes?: number | null
   // Populated by refreshSessionMetadata (v34)
   lastMessagePreview?: string | null
+  // Populated by refreshSessionMetadata (v35)
+  lastUserMessagePreview?: string | null
 }
 
 export type SessionsPagedRequest = {
