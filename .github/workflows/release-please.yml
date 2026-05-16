@@ -47,14 +47,33 @@ permissions:
   pull-requests: write
 
 jobs:
-  release-please:
+  preflight:
     # Skip commits that explicitly invoke the manual release pipeline via
     # release.yml's [release] marker — those ship through that workflow,
-    # not through a Release PR.
-    if: >-
-      ${{
-        !contains(github.event.head_commit.message, '[release')
-      }}
+    # not through a Release PR. Job-level `if:` would match the marker
+    # appearing anywhere in the commit (subject or body); we only want
+    # to match against the subject line.
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - name: Resolve trigger gate
+        id: gate
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\]'; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "[preflight] subject '$SUBJECT' has [release] marker → skip (release.yml handles it)"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[preflight] subject '$SUBJECT' → run release-please"
+          fi
+
+  release-please:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}

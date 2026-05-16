@@ -35,20 +35,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    # Decide whether the release job should run. Job-level `if:` expressions
+    # in GHA can only call contains() on the full commit message (subject +
+    # body), which produces false positives when commit bodies discuss the
+    # [release] marker. So we extract just the first line (subject) here
+    # and let downstream jobs gate on the output.
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - name: Resolve trigger gate
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[preflight] workflow_dispatch → run"
+            exit 0
+          fi
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\]' &&
+             ! echo "$SUBJECT" | grep -qE '^chore\(release\)'; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[preflight] subject '$SUBJECT' has [release] marker → run"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "[preflight] subject '$SUBJECT' → skip"
+          fi
+
   release:
-    # Two ways to trigger:
-    #   1. workflow_dispatch (manual button in the Actions tab) — always runs.
-    #   2. push to main with [release] in the head commit message — runs, with
-    #      bump type parsed from [release patch|minor|major] (defaults to patch).
-    # Skip the self-push that this workflow itself makes (`chore(release): vX`),
-    # otherwise the bump push would re-trigger the workflow in a loop.
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' &&
-         contains(github.event.head_commit.message, '[release') &&
-         !startsWith(github.event.head_commit.message, 'chore(release):'))
-      }}
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     runs-on: macos-14
     permissions:
       contents: write
