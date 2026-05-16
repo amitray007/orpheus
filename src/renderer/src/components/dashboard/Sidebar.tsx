@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import { Kanban, Plus, CaretDown, CaretRight, Stack, Archive, Gear } from '@phosphor-icons/react'
 import type {
+  PinnedItem,
   ProjectRecord,
   SessionRecord,
   WorkspaceRecord,
@@ -263,6 +264,72 @@ function WorkspaceSubRow({
           <Archive size={13} />
         </button>
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pinned workspace row (appears in the Pinned section above Projects)
+// ---------------------------------------------------------------------------
+
+interface PinnedRowProps {
+  item: PinnedItem
+  active: boolean
+  activity: WorkspaceActivityDetail | undefined
+  onSelect: () => void
+  onUnpin: () => void
+}
+
+function PinnedRow({
+  item,
+  active,
+  activity,
+  onSelect,
+  onUnpin
+}: PinnedRowProps): React.JSX.Element {
+  const { workspace, project } = item
+
+  async function handleContextMenu(e: React.MouseEvent): Promise<void> {
+    e.preventDefault()
+    const action = await window.api.contextMenu.show([{ label: 'Unpin', action: 'unpin' }])
+    if (action === 'unpin') onUnpin()
+  }
+
+  return (
+    <div
+      className={[
+        'relative flex items-center rounded-r-md transition-colors duration-150 group',
+        active
+          ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
+      ].join(' ')}
+      onContextMenu={handleContextMenu}
+    >
+      <button
+        onClick={onSelect}
+        className="flex items-center gap-2 pl-4 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        title={workspace.cwd}
+        aria-label={workspace.name}
+      >
+        <span className="flex-shrink-0">
+          {activity && activity !== 'archived' ? (
+            <ActivityIndicator detail={activity} />
+          ) : (
+            <Stack
+              size={12}
+              weight={active ? 'fill' : 'regular'}
+              className={[
+                'transition-colors duration-150',
+                active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
+              ].join(' ')}
+            />
+          )}
+        </span>
+        <span className="flex flex-col min-w-0 flex-1">
+          <span className="text-xs truncate leading-snug">{workspace.name}</span>
+          <span className="text-[10px] text-text-muted truncate leading-none">{project.name}</span>
+        </span>
+      </button>
     </div>
   )
 }
@@ -560,6 +627,7 @@ interface SidebarProps {
   sidebarWidth: number // px, expanded state only
   // Privacy (v37)
   fetchGithubAvatars: boolean
+  pinnedItems: PinnedItem[]
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'sessions') => void
   onSelectSettings: () => void
@@ -578,6 +646,7 @@ interface SidebarProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
+  onRefreshPins: () => void
 }
 
 export function Sidebar({
@@ -608,7 +677,9 @@ export function Sidebar({
   onRenameWorkspace,
   onArchiveWorkspace,
   onReorderProjects,
-  onReorderWorkspaces
+  onReorderWorkspaces,
+  pinnedItems,
+  onRefreshPins
 }: SidebarProps): React.JSX.Element {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
@@ -832,6 +903,26 @@ export function Sidebar({
         flushTop
         onClick={() => onSelectNav('sessions')}
       />
+
+      {/* Pinned section — only rendered when at least one workspace is pinned */}
+      {!collapsed && pinnedItems.length > 0 && (
+        <div className="mt-4 flex flex-col gap-0.5">
+          <SectionHeader label="Pinned" />
+          {pinnedItems.map((item) => (
+            <PinnedRow
+              key={item.workspace.id}
+              item={item}
+              active={selectedWorkspaceId === item.workspace.id}
+              activity={workspaceActivities[item.workspace.id]}
+              onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
+              onUnpin={async () => {
+                await window.api.workspaces.setPinned(item.workspace.id, false)
+                onRefreshPins()
+              }}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Projects section */}
       <div className="mt-4 flex flex-col gap-0.5">

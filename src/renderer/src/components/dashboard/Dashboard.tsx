@@ -6,6 +6,7 @@ import { MainContent, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import type {
   AppUiState,
+  PinnedItem,
   ProjectRecord,
   SessionRecord,
   WorkspaceRecord,
@@ -51,6 +52,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
   const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
+
+  // Pinned workspaces — fetched on mount and after any pin/unpin toggle
+  const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'sessions' })
@@ -230,10 +234,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       })
   }, [])
 
-  // refreshPins is kept as a no-op: the pins IPC still exists for back-compat
-  // but the Sidebar no longer renders a Pinned section.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  function refreshPins(): void {}
+  function refreshPins(): void {
+    window.api.pins.listAll().then(setPinnedItems).catch(console.error)
+  }
+
+  useEffect(() => {
+    refreshPins()
+  }, [])
 
   // Poll git status for all non-archived workspaces every 30s
   useEffect(() => {
@@ -729,6 +736,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+          pinnedItems={pinnedItems}
           onSelectProject={handleSelectProject}
           onSelectNav={handleSelectNav}
           onSelectSettings={handleSelectSettings}
@@ -743,6 +751,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}
+          onRefreshPins={refreshPins}
         />
 
         <main
