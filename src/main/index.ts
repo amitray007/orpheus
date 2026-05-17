@@ -142,6 +142,11 @@ type LoadingThemePalette = {
   textSecondary: [number, number, number]
   border: [number, number, number]
   isDark: boolean
+  // Extra dark/light tint above the macOS blur. macOS dark blur reads as
+  // bluish-gray over a pure-black eclipse terminal — looks LIGHTER than the
+  // surrounding content. tintAlpha deepens it back to true black for eclipse.
+  // 0 = blur only (no extra tint).
+  tintAlpha: number
 }
 const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
   midnight: {
@@ -150,7 +155,8 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     textPrimary: [0xf4, 0xf4, 0xf5],
     textSecondary: [0xa1, 0xa1, 0xaa],
     border: [0x27, 0x27, 0x2a],
-    isDark: true
+    isDark: true,
+    tintAlpha: 0
   },
   daylight: {
     backdrop: [0xfa, 0xfa, 0xf7],
@@ -158,7 +164,8 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     textPrimary: [0x18, 0x18, 0x1b],
     textSecondary: [0x52, 0x52, 0x5b],
     border: [0xd4, 0xd4, 0xd0],
-    isDark: false
+    isDark: false,
+    tintAlpha: 0
   },
   eclipse: {
     backdrop: [0x00, 0x00, 0x00],
@@ -166,7 +173,8 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     textPrimary: [0xff, 0xff, 0xff],
     textSecondary: [0xb4, 0xb4, 0xb4],
     border: [0x1f, 0x1f, 0x1f],
-    isDark: true
+    isDark: true,
+    tintAlpha: 0.35
   }
 }
 
@@ -1118,6 +1126,7 @@ type GhosttyNativeAddon = {
     textSecondary: [number, number, number]
     border: [number, number, number]
     isDark: boolean
+    tintAlpha: number
   }) => void
 }
 

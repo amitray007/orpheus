@@ -685,12 +685,15 @@ static bool g_loadingActionTSFNActive = false;
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    NSColor* backdrop;       // tint layered over the blur for theme color hint
+    NSColor* backdrop;       // tint layered over the blur for theme deepening
     NSColor* card;           // card background (drawn at 0.94 alpha)
     NSColor* textPrimary;    // title color, spinner stroke
     NSColor* textSecondary;  // subtitle color, spinner fade
     NSColor* border;         // card hairline border
     BOOL     isDark;         // picks darkAqua appearance for the blur material
+    CGFloat  tintAlpha;      // 0 = blur only; >0 paints backdrop at this alpha
+                             // above the blur (used by eclipse to deepen the
+                             // bluish-gray macOS dark blur into true black)
 } OrpheusLoadingTheme;
 
 static OrpheusLoadingTheme g_loadingTheme = {
@@ -699,7 +702,8 @@ static OrpheusLoadingTheme g_loadingTheme = {
     .textPrimary   = nil,
     .textSecondary = nil,
     .border        = nil,
-    .isDark        = YES
+    .isDark        = YES,
+    .tintAlpha     = 0.0
 };
 
 static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
@@ -770,6 +774,8 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
     // Resolve colors from the app-theme palette pushed by the main process,
     // with sensible midnight-ish fallbacks if main hasn't called setLoadingTheme yet.
+    NSColor* backdropColor = themeColorOr(g_loadingTheme.backdrop,
+                                          [NSColor colorWithCalibratedRed:0x0b/255.0 green:0x0b/255.0 blue:0x0c/255.0 alpha:1.0]);
     NSColor* cardColor     = themeColorOr(g_loadingTheme.card,
                                           [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]);
     NSColor* borderColor   = themeColorOr(g_loadingTheme.border,
@@ -792,6 +798,19 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
     // Start invisible; caller animates to 1.
     self.alphaValue = 0.0;
+
+    // Optional per-theme tint above the blur. macOS dark blur reads slightly
+    // bluish-gray over a pure-black terminal (eclipse case) — making the
+    // overlay look LIGHTER than the masked content. A tint layer over the
+    // blur restores the deep-dark feel. Midnight/daylight pass tintAlpha=0
+    // so this is a no-op for them.
+    if (g_loadingTheme.tintAlpha > 0.001) {
+        NSView* tint = [[NSView alloc] initWithFrame:self.bounds];
+        tint.wantsLayer = YES;
+        tint.layer.backgroundColor = [backdropColor colorWithAlphaComponent:g_loadingTheme.tintAlpha].CGColor;
+        tint.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:tint];
+    }
 
     // ---- Card subview ----
     NSView* card = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 340, 142)];
@@ -1134,6 +1153,8 @@ static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
     NSColor* border        = parseRgbArray(obj.Get("border"));
     Napi::Value isDarkVal  = obj.Get("isDark");
     BOOL isDark = isDarkVal.IsBoolean() ? (isDarkVal.As<Napi::Boolean>().Value() ? YES : NO) : YES;
+    Napi::Value tintAlphaVal = obj.Get("tintAlpha");
+    CGFloat tintAlpha = tintAlphaVal.IsNumber() ? (CGFloat)tintAlphaVal.As<Napi::Number>().DoubleValue() : 0.0;
 
     g_loadingTheme.backdrop      = backdrop;
     g_loadingTheme.card          = card;
@@ -1141,8 +1162,10 @@ static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
     g_loadingTheme.textSecondary = textSecondary;
     g_loadingTheme.border        = border;
     g_loadingTheme.isDark        = isDark;
+    g_loadingTheme.tintAlpha     = tintAlpha;
 
-    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d)", (int)isDark);
+    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
+          (int)isDark, (double)tintAlpha);
     return env.Undefined();
 }
 
