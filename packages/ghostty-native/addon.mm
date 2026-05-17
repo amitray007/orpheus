@@ -807,10 +807,12 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     [self addSubview:card];
     self.card = card;
 
-    // ---- Spinner host (36 × 36) — native port of DotmSquare13.
-    // Renders a 5×5 dot grid that cycles through 8 directional frames (each
-    // shown for 2 steps = 16-step keyframe), 1550ms / 1.85 ≈ 838ms per cycle.
-    // Mirrors src/renderer/src/components/ui/dotm-square-13.tsx. ----
+    // ---- Spinner host (36 × 36) — native port of DotmSquare12.
+    // 5×5 dot grid; each dot pulses via a center-origin ripple whose phase
+    // is staggered by its Manhattan distance from the origin cell (row=1, col=1).
+    // Mirrors src/renderer/src/components/ui/dotm-square-12.tsx and the
+    // dmx-center-origin-ripple keyframe in dotmatrix-loader.css.
+    // Cycle: 1500ms × (1 / 1.35) ≈ 1111ms; ring stagger: ring × 0.16 × cycle.
     const CGFloat hostSize = 36.0;
     NSView* spinnerHost = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, hostSize, hostSize)];
     spinnerHost.wantsLayer = YES;
@@ -822,38 +824,24 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     static const CGFloat kDotSize = 5.0;
     const CGFloat gap = (hostSize - (kGridSize * kDotSize)) / (CGFloat)(kGridSize - 1);
 
-    // 8 directional masks (N, NE, E, SE, S, SW, W, NW). Per cell:
-    //   'x' = peak opacity, 'o' = on, '.' = base.
-    static const char* kFrameMasks[8] = {
-        // N
-        "..x.."  "..x.."  "..o.."  "....."  ".....",
-        // NE
-        "....x"  "...x."  "..o.."  "....."  ".....",
-        // E
-        "....."  "....."  "..oxx"  "....."  ".....",
-        // SE
-        "....."  "....."  "..o.."  "...x."  "....x",
-        // S
-        "....."  "....."  "..o.."  "..x.."  "..x..",
-        // SW
-        "....."  "....."  "..o.."  ".x..."  "x....",
-        // W
-        "....."  "....."  "xxo.."  "....."  ".....",
-        // NW
-        "x...."  ".x..."  "..o.."  "....."  "....."
-    };
-    // 16-step sequence: each direction shown for 2 consecutive frames.
-    static const int kSequenceLen = 16;
-    static const int kFrameSequence[16] = {0,0, 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, 7,7};
-    static const CGFloat kBaseOpacity = 0.08;
-    static const CGFloat kOnOpacity   = 0.56;
-    static const CGFloat kPeakOpacity = 1.00;
-    static const CFTimeInterval kCycleSeconds = 1.55 / 1.85; // matches DotmSquare13 speed
+    // dmx-center-origin-ripple keyframe values resolved against the default
+    // opacity vars (base=0.16, mid=0.32, peak=1.00):
+    //   0% → 0.625 * 0.16        = 0.100
+    //   34% → 1.0                 = 1.000
+    //   60% → 0.5 * (0.16+0.32)   = 0.240
+    //   100% → same as 0%         = 0.100
+    static const CGFloat kKeyOpacities[4] = { 0.100, 1.000, 0.240, 0.100 };
+    static const CGFloat kKeyTimes[4]     = { 0.0,   0.34,  0.60,  1.0   };
+    static const int kOriginRow = 1;
+    static const int kOriginCol = 1;
+    static const int kMaxManhattan = 6;
+    static const CFTimeInterval kCycleSeconds = 1.500 / 1.350; // ≈ 1.111s
+    static const CFTimeInterval kRingDelayScale = 0.16;
 
     NSColor* dotColor = themeColorOr(g_loadingTheme.textPrimary, [NSColor labelColor]);
+    CFTimeInterval now = CACurrentMediaTime();
 
     NSMutableArray<CALayer*>* dots = [NSMutableArray arrayWithCapacity:kGridSize * kGridSize];
-    // Build dots row-major, top-left origin (matches the React rowMajorIndex helper).
     for (int row = 0; row < kGridSize; row++) {
         for (int col = 0; col < kGridSize; col++) {
             CALayer* dot = [CALayer layer];
@@ -864,26 +852,27 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
             // (top) needs the largest y. Flip the row index.
             CGFloat y = (kGridSize - 1 - row) * (kDotSize + gap);
             dot.frame = CGRectMake(x, y, kDotSize, kDotSize);
+            // Start dots at their resting opacity so there's no first-frame flash.
+            dot.opacity = (float)kKeyOpacities[0];
 
-            // Per-cell keyframe: opacity at each of the 16 steps.
-            NSMutableArray<NSNumber*>* values = [NSMutableArray arrayWithCapacity:kSequenceLen + 1];
-            for (int step = 0; step < kSequenceLen; step++) {
-                int frame = kFrameSequence[step];
-                char cell = kFrameMasks[frame][row * kGridSize + col];
-                CGFloat opacity = kBaseOpacity;
-                if (cell == 'x')      opacity = kPeakOpacity;
-                else if (cell == 'o') opacity = kOnOpacity;
-                [values addObject:@(opacity)];
-            }
-            // Close the loop so step 15 → step 0 transitions smoothly.
-            [values addObject:values.firstObject];
+            int ring = abs(row - kOriginRow) + abs(col - kOriginCol);
+            if (ring > kMaxManhattan) ring = kMaxManhattan;
+            CFTimeInterval delay = (CFTimeInterval)ring * kRingDelayScale * kCycleSeconds;
 
             CAKeyframeAnimation* anim = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-            anim.values         = values;
+            anim.values   = @[ @(kKeyOpacities[0]), @(kKeyOpacities[1]),
+                               @(kKeyOpacities[2]), @(kKeyOpacities[3]) ];
+            anim.keyTimes = @[ @(kKeyTimes[0]),     @(kKeyTimes[1]),
+                               @(kKeyTimes[2]),     @(kKeyTimes[3])     ];
             anim.duration       = kCycleSeconds;
             anim.repeatCount    = HUGE_VALF;
-            anim.calculationMode = kCAAnimationDiscrete;
+            anim.calculationMode = kCAAnimationLinear;
+            anim.timingFunction  = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
             anim.removedOnCompletion = NO;
+            // Stagger the phase by ring × 0.16 × cycle so the ripple emanates
+            // from the origin cell instead of all 25 dots pulsing in lockstep.
+            anim.beginTime = now + delay;
+
             [dot addAnimation:anim forKey:@"dotmatrix"];
 
             [spinnerHost.layer addSublayer:dot];
