@@ -193,6 +193,7 @@ jobs:
 
       - name: Render and push cask + scoped tag
         run: |
+          mkdir -p homebrew-tap/Casks
           sed -e "s/{{VERSION}}/${{ steps.ver.outputs.version }}/g" \
               -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
               scripts/orpheus-cask.template.rb > homebrew-tap/Casks/orpheus.rb
