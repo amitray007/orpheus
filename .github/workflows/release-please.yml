@@ -122,7 +122,11 @@ jobs:
           bun run build
 
       - name: Build .dmg
-        run: bunx electron-builder --mac
+        # `--publish never` is load-bearing: electron-builder otherwise sees
+        # CI=true and tries to implicitly publish to GitHub Releases without
+        # a GH_TOKEN, failing the step. We publish explicitly via gh release
+        # upload below, so the implicit path must stay off.
+        run: bunx electron-builder --mac --publish never
 
       - name: Compute sha256
         id: sha

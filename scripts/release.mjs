@@ -83,7 +83,9 @@ if (existing) {
 
 run('bun', ['run', 'build:native'])
 run('bun', ['run', 'build'])
-run('bunx', ['electron-builder', '--mac'])
+// `--publish never` parries electron-builder's CI auto-publish heuristic;
+// we upload the .dmg explicitly via `gh release create` below.
+run('bunx', ['electron-builder', '--mac', '--publish', 'never'])
 
 const dmgPath = resolve(projectRoot, 'dist', `orpheus-${version}.dmg`)
 if (!existsSync(dmgPath)) {
