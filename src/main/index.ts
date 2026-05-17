@@ -86,9 +86,9 @@ import {
 import {
   configureLoadingOverlay,
   show as showLoadingOverlay,
-  hide as hideLoadingOverlay,
-  copyForMount as loadingCopyForMount
+  hide as hideLoadingOverlay
 } from './loadingOverlay'
+import type { Theme } from '../shared/types'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
 import { showContextMenu } from './contextMenu'
@@ -132,9 +132,52 @@ const workspaceTitles = new Map<string, string>()
 let titleCallbackRegistered = false
 let loadingOverlayWired = false
 
+// Theme palettes for the loading overlay. Must mirror src/renderer/src/assets/main.css.
+// RGB tuples (0-255) so the native side doesn't need a hex parser.
+type LoadingThemePalette = {
+  backdrop: [number, number, number]
+  card: [number, number, number]
+  textPrimary: [number, number, number]
+  textSecondary: [number, number, number]
+  border: [number, number, number]
+}
+const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
+  midnight: {
+    backdrop: [0x0b, 0x0b, 0x0c],
+    card: [0x16, 0x16, 0x1a],
+    textPrimary: [0xf4, 0xf4, 0xf5],
+    textSecondary: [0xa1, 0xa1, 0xaa],
+    border: [0x27, 0x27, 0x2a]
+  },
+  daylight: {
+    backdrop: [0xfa, 0xfa, 0xf7],
+    card: [0xff, 0xff, 0xff],
+    textPrimary: [0x18, 0x18, 0x1b],
+    textSecondary: [0x52, 0x52, 0x5b],
+    border: [0xd4, 0xd4, 0xd0]
+  },
+  eclipse: {
+    backdrop: [0x00, 0x00, 0x00],
+    card: [0x0a, 0x0a, 0x0a],
+    textPrimary: [0xff, 0xff, 0xff],
+    textSecondary: [0xb4, 0xb4, 0xb4],
+    border: [0x1f, 0x1f, 0x1f]
+  }
+}
+
+function applyLoadingOverlayTheme(theme: Theme): void {
+  if (!terminalAddon) return // addon not loaded yet — startup wiring will apply it on first mount
+  const palette = THEME_PALETTES[theme] ?? THEME_PALETTES.midnight
+  terminalAddon.setLoadingTheme(palette)
+  console.log('[loadingOverlay] theme applied:', theme)
+}
+
 function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
   if (loadingOverlayWired) return
   loadingOverlayWired = true
+  // Push the current app theme to the native side so the overlay matches.
+  const currentTheme = getAppUiState().theme as Theme
+  addon.setLoadingTheme(THEME_PALETTES[currentTheme] ?? THEME_PALETTES.midnight)
   // Bridge the state machine to the native addon's overlay calls.
   configureLoadingOverlay((workspaceId, state, copy) => {
     addon.setLoadingOverlay(workspaceId, state, copy)
@@ -151,16 +194,6 @@ function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
   onSessionStart((workspaceId: string) => {
     hideLoadingOverlay(workspaceId)
   })
-}
-
-// Pull the resolved model from composed launch flags like
-// "--model opus --permission-mode acceptEdits". Returns null if --model is absent.
-function extractModelFromFlags(flags: string): string | null {
-  if (!flags) return null
-  const parts = flags.split(/\s+/)
-  const idx = parts.indexOf('--model')
-  if (idx === -1 || idx === parts.length - 1) return null
-  return parts[idx + 1] ?? null
 }
 
 function ensureTitleCallback(addon: GhosttyNativeAddon): void {
@@ -935,6 +968,7 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
+  if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   return result
 })
 
@@ -1072,6 +1106,13 @@ type GhosttyNativeAddon = {
     copy: { title: string; subtitle?: string; actionLabel?: string }
   ) => void
   setLoadingActionCallback: (cb: (workspaceId: string) => void) => void
+  setLoadingTheme: (colors: {
+    backdrop: [number, number, number]
+    card: [number, number, number]
+    textPrimary: [number, number, number]
+    textSecondary: [number, number, number]
+    border: [number, number, number]
+  }) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1174,14 +1215,7 @@ ipcMain.handle(
     // re-attaching a hidden surface or a defensive resize means claude is
     // already running and there's no boot to mask.
     if (result.created) {
-      showLoadingOverlay(
-        workspaceId,
-        loadingCopyForMount({
-          hasSession: !!ws?.claudeSessionId,
-          sessionId: ws?.claudeSessionId ?? null,
-          model: extractModelFromFlags(launch.flags)
-        })
-      )
+      showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
     }
 
     // Snapshot the composed launch so we can detect settings drift later.

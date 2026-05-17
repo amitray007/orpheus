@@ -678,12 +678,41 @@ static Napi::ThreadSafeFunction g_loadingActionTSFN;
 static bool g_loadingActionTSFNActive = false;
 
 // ---------------------------------------------------------------------------
-// OrpheusLoadingOverlayView — native blurred loading card drawn above the
-// ghostty NSView while claude boots.  Lifecycle: created by SetLoadingOverlay
-// when state = "showing"; removed (with fade) when state = "hidden".
+// Loading overlay theme — colors pushed from main process (resolved from the
+// active app theme: midnight / daylight / eclipse). The native side stays
+// dumb about theme names; it just renders whatever colors it was given.
+// Reasonable midnight-ish defaults are used until main pushes the real values.
 // ---------------------------------------------------------------------------
 
-@interface OrpheusLoadingOverlayView : NSVisualEffectView
+typedef struct {
+    NSColor* backdrop;       // overlay backdrop (drawn at 0.55 alpha over terminal)
+    NSColor* card;           // card background (drawn at 0.94 alpha)
+    NSColor* textPrimary;    // title color, spinner stroke
+    NSColor* textSecondary;  // subtitle color, spinner fade
+    NSColor* border;         // card hairline border
+} OrpheusLoadingTheme;
+
+static OrpheusLoadingTheme g_loadingTheme = {
+    .backdrop      = nil,
+    .card          = nil,
+    .textPrimary   = nil,
+    .textSecondary = nil,
+    .border        = nil
+};
+
+static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
+    return c ? c : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// OrpheusLoadingOverlayView — translucent loading card drawn above the
+// ghostty NSView while claude boots. Colors come from g_loadingTheme so the
+// overlay always matches the active app theme.
+// Lifecycle: created by SetLoadingOverlay when state = "showing";
+// removed (with fade) when state = "hidden".
+// ---------------------------------------------------------------------------
+
+@interface OrpheusLoadingOverlayView : NSView
 
 @property (nonatomic, strong) NSView*        card;
 @property (nonatomic, strong) NSTextField*   titleLabel;
@@ -736,12 +765,20 @@ static bool g_loadingActionTSFNActive = false;
 
     self.workspaceId = wsId;
 
-    // NSVisualEffectView config — blurred HUD look, always active.
-    self.material     = NSVisualEffectMaterialHUDWindow;
-    self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    self.state        = NSVisualEffectStateActive;
+    // Resolve colors from the app-theme palette pushed by the main process,
+    // with sensible midnight-ish fallbacks if main hasn't called setLoadingTheme yet.
+    NSColor* backdropColor = themeColorOr(g_loadingTheme.backdrop,
+                                          [NSColor colorWithCalibratedRed:0x0b/255.0 green:0x0b/255.0 blue:0x0c/255.0 alpha:1.0]);
+    NSColor* cardColor     = themeColorOr(g_loadingTheme.card,
+                                          [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]);
+    NSColor* borderColor   = themeColorOr(g_loadingTheme.border,
+                                          [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
 
-    // Track the parent on window resize.
+    // Translucent backdrop — the terminal shows through faintly behind it.
+    self.wantsLayer = YES;
+    self.layer.backgroundColor = [backdropColor colorWithAlphaComponent:0.55].CGColor;
+
+    // Track the parent on resize.
     self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
     // Start invisible; caller animates to 1.
@@ -751,9 +788,11 @@ static bool g_loadingActionTSFNActive = false;
     NSView* card = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 340, 142)];
     card.wantsLayer = YES;
     card.layer.cornerRadius = 14.0;
-    // ~80 % opaque control background.
-    NSColor* bg = [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.82];
-    card.layer.backgroundColor = bg.CGColor;
+    // Card at ~0.94 alpha — visibly translucent against the backdrop but
+    // solid enough to read clearly.
+    card.layer.backgroundColor = [cardColor colorWithAlphaComponent:0.94].CGColor;
+    card.layer.borderColor     = borderColor.CGColor;
+    card.layer.borderWidth     = 1.0;
     // Subtle shadow.
     card.layer.shadowColor     = [NSColor blackColor].CGColor;
     card.layer.shadowOpacity   = 0.22;
@@ -779,7 +818,7 @@ static bool g_loadingActionTSFNActive = false;
     spinner.path        = arcPath;
     CGPathRelease(arcPath);
     spinner.fillColor   = nil;
-    spinner.strokeColor = [NSColor secondaryLabelColor].CGColor;
+    spinner.strokeColor = themeColorOr(g_loadingTheme.textSecondary, [NSColor secondaryLabelColor]).CGColor;
     spinner.lineWidth   = 2.0;
     spinner.strokeStart = 0.0;
     spinner.strokeEnd   = 0.75;
@@ -812,7 +851,7 @@ static bool g_loadingActionTSFNActive = false;
     // ---- Title label ----
     NSTextField* titleLabel = [NSTextField labelWithString:@""];
     titleLabel.font      = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-    titleLabel.textColor = [NSColor labelColor];
+    titleLabel.textColor = themeColorOr(g_loadingTheme.textPrimary, [NSColor labelColor]);
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.cell.wraps = NO;
     titleLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -822,7 +861,7 @@ static bool g_loadingActionTSFNActive = false;
     // ---- Subtitle label ----
     NSTextField* subLabel = [NSTextField labelWithString:@""];
     subLabel.font      = [NSFont systemFontOfSize:12];
-    subLabel.textColor = [NSColor secondaryLabelColor];
+    subLabel.textColor = themeColorOr(g_loadingTheme.textSecondary, [NSColor secondaryLabelColor]);
     subLabel.alignment = NSTextAlignmentCenter;
     subLabel.cell.wraps = NO;
     subLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -1012,6 +1051,46 @@ static Napi::Value SetLoadingActionCallback(const Napi::CallbackInfo& info) {
         1
     );
     g_loadingActionTSFNActive = true;
+    return env.Undefined();
+}
+
+// NAPI: setLoadingTheme({ backdrop, card, textPrimary, textSecondary, border }) → void
+// Each value is a 3-element [r, g, b] array (0-255). Called by main on app
+// startup and whenever uiState.theme changes. Replaces the cached g_loadingTheme;
+// existing overlay views are NOT re-tinted in place (overlays are short-lived).
+static NSColor* parseRgbArray(Napi::Value v) {
+    if (!v.IsArray()) return nil;
+    Napi::Array arr = v.As<Napi::Array>();
+    if (arr.Length() < 3) return nil;
+    double r = arr.Get((uint32_t)0).As<Napi::Number>().DoubleValue();
+    double g = arr.Get((uint32_t)1).As<Napi::Number>().DoubleValue();
+    double b = arr.Get((uint32_t)2).As<Napi::Number>().DoubleValue();
+    return [NSColor colorWithCalibratedRed:r / 255.0
+                                     green:g / 255.0
+                                      blue:b / 255.0
+                                     alpha:1.0];
+}
+
+static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "setLoadingTheme requires an object").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Object obj = info[0].As<Napi::Object>();
+    NSColor* backdrop      = parseRgbArray(obj.Get("backdrop"));
+    NSColor* card          = parseRgbArray(obj.Get("card"));
+    NSColor* textPrimary   = parseRgbArray(obj.Get("textPrimary"));
+    NSColor* textSecondary = parseRgbArray(obj.Get("textSecondary"));
+    NSColor* border        = parseRgbArray(obj.Get("border"));
+
+    g_loadingTheme.backdrop      = backdrop;
+    g_loadingTheme.card          = card;
+    g_loadingTheme.textPrimary   = textPrimary;
+    g_loadingTheme.textSecondary = textSecondary;
+    g_loadingTheme.border        = border;
+
+    NSLog(@"[ghostty-native] setLoadingTheme applied");
     return env.Undefined();
 }
 
@@ -2079,6 +2158,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
+    exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
     return exports;
 }
 

@@ -141,23 +141,6 @@ export function markError(workspaceId: string, reason: string): void {
   console.log('[loadingOverlay] error', workspaceId, reason)
 }
 
-/**
- * Build the initial copy for a workspace mount. Resume vs first-launch is
- * derived from whether the workspace has a claudeSessionId stored.
- */
-export function copyForMount(opts: {
-  hasSession: boolean
-  sessionId: string | null
-  model: string | null
-}): LoadingCopy {
-  if (opts.hasSession && opts.sessionId) {
-    const short = opts.sessionId.slice(0, 8)
-    return { title: 'Starting workspace', subtitle: `Resuming ${short}` }
-  }
-  const model = opts.model ?? 'sonnet'
-  return { title: 'Starting workspace', subtitle: `First launch · ${model}` }
-}
-
 function mapState(s: OverlayState): 'showing' | 'slow' | 'error' | 'hidden' {
   if (s === 'idle') return 'hidden'
   return s
