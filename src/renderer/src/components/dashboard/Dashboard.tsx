@@ -589,8 +589,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         cwd: project.path
       })
       playSound('pop')
-      // Refresh workspace list for this project
-      await fetchWorkspacesForProject(projectId)
+      // Append the newly-created workspace directly to local state instead of
+      // re-fetching the full list — the create IPC already returned everything
+      // we need. Eliminates a redundant DB roundtrip before the user can see
+      // the new row in the sidebar.
+      setWorkspacesByProject((prev) => {
+        const current = prev[projectId] ?? []
+        // De-dupe defensively in case a parallel fetch raced.
+        if (current.some((w) => w.id === newWs.id)) return prev
+        return { ...prev, [projectId]: [...current, newWs] }
+      })
       // Expand the project row so the new workspace is visible.
       // Persist the expanded state so it survives a relaunch.
       setExpandedProjectIds((prev) => {
@@ -601,7 +609,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
         return next
       })
-      // Navigate to the new workspace
+      // Navigate to the new workspace — fires immediately, mount kicks off in parallel.
       handleSelectWorkspace(newWs.id, projectId)
     } catch (err) {
       console.error('[dashboard] add workspace failed', err)

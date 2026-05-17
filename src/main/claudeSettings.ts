@@ -969,12 +969,22 @@ export function composeClaudeLaunch(
 // Public API
 // ---------------------------------------------------------------------------
 
+// Module-level cache — the global settings row is hot on every terminal:mount
+// and every settings UI read. Invalidated by updateClaudeGlobalSettings below.
+let cachedGlobalSettings: ClaudeGlobalSettings | null = null
+
+export function invalidateClaudeGlobalSettingsCache(): void {
+  cachedGlobalSettings = null
+}
+
 export function getClaudeGlobalSettings(): ClaudeGlobalSettings {
+  if (cachedGlobalSettings) return cachedGlobalSettings
   const db = getDb()
   const row = db
     .prepare('SELECT * FROM claude_global_settings WHERE id = 1')
     .get() as ClaudeSettingsRow
-  return rowToRecord(row)
+  cachedGlobalSettings = rowToRecord(row)
+  return cachedGlobalSettings
 }
 
 export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): ClaudeGlobalSettings {
@@ -1119,5 +1129,9 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
   const row = db
     .prepare('SELECT * FROM claude_global_settings WHERE id = 1')
     .get() as ClaudeSettingsRow
-  return rowToRecord(row)
+  const fresh = rowToRecord(row)
+  // Refresh the module cache so subsequent readers (terminal:mount,
+  // recomputeDirty) see the new values immediately.
+  cachedGlobalSettings = fresh
+  return fresh
 }

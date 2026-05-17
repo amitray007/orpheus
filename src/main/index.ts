@@ -1301,9 +1301,9 @@ ipcMain.handle(
     // Fire-and-forget: capture the claude session ID written to disk after this
     // mount. Only needed on the first mount (no stored session yet); subsequent
     // mounts pass --resume so the .jsonl already exists and we skip re-capture.
-    const wsForCapture = getWorkspace(workspaceId)
-    if (wsForCapture && !wsForCapture.claudeSessionId) {
-      captureWorkspaceSessionId(workspaceId, cwd ?? wsForCapture.cwd).catch((err) =>
+    // Reuse the `ws` we already fetched above instead of querying again.
+    if (ws && !ws.claudeSessionId) {
+      captureWorkspaceSessionId(workspaceId, cwd ?? ws.cwd).catch((err) =>
         console.error('[claude-session] capture failed:', err)
       )
     }
