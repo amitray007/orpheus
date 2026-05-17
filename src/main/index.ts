@@ -133,13 +133,15 @@ let titleCallbackRegistered = false
 let loadingOverlayWired = false
 
 // Theme palettes for the loading overlay. Must mirror src/renderer/src/assets/main.css.
-// RGB tuples (0-255) so the native side doesn't need a hex parser.
+// RGB tuples (0-255) so the native side doesn't need a hex parser. `isDark` picks
+// the NSAppearance for the NSVisualEffectView blur backdrop.
 type LoadingThemePalette = {
   backdrop: [number, number, number]
   card: [number, number, number]
   textPrimary: [number, number, number]
   textSecondary: [number, number, number]
   border: [number, number, number]
+  isDark: boolean
 }
 const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
   midnight: {
@@ -147,21 +149,24 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     card: [0x16, 0x16, 0x1a],
     textPrimary: [0xf4, 0xf4, 0xf5],
     textSecondary: [0xa1, 0xa1, 0xaa],
-    border: [0x27, 0x27, 0x2a]
+    border: [0x27, 0x27, 0x2a],
+    isDark: true
   },
   daylight: {
     backdrop: [0xfa, 0xfa, 0xf7],
     card: [0xff, 0xff, 0xff],
     textPrimary: [0x18, 0x18, 0x1b],
     textSecondary: [0x52, 0x52, 0x5b],
-    border: [0xd4, 0xd4, 0xd0]
+    border: [0xd4, 0xd4, 0xd0],
+    isDark: false
   },
   eclipse: {
     backdrop: [0x00, 0x00, 0x00],
     card: [0x0a, 0x0a, 0x0a],
     textPrimary: [0xff, 0xff, 0xff],
     textSecondary: [0xb4, 0xb4, 0xb4],
-    border: [0x1f, 0x1f, 0x1f]
+    border: [0x1f, 0x1f, 0x1f],
+    isDark: true
   }
 }
 
@@ -1112,6 +1117,7 @@ type GhosttyNativeAddon = {
     textPrimary: [number, number, number]
     textSecondary: [number, number, number]
     border: [number, number, number]
+    isDark: boolean
   }) => void
 }
 

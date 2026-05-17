@@ -685,11 +685,12 @@ static bool g_loadingActionTSFNActive = false;
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    NSColor* backdrop;       // overlay backdrop (drawn at 0.55 alpha over terminal)
+    NSColor* backdrop;       // tint layered over the blur for theme color hint
     NSColor* card;           // card background (drawn at 0.94 alpha)
     NSColor* textPrimary;    // title color, spinner stroke
     NSColor* textSecondary;  // subtitle color, spinner fade
     NSColor* border;         // card hairline border
+    BOOL     isDark;         // picks darkAqua appearance for the blur material
 } OrpheusLoadingTheme;
 
 static OrpheusLoadingTheme g_loadingTheme = {
@@ -697,7 +698,8 @@ static OrpheusLoadingTheme g_loadingTheme = {
     .card          = nil,
     .textPrimary   = nil,
     .textSecondary = nil,
-    .border        = nil
+    .border        = nil,
+    .isDark        = YES
 };
 
 static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
@@ -712,7 +714,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 // removed (with fade) when state = "hidden".
 // ---------------------------------------------------------------------------
 
-@interface OrpheusLoadingOverlayView : NSView
+@interface OrpheusLoadingOverlayView : NSVisualEffectView
 
 @property (nonatomic, strong) NSView*                  card;
 @property (nonatomic, strong) NSTextField*             titleLabel;
@@ -768,18 +770,22 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
     // Resolve colors from the app-theme palette pushed by the main process,
     // with sensible midnight-ish fallbacks if main hasn't called setLoadingTheme yet.
-    NSColor* backdropColor = themeColorOr(g_loadingTheme.backdrop,
-                                          [NSColor colorWithCalibratedRed:0x0b/255.0 green:0x0b/255.0 blue:0x0c/255.0 alpha:1.0]);
     NSColor* cardColor     = themeColorOr(g_loadingTheme.card,
                                           [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]);
     NSColor* borderColor   = themeColorOr(g_loadingTheme.border,
                                           [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
 
-    // Barely-there backdrop — just enough of a tint to soften the boot output
-    // behind the card; the terminal stays mostly visible. The card itself
-    // carries the visual weight.
-    self.wantsLayer = YES;
-    self.layer.backgroundColor = [backdropColor colorWithAlphaComponent:0.18].CGColor;
+    // Frosted-glass backdrop. NSVisualEffectMaterialUnderWindowBackground gives
+    // a transparent-looking surface that BLURS what's behind it — so the
+    // terminal boot output is unreadable but the view doesn't feel like a
+    // solid panel. Appearance follows the active app theme so dark themes
+    // get dark blur, daylight gets light blur.
+    self.material     = NSVisualEffectMaterialUnderWindowBackground;
+    self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    self.state        = NSVisualEffectStateActive;
+    self.appearance   = [NSAppearance appearanceNamed:(g_loadingTheme.isDark
+                                                       ? NSAppearanceNameDarkAqua
+                                                       : NSAppearanceNameAqua)];
 
     // Track the parent on resize.
     self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -1126,14 +1132,17 @@ static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
     NSColor* textPrimary   = parseRgbArray(obj.Get("textPrimary"));
     NSColor* textSecondary = parseRgbArray(obj.Get("textSecondary"));
     NSColor* border        = parseRgbArray(obj.Get("border"));
+    Napi::Value isDarkVal  = obj.Get("isDark");
+    BOOL isDark = isDarkVal.IsBoolean() ? (isDarkVal.As<Napi::Boolean>().Value() ? YES : NO) : YES;
 
     g_loadingTheme.backdrop      = backdrop;
     g_loadingTheme.card          = card;
     g_loadingTheme.textPrimary   = textPrimary;
     g_loadingTheme.textSecondary = textSecondary;
     g_loadingTheme.border        = border;
+    g_loadingTheme.isDark        = isDark;
 
-    NSLog(@"[ghostty-native] setLoadingTheme applied");
+    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d)", (int)isDark);
     return env.Undefined();
 }
 
