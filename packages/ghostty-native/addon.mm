@@ -714,13 +714,14 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
 @interface OrpheusLoadingOverlayView : NSView
 
-@property (nonatomic, strong) NSView*        card;
-@property (nonatomic, strong) NSTextField*   titleLabel;
-@property (nonatomic, strong) NSTextField*   subtitleLabel;
-@property (nonatomic, strong) NSView*        spinnerHost;   // CAShapeLayer lives here
-@property (nonatomic, strong) CAShapeLayer*  spinnerLayer;
-@property (nonatomic, strong) CATextLayer*   errorGlyphLayer;
-@property (nonatomic, strong) NSButton*      actionButton;
+@property (nonatomic, strong) NSView*                  card;
+@property (nonatomic, strong) NSTextField*             titleLabel;
+@property (nonatomic, strong) NSTextField*             subtitleLabel;
+@property (nonatomic, strong) NSView*                  spinnerHost;   // dot grid lives here
+@property (nonatomic, strong) NSArray<CALayer*>*       dotLayers;     // 25 dots, row-major
+@property (nonatomic, strong) CAShapeLayer*            spinnerLayer;  // unused after dotmatrix swap; kept for ABI
+@property (nonatomic, strong) CATextLayer*             errorGlyphLayer;
+@property (nonatomic, strong) NSButton*                actionButton;
 
 // workspaceId used to fire the TSFN when the action button is clicked.
 @property (nonatomic, copy)   NSString*      workspaceId;
@@ -774,9 +775,11 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     NSColor* borderColor   = themeColorOr(g_loadingTheme.border,
                                           [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
 
-    // Translucent backdrop — the terminal shows through faintly behind it.
+    // Barely-there backdrop — just enough of a tint to soften the boot output
+    // behind the card; the terminal stays mostly visible. The card itself
+    // carries the visual weight.
     self.wantsLayer = YES;
-    self.layer.backgroundColor = [backdropColor colorWithAlphaComponent:0.55].CGColor;
+    self.layer.backgroundColor = [backdropColor colorWithAlphaComponent:0.18].CGColor;
 
     // Track the parent on resize.
     self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -804,46 +807,100 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     [self addSubview:card];
     self.card = card;
 
-    // ---- Spinner host (22 × 22, centered horizontally in card, 22pt from top) ----
-    NSView* spinnerHost = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 22, 22)];
+    // ---- Spinner host (36 × 36) — native port of DotmSquare13.
+    // Renders a 5×5 dot grid that cycles through 8 directional frames (each
+    // shown for 2 steps = 16-step keyframe), 1550ms / 1.85 ≈ 838ms per cycle.
+    // Mirrors src/renderer/src/components/ui/dotm-square-13.tsx. ----
+    const CGFloat hostSize = 36.0;
+    NSView* spinnerHost = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, hostSize, hostSize)];
     spinnerHost.wantsLayer = YES;
     [card addSubview:spinnerHost];
     self.spinnerHost = spinnerHost;
 
-    // CAShapeLayer arc spinner.
-    CAShapeLayer* spinner = [CAShapeLayer layer];
-    CGFloat r = 9.0; // radius of arc
-    CGMutablePathRef arcPath = CGPathCreateMutable();
-    CGPathAddArc(arcPath, NULL, 11, 11, r, 0, 2 * M_PI * 0.75, NO);
-    spinner.path        = arcPath;
-    CGPathRelease(arcPath);
-    spinner.fillColor   = nil;
-    spinner.strokeColor = themeColorOr(g_loadingTheme.textSecondary, [NSColor secondaryLabelColor]).CGColor;
-    spinner.lineWidth   = 2.0;
-    spinner.strokeStart = 0.0;
-    spinner.strokeEnd   = 0.75;
-    spinner.frame       = spinnerHost.bounds;
+    // 5×5 grid math: 5 dots × 5pt + 4 gaps × ~2.75pt = ~36pt total.
+    static const int kGridSize = 5;
+    static const CGFloat kDotSize = 5.0;
+    const CGFloat gap = (hostSize - (kGridSize * kDotSize)) / (CGFloat)(kGridSize - 1);
 
-    // Continuous rotation animation.
-    CABasicAnimation* rot = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
-    rot.fromValue      = @(0);
-    rot.toValue        = @(2 * M_PI);
-    rot.duration       = 1.2;
-    rot.repeatCount    = HUGE_VALF;
-    rot.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [spinner addAnimation:rot forKey:@"spin"];
+    // 8 directional masks (N, NE, E, SE, S, SW, W, NW). Per cell:
+    //   'x' = peak opacity, 'o' = on, '.' = base.
+    static const char* kFrameMasks[8] = {
+        // N
+        "..x.."  "..x.."  "..o.."  "....."  ".....",
+        // NE
+        "....x"  "...x."  "..o.."  "....."  ".....",
+        // E
+        "....."  "....."  "..oxx"  "....."  ".....",
+        // SE
+        "....."  "....."  "..o.."  "...x."  "....x",
+        // S
+        "....."  "....."  "..o.."  "..x.."  "..x..",
+        // SW
+        "....."  "....."  "..o.."  ".x..."  "x....",
+        // W
+        "....."  "....."  "xxo.."  "....."  ".....",
+        // NW
+        "x...."  ".x..."  "..o.."  "....."  "....."
+    };
+    // 16-step sequence: each direction shown for 2 consecutive frames.
+    static const int kSequenceLen = 16;
+    static const int kFrameSequence[16] = {0,0, 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, 7,7};
+    static const CGFloat kBaseOpacity = 0.08;
+    static const CGFloat kOnOpacity   = 0.56;
+    static const CGFloat kPeakOpacity = 1.00;
+    static const CFTimeInterval kCycleSeconds = 1.55 / 1.85; // matches DotmSquare13 speed
 
-    [spinnerHost.layer addSublayer:spinner];
-    self.spinnerLayer = spinner;
+    NSColor* dotColor = themeColorOr(g_loadingTheme.textPrimary, [NSColor labelColor]);
 
-    // Error glyph — hidden by default.
+    NSMutableArray<CALayer*>* dots = [NSMutableArray arrayWithCapacity:kGridSize * kGridSize];
+    // Build dots row-major, top-left origin (matches the React rowMajorIndex helper).
+    for (int row = 0; row < kGridSize; row++) {
+        for (int col = 0; col < kGridSize; col++) {
+            CALayer* dot = [CALayer layer];
+            dot.backgroundColor = dotColor.CGColor;
+            dot.cornerRadius    = kDotSize / 2.0;
+            CGFloat x = col * (kDotSize + gap);
+            // spinnerHost is a non-flipped NSView (bottom-left origin), so row=0
+            // (top) needs the largest y. Flip the row index.
+            CGFloat y = (kGridSize - 1 - row) * (kDotSize + gap);
+            dot.frame = CGRectMake(x, y, kDotSize, kDotSize);
+
+            // Per-cell keyframe: opacity at each of the 16 steps.
+            NSMutableArray<NSNumber*>* values = [NSMutableArray arrayWithCapacity:kSequenceLen + 1];
+            for (int step = 0; step < kSequenceLen; step++) {
+                int frame = kFrameSequence[step];
+                char cell = kFrameMasks[frame][row * kGridSize + col];
+                CGFloat opacity = kBaseOpacity;
+                if (cell == 'x')      opacity = kPeakOpacity;
+                else if (cell == 'o') opacity = kOnOpacity;
+                [values addObject:@(opacity)];
+            }
+            // Close the loop so step 15 → step 0 transitions smoothly.
+            [values addObject:values.firstObject];
+
+            CAKeyframeAnimation* anim = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            anim.values         = values;
+            anim.duration       = kCycleSeconds;
+            anim.repeatCount    = HUGE_VALF;
+            anim.calculationMode = kCAAnimationDiscrete;
+            anim.removedOnCompletion = NO;
+            [dot addAnimation:anim forKey:@"dotmatrix"];
+
+            [spinnerHost.layer addSublayer:dot];
+            [dots addObject:dot];
+        }
+    }
+    self.dotLayers     = [dots copy];
+    self.spinnerLayer  = nil; // legacy field — unused now but kept on the @interface
+
+    // Error glyph — centered in the host, hidden by default.
     CATextLayer* errorLayer = [CATextLayer layer];
     errorLayer.string    = @"✕";
-    errorLayer.fontSize  = 18.0;
+    errorLayer.fontSize  = 22.0;
     errorLayer.foregroundColor = [[NSColor systemRedColor] CGColor];
     errorLayer.alignmentMode   = kCAAlignmentCenter;
     errorLayer.contentsScale   = [[NSScreen mainScreen] backingScaleFactor];
-    errorLayer.frame       = CGRectMake(0, 0, 22, 22);
+    errorLayer.frame       = CGRectMake(0, (hostSize - 26) / 2.0, hostSize, 26);
     errorLayer.hidden      = YES;
     [spinnerHost.layer addSublayer:errorLayer];
     self.errorGlyphLayer = errorLayer;
@@ -889,10 +946,10 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 - (void)layoutCard:(BOOL)hasSubtitle hasAction:(BOOL)hasAction {
     const CGFloat cardW   = 340.0;
     const CGFloat padH    = 20.0; // horizontal padding inside card
-    const CGFloat spinW   = 22.0;
-    const CGFloat spinH   = 22.0;
-    const CGFloat spinTop = 22.0;
-    const CGFloat gapSpinTitle = 14.0;
+    const CGFloat spinW   = 36.0; // dotmatrix grid
+    const CGFloat spinH   = 36.0;
+    const CGFloat spinTop = 26.0;
+    const CGFloat gapSpinTitle = 16.0;
     const CGFloat titleH  = 20.0;
     const CGFloat gapSub  = 6.0;
     const CGFloat subH    = 17.0;
@@ -921,8 +978,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     // Spinner host — centered horizontally, from top.
     CGFloat spinX = floor((cardW - spinW) / 2.0);
     self.spinnerHost.frame = NSMakeRect(spinX, totalH - spinTop - spinH, spinW, spinH);
-    self.spinnerLayer.frame = self.spinnerHost.bounds;
-    self.errorGlyphLayer.frame = CGRectMake(0, 0, spinW, spinH);
+    self.errorGlyphLayer.frame = CGRectMake(0, (spinH - 26.0) / 2.0, spinW, 26.0);
 
     // Title.
     CGFloat titleY = totalH - spinTop - spinH - gapSpinTitle - titleH;
@@ -965,13 +1021,11 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
         [self.actionButton setTitle:actionLabel];
     }
 
-    if ([state isEqualToString:@"error"]) {
-        self.spinnerLayer.hidden    = YES;
-        self.errorGlyphLayer.hidden = NO;
-    } else {
-        self.spinnerLayer.hidden    = NO;
-        self.errorGlyphLayer.hidden = YES;
+    BOOL isError = [state isEqualToString:@"error"];
+    for (CALayer* dot in self.dotLayers) {
+        dot.hidden = isError;
     }
+    self.errorGlyphLayer.hidden = !isError;
 
     [self layoutCard:hasSubtitle hasAction:hasAction];
 }
