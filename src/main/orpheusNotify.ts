@@ -69,6 +69,10 @@ const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 const listeners = new Set<
   (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
 >()
+// Fires only on the SessionStart hook, regardless of prior activity status.
+// Used by loadingOverlay to dismiss its mount-time overlay reliably even when
+// the workspace was previously in 'awaiting_input' (re-mount of a known session).
+const sessionStartListeners = new Set<(workspaceId: string) => void>()
 const watchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
@@ -243,12 +247,23 @@ function handleHookEvent(
       }
       break
     case 'session-start':
+      for (const cb of sessionStartListeners) {
+        try {
+          cb(workspaceId)
+        } catch {
+          /* ignore */
+        }
+      }
       break
   }
 
   const status = EVENT_TO_STATUS[ev]
   if (!status) return
   dispatch(workspaceId, status)
+}
+
+export function onSessionStart(cb: (workspaceId: string) => void): void {
+  sessionStartListeners.add(cb)
 }
 
 export function resetWorkspaceActivity(workspaceId: string): void {

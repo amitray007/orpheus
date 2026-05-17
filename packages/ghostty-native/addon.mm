@@ -26,6 +26,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Carbon/Carbon.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <string>
 #include <map>
@@ -655,6 +656,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 // GhosttySurfaceEntry + g_surfaces
 // ---------------------------------------------------------------------------
 
+// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusLoadingOverlayView;
+
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
     OrpheusGhosttyView* __strong view;
@@ -662,10 +666,278 @@ struct GhosttySurfaceEntry {
     BOOL isAttached;              // YES = view is in contentView superview, displayLink running
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
+    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
 };
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// Forward-declare the loading action TSFN so OrpheusLoadingActionTarget can
+// reference it before the full TSFN block further down the file.
+static Napi::ThreadSafeFunction g_loadingActionTSFN;
+static bool g_loadingActionTSFNActive = false;
+
+// ---------------------------------------------------------------------------
+// OrpheusLoadingOverlayView — native blurred loading card drawn above the
+// ghostty NSView while claude boots.  Lifecycle: created by SetLoadingOverlay
+// when state = "showing"; removed (with fade) when state = "hidden".
+// ---------------------------------------------------------------------------
+
+@interface OrpheusLoadingOverlayView : NSVisualEffectView
+
+@property (nonatomic, strong) NSView*        card;
+@property (nonatomic, strong) NSTextField*   titleLabel;
+@property (nonatomic, strong) NSTextField*   subtitleLabel;
+@property (nonatomic, strong) NSView*        spinnerHost;   // CAShapeLayer lives here
+@property (nonatomic, strong) CAShapeLayer*  spinnerLayer;
+@property (nonatomic, strong) CATextLayer*   errorGlyphLayer;
+@property (nonatomic, strong) NSButton*      actionButton;
+
+// workspaceId used to fire the TSFN when the action button is clicked.
+@property (nonatomic, copy)   NSString*      workspaceId;
+
+- (void)updateWithState:(NSString*)state
+                  title:(NSString*)title
+               subtitle:(NSString*)subtitle
+            actionLabel:(NSString*)actionLabel;
+
+@end
+
+// Singleton Obj-C target for the NSButton action.
+@interface OrpheusLoadingActionTarget : NSObject
++ (instancetype)shared;
+- (void)actionButtonClicked:(NSButton*)sender;
+@end
+
+@implementation OrpheusLoadingActionTarget
++ (instancetype)shared {
+    static OrpheusLoadingActionTarget* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ s = [[OrpheusLoadingActionTarget alloc] init]; });
+    return s;
+}
+- (void)actionButtonClicked:(NSButton*)sender {
+    NSString* wsId = sender.identifier;
+    if (!wsId || wsId.length == 0) return;
+    NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
+    if (!g_loadingActionTSFNActive) return;
+    std::string wsIdCpp = wsId.UTF8String;
+    g_loadingActionTSFN.BlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, wsIdCpp) });
+    });
+}
+@end
+
+@implementation OrpheusLoadingOverlayView
+
+- (instancetype)initWithFrame:(NSRect)frame workspaceId:(NSString*)wsId {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    self.workspaceId = wsId;
+
+    // NSVisualEffectView config — blurred HUD look, always active.
+    self.material     = NSVisualEffectMaterialHUDWindow;
+    self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    self.state        = NSVisualEffectStateActive;
+
+    // Track the parent on window resize.
+    self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    // Start invisible; caller animates to 1.
+    self.alphaValue = 0.0;
+
+    // ---- Card subview ----
+    NSView* card = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 340, 142)];
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 14.0;
+    // ~80 % opaque control background.
+    NSColor* bg = [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.82];
+    card.layer.backgroundColor = bg.CGColor;
+    // Subtle shadow.
+    card.layer.shadowColor     = [NSColor blackColor].CGColor;
+    card.layer.shadowOpacity   = 0.22;
+    card.layer.shadowRadius    = 12.0;
+    card.layer.shadowOffset    = CGSizeMake(0, -3);
+    // Center the card in whatever size the overlay is.
+    card.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin |
+                            NSViewMinYMargin | NSViewMaxYMargin;
+    [self addSubview:card];
+    self.card = card;
+
+    // ---- Spinner host (22 × 22, centered horizontally in card, 22pt from top) ----
+    NSView* spinnerHost = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 22, 22)];
+    spinnerHost.wantsLayer = YES;
+    [card addSubview:spinnerHost];
+    self.spinnerHost = spinnerHost;
+
+    // CAShapeLayer arc spinner.
+    CAShapeLayer* spinner = [CAShapeLayer layer];
+    CGFloat r = 9.0; // radius of arc
+    CGMutablePathRef arcPath = CGPathCreateMutable();
+    CGPathAddArc(arcPath, NULL, 11, 11, r, 0, 2 * M_PI * 0.75, NO);
+    spinner.path        = arcPath;
+    CGPathRelease(arcPath);
+    spinner.fillColor   = nil;
+    spinner.strokeColor = [NSColor secondaryLabelColor].CGColor;
+    spinner.lineWidth   = 2.0;
+    spinner.strokeStart = 0.0;
+    spinner.strokeEnd   = 0.75;
+    spinner.frame       = spinnerHost.bounds;
+
+    // Continuous rotation animation.
+    CABasicAnimation* rot = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+    rot.fromValue      = @(0);
+    rot.toValue        = @(2 * M_PI);
+    rot.duration       = 1.2;
+    rot.repeatCount    = HUGE_VALF;
+    rot.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [spinner addAnimation:rot forKey:@"spin"];
+
+    [spinnerHost.layer addSublayer:spinner];
+    self.spinnerLayer = spinner;
+
+    // Error glyph — hidden by default.
+    CATextLayer* errorLayer = [CATextLayer layer];
+    errorLayer.string    = @"✕";
+    errorLayer.fontSize  = 18.0;
+    errorLayer.foregroundColor = [[NSColor systemRedColor] CGColor];
+    errorLayer.alignmentMode   = kCAAlignmentCenter;
+    errorLayer.contentsScale   = [[NSScreen mainScreen] backingScaleFactor];
+    errorLayer.frame       = CGRectMake(0, 0, 22, 22);
+    errorLayer.hidden      = YES;
+    [spinnerHost.layer addSublayer:errorLayer];
+    self.errorGlyphLayer = errorLayer;
+
+    // ---- Title label ----
+    NSTextField* titleLabel = [NSTextField labelWithString:@""];
+    titleLabel.font      = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    titleLabel.textColor = [NSColor labelColor];
+    titleLabel.alignment = NSTextAlignmentCenter;
+    titleLabel.cell.wraps = NO;
+    titleLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:titleLabel];
+    self.titleLabel = titleLabel;
+
+    // ---- Subtitle label ----
+    NSTextField* subLabel = [NSTextField labelWithString:@""];
+    subLabel.font      = [NSFont systemFontOfSize:12];
+    subLabel.textColor = [NSColor secondaryLabelColor];
+    subLabel.alignment = NSTextAlignmentCenter;
+    subLabel.cell.wraps = NO;
+    subLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:subLabel];
+    self.subtitleLabel = subLabel;
+
+    // ---- Action button (hidden until needed) ----
+    NSButton* btn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    btn.bezelStyle = NSBezelStylePush;
+    btn.font       = [NSFont systemFontOfSize:12];
+    btn.identifier = wsId; // passed through to the target so it knows the workspaceId
+    btn.target     = [OrpheusLoadingActionTarget shared];
+    btn.action     = @selector(actionButtonClicked:);
+    btn.hidden     = YES;
+    [card addSubview:btn];
+    self.actionButton = btn;
+
+    // Do an initial layout pass with a placeholder state.
+    [self layoutCard:NO hasAction:NO];
+
+    return self;
+}
+
+// Re-layout the card subviews based on whether subtitle and action are visible.
+- (void)layoutCard:(BOOL)hasSubtitle hasAction:(BOOL)hasAction {
+    const CGFloat cardW   = 340.0;
+    const CGFloat padH    = 20.0; // horizontal padding inside card
+    const CGFloat spinW   = 22.0;
+    const CGFloat spinH   = 22.0;
+    const CGFloat spinTop = 22.0;
+    const CGFloat gapSpinTitle = 14.0;
+    const CGFloat titleH  = 20.0;
+    const CGFloat gapSub  = 6.0;
+    const CGFloat subH    = 17.0;
+    const CGFloat gapBtn  = 12.0;
+    const CGFloat btnH    = 24.0;
+    const CGFloat botPad  = 22.0;
+
+    // Compute total card height.
+    CGFloat totalH = spinTop + spinH + gapSpinTitle + titleH;
+    if (hasSubtitle) totalH += gapSub + subH;
+    if (hasAction)   totalH += gapBtn + btnH;
+    totalH += botPad;
+
+    NSRect cardFrame = self.card.frame;
+    cardFrame.size   = CGSizeMake(cardW, totalH);
+    // Re-center: card was positioned via autoresizing from the previous layout;
+    // we need to force position to center now.  Autoresizing margins will track
+    // future resizes from this centered origin.
+    NSSize parentSize = self.bounds.size;
+    cardFrame.origin  = CGPointMake(
+        floor((parentSize.width  - cardW)   / 2.0),
+        floor((parentSize.height - totalH)  / 2.0)
+    );
+    self.card.frame = cardFrame;
+
+    // Spinner host — centered horizontally, from top.
+    CGFloat spinX = floor((cardW - spinW) / 2.0);
+    self.spinnerHost.frame = NSMakeRect(spinX, totalH - spinTop - spinH, spinW, spinH);
+    self.spinnerLayer.frame = self.spinnerHost.bounds;
+    self.errorGlyphLayer.frame = CGRectMake(0, 0, spinW, spinH);
+
+    // Title.
+    CGFloat titleY = totalH - spinTop - spinH - gapSpinTitle - titleH;
+    self.titleLabel.frame = NSMakeRect(padH, titleY, cardW - padH * 2, titleH);
+
+    // Subtitle.
+    if (hasSubtitle) {
+        CGFloat subY = titleY - gapSub - subH;
+        self.subtitleLabel.frame  = NSMakeRect(padH, subY, cardW - padH * 2, subH);
+        self.subtitleLabel.hidden = NO;
+    } else {
+        self.subtitleLabel.hidden = YES;
+    }
+
+    // Action button.
+    if (hasAction) {
+        CGFloat subBottom = hasSubtitle
+            ? self.subtitleLabel.frame.origin.y
+            : titleY;
+        CGFloat btnY = subBottom - gapBtn - btnH;
+        CGFloat btnW = 160.0;
+        self.actionButton.frame  = NSMakeRect(floor((cardW - btnW) / 2.0), btnY, btnW, btnH);
+        self.actionButton.hidden = NO;
+    } else {
+        self.actionButton.hidden = YES;
+    }
+}
+
+- (void)updateWithState:(NSString*)state
+                  title:(NSString*)title
+               subtitle:(NSString*)subtitle
+            actionLabel:(NSString*)actionLabel {
+
+    BOOL hasSubtitle = (subtitle != nil && subtitle.length > 0);
+    BOOL hasAction   = (actionLabel != nil && actionLabel.length > 0);
+
+    self.titleLabel.stringValue    = title    ?: @"";
+    self.subtitleLabel.stringValue = subtitle ?: @"";
+    if (hasAction) {
+        [self.actionButton setTitle:actionLabel];
+    }
+
+    if ([state isEqualToString:@"error"]) {
+        self.spinnerLayer.hidden    = YES;
+        self.errorGlyphLayer.hidden = NO;
+    } else {
+        self.spinnerLayer.hidden    = NO;
+        self.errorGlyphLayer.hidden = YES;
+    }
+
+    [self layoutCard:hasSubtitle hasAction:hasAction];
+}
+
+@end
 
 // ---------------------------------------------------------------------------
 // Title ThreadSafeFunction — marshals SET_TITLE from Ghostty's IO thread
@@ -719,6 +991,27 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
         1
     );
     g_actionTraceTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetLoadingActionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setLoadingActionCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_loadingActionTSFNActive) {
+        g_loadingActionTSFN.Release();
+        g_loadingActionTSFNActive = false;
+    }
+    g_loadingActionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-loading-action-callback",
+        0,
+        1
+    );
+    g_loadingActionTSFNActive = true;
     return env.Undefined();
 }
 
@@ -1556,6 +1849,125 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 // NSView has already been removed from the superview.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// NAPI: setLoadingOverlay(workspaceId, state, copy) → void
+//
+// state ∈ { "showing" | "slow" | "error" | "hidden" }
+// copy  = { title, subtitle?, actionLabel? }
+//
+// "showing" — create overlay if missing (added above the ghostty view in
+//             superview z-order), animate opacity 0→1 over 120ms. Updates copy
+//             if called again while already visible.
+// "slow"    — same overlay, action button now visible with actionLabel text.
+// "error"   — spinner replaced by ✕ glyph; title becomes error reason.
+// "hidden"  — animate opacity 1→0 over 100ms, then removeFromSuperview.
+//             Idempotent — no-op if there is no overlay or no entry.
+// ---------------------------------------------------------------------------
+
+static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsObject()) {
+        Napi::TypeError::New(env, "setLoadingOverlay requires (workspaceId, state, copy)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string state       = info[1].As<Napi::String>().Utf8Value();
+    Napi::Object copyObj    = info[2].As<Napi::Object>();
+
+    std::string titleStr, subtitleStr, actionLabelStr;
+    Napi::Value titleVal = copyObj.Get("title");
+    if (titleVal.IsString()) titleStr = titleVal.As<Napi::String>().Utf8Value();
+    Napi::Value subVal = copyObj.Get("subtitle");
+    if (subVal.IsString()) subtitleStr = subVal.As<Napi::String>().Utf8Value();
+    Napi::Value actVal = copyObj.Get("actionLabel");
+    if (actVal.IsString()) actionLabelStr = actVal.As<Napi::String>().Utf8Value();
+
+    // "hidden" with no surface entry — pure no-op (no throw).
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        if (state == "hidden") return env.Undefined();
+        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
+              workspaceId.c_str(), state.c_str());
+        return env.Undefined();
+    }
+
+    // Capture by value for the dispatch block.
+    NSString* nsWorkspaceId  = [NSString stringWithUTF8String:workspaceId.c_str()];
+    NSString* nsState        = [NSString stringWithUTF8String:state.c_str()];
+    NSString* nsTitle        = [NSString stringWithUTF8String:titleStr.c_str()];
+    NSString* nsSubtitle     = subtitleStr.empty()     ? nil : [NSString stringWithUTF8String:subtitleStr.c_str()];
+    NSString* nsActionLabel  = actionLabelStr.empty()  ? nil : [NSString stringWithUTF8String:actionLabelStr.c_str()];
+    GhosttySurfaceEntry& entry = it->second;
+
+    // We need a stable pointer to the entry's overlay field for the block.
+    // Safe because: entries are never moved after insertion (std::map guarantee),
+    // and this dispatch runs on the main queue (same thread as all map mutations).
+    OrpheusLoadingOverlayView* __strong* overlayPtr = &entry.loadingOverlay;
+    NSView* ghosttyView = entry.view;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // ---- "hidden" — fade out and remove ----
+        if ([nsState isEqualToString:@"hidden"]) {
+            OrpheusLoadingOverlayView* ov = *overlayPtr;
+            if (!ov) return;
+            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
+            CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            fade.fromValue = @(ov.alphaValue);
+            fade.toValue   = @(0.0);
+            fade.duration  = 0.1;
+            // Remove after animation completes.
+            [CATransaction begin];
+            [CATransaction setCompletionBlock:^{
+                [ov removeFromSuperview];
+            }];
+            [ov.layer addAnimation:fade forKey:@"fadeOut"];
+            ov.alphaValue = 0.0;
+            [CATransaction commit];
+            *overlayPtr = nil;
+            return;
+        }
+
+        // ---- "showing" / "slow" / "error" — create if needed, then update ----
+        OrpheusLoadingOverlayView* ov = *overlayPtr;
+        NSView* superview = ghosttyView ? ghosttyView.superview : nil;
+
+        if (!ov) {
+            if (!superview) {
+                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view has no superview, deferring",
+                      nsWorkspaceId.UTF8String);
+                return;
+            }
+            // Size the overlay to fill the same rect as the superview.
+            NSRect overlayFrame = superview.bounds;
+            ov = [[OrpheusLoadingOverlayView alloc] initWithFrame:overlayFrame
+                                                      workspaceId:nsWorkspaceId];
+            // Add AFTER the ghostty view so it sits on top (higher z-order).
+            [superview addSubview:ov];
+            *overlayPtr = ov;
+            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: created overlay",
+                  nsWorkspaceId.UTF8String);
+
+            // Fade in.
+            CABasicAnimation* fadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            fadeIn.fromValue = @(0.0);
+            fadeIn.toValue   = @(1.0);
+            fadeIn.duration  = 0.12;
+            [CATransaction begin];
+            [ov.layer addAnimation:fadeIn forKey:@"fadeIn"];
+            ov.alphaValue = 1.0;
+            [CATransaction commit];
+        }
+
+        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: state=%s",
+              nsWorkspaceId.UTF8String, nsState.UTF8String);
+        [ov updateWithState:nsState title:nsTitle subtitle:nsSubtitle actionLabel:nsActionLabel];
+    });
+
+    return env.Undefined();
+}
+
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -1662,8 +2074,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setTitleCallback",       Napi::Function::New(env, SetTitleCallback));
-    exports.Set("setActionTraceCallback", Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
+    exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     return exports;
 }
 

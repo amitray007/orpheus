@@ -78,10 +78,17 @@ import {
   ensureManagedHooks,
   shimPath,
   onActivityChange,
+  onSessionStart,
   resetWorkspaceActivity,
   heartbeatFromTitle,
   clearWorkspaceActivity
 } from './orpheusNotify'
+import {
+  configureLoadingOverlay,
+  show as showLoadingOverlay,
+  hide as hideLoadingOverlay,
+  copyForMount as loadingCopyForMount
+} from './loadingOverlay'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
 import { showContextMenu } from './contextMenu'
@@ -123,6 +130,38 @@ let notifyServer: { sockPath: string; close: () => void } | null = null
 const workspaceTitles = new Map<string, string>()
 
 let titleCallbackRegistered = false
+let loadingOverlayWired = false
+
+function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
+  if (loadingOverlayWired) return
+  loadingOverlayWired = true
+  // Bridge the state machine to the native addon's overlay calls.
+  configureLoadingOverlay((workspaceId, state, copy) => {
+    addon.setLoadingOverlay(workspaceId, state, copy)
+  })
+  // Native overlay's action button (e.g. "Show terminal anyway", "Dismiss")
+  // dismisses the overlay regardless of which state it was in.
+  addon.setLoadingActionCallback((workspaceId: string) => {
+    console.log('[loadingOverlay] action click', workspaceId)
+    hideLoadingOverlay(workspaceId)
+  })
+  // SessionStart hook is the canonical "claude is ready" signal — dismiss the
+  // overlay regardless of prior activity status. Min-show debounce in the state
+  // machine prevents flash on fast mounts.
+  onSessionStart((workspaceId: string) => {
+    hideLoadingOverlay(workspaceId)
+  })
+}
+
+// Pull the resolved model from composed launch flags like
+// "--model opus --permission-mode acceptEdits". Returns null if --model is absent.
+function extractModelFromFlags(flags: string): string | null {
+  if (!flags) return null
+  const parts = flags.split(/\s+/)
+  const idx = parts.indexOf('--model')
+  if (idx === -1 || idx === parts.length - 1) return null
+  return parts[idx + 1] ?? null
+}
 
 function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   if (titleCallbackRegistered) return
@@ -1027,6 +1066,12 @@ type GhosttyNativeAddon = {
   focus: (workspaceId: string) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
+  setLoadingOverlay: (
+    workspaceId: string,
+    state: 'showing' | 'slow' | 'error' | 'hidden',
+    copy: { title: string; subtitle?: string; actionLabel?: string }
+  ) => void
+  setLoadingActionCallback: (cb: (workspaceId: string) => void) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1076,6 +1121,7 @@ ipcMain.handle(
   ): { workspaceId: string; created: boolean } => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
+    ensureLoadingOverlayWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
@@ -1124,6 +1170,20 @@ ipcMain.handle(
       env: surfaceEnv
     })
 
+    // Show the loading overlay only when a new surface was actually created —
+    // re-attaching a hidden surface or a defensive resize means claude is
+    // already running and there's no boot to mask.
+    if (result.created) {
+      showLoadingOverlay(
+        workspaceId,
+        loadingCopyForMount({
+          hasSession: !!ws?.claudeSessionId,
+          sessionId: ws?.claudeSessionId ?? null,
+          model: extractModelFromFlags(launch.flags)
+        })
+      )
+    }
+
     // Snapshot the composed launch so we can detect settings drift later.
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
@@ -1144,6 +1204,9 @@ ipcMain.handle(
 
 ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
+  // If the user navigates away mid-boot, dismiss the overlay so it doesn't
+  // outlive its parent surface in the contentView.
+  hideLoadingOverlay(workspaceId)
   addon.hide(workspaceId)
 })
 
@@ -1164,6 +1227,7 @@ ipcMain.handle(
 
 ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
   // Clean up snapshot and dirty state before destroying the surface
+  hideLoadingOverlay(workspaceId)
   launchSnapshots.delete(workspaceId)
   if (dirtyWorkspaces.delete(workspaceId)) {
     broadcastDirty(workspaceId, false)
