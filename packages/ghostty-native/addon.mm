@@ -163,8 +163,6 @@ struct GhosttyMousePos { double x; double y; };
 static GhosttyMousePos ghosttyPosForEvent(NSEvent *event, OrpheusGhosttyView *view) {
     NSPoint local = [view convertPoint:event.locationInWindow fromView:nil];
     // local is already in top-left origin (isFlipped=YES). Do NOT re-flip.
-    NSLog(@"[ghostty-native] mouse pos: (%.1f, %.1f) view=%.0fx%.0f",
-          local.x, local.y, view.frame.size.width, view.frame.size.height);
     return { local.x, local.y };
 }
 
@@ -671,6 +669,11 @@ struct GhosttySurfaceEntry {
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// Reverse map: surface pointer → workspaceId.
+// Maintained in sync with g_surfaces to give O(log n) lookup in action_cb
+// instead of the O(n) linear scan over g_surfaces.
+static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
 
 // Forward-declare the loading action TSFN so OrpheusLoadingActionTarget can
 // reference it before the full TSFN block further down the file.
@@ -1273,14 +1276,18 @@ static bool action_cb(ghostty_app_t /*app*/,
         const char* rawTitle = (action.tag == GHOSTTY_ACTION_SET_TITLE)
             ? action.action.set_title.title
             : action.action.set_tab_title.title;
-        const char* tagName = (action.tag == GHOSTTY_ACTION_SET_TITLE) ? "SET_TITLE" : "SET_TAB_TITLE";
-        NSLog(@"[ghostty-native] %s: %s", tagName, rawTitle ? rawTitle : "(null)");
 
         if (g_titleTSFNActive && target.tag == GHOSTTY_TARGET_SURFACE) {
             ghostty_surface_t surf = target.target.surface;
+            // Fast O(log n) reverse-map lookup; fall back to linear scan if missed.
             std::string workspaceId;
-            for (auto& [id, entry] : g_surfaces) {
-                if (entry.surface == surf) { workspaceId = id; break; }
+            auto rmIt = g_surfaceToWorkspaceId.find(surf);
+            if (rmIt != g_surfaceToWorkspaceId.end()) {
+                workspaceId = rmIt->second;
+            } else {
+                for (auto& [id, entry] : g_surfaces) {
+                    if (entry.surface == surf) { workspaceId = id; break; }
+                }
             }
             if (!workspaceId.empty()) {
                 std::string title = rawTitle ? rawTitle : "";
@@ -1379,8 +1386,6 @@ static void write_clipboard_cb(void* /*userdata*/,
         NSPasteboard* pb = [NSPasteboard generalPasteboard];
         [pb clearContents];
         [pb setString:str forType:NSPasteboardTypeString];
-        NSLog(@"[ghostty-native] write_clipboard_cb: wrote %lu byte(s) to clipboard",
-              (unsigned long)[str lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
     });
 }
 
@@ -1419,11 +1424,8 @@ static bool read_clipboard_cb(void* /*userdata*/,
 
         if (contents) {
             const char* bytes = [contents UTF8String];
-            NSLog(@"[ghostty-native] read_clipboard_cb: delivering %lu byte(s) from clipboard",
-                  (unsigned long)[contents lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
             ghostty_surface_complete_clipboard_request(targetSurface, bytes, capturedState, true);
         } else {
-            NSLog(@"[ghostty-native] read_clipboard_cb: clipboard empty, delivering empty string");
             ghostty_surface_complete_clipboard_request(targetSurface, "", capturedState, true);
         }
     });
@@ -1881,6 +1883,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect    = CGRectMake(rx, ry, rw, rh);
     entry.lastScale   = scaleFactor;
     g_surfaces[workspaceId] = entry;
+    g_surfaceToWorkspaceId[surface] = workspaceId;
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
@@ -2165,6 +2168,9 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // lookup (e.g. hide() racing with archive) sees no entry.
     GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
+    if (doomed.surface) {
+        g_surfaceToWorkspaceId.erase(doomed.surface);
+    }
 
     // Detach the view so the workspace appears gone right away.
     // Nil out surface pointer first so any in-flight key events see nullptr

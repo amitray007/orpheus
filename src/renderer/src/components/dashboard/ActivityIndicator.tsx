@@ -21,12 +21,13 @@ const COMPACT_FRAMES = [
   '▂'
 ] as const
 
-function useAnimatedFrame(frames: readonly string[], intervalMs: number): string {
+function useAnimatedFrame(frames: readonly string[], intervalMs: number, active: boolean): string {
   const [index, setIndex] = useState(0)
   useEffect(() => {
+    if (!active) return
     const id = setInterval(() => setIndex((i) => (i + 1) % frames.length), intervalMs)
     return () => clearInterval(id)
-  }, [frames, intervalMs])
+  }, [frames, intervalMs, active])
   return frames[index] ?? frames[0] ?? ''
 }
 
@@ -39,9 +40,9 @@ export function ActivityIndicator({
   detail,
   className
 }: ActivityIndicatorProps): React.JSX.Element | null {
-  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80)
-  const tool = useAnimatedFrame(TOOL_FRAMES, 200)
-  const compact = useAnimatedFrame(COMPACT_FRAMES, 100)
+  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, detail === 'thinking')
+  const tool = useAnimatedFrame(TOOL_FRAMES, 200, detail === 'tool')
+  const compact = useAnimatedFrame(COMPACT_FRAMES, 100, detail === 'compacting')
 
   if (!detail || detail === 'archived') return null
 

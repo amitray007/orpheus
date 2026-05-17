@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 40
+const CURRENT_VERSION = 41
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -245,6 +245,10 @@ export function getDb(): Database.Database {
   // WAL mode for better concurrent read performance
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  db.pragma('synchronous = NORMAL') // safe under WAL; eliminates fsync per commit
+  db.pragma('cache_size = -8000') // 8 MB page cache (negative = KB)
+  db.pragma('mmap_size = 268435456') // 256 MB memory-mapped IO
+  db.pragma('temp_store = MEMORY') // temp tables in RAM
 
   // Run migrations
   migrate(db)
@@ -254,20 +258,25 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database): void {
-  // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run)
+  // schema_version must exist before we can read it — create it unconditionally
+  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);')
+
+  const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
+    | { version: number }
+    | undefined
+
+  const currentVersion = row?.version ?? 0
+
+  // Fast path: already up-to-date — skip all DDL and migration steps
+  if (currentVersion === CURRENT_VERSION) return
+
+  // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run on new/old installs)
   db.exec(SCHEMA_SQL)
   db.exec(WORKSPACES_SCHEMA_SQL)
   db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
-
-  // Check / set schema version
-  const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
-    | { version: number }
-    | undefined
-
-  const currentVersion = row?.version ?? 0
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -1435,5 +1444,40 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(40)
+  }
+
+  // Version 41: composite and targeted indexes for common query patterns
+  if (currentVersion < 41) {
+    // workspaces: covers listWorkspacesForProject(project_id ORDER BY sort_order, created_at DESC)
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort ON workspaces(project_id, sort_order, created_at DESC)'
+      )
+    } catch {
+      /* ignore */
+    }
+    // projects: covers WHERE archived_at IS NULL in listAllSessions and similar
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_projects_archived_at ON projects(archived_at)')
+    } catch {
+      /* ignore */
+    }
+    // sessions: covers project-scoped search using LOWER(title)
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_sessions_project_title_lower ON sessions(project_id, LOWER(title))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // sessions: covers pruneOldSessions ORDER BY updated_at ASC scope
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_sessions_project_updated ON sessions(project_id, updated_at ASC)'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(41)
   }
 }

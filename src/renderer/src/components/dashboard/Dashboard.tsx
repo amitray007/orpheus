@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
-import { Sidebar, type SidebarActiveView } from './Sidebar'
+import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
-import { MainContent, type View } from './MainContent'
+import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
+
+const Sidebar = memo(SidebarBase)
+const MainContent = memo(MainContentBase)
 import type {
   AppUiState,
   PinnedItem,
@@ -55,6 +58,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Pinned workspaces — fetched on mount and after any pin/unpin toggle
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
+
+  // Terminal titles keyed by workspaceId — single hoisted subscription (fix: prevent N listeners)
+  const [titleByWorkspaceId, setTitleByWorkspaceId] = useState<Record<string, string>>({})
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'sessions' })
@@ -158,6 +164,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Single hoisted title subscription — replaces per-workspace listeners in WorkspaceCard / PinnedRow / WorkspaceSubRow
+  useEffect(() => {
+    return window.api.workspaces.onTitleChanged((e) => {
+      if (!e.title) return
+      setTitleByWorkspaceId((prev) => ({ ...prev, [e.workspaceId]: e.title as string }))
+    })
+  }, [])
+
   // GitHub avatar fetches are async + fire-and-forget on the main side. When
   // they land we patch the local projects state in-place so the sidebar swaps
   // identicon → avatar without waiting for a restart or a full list refetch.
@@ -179,13 +193,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Derived workspace id — stable across renders when the workspace hasn't actually changed
+  const currentlyViewedWorkspaceId = useMemo(
+    () => (view.kind === 'workspace' ? view.workspaceId : null),
+    [view]
+  )
+
   useEffect(() => {
-    const id = view.kind === 'workspace' ? view.workspaceId : null
-    window.api.workspaces.setCurrentlyViewed(id)
-  }, [view])
+    window.api.workspaces.setCurrentlyViewed(currentlyViewedWorkspaceId)
+  }, [currentlyViewedWorkspaceId])
 
   // Fetch all sessions on mount and refresh whenever the Workspaces view is opened
   useEffect(() => {
+    if (view.kind !== 'sessions') return
     let cancelled = false
     window.api.sessions
       .listAll()
@@ -199,8 +219,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       cancelled = true
     }
     // Re-fetch when navigating to the sessions/workspaces view so data is fresh
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.kind === 'sessions'])
+  }, [view.kind])
 
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
@@ -242,19 +261,31 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     refreshPins()
   }, [])
 
-  // Poll git status for all non-archived workspaces every 30s
+  // Stable key — only changes when workspace ids/cwds actually change, not on every object re-creation
+  const workspacesPollKey = useMemo(
+    () =>
+      Object.values(workspacesByProject)
+        .flat()
+        .filter((w) => w.archivedAt === null)
+        .map((w) => w.id + ':' + w.cwd)
+        .join('|'),
+    [workspacesByProject]
+  )
+
+  // Poll git status for all non-archived workspaces every 30s.
+  // 300ms debounce prevents burst spawns when workspacesByProject updates rapidly.
   useEffect(() => {
-    const allWorkspaces = Object.values(workspacesByProject)
+    const workspaces = Object.values(workspacesByProject)
       .flat()
       .filter((w) => w.archivedAt === null)
-    if (allWorkspaces.length === 0) return
+    if (workspaces.length === 0) return
 
     let cancelled = false
 
     async function refresh(): Promise<void> {
       const results: Record<string, GitStatus | null> = {}
       // Sequential to avoid spawning N git processes at once
-      for (const ws of allWorkspaces) {
+      for (const ws of workspaces) {
         if (cancelled) return
         try {
           const status = await window.api.git.status(ws.cwd)
@@ -269,13 +300,44 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
     }
 
-    refresh()
+    const debounceTimer = setTimeout(refresh, 300)
     const interval = setInterval(refresh, 30000)
     return () => {
       cancelled = true
+      clearTimeout(debounceTimer)
       clearInterval(interval)
     }
-  }, [workspacesByProject])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacesPollKey])
+
+  // Batch-fetch initial titles for newly seen workspaces so the hoisted title map is seeded.
+  // Runs when new workspace ids appear; subsequent updates come via the onTitleChanged subscription.
+  useEffect(() => {
+    const allWs = Object.values(workspacesByProject).flat()
+    if (allWs.length === 0) return
+    let cancelled = false
+    Promise.all(
+      allWs.map((ws) =>
+        window.api.workspaces
+          .getTitle(ws.id)
+          .then((title) => ({ id: ws.id, title }))
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return
+      const patch: Record<string, string> = {}
+      for (const r of results) {
+        if (r && r.title) patch[r.id] = r.title
+      }
+      if (Object.keys(patch).length > 0) {
+        setTitleByWorkspaceId((prev) => ({ ...prev, ...patch }))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacesPollKey])
 
   // Hydrate UI state from DB once both projects and uiState are loaded.
   // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
@@ -733,6 +795,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           workspacesByProject={workspacesByProject}
           workspaceActivities={workspaceActivities}
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+          titleByWorkspaceId={titleByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
@@ -781,6 +844,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            titleByWorkspaceId={titleByWorkspaceId}
             fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           />
         </main>

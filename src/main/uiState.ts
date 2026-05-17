@@ -190,10 +190,19 @@ function validatePatch(patch: AppUiStatePatch): void {
 // Public API
 // ---------------------------------------------------------------------------
 
+let cachedState: AppUiState | null = null
+
+/** Invalidate the in-memory cache (call after external mutations, e.g. in tests). */
+export function invalidateAppUiStateCache(): void {
+  cachedState = null
+}
+
 export function getAppUiState(): AppUiState {
+  if (cachedState !== null) return cachedState
   const db = getDb()
   const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
-  return rowToRecord(row)
+  cachedState = rowToRecord(row)
+  return cachedState
 }
 
 export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
@@ -267,8 +276,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   }
 
   if (setClauses.length === 0) {
-    // Nothing to update — just return current state
-    return getAppUiState()
+    // Nothing to update — return cached or fresh state
+    return cachedState ?? getAppUiState()
   }
 
   setClauses.push('updated_at = ?')
@@ -278,5 +287,6 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   db.prepare(`UPDATE app_ui_state SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
 
   const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
-  return rowToRecord(row)
+  cachedState = rowToRecord(row)
+  return cachedState
 }

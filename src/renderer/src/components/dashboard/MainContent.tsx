@@ -64,6 +64,7 @@ interface MainContentProps {
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
+  titleByWorkspaceId?: Record<string, string>
   // Privacy (v37)
   fetchGithubAvatars?: boolean
 }
@@ -85,6 +86,7 @@ export function MainContent({
   allWorkspaces,
   allSessions,
   gitStatusByWorkspaceId,
+  titleByWorkspaceId,
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
@@ -100,6 +102,7 @@ export function MainContent({
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}
         workspaceActivities={workspaceActivities ?? {}}
+        titleByWorkspaceId={titleByWorkspaceId ?? {}}
         sessions={allSessions ?? []}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
       />

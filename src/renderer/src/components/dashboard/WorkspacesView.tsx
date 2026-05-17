@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, memo } from 'react'
 import type {
   SessionRecord,
   WorkspaceRecord,
@@ -91,43 +91,26 @@ interface WorkspaceCardProps {
   workspace: WorkspaceRecord
   projectName: string
   session: SessionRecord | undefined
-  activities: Record<string, WorkspaceActivityDetail>
+  activityDetail: WorkspaceActivityDetail | undefined
+  terminalTitle: string | null
   gitStatus: GitStatus | null
   onClick: () => void
 }
 
-function WorkspaceCard({
+const WorkspaceCard = memo(function WorkspaceCard({
   workspace,
   projectName,
   session,
-  activities,
+  activityDetail,
+  terminalTitle,
   gitStatus,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
-  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces
-      .getTitle(workspaceId)
-      .then((t) => {
-        setTerminalTitle(t)
-      })
-      .catch(() => {})
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) {
-        setTerminalTitle(e.title || null)
-      }
-    })
-    return unsub
-  }, [workspace.id])
-
   const sessionTitle = session?.title ?? null
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
 
   // Effective indicator: live activity wins; fall back to persisted status glyph
-  const liveActivity = activities[workspace.id]
-  const effectiveActivity: WorkspaceActivityDetail = liveActivity ?? fallbackActivity(workspace)
+  const effectiveActivity: WorkspaceActivityDetail = activityDetail ?? fallbackActivity(workspace)
 
   const timestamp = workspace.lastOpenedAt ?? workspace.createdAt
   const branch = gitStatus?.branch ?? null
@@ -178,7 +161,7 @@ function WorkspaceCard({
       )}
     </button>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Kanban column
@@ -190,16 +173,18 @@ interface KanbanColumnProps {
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
   activities: Record<string, WorkspaceActivityDetail>
+  titleByWorkspaceId: Record<string, string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
 }
 
-function KanbanColumn({
+const KanbanColumn = memo(function KanbanColumn({
   config,
   workspaces,
   projectsById,
   sessionsById,
   activities,
+  titleByWorkspaceId,
   gitStatusByWorkspaceId,
   onNavigateToWorkspace
 }: KanbanColumnProps): React.JSX.Element {
@@ -232,7 +217,8 @@ function KanbanColumn({
                 workspace={ws}
                 projectName={project?.name ?? 'Unknown'}
                 session={session}
-                activities={activities}
+                activityDetail={activities[ws.id]}
+                terminalTitle={titleByWorkspaceId[ws.id] ?? null}
                 gitStatus={gitStatusByWorkspaceId[ws.id] ?? null}
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
@@ -242,7 +228,7 @@ function KanbanColumn({
       </div>
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // WorkspacesView
@@ -255,6 +241,7 @@ export interface WorkspacesViewProps {
   projects: ProjectRecord[]
   workspaces: WorkspaceRecord[]
   workspaceActivities: Record<string, WorkspaceActivityDetail>
+  titleByWorkspaceId: Record<string, string>
   sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
 }
@@ -264,6 +251,7 @@ export function WorkspacesView({
   projects,
   workspaces,
   workspaceActivities,
+  titleByWorkspaceId,
   sessions,
   gitStatusByWorkspaceId = {}
 }: WorkspacesViewProps): React.JSX.Element {
@@ -318,6 +306,7 @@ export function WorkspacesView({
             projectsById={projectsById}
             sessionsById={sessionsById}
             activities={workspaceActivities}
+            titleByWorkspaceId={titleByWorkspaceId}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
             onNavigateToWorkspace={onNavigateToWorkspace}
           />
