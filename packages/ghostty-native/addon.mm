@@ -1931,20 +1931,21 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
 
         // ---- "showing" / "slow" / "error" — create if needed, then update ----
         OrpheusLoadingOverlayView* ov = *overlayPtr;
-        NSView* superview = ghosttyView ? ghosttyView.superview : nil;
 
         if (!ov) {
-            if (!superview) {
-                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view has no superview, deferring",
+            if (!ghosttyView) {
+                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
                       nsWorkspaceId.UTF8String);
                 return;
             }
-            // Size the overlay to fill the same rect as the superview.
-            NSRect overlayFrame = superview.bounds;
+            // Attach as a CHILD of the ghostty view itself (not a sibling) so
+            // the overlay rect always matches the terminal rect exactly — no
+            // chance of covering the sidebar / tabs / header. The autoresizing
+            // mask on the view makes it track terminal:resize for free.
+            NSRect overlayFrame = ghosttyView.bounds;
             ov = [[OrpheusLoadingOverlayView alloc] initWithFrame:overlayFrame
                                                       workspaceId:nsWorkspaceId];
-            // Add AFTER the ghostty view so it sits on top (higher z-order).
-            [superview addSubview:ov];
+            [ghosttyView addSubview:ov];
             *overlayPtr = ov;
             NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: created overlay",
                   nsWorkspaceId.UTF8String);
