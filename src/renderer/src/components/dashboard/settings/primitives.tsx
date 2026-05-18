@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type React from 'react'
-import { X, Plus, CaretDown } from '@phosphor-icons/react'
+import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import { playSound } from '../../../lib/sound'
 
@@ -95,9 +96,11 @@ export function SegmentedControl<T extends string>({
 }
 
 // ---------------------------------------------------------------------------
-// Select — styled native <select>. Uses the OS dropdown menu so it works
-// without keyboard plumbing or focus management. Designed for compact rows
-// (e.g. the workspace drawer) where a segmented control would overflow.
+// Select — custom popover dropdown (no native <select>). Renders the option
+// list into a body-level portal positioned against the trigger's bounding
+// rect so it escapes any overflow:hidden ancestor (the settings panels,
+// drawer overrides, project tab filters all scroll). Keyboard navigation
+// mirrors the macOS popup: Up/Down to step, Enter to commit, Esc to close.
 // ---------------------------------------------------------------------------
 
 export interface SelectProps<T extends string> {
@@ -106,6 +109,11 @@ export interface SelectProps<T extends string> {
   onChange: (v: T) => void
   ariaLabel?: string
   className?: string
+  disabled?: boolean
+  placeholder?: string
+  /** Focus the trigger button on mount — replaces the old pattern where callers
+   *  put a ref on the native <select>. */
+  autoFocus?: boolean
 }
 
 export function Select<T extends string>({
@@ -113,38 +121,243 @@ export function Select<T extends string>({
   value,
   onChange,
   ariaLabel,
-  className
+  className,
+  disabled,
+  placeholder,
+  autoFocus
 }: SelectProps<T>): React.JSX.Element {
-  // appearance-none drops the platform chevron so the icon below can sit at
-  // the right edge with consistent metrics. Keeping the underlying <select>
-  // means the macOS popup menu still opens natively.
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (autoFocus) triggerRef.current?.focus()
+  }, [autoFocus])
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [highlight, setHighlight] = useState<number>(-1)
+  // Anchor rect captured at open time + viewport-clamped popover geometry.
+  const [pos, setPos] = useState<{
+    left: number
+    top: number
+    width: number
+    maxHeight: number
+    above: boolean
+  } | null>(null)
+
+  const selectedIndex = options.findIndex((o) => o.value === value)
+  const selectedLabel = selectedIndex >= 0 ? options[selectedIndex].label : (placeholder ?? '')
+
+  function openMenu(): void {
+    if (disabled) return
+    setHighlight(selectedIndex >= 0 ? selectedIndex : 0)
+    setOpen(true)
+  }
+
+  function closeMenu(): void {
+    setOpen(false)
+    // Return focus to the trigger so keyboard users stay in flow.
+    triggerRef.current?.focus()
+  }
+
+  function commit(idx: number): void {
+    const opt = options[idx]
+    if (!opt) return
+    onChange(opt.value)
+    setOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  // Measure trigger + clamp inside the viewport on every open. Flip above the
+  // trigger when there's more room there than below.
+  useLayoutEffect(() => {
+    if (!open) return
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    const margin = 8
+    const desiredHeight = Math.min(280, options.length * 28 + 8)
+    const spaceBelow = window.innerHeight - rect.bottom - margin
+    const spaceAbove = rect.top - margin
+    const above = spaceBelow < desiredHeight && spaceAbove > spaceBelow
+    const maxHeight = Math.max(120, above ? spaceAbove : spaceBelow)
+    setPos({
+      left: rect.left,
+      top: above ? rect.top - 4 : rect.bottom + 4,
+      width: rect.width,
+      maxHeight,
+      above
+    })
+  }, [open, options.length])
+
+  // Close on outside mousedown.
+  useEffect(() => {
+    if (!open) return
+    function onMouseDown(e: MouseEvent): void {
+      const t = e.target as Node
+      if (popoverRef.current?.contains(t)) return
+      if (triggerRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [open])
+
+  // Reposition on scroll / resize so the popover tracks layout shifts.
+  useEffect(() => {
+    if (!open) return
+    function reposition(): void {
+      const trigger = triggerRef.current
+      if (!trigger) return
+      const rect = trigger.getBoundingClientRect()
+      const margin = 8
+      const desiredHeight = Math.min(280, options.length * 28 + 8)
+      const spaceBelow = window.innerHeight - rect.bottom - margin
+      const spaceAbove = rect.top - margin
+      const above = spaceBelow < desiredHeight && spaceAbove > spaceBelow
+      setPos({
+        left: rect.left,
+        top: above ? rect.top - 4 : rect.bottom + 4,
+        width: rect.width,
+        maxHeight: Math.max(120, above ? spaceAbove : spaceBelow),
+        above
+      })
+    }
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [open, options.length])
+
+  // Scroll highlighted option into view as the user navigates.
+  useEffect(() => {
+    if (!open || highlight < 0) return
+    const el = popoverRef.current?.querySelector<HTMLElement>(`[data-option-index="${highlight}"]`)
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [open, highlight])
+
+  function onTriggerKeyDown(e: React.KeyboardEvent): void {
+    if (disabled) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      openMenu()
+    }
+  }
+
+  function onPopoverKeyDown(e: React.KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeMenu()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setHighlight((h) => (h + 1) % options.length)
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlight((h) => (h - 1 + options.length) % options.length)
+      return
+    }
+    if (e.key === 'Home') {
+      e.preventDefault()
+      setHighlight(0)
+      return
+    }
+    if (e.key === 'End') {
+      e.preventDefault()
+      setHighlight(options.length - 1)
+      return
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      if (highlight >= 0) commit(highlight)
+    }
+  }
+
   return (
     <div className={['relative inline-flex w-full', className ?? ''].join(' ')}>
-      <select
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         aria-label={ariaLabel}
-        value={value}
-        onChange={(e) => onChange(e.target.value as T)}
+        disabled={disabled}
+        onClick={() => (open ? closeMenu() : openMenu())}
+        onKeyDown={onTriggerKeyDown}
         className={[
-          'w-full appearance-none cursor-pointer',
-          'pl-3 pr-8 py-1.5 rounded-md',
-          'text-xs text-text-primary',
+          'w-full inline-flex items-center justify-between gap-2',
+          'pl-3 pr-2.5 py-1.5 rounded-md',
+          'text-xs text-text-primary text-left',
           'bg-surface-raised border border-border-default',
-          'hover:border-border-hover',
-          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40',
-          'transition-colors duration-150'
+          'transition-colors duration-150',
+          disabled
+            ? 'opacity-50 cursor-not-allowed'
+            : 'cursor-pointer hover:border-border-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40'
         ].join(' ')}
       >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-      <CaretDown
-        size={11}
-        weight="bold"
-        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-      />
+        <span className={['truncate', selectedIndex < 0 ? 'text-text-muted' : ''].join(' ')}>
+          {selectedLabel || ' '}
+        </span>
+        <CaretDown
+          size={11}
+          weight="bold"
+          className={[
+            'flex-shrink-0 text-text-muted transition-transform duration-150',
+            open ? 'rotate-180' : ''
+          ].join(' ')}
+        />
+      </button>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            role="listbox"
+            aria-label={ariaLabel}
+            tabIndex={-1}
+            autoFocus
+            onKeyDown={onPopoverKeyDown}
+            style={{
+              position: 'fixed',
+              left: pos.left,
+              top: pos.above ? undefined : pos.top,
+              bottom: pos.above ? window.innerHeight - pos.top : undefined,
+              width: pos.width,
+              maxHeight: pos.maxHeight
+            }}
+            className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
+          >
+            {options.map((opt, idx) => {
+              const isSelected = opt.value === value
+              const isHighlighted = idx === highlight
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  data-option-index={idx}
+                  onMouseEnter={() => setHighlight(idx)}
+                  onClick={() => commit(idx)}
+                  className={[
+                    'w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left transition-colors duration-100 cursor-pointer',
+                    isHighlighted ? 'bg-surface-raised' : '',
+                    isSelected ? 'text-text-primary' : 'text-text-secondary'
+                  ].join(' ')}
+                >
+                  <span className="flex-shrink-0 w-3 inline-flex items-center justify-center">
+                    {isSelected ? <Check size={10} weight="bold" className="text-accent" /> : null}
+                  </span>
+                  <span className="truncate flex-1">{opt.label}</span>
+                </button>
+              )
+            })}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

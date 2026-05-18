@@ -7,7 +7,7 @@ import type {
   McpServerDraft,
   ProjectRecord
 } from '@shared/types'
-import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingRow, Toggle, NumberInput, Select } from './primitives'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -139,15 +139,12 @@ function McpServerForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="mcp-source" className={labelClass}>
-            Source
-          </label>
-          <select
-            id="mcp-source"
+          <label className={labelClass}>Source</label>
+          <Select
+            ariaLabel="Source"
             disabled={sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(e) => {
-              const val = e.target.value
+            onChange={(val) => {
               if (val === 'user') {
                 set('source', 'user')
                 set('projectId', '')
@@ -156,15 +153,11 @@ function McpServerForm({
                 set('projectId', val)
               }
             }}
-            className={inputClass}
-          >
-            <option value="user">User (~/.claude.json)</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                Project · {p.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: 'user', label: 'User (~/.claude.json)' },
+              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
+            ]}
+          />
         </div>
 
         {/* Name */}
@@ -190,19 +183,17 @@ function McpServerForm({
 
         {/* Transport */}
         <div className="w-28 flex-shrink-0">
-          <label htmlFor="mcp-transport" className={labelClass}>
-            Transport
-          </label>
-          <select
-            id="mcp-transport"
+          <label className={labelClass}>Transport</label>
+          <Select<'stdio' | 'http' | 'sse'>
+            ariaLabel="Transport"
             value={values.transport}
-            onChange={(e) => set('transport', e.target.value as 'stdio' | 'http' | 'sse')}
-            className={inputClass}
-          >
-            <option value="stdio">stdio</option>
-            <option value="http">http</option>
-            <option value="sse">sse</option>
-          </select>
+            onChange={(v) => set('transport', v)}
+            options={[
+              { value: 'stdio', label: 'stdio' },
+              { value: 'http', label: 'http' },
+              { value: 'sse', label: 'sse' }
+            ]}
+          />
         </div>
       </div>
 

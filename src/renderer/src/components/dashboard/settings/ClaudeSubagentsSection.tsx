@@ -3,6 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSubagent, ClaudeSubagentDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
+import { Select } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSubagentsSection — full CRUD for ~/.claude/agents/ and project .claude/agents/
@@ -77,14 +78,12 @@ function SubagentForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | null>(null)
-  const firstSelectRef = useRef<HTMLSelectElement | null>(null)
 
   useEffect(() => {
-    if (sourceFixed) {
-      firstInputRef.current?.focus()
-    } else {
-      firstSelectRef.current?.focus()
-    }
+    // When the source is fixed (editing existing), jump straight to the name
+    // input. Otherwise the Select primitive autofocuses its trigger via
+    // autoFocus={!sourceFixed} below.
+    if (sourceFixed) firstInputRef.current?.focus()
   }, [sourceFixed])
 
   useEffect(() => {
@@ -128,16 +127,13 @@ function SubagentForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="agent-source" className={labelClass}>
-            Source
-          </label>
-          <select
-            id="agent-source"
-            ref={firstSelectRef}
+          <label className={labelClass}>Source</label>
+          <Select
+            ariaLabel="Source"
             disabled={sourceFixed}
+            autoFocus={!sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(e) => {
-              const val = e.target.value
+            onChange={(val) => {
               if (val === 'user') {
                 set('source', 'user')
                 set('projectId', '')
@@ -146,15 +142,11 @@ function SubagentForm({
                 set('projectId', val)
               }
             }}
-            className={inputClass}
-          >
-            <option value="user">User (~/.claude/agents)</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                Project · {p.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: 'user', label: 'User (~/.claude/agents)' },
+              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
+            ]}
+          />
         </div>
 
         {/* Name */}
