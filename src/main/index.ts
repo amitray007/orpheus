@@ -93,6 +93,12 @@ import {
 import type { Theme } from '../shared/types'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
+import {
+  getStatusSnapshot,
+  startStatusPoller,
+  stopStatusPoller,
+  refreshStatusNow
+} from './claudeStatus'
 import { showContextMenu } from './contextMenu'
 import {
   revealInFinder,
@@ -1048,6 +1054,18 @@ ipcMain.handle('updates:restart', () => {
   relaunchApp()
 })
 
+// ---------------------------------------------------------------------------
+// Claude status IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('status:get', () => getStatusSnapshot())
+ipcMain.handle('status:refresh', async () => refreshStatusNow())
+ipcMain.handle('status:openPage', () => {
+  shell.openExternal('https://status.claude.com').catch((err) => {
+    console.warn('[status] openExternal failed:', err)
+  })
+})
+
 ipcMain.handle(
   'projects:setExpandedInSidebar',
   (_e, { id, expanded }: { id: string; expanded: boolean }) =>
@@ -1387,6 +1405,13 @@ app.whenReady().then(() => {
   // Gated internally on the autoCheckUpdates setting.
   startAutoCheckLoop()
 
+  // Start the Claude service-status poller (3s initial delay, then per user setting).
+  // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
+  const mainWin = getMainWindow()
+  if (mainWin) {
+    startStatusPoller(mainWin)
+  }
+
   // Pre-warm the shell PATH resolution so doctor:check doesn't block on first call.
   getUserShellPath().catch(() => {
     /* swallow — logged inside getUserShellPath */
@@ -1425,6 +1450,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
+  stopStatusPoller()
 })
 
 app.on('window-all-closed', () => {

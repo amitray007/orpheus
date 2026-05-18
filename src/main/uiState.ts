@@ -63,6 +63,9 @@ type AppUiStateRow = {
   sound_pack: string | null
   // Updates (v40)
   auto_check_updates: number | null
+  // Status polling preferences (v42)
+  status_poll_interval_sec: number | null
+  mute_status_notifications: number | null
   updated_at: number
 }
 
@@ -120,6 +123,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     soundPack: (row.sound_pack ?? 'core') as SoundPack,
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
+    // Status polling preferences (v42)
+    statusPollIntervalSec: row.status_poll_interval_sec ?? 60,
+    muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -260,7 +266,10 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Sound pack (v39)
     soundPack: 'sound_pack',
     // Updates (v40)
-    autoCheckUpdates: 'auto_check_updates'
+    autoCheckUpdates: 'auto_check_updates',
+    // Status polling preferences (v42)
+    statusPollIntervalSec: 'status_poll_interval_sec',
+    muteStatusNotifications: 'mute_status_notifications'
   }
 
   const setClauses: string[] = []

@@ -37,7 +37,8 @@ import type {
   ClaudeHookEntry,
   ClaudeHookDraft,
   ContextMenuNativeItem,
-  UpdateCheckResult
+  UpdateCheckResult,
+  ClaudeStatusSnapshot
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -358,6 +359,17 @@ const api = {
       const listener = (_evt: IpcRendererEvent, result: UpdateCheckResult): void => cb(result)
       ipcRenderer.on('updates:checkResult', listener)
       return () => ipcRenderer.removeListener('updates:checkResult', listener)
+    }
+  },
+  status: {
+    get: (): Promise<ClaudeStatusSnapshot | null> => ipcRenderer.invoke('status:get'),
+    refresh: (): Promise<ClaudeStatusSnapshot | null> => ipcRenderer.invoke('status:refresh'),
+    openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
+    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, snapshot: ClaudeStatusSnapshot): void =>
+        cb(snapshot)
+      ipcRenderer.on('status:change', listener)
+      return () => ipcRenderer.removeListener('status:change', listener)
     }
   }
 }

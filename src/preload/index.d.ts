@@ -35,7 +35,8 @@ import type {
   ClaudeHookEntry,
   ClaudeHookDraft,
   ContextMenuNativeItem,
-  UpdateCheckResult
+  UpdateCheckResult,
+  ClaudeStatusSnapshot
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -247,6 +248,12 @@ declare global {
         onProgress: (cb: (e: { line: string }) => void) => () => void
         onDone: (cb: (e: { success: boolean; code: number | null }) => void) => () => void
         onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
+      }
+      status: {
+        get: () => Promise<ClaudeStatusSnapshot | null>
+        refresh: () => Promise<ClaudeStatusSnapshot | null>
+        openPage: () => Promise<void>
+        onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void) => () => void
       }
     }
   }

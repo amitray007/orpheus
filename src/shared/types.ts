@@ -178,6 +178,9 @@ export type AppUiState = {
   soundPack: SoundPack
   // Updates (v40)
   autoCheckUpdates: boolean
+  // Status polling preferences (v42)
+  statusPollIntervalSec: number // 30 | 60 | 300; default 60
+  muteStatusNotifications: boolean
   updatedAt: number
 }
 
@@ -588,4 +591,49 @@ export type SessionsPagedRequest = {
 export type SessionsPagedResult = {
   rows: SessionRecord[]
   total: number // total matching rows before pagination
+}
+
+// ---------------------------------------------------------------------------
+// Claude status (status.claude.com polling)
+// ---------------------------------------------------------------------------
+
+export type ClaudeStatusIndicator = 'none' | 'minor' | 'major' | 'critical' | 'maintenance'
+
+export type ClaudeStatusComponentStatus =
+  | 'operational'
+  | 'degraded_performance'
+  | 'partial_outage'
+  | 'major_outage'
+  | 'under_maintenance'
+
+export type ClaudeStatusComponent = {
+  id: string
+  name: string
+  status: ClaudeStatusComponentStatus
+  updatedAt: string // ISO timestamp
+  /** True for the two components that drive the top-bar chip color */
+  watched: boolean
+}
+
+export type ClaudeStatusIncident = {
+  id: string
+  name: string
+  impact: 'none' | 'minor' | 'major' | 'critical'
+  status: 'investigating' | 'identified' | 'monitoring' | 'resolved'
+  updatedAt: string // ISO timestamp
+}
+
+export type ClaudeStatusSnapshot = {
+  /** Overall page indicator */
+  indicator: ClaudeStatusIndicator
+  /** Human-readable summary, e.g. "All Systems Operational" */
+  description: string
+  /** Worst indicator of the two watched components (drives chip color) */
+  watchedIndicator: ClaudeStatusIndicator
+  components: ClaudeStatusComponent[]
+  incidents: ClaudeStatusIncident[]
+  /** ms epoch when this snapshot was fetched */
+  fetchedAt: number
+  /** False when the last fetch attempt failed; snapshot is stale */
+  fetchOk: boolean
 }

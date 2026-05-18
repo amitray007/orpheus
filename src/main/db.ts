@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 41
+const CURRENT_VERSION = 42
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -235,6 +235,9 @@ const UI_STATE_SCHEMA_SQL = `
     global_hotkey TEXT NOT NULL DEFAULT '',
     -- Archive cap (v25)
     archived_workspace_limit INTEGER NOT NULL DEFAULT 20,
+    -- Status polling preferences (v42)
+    status_poll_interval_sec INTEGER NOT NULL DEFAULT 60,
+    mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -1495,6 +1498,25 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(41)
+  }
+
+  // Version 42: status polling preferences on app_ui_state
+  if (currentVersion < 42) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN status_poll_interval_sec INTEGER NOT NULL DEFAULT 60'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(42)
   }
 }
 

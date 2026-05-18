@@ -114,6 +114,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           playInteractionSounds: true,
           soundPack: 'core',
           autoCheckUpdates: true,
+          statusPollIntervalSec: 60,
+          muteStatusNotifications: false,
           updatedAt: 0
         })
       })
