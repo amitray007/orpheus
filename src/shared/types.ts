@@ -43,6 +43,11 @@ export type GitCommit = {
   author: string
   authorEmail: string
   timestamp: number
+  // Diff stats from `git log --shortstat`. Default to 0 when the commit has no
+  // tree change (e.g. merges or empty commits where shortstat is silent).
+  filesChanged: number
+  insertions: number
+  deletions: number
 }
 
 export type ExistingProject = {

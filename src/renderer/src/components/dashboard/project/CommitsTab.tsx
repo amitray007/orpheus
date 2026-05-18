@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { GitBranch, GitCommit as GitCommitIcon, MagnifyingGlass } from '@phosphor-icons/react'
+import {
+  Files,
+  GitBranch,
+  GitCommit as GitCommitIcon,
+  MagnifyingGlass
+} from '@phosphor-icons/react'
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { CommitListSkeleton } from '../../Skeleton'
@@ -210,21 +215,39 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {commits.map((c) => (
-            <div
-              key={c.fullSha}
-              className="rounded-lg border border-border-default bg-surface-raised px-4 py-3 hover:bg-surface-overlay/30 transition-colors"
-            >
-              <p className="text-sm text-text-primary leading-snug">{c.subject}</p>
-              <p className="mt-1 text-xs text-text-muted flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-text-secondary">{c.sha}</span>
-                <span>·</span>
-                <span>{c.author}</span>
-                <span>·</span>
-                <span>{relativeTime(c.timestamp)}</span>
-              </p>
-            </div>
-          ))}
+          {commits.map((c) => {
+            const hasStats = c.filesChanged > 0 || c.insertions > 0 || c.deletions > 0
+            return (
+              <div
+                key={c.fullSha}
+                className="rounded-lg border border-border-default bg-surface-raised px-4 py-3 hover:bg-surface-overlay/30 transition-colors"
+              >
+                <p className="text-sm text-text-primary leading-snug">{c.subject}</p>
+                <p className="mt-1 text-xs text-text-muted flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-text-secondary">{c.sha}</span>
+                  <span>·</span>
+                  <span>{c.author}</span>
+                  <span>·</span>
+                  <span>{relativeTime(c.timestamp)}</span>
+                  {hasStats && (
+                    <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px]">
+                      <span
+                        className="inline-flex items-center gap-1 text-text-muted"
+                        title={`${c.filesChanged} file${c.filesChanged === 1 ? '' : 's'} changed`}
+                      >
+                        <Files size={11} weight="bold" />
+                        {c.filesChanged}
+                      </span>
+                      {c.insertions > 0 && (
+                        <span className="text-emerald-400">+{c.insertions}</span>
+                      )}
+                      {c.deletions > 0 && <span className="text-red-400">−{c.deletions}</span>}
+                    </span>
+                  )}
+                </p>
+              </div>
+            )
+          })}
           {total > PAGE_SIZE && (
             <div className="rounded-lg border border-border-default bg-surface-raised mt-1">
               <PaginationFooter

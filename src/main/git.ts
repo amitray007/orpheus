@@ -89,6 +89,9 @@ export type GitCommit = {
   author: string
   authorEmail: string
   timestamp: number // epoch ms
+  filesChanged: number
+  insertions: number
+  deletions: number
 }
 
 export function listBranches(cwd: string): GitBranchInfo[] {
@@ -188,10 +191,15 @@ export function listCommits(
     // Case-insensitive subject grep; git matches against the commit message.
     args.push('-i', `--grep=${opts.grep}`)
   }
+  // SENTINEL prefixes every commit's metadata line so the parser can
+  // distinguish it from --shortstat lines that follow ("3 files changed, ...").
+  // Without it, multi-line shortstat output would shred line-based splitting.
+  const SENTINEL = '__ORPH_COMMIT__'
   args.push(
+    '--shortstat',
     `--max-count=${limit}`,
     `--skip=${offset}`,
-    '--format=%H%x09%h%x09%s%x09%an%x09%ae%x09%ct'
+    `--format=${SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
   )
   try {
     const out = childProcess.execFileSync('git', args, {
@@ -199,21 +207,40 @@ export function listCommits(
       timeout: 3000,
       encoding: 'utf-8'
     })
-    return out
-      .split('\n')
-      .filter((l) => l.trim().length > 0)
-      .map((line) => {
-        const parts = line.split('\t')
+    const commits: GitCommit[] = []
+    let current: GitCommit | null = null
+    // shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
+    // insertions or deletions may be absent (pure additions / pure deletions).
+    const statRe =
+      /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
+    for (const raw of out.split('\n')) {
+      if (raw.startsWith(SENTINEL)) {
+        if (current) commits.push(current)
+        const parts = raw.slice(SENTINEL.length).split('\t')
         const ts = parseInt(parts[5], 10)
-        return {
+        current = {
           fullSha: parts[0] ?? '',
           sha: parts[1] ?? '',
           subject: parts[2] ?? '',
           author: parts[3] ?? '',
           authorEmail: parts[4] ?? '',
-          timestamp: isNaN(ts) ? 0 : ts * 1000
+          timestamp: isNaN(ts) ? 0 : ts * 1000,
+          filesChanged: 0,
+          insertions: 0,
+          deletions: 0
         }
-      })
+        continue
+      }
+      if (!current) continue
+      const m = statRe.exec(raw)
+      if (m) {
+        current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
+        current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
+        current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
+      }
+    }
+    if (current) commits.push(current)
+    return commits
   } catch {
     return []
   }
