@@ -99,9 +99,11 @@ function CommitRow({ commit }: { commit: GitCommit }): React.JSX.Element {
           </button>
         </span>
         <span>·</span>
-        <span>{commit.author}</span>
+        <span title={commit.authorEmail || undefined}>{commit.author}</span>
         <span>·</span>
-        <span>{relativeTime(commit.timestamp)}</span>
+        <span title={new Date(commit.timestamp).toLocaleString()}>
+          {relativeTime(commit.timestamp)}
+        </span>
         {hasStats && (
           <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px]">
             <span
