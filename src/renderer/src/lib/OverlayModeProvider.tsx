@@ -54,8 +54,10 @@ export function OverlayModeProvider({ children }: { children: ReactNode }): Reac
 
   // Memoize the context value so consumers' [ctx]-dep effects don't
   // tear down + re-run (and accidentally re-fire setOverlay IPC) on
-  // every provider render. All three callbacks are themselves stable
-  // via useCallback, so the dependency list is empty.
+  // every provider render. The three callbacks are themselves stable
+  // via useCallback, so the deps below are referentially stable and the
+  // memo only re-computes if one of them is replaced — which shouldn't
+  // happen during the provider's lifetime.
   const value = useMemo(
     () => ({ setActiveWorkspace, acquire, release }),
     [setActiveWorkspace, acquire, release]

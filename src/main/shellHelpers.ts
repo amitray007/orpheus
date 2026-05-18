@@ -20,9 +20,22 @@ export function getUserShellPath(): Promise<string> {
     shellPathPromise = Promise.resolve('')
     return shellPathPromise
   }
+  // Validate that SHELL is an absolute path with no shell metacharacters
+  // before spawning — defence in depth in case the env is tampered with.
+  // execFile (vs exec) already avoids shell interpretation of the command
+  // string, but the binary path itself goes to the OS verbatim.
+  if (!/^\/[\w./@+-]+$/.test(userShell)) {
+    console.warn('[shellHelpers] SHELL value rejected (not a clean absolute path):', userShell)
+    shellPathPromise = Promise.resolve('')
+    return shellPathPromise
+  }
   shellPathPromise = new Promise<string>((resolve) => {
-    childProcess.exec(
-      `${userShell} -ilc 'printf "%s" "$PATH"'`,
+    // execFile avoids shell interpretation of the command — args are passed
+    // directly to the userShell binary as argv, so quoting / metacharacters
+    // in process.env.SHELL can't form a new command.
+    childProcess.execFile(
+      userShell,
+      ['-ilc', 'printf "%s" "$PATH"'],
       { timeout: 5000 },
       (err, stdout) => {
         if (err) {

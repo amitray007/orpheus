@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
 import { SettingRow, Toggle, Select } from './primitives'
@@ -127,7 +127,6 @@ export function OrpheusStatusSection(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ClaudeStatusSnapshot | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [, setTick] = useState(0)
-  const cleanupRef = useRef<(() => void) | null>(null)
   const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot?.isFetching ?? false)
 
   // Tick every 10 seconds to update relative timestamps
@@ -156,7 +155,6 @@ export function OrpheusStatusSection(): React.JSX.Element {
     const off = window.api.status.onChange((s) => {
       if (!cancelled) setSnapshot(s)
     })
-    cleanupRef.current = off
 
     return () => {
       cancelled = true

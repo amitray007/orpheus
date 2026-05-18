@@ -123,7 +123,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     soundPack: (row.sound_pack ?? 'core') as SoundPack,
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
-    // Status polling preferences (v42; default raised in v43)
+    // Status polling preferences (v42)
     statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     updatedAt: row.updated_at
@@ -148,6 +148,10 @@ const VALID_SOUND_PACKS: SoundPack[] = [
   'organic',
   'soft'
 ]
+// Allowed values for the status poller interval. Must stay in sync with the
+// Select options surfaced in OrpheusStatusSection.tsx (5/10/15/30 min,
+// 1/2/3 hr) so the UI never offers a value the validator rejects.
+const VALID_STATUS_POLL_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800] as const
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -188,6 +192,23 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('soundPack' in patch && patch.soundPack !== undefined) {
     if (!VALID_SOUND_PACKS.includes(patch.soundPack as SoundPack)) {
       throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
+    }
+  }
+  if ('statusPollIntervalSec' in patch && patch.statusPollIntervalSec !== undefined) {
+    if (
+      typeof patch.statusPollIntervalSec !== 'number' ||
+      !VALID_STATUS_POLL_INTERVALS.includes(
+        patch.statusPollIntervalSec as (typeof VALID_STATUS_POLL_INTERVALS)[number]
+      )
+    ) {
+      throw new Error(
+        `uiState: statusPollIntervalSec must be one of ${VALID_STATUS_POLL_INTERVALS.join(', ')}`
+      )
+    }
+  }
+  if ('muteStatusNotifications' in patch && patch.muteStatusNotifications !== undefined) {
+    if (typeof patch.muteStatusNotifications !== 'boolean') {
+      throw new Error('uiState: muteStatusNotifications must be a boolean')
     }
   }
 }

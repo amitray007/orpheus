@@ -64,13 +64,19 @@ function relativeTime(ms: number): string {
 function CommitRow({ commit }: { commit: GitCommit }): React.JSX.Element {
   const [copied, setCopied] = useState(false)
 
+  // Reset the copied flag ~1.2s after it flips true. Cleanup clears the
+  // pending timer so unmounting (paging / filter change) or re-clicking the
+  // button before the timer fires can't set state on an unmounted row.
+  useEffect(() => {
+    if (!copied) return
+    const id = setTimeout(() => setCopied(false), 1200)
+    return () => clearTimeout(id)
+  }, [copied])
+
   async function handleCopy(): Promise<void> {
     try {
       await navigator.clipboard.writeText(commit.fullSha)
       setCopied(true)
-      // Reset back to the Copy glyph after the user has had time to register
-      // the success state without lingering forever.
-      setTimeout(() => setCopied(false), 1200)
     } catch (err) {
       console.error('[CommitsTab] clipboard copy failed', err)
     }

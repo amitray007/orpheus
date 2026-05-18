@@ -290,6 +290,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Poll git status for all non-archived workspaces every 30s.
   // 300ms debounce prevents burst spawns when workspacesByProject updates rapidly.
+  // Self-scheduling setTimeout chain (not setInterval) so a slow refresh
+  // can't overlap with the next tick — gh can take seconds on flaky networks,
+  // and concurrent IPC calls produced out-of-order state patches before.
   useEffect(() => {
     const workspaces = Object.values(workspacesByProject)
       .flat()
@@ -297,6 +300,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     if (workspaces.length === 0) return
 
     let cancelled = false
+    let nextTickId: ReturnType<typeof setTimeout> | null = null
 
     async function refresh(): Promise<void> {
       const gitResults: Record<string, GitStatus | null> = {}
@@ -331,12 +335,20 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
     }
 
-    const debounceTimer = setTimeout(refresh, 300)
-    const interval = setInterval(refresh, 30000)
+    function schedule(delay: number): void {
+      nextTickId = setTimeout(async () => {
+        nextTickId = null
+        if (cancelled) return
+        await refresh()
+        if (!cancelled) schedule(30000)
+      }, delay)
+    }
+
+    schedule(300) // initial debounce, then every 30s after each completes
+
     return () => {
       cancelled = true
-      clearTimeout(debounceTimer)
-      clearInterval(interval)
+      if (nextTickId !== null) clearTimeout(nextTickId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspacesPollKey])

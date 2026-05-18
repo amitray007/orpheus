@@ -188,13 +188,16 @@ export function Select<T extends string>({
   }, [open, options.length])
 
   // Close on outside mousedown.
+  // Route through closeMenu() so focus returns to the trigger when the user
+  // clicks onto a non-focusable surface (otherwise the listbox unmounts with
+  // focus on it and keyboard nav lands on document.body).
   useEffect(() => {
     if (!open) return
     function onMouseDown(e: MouseEvent): void {
       const t = e.target as Node
       if (popoverRef.current?.contains(t)) return
       if (triggerRef.current?.contains(t)) return
-      setOpen(false)
+      closeMenu()
     }
     document.addEventListener('mousedown', onMouseDown)
     return () => document.removeEventListener('mousedown', onMouseDown)
