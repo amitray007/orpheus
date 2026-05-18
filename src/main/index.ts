@@ -1409,10 +1409,7 @@ app.whenReady().then(() => {
 
   // Start the Claude service-status poller (3s initial delay, then per user setting).
   // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
-  const mainWin = getMainWindow()
-  if (mainWin) {
-    startStatusPoller(mainWin)
-  }
+  startStatusPoller()
 
   // Pre-warm the shell PATH resolution so doctor:check doesn't block on first call.
   getUserShellPath().catch(() => {

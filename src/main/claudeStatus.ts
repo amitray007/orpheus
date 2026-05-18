@@ -363,7 +363,10 @@ export function getStatusSnapshot(): ClaudeStatusSnapshot {
   return snapshot
 }
 
-export function startStatusPoller(_mainWindow: Electron.BrowserWindow): void {
+// Window reference isn't needed today — broadcasts go via BrowserWindow.getAllWindows()
+// inside runPoll(). Kept signature parameter-less; callers in index.ts can pass
+// no args once they're updated.
+export function startStatusPoller(): void {
   // First fetch after a short delay to not compete with critical-path boot
   pollTimer = setTimeout(() => {
     pollTimer = null

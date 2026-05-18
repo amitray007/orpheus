@@ -508,6 +508,7 @@ function ProjectRow({
 
   // Sync rename input when project name changes externally (useEffect avoids render-time setState)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
     if (!renaming) setRenameValue(project.name)
   }, [project.name, renaming])
 

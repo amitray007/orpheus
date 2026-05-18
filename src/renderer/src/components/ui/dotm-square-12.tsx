@@ -1,6 +1,7 @@
 'use client'
 
 import type { CSSProperties } from 'react'
+import type React from 'react'
 
 import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
 import { useDotMatrixPhases } from '@/components/ui/dotmatrix-hooks'
@@ -45,7 +46,7 @@ export function DotmSquare12({
   animated = true,
   hoverAnimated = false,
   ...rest
-}: DotmSquare12Props) {
+}: DotmSquare12Props): React.JSX.Element {
   const reducedMotion = usePrefersReducedMotion()
   const {
     phase: matrixPhase,
