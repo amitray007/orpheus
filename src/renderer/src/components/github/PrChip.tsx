@@ -90,8 +90,16 @@ export function PrChip({ pr, variant = 'chip', clickable = true }: PrChipProps):
 
   const content =
     variant === 'icon' ? (
-      <span className={`inline-flex items-center ${stateColor}`} title={tooltip}>
-        <StateIcon state={pr.state} size={12} />
+      // Match ActivityIndicator's container shape (w-3 + flex-centered +
+      // leading-none) so the chip and the activity dot share the same visual
+      // baseline. SVG sized at 11 so its visual footprint matches the small
+      // text glyph (`●`) the activity indicator uses; otherwise the SVG fills
+      // edge-to-edge and reads as visually higher than the dot.
+      <span
+        className={`inline-flex items-center justify-center flex-shrink-0 leading-none w-3 h-3 ${stateColor}`}
+        title={tooltip}
+      >
+        <StateIcon state={pr.state} size={11} />
       </span>
     ) : (
       <span className="inline-flex items-center gap-1 text-[11px] font-mono" title={tooltip}>

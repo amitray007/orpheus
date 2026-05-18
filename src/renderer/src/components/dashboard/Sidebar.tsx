@@ -219,11 +219,7 @@ function WorkspaceSubRow({
             then the activity / stack glyph. PR icon only renders when a PR
             exists, slight horizontal jiggle on state change is acceptable
             because openings/closings are infrequent. */}
-        {pr && (
-          <span className="flex-shrink-0 -mr-1">
-            <PrChip pr={pr} variant="icon" clickable={false} />
-          </span>
-        )}
+        {pr && <PrChip pr={pr} variant="icon" clickable={false} />}
         <span className="flex-shrink-0">
           {activity && activity !== 'archived' ? (
             <ActivityIndicator detail={activity} />
