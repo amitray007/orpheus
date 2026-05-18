@@ -147,6 +147,10 @@ export function Select<T extends string>({
 
   function openMenu(): void {
     if (disabled) return
+    // No options = nothing to choose. Treat as disabled so the keyboard
+    // handler's `(h + 1) % options.length` can't produce NaN and the
+    // popover doesn't open into an empty listbox.
+    if (options.length === 0) return
     setHighlight(selectedIndex >= 0 ? selectedIndex : 0)
     setOpen(true)
   }

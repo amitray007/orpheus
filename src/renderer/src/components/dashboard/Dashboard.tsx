@@ -4,9 +4,6 @@ import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
-
-const Sidebar = memo(SidebarBase)
-const MainContent = memo(MainContentBase)
 import type {
   AppUiState,
   PinnedItem,
@@ -17,6 +14,9 @@ import type {
   GhPullRequest,
   WorkspaceActivityDetail
 } from '@shared/types'
+
+const Sidebar = memo(SidebarBase)
+const MainContent = memo(MainContentBase)
 
 interface DashboardProps {
   claudeInstalled: boolean

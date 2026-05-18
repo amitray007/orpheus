@@ -75,9 +75,13 @@ const MAX_TITLE_LENGTH = 60
 function extractTitle(jsonlPath: string): string | null {
   try {
     const fd = fs.openSync(jsonlPath, 'r')
+    let bytesRead: number
     const buf = Buffer.allocUnsafe(MAX_BYTES)
-    const bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
-    fs.closeSync(fd)
+    try {
+      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
     const lines = text.split('\n')
@@ -145,9 +149,13 @@ function extractTitle(jsonlPath: string): string | null {
 function extractModel(jsonlPath: string): string | null {
   try {
     const fd = fs.openSync(jsonlPath, 'r')
+    let bytesRead: number
     const buf = Buffer.allocUnsafe(MAX_BYTES)
-    const bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
-    fs.closeSync(fd)
+    try {
+      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
     const lines = text.split('\n')
@@ -183,8 +191,11 @@ function extractLastMessageRole(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
@@ -225,8 +236,11 @@ function extractMessageCount(jsonlPath: string): number | null {
     // Read from the start so we count from the beginning of the conversation.
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, 0)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
     const text = buf.toString('utf-8')
     const lines = text.split('\n')
     let count = 0
@@ -275,8 +289,11 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
@@ -372,8 +389,11 @@ function extractLastUserMessagePreview(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
