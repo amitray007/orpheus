@@ -72,7 +72,9 @@ const api = {
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
     destroy: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:destroy', { workspaceId })
+      ipcRenderer.invoke('terminal:destroy', { workspaceId }),
+    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
+      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')

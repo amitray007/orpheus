@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
 import { DotmSquare11 } from './components/ui/dotm-square-11'
+import { OverlayModeProvider } from './lib/overlayMode'
 import type { DoctorResult } from '@shared/types'
 
 function App(): React.JSX.Element {
@@ -27,6 +28,20 @@ function App(): React.JSX.Element {
 
   const showMissingModal = doctor !== null && !doctor.claudeInstalled
 
+  return (
+    <OverlayModeProvider>
+      <AppShell doctor={doctor} runDoctor={runDoctor} showMissingModal={showMissingModal} />
+    </OverlayModeProvider>
+  )
+}
+
+interface AppShellProps {
+  doctor: DoctorResult | null
+  runDoctor: () => Promise<void>
+  showMissingModal: boolean
+}
+
+function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React.JSX.Element {
   return (
     <main className="app h-full">
       {doctor === null ? (

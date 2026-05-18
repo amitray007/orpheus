@@ -2,6 +2,7 @@ import type React from 'react'
 import { useEffect, useState } from 'react'
 import { Button } from './Button'
 import { playSound } from '../lib/sound'
+import { useTerminalOverlay } from '../lib/overlayMode'
 
 export interface ConfirmModalProps {
   title: string
@@ -23,6 +24,11 @@ export function ConfirmModal({
   onCancel
 }: ConfirmModalProps): React.JSX.Element {
   const [loading, setLoading] = useState(false)
+
+  // Flip ghostty's NSView behind the WebContents while this modal is on
+  // screen so the dialog paints above the terminal pixels. Refcounted in
+  // the OverlayModeProvider, so nested overlays nest cleanly.
+  useTerminalOverlay()
 
   // Sound on mount
   useEffect(() => {

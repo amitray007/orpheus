@@ -1189,6 +1189,7 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
+  setOverlay: (workspaceId: string, on: boolean) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (
@@ -1343,6 +1344,19 @@ ipcMain.handle(
   ): void => {
     const addon = loadTerminalAddon()
     addon.resize(workspaceId, rect, scaleFactor)
+  }
+)
+
+// Move the workspace's ghostty NSView between the FAST PATH (top sibling,
+// opaque, no compositor blend) and the OVERLAY PATH (bottom sibling so DOM
+// popovers stack above the terminal pixels). The renderer's
+// useTerminalOverlay hook refcounts open overlays and only flips when the
+// count transitions across zero, so this IPC fires rarely and is cheap.
+ipcMain.handle(
+  'terminal:setOverlay',
+  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+    const addon = loadTerminalAddon()
+    addon.setOverlay(workspaceId, on)
   }
 )
 

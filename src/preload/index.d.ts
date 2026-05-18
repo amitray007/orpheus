@@ -65,6 +65,7 @@ declare global {
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
+        setOverlay: (workspaceId: string, on: boolean) => Promise<void>
       }
       config: {
         openFolder: () => Promise<string | null>
