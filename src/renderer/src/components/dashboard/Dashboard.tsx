@@ -14,6 +14,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
+  GhPullRequest,
   WorkspaceActivityDetail
 } from '@shared/types'
 
@@ -51,6 +52,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<
     Record<string, GitStatus | null>
   >({})
+
+  // GitHub PR per workspace id — null means "no PR for this branch" so the
+  // map distinguishes "not yet fetched" (undefined) from "fetched, none found"
+  // (null). Rides the same 30s cadence as the git-status poll below.
+  const [prByWorkspaceId, setPrByWorkspaceId] = useState<Record<string, GhPullRequest | null>>({})
 
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
@@ -283,20 +289,35 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     let cancelled = false
 
     async function refresh(): Promise<void> {
-      const results: Record<string, GitStatus | null> = {}
+      const gitResults: Record<string, GitStatus | null> = {}
+      const prResults: Record<string, GhPullRequest | null> = {}
       // Sequential to avoid spawning N git processes at once
       for (const ws of workspaces) {
         if (cancelled) return
         try {
           const status = await window.api.git.status(ws.cwd)
-          results[ws.id] = status
+          gitResults[ws.id] = status
+          // Branch came back — ask gh for the PR. The IPC layer caches with a
+          // 2-min TTL so the 30s loop doesn't actually re-shell on every tick.
+          if (status?.branch) {
+            try {
+              prResults[ws.id] = await window.api.github.prForBranch(ws.cwd, status.branch)
+            } catch (err) {
+              console.error('[dashboard] gh pr lookup failed for', ws.id, err)
+              prResults[ws.id] = null
+            }
+          } else {
+            prResults[ws.id] = null
+          }
         } catch (err) {
           console.error('[dashboard] git status failed for', ws.id, err)
-          results[ws.id] = null
+          gitResults[ws.id] = null
+          prResults[ws.id] = null
         }
       }
       if (!cancelled) {
-        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...results }))
+        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...gitResults }))
+        setPrByWorkspaceId((prev) => ({ ...prev, ...prResults }))
       }
     }
 
@@ -803,6 +824,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           workspacesByProject={workspacesByProject}
           workspaceActivities={workspaceActivities}
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+          prByWorkspaceId={prByWorkspaceId}
           titleByWorkspaceId={titleByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
@@ -852,6 +874,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            prByWorkspaceId={prByWorkspaceId}
             titleByWorkspaceId={titleByWorkspaceId}
             fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           />

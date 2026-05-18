@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type React from 'react'
-import type { WorkspaceRecord, WorkspaceStatus, WorkspaceActivityDetail } from '@shared/types'
+import type {
+  GhPullRequest,
+  WorkspaceRecord,
+  WorkspaceStatus,
+  WorkspaceActivityDetail
+} from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 
@@ -11,9 +16,15 @@ interface WorkspaceViewProps {
    *  glyph on re-mount so a tool / compacting / asking sub-state survives a
    *  navigation round-trip until the next hook event refreshes it. */
   initialDetail?: WorkspaceActivityDetail
+  /** Open PR for this workspace's current branch, fetched at Dashboard level. */
+  pr?: GhPullRequest | null
 }
 
-export function WorkspaceView({ workspace, initialDetail }: WorkspaceViewProps): React.JSX.Element {
+export function WorkspaceView({
+  workspace,
+  initialDetail,
+  pr
+}: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
@@ -177,7 +188,12 @@ export function WorkspaceView({ workspace, initialDetail }: WorkspaceViewProps):
     <>
       {titleBarHost &&
         createPortal(
-          <WorkspaceTitleBar workspace={workspace} drawer={drawer} onSetDrawer={setDrawer} />,
+          <WorkspaceTitleBar
+            workspace={workspace}
+            drawer={drawer}
+            onSetDrawer={setDrawer}
+            pr={pr}
+          />,
           titleBarHost
         )}
 

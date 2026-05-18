@@ -22,6 +22,7 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -177,6 +178,9 @@ declare global {
           cwd: string,
           opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
         ) => Promise<number>
+      }
+      github: {
+        prForBranch: (cwd: string, branch: string) => Promise<GhPullRequest | null>
       }
       shell: {
         revealInFinder: (path: string) => Promise<void>

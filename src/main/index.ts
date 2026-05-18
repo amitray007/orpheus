@@ -9,6 +9,7 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
 import { getGitStatus, listBranches, listCommits, countCommits } from './git'
+import { getPrForBranch } from './github'
 import { getDb } from './db'
 import {
   listProjects,
@@ -99,7 +100,8 @@ import {
   openTerminal,
   copyToClipboard,
   listEditorApps,
-  listTerminalApps
+  listTerminalApps,
+  getUserShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -636,31 +638,6 @@ function createWindow(): void {
 // interactive subshell once on first check, capture its $PATH, and cache it.
 //
 // The resolution is async so the main thread doesn't block on the first call.
-// A pre-warm is kicked off in app.whenReady() so the Promise is usually already
-// settled by the time the first doctor:check fires.
-let shellPathPromise: Promise<string> | null = null
-
-function getUserShellPath(): Promise<string> {
-  if (shellPathPromise !== null) return shellPathPromise
-  const shell = process.env['SHELL']
-  if (!shell) {
-    console.warn('[orpheus] SHELL not set; user PATH cannot be derived')
-    shellPathPromise = Promise.resolve('')
-    return shellPathPromise
-  }
-  shellPathPromise = new Promise<string>((resolve) => {
-    childProcess.exec(`${shell} -ilc 'printf "%s" "$PATH"'`, { timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        console.warn('[orpheus] failed to read user shell PATH:', err)
-        resolve('')
-      } else {
-        resolve(stdout.trim())
-      }
-    })
-  })
-  return shellPathPromise
-}
-
 // Cache for checkClaude — invalidated on app focus change (app:focus event).
 // 30s TTL guards against stale "not installed" results if the user installs
 // claude while Orpheus is open.
@@ -1134,6 +1111,14 @@ ipcMain.handle(
   'git:count',
   (_e, args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }) =>
     countCommits(args.cwd, args)
+)
+
+// ---------------------------------------------------------------------------
+// GitHub IPC — `gh` CLI passthrough; null on every failure mode.
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
+  getPrForBranch(cwd, branch)
 )
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -252,6 +253,10 @@ const api = {
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
     ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts })
+  },
+  github: {
+    prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
+      ipcRenderer.invoke('github:prForBranch', { cwd, branch })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>

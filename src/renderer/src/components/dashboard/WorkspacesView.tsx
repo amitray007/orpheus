@@ -4,10 +4,12 @@ import type {
   WorkspaceRecord,
   WorkspaceActivityDetail,
   ProjectRecord,
-  GitStatus
+  GitStatus,
+  GhPullRequest
 } from '@shared/types'
 import { GitMerge } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
+import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { DotmSquare18 } from '../ui/dotm-square-18'
 
@@ -94,6 +96,7 @@ interface WorkspaceCardProps {
   activityDetail: WorkspaceActivityDetail | undefined
   terminalTitle: string | null
   gitStatus: GitStatus | null
+  pr: GhPullRequest | null
   onClick: () => void
 }
 
@@ -104,6 +107,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
   activityDetail,
   terminalTitle,
   gitStatus,
+  pr,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
   const sessionTitle = session?.title ?? null
@@ -145,11 +149,20 @@ const WorkspaceCard = memo(function WorkspaceCard({
         <span className="text-[11px] text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
       </span>
 
-      {/* Row 3: git branch (only when available) */}
-      {branch && (
-        <span className="flex items-center gap-1 text-[11px] text-text-muted min-w-0">
-          <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
-          <span className="truncate font-mono">{branch}</span>
+      {/* Row 3: git branch + (when PR exists for this branch) PR chip on the right */}
+      {(branch || pr) && (
+        <span className="flex items-center gap-2 text-[11px] text-text-muted min-w-0">
+          {branch && (
+            <span className="flex items-center gap-1 min-w-0">
+              <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
+              <span className="truncate font-mono">{branch}</span>
+            </span>
+          )}
+          {pr && (
+            <span className="ml-auto flex-shrink-0">
+              <PrChip pr={pr} variant="chip" />
+            </span>
+          )}
         </span>
       )}
 
@@ -175,6 +188,7 @@ interface KanbanColumnProps {
   activities: Record<string, WorkspaceActivityDetail>
   titleByWorkspaceId: Record<string, string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  prByWorkspaceId: Record<string, GhPullRequest | null>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
 }
 
@@ -186,6 +200,7 @@ const KanbanColumn = memo(function KanbanColumn({
   activities,
   titleByWorkspaceId,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
   onNavigateToWorkspace
 }: KanbanColumnProps): React.JSX.Element {
   return (
@@ -220,6 +235,7 @@ const KanbanColumn = memo(function KanbanColumn({
                 activityDetail={activities[ws.id]}
                 terminalTitle={titleByWorkspaceId[ws.id] ?? null}
                 gitStatus={gitStatusByWorkspaceId[ws.id] ?? null}
+                pr={prByWorkspaceId[ws.id] ?? null}
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
             )
@@ -244,6 +260,7 @@ export interface WorkspacesViewProps {
   titleByWorkspaceId: Record<string, string>
   sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
+  prByWorkspaceId?: Record<string, GhPullRequest | null>
 }
 
 export function WorkspacesView({
@@ -253,7 +270,8 @@ export function WorkspacesView({
   workspaceActivities,
   titleByWorkspaceId,
   sessions,
-  gitStatusByWorkspaceId = {}
+  gitStatusByWorkspaceId = {},
+  prByWorkspaceId = {}
 }: WorkspacesViewProps): React.JSX.Element {
   // Build fast lookups
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects])
@@ -308,6 +326,7 @@ export function WorkspacesView({
             activities={workspaceActivities}
             titleByWorkspaceId={titleByWorkspaceId}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            prByWorkspaceId={prByWorkspaceId}
             onNavigateToWorkspace={onNavigateToWorkspace}
           />
         ))}

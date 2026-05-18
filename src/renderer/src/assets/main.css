@@ -37,6 +37,14 @@
   --color-accent-hover: var(--color-accent-hover);
   --color-accent-on: var(--color-accent-on);
 
+  /* GitHub PR-state palette — fixed across themes so chip colors match
+     github.com's own header semantics. Sourced from Primer (open=#1a7f37,
+     merged=#8250df, closed=#cf222e, draft=#6e7781). */
+  --color-gh-open: #1a7f37;
+  --color-gh-merged: #8250df;
+  --color-gh-closed: #cf222e;
+  --color-gh-draft: #6e7781;
+
   --font-sans:
     'Geist Pixel', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono: 'Geist Pixel', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;

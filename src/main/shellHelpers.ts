@@ -3,6 +3,41 @@ import * as childProcess from 'node:child_process'
 import * as fs from 'node:fs'
 
 // ---------------------------------------------------------------------------
+// User-shell PATH resolution
+// Finder-launched Electron apps inherit a stripped PATH that omits Homebrew
+// and most user-installed bins. Shelling out to the user's login+interactive
+// shell once on app start lets the rest of the process resolve `claude`,
+// `gh`, etc. the same way they do in Terminal.app.
+// ---------------------------------------------------------------------------
+
+let shellPathPromise: Promise<string> | null = null
+
+export function getUserShellPath(): Promise<string> {
+  if (shellPathPromise !== null) return shellPathPromise
+  const userShell = process.env['SHELL']
+  if (!userShell) {
+    console.warn('[shellHelpers] SHELL not set; user PATH cannot be derived')
+    shellPathPromise = Promise.resolve('')
+    return shellPathPromise
+  }
+  shellPathPromise = new Promise<string>((resolve) => {
+    childProcess.exec(
+      `${userShell} -ilc 'printf "%s" "$PATH"'`,
+      { timeout: 5000 },
+      (err, stdout) => {
+        if (err) {
+          console.warn('[shellHelpers] failed to read user shell PATH:', err)
+          resolve('')
+        } else {
+          resolve(stdout.trim())
+        }
+      }
+    )
+  })
+  return shellPathPromise
+}
+
+// ---------------------------------------------------------------------------
 // App detection
 // ---------------------------------------------------------------------------
 

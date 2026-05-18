@@ -536,6 +536,22 @@ export type WorkspaceActivityDetail =
   | 'idle'
   | 'archived'
 
+// GitHub PR state mapped from `gh pr list` plus the draft flag — drafts come
+// back as OPEN with isDraft=true; we hoist draft into its own state so chip
+// color reflects GitHub's own header (open=green, draft=gray, merged=purple,
+// closed=red).
+export type GhPullRequestState = 'open' | 'draft' | 'merged' | 'closed'
+
+export type GhPullRequest = {
+  number: number
+  state: GhPullRequestState
+  title: string
+  url: string
+  author: string | null
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  checks: 'success' | 'failure' | 'pending' | null
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

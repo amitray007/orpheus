@@ -8,6 +8,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
+  GhPullRequest,
   WorkspaceActivityDetail
 } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -15,6 +16,7 @@ import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
 import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
+import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
 
@@ -94,6 +96,8 @@ interface WorkspaceRowProps {
   active: boolean
   activity: WorkspaceActivityDetail | undefined
   gitStatus?: GitStatus | null
+  /** Open PR for this workspace's current branch (null when none). */
+  pr?: GhPullRequest | null
   /** Terminal title resolved from the hoisted Dashboard-level titleByWorkspaceId map */
   terminalTitle: string | null
   /** Map from claudeSessionId → first-user-prompt title (fetched once per project). */
@@ -114,6 +118,7 @@ function WorkspaceSubRow({
   active,
   activity,
   gitStatus,
+  pr,
   terminalTitle,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
@@ -210,7 +215,15 @@ function WorkspaceSubRow({
         title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
         aria-label={workspace.name}
       >
-        {/* Left: activity glyph (vertically centered with single-line title) */}
+        {/* Left chrome: optional PR state icon (rearranged prefix per design),
+            then the activity / stack glyph. PR icon only renders when a PR
+            exists, slight horizontal jiggle on state change is acceptable
+            because openings/closings are infrequent. */}
+        {pr && (
+          <span className="flex-shrink-0 -mr-1">
+            <PrChip pr={pr} variant="icon" clickable={false} />
+          </span>
+        )}
         <span className="flex-shrink-0">
           {activity && activity !== 'archived' ? (
             <ActivityIndicator detail={activity} />
@@ -411,6 +424,7 @@ interface ProjectRowProps {
   selectedWorkspaceId?: string | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  prByWorkspaceId: Record<string, GhPullRequest | null>
   titleByWorkspaceId: Record<string, string>
   /** Map from claudeSessionId → session title for all sessions in this project. */
   sessionTitleBySessionId: Map<string, string>
@@ -462,6 +476,7 @@ function ProjectRow({
   selectedWorkspaceId,
   workspaceActivities,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
   titleByWorkspaceId,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
@@ -663,6 +678,7 @@ function ProjectRow({
                   }
                   activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
+                  pr={prByWorkspaceId[ws.id]}
                   terminalTitle={titleByWorkspaceId[ws.id] ?? null}
                   sessionTitleBySessionId={sessionTitleBySessionId}
                   sessionUserPreviewBySessionId={sessionUserPreviewBySessionId}
@@ -715,6 +731,7 @@ interface SidebarProps {
   workspacesByProject: Record<string, WorkspaceRecord[]>
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  prByWorkspaceId: Record<string, GhPullRequest | null>
   /** Hoisted terminal titles keyed by workspaceId — eliminates per-row onTitleChanged subscriptions */
   titleByWorkspaceId: Record<string, string>
   // Sidebar behavior preferences (v12)
@@ -757,6 +774,7 @@ export function Sidebar({
   workspacesByProject,
   workspaceActivities,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
   titleByWorkspaceId,
   workspaceCountInline,
   sidebarWidth,
@@ -1067,6 +1085,7 @@ export function Sidebar({
                           selectedWorkspaceId={selectedWorkspaceId}
                           workspaceActivities={workspaceActivities}
                           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+                          prByWorkspaceId={prByWorkspaceId}
                           titleByWorkspaceId={titleByWorkspaceId}
                           sessionTitleBySessionId={
                             sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP

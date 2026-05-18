@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
-import type { WorkspaceRecord } from '@shared/types'
+import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
+import { PrChip } from '../github/PrChip'
 
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
   drawer: null | 'status' | 'overrides'
   onSetDrawer: (drawer: null | 'status' | 'overrides') => void
+  pr?: GhPullRequest | null
 }
 
 export function WorkspaceTitleBar({
   workspace,
   drawer,
-  onSetDrawer
+  onSetDrawer,
+  pr
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
@@ -43,6 +46,14 @@ export function WorkspaceTitleBar({
       >
         {workspace.nameIsAuto ? terminalTitle || workspace.name : workspace.name}
       </span>
+
+      {/* PR chip appears next to the workspace name when the current branch
+          has a PR on GitHub. Hides cleanly when no PR. */}
+      {pr && (
+        <span className="flex-shrink-0">
+          <PrChip pr={pr} variant="chip" />
+        </span>
+      )}
 
       <span className="text-text-muted text-xs">·</span>
       <span

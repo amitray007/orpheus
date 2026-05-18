@@ -3,6 +3,7 @@ import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import type {
+  GhPullRequest,
   GitStatus,
   ProjectRecord,
   SessionRecord,
@@ -64,6 +65,7 @@ interface MainContentProps {
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
+  prByWorkspaceId?: Record<string, GhPullRequest | null>
   titleByWorkspaceId?: Record<string, string>
   // Privacy (v37)
   fetchGithubAvatars?: boolean
@@ -86,6 +88,7 @@ export function MainContent({
   allWorkspaces,
   allSessions,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
   titleByWorkspaceId,
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
@@ -105,6 +108,7 @@ export function MainContent({
         titleByWorkspaceId={titleByWorkspaceId ?? {}}
         sessions={allSessions ?? []}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+        prByWorkspaceId={prByWorkspaceId}
       />
     )
   }
@@ -129,6 +133,7 @@ export function MainContent({
         key={workspace.id}
         workspace={workspace}
         initialDetail={workspaceActivities?.[workspace.id]}
+        pr={prByWorkspaceId?.[workspace.id] ?? null}
       />
     )
   }
