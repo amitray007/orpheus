@@ -66,9 +66,21 @@ const BLOCKING_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPla
 const activityMap = new Map<string, WorkspaceStatus>()
 const detailMap = new Map<string, DetailState>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
+
+// Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
+let cachedWatchdogSec: number | null = null
+
+/** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
+export function invalidateWatchdogCache(): void {
+  cachedWatchdogSec = null
+}
 const listeners = new Set<
   (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
 >()
+// Fires only on the SessionStart hook, regardless of prior activity status.
+// Used by loadingOverlay to dismiss its mount-time overlay reliably even when
+// the workspace was previously in 'awaiting_input' (re-mount of a known session).
+const sessionStartListeners = new Set<(workspaceId: string) => void>()
 const watchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
@@ -127,7 +139,10 @@ function clearWatchdog(workspaceId: string): void {
 
 function armWatchdog(workspaceId: string): void {
   clearWatchdog(workspaceId)
-  const userSec = getAppUiState().inProgressWatchdogSec ?? 120
+  if (cachedWatchdogSec === null) {
+    cachedWatchdogSec = getAppUiState().inProgressWatchdogSec ?? 120
+  }
+  const userSec = cachedWatchdogSec
   if (userSec <= 0) return
   const s = detailMap.get(workspaceId)
   const seconds = s?.compacting ? Math.max(userSec, 300) : userSec
@@ -190,7 +205,9 @@ function handleHookEvent(
   const ds = getDetailState(workspaceId)
   const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
   const msg = typeof payload.message === 'string' ? payload.message : null
-  console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
+  if (process.env['ORPHEUS_DEBUG_HOOKS'] === '1') {
+    console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
+  }
 
   switch (ev) {
     case 'pretool': {
@@ -243,6 +260,13 @@ function handleHookEvent(
       }
       break
     case 'session-start':
+      for (const cb of sessionStartListeners) {
+        try {
+          cb(workspaceId)
+        } catch {
+          /* ignore */
+        }
+      }
       break
   }
 
@@ -251,9 +275,8 @@ function handleHookEvent(
   dispatch(workspaceId, status)
 }
 
-export function resetWorkspaceActivity(workspaceId: string): void {
-  clearWatchdog(workspaceId)
-  dispatch(workspaceId, 'awaiting_input')
+export function onSessionStart(cb: (workspaceId: string) => void): void {
+  sessionStartListeners.add(cb)
 }
 
 /**
@@ -365,8 +388,19 @@ export function ensureManagedHooks(): void {
     hooksObj[hookEvent] = cleaned
   }
 
+  const newContent = JSON.stringify(parsed, null, 2)
+
+  // Skip the write + rename if the file already matches — avoids unnecessary
+  // disk I/O and atime bumps on every Orpheus launch.
+  try {
+    const existing = fs.readFileSync(settingsPath, 'utf-8').trim()
+    if (existing === newContent.trim()) return
+  } catch {
+    // File doesn't exist or is unreadable — proceed with write.
+  }
+
   const tmp = settingsPath + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf-8')
+  fs.writeFileSync(tmp, newContent, 'utf-8')
   fs.renameSync(tmp, settingsPath)
 }
 

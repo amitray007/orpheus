@@ -3,6 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSlashCommand, ClaudeSlashCommandDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
+import { Select } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSlashCommandsSection — full CRUD for ~/.claude/commands/ and project .claude/commands/
@@ -77,15 +78,11 @@ function SlashCommandForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | null>(null)
-  const firstFocusableRef = useRef<HTMLSelectElement | null>(null)
 
   useEffect(() => {
-    // Focus the first input or, when source is fixed, the name input
-    if (sourceFixed) {
-      firstInputRef.current?.focus()
-    } else {
-      firstFocusableRef.current?.focus()
-    }
+    // When the source is fixed (editing existing), focus the name input.
+    // Otherwise the Select primitive autofocuses its trigger via autoFocus.
+    if (sourceFixed) firstInputRef.current?.focus()
   }, [sourceFixed])
 
   useEffect(() => {
@@ -132,16 +129,13 @@ function SlashCommandForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label htmlFor="cmd-source" className={labelClass}>
-            Source
-          </label>
-          <select
-            id="cmd-source"
-            ref={firstFocusableRef}
+          <label className={labelClass}>Source</label>
+          <Select
+            ariaLabel="Source"
             disabled={sourceFixed}
+            autoFocus={!sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(e) => {
-              const val = e.target.value
+            onChange={(val) => {
               if (val === 'user') {
                 set('source', 'user')
                 set('projectId', '')
@@ -150,15 +144,11 @@ function SlashCommandForm({
                 set('projectId', val)
               }
             }}
-            className={inputClass}
-          >
-            <option value="user">User (~/.claude/commands)</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                Project · {p.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: 'user', label: 'User (~/.claude/commands)' },
+              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
+            ]}
+          />
         </div>
 
         {/* Name */}

@@ -75,9 +75,13 @@ const MAX_TITLE_LENGTH = 60
 function extractTitle(jsonlPath: string): string | null {
   try {
     const fd = fs.openSync(jsonlPath, 'r')
+    let bytesRead: number
     const buf = Buffer.allocUnsafe(MAX_BYTES)
-    const bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
-    fs.closeSync(fd)
+    try {
+      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
     const lines = text.split('\n')
@@ -145,9 +149,13 @@ function extractTitle(jsonlPath: string): string | null {
 function extractModel(jsonlPath: string): string | null {
   try {
     const fd = fs.openSync(jsonlPath, 'r')
+    let bytesRead: number
     const buf = Buffer.allocUnsafe(MAX_BYTES)
-    const bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
-    fs.closeSync(fd)
+    try {
+      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
     const lines = text.split('\n')
@@ -183,8 +191,11 @@ function extractLastMessageRole(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
@@ -216,8 +227,21 @@ function extractLastMessageRole(jsonlPath: string): string | null {
 // ---------------------------------------------------------------------------
 
 function extractMessageCount(jsonlPath: string): number | null {
+  // Bounded read — same MAX_BYTES cap as extractTitle / extractLastMessagePreview.
+  // On very long sessions this undercounts, but avoids loading unbounded files.
   try {
-    const text = fs.readFileSync(jsonlPath, 'utf-8')
+    const stat = fs.statSync(jsonlPath)
+    const fileSize = stat.size
+    const readSize = Math.min(fileSize, MAX_BYTES)
+    // Read from the start so we count from the beginning of the conversation.
+    const fd = fs.openSync(jsonlPath, 'r')
+    const buf = Buffer.allocUnsafe(readSize)
+    try {
+      fs.readSync(fd, buf, 0, readSize, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
+    const text = buf.toString('utf-8')
     const lines = text.split('\n')
     let count = 0
     for (const line of lines) {
@@ -265,8 +289,11 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
@@ -362,8 +389,11 @@ function extractLastUserMessagePreview(jsonlPath: string): string | null {
 
     const fd = fs.openSync(jsonlPath, 'r')
     const buf = Buffer.allocUnsafe(readSize)
-    fs.readSync(fd, buf, 0, readSize, offset)
-    fs.closeSync(fd)
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
 
     const text = buf.toString('utf-8')
     const lines = text.split('\n').reverse()
@@ -550,18 +580,22 @@ export function refreshSessionMetadata(projectId: string): void {
      WHERE id = ?`
   )
 
-  for (const row of nullRows) {
-    const title = extractTitle(row.jsonl_path)
-    const model = extractModel(row.jsonl_path)
-    const lastMessageRole = extractLastMessageRole(row.jsonl_path)
-    const messageCount = extractMessageCount(row.jsonl_path)
-    const jsonlSizeBytes = extractFileSize(row.jsonl_path)
-    try {
-      updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
-    } catch {
-      // Ignore individual row failures
+  // Wrap all UPDATEs in a single transaction — one fsync instead of N.
+  const runMetadataUpdates = db.transaction((rows: NullMetaRow[]) => {
+    for (const row of rows) {
+      const title = extractTitle(row.jsonl_path)
+      const model = extractModel(row.jsonl_path)
+      const lastMessageRole = extractLastMessageRole(row.jsonl_path)
+      const messageCount = extractMessageCount(row.jsonl_path)
+      const jsonlSizeBytes = extractFileSize(row.jsonl_path)
+      try {
+        updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
+      } catch {
+        // Ignore individual row failures
+      }
     }
-  }
+  })
+  runMetadataUpdates(nullRows)
 
   // Always re-extract last_message_preview and last_user_message_preview for
   // non-archived sessions so the snippets stay fresh as sessions accumulate more messages.
@@ -578,20 +612,23 @@ export function refreshSessionMetadata(projectId: string): void {
     `UPDATE sessions SET last_user_message_preview = ? WHERE id = ?`
   )
 
-  for (const row of activeRows) {
-    const preview = extractLastMessagePreview(row.jsonl_path)
-    try {
-      previewStmt.run(preview, row.id)
-    } catch {
-      // Ignore individual row failures
+  const runPreviewUpdates = db.transaction((rows: ActiveRow[]) => {
+    for (const row of rows) {
+      const preview = extractLastMessagePreview(row.jsonl_path)
+      try {
+        previewStmt.run(preview, row.id)
+      } catch {
+        // Ignore individual row failures
+      }
+      const userPreview = extractLastUserMessagePreview(row.jsonl_path)
+      try {
+        userPreviewStmt.run(userPreview, row.id)
+      } catch {
+        // Ignore individual row failures
+      }
     }
-    const userPreview = extractLastUserMessagePreview(row.jsonl_path)
-    try {
-      userPreviewStmt.run(userPreview, row.id)
-    } catch {
-      // Ignore individual row failures
-    }
-  }
+  })
+  runPreviewUpdates(activeRows)
 
   // Auto-prune: drop oldest non-archived rows if a cap is configured.
   const uiState = getAppUiState()

@@ -55,24 +55,12 @@ function statusToDetail(s: WorkspaceStatus): WorkspaceActivityDetail {
 interface ActivitySectionProps {
   activity: WorkspaceStatus
   detail: WorkspaceActivityDetail | undefined
-  workspaceId: string
 }
 
-function ActivitySection({
-  activity,
-  detail,
-  workspaceId
-}: ActivitySectionProps): React.JSX.Element {
+function ActivitySection({ activity, detail }: ActivitySectionProps): React.JSX.Element {
   const resolved = detail ?? statusToDetail(activity)
   const label = DETAIL_LABELS[resolved]
   const color = DETAIL_COLORS[resolved] ?? 'text-text-muted'
-  const canReset = activity === 'in_progress' || activity === 'attention'
-
-  function handleReset(): void {
-    window.api.workspaces.resetActivity(workspaceId).catch((err) => {
-      console.error('[drawer] resetActivity failed', err)
-    })
-  }
 
   return (
     <section className="flex flex-col px-4 pt-5 pb-4 border-b border-border-default/40">
@@ -87,16 +75,6 @@ function ActivitySection({
         </p>
       ) : (
         <p className="text-xs text-text-muted">Workspace is archived.</p>
-      )}
-      {canReset && (
-        <button
-          type="button"
-          onClick={handleReset}
-          className="self-start mt-3 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-overlay border border-border-default hover:border-border-hover text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          title="Use this if Claude was interrupted (Ctrl-C / Esc) and the indicator is stuck."
-        >
-          Mark as ready
-        </button>
       )}
     </section>
   )
@@ -381,7 +359,7 @@ export function WorkspaceDrawer({
 
       {/* Drawer body — single scrollable column */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        <ActivitySection activity={activity} detail={detail} workspaceId={workspace.id} />
+        <ActivitySection activity={activity} detail={detail} />
         <OverridesSection workspaceId={workspace.id} isDirty={isDirty} onRestart={onRestart} />
       </div>
     </div>

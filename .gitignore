@@ -14,6 +14,8 @@ packages/*/*.node
 # worktree clones (each one contains a .git pointer file that would otherwise
 # be added as a submodule) are ignored.
 .claude/worktrees/
+# Scheduler runtime lockfile written by Claude Code wake-up tasks
+.claude/scheduled_tasks.lock
 # TypeScript incremental build cache
 *.tsbuildinfo
 # Stray bundle extracts (e.g. from asar debugging) — never commit these

@@ -98,12 +98,13 @@ export function createWorkspace({
   // claudeSessionId stayed null, so the next launch started fresh).
   const claudeSessionId = crypto.randomUUID()
 
-  db.prepare(
-    `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, projectId, name, cwd, createdAt, claudeSessionId)
-
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  const row = db
+    .prepare(
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING *`
+    )
+    .get(id, projectId, name, cwd, createdAt, claudeSessionId) as WorkspaceRow | undefined
+  if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -141,16 +142,20 @@ export function getWorkspace(id: string): WorkspaceRecord | null {
 
 export function openWorkspace(id: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ?').run(Date.now(), id)
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  const row = db
+    .prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ? RETURNING *')
+    .get(Date.now(), id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`openWorkspace: workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
 export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord {
   const db = getDb()
   const pinnedAt = pinned ? Date.now() : null
-  db.prepare('UPDATE workspaces SET pinned_at = ? WHERE id = ?').run(pinnedAt, id)
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  const row = db
+    .prepare('UPDATE workspaces SET pinned_at = ? WHERE id = ? RETURNING *')
+    .get(pinnedAt, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`setWorkspacePinned: workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -175,8 +180,10 @@ export function archiveWorkspace(id: string): void {
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   const db = getDb()
-  db.prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ?').run(name, id)
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  const row = db
+    .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
+    .get(name, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`renameWorkspace: workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -223,16 +230,18 @@ const VALID_STATUSES: WorkspaceStatus[] = [
 ]
 
 /**
- * On app launch no claude processes are running yet, so any workspace still
- * persisted as 'in_progress' or 'attention' is left over from a prior session
- * (e.g. crash, hard quit). Reset them to 'idle' so the UI doesn't show a
- * forever-spinning "thinking" indicator. Archived workspaces are untouched.
+ * On app launch no claude processes are running yet, so any non-archived
+ * runtime status persisted from a prior session is stale by definition.
+ * Demote everything except 'archived' to 'idle' so the Workspaces kanban lands
+ * each row in "Waiting" until the user actually activates it and a SessionStart
+ * hook dispatches a fresh status. Without this, workspaces shown as
+ * in_progress / attention / awaiting_input from the prior session would
+ * surface as forever-thinking, attention-needed, or ready-to-go before the
+ * user has done anything.
  */
 export function resetTransientStatusesOnStartup(): number {
   const db = getDb()
-  const res = db
-    .prepare("UPDATE workspaces SET status = 'idle' WHERE status IN ('in_progress', 'attention')")
-    .run()
+  const res = db.prepare("UPDATE workspaces SET status = 'idle' WHERE status != 'archived'").run()
   return res.changes
 }
 
@@ -243,14 +252,19 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   const db = getDb()
   // Sync archived_at with status. Transitioning to 'archived' sets archived_at;
   // transitioning AWAY from 'archived' clears it.
+  let row: WorkspaceRow | undefined
   if (status === 'archived') {
-    db.prepare(
-      'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ?'
-    ).run(status, Date.now(), id)
+    row = db
+      .prepare(
+        'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
+      )
+      .get(status, Date.now(), id) as WorkspaceRow | undefined
   } else {
-    db.prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ?').run(status, id)
+    row = db
+      .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
+      .get(status, id) as WorkspaceRow | undefined
   }
-  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow
+  if (!row) throw new Error(`setWorkspaceStatus: workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 

@@ -3,6 +3,7 @@ import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import type {
+  GhPullRequest,
   GitStatus,
   ProjectRecord,
   SessionRecord,
@@ -64,6 +65,8 @@ interface MainContentProps {
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
+  prByWorkspaceId?: Record<string, GhPullRequest | null>
+  titleByWorkspaceId?: Record<string, string>
   // Privacy (v37)
   fetchGithubAvatars?: boolean
 }
@@ -85,6 +88,8 @@ export function MainContent({
   allWorkspaces,
   allSessions,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
+  titleByWorkspaceId,
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
@@ -100,8 +105,10 @@ export function MainContent({
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}
         workspaceActivities={workspaceActivities ?? {}}
+        titleByWorkspaceId={titleByWorkspaceId ?? {}}
         sessions={allSessions ?? []}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+        prByWorkspaceId={prByWorkspaceId}
       />
     )
   }
@@ -117,7 +124,18 @@ export function MainContent({
     // key forces React to unmount the old WorkspaceView and mount a fresh
     // one when the workspace changes — without this the useEffect with []
     // deps doesn't re-run and terminal:hide/mount never fires.
-    return <WorkspaceView key={workspace.id} workspace={workspace} />
+    // Seed initialDetail from the live activity map so re-mount after
+    // navigation keeps the right glyph (tool / compacting / asking) instead
+    // of falling back to the coarser status-derived value until the next
+    // hook event lands.
+    return (
+      <WorkspaceView
+        key={workspace.id}
+        workspace={workspace}
+        initialDetail={workspaceActivities?.[workspace.id]}
+        pr={prByWorkspaceId?.[workspace.id] ?? null}
+      />
+    )
   }
 
   // project view

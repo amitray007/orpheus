@@ -8,6 +8,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
+  GhPullRequest,
   WorkspaceActivityDetail
 } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -15,8 +16,15 @@ import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
 import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
+import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
+
+// ---------------------------------------------------------------------------
+// Module-level stable empty maps (avoid new Map() on every render as fallback)
+// ---------------------------------------------------------------------------
+
+const EMPTY_TITLE_MAP = new Map<string, string>()
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -88,6 +96,10 @@ interface WorkspaceRowProps {
   active: boolean
   activity: WorkspaceActivityDetail | undefined
   gitStatus?: GitStatus | null
+  /** Open PR for this workspace's current branch (null when none). */
+  pr?: GhPullRequest | null
+  /** Terminal title resolved from the hoisted Dashboard-level titleByWorkspaceId map */
+  terminalTitle: string | null
   /** Map from claudeSessionId → first-user-prompt title (fetched once per project). */
   sessionTitleBySessionId: Map<string, string>
   /** Map from claudeSessionId → last user message preview (fetched once per project). */
@@ -106,6 +118,8 @@ function WorkspaceSubRow({
   active,
   activity,
   gitStatus,
+  pr,
+  terminalTitle,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
   onSelect,
@@ -118,25 +132,8 @@ function WorkspaceSubRow({
 }: WorkspaceRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
-  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
-
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces
-      .getTitle(workspaceId)
-      .then((t) => {
-        setTerminalTitle(t)
-      })
-      .catch(() => {})
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) {
-        setTerminalTitle(e.title || null)
-      }
-    })
-    return unsub
-  }, [workspace.id])
 
   const sessionTitle = workspace.claudeSessionId
     ? (sessionTitleBySessionId.get(workspace.claudeSessionId) ?? null)
@@ -218,7 +215,11 @@ function WorkspaceSubRow({
         title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
         aria-label={workspace.name}
       >
-        {/* Left: activity glyph (vertically centered with single-line title) */}
+        {/* Left chrome: optional PR state icon (rearranged prefix per design),
+            then the activity / stack glyph. PR icon only renders when a PR
+            exists, slight horizontal jiggle on state change is acceptable
+            because openings/closings are infrequent. */}
+        {pr && <PrChip pr={pr} variant="icon" clickable={false} />}
         <span className="flex-shrink-0">
           {activity && activity !== 'archived' ? (
             <ActivityIndicator detail={activity} />
@@ -311,6 +312,7 @@ interface PinnedRowProps {
   item: PinnedItem
   active: boolean
   activity: WorkspaceActivityDetail | undefined
+  terminalTitle: string | null
   onSelect: () => void
   onUnpin: () => void
 }
@@ -319,25 +321,13 @@ function PinnedRow({
   item,
   active,
   activity,
+  terminalTitle,
   onSelect,
   onUnpin
 }: PinnedRowProps): React.JSX.Element {
   const { workspace, project } = item
-  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
-
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces
-      .getTitle(workspaceId)
-      .then(setTerminalTitle)
-      .catch(() => {})
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
-    })
-    return unsub
-  }, [workspace.id])
 
   // Session title is per-project; we don't pull it for cross-project pinned
   // rows. Terminal title (live OSC + persisted last_title from getTitle)
@@ -430,6 +420,8 @@ interface ProjectRowProps {
   selectedWorkspaceId?: string | null
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  prByWorkspaceId: Record<string, GhPullRequest | null>
+  titleByWorkspaceId: Record<string, string>
   /** Map from claudeSessionId → session title for all sessions in this project. */
   sessionTitleBySessionId: Map<string, string>
   /** Map from claudeSessionId → last user message preview for all sessions in this project. */
@@ -480,6 +472,8 @@ function ProjectRow({
   selectedWorkspaceId,
   workspaceActivities,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
+  titleByWorkspaceId,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
   onSelect,
@@ -512,10 +506,11 @@ function ProjectRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
-  // Sync rename input when project name changes externally
-  if (!renaming && renameValue !== project.name) {
-    setRenameValue(project.name)
-  }
+  // Sync rename input when project name changes externally (useEffect avoids render-time setState)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
+    if (!renaming) setRenameValue(project.name)
+  }, [project.name, renaming])
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
@@ -680,6 +675,8 @@ function ProjectRow({
                   }
                   activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
+                  pr={prByWorkspaceId[ws.id]}
+                  terminalTitle={titleByWorkspaceId[ws.id] ?? null}
                   sessionTitleBySessionId={sessionTitleBySessionId}
                   sessionUserPreviewBySessionId={sessionUserPreviewBySessionId}
                   onSelect={() => onSelectWorkspace(ws.id)}
@@ -731,6 +728,9 @@ interface SidebarProps {
   workspacesByProject: Record<string, WorkspaceRecord[]>
   workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
+  prByWorkspaceId: Record<string, GhPullRequest | null>
+  /** Hoisted terminal titles keyed by workspaceId — eliminates per-row onTitleChanged subscriptions */
+  titleByWorkspaceId: Record<string, string>
   // Sidebar behavior preferences (v12)
   workspaceCountInline: boolean
   sidebarWidth: number // px, expanded state only
@@ -771,6 +771,8 @@ export function Sidebar({
   workspacesByProject,
   workspaceActivities,
   gitStatusByWorkspaceId,
+  prByWorkspaceId,
+  titleByWorkspaceId,
   workspaceCountInline,
   sidebarWidth,
   fetchGithubAvatars,
@@ -1028,6 +1030,7 @@ export function Sidebar({
                 item={item}
                 active={selectedWorkspaceId === item.workspace.id}
                 activity={workspaceActivities[item.workspace.id]}
+                terminalTitle={titleByWorkspaceId[item.workspace.id] ?? null}
                 onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
                 onUnpin={async () => {
                   await window.api.workspaces.setPinned(item.workspace.id, false)
@@ -1079,9 +1082,13 @@ export function Sidebar({
                           selectedWorkspaceId={selectedWorkspaceId}
                           workspaceActivities={workspaceActivities}
                           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-                          sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? new Map()}
+                          prByWorkspaceId={prByWorkspaceId}
+                          titleByWorkspaceId={titleByWorkspaceId}
+                          sessionTitleBySessionId={
+                            sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP
+                          }
                           sessionUserPreviewBySessionId={
-                            sessionUserPreviewsByProject.get(p.id) ?? new Map()
+                            sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
                           }
                           onSelect={() => onSelectProject(p.id)}
                           onToggleExpand={() => onToggleProjectExpand(p.id)}

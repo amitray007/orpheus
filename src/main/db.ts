@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 40
+const CURRENT_VERSION = 42
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -41,6 +41,11 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions(updated_at);
 `
 
+// CHECK kept in sync with WorkspaceStatus (shared/types.ts). When this drifted
+// historically (v21 enum survived past v28's value migration), every dispatch to
+// 'awaiting_input'|'attention'|'idle' raised CHECK constraint failed and got
+// swallowed in setWorkspaceStatus's catch — leaving rows frozen at 'in_progress'
+// and surfacing as a stuck "Claude is thinking" indicator across restarts.
 const WORKSPACES_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY NOT NULL,
@@ -51,13 +56,17 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
-    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived')),
+    status TEXT NOT NULL DEFAULT 'idle'
+      CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER,
-    claude_session_id TEXT
+    claude_session_id TEXT,
+    last_title TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
+  CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort
+    ON workspaces(project_id, sort_order, created_at DESC);
 `
 
 const CLAUDE_SETTINGS_SCHEMA_SQL = `
@@ -226,6 +235,9 @@ const UI_STATE_SCHEMA_SQL = `
     global_hotkey TEXT NOT NULL DEFAULT '',
     -- Archive cap (v25)
     archived_workspace_limit INTEGER NOT NULL DEFAULT 20,
+    -- Status polling preferences (v42)
+    status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800,
+    mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -245,6 +257,10 @@ export function getDb(): Database.Database {
   // WAL mode for better concurrent read performance
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  db.pragma('synchronous = NORMAL') // safe under WAL; eliminates fsync per commit
+  db.pragma('cache_size = -8000') // 8 MB page cache (negative = KB)
+  db.pragma('mmap_size = 268435456') // 256 MB memory-mapped IO
+  db.pragma('temp_store = MEMORY') // temp tables in RAM
 
   // Run migrations
   migrate(db)
@@ -254,20 +270,32 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database): void {
-  // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run)
+  // schema_version must exist before we can read it — create it unconditionally
+  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);')
+
+  const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
+    | { version: number }
+    | undefined
+
+  const currentVersion = row?.version ?? 0
+
+  // Heal the workspaces CHECK before the fast-path check. The CHECK silently
+  // drifted from the WorkspaceStatus enum across several version bumps without
+  // any version flagging the problem, so versioning it now would just leave
+  // existing installs stuck. This is idempotent and a no-op once the table is
+  // healthy.
+  healWorkspacesCheck(db)
+
+  // Fast path: already up-to-date — skip all DDL and migration steps
+  if (currentVersion === CURRENT_VERSION) return
+
+  // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run on new/old installs)
   db.exec(SCHEMA_SQL)
   db.exec(WORKSPACES_SCHEMA_SQL)
   db.exec(CLAUDE_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
-
-  // Check / set schema version
-  const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as
-    | { version: number }
-    | undefined
-
-  const currentVersion = row?.version ?? 0
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -1435,5 +1463,139 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(40)
+  }
+
+  // Version 41: composite and targeted indexes for common query patterns
+  if (currentVersion < 41) {
+    // workspaces: covers listWorkspacesForProject(project_id ORDER BY sort_order, created_at DESC)
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort ON workspaces(project_id, sort_order, created_at DESC)'
+      )
+    } catch {
+      /* ignore */
+    }
+    // projects: covers WHERE archived_at IS NULL in listAllSessions and similar
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_projects_archived_at ON projects(archived_at)')
+    } catch {
+      /* ignore */
+    }
+    // sessions: covers project-scoped search using LOWER(title)
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_sessions_project_title_lower ON sessions(project_id, LOWER(title))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // sessions: covers pruneOldSessions ORDER BY updated_at ASC scope
+    try {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_sessions_project_updated ON sessions(project_id, updated_at ASC)'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(41)
+  }
+
+  // Version 42: status polling preferences on app_ui_state.
+  // Default = 1800s (30 min) — matches the allowed Select option set
+  // (5/10/15/30 min + 1/2/3 hr) so freshly migrated rows are valid against
+  // validateIntervalSec in main/uiState.ts and the UI Select options.
+  if (currentVersion < 42) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(42)
+  }
+}
+
+function healWorkspacesCheck(db: Database.Database): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workspaces'")
+    .get() as { sql: string } | undefined
+  if (!row) return
+  const sql = row.sql
+  // Treat the table as stale if it lacks any current status value or still
+  // mentions a removed one. Match the CHECK shape without depending on exact
+  // whitespace / quoting.
+  const hasAllCurrent =
+    sql.includes("'in_progress'") &&
+    sql.includes("'awaiting_input'") &&
+    sql.includes("'attention'") &&
+    sql.includes("'idle'") &&
+    sql.includes("'archived'")
+  const hasLegacy = sql.includes("'in_review'") || sql.includes("'completed'")
+  if (hasAllCurrent && !hasLegacy) return
+
+  console.log('[db] workspaces CHECK is stale — rebuilding via copy-migration to preserve rows')
+  db.pragma('foreign_keys = OFF')
+  try {
+    const rebuild = db.transaction(() => {
+      // Create the new table with the canonical CHECK. Inline rather than
+      // re-using WORKSPACES_SCHEMA_SQL so we can name it _new for the swap.
+      db.exec(`
+        CREATE TABLE workspaces_new (
+          id TEXT PRIMARY KEY NOT NULL,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          pinned_at INTEGER,
+          created_at INTEGER NOT NULL,
+          last_opened_at INTEGER,
+          archived_at INTEGER,
+          status TEXT NOT NULL DEFAULT 'idle'
+            CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
+          name_is_auto INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER,
+          claude_session_id TEXT,
+          last_title TEXT
+        )
+      `)
+      // Copy every workspace row, normalising any legacy status value that
+      // the old CHECK accepted but the new one doesn't. Archived rows keep
+      // their state; everything else falls back to 'idle' if unknown (the
+      // startup reset will redrive it once the user activates the workspace).
+      db.exec(`
+        INSERT INTO workspaces_new (
+          id, project_id, name, cwd, pinned_at, created_at, last_opened_at,
+          archived_at, status, name_is_auto, sort_order, claude_session_id, last_title
+        )
+        SELECT
+          id, project_id, name, cwd, pinned_at, created_at, last_opened_at,
+          archived_at,
+          CASE
+            WHEN status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')
+              THEN status
+            WHEN archived_at IS NOT NULL THEN 'archived'
+            ELSE 'idle'
+          END,
+          name_is_auto, sort_order, claude_session_id, last_title
+        FROM workspaces
+      `)
+      db.exec('DROP TABLE workspaces')
+      db.exec('ALTER TABLE workspaces_new RENAME TO workspaces')
+      db.exec('CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id)')
+      db.exec('CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at)')
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort ON workspaces(project_id, sort_order, created_at DESC)'
+      )
+    })
+    rebuild()
+  } finally {
+    db.pragma('foreign_keys = ON')
   }
 }

@@ -15,6 +15,7 @@ export type SectionId =
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-updates'
+  | 'orpheus-status'
   | 'orpheus-developer'
   | 'orpheus-about'
 
@@ -1622,6 +1623,59 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Manually trigger an update check against the release channel.',
     mapsTo: [],
     keywords: ['check now', 'manual update', 'force update check', 'update now']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Service status
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-status',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Service status',
+    settingId: '_section',
+    label: 'Claude service status',
+    description: 'Live status indicator for the Claude API and Claude Code service.',
+    mapsTo: [],
+    keywords: [
+      'status',
+      'claude status',
+      'api status',
+      'service status',
+      'outage',
+      'degraded',
+      'operational',
+      'incident',
+      'downtime',
+      'health',
+      'status page'
+    ]
+  },
+  {
+    sectionId: 'orpheus-status',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Service status',
+    settingId: 'check-interval',
+    label: 'Check interval',
+    description: 'How often Orpheus polls status.claude.com.',
+    mapsTo: [],
+    keywords: ['poll interval', 'polling', 'status interval', 'check frequency', 'refresh rate']
+  },
+  {
+    sectionId: 'orpheus-status',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Service status',
+    settingId: 'mute-status-notifications',
+    label: 'Mute status notifications',
+    description: 'Suppress OS notifications for Claude service status transitions.',
+    mapsTo: [],
+    keywords: [
+      'mute',
+      'silence',
+      'status notification',
+      'outage notification',
+      'degraded notification',
+      'status alert'
+    ]
   },
 
   // ---------------------------------------------------------------------------

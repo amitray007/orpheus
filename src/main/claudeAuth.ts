@@ -118,7 +118,17 @@ export function updateClaudeAuth(patch: ClaudeAuthPatch): ClaudeAuthState {
     next.auth_bedrock_bearer_token,
     now
   )
+  // Invalidate the env cache so the next terminal:mount picks up new secrets.
+  invalidateClaudeAuthEnvCache()
   return getClaudeAuthState()
+}
+
+// Module-level cache — getClaudeAuthEnv runs on every terminal:mount and the
+// row only changes via updateClaudeAuth below. Invalidated on update.
+let cachedAuthEnv: Record<string, string> | null = null
+
+export function invalidateClaudeAuthEnvCache(): void {
+  cachedAuthEnv = null
 }
 
 /**
@@ -126,8 +136,12 @@ export function updateClaudeAuth(patch: ClaudeAuthPatch): ClaudeAuthState {
  * NEVER log values — they may contain a real API key.
  */
 export function getClaudeAuthEnv(): Record<string, string> {
+  if (cachedAuthEnv) return cachedAuthEnv
   const row = readRow()
-  if (!row) return {}
+  if (!row) {
+    cachedAuthEnv = {}
+    return cachedAuthEnv
+  }
   const env: Record<string, string> = {}
 
   if (row.cloud_provider === 'foundry') {
@@ -135,29 +149,24 @@ export function getClaudeAuthEnv(): Record<string, string> {
     if (row.auth_foundry_api_key) env.ANTHROPIC_FOUNDRY_API_KEY = row.auth_foundry_api_key
     if (row.auth_foundry_resource) env.ANTHROPIC_FOUNDRY_RESOURCE = row.auth_foundry_resource
     if (row.auth_foundry_base_url) env.ANTHROPIC_FOUNDRY_BASE_URL = row.auth_foundry_base_url
-    return env
-  }
-
-  if (row.cloud_provider === 'bedrock') {
+  } else if (row.cloud_provider === 'bedrock') {
     env.CLAUDE_CODE_USE_BEDROCK = '1'
     if (row.auth_aws_region) env.AWS_REGION = row.auth_aws_region
     if (row.auth_bedrock_bearer_token) env.AWS_BEARER_TOKEN_BEDROCK = row.auth_bedrock_bearer_token
     if (row.auth_base_url) env.ANTHROPIC_BEDROCK_BASE_URL = row.auth_base_url
-    return env
-  }
-
-  if (row.cloud_provider === 'vertex') {
+  } else if (row.cloud_provider === 'vertex') {
     env.CLAUDE_CODE_USE_VERTEX = '1'
     if (row.auth_vertex_project_id) env.ANTHROPIC_VERTEX_PROJECT_ID = row.auth_vertex_project_id
     if (row.auth_vertex_region) env.CLOUD_ML_REGION = row.auth_vertex_region
     if (row.auth_base_url) env.ANTHROPIC_VERTEX_BASE_URL = row.auth_base_url
-    return env
+  } else {
+    // anthropic (default)
+    if (row.auth_api_key) env.ANTHROPIC_API_KEY = row.auth_api_key
+    if (row.auth_token) env.ANTHROPIC_AUTH_TOKEN = row.auth_token
+    if (row.auth_base_url) env.ANTHROPIC_BASE_URL = row.auth_base_url
   }
 
-  // anthropic (default)
-  if (row.auth_api_key) env.ANTHROPIC_API_KEY = row.auth_api_key
-  if (row.auth_token) env.ANTHROPIC_AUTH_TOKEN = row.auth_token
-  if (row.auth_base_url) env.ANTHROPIC_BASE_URL = row.auth_base_url
+  cachedAuthEnv = env
   return env
 }
 

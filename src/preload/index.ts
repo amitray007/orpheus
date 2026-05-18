@@ -24,6 +24,7 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -36,7 +37,8 @@ import type {
   ClaudeHookEntry,
   ClaudeHookDraft,
   ContextMenuNativeItem,
-  UpdateCheckResult
+  UpdateCheckResult,
+  ClaudeStatusSnapshot
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -70,7 +72,9 @@ const api = {
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
     destroy: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:destroy', { workspaceId })
+      ipcRenderer.invoke('terminal:destroy', { workspaceId }),
+    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
+      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
@@ -188,8 +192,6 @@ const api = {
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    resetActivity: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('workspace:resetActivity', { workspaceId }),
     onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
       const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
         cb(e.workspaceId)
@@ -254,6 +256,10 @@ const api = {
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
     ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts })
+  },
+  github: {
+    prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
+      ipcRenderer.invoke('github:prForBranch', { cwd, branch })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>
@@ -355,6 +361,17 @@ const api = {
       const listener = (_evt: IpcRendererEvent, result: UpdateCheckResult): void => cb(result)
       ipcRenderer.on('updates:checkResult', listener)
       return () => ipcRenderer.removeListener('updates:checkResult', listener)
+    }
+  },
+  status: {
+    get: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:get'),
+    refresh: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:refresh'),
+    openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
+    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, snapshot: ClaudeStatusSnapshot): void =>
+        cb(snapshot)
+      ipcRenderer.on('status:change', listener)
+      return () => ipcRenderer.removeListener('status:change', listener)
     }
   }
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from './Button'
+import { useTerminalOverlay } from '../lib/overlayMode'
 
 interface ClaudeMissingModalProps {
   onRecheck: () => Promise<void>
@@ -7,6 +8,10 @@ interface ClaudeMissingModalProps {
 
 export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): React.JSX.Element {
   const [rechecking, setRechecking] = useState(false)
+
+  // Push ghostty behind the WebContents while the modal is open so the
+  // dialog can paint above the terminal. No-op outside a workspace.
+  useTerminalOverlay()
 
   async function handleRecheck(): Promise<void> {
     if (rechecking) return

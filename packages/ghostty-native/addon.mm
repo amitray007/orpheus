@@ -26,6 +26,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Carbon/Carbon.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <string>
 #include <map>
@@ -106,6 +107,15 @@
     return YES;
 }
 
+- (BOOL)isOpaque {
+    // libghostty installs an IOSurfaceLayer that fully paints the view's
+    // frame. Returning YES lets AppKit's display machinery skip drawing
+    // anything below us in the region we occupy — meaningful win when we
+    // sit on top of the WebContents (the default fast path) because the
+    // OS compositor can cull the alpha-blend pass for this rect entirely.
+    return YES;
+}
+
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
@@ -162,8 +172,6 @@ struct GhosttyMousePos { double x; double y; };
 static GhosttyMousePos ghosttyPosForEvent(NSEvent *event, OrpheusGhosttyView *view) {
     NSPoint local = [view convertPoint:event.locationInWindow fromView:nil];
     // local is already in top-left origin (isFlipped=YES). Do NOT re-flip.
-    NSLog(@"[ghostty-native] mouse pos: (%.1f, %.1f) view=%.0fx%.0f",
-          local.x, local.y, view.frame.size.width, view.frame.size.height);
     return { local.x, local.y };
 }
 
@@ -655,6 +663,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 // GhosttySurfaceEntry + g_surfaces
 // ---------------------------------------------------------------------------
 
+// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusLoadingOverlayView;
+
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
     OrpheusGhosttyView* __strong view;
@@ -662,10 +673,652 @@ struct GhosttySurfaceEntry {
     BOOL isAttached;              // YES = view is in contentView superview, displayLink running
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
+    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
 };
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+#if 0
+// ---------------------------------------------------------------------------
+// WebContents -hitTest: swizzle.
+//
+// Why we need this: the libghostty NSView is parented as the BOTTOM sibling
+// of the BrowserWindow's contentView so DOM popovers / overlays from the
+// renderer naturally z-order on top of the terminal pixels. The downside is
+// that mouse / drag / drop events at the terminal region default-route to
+// the transparent WebContents NSView sitting above us — Chromium's
+// -nonWebContentView hook only helps for views ABOVE the WebContents, not
+// below — so typing, click-to-select, paste, and image drop into the
+// terminal all break.
+//
+// Fix: install a method-impl swap on the WebContents NSView class's
+// -hitTest: so that when the point falls inside any attached ghostty
+// surface's frame, we return nil. AppKit then falls through to the next
+// sibling at that point, which is the ghostty view. Outside terminal
+// regions, the original implementation runs unchanged so DOM clicks /
+// scrolls / drags work exactly as before.
+//
+// The swap is class-wide (affects all instances of that NSView class) but
+// Orpheus only opens one BrowserWindow so we just see the main window's
+// WebContents — and the override is a no-op when no ghostty surface is
+// attached. Installed exactly once via dispatch_once on the first Mount()
+// call. Falls back gracefully (logs + leaves clicks routed to the web
+// layer) if Electron's class hierarchy shifts and we can't find the view.
+// ---------------------------------------------------------------------------
+
+// Held implementations of the WebContents NSView class's original methods so
+// our swizzles can chain to them when the cursor / drag is outside terminal
+// regions.
+static IMP g_origWebContentsHitTestIMP = NULL;
+static IMP g_origWebContentsDraggingEnteredIMP = NULL;
+static IMP g_origWebContentsDraggingUpdatedIMP = NULL;
+static IMP g_origWebContentsDraggingExitedIMP = NULL;
+static IMP g_origWebContentsPrepareForDragOpIMP = NULL;
+static IMP g_origWebContentsPerformDragOpIMP = NULL;
+static IMP g_origWebContentsConcludeDragOpIMP = NULL;
+
+// Tracks the ghostty view that "owns" the in-flight drag while it hovers
+// inside a terminal frame. Cleared on exit / drop / window cross.
+// __strong so the view stays alive for the drag's lifetime even if the
+// surface map mutates mid-drag (defensive — shouldn't happen in practice).
+static OrpheusGhosttyView* __strong g_dragForwardingTo = nil;
+
+// Mouse hit-test override. Returns nil when `point` is inside a known
+// ghostty frame so AppKit falls through to that sibling and delivers
+// mouseDown:/etc. there instead of into Blink.
+static NSView* orpheus_webContents_hitTest(id self, SEL _cmd, NSPoint point) {
+    NSView* selfView = (NSView*)self;
+    NSView* superview = selfView.superview;
+    if (superview) {
+        // `point` is in superview's coordinate space (AppKit's -hitTest:
+        // contract). Each ghostty view's .frame is in the SAME coord space
+        // because they're siblings under the same contentView.
+        for (auto& kv : g_surfaces) {
+            OrpheusGhosttyView* gv = kv.second.view;
+            if (!gv || !kv.second.isAttached) continue;
+            if (NSPointInRect(point, gv.frame)) {
+                return nil;
+            }
+        }
+    }
+    if (g_origWebContentsHitTestIMP) {
+        typedef NSView* (*Fn)(id, SEL, NSPoint);
+        return ((Fn)g_origWebContentsHitTestIMP)(self, _cmd, point);
+    }
+    return selfView;
+}
+
+// Drag-destination resolution does NOT go through -hitTest:; AppKit picks
+// the topmost view registered for the dragged pasteboard types, which (for
+// file URLs) is the WebContents — its Chromium-side machinery registers
+// for HTML5 file drag. So we swizzle the NSDraggingDestination methods on
+// the WebContents class and forward to whichever ghostty view is under the
+// cursor when the drag is happening, falling back to Chromium otherwise.
+
+static OrpheusGhosttyView* findGhosttyForDrag(id self, id<NSDraggingInfo> sender) {
+    NSView* selfView = (NSView*)self;
+    NSView* superview = selfView.superview;
+    if (!superview) return nil;
+    NSPoint windowLoc = [sender draggingLocation];
+    NSPoint inSuperview = [superview convertPoint:windowLoc fromView:nil];
+    for (auto& kv : g_surfaces) {
+        OrpheusGhosttyView* gv = kv.second.view;
+        if (!gv || !kv.second.isAttached) continue;
+        if (NSPointInRect(inSuperview, gv.frame)) {
+            return gv;
+        }
+    }
+    return nil;
+}
+
+static NSDragOperation orpheus_webContents_draggingEntered(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    OrpheusGhosttyView* gv = findGhosttyForDrag(self, sender);
+    if (gv) {
+        g_dragForwardingTo = gv;
+        return [gv draggingEntered:sender];
+    }
+    if (g_origWebContentsDraggingEnteredIMP) {
+        typedef NSDragOperation (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsDraggingEnteredIMP)(self, _cmd, sender);
+    }
+    return NSDragOperationNone;
+}
+
+static NSDragOperation orpheus_webContents_draggingUpdated(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    OrpheusGhosttyView* gv = findGhosttyForDrag(self, sender);
+    if (gv) {
+        if (g_dragForwardingTo != gv) {
+            // Drag crossed boundaries (from web region or another terminal).
+            if (g_dragForwardingTo) {
+                [g_dragForwardingTo draggingExited:sender];
+            }
+            g_dragForwardingTo = gv;
+            return [gv draggingEntered:sender];
+        }
+        return [gv draggingUpdated:sender];
+    }
+    if (g_dragForwardingTo) {
+        [g_dragForwardingTo draggingExited:sender];
+        g_dragForwardingTo = nil;
+    }
+    if (g_origWebContentsDraggingUpdatedIMP) {
+        typedef NSDragOperation (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsDraggingUpdatedIMP)(self, _cmd, sender);
+    }
+    return NSDragOperationNone;
+}
+
+static void orpheus_webContents_draggingExited(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        [g_dragForwardingTo draggingExited:sender];
+        g_dragForwardingTo = nil;
+        return;
+    }
+    if (g_origWebContentsDraggingExitedIMP) {
+        typedef void (*Fn)(id, SEL, id<NSDraggingInfo>);
+        ((Fn)g_origWebContentsDraggingExitedIMP)(self, _cmd, sender);
+    }
+}
+
+static BOOL orpheus_webContents_prepareForDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        return [g_dragForwardingTo prepareForDragOperation:sender];
+    }
+    if (g_origWebContentsPrepareForDragOpIMP) {
+        typedef BOOL (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsPrepareForDragOpIMP)(self, _cmd, sender);
+    }
+    return NO;
+}
+
+static BOOL orpheus_webContents_performDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        BOOL result = [g_dragForwardingTo performDragOperation:sender];
+        g_dragForwardingTo = nil;
+        return result;
+    }
+    if (g_origWebContentsPerformDragOpIMP) {
+        typedef BOOL (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsPerformDragOpIMP)(self, _cmd, sender);
+    }
+    return NO;
+}
+
+static void orpheus_webContents_concludeDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    // performDragOperation should have already cleared g_dragForwardingTo on
+    // a successful drop; clear defensively in case the drop was rejected.
+    g_dragForwardingTo = nil;
+    if (g_origWebContentsConcludeDragOpIMP) {
+        typedef void (*Fn)(id, SEL, id<NSDraggingInfo>);
+        ((Fn)g_origWebContentsConcludeDragOpIMP)(self, _cmd, sender);
+    }
+}
+
+// Swap one method's implementation, caching the original. If the class
+// doesn't have the method defined directly (only inherited), add it first
+// so we override only this class without polluting the parent. Returns the
+// original IMP (NULL on failure).
+static IMP installSwizzle(Class cls, SEL sel, IMP newImpl, const char* typeEncoding) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return NULL;
+    // If the method is inherited, add it locally first so method_setImplementation
+    // only affects `cls` and its subclasses.
+    if (!class_addMethod(cls, sel, newImpl, typeEncoding)) {
+        // Method already exists on cls — swap in place.
+        return method_setImplementation(m, newImpl);
+    }
+    return method_getImplementation(m);
+}
+
+static void installWebContentsRoutingSwizzles(NSView* contentView) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (!contentView) return;
+        // Find Electron's WebContents-hosting NSView among the contentView's
+        // siblings. Class name varies across Chromium versions — match on
+        // both the wrapper (WebContentsViewCocoa) and the leaf
+        // (RenderWidgetHostViewCocoa). Prefer the wrapper because that's
+        // the sibling level where ghostty also lives, and Chromium hangs
+        // the file-drag registration off the wrapper.
+        NSView* wcv = nil;
+        for (NSView* sub in contentView.subviews) {
+            NSString* cls = NSStringFromClass([sub class]);
+            if ([cls containsString:@"WebContentsView"]) {
+                wcv = sub;
+                break;
+            }
+        }
+        if (!wcv) {
+            for (NSView* sub in contentView.subviews) {
+                NSString* cls = NSStringFromClass([sub class]);
+                if ([cls containsString:@"RenderWidgetHostView"]) {
+                    wcv = sub;
+                    break;
+                }
+            }
+        }
+        if (!wcv) {
+            NSLog(@"[ghostty-native] WebContents NSView not found in contentView.subviews; "
+                  @"terminal-region input + drag routing will not work. Subview classes seen:");
+            for (NSView* sub in contentView.subviews) {
+                NSLog(@"[ghostty-native]   - %@", NSStringFromClass([sub class]));
+            }
+            return;
+        }
+        Class cls = [wcv class];
+
+        // -hitTest: routes mouse events. Returns nil over a terminal frame so
+        // AppKit falls through to ghostty's sibling NSView.
+        g_origWebContentsHitTestIMP = installSwizzle(
+            cls, @selector(hitTest:), (IMP)orpheus_webContents_hitTest,
+            "@@:{CGPoint=dd}");
+
+        // NSDraggingDestination methods — forward to ghostty's own
+        // implementations when the cursor is over a terminal frame.
+        g_origWebContentsDraggingEnteredIMP = installSwizzle(
+            cls, @selector(draggingEntered:), (IMP)orpheus_webContents_draggingEntered,
+            "L@:@");
+        g_origWebContentsDraggingUpdatedIMP = installSwizzle(
+            cls, @selector(draggingUpdated:), (IMP)orpheus_webContents_draggingUpdated,
+            "L@:@");
+        g_origWebContentsDraggingExitedIMP = installSwizzle(
+            cls, @selector(draggingExited:), (IMP)orpheus_webContents_draggingExited,
+            "v@:@");
+        g_origWebContentsPrepareForDragOpIMP = installSwizzle(
+            cls, @selector(prepareForDragOperation:),
+            (IMP)orpheus_webContents_prepareForDragOperation, "B@:@");
+        g_origWebContentsPerformDragOpIMP = installSwizzle(
+            cls, @selector(performDragOperation:),
+            (IMP)orpheus_webContents_performDragOperation, "B@:@");
+        g_origWebContentsConcludeDragOpIMP = installSwizzle(
+            cls, @selector(concludeDragOperation:),
+            (IMP)orpheus_webContents_concludeDragOperation, "v@:@");
+
+        NSLog(@"[ghostty-native] installed input + drag routing swizzles on %s",
+              class_getName(cls));
+    });
+}
+#endif
+
+// Reverse map: surface pointer → workspaceId.
+// Maintained in sync with g_surfaces to give O(log n) lookup in action_cb
+// instead of the O(n) linear scan over g_surfaces.
+static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
+
+// Forward-declare the loading action TSFN so OrpheusLoadingActionTarget can
+// reference it before the full TSFN block further down the file.
+static Napi::ThreadSafeFunction g_loadingActionTSFN;
+static bool g_loadingActionTSFNActive = false;
+
+// ---------------------------------------------------------------------------
+// Loading overlay theme — colors pushed from main process (resolved from the
+// active app theme: midnight / daylight / eclipse). The native side stays
+// dumb about theme names; it just renders whatever colors it was given.
+// Reasonable midnight-ish defaults are used until main pushes the real values.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    NSColor* backdrop;       // tint layered over the blur for theme deepening
+    NSColor* card;           // card background (drawn at 0.94 alpha)
+    NSColor* textPrimary;    // title color, spinner stroke
+    NSColor* textSecondary;  // subtitle color, spinner fade
+    NSColor* border;         // card hairline border
+    BOOL     isDark;         // picks darkAqua appearance for the blur material
+    CGFloat  tintAlpha;      // 0 = blur only; >0 paints backdrop at this alpha
+                             // above the blur (used by eclipse to deepen the
+                             // bluish-gray macOS dark blur into true black)
+} OrpheusLoadingTheme;
+
+static OrpheusLoadingTheme g_loadingTheme = {
+    .backdrop      = nil,
+    .card          = nil,
+    .textPrimary   = nil,
+    .textSecondary = nil,
+    .border        = nil,
+    .isDark        = YES,
+    .tintAlpha     = 0.0
+};
+
+static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
+    return c ? c : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// OrpheusLoadingOverlayView — translucent loading card drawn above the
+// ghostty NSView while claude boots. Colors come from g_loadingTheme so the
+// overlay always matches the active app theme.
+// Lifecycle: created by SetLoadingOverlay when state = "showing";
+// removed (with fade) when state = "hidden".
+// ---------------------------------------------------------------------------
+
+@interface OrpheusLoadingOverlayView : NSVisualEffectView
+
+@property (nonatomic, strong) NSView*                  card;
+@property (nonatomic, strong) NSTextField*             titleLabel;
+@property (nonatomic, strong) NSTextField*             subtitleLabel;
+@property (nonatomic, strong) NSView*                  spinnerHost;   // dot grid lives here
+@property (nonatomic, strong) NSArray<CALayer*>*       dotLayers;     // 25 dots, row-major
+@property (nonatomic, strong) CAShapeLayer*            spinnerLayer;  // unused after dotmatrix swap; kept for ABI
+@property (nonatomic, strong) CATextLayer*             errorGlyphLayer;
+@property (nonatomic, strong) NSButton*                actionButton;
+
+// workspaceId used to fire the TSFN when the action button is clicked.
+@property (nonatomic, copy)   NSString*      workspaceId;
+
+- (void)updateWithState:(NSString*)state
+                  title:(NSString*)title
+               subtitle:(NSString*)subtitle
+            actionLabel:(NSString*)actionLabel;
+
+@end
+
+// Singleton Obj-C target for the NSButton action.
+@interface OrpheusLoadingActionTarget : NSObject
++ (instancetype)shared;
+- (void)actionButtonClicked:(NSButton*)sender;
+@end
+
+@implementation OrpheusLoadingActionTarget
++ (instancetype)shared {
+    static OrpheusLoadingActionTarget* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ s = [[OrpheusLoadingActionTarget alloc] init]; });
+    return s;
+}
+- (void)actionButtonClicked:(NSButton*)sender {
+    NSString* wsId = sender.identifier;
+    if (!wsId || wsId.length == 0) return;
+    NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
+    if (!g_loadingActionTSFNActive) return;
+    std::string wsIdCpp = wsId.UTF8String;
+    g_loadingActionTSFN.BlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, wsIdCpp) });
+    });
+}
+@end
+
+@implementation OrpheusLoadingOverlayView
+
+- (instancetype)initWithFrame:(NSRect)frame workspaceId:(NSString*)wsId {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    self.workspaceId = wsId;
+
+    // Resolve colors from the app-theme palette pushed by the main process,
+    // with sensible midnight-ish fallbacks if main hasn't called setLoadingTheme yet.
+    NSColor* backdropColor = themeColorOr(g_loadingTheme.backdrop,
+                                          [NSColor colorWithCalibratedRed:0x0b/255.0 green:0x0b/255.0 blue:0x0c/255.0 alpha:1.0]);
+    NSColor* cardColor     = themeColorOr(g_loadingTheme.card,
+                                          [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]);
+    NSColor* borderColor   = themeColorOr(g_loadingTheme.border,
+                                          [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
+
+    // Frosted-glass backdrop. NSVisualEffectMaterialUnderWindowBackground gives
+    // a transparent-looking surface that BLURS what's behind it — so the
+    // terminal boot output is unreadable but the view doesn't feel like a
+    // solid panel. Appearance follows the active app theme so dark themes
+    // get dark blur, daylight gets light blur.
+    self.material     = NSVisualEffectMaterialUnderWindowBackground;
+    self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    self.state        = NSVisualEffectStateActive;
+    self.appearance   = [NSAppearance appearanceNamed:(g_loadingTheme.isDark
+                                                       ? NSAppearanceNameDarkAqua
+                                                       : NSAppearanceNameAqua)];
+
+    // Track the parent on resize.
+    self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    // Start invisible; caller animates to 1.
+    self.alphaValue = 0.0;
+
+    // Optional per-theme tint above the blur. macOS dark blur reads slightly
+    // bluish-gray over a pure-black terminal (eclipse case) — making the
+    // overlay look LIGHTER than the masked content. A tint layer over the
+    // blur restores the deep-dark feel. Midnight/daylight pass tintAlpha=0
+    // so this is a no-op for them.
+    if (g_loadingTheme.tintAlpha > 0.001) {
+        NSView* tint = [[NSView alloc] initWithFrame:self.bounds];
+        tint.wantsLayer = YES;
+        tint.layer.backgroundColor = [backdropColor colorWithAlphaComponent:g_loadingTheme.tintAlpha].CGColor;
+        tint.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:tint];
+    }
+
+    // ---- Card subview ----
+    NSView* card = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 340, 142)];
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 14.0;
+    // Card at ~0.94 alpha — visibly translucent against the backdrop but
+    // solid enough to read clearly.
+    card.layer.backgroundColor = [cardColor colorWithAlphaComponent:0.94].CGColor;
+    card.layer.borderColor     = borderColor.CGColor;
+    card.layer.borderWidth     = 1.0;
+    // Subtle shadow.
+    card.layer.shadowColor     = [NSColor blackColor].CGColor;
+    card.layer.shadowOpacity   = 0.22;
+    card.layer.shadowRadius    = 12.0;
+    card.layer.shadowOffset    = CGSizeMake(0, -3);
+    // Center the card in whatever size the overlay is.
+    card.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin |
+                            NSViewMinYMargin | NSViewMaxYMargin;
+    [self addSubview:card];
+    self.card = card;
+
+    // ---- Spinner host (36 × 36) — native port of DotmSquare12.
+    // 5×5 dot grid; each dot pulses via a center-origin ripple whose phase
+    // is staggered by its Manhattan distance from the origin cell (row=1, col=1).
+    // Mirrors src/renderer/src/components/ui/dotm-square-12.tsx and the
+    // dmx-center-origin-ripple keyframe in dotmatrix-loader.css.
+    // Cycle: 1500ms × (1 / 1.35) ≈ 1111ms; ring stagger: ring × 0.16 × cycle.
+    const CGFloat hostSize = 36.0;
+    NSView* spinnerHost = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, hostSize, hostSize)];
+    spinnerHost.wantsLayer = YES;
+    [card addSubview:spinnerHost];
+    self.spinnerHost = spinnerHost;
+
+    // 5×5 grid math: 5 dots × 5pt + 4 gaps × ~2.75pt = ~36pt total.
+    static const int kGridSize = 5;
+    static const CGFloat kDotSize = 5.0;
+    const CGFloat gap = (hostSize - (kGridSize * kDotSize)) / (CGFloat)(kGridSize - 1);
+
+    // dmx-center-origin-ripple keyframe values resolved against the default
+    // opacity vars (base=0.16, mid=0.32, peak=1.00):
+    //   0% → 0.625 * 0.16        = 0.100
+    //   34% → 1.0                 = 1.000
+    //   60% → 0.5 * (0.16+0.32)   = 0.240
+    //   100% → same as 0%         = 0.100
+    static const CGFloat kKeyOpacities[4] = { 0.100, 1.000, 0.240, 0.100 };
+    static const CGFloat kKeyTimes[4]     = { 0.0,   0.34,  0.60,  1.0   };
+    static const int kOriginRow = 1;
+    static const int kOriginCol = 1;
+    static const int kMaxManhattan = 6;
+    static const CFTimeInterval kCycleSeconds = 1.500 / 1.350; // ≈ 1.111s
+    static const CFTimeInterval kRingDelayScale = 0.16;
+
+    NSColor* dotColor = themeColorOr(g_loadingTheme.textPrimary, [NSColor labelColor]);
+    CFTimeInterval now = CACurrentMediaTime();
+
+    NSMutableArray<CALayer*>* dots = [NSMutableArray arrayWithCapacity:kGridSize * kGridSize];
+    for (int row = 0; row < kGridSize; row++) {
+        for (int col = 0; col < kGridSize; col++) {
+            CALayer* dot = [CALayer layer];
+            dot.backgroundColor = dotColor.CGColor;
+            dot.cornerRadius    = kDotSize / 2.0;
+            CGFloat x = col * (kDotSize + gap);
+            // spinnerHost is a non-flipped NSView (bottom-left origin), so row=0
+            // (top) needs the largest y. Flip the row index.
+            CGFloat y = (kGridSize - 1 - row) * (kDotSize + gap);
+            dot.frame = CGRectMake(x, y, kDotSize, kDotSize);
+            // Start dots at their resting opacity so there's no first-frame flash.
+            dot.opacity = (float)kKeyOpacities[0];
+
+            int ring = abs(row - kOriginRow) + abs(col - kOriginCol);
+            if (ring > kMaxManhattan) ring = kMaxManhattan;
+            CFTimeInterval delay = (CFTimeInterval)ring * kRingDelayScale * kCycleSeconds;
+
+            CAKeyframeAnimation* anim = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            anim.values   = @[ @(kKeyOpacities[0]), @(kKeyOpacities[1]),
+                               @(kKeyOpacities[2]), @(kKeyOpacities[3]) ];
+            anim.keyTimes = @[ @(kKeyTimes[0]),     @(kKeyTimes[1]),
+                               @(kKeyTimes[2]),     @(kKeyTimes[3])     ];
+            anim.duration       = kCycleSeconds;
+            anim.repeatCount    = HUGE_VALF;
+            anim.calculationMode = kCAAnimationLinear;
+            anim.timingFunction  = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            anim.removedOnCompletion = NO;
+            // Stagger the phase by ring × 0.16 × cycle so the ripple emanates
+            // from the origin cell instead of all 25 dots pulsing in lockstep.
+            anim.beginTime = now + delay;
+
+            [dot addAnimation:anim forKey:@"dotmatrix"];
+
+            [spinnerHost.layer addSublayer:dot];
+            [dots addObject:dot];
+        }
+    }
+    self.dotLayers     = [dots copy];
+    self.spinnerLayer  = nil; // legacy field — unused now but kept on the @interface
+
+    // Error glyph — centered in the host, hidden by default.
+    CATextLayer* errorLayer = [CATextLayer layer];
+    errorLayer.string    = @"✕";
+    errorLayer.fontSize  = 22.0;
+    errorLayer.foregroundColor = [[NSColor systemRedColor] CGColor];
+    errorLayer.alignmentMode   = kCAAlignmentCenter;
+    errorLayer.contentsScale   = [[NSScreen mainScreen] backingScaleFactor];
+    errorLayer.frame       = CGRectMake(0, (hostSize - 26) / 2.0, hostSize, 26);
+    errorLayer.hidden      = YES;
+    [spinnerHost.layer addSublayer:errorLayer];
+    self.errorGlyphLayer = errorLayer;
+
+    // ---- Title label ----
+    NSTextField* titleLabel = [NSTextField labelWithString:@""];
+    titleLabel.font      = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    titleLabel.textColor = themeColorOr(g_loadingTheme.textPrimary, [NSColor labelColor]);
+    titleLabel.alignment = NSTextAlignmentCenter;
+    titleLabel.cell.wraps = NO;
+    titleLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:titleLabel];
+    self.titleLabel = titleLabel;
+
+    // ---- Subtitle label ----
+    NSTextField* subLabel = [NSTextField labelWithString:@""];
+    subLabel.font      = [NSFont systemFontOfSize:12];
+    subLabel.textColor = themeColorOr(g_loadingTheme.textSecondary, [NSColor secondaryLabelColor]);
+    subLabel.alignment = NSTextAlignmentCenter;
+    subLabel.cell.wraps = NO;
+    subLabel.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:subLabel];
+    self.subtitleLabel = subLabel;
+
+    // ---- Action button (hidden until needed) ----
+    NSButton* btn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    btn.bezelStyle = NSBezelStylePush;
+    btn.font       = [NSFont systemFontOfSize:12];
+    btn.identifier = wsId; // passed through to the target so it knows the workspaceId
+    btn.target     = [OrpheusLoadingActionTarget shared];
+    btn.action     = @selector(actionButtonClicked:);
+    btn.hidden     = YES;
+    [card addSubview:btn];
+    self.actionButton = btn;
+
+    // Do an initial layout pass with a placeholder state.
+    [self layoutCard:NO hasAction:NO];
+
+    return self;
+}
+
+// Re-layout the card subviews based on whether subtitle and action are visible.
+- (void)layoutCard:(BOOL)hasSubtitle hasAction:(BOOL)hasAction {
+    const CGFloat cardW   = 340.0;
+    const CGFloat padH    = 20.0; // horizontal padding inside card
+    const CGFloat spinW   = 36.0; // dotmatrix grid
+    const CGFloat spinH   = 36.0;
+    const CGFloat spinTop = 26.0;
+    const CGFloat gapSpinTitle = 16.0;
+    const CGFloat titleH  = 20.0;
+    const CGFloat gapSub  = 6.0;
+    const CGFloat subH    = 17.0;
+    const CGFloat gapBtn  = 12.0;
+    const CGFloat btnH    = 24.0;
+    const CGFloat botPad  = 22.0;
+
+    // Compute total card height.
+    CGFloat totalH = spinTop + spinH + gapSpinTitle + titleH;
+    if (hasSubtitle) totalH += gapSub + subH;
+    if (hasAction)   totalH += gapBtn + btnH;
+    totalH += botPad;
+
+    NSRect cardFrame = self.card.frame;
+    cardFrame.size   = CGSizeMake(cardW, totalH);
+    // Re-center: card was positioned via autoresizing from the previous layout;
+    // we need to force position to center now.  Autoresizing margins will track
+    // future resizes from this centered origin.
+    NSSize parentSize = self.bounds.size;
+    cardFrame.origin  = CGPointMake(
+        floor((parentSize.width  - cardW)   / 2.0),
+        floor((parentSize.height - totalH)  / 2.0)
+    );
+    self.card.frame = cardFrame;
+
+    // Spinner host — centered horizontally, from top.
+    CGFloat spinX = floor((cardW - spinW) / 2.0);
+    self.spinnerHost.frame = NSMakeRect(spinX, totalH - spinTop - spinH, spinW, spinH);
+    self.errorGlyphLayer.frame = CGRectMake(0, (spinH - 26.0) / 2.0, spinW, 26.0);
+
+    // Title.
+    CGFloat titleY = totalH - spinTop - spinH - gapSpinTitle - titleH;
+    self.titleLabel.frame = NSMakeRect(padH, titleY, cardW - padH * 2, titleH);
+
+    // Subtitle.
+    if (hasSubtitle) {
+        CGFloat subY = titleY - gapSub - subH;
+        self.subtitleLabel.frame  = NSMakeRect(padH, subY, cardW - padH * 2, subH);
+        self.subtitleLabel.hidden = NO;
+    } else {
+        self.subtitleLabel.hidden = YES;
+    }
+
+    // Action button.
+    if (hasAction) {
+        CGFloat subBottom = hasSubtitle
+            ? self.subtitleLabel.frame.origin.y
+            : titleY;
+        CGFloat btnY = subBottom - gapBtn - btnH;
+        CGFloat btnW = 160.0;
+        self.actionButton.frame  = NSMakeRect(floor((cardW - btnW) / 2.0), btnY, btnW, btnH);
+        self.actionButton.hidden = NO;
+    } else {
+        self.actionButton.hidden = YES;
+    }
+}
+
+- (void)updateWithState:(NSString*)state
+                  title:(NSString*)title
+               subtitle:(NSString*)subtitle
+            actionLabel:(NSString*)actionLabel {
+
+    BOOL hasSubtitle = (subtitle != nil && subtitle.length > 0);
+    BOOL hasAction   = (actionLabel != nil && actionLabel.length > 0);
+
+    self.titleLabel.stringValue    = title    ?: @"";
+    self.subtitleLabel.stringValue = subtitle ?: @"";
+    if (hasAction) {
+        [self.actionButton setTitle:actionLabel];
+    }
+
+    BOOL isError = [state isEqualToString:@"error"];
+    for (CALayer* dot in self.dotLayers) {
+        dot.hidden = isError;
+    }
+    self.errorGlyphLayer.hidden = !isError;
+
+    [self layoutCard:hasSubtitle hasAction:hasAction];
+}
+
+@end
 
 // ---------------------------------------------------------------------------
 // Title ThreadSafeFunction — marshals SET_TITLE from Ghostty's IO thread
@@ -719,6 +1372,74 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
         1
     );
     g_actionTraceTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetLoadingActionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setLoadingActionCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_loadingActionTSFNActive) {
+        g_loadingActionTSFN.Release();
+        g_loadingActionTSFNActive = false;
+    }
+    g_loadingActionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-loading-action-callback",
+        0,
+        1
+    );
+    g_loadingActionTSFNActive = true;
+    return env.Undefined();
+}
+
+// NAPI: setLoadingTheme({ backdrop, card, textPrimary, textSecondary, border }) → void
+// Each value is a 3-element [r, g, b] array (0-255). Called by main on app
+// startup and whenever uiState.theme changes. Replaces the cached g_loadingTheme;
+// existing overlay views are NOT re-tinted in place (overlays are short-lived).
+static NSColor* parseRgbArray(Napi::Value v) {
+    if (!v.IsArray()) return nil;
+    Napi::Array arr = v.As<Napi::Array>();
+    if (arr.Length() < 3) return nil;
+    double r = arr.Get((uint32_t)0).As<Napi::Number>().DoubleValue();
+    double g = arr.Get((uint32_t)1).As<Napi::Number>().DoubleValue();
+    double b = arr.Get((uint32_t)2).As<Napi::Number>().DoubleValue();
+    return [NSColor colorWithCalibratedRed:r / 255.0
+                                     green:g / 255.0
+                                      blue:b / 255.0
+                                     alpha:1.0];
+}
+
+static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "setLoadingTheme requires an object").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Object obj = info[0].As<Napi::Object>();
+    NSColor* backdrop      = parseRgbArray(obj.Get("backdrop"));
+    NSColor* card          = parseRgbArray(obj.Get("card"));
+    NSColor* textPrimary   = parseRgbArray(obj.Get("textPrimary"));
+    NSColor* textSecondary = parseRgbArray(obj.Get("textSecondary"));
+    NSColor* border        = parseRgbArray(obj.Get("border"));
+    Napi::Value isDarkVal  = obj.Get("isDark");
+    BOOL isDark = isDarkVal.IsBoolean() ? (isDarkVal.As<Napi::Boolean>().Value() ? YES : NO) : YES;
+    Napi::Value tintAlphaVal = obj.Get("tintAlpha");
+    CGFloat tintAlpha = tintAlphaVal.IsNumber() ? (CGFloat)tintAlphaVal.As<Napi::Number>().DoubleValue() : 0.0;
+
+    g_loadingTheme.backdrop      = backdrop;
+    g_loadingTheme.card          = card;
+    g_loadingTheme.textPrimary   = textPrimary;
+    g_loadingTheme.textSecondary = textSecondary;
+    g_loadingTheme.border        = border;
+    g_loadingTheme.isDark        = isDark;
+    g_loadingTheme.tintAlpha     = tintAlpha;
+
+    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
+          (int)isDark, (double)tintAlpha);
     return env.Undefined();
 }
 
@@ -826,14 +1547,18 @@ static bool action_cb(ghostty_app_t /*app*/,
         const char* rawTitle = (action.tag == GHOSTTY_ACTION_SET_TITLE)
             ? action.action.set_title.title
             : action.action.set_tab_title.title;
-        const char* tagName = (action.tag == GHOSTTY_ACTION_SET_TITLE) ? "SET_TITLE" : "SET_TAB_TITLE";
-        NSLog(@"[ghostty-native] %s: %s", tagName, rawTitle ? rawTitle : "(null)");
 
         if (g_titleTSFNActive && target.tag == GHOSTTY_TARGET_SURFACE) {
             ghostty_surface_t surf = target.target.surface;
+            // Fast O(log n) reverse-map lookup; fall back to linear scan if missed.
             std::string workspaceId;
-            for (auto& [id, entry] : g_surfaces) {
-                if (entry.surface == surf) { workspaceId = id; break; }
+            auto rmIt = g_surfaceToWorkspaceId.find(surf);
+            if (rmIt != g_surfaceToWorkspaceId.end()) {
+                workspaceId = rmIt->second;
+            } else {
+                for (auto& [id, entry] : g_surfaces) {
+                    if (entry.surface == surf) { workspaceId = id; break; }
+                }
             }
             if (!workspaceId.empty()) {
                 std::string title = rawTitle ? rawTitle : "";
@@ -932,8 +1657,6 @@ static void write_clipboard_cb(void* /*userdata*/,
         NSPasteboard* pb = [NSPasteboard generalPasteboard];
         [pb clearContents];
         [pb setString:str forType:NSPasteboardTypeString];
-        NSLog(@"[ghostty-native] write_clipboard_cb: wrote %lu byte(s) to clipboard",
-              (unsigned long)[str lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
     });
 }
 
@@ -972,11 +1695,8 @@ static bool read_clipboard_cb(void* /*userdata*/,
 
         if (contents) {
             const char* bytes = [contents UTF8String];
-            NSLog(@"[ghostty-native] read_clipboard_cb: delivering %lu byte(s) from clipboard",
-                  (unsigned long)[contents lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
             ghostty_surface_complete_clipboard_request(targetSurface, bytes, capturedState, true);
         } else {
-            NSLog(@"[ghostty-native] read_clipboard_cb: clipboard empty, delivering empty string");
             ghostty_surface_complete_clipboard_request(targetSurface, "", capturedState, true);
         }
     });
@@ -1168,6 +1888,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
+    // Dynamic z-order keeps ghostty on top by default, so AppKit's natural
+    // hit-test + drag-destination resolution routes terminal-region events
+    // straight to us. While overlay mode is active (ghostty moved to the
+    // back so DOM popovers stack above), we *want* the WebContents to keep
+    // those events so the popover/backdrop can respond. No swizzles needed
+    // in either state.
+
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
         Napi::TypeError::New(env, "arg 1 must be object {workspaceId,rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
@@ -1244,7 +1971,15 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            [contentView addSubview:entry.view];
+            // DEFAULT FAST PATH: insert ghostty at the TOP of the sibling
+            // stack. Opaque NSView on top of WebContents means the OS
+            // compositor culls alpha blending in the terminal region — same
+            // perf as the pre-z-order-inversion architecture. When a DOM
+            // overlay needs to render above the terminal, JS calls
+            // terminal:setOverlay(true) which moves us below WebContents
+            // for the duration of the overlay; setOverlay(false) snaps us
+            // back here.
+            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
 
             // Wake the renderer — surface is no longer occluded.
             ghostty_surface_set_occlusion(entry.surface, false);
@@ -1285,7 +2020,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    [contentView addSubview:termView];
+    // Default to the top of the sibling z-order — see the matching comment
+    // in the re-attach branch above. setOverlay(true) moves us below the
+    // WebContents on demand when a DOM overlay needs to paint on top.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
@@ -1434,6 +2172,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastRect    = CGRectMake(rx, ry, rw, rh);
     entry.lastScale   = scaleFactor;
     g_surfaces[workspaceId] = entry;
+    g_surfaceToWorkspaceId[surface] = workspaceId;
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
@@ -1556,6 +2295,164 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 // NSView has already been removed from the superview.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// NAPI: setLoadingOverlay(workspaceId, state, copy) → void
+//
+// state ∈ { "showing" | "slow" | "error" | "hidden" }
+// copy  = { title, subtitle?, actionLabel? }
+//
+// "showing" — create overlay if missing (added above the ghostty view in
+//             superview z-order), animate opacity 0→1 over 120ms. Updates copy
+//             if called again while already visible.
+// "slow"    — same overlay, action button now visible with actionLabel text.
+// "error"   — spinner replaced by ✕ glyph; title becomes error reason.
+// "hidden"  — animate opacity 1→0 over 100ms, then removeFromSuperview.
+//             Idempotent — no-op if there is no overlay or no entry.
+// ---------------------------------------------------------------------------
+
+static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsObject()) {
+        Napi::TypeError::New(env, "setLoadingOverlay requires (workspaceId, state, copy)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string state       = info[1].As<Napi::String>().Utf8Value();
+    Napi::Object copyObj    = info[2].As<Napi::Object>();
+
+    std::string titleStr, subtitleStr, actionLabelStr;
+    Napi::Value titleVal = copyObj.Get("title");
+    if (titleVal.IsString()) titleStr = titleVal.As<Napi::String>().Utf8Value();
+    Napi::Value subVal = copyObj.Get("subtitle");
+    if (subVal.IsString()) subtitleStr = subVal.As<Napi::String>().Utf8Value();
+    Napi::Value actVal = copyObj.Get("actionLabel");
+    if (actVal.IsString()) actionLabelStr = actVal.As<Napi::String>().Utf8Value();
+
+    // "hidden" with no surface entry — pure no-op (no throw).
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        if (state == "hidden") return env.Undefined();
+        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
+              workspaceId.c_str(), state.c_str());
+        return env.Undefined();
+    }
+
+    // Capture by value for the dispatch block.
+    NSString* nsWorkspaceId  = [NSString stringWithUTF8String:workspaceId.c_str()];
+    NSString* nsState        = [NSString stringWithUTF8String:state.c_str()];
+    NSString* nsTitle        = [NSString stringWithUTF8String:titleStr.c_str()];
+    NSString* nsSubtitle     = subtitleStr.empty()     ? nil : [NSString stringWithUTF8String:subtitleStr.c_str()];
+    NSString* nsActionLabel  = actionLabelStr.empty()  ? nil : [NSString stringWithUTF8String:actionLabelStr.c_str()];
+    GhosttySurfaceEntry& entry = it->second;
+
+    // We need a stable pointer to the entry's overlay field for the block.
+    // Safe because: entries are never moved after insertion (std::map guarantee),
+    // and this dispatch runs on the main queue (same thread as all map mutations).
+    OrpheusLoadingOverlayView* __strong* overlayPtr = &entry.loadingOverlay;
+    NSView* ghosttyView = entry.view;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // ---- "hidden" — fade out and remove ----
+        if ([nsState isEqualToString:@"hidden"]) {
+            OrpheusLoadingOverlayView* ov = *overlayPtr;
+            if (!ov) return;
+            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
+            CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            fade.fromValue = @(ov.alphaValue);
+            fade.toValue   = @(0.0);
+            fade.duration  = 0.1;
+            // Remove after animation completes.
+            [CATransaction begin];
+            [CATransaction setCompletionBlock:^{
+                [ov removeFromSuperview];
+            }];
+            [ov.layer addAnimation:fade forKey:@"fadeOut"];
+            ov.alphaValue = 0.0;
+            [CATransaction commit];
+            *overlayPtr = nil;
+            return;
+        }
+
+        // ---- "showing" / "slow" / "error" — create if needed, then update ----
+        OrpheusLoadingOverlayView* ov = *overlayPtr;
+
+        if (!ov) {
+            if (!ghosttyView) {
+                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
+                      nsWorkspaceId.UTF8String);
+                return;
+            }
+            // Attach as a CHILD of the ghostty view itself (not a sibling) so
+            // the overlay rect always matches the terminal rect exactly — no
+            // chance of covering the sidebar / tabs / header. The autoresizing
+            // mask on the view makes it track terminal:resize for free.
+            NSRect overlayFrame = ghosttyView.bounds;
+            ov = [[OrpheusLoadingOverlayView alloc] initWithFrame:overlayFrame
+                                                      workspaceId:nsWorkspaceId];
+            [ghosttyView addSubview:ov];
+            *overlayPtr = ov;
+            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: created overlay",
+                  nsWorkspaceId.UTF8String);
+
+            // Fade in.
+            CABasicAnimation* fadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            fadeIn.fromValue = @(0.0);
+            fadeIn.toValue   = @(1.0);
+            fadeIn.duration  = 0.12;
+            [CATransaction begin];
+            [ov.layer addAnimation:fadeIn forKey:@"fadeIn"];
+            ov.alphaValue = 1.0;
+            [CATransaction commit];
+        }
+
+        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: state=%s",
+              nsWorkspaceId.UTF8String, nsState.UTF8String);
+        [ov updateWithState:nsState title:nsTitle subtitle:nsSubtitle actionLabel:nsActionLabel];
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: setOverlay(workspaceId, on)
+//
+// Toggle a workspace's terminal NSView between the FAST PATH (top sibling of
+// the BrowserWindow's contentView — opaque, no alpha-blend overhead) and the
+// OVERLAY PATH (bottom sibling — DOM elements stack above the terminal pixels
+// because the WebContents draws with alpha on top of us).
+//
+// JS owns the policy: the renderer's useTerminalOverlay() hook refcounts how
+// many React popovers / modals / drawers want to paint above the terminal,
+// and calls setOverlay(true) on 0→1 and setOverlay(false) on 1→0 so the
+// blend cost is only paid while overlays are actually on screen.
+//
+// Idempotent: re-asserting the same mode is a cheap reorder (AppKit just
+// moves the view within the superview's subview array).
+static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    bool on = info[1].As<Napi::Boolean>().Value();
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return env.Undefined();
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached || !entry.view) return env.Undefined();
+    NSView* superview = entry.view.superview;
+    if (!superview) return env.Undefined();
+    // Reorder happens immediately on the main thread (NAPI handlers run on
+    // it) so the very next display refresh reflects the new z-order.
+    NSWindowOrderingMode mode = on ? NSWindowBelow : NSWindowAbove;
+    [superview addSubview:entry.view positioned:mode relativeTo:nil];
+    NSLog(@"[ghostty-native] setOverlay workspaceId=%s on=%d (z=%s)",
+          workspaceId.c_str(), on ? 1 : 0, on ? "below" : "above");
+    return env.Undefined();
+}
+
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -1598,6 +2495,9 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // lookup (e.g. hide() racing with archive) sees no entry.
     GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
+    if (doomed.surface) {
+        g_surfaceToWorkspaceId.erase(doomed.surface);
+    }
 
     // Detach the view so the workspace appears gone right away.
     // Nil out surface pointer first so any in-flight key events see nullptr
@@ -1662,8 +2562,12 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setTitleCallback",       Napi::Function::New(env, SetTitleCallback));
-    exports.Set("setActionTraceCallback", Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
+    exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
+    exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
+    exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
     return exports;
 }
 

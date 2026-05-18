@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { minidenticon } from 'minidenticons'
 
 interface IdenticonProps {
@@ -17,6 +17,8 @@ interface IdenticonProps {
  */
 export function Identicon({ seed, size = 20, avatarUrl }: IdenticonProps): React.JSX.Element {
   const [failed, setFailed] = useState(false)
+  // Hoisted above the early return so hook order stays stable across renders.
+  const svg = useMemo(() => minidenticon(seed, 75, 55), [seed])
 
   if (avatarUrl && !failed) {
     return (
@@ -32,7 +34,6 @@ export function Identicon({ seed, size = 20, avatarUrl }: IdenticonProps): React
     )
   }
 
-  const svg = minidenticon(seed, 75, 55)
   return (
     <span
       style={{ width: size, height: size, minWidth: size }}

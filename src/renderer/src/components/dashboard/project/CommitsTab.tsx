@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { GitBranch, GitCommit as GitCommitIcon, MagnifyingGlass } from '@phosphor-icons/react'
+import {
+  Check,
+  Copy,
+  Files,
+  GitBranch,
+  GitCommit as GitCommitIcon,
+  MagnifyingGlass
+} from '@phosphor-icons/react'
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { CommitListSkeleton } from '../../Skeleton'
@@ -47,6 +54,80 @@ function relativeTime(ms: number): string {
   if (d < 30) return `${d}d ago`
   const mo = Math.floor(d / 30)
   return `${mo}mo ago`
+}
+
+// ---------------------------------------------------------------------------
+// Commit row — extracted so each row owns its own "copied" state. Keeping it
+// on the parent via a Map would force every row to re-render on each copy.
+// ---------------------------------------------------------------------------
+
+function CommitRow({ commit }: { commit: GitCommit }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+
+  // Reset the copied flag ~1.2s after it flips true. Cleanup clears the
+  // pending timer so unmounting (paging / filter change) or re-clicking the
+  // button before the timer fires can't set state on an unmounted row.
+  useEffect(() => {
+    if (!copied) return
+    const id = setTimeout(() => setCopied(false), 1200)
+    return () => clearTimeout(id)
+  }, [copied])
+
+  async function handleCopy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(commit.fullSha)
+      setCopied(true)
+    } catch (err) {
+      console.error('[CommitsTab] clipboard copy failed', err)
+    }
+  }
+
+  const hasStats = commit.filesChanged > 0 || commit.insertions > 0 || commit.deletions > 0
+
+  return (
+    <div className="rounded-lg border border-border-default bg-surface-raised px-4 py-3 hover:bg-surface-overlay/30 transition-colors">
+      <p className="text-sm text-text-primary leading-snug">{commit.subject}</p>
+      <p className="mt-1 text-xs text-text-muted flex items-center gap-2 flex-wrap">
+        <span className="inline-flex items-center gap-1">
+          <span className="font-mono text-text-secondary">{commit.sha}</span>
+          <button
+            type="button"
+            onClick={handleCopy}
+            aria-label={copied ? 'Copied full SHA' : `Copy full SHA ${commit.fullSha}`}
+            title={copied ? 'Copied' : 'Copy full SHA'}
+            className="inline-flex items-center justify-center w-4 h-4 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
+          >
+            {copied ? (
+              <Check size={10} weight="bold" className="text-emerald-400" />
+            ) : (
+              <Copy size={10} weight="bold" />
+            )}
+          </button>
+        </span>
+        <span>·</span>
+        <span title={commit.authorEmail || undefined}>{commit.author}</span>
+        <span>·</span>
+        <span title={new Date(commit.timestamp).toLocaleString()}>
+          {relativeTime(commit.timestamp)}
+        </span>
+        {hasStats && (
+          <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px]">
+            <span
+              className="inline-flex items-center gap-1 text-text-muted"
+              title={`${commit.filesChanged} file${commit.filesChanged === 1 ? '' : 's'} changed`}
+            >
+              <Files size={11} weight="bold" />
+              {commit.filesChanged}
+            </span>
+            {commit.insertions > 0 && (
+              <span className="text-emerald-400">+{commit.insertions}</span>
+            )}
+            {commit.deletions > 0 && <span className="text-red-400">−{commit.deletions}</span>}
+          </span>
+        )}
+      </p>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -211,19 +292,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
       ) : (
         <div className="flex flex-col gap-2">
           {commits.map((c) => (
-            <div
-              key={c.fullSha}
-              className="rounded-lg border border-border-default bg-surface-raised px-4 py-3 hover:bg-surface-overlay/30 transition-colors"
-            >
-              <p className="text-sm text-text-primary leading-snug">{c.subject}</p>
-              <p className="mt-1 text-xs text-text-muted flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-text-secondary">{c.sha}</span>
-                <span>·</span>
-                <span>{c.author}</span>
-                <span>·</span>
-                <span>{relativeTime(c.timestamp)}</span>
-              </p>
-            </div>
+            <CommitRow key={c.fullSha} commit={c} />
           ))}
           {total > PAGE_SIZE && (
             <div className="rounded-lg border border-border-default bg-surface-raised mt-1">

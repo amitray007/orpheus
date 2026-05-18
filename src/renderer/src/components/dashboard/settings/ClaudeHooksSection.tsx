@@ -3,6 +3,7 @@ import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeHookEntry, ClaudeHookDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
+import { Select } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeHooksSection — lifecycle event handlers (full CRUD)
@@ -133,11 +134,11 @@ function HookForm({
         {/* Source */}
         <div className="flex-1 min-w-0">
           <label className={labelClass}>Source</label>
-          <select
+          <Select
+            ariaLabel="Source"
             disabled={sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(e) => {
-              const val = e.target.value
+            onChange={(val) => {
               if (val === 'user') {
                 set('source', 'user')
                 set('projectId', '')
@@ -146,31 +147,22 @@ function HookForm({
                 set('projectId', val)
               }
             }}
-            className={inputClass}
-          >
-            <option value="user">User (~/.claude)</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                Project · {p.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: 'user', label: 'User (~/.claude)' },
+              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
+            ]}
+          />
         </div>
 
         {/* Event */}
         <div className="flex-1 min-w-0">
           <label className={labelClass}>Event</label>
-          <select
+          <Select
+            ariaLabel="Event"
             value={values.event}
-            onChange={(e) => set('event', e.target.value)}
-            className={inputClass}
-          >
-            {HOOK_EVENTS.map((ev) => (
-              <option key={ev} value={ev}>
-                {ev}
-              </option>
-            ))}
-          </select>
+            onChange={(val) => set('event', val)}
+            options={HOOK_EVENTS.map((ev) => ({ value: ev, label: ev }))}
+          />
         </div>
 
         {/* Matcher */}

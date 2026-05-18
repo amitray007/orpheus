@@ -1,4 +1,7 @@
 import * as childProcess from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFile = promisify(childProcess.execFile)
 
 export type GitStatus = {
   /** Working-tree changes vs HEAD: counted lines added */
@@ -17,71 +20,55 @@ export type GitStatus = {
  * Returns null if cwd is not inside a git repository OR if git is unavailable.
  * Errors are swallowed — git status failures shouldn't crash Orpheus.
  *
- * Uses `git -C <cwd>` so we don't need to chdir.
+ * Uses `git -C <cwd>` so we don't need to chdir. All three git commands run
+ * in parallel to avoid sequential blocking on slow repos.
  */
-export function getGitStatus(cwd: string): GitStatus | null {
+export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
   if (!cwd) return null
 
   // Quick check: is this a git repo?
   try {
-    childProcess.execFileSync('git', ['-C', cwd, 'rev-parse', '--is-inside-work-tree'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1500,
-      encoding: 'utf-8'
+    await execFile('git', ['-C', cwd, 'rev-parse', '--is-inside-work-tree'], {
+      timeout: 1500
     })
   } catch {
     return null
   }
 
+  // Run branch, diff, and untracked queries in parallel.
+  const [branchResult, diffResult, untrackedResult] = await Promise.all([
+    execFile('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      timeout: 1500
+    }).catch(() => null),
+    execFile('git', ['-C', cwd, 'diff', '--shortstat', 'HEAD'], {
+      timeout: 2000
+    }).catch(() => null),
+    execFile('git', ['-C', cwd, 'ls-files', '--others', '--exclude-standard'], {
+      timeout: 1500
+    }).catch(() => null)
+  ])
+
   let branch: string | null = null
-  try {
-    const out = childProcess
-      .execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 1500,
-        encoding: 'utf-8'
-      })
-      .trim()
+  if (branchResult) {
+    const out = branchResult.stdout.trim()
     // Detached HEAD reports literal "HEAD"
-    branch = out === 'HEAD' ? null : out
-  } catch {
-    /* fall through with branch null */
+    branch = out === 'HEAD' ? null : out || null
   }
 
   let insertions = 0
   let deletions = 0
-  try {
-    // `git diff --shortstat HEAD` — captures working-tree + staged vs HEAD.
+  if (diffResult) {
     // Output looks like: " 2 files changed, 113 insertions(+), 0 deletions(-)"
-    const out = childProcess.execFileSync('git', ['-C', cwd, 'diff', '--shortstat', 'HEAD'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
-      encoding: 'utf-8'
-    })
+    const out = diffResult.stdout
     const insMatch = out.match(/(\d+)\s+insertion/)
     const delMatch = out.match(/(\d+)\s+deletion/)
     if (insMatch) insertions = parseInt(insMatch[1], 10)
     if (delMatch) deletions = parseInt(delMatch[1], 10)
-  } catch {
-    // No HEAD yet (fresh repo) or other error — leave as zero
   }
 
-  // Also check for untracked files. If insertions/deletions are zero but there are
-  // untracked files, hasChanges should still be true.
   let untrackedCount = 0
-  try {
-    const out = childProcess.execFileSync(
-      'git',
-      ['-C', cwd, 'ls-files', '--others', '--exclude-standard'],
-      {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 1500,
-        encoding: 'utf-8'
-      }
-    )
-    untrackedCount = out.split('\n').filter((line) => line.length > 0).length
-  } catch {
-    /* swallow */
+  if (untrackedResult) {
+    untrackedCount = untrackedResult.stdout.split('\n').filter((line) => line.length > 0).length
   }
 
   const hasChanges = insertions > 0 || deletions > 0 || untrackedCount > 0
@@ -102,6 +89,9 @@ export type GitCommit = {
   author: string
   authorEmail: string
   timestamp: number // epoch ms
+  filesChanged: number
+  insertions: number
+  deletions: number
 }
 
 export function listBranches(cwd: string): GitBranchInfo[] {
@@ -201,10 +191,15 @@ export function listCommits(
     // Case-insensitive subject grep; git matches against the commit message.
     args.push('-i', `--grep=${opts.grep}`)
   }
+  // SENTINEL prefixes every commit's metadata line so the parser can
+  // distinguish it from --shortstat lines that follow ("3 files changed, ...").
+  // Without it, multi-line shortstat output would shred line-based splitting.
+  const SENTINEL = '__ORPH_COMMIT__'
   args.push(
+    '--shortstat',
     `--max-count=${limit}`,
     `--skip=${offset}`,
-    '--format=%H%x09%h%x09%s%x09%an%x09%ae%x09%ct'
+    `--format=${SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
   )
   try {
     const out = childProcess.execFileSync('git', args, {
@@ -212,21 +207,40 @@ export function listCommits(
       timeout: 3000,
       encoding: 'utf-8'
     })
-    return out
-      .split('\n')
-      .filter((l) => l.trim().length > 0)
-      .map((line) => {
-        const parts = line.split('\t')
+    const commits: GitCommit[] = []
+    let current: GitCommit | null = null
+    // shortstat: " 3 files changed, 124 insertions(+), 38 deletions(-)"
+    // insertions or deletions may be absent (pure additions / pure deletions).
+    const statRe =
+      /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
+    for (const raw of out.split('\n')) {
+      if (raw.startsWith(SENTINEL)) {
+        if (current) commits.push(current)
+        const parts = raw.slice(SENTINEL.length).split('\t')
         const ts = parseInt(parts[5], 10)
-        return {
+        current = {
           fullSha: parts[0] ?? '',
           sha: parts[1] ?? '',
           subject: parts[2] ?? '',
           author: parts[3] ?? '',
           authorEmail: parts[4] ?? '',
-          timestamp: isNaN(ts) ? 0 : ts * 1000
+          timestamp: isNaN(ts) ? 0 : ts * 1000,
+          filesChanged: 0,
+          insertions: 0,
+          deletions: 0
         }
-      })
+        continue
+      }
+      if (!current) continue
+      const m = statRe.exec(raw)
+      if (m) {
+        current.filesChanged = parseInt(m[1] ?? '0', 10) || 0
+        current.insertions = m[2] ? parseInt(m[2], 10) || 0 : 0
+        current.deletions = m[3] ? parseInt(m[3], 10) || 0 : 0
+      }
+    }
+    if (current) commits.push(current)
+    return commits
   } catch {
     return []
   }

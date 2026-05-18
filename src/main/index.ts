@@ -9,6 +9,7 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
 import { getGitStatus, listBranches, listCommits, countCommits } from './git'
+import { getPrForBranch } from './github'
 import { getDb } from './db'
 import {
   listProjects,
@@ -47,7 +48,8 @@ import {
 import {
   getClaudeGlobalSettings,
   updateClaudeGlobalSettings,
-  composeClaudeLaunch
+  composeClaudeLaunch,
+  invalidateSessionJsonlCache
 } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import {
@@ -78,12 +80,26 @@ import {
   ensureManagedHooks,
   shimPath,
   onActivityChange,
-  resetWorkspaceActivity,
+  onSessionStart,
   heartbeatFromTitle,
-  clearWorkspaceActivity
+  clearWorkspaceActivity,
+  invalidateWatchdogCache
 } from './orpheusNotify'
+import {
+  configureLoadingOverlay,
+  show as showLoadingOverlay,
+  hide as hideLoadingOverlay
+} from './loadingOverlay'
+import type { Theme } from '../shared/types'
 import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
 import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
+import {
+  getStatusSnapshot,
+  startStatusPoller,
+  stopStatusPoller,
+  refreshStatusNow,
+  rescheduleStatusPoll
+} from './claudeStatus'
 import { showContextMenu } from './contextMenu'
 import {
   revealInFinder,
@@ -91,7 +107,8 @@ import {
   openTerminal,
   copyToClipboard,
   listEditorApps,
-  listTerminalApps
+  listTerminalApps,
+  getUserShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -119,10 +136,98 @@ const dirtyWorkspaces = new Set<string>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 
+// Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
+let mainWindowRef: BrowserWindow | null = null
+
+function getMainWindow(): BrowserWindow | null {
+  if (mainWindowRef && !mainWindowRef.isDestroyed()) return mainWindowRef
+  // Fallback — should only happen if the window was destroyed unexpectedly.
+  mainWindowRef = BrowserWindow.getAllWindows()[0] ?? null
+  return mainWindowRef
+}
+
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
 const workspaceTitles = new Map<string, string>()
 
 let titleCallbackRegistered = false
+let loadingOverlayWired = false
+
+// Theme palettes for the loading overlay. Must mirror src/renderer/src/assets/main.css.
+// RGB tuples (0-255) so the native side doesn't need a hex parser. `isDark` picks
+// the NSAppearance for the NSVisualEffectView blur backdrop.
+type LoadingThemePalette = {
+  backdrop: [number, number, number]
+  card: [number, number, number]
+  textPrimary: [number, number, number]
+  textSecondary: [number, number, number]
+  border: [number, number, number]
+  isDark: boolean
+  // Extra dark/light tint above the macOS blur. macOS dark blur reads as
+  // bluish-gray over a pure-black eclipse terminal — looks LIGHTER than the
+  // surrounding content. tintAlpha deepens it back to true black for eclipse.
+  // 0 = blur only (no extra tint).
+  tintAlpha: number
+}
+const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
+  midnight: {
+    backdrop: [0x0b, 0x0b, 0x0c],
+    card: [0x16, 0x16, 0x1a],
+    textPrimary: [0xf4, 0xf4, 0xf5],
+    textSecondary: [0xa1, 0xa1, 0xaa],
+    border: [0x27, 0x27, 0x2a],
+    isDark: true,
+    tintAlpha: 0
+  },
+  daylight: {
+    backdrop: [0xfa, 0xfa, 0xf7],
+    card: [0xff, 0xff, 0xff],
+    textPrimary: [0x18, 0x18, 0x1b],
+    textSecondary: [0x52, 0x52, 0x5b],
+    border: [0xd4, 0xd4, 0xd0],
+    isDark: false,
+    tintAlpha: 0
+  },
+  eclipse: {
+    backdrop: [0x00, 0x00, 0x00],
+    card: [0x0a, 0x0a, 0x0a],
+    textPrimary: [0xff, 0xff, 0xff],
+    textSecondary: [0xb4, 0xb4, 0xb4],
+    border: [0x1f, 0x1f, 0x1f],
+    isDark: true,
+    tintAlpha: 0.35
+  }
+}
+
+function applyLoadingOverlayTheme(theme: Theme): void {
+  if (!terminalAddon) return // addon not loaded yet — startup wiring will apply it on first mount
+  const palette = THEME_PALETTES[theme] ?? THEME_PALETTES.midnight
+  terminalAddon.setLoadingTheme(palette)
+  console.log('[loadingOverlay] theme applied:', theme)
+}
+
+function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
+  if (loadingOverlayWired) return
+  loadingOverlayWired = true
+  // Push the current app theme to the native side so the overlay matches.
+  const currentTheme = getAppUiState().theme as Theme
+  addon.setLoadingTheme(THEME_PALETTES[currentTheme] ?? THEME_PALETTES.midnight)
+  // Bridge the state machine to the native addon's overlay calls.
+  configureLoadingOverlay((workspaceId, state, copy) => {
+    addon.setLoadingOverlay(workspaceId, state, copy)
+  })
+  // Native overlay's action button (e.g. "Show terminal anyway", "Dismiss")
+  // dismisses the overlay regardless of which state it was in.
+  addon.setLoadingActionCallback((workspaceId: string) => {
+    console.log('[loadingOverlay] action click', workspaceId)
+    hideLoadingOverlay(workspaceId)
+  })
+  // SessionStart hook is the canonical "claude is ready" signal — dismiss the
+  // overlay regardless of prior activity status. Min-show debounce in the state
+  // machine prevents flash on fast mounts.
+  onSessionStart((workspaceId: string) => {
+    hideLoadingOverlay(workspaceId)
+  })
+}
 
 function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   if (titleCallbackRegistered) return
@@ -161,18 +266,17 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
     } catch (err) {
       console.error('[title] failed to persist last_title', err)
     }
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
-    }
+    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
   })
-  // Diagnostic: also forward every action_cb tag to the renderer for visibility
-  // via DevTools console. Routed through a separate IPC so it doesn't pollute
-  // the title flow.
-  addon.setActionTraceCallback((tagName: string) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('addon:actionTrace', { tagName })
-    }
-  })
+  // Diagnostic: forward every action_cb tag to the renderer for visibility
+  // via DevTools console. Gated on ORPHEUS_DEBUG_ACTION_TRACE=1 because this
+  // fires at 60-120 Hz (every RENDER action) and is heavy in production.
+  if (process.env['ORPHEUS_DEBUG_ACTION_TRACE'] === '1') {
+    addon.setActionTraceCallback((tagName: string) => {
+      const win = getMainWindow()
+      win?.webContents.send('addon:actionTrace', { tagName })
+    })
+  }
 }
 
 function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
@@ -188,9 +292,7 @@ function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
 }
 
 function broadcastDirty(workspaceId: string, dirty: boolean): void {
-  for (const w of BrowserWindow.getAllWindows()) {
-    w.webContents.send('workspace:dirtyChanged', { workspaceId, dirty })
-  }
+  getMainWindow()?.webContents.send('workspace:dirtyChanged', { workspaceId, dirty })
 }
 
 function setDirty(workspaceId: string, dirty: boolean): void {
@@ -201,10 +303,14 @@ function setDirty(workspaceId: string, dirty: boolean): void {
 }
 
 function recomputeDirty(): void {
+  if (launchSnapshots.size === 0) return
+  // Fetch global settings once — shared across all workspaces in the loop.
+  // Each composeClaudeLaunch would otherwise run a redundant DB read.
+  const globalSettings = getClaudeGlobalSettings()
   for (const [workspaceId, snap] of launchSnapshots.entries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) continue
-    const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
+    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
     setDirty(workspaceId, !launchEquals(snap, fresh))
   }
 }
@@ -250,10 +356,18 @@ async function captureWorkspaceSessionId(workspaceId: string, cwd: string): Prom
       if (entries.length === 0) continue
 
       // Pick the newest by mtime — this workspace's session is the most recent.
-      const withStats = entries.map((e) => {
-        const full = nodePath.join(claudeProjectsDir, e.name)
-        return { name: e.name, mtimeMs: fs.statSync(full).mtimeMs }
-      })
+      // Stat all files in parallel to avoid sequential blocking on slow filesystems.
+      const withStats = await Promise.all(
+        entries.map(async (e) => {
+          const full = nodePath.join(claudeProjectsDir, e.name)
+          try {
+            const stat = await fs.promises.stat(full)
+            return { name: e.name, mtimeMs: stat.mtimeMs }
+          } catch {
+            return { name: e.name, mtimeMs: 0 }
+          }
+        })
+      )
       withStats.sort((a, b) => b.mtimeMs - a.mtimeMs)
       const sessionId = withStats[0]!.name.replace(/\.jsonl$/, '')
 
@@ -262,6 +376,8 @@ async function captureWorkspaceSessionId(workspaceId: string, cwd: string): Prom
       if (current.claudeSessionId === sessionId) return // already stored
 
       setWorkspaceClaudeSessionId(workspaceId, sessionId)
+      // The session id changed — old cache entry (session-id path) is stale.
+      invalidateSessionJsonlCache(workspaceId)
       console.log('[claude-session] captured', { workspaceId, sessionId })
 
       // Re-snapshot with the --resume flag so the dirty-tracker doesn't flag
@@ -366,12 +482,21 @@ function createWindow(): void {
     }
   }
 
+  // Transparent web layer is a macOS-only requirement: it lets the ghostty
+  // NSView (parented as a sibling of contentView in addon.mm) z-order above
+  // the WebContents in the fast path, and below the WebContents in overlay
+  // mode (DOM popovers visible). On Linux/Windows we don't load libghostty
+  // and transparent windows have well-documented perf/rendering quirks, so
+  // keep the original opaque backing there.
+  const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: '#0b0b0c',
+    ...(isMac
+      ? { transparent: true, backgroundColor: '#00000000' }
+      : { backgroundColor: '#0b0b0c' }),
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
@@ -382,6 +507,12 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
+  })
+
+  // Cache the main window reference for use in hot-path broadcasts.
+  mainWindowRef = mainWindow
+  mainWindow.on('closed', () => {
+    if (mainWindowRef === mainWindow) mainWindowRef = null
   })
 
   // Restore fullscreen state before the window is shown
@@ -459,6 +590,10 @@ function createWindow(): void {
   // active again (Cmd-Tab back, dock click, etc.). Without this the focus
   // stays on whatever HTML element it was on, and typing won't reach claude.
   mainWindow.on('focus', () => {
+    // Invalidate the checkClaude cache so the next doctor:check picks up any
+    // claude install/update that happened while the window was in the background.
+    cachedClaudeCheck = null
+
     try {
       const state = getAppUiState()
       if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
@@ -517,43 +652,46 @@ function createWindow(): void {
 // the user's shell customizations (`.zshrc`, brew paths, npm-global, etc.).
 // To match what the user sees in their actual terminal, we spawn a login +
 // interactive subshell once on first check, capture its $PATH, and cache it.
-let cachedShellPath: string | null = null
-function getUserShellPath(): string {
-  if (cachedShellPath !== null) return cachedShellPath
-  const shell = process.env.SHELL
-  if (!shell) {
-    console.warn('[orpheus] SHELL not set; user PATH cannot be derived')
-    cachedShellPath = ''
-    return cachedShellPath
-  }
-  try {
-    const output = childProcess.execSync(`${shell} -ilc 'printf "%s" "$PATH"'`, {
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore']
-    })
-    cachedShellPath = output.trim()
-  } catch (err) {
-    console.warn('[orpheus] failed to read user shell PATH:', err)
-    cachedShellPath = ''
-  }
-  return cachedShellPath
-}
+//
+// The resolution is async so the main thread doesn't block on the first call.
+// Cache for checkClaude — invalidated on app focus change (app:focus event).
+// 30s TTL guards against stale "not installed" results if the user installs
+// claude while Orpheus is open.
+let cachedClaudeCheck: {
+  result: { installed: boolean; version: string | null; path: string | null }
+  at: number
+} | null = null
 
-function checkClaude(): { installed: boolean; version: string | null; path: string | null } {
+const CLAUDE_CHECK_TTL_MS = 30_000
+
+async function checkClaude(): Promise<{
+  installed: boolean
+  version: string | null
+  path: string | null
+}> {
+  if (cachedClaudeCheck && Date.now() - cachedClaudeCheck.at < CLAUDE_CHECK_TTL_MS) {
+    return cachedClaudeCheck.result
+  }
+
   // PATH comes from the user's actual shell (cached). No hardcoded fallbacks:
   // if `claude` isn't on the user's shell PATH, it isn't installed for them.
-  const userPath = getUserShellPath()
-  const env = { ...process.env, PATH: userPath || process.env.PATH || '' }
+  const userPath = await getUserShellPath()
+  const env = { ...process.env, PATH: userPath || process.env['PATH'] || '' }
 
   let claudePath: string
   try {
     claudePath = childProcess
       .execSync('which claude', { encoding: 'utf-8', env, timeout: 3000 })
       .trim()
-    if (!claudePath) return { installed: false, version: null, path: null }
+    if (!claudePath) {
+      const result = { installed: false, version: null, path: null }
+      cachedClaudeCheck = { result, at: Date.now() }
+      return result
+    }
   } catch {
-    return { installed: false, version: null, path: null }
+    const result = { installed: false, version: null, path: null }
+    cachedClaudeCheck = { result, at: Date.now() }
+    return result
   }
 
   let version: string | null = null
@@ -568,7 +706,9 @@ function checkClaude(): { installed: boolean; version: string | null; path: stri
   } catch {
     // `which` succeeded but `--version` failed; treat as installed, version unknown
   }
-  return { installed: true, version, path: claudePath }
+  const result = { installed: true, version, path: claudePath }
+  cachedClaudeCheck = { result, at: Date.now() }
+  return result
 }
 
 function readClaudeProjects(): ExistingProject[] {
@@ -896,6 +1036,9 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
+  if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
+  if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
+  if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
   return result
 })
 
@@ -905,10 +1048,6 @@ ipcMain.on(
     setCurrentlyViewedWorkspace(workspaceId)
   }
 )
-
-ipcMain.handle('workspace:resetActivity', (_e, { workspaceId }: { workspaceId: string }) => {
-  resetWorkspaceActivity(workspaceId)
-})
 
 ipcMain.handle('notifications:test', () => {
   fireTestNotification()
@@ -926,6 +1065,18 @@ ipcMain.handle('updates:restart', () => {
   relaunchApp()
 })
 
+// ---------------------------------------------------------------------------
+// Claude status IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('status:get', () => getStatusSnapshot())
+ipcMain.handle('status:refresh', async () => refreshStatusNow())
+ipcMain.handle('status:openPage', () => {
+  shell.openExternal('https://status.claude.com').catch((err) => {
+    console.warn('[status] openExternal failed:', err)
+  })
+})
+
 ipcMain.handle(
   'projects:setExpandedInSidebar',
   (_e, { id, expanded }: { id: string; expanded: boolean }) =>
@@ -938,8 +1089,8 @@ ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }
 
 ipcMain.handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
 
-ipcMain.handle('doctor:check', (): DoctorResult => {
-  const { installed, version, path: claudePath } = checkClaude()
+ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
+  const { installed, version, path: claudePath } = await checkClaude()
   return {
     claudeInstalled: installed,
     claudeVersion: version,
@@ -962,7 +1113,10 @@ ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => 
 // Git IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('git:status', (_e, { cwd }: { cwd: string }): GitStatus | null => getGitStatus(cwd))
+ipcMain.handle(
+  'git:status',
+  (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd)
+)
 
 ipcMain.handle('git:branches', (_e, { cwd }: { cwd: string }) => listBranches(cwd))
 
@@ -986,6 +1140,14 @@ ipcMain.handle(
   'git:count',
   (_e, args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }) =>
     countCommits(args.cwd, args)
+)
+
+// ---------------------------------------------------------------------------
+// GitHub IPC — `gh` CLI passthrough; null on every failure mode.
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
+  getPrForBranch(cwd, branch)
 )
 
 // ---------------------------------------------------------------------------
@@ -1025,8 +1187,24 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
+  setOverlay: (workspaceId: string, on: boolean) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
+  setLoadingOverlay: (
+    workspaceId: string,
+    state: 'showing' | 'slow' | 'error' | 'hidden',
+    copy: { title: string; subtitle?: string; actionLabel?: string }
+  ) => void
+  setLoadingActionCallback: (cb: (workspaceId: string) => void) => void
+  setLoadingTheme: (colors: {
+    backdrop: [number, number, number]
+    card: [number, number, number]
+    textPrimary: [number, number, number]
+    textSecondary: [number, number, number]
+    border: [number, number, number]
+    isDark: boolean
+    tintAlpha: number
+  }) => void
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1076,6 +1254,7 @@ ipcMain.handle(
   ): { workspaceId: string; created: boolean } => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
+    ensureLoadingOverlayWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
@@ -1102,18 +1281,12 @@ ipcMain.handle(
       ORPHEUS_NOTIFY: shimPath()
     }
 
-    // Build a redacted copy of env for logging — never log secret values
-    const redactedEnv: Record<string, string> = {}
-    const SECRET_KEYS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])
-    for (const [k, v] of Object.entries(surfaceEnv)) {
-      redactedEnv[k] = SECRET_KEYS.has(k) ? '[redacted]' : v
-    }
     console.log(
-      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s env=%s',
+      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
       workspaceId,
       launch.flags || '(none)',
       launch.settingsJson || '(none)',
-      JSON.stringify(redactedEnv)
+      Object.keys(surfaceEnv).join(',')
     )
 
     const result = addon.mount(handle, {
@@ -1124,6 +1297,13 @@ ipcMain.handle(
       env: surfaceEnv
     })
 
+    // Show the loading overlay only when a new surface was actually created —
+    // re-attaching a hidden surface or a defensive resize means claude is
+    // already running and there's no boot to mask.
+    if (result.created) {
+      showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
+    }
+
     // Snapshot the composed launch so we can detect settings drift later.
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
@@ -1131,9 +1311,9 @@ ipcMain.handle(
     // Fire-and-forget: capture the claude session ID written to disk after this
     // mount. Only needed on the first mount (no stored session yet); subsequent
     // mounts pass --resume so the .jsonl already exists and we skip re-capture.
-    const wsForCapture = getWorkspace(workspaceId)
-    if (wsForCapture && !wsForCapture.claudeSessionId) {
-      captureWorkspaceSessionId(workspaceId, cwd ?? wsForCapture.cwd).catch((err) =>
+    // Reuse the `ws` we already fetched above instead of querying again.
+    if (ws && !ws.claudeSessionId) {
+      captureWorkspaceSessionId(workspaceId, cwd ?? ws.cwd).catch((err) =>
         console.error('[claude-session] capture failed:', err)
       )
     }
@@ -1144,6 +1324,9 @@ ipcMain.handle(
 
 ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
+  // If the user navigates away mid-boot, dismiss the overlay so it doesn't
+  // outlive its parent surface in the contentView.
+  hideLoadingOverlay(workspaceId)
   addon.hide(workspaceId)
 })
 
@@ -1162,17 +1345,29 @@ ipcMain.handle(
   }
 )
 
+// Move the workspace's ghostty NSView between the FAST PATH (top sibling,
+// opaque, no compositor blend) and the OVERLAY PATH (bottom sibling so DOM
+// popovers stack above the terminal pixels). The renderer's
+// useTerminalOverlay hook refcounts open overlays and only flips when the
+// count transitions across zero, so this IPC fires rarely and is cheap.
+ipcMain.handle(
+  'terminal:setOverlay',
+  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+    const addon = loadTerminalAddon()
+    addon.setOverlay(workspaceId, on)
+  }
+)
+
 ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
   // Clean up snapshot and dirty state before destroying the surface
+  hideLoadingOverlay(workspaceId)
   launchSnapshots.delete(workspaceId)
   if (dirtyWorkspaces.delete(workspaceId)) {
     broadcastDirty(workspaceId, false)
   }
   // Clear title and notify renderer so stale claude titles don't linger
   if (workspaceTitles.delete(workspaceId)) {
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('workspace:titleChanged', { workspaceId, title: null })
-    }
+    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
   }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
@@ -1205,25 +1400,6 @@ app.whenReady().then(() => {
     console.error('[startup] failed to clear stale activity statuses:', err)
   }
 
-  // Start the Unix-domain socket server that hook shims post to.
-  try {
-    notifyServer = startNotifyServer()
-    onActivityChange((workspaceId, status, detail) => {
-      for (const w of BrowserWindow.getAllWindows()) {
-        w.webContents.send('workspace:activityChanged', { workspaceId, status, detail })
-      }
-    })
-  } catch (err) {
-    console.error('[orpheusNotify] failed to start notify server:', err)
-  }
-
-  // Inject managed hooks into ~/.claude/settings.json (idempotent).
-  try {
-    ensureManagedHooks()
-  } catch (err) {
-    console.error('[orpheusNotify] failed to install managed hooks:', err)
-  }
-
   // Seed the in-memory workspaceTitles map from the DB so the sidebar /
   // workspace header can show the last observed prompt title immediately on
   // launch — without waiting for Claude to re-emit an OSC title.
@@ -1254,6 +1430,40 @@ app.whenReady().then(() => {
   // Gated internally on the autoCheckUpdates setting.
   startAutoCheckLoop()
 
+  // Start the Claude service-status poller (3s initial delay, then per user setting).
+  // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
+  startStatusPoller()
+
+  // Pre-warm the shell PATH resolution so doctor:check doesn't block on first call.
+  getUserShellPath().catch(() => {
+    /* swallow — logged inside getUserShellPath */
+  })
+
+  // Defer notify server + hook install until after the first frame — keeps
+  // createWindow() hot so the UI appears faster on launch.
+  setImmediate(() => {
+    // Start the Unix-domain socket server that hook shims post to.
+    try {
+      notifyServer = startNotifyServer()
+      onActivityChange((workspaceId, status, detail) => {
+        getMainWindow()?.webContents.send('workspace:activityChanged', {
+          workspaceId,
+          status,
+          detail
+        })
+      })
+    } catch (err) {
+      console.error('[orpheusNotify] failed to start notify server:', err)
+    }
+
+    // Inject managed hooks into ~/.claude/settings.json (idempotent, skips write if unchanged).
+    try {
+      ensureManagedHooks()
+    } catch (err) {
+      console.error('[orpheusNotify] failed to install managed hooks:', err)
+    }
+  })
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -1262,6 +1472,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
+  stopStatusPoller()
 })
 
 app.on('window-all-closed', () => {

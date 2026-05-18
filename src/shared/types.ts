@@ -43,6 +43,11 @@ export type GitCommit = {
   author: string
   authorEmail: string
   timestamp: number
+  // Diff stats from `git log --shortstat`. Default to 0 when the commit has no
+  // tree change (e.g. merges or empty commits where shortstat is silent).
+  filesChanged: number
+  insertions: number
+  deletions: number
 }
 
 export type ExistingProject = {
@@ -173,6 +178,9 @@ export type AppUiState = {
   soundPack: SoundPack
   // Updates (v40)
   autoCheckUpdates: boolean
+  // Status polling preferences (v42)
+  statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
+  muteStatusNotifications: boolean
   updatedAt: number
 }
 
@@ -531,6 +539,22 @@ export type WorkspaceActivityDetail =
   | 'idle'
   | 'archived'
 
+// GitHub PR state mapped from `gh pr list` plus the draft flag — drafts come
+// back as OPEN with isDraft=true; we hoist draft into its own state so chip
+// color reflects GitHub's own header (open=green, draft=gray, merged=purple,
+// closed=red).
+export type GhPullRequestState = 'open' | 'draft' | 'merged' | 'closed'
+
+export type GhPullRequest = {
+  number: number
+  state: GhPullRequestState
+  title: string
+  url: string
+  author: string | null
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  checks: 'success' | 'failure' | 'pending' | null
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {
@@ -567,4 +591,51 @@ export type SessionsPagedRequest = {
 export type SessionsPagedResult = {
   rows: SessionRecord[]
   total: number // total matching rows before pagination
+}
+
+// ---------------------------------------------------------------------------
+// Claude status (status.claude.com polling)
+// ---------------------------------------------------------------------------
+
+export type ClaudeStatusIndicator = 'none' | 'minor' | 'major' | 'critical' | 'maintenance'
+
+export type ClaudeStatusComponentStatus =
+  | 'operational'
+  | 'degraded_performance'
+  | 'partial_outage'
+  | 'major_outage'
+  | 'under_maintenance'
+
+export type ClaudeStatusComponent = {
+  id: string
+  name: string
+  status: ClaudeStatusComponentStatus
+  updatedAt: string // ISO timestamp
+  /** True for the two components that drive the top-bar chip color */
+  watched: boolean
+}
+
+export type ClaudeStatusIncident = {
+  id: string
+  name: string
+  impact: 'none' | 'minor' | 'major' | 'critical'
+  status: 'investigating' | 'identified' | 'monitoring' | 'resolved'
+  updatedAt: string // ISO timestamp
+}
+
+export type ClaudeStatusSnapshot = {
+  /** Overall page indicator */
+  indicator: ClaudeStatusIndicator
+  /** Human-readable summary, e.g. "All Systems Operational" */
+  description: string
+  /** Worst indicator of the two watched components (drives chip color) */
+  watchedIndicator: ClaudeStatusIndicator
+  components: ClaudeStatusComponent[]
+  incidents: ClaudeStatusIncident[]
+  /** ms epoch when this snapshot was fetched */
+  fetchedAt: number | null
+  /** False when the last fetch attempt failed; snapshot is stale */
+  fetchOk: boolean
+  /** True while a fetch is in flight */
+  isFetching: boolean
 }

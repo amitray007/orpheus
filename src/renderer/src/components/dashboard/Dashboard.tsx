@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
-import { Sidebar, type SidebarActiveView } from './Sidebar'
+import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
-import { MainContent, type View } from './MainContent'
+import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import type {
   AppUiState,
@@ -11,8 +11,12 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
+  GhPullRequest,
   WorkspaceActivityDetail
 } from '@shared/types'
+
+const Sidebar = memo(SidebarBase)
+const MainContent = memo(MainContentBase)
 
 interface DashboardProps {
   claudeInstalled: boolean
@@ -49,12 +53,20 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     Record<string, GitStatus | null>
   >({})
 
+  // GitHub PR per workspace id — null means "no PR for this branch" so the
+  // map distinguishes "not yet fetched" (undefined) from "fetched, none found"
+  // (null). Rides the same 30s cadence as the git-status poll below.
+  const [prByWorkspaceId, setPrByWorkspaceId] = useState<Record<string, GhPullRequest | null>>({})
+
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
   const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
 
   // Pinned workspaces — fetched on mount and after any pin/unpin toggle
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
+
+  // Terminal titles keyed by workspaceId — single hoisted subscription (fix: prevent N listeners)
+  const [titleByWorkspaceId, setTitleByWorkspaceId] = useState<Record<string, string>>({})
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'sessions' })
@@ -102,6 +114,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           playInteractionSounds: true,
           soundPack: 'core',
           autoCheckUpdates: true,
+          statusPollIntervalSec: 1800,
+          muteStatusNotifications: false,
           updatedAt: 0
         })
       })
@@ -158,6 +172,22 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Single hoisted title subscription — replaces per-workspace listeners in WorkspaceCard / PinnedRow / WorkspaceSubRow.
+  // Main emits { title: null } on terminal:destroy to clear stale titles, so a
+  // null payload deletes the key (not just skips) — otherwise destroyed
+  // workspaces would keep showing the last-seen title.
+  useEffect(() => {
+    return window.api.workspaces.onTitleChanged((e) => {
+      setTitleByWorkspaceId((prev) => {
+        if (e.title) return { ...prev, [e.workspaceId]: e.title }
+        if (!(e.workspaceId in prev)) return prev
+        const next = { ...prev }
+        delete next[e.workspaceId]
+        return next
+      })
+    })
+  }, [])
+
   // GitHub avatar fetches are async + fire-and-forget on the main side. When
   // they land we patch the local projects state in-place so the sidebar swaps
   // identicon → avatar without waiting for a restart or a full list refetch.
@@ -179,13 +209,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // Derived workspace id — stable across renders when the workspace hasn't actually changed
+  const currentlyViewedWorkspaceId = useMemo(
+    () => (view.kind === 'workspace' ? view.workspaceId : null),
+    [view]
+  )
+
   useEffect(() => {
-    const id = view.kind === 'workspace' ? view.workspaceId : null
-    window.api.workspaces.setCurrentlyViewed(id)
-  }, [view])
+    window.api.workspaces.setCurrentlyViewed(currentlyViewedWorkspaceId)
+  }, [currentlyViewedWorkspaceId])
 
   // Fetch all sessions on mount and refresh whenever the Workspaces view is opened
   useEffect(() => {
+    if (view.kind !== 'sessions') return
     let cancelled = false
     window.api.sessions
       .listAll()
@@ -199,8 +235,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       cancelled = true
     }
     // Re-fetch when navigating to the sessions/workspaces view so data is fresh
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.kind === 'sessions'])
+  }, [view.kind])
 
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
@@ -242,40 +277,110 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     refreshPins()
   }, [])
 
-  // Poll git status for all non-archived workspaces every 30s
+  // Stable key — only changes when workspace ids/cwds actually change, not on every object re-creation
+  const workspacesPollKey = useMemo(
+    () =>
+      Object.values(workspacesByProject)
+        .flat()
+        .filter((w) => w.archivedAt === null)
+        .map((w) => w.id + ':' + w.cwd)
+        .join('|'),
+    [workspacesByProject]
+  )
+
+  // Poll git status for all non-archived workspaces every 30s.
+  // 300ms debounce prevents burst spawns when workspacesByProject updates rapidly.
+  // Self-scheduling setTimeout chain (not setInterval) so a slow refresh
+  // can't overlap with the next tick — gh can take seconds on flaky networks,
+  // and concurrent IPC calls produced out-of-order state patches before.
   useEffect(() => {
-    const allWorkspaces = Object.values(workspacesByProject)
+    const workspaces = Object.values(workspacesByProject)
       .flat()
       .filter((w) => w.archivedAt === null)
-    if (allWorkspaces.length === 0) return
+    if (workspaces.length === 0) return
 
     let cancelled = false
+    let nextTickId: ReturnType<typeof setTimeout> | null = null
 
     async function refresh(): Promise<void> {
-      const results: Record<string, GitStatus | null> = {}
+      const gitResults: Record<string, GitStatus | null> = {}
+      const prResults: Record<string, GhPullRequest | null> = {}
       // Sequential to avoid spawning N git processes at once
-      for (const ws of allWorkspaces) {
+      for (const ws of workspaces) {
         if (cancelled) return
         try {
           const status = await window.api.git.status(ws.cwd)
-          results[ws.id] = status
+          gitResults[ws.id] = status
+          // Branch came back — ask gh for the PR. The IPC layer caches with a
+          // 2-min TTL so the 30s loop doesn't actually re-shell on every tick.
+          if (status?.branch) {
+            try {
+              prResults[ws.id] = await window.api.github.prForBranch(ws.cwd, status.branch)
+            } catch (err) {
+              console.error('[dashboard] gh pr lookup failed for', ws.id, err)
+              prResults[ws.id] = null
+            }
+          } else {
+            prResults[ws.id] = null
+          }
         } catch (err) {
           console.error('[dashboard] git status failed for', ws.id, err)
-          results[ws.id] = null
+          gitResults[ws.id] = null
+          prResults[ws.id] = null
         }
       }
       if (!cancelled) {
-        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...results }))
+        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...gitResults }))
+        setPrByWorkspaceId((prev) => ({ ...prev, ...prResults }))
       }
     }
 
-    refresh()
-    const interval = setInterval(refresh, 30000)
+    function schedule(delay: number): void {
+      nextTickId = setTimeout(async () => {
+        nextTickId = null
+        if (cancelled) return
+        await refresh()
+        if (!cancelled) schedule(30000)
+      }, delay)
+    }
+
+    schedule(300) // initial debounce, then every 30s after each completes
+
     return () => {
       cancelled = true
-      clearInterval(interval)
+      if (nextTickId !== null) clearTimeout(nextTickId)
     }
-  }, [workspacesByProject])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacesPollKey])
+
+  // Batch-fetch initial titles for newly seen workspaces so the hoisted title map is seeded.
+  // Runs when new workspace ids appear; subsequent updates come via the onTitleChanged subscription.
+  useEffect(() => {
+    const allWs = Object.values(workspacesByProject).flat()
+    if (allWs.length === 0) return
+    let cancelled = false
+    Promise.all(
+      allWs.map((ws) =>
+        window.api.workspaces
+          .getTitle(ws.id)
+          .then((title) => ({ id: ws.id, title }))
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return
+      const patch: Record<string, string> = {}
+      for (const r of results) {
+        if (r && r.title) patch[r.id] = r.title
+      }
+      if (Object.keys(patch).length > 0) {
+        setTitleByWorkspaceId((prev) => ({ ...prev, ...patch }))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacesPollKey])
 
   // Hydrate UI state from DB once both projects and uiState are loaded.
   // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
@@ -527,8 +632,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         cwd: project.path
       })
       playSound('pop')
-      // Refresh workspace list for this project
-      await fetchWorkspacesForProject(projectId)
+      // Append the newly-created workspace directly to local state instead of
+      // re-fetching the full list — the create IPC already returned everything
+      // we need. Eliminates a redundant DB roundtrip before the user can see
+      // the new row in the sidebar.
+      setWorkspacesByProject((prev) => {
+        const current = prev[projectId] ?? []
+        // De-dupe defensively in case a parallel fetch raced.
+        if (current.some((w) => w.id === newWs.id)) return prev
+        return { ...prev, [projectId]: [...current, newWs] }
+      })
       // Expand the project row so the new workspace is visible.
       // Persist the expanded state so it survives a relaunch.
       setExpandedProjectIds((prev) => {
@@ -539,7 +652,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
         return next
       })
-      // Navigate to the new workspace
+      // Navigate to the new workspace — fires immediately, mount kicks off in parallel.
       handleSelectWorkspace(newWs.id, projectId)
     } catch (err) {
       console.error('[dashboard] add workspace failed', err)
@@ -733,6 +846,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           workspacesByProject={workspacesByProject}
           workspaceActivities={workspaceActivities}
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+          prByWorkspaceId={prByWorkspaceId}
+          titleByWorkspaceId={titleByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
@@ -757,9 +872,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
         <main
           className={
-            view.kind === 'workspace' || view.kind === 'settings'
+            // body is transparent so the ghostty NSView shows through in
+            // workspace view. Every OTHER view needs to paint surface-base
+            // explicitly or it would bleed through to a hidden NSView /
+            // empty window backing. Workspace view leaves <main> bg-less so
+            // WorkspaceView's terminal placeholder div cuts a clean hole.
+            view.kind === 'workspace'
               ? 'flex-1 overflow-hidden min-h-0'
-              : 'flex-1 overflow-y-auto px-8 py-6'
+              : view.kind === 'settings'
+                ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
+                : 'flex-1 overflow-y-auto px-8 py-6 bg-surface-base'
           }
         >
           <MainContent
@@ -781,6 +903,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
             gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+            prByWorkspaceId={prByWorkspaceId}
+            titleByWorkspaceId={titleByWorkspaceId}
             fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           />
         </main>

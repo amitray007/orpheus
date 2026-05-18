@@ -63,6 +63,9 @@ type AppUiStateRow = {
   sound_pack: string | null
   // Updates (v40)
   auto_check_updates: number | null
+  // Status polling preferences (v42)
+  status_poll_interval_sec: number | null
+  mute_status_notifications: number | null
   updated_at: number
 }
 
@@ -120,6 +123,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     soundPack: (row.sound_pack ?? 'core') as SoundPack,
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
+    // Status polling preferences (v42)
+    statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
+    muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -142,6 +148,10 @@ const VALID_SOUND_PACKS: SoundPack[] = [
   'organic',
   'soft'
 ]
+// Allowed values for the status poller interval. Must stay in sync with the
+// Select options surfaced in OrpheusStatusSection.tsx (5/10/15/30 min,
+// 1/2/3 hr) so the UI never offers a value the validator rejects.
+const VALID_STATUS_POLL_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800] as const
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -184,16 +194,42 @@ function validatePatch(patch: AppUiStatePatch): void {
       throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
     }
   }
+  if ('statusPollIntervalSec' in patch && patch.statusPollIntervalSec !== undefined) {
+    if (
+      typeof patch.statusPollIntervalSec !== 'number' ||
+      !VALID_STATUS_POLL_INTERVALS.includes(
+        patch.statusPollIntervalSec as (typeof VALID_STATUS_POLL_INTERVALS)[number]
+      )
+    ) {
+      throw new Error(
+        `uiState: statusPollIntervalSec must be one of ${VALID_STATUS_POLL_INTERVALS.join(', ')}`
+      )
+    }
+  }
+  if ('muteStatusNotifications' in patch && patch.muteStatusNotifications !== undefined) {
+    if (typeof patch.muteStatusNotifications !== 'boolean') {
+      throw new Error('uiState: muteStatusNotifications must be a boolean')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
+let cachedState: AppUiState | null = null
+
+/** Invalidate the in-memory cache (call after external mutations, e.g. in tests). */
+export function invalidateAppUiStateCache(): void {
+  cachedState = null
+}
+
 export function getAppUiState(): AppUiState {
+  if (cachedState !== null) return cachedState
   const db = getDb()
   const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
-  return rowToRecord(row)
+  cachedState = rowToRecord(row)
+  return cachedState
 }
 
 export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
@@ -251,7 +287,10 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Sound pack (v39)
     soundPack: 'sound_pack',
     // Updates (v40)
-    autoCheckUpdates: 'auto_check_updates'
+    autoCheckUpdates: 'auto_check_updates',
+    // Status polling preferences (v42)
+    statusPollIntervalSec: 'status_poll_interval_sec',
+    muteStatusNotifications: 'mute_status_notifications'
   }
 
   const setClauses: string[] = []
@@ -267,8 +306,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   }
 
   if (setClauses.length === 0) {
-    // Nothing to update — just return current state
-    return getAppUiState()
+    // Nothing to update — return cached or fresh state
+    return cachedState ?? getAppUiState()
   }
 
   setClauses.push('updated_at = ?')
@@ -278,5 +317,6 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
   db.prepare(`UPDATE app_ui_state SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
 
   const row = db.prepare('SELECT * FROM app_ui_state WHERE id = 1').get() as AppUiStateRow
-  return rowToRecord(row)
+  cachedState = rowToRecord(row)
+  return cachedState
 }

@@ -1,15 +1,31 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type React from 'react'
-import type { WorkspaceRecord, WorkspaceStatus, WorkspaceActivityDetail } from '@shared/types'
+import type {
+  GhPullRequest,
+  WorkspaceRecord,
+  WorkspaceStatus,
+  WorkspaceActivityDetail
+} from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
+import { useSetActiveOverlayWorkspace } from '@/lib/overlayMode'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
+  /** Last-seen activity detail from Dashboard's live cache; seeds the drawer
+   *  glyph on re-mount so a tool / compacting / asking sub-state survives a
+   *  navigation round-trip until the next hook event refreshes it. */
+  initialDetail?: WorkspaceActivityDetail
+  /** Open PR for this workspace's current branch, fetched at Dashboard level. */
+  pr?: GhPullRequest | null
 }
 
-export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Element {
+export function WorkspaceView({
+  workspace,
+  initialDetail,
+  pr
+}: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
@@ -21,7 +37,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   // Activity status driven by claude hook events
   const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
   // Detail sub-state (thinking / tool / compacting / ready / etc.)
-  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(undefined)
+  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(initialDetail)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -29,6 +45,12 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
+
+  // Tell the overlay-mode provider which workspace's NSView to flip when a
+  // popover / modal / drawer mounts useTerminalOverlay(). Cleared on unmount
+  // so navigating away (back to Sessions / Project / Settings) disables
+  // overlay flipping until we re-enter a workspace.
+  useSetActiveOverlayWorkspace(workspace.id)
 
   // Subscribe to live activity changes for this workspace.
   useEffect(() => {
@@ -173,7 +195,12 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
     <>
       {titleBarHost &&
         createPortal(
-          <WorkspaceTitleBar workspace={workspace} drawer={drawer} onSetDrawer={setDrawer} />,
+          <WorkspaceTitleBar
+            workspace={workspace}
+            drawer={drawer}
+            onSetDrawer={setDrawer}
+            pr={pr}
+          />,
           titleBarHost
         )}
 

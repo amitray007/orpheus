@@ -17,7 +17,8 @@ import {
   ArrowsClockwise,
   Command,
   Robot,
-  Bell
+  Bell,
+  Pulse
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -39,6 +40,7 @@ import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
 import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
 import { OrpheusNotificationsSection } from './settings/OrpheusNotificationsSection'
 import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
+import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 
@@ -63,6 +65,7 @@ export type SectionId =
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-updates'
+  | 'orpheus-status'
   | 'orpheus-developer'
   | 'orpheus-about'
 
@@ -109,6 +112,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Updates',
         icon: ArrowsClockwise,
         Component: OrpheusUpdatesSection
+      },
+      {
+        id: 'orpheus-status',
+        label: 'Service status',
+        icon: Pulse,
+        Component: OrpheusStatusSection
       },
       {
         id: 'orpheus-developer',

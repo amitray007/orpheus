@@ -22,6 +22,7 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -34,7 +35,8 @@ import type {
   ClaudeHookEntry,
   ClaudeHookDraft,
   ContextMenuNativeItem,
-  UpdateCheckResult
+  UpdateCheckResult,
+  ClaudeStatusSnapshot
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -63,6 +65,7 @@ declare global {
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
+        setOverlay: (workspaceId: string, on: boolean) => Promise<void>
       }
       config: {
         openFolder: () => Promise<string | null>
@@ -127,7 +130,6 @@ declare global {
           }) => void
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
-        resetActivity: (workspaceId: string) => Promise<void>
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
       }
       pins: {
@@ -178,6 +180,9 @@ declare global {
           cwd: string,
           opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
         ) => Promise<number>
+      }
+      github: {
+        prForBranch: (cwd: string, branch: string) => Promise<GhPullRequest | null>
       }
       shell: {
         revealInFinder: (path: string) => Promise<void>
@@ -244,6 +249,12 @@ declare global {
         onProgress: (cb: (e: { line: string }) => void) => () => void
         onDone: (cb: (e: { success: boolean; code: number | null }) => void) => () => void
         onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
+      }
+      status: {
+        get: () => Promise<ClaudeStatusSnapshot>
+        refresh: () => Promise<ClaudeStatusSnapshot>
+        openPage: () => Promise<void>
+        onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void) => () => void
       }
     }
   }
