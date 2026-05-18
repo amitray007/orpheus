@@ -4,6 +4,7 @@ import type React from 'react'
 import {
   SidebarSimple,
   ArrowSquareOut,
+  ArrowClockwise,
   WifiHigh,
   WifiMedium,
   WifiLow,
@@ -263,6 +264,10 @@ function StatusPopover({
     onClose()
   }
 
+  function handleRefresh(): void {
+    window.api.status.refresh().catch(console.error)
+  }
+
   const visibleComponents = snapshot.components.filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
   const hasData = snapshot.fetchedAt !== null && visibleComponents.length > 0
   const initialLoading = snapshot.isFetching && !hasData
@@ -304,9 +309,19 @@ function StatusPopover({
               <span
                 className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(snapshot.fetchOk ? snapshot.watchedIndicator : null)}`}
               />
-              <span className="text-xs font-medium text-text-primary truncate">
+              <span className="text-xs font-medium text-text-primary truncate flex-1">
                 {snapshot.description}
               </span>
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={snapshot.isFetching}
+                aria-label="Refresh status now"
+                title="Refresh now"
+                className="w-5 h-5 inline-flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex-shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              >
+                <ArrowClockwise size={11} />
+              </button>
             </div>
             <p className="text-[11px] text-text-muted mt-0.5 flex items-center gap-1.5">
               {snapshot.isFetching ? (
