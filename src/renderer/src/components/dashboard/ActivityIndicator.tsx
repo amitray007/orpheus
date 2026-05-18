@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
+import { Circle, CircleDashed, Diamond } from '@phosphor-icons/react'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
 const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
@@ -36,6 +37,11 @@ interface ActivityIndicatorProps {
   className?: string
 }
 
+// Fixed 12×12 box with flex centering so SVG and text content share an
+// identical bounding box and visual center — matches PrChip's icon variant
+// container so siblings in a sidebar / kanban row land on the same line.
+const BASE_CLS = 'inline-flex items-center justify-center flex-shrink-0 leading-none w-3 h-3'
+
 export function ActivityIndicator({
   detail,
   className
@@ -46,12 +52,34 @@ export function ActivityIndicator({
 
   if (!detail || detail === 'archived') return null
 
-  const base = 'inline-flex items-center justify-center flex-shrink-0 leading-none w-3'
-  const cls = className ? `${base} ${className}` : base
+  const cls = className ? `${BASE_CLS} ${className}` : BASE_CLS
 
-  if (detail === 'idle') {
-    return <span className={`${cls} text-text-muted text-xs font-mono`}>◌</span>
+  // Static states use SVG glyphs so they centre geometrically. Text glyphs
+  // (like U+25CF '●') sit at the font's baseline / cap-height position,
+  // which is offset from the line-box centre — they end up visually lower
+  // than an SVG sibling in the same flex row.
+  if (detail === 'ready') {
+    return (
+      <span className={`${cls} text-emerald-400`}>
+        <Circle size={11} weight="fill" />
+      </span>
+    )
   }
+  if (detail === 'idle') {
+    return (
+      <span className={`${cls} text-text-muted`}>
+        <CircleDashed size={11} weight="bold" />
+      </span>
+    )
+  }
+  if (detail === 'attention') {
+    return (
+      <span className={`${cls} text-amber-400 animate-pulse`}>
+        <Diamond size={11} weight="fill" />
+      </span>
+    )
+  }
+  // Animated states stay text-rendered — the frames are unicode sequences.
   if (detail === 'thinking') {
     return <span className={`${cls} text-accent text-xs font-mono`}>{braille}</span>
   }
@@ -60,12 +88,6 @@ export function ActivityIndicator({
   }
   if (detail === 'compacting') {
     return <span className={`${cls} text-accent text-xs font-mono`}>{compact}</span>
-  }
-  if (detail === 'ready') {
-    return <span className={`${cls} text-emerald-400 text-xs font-mono`}>●</span>
-  }
-  if (detail === 'attention') {
-    return <span className={`${cls} text-amber-400 text-xs font-mono animate-pulse`}>◆</span>
   }
   if (detail === 'asking') {
     return (
