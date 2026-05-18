@@ -235,8 +235,8 @@ const UI_STATE_SCHEMA_SQL = `
     global_hotkey TEXT NOT NULL DEFAULT '',
     -- Archive cap (v25)
     archived_workspace_limit INTEGER NOT NULL DEFAULT 20,
-    -- Status polling preferences (v42)
-    status_poll_interval_sec INTEGER NOT NULL DEFAULT 60,
+    -- Status polling preferences (v42; default raised in v43)
+    status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800,
     mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
     updated_at INTEGER NOT NULL
   );

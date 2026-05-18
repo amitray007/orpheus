@@ -250,8 +250,8 @@ declare global {
         onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
       }
       status: {
-        get: () => Promise<ClaudeStatusSnapshot | null>
-        refresh: () => Promise<ClaudeStatusSnapshot | null>
+        get: () => Promise<ClaudeStatusSnapshot>
+        refresh: () => Promise<ClaudeStatusSnapshot>
         openPage: () => Promise<void>
         onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void) => () => void
       }

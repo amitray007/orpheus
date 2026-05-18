@@ -20,7 +20,15 @@ const WATCHED_COMPONENT_NAMES = ['Claude Code', 'Claude API (api.anthropic.com)'
 
 const FETCH_TIMEOUT_MS = 8_000
 const INITIAL_DELAY_MS = 3_000
-const BACKOFF_BLURRED_MS = 5 * 60 * 1_000
+
+/** Allowed poll intervals (seconds). */
+const VALID_INTERVALS_SEC = [300, 600, 900, 1800, 3600, 7200, 10800] as const
+const DEFAULT_INTERVAL_SEC = 1800
+
+function validateIntervalSec(sec: number | undefined): number {
+  if (!sec) return DEFAULT_INTERVAL_SEC
+  return (VALID_INTERVALS_SEC as readonly number[]).includes(sec) ? sec : DEFAULT_INTERVAL_SEC
+}
 
 // ---------------------------------------------------------------------------
 // API shape (raw JSON from status.claude.com)
@@ -51,9 +59,21 @@ interface RawSummary {
 // Internal state
 // ---------------------------------------------------------------------------
 
-let snapshot: ClaudeStatusSnapshot | null = null
+function makePlaceholderSnapshot(isFetching: boolean): ClaudeStatusSnapshot {
+  return {
+    indicator: 'none',
+    description: 'Checking Claude APIs',
+    watchedIndicator: 'none',
+    components: [],
+    incidents: [],
+    fetchedAt: null,
+    fetchOk: false,
+    isFetching
+  }
+}
+
+let snapshot: ClaudeStatusSnapshot = makePlaceholderSnapshot(true)
 let pollTimer: NodeJS.Timeout | null = null
-let isWindowBlurred = false
 
 /**
  * Flap protection: require two consecutive samples in a new state before
@@ -208,7 +228,8 @@ export async function fetchStatusSnapshot(): Promise<ClaudeStatusSnapshot> {
     components,
     incidents,
     fetchedAt: Date.now(),
-    fetchOk: true
+    fetchOk: true,
+    isFetching: false
   }
 }
 
@@ -292,36 +313,34 @@ function maybeNotifyTransition(
 async function runPoll(): Promise<void> {
   const prevSnapshot = snapshot
 
+  // Mark as fetching and broadcast immediately so the chip flips to the spinner
+  snapshot = { ...snapshot, isFetching: true }
+  broadcast('status:change', snapshot)
+
   try {
     const fresh = await fetchStatusSnapshot()
     snapshot = fresh
 
-    // Fire notifications for watched components that changed
     for (const c of fresh.components) {
       if (c.watched) {
         maybeNotifyTransition(c, prevSnapshot)
       }
     }
 
-    broadcast('status:change', fresh)
+    broadcast('status:change', snapshot)
   } catch (err) {
     console.warn('[claudeStatus] fetch failed:', err)
-    if (snapshot) {
-      // Keep last good snapshot, mark as stale
-      snapshot = { ...snapshot, fetchOk: false }
-      broadcast('status:change', snapshot)
-    }
+    snapshot = { ...prevSnapshot, fetchOk: false, isFetching: false }
+    broadcast('status:change', snapshot)
   }
 }
 
 function getPollIntervalMs(): number {
-  if (isWindowBlurred) return BACKOFF_BLURRED_MS
   try {
     const state = getAppUiState()
-    const sec = state.statusPollIntervalSec ?? 60
-    return sec * 1_000
+    return validateIntervalSec(state.statusPollIntervalSec) * 1_000
   } catch {
-    return 60_000
+    return DEFAULT_INTERVAL_SEC * 1_000
   }
 }
 
@@ -340,25 +359,11 @@ function scheduleNextPoll(): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function getStatusSnapshot(): ClaudeStatusSnapshot | null {
+export function getStatusSnapshot(): ClaudeStatusSnapshot {
   return snapshot
 }
 
-export function startStatusPoller(mainWindow: Electron.BrowserWindow): void {
-  // Track blur/focus for poll back-off
-  mainWindow.on('blur', () => {
-    isWindowBlurred = true
-  })
-  mainWindow.on('focus', () => {
-    isWindowBlurred = false
-    // On focus restore, reschedule with regular interval
-    if (pollTimer !== null) {
-      clearTimeout(pollTimer)
-      pollTimer = null
-    }
-    scheduleNextPoll()
-  })
-
+export function startStatusPoller(_mainWindow: Electron.BrowserWindow): void {
   // First fetch after a short delay to not compete with critical-path boot
   pollTimer = setTimeout(() => {
     pollTimer = null
@@ -366,6 +371,19 @@ export function startStatusPoller(mainWindow: Electron.BrowserWindow): void {
       scheduleNextPoll()
     })
   }, INITIAL_DELAY_MS)
+}
+
+/**
+ * Called when the user changes the poll interval — cancel the existing timer
+ * and reschedule with the new value. No immediate fetch (use refreshStatusNow
+ * for that).
+ */
+export function rescheduleStatusPoll(): void {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+  scheduleNextPoll()
 }
 
 export function stopStatusPoller(): void {
@@ -379,8 +397,7 @@ export function stopStatusPoller(): void {
  * Trigger an immediate out-of-schedule fetch and return the result.
  * Reschedules the regular loop from scratch after the fetch completes.
  */
-export async function refreshStatusNow(): Promise<ClaudeStatusSnapshot | null> {
-  // Cancel any pending scheduled poll
+export async function refreshStatusNow(): Promise<ClaudeStatusSnapshot> {
   if (pollTimer !== null) {
     clearTimeout(pollTimer)
     pollTimer = null

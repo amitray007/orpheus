@@ -123,8 +123,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     soundPack: (row.sound_pack ?? 'core') as SoundPack,
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
-    // Status polling preferences (v42)
-    statusPollIntervalSec: row.status_poll_interval_sec ?? 60,
+    // Status polling preferences (v42; default raised in v43)
+    statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     updatedAt: row.updated_at
   }

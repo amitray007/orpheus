@@ -97,7 +97,8 @@ import {
   getStatusSnapshot,
   startStatusPoller,
   stopStatusPoller,
-  refreshStatusNow
+  refreshStatusNow,
+  rescheduleStatusPoll
 } from './claudeStatus'
 import { showContextMenu } from './contextMenu'
 import {
@@ -1028,6 +1029,7 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
+  if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
   return result
 })
 

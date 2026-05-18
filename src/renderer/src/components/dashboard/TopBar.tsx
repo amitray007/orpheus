@@ -4,7 +4,6 @@ import type React from 'react'
 import {
   SidebarSimple,
   ArrowSquareOut,
-  PushPin,
   WifiHigh,
   WifiMedium,
   WifiLow,
@@ -54,9 +53,9 @@ function indicatorDotClass(indicator: Indicator | null): string {
   }
 }
 
-function chipTooltip(snapshot: ClaudeStatusSnapshot | null, loading: boolean): string {
-  if (loading) return 'Claude · Checking...'
-  if (!snapshot) return 'Claude · Status unavailable'
+function chipTooltip(snapshot: ClaudeStatusSnapshot): string {
+  if (snapshot.isFetching && snapshot.fetchedAt === null) return 'Claude APIs are being checked'
+  if (snapshot.isFetching) return 'Claude · Checking now'
   if (!snapshot.fetchOk) return 'Claude · Status unavailable'
   switch (snapshot.watchedIndicator) {
     case 'none':
@@ -72,6 +71,16 @@ function chipTooltip(snapshot: ClaudeStatusSnapshot | null, loading: boolean): s
     default:
       return 'Claude · Unknown'
   }
+}
+
+/**
+ * Parse names like "Claude Console (platform.claude.com)" into a primary line
+ * and an optional subtitle. Names without parens return subtitle=null.
+ */
+function parseComponentName(name: string): { primary: string; subtitle: string | null } {
+  const m = name.match(/^(.+?)\s*\(([^)]+)\)\s*$/)
+  if (!m) return { primary: name, subtitle: null }
+  return { primary: m[1], subtitle: m[2] }
 }
 
 function timeAgo(ms: number): string {
@@ -176,7 +185,7 @@ function StatusIcon({ indicator, loading }: StatusIconProps): React.JSX.Element 
 // ---------------------------------------------------------------------------
 
 interface StatusPopoverProps {
-  snapshot: ClaudeStatusSnapshot | null
+  snapshot: ClaudeStatusSnapshot
   triggerRef: React.RefObject<HTMLButtonElement | null>
   sidebarWidth: number
   onClose: () => void
@@ -188,6 +197,7 @@ function StatusPopover({
   sidebarWidth,
   onClose
 }: StatusPopoverProps): React.JSX.Element {
+  const headerBraille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot.isFetching)
   const popoverRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{
     left: number
@@ -253,9 +263,9 @@ function StatusPopover({
     onClose()
   }
 
-  const visibleComponents = snapshot
-    ? snapshot.components.filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
-    : []
+  const visibleComponents = snapshot.components.filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
+  const hasData = snapshot.fetchedAt !== null && visibleComponents.length > 0
+  const initialLoading = snapshot.isFetching && !hasData
 
   return createPortal(
     <div
@@ -269,7 +279,24 @@ function StatusPopover({
       }}
       className="bg-surface-overlay border border-border-default rounded-lg shadow-xl overflow-hidden text-sm"
     >
-      {snapshot ? (
+      {initialLoading ? (
+        <>
+          <div className="px-4 py-5 flex items-center justify-center gap-2">
+            <span className="text-zinc-400 font-mono text-xs leading-none">{headerBraille}</span>
+            <span className="text-xs text-text-secondary">Claude APIs are being checked</span>
+          </div>
+          <div className="px-4 py-2 border-t border-border-default/50">
+            <button
+              type="button"
+              onClick={handleOpenPage}
+              className="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none"
+            >
+              View status page
+              <ArrowSquareOut size={11} />
+            </button>
+          </div>
+        </>
+      ) : (
         <>
           {/* Header */}
           <div className="px-4 py-3 border-b border-border-default/50">
@@ -281,33 +308,45 @@ function StatusPopover({
                 {snapshot.description}
               </span>
             </div>
-            <p className="text-[11px] text-text-muted mt-0.5">
-              {snapshot.fetchOk
-                ? `Last checked ${timeAgo(snapshot.fetchedAt)}`
-                : `Stale · Last checked ${timeAgo(snapshot.fetchedAt)}`}
+            <p className="text-[11px] text-text-muted mt-0.5 flex items-center gap-1.5">
+              {snapshot.isFetching ? (
+                <>
+                  <span className="text-zinc-400 font-mono leading-none">{headerBraille}</span>
+                  <span>Checking now</span>
+                </>
+              ) : snapshot.fetchedAt !== null ? (
+                snapshot.fetchOk ? (
+                  `Last checked ${timeAgo(snapshot.fetchedAt)}`
+                ) : (
+                  `Stale · Last checked ${timeAgo(snapshot.fetchedAt)}`
+                )
+              ) : null}
             </p>
           </div>
 
-          {/* Components (filtered) */}
+          {/* Components (filtered, two-line) */}
           {visibleComponents.length > 0 && (
-            <div className="px-4 py-2 flex flex-col gap-0.5 max-h-48 overflow-y-auto">
+            <div className="px-4 py-2 flex flex-col gap-0.5 max-h-56 overflow-y-auto">
               {visibleComponents.map((c) => {
                 const ind = componentStatusToIndicator(c.status)
+                const { primary, subtitle } = parseComponentName(c.name)
                 return (
-                  <div key={c.id} className="flex items-center gap-2 py-1">
+                  <div key={c.id} className="flex items-start gap-2 py-1">
                     <span
-                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${indicatorDotClass(ind)}`}
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${indicatorDotClass(ind)}`}
                     />
-                    <span className="text-[11px] text-text-primary flex-1 truncate">{c.name}</span>
-                    {c.watched && (
-                      <PushPin
-                        size={9}
-                        className="text-text-muted flex-shrink-0"
-                        aria-label="Watched component"
-                      />
-                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] text-text-primary truncate leading-tight">
+                        {primary}
+                      </p>
+                      {subtitle && (
+                        <p className="text-[10px] text-text-muted truncate leading-tight">
+                          {subtitle}
+                        </p>
+                      )}
+                    </div>
                     <span
-                      className={`text-[11px] flex-shrink-0 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
+                      className={`text-[11px] flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
                     >
                       {componentStatusLabel(c.status)}
                     </span>
@@ -353,10 +392,6 @@ function StatusPopover({
             </button>
           </div>
         </>
-      ) : (
-        <div className="px-4 py-3">
-          <p className="text-[11px] text-text-muted">Status not yet available.</p>
-        </div>
       )}
     </div>,
     document.body
@@ -379,7 +414,6 @@ function StatusChip({
   onToggleCollapsed
 }: StatusChipProps): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ClaudeStatusSnapshot | null>(null)
-  const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
@@ -388,18 +422,12 @@ function StatusChip({
     window.api.status
       .get()
       .then((s) => {
-        if (cancelled) return
-        setSnapshot(s)
-        setLoading(false)
+        if (!cancelled) setSnapshot(s)
       })
-      .catch(() => {
-        if (!cancelled) setLoading(false)
-      })
+      .catch(console.error)
 
     const off = window.api.status.onChange((s) => {
-      if (cancelled) return
-      setSnapshot(s)
-      setLoading(false)
+      if (!cancelled) setSnapshot(s)
     })
 
     return () => {
@@ -408,14 +436,14 @@ function StatusChip({
     }
   }, [])
 
+  // Show the spinner whenever a fetch is in flight (initial or refresh)
+  const isFetching = snapshot?.isFetching ?? true
   const chipIndicator =
-    !loading && snapshot?.fetchOk !== false ? (snapshot?.watchedIndicator ?? null) : null
-  const isLoading = loading && !snapshot
-  const tooltip = chipTooltip(snapshot, isLoading)
+    snapshot && !isFetching && snapshot.fetchOk ? snapshot.watchedIndicator : null
+  const tooltip = snapshot ? chipTooltip(snapshot) : 'Claude APIs are being checked'
 
   function handleClick(): void {
     if (sidebarCollapsed) {
-      // Expand sidebar first, then open popover on next frame
       onToggleCollapsed()
       requestAnimationFrame(() => {
         setOpen(true)
@@ -437,9 +465,9 @@ function StatusChip({
         className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 flex-shrink-0"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <StatusIcon indicator={chipIndicator} loading={isLoading} />
+        <StatusIcon indicator={chipIndicator} loading={isFetching} />
       </button>
-      {open && (
+      {open && snapshot && (
         <StatusPopover
           snapshot={snapshot}
           triggerRef={triggerRef}

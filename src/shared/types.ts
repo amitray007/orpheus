@@ -179,7 +179,7 @@ export type AppUiState = {
   // Updates (v40)
   autoCheckUpdates: boolean
   // Status polling preferences (v42)
-  statusPollIntervalSec: number // 30 | 60 | 300; default 60
+  statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
   muteStatusNotifications: boolean
   updatedAt: number
 }
@@ -633,7 +633,9 @@ export type ClaudeStatusSnapshot = {
   components: ClaudeStatusComponent[]
   incidents: ClaudeStatusIncident[]
   /** ms epoch when this snapshot was fetched */
-  fetchedAt: number
+  fetchedAt: number | null
   /** False when the last fetch attempt failed; snapshot is stale */
   fetchOk: boolean
+  /** True while a fetch is in flight */
+  isFetching: boolean
 }

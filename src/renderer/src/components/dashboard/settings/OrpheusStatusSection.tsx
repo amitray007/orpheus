@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
-import { SettingRow, Toggle, SegmentedControl } from './primitives'
+import { SettingRow, Toggle, Select } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
-import { ArrowSquareOut, PushPin } from '@phosphor-icons/react'
+import { ArrowSquareOut } from '@phosphor-icons/react'
+import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,17 +95,32 @@ function impactLabel(impact: ClaudeStatusSnapshot['incidents'][number]['impact']
 
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
 
+/**
+ * Parse names like "Claude Console (platform.claude.com)" into a primary line
+ * and an optional subtitle. Names without parens return subtitle=null.
+ */
+function parseComponentName(name: string): { primary: string; subtitle: string | null } {
+  const m = name.match(/^(.+?)\s*\(([^)]+)\)\s*$/)
+  if (!m) return { primary: name, subtitle: null }
+  return { primary: m[1], subtitle: m[2] }
+}
+
 // ---------------------------------------------------------------------------
 // OrpheusStatusSection
 // ---------------------------------------------------------------------------
 
 const POLL_INTERVAL_OPTIONS = [
-  { value: '30', label: '30 s' },
-  { value: '60', label: '1 min' },
-  { value: '300', label: '5 min' }
+  { value: '300', label: '5 minutes' },
+  { value: '600', label: '10 minutes' },
+  { value: '900', label: '15 minutes' },
+  { value: '1800', label: '30 minutes' },
+  { value: '3600', label: '1 hour' },
+  { value: '7200', label: '2 hours' },
+  { value: '10800', label: '3 hours' }
 ] as const
 
 type PollIntervalValue = (typeof POLL_INTERVAL_OPTIONS)[number]['value']
+const DEFAULT_POLL_INTERVAL: PollIntervalValue = '1800'
 
 export function OrpheusStatusSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -112,6 +128,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
   const [refreshing, setRefreshing] = useState(false)
   const [, setTick] = useState(0)
   const cleanupRef = useRef<(() => void) | null>(null)
+  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot?.isFetching ?? false)
 
   // Tick every 10 seconds to update relative timestamps
   useEffect(() => {
@@ -189,10 +206,18 @@ export function OrpheusStatusSection(): React.JSX.Element {
     )
   }
 
-  const pollIntervalStr = String(uiState.statusPollIntervalSec ?? 60) as PollIntervalValue
+  const pollIntervalStr = String(
+    uiState.statusPollIntervalSec ?? Number(DEFAULT_POLL_INTERVAL)
+  ) as PollIntervalValue
   const validPollInterval = POLL_INTERVAL_OPTIONS.some((o) => o.value === pollIntervalStr)
     ? pollIntervalStr
-    : '60'
+    : DEFAULT_POLL_INTERVAL
+
+  const hasData =
+    snapshot !== null &&
+    snapshot.fetchedAt !== null &&
+    snapshot.components.some((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
+  const initialLoading = snapshot !== null && snapshot.isFetching && !hasData
 
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
@@ -209,7 +234,12 @@ export function OrpheusStatusSection(): React.JSX.Element {
           Current status
         </h3>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex flex-col gap-4">
-          {snapshot ? (
+          {initialLoading ? (
+            <div className="flex items-center justify-center gap-2 py-3">
+              <span className="text-zinc-400 font-mono text-xs leading-none">{braille}</span>
+              <span className="text-xs text-text-secondary">Claude APIs are being checked</span>
+            </div>
+          ) : snapshot ? (
             <>
               {/* Header */}
               <div className="flex items-center justify-between gap-4">
@@ -221,37 +251,47 @@ export function OrpheusStatusSection(): React.JSX.Element {
                     {snapshot.description}
                   </span>
                 </div>
-                <span className="text-xs text-text-muted flex-shrink-0">
-                  {snapshot.fetchOk
-                    ? `Last checked ${timeAgo(snapshot.fetchedAt)}`
-                    : `Stale · Last checked ${timeAgo(snapshot.fetchedAt)}`}
+                <span className="text-xs text-text-muted flex-shrink-0 flex items-center gap-1.5">
+                  {snapshot.isFetching ? (
+                    <>
+                      <span className="text-zinc-400 font-mono leading-none">{braille}</span>
+                      <span>Checking now</span>
+                    </>
+                  ) : snapshot.fetchedAt !== null ? (
+                    snapshot.fetchOk ? (
+                      `Last checked ${timeAgo(snapshot.fetchedAt)}`
+                    ) : (
+                      `Stale · Last checked ${timeAgo(snapshot.fetchedAt)}`
+                    )
+                  ) : null}
                 </span>
               </div>
 
-              {/* Component rows (filtered) */}
+              {/* Component rows (filtered, two-line) */}
               {snapshot.components.some((c) => !HIDDEN_COMPONENT_NAMES.has(c.name)) && (
                 <div className="flex flex-col gap-1">
                   {snapshot.components
                     .filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
                     .map((c) => {
                       const ind = componentStatusToIndicator(c.status)
+                      const { primary, subtitle } = parseComponentName(c.name)
                       return (
-                        <div key={c.id} className="flex items-center gap-2 py-1">
+                        <div key={c.id} className="flex items-start gap-2 py-1">
                           <span
-                            className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(ind)}`}
+                            className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${indicatorDotClass(ind)}`}
                           />
-                          <span className="text-xs text-text-primary flex-1 truncate">
-                            {c.name}
-                          </span>
-                          {c.watched && (
-                            <PushPin
-                              size={10}
-                              className="text-text-muted flex-shrink-0"
-                              aria-label="Drives the top-bar indicator"
-                            />
-                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-text-primary truncate leading-tight">
+                              {primary}
+                            </p>
+                            {subtitle && (
+                              <p className="text-[11px] text-text-muted truncate leading-tight">
+                                {subtitle}
+                              </p>
+                            )}
+                          </div>
                           <span
-                            className={`text-xs flex-shrink-0 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
+                            className={`text-xs flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
                           >
                             {componentStatusLabel(c.status)}
                           </span>
@@ -319,10 +359,10 @@ export function OrpheusStatusSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Check interval"
-            description="How often Orpheus polls status.claude.com in the foreground. Polling slows to 5 minutes when Orpheus is in the background."
+            description="How often Orpheus polls status.claude.com for live service health."
           >
-            <SegmentedControl
-              options={POLL_INTERVAL_OPTIONS}
+            <Select
+              options={POLL_INTERVAL_OPTIONS as unknown as { value: string; label: string }[]}
               value={validPollInterval}
               onChange={(v) => patch({ statusPollIntervalSec: parseInt(v, 10) })}
               ariaLabel="Status check interval"

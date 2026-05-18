@@ -362,8 +362,8 @@ const api = {
     }
   },
   status: {
-    get: (): Promise<ClaudeStatusSnapshot | null> => ipcRenderer.invoke('status:get'),
-    refresh: (): Promise<ClaudeStatusSnapshot | null> => ipcRenderer.invoke('status:refresh'),
+    get: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:get'),
+    refresh: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:refresh'),
     openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
     onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) => {
       const listener = (_evt: IpcRendererEvent, snapshot: ClaudeStatusSnapshot): void =>
