@@ -89,6 +89,12 @@ function impactLabel(impact: ClaudeStatusSnapshot['incidents'][number]['impact']
 }
 
 // ---------------------------------------------------------------------------
+// Components filtered from the displayed list (still fetched by the poller)
+// ---------------------------------------------------------------------------
+
+const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
+
+// ---------------------------------------------------------------------------
 // OrpheusStatusSection
 // ---------------------------------------------------------------------------
 
@@ -222,32 +228,36 @@ export function OrpheusStatusSection(): React.JSX.Element {
                 </span>
               </div>
 
-              {/* Component rows */}
-              {snapshot.components.length > 0 && (
+              {/* Component rows (filtered) */}
+              {snapshot.components.some((c) => !HIDDEN_COMPONENT_NAMES.has(c.name)) && (
                 <div className="flex flex-col gap-1">
-                  {snapshot.components.map((c) => {
-                    const ind = componentStatusToIndicator(c.status)
-                    return (
-                      <div key={c.id} className="flex items-center gap-2 py-1">
-                        <span
-                          className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(ind)}`}
-                        />
-                        <span className="text-xs text-text-primary flex-1 truncate">{c.name}</span>
-                        {c.watched && (
-                          <PushPin
-                            size={10}
-                            className="text-text-muted flex-shrink-0"
-                            aria-label="Drives the top-bar indicator"
+                  {snapshot.components
+                    .filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
+                    .map((c) => {
+                      const ind = componentStatusToIndicator(c.status)
+                      return (
+                        <div key={c.id} className="flex items-center gap-2 py-1">
+                          <span
+                            className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(ind)}`}
                           />
-                        )}
-                        <span
-                          className={`text-xs flex-shrink-0 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
-                        >
-                          {componentStatusLabel(c.status)}
-                        </span>
-                      </div>
-                    )
-                  })}
+                          <span className="text-xs text-text-primary flex-1 truncate">
+                            {c.name}
+                          </span>
+                          {c.watched && (
+                            <PushPin
+                              size={10}
+                              className="text-text-muted flex-shrink-0"
+                              aria-label="Drives the top-bar indicator"
+                            />
+                          )}
+                          <span
+                            className={`text-xs flex-shrink-0 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
+                          >
+                            {componentStatusLabel(c.status)}
+                          </span>
+                        </div>
+                      )
+                    })}
                 </div>
               )}
 

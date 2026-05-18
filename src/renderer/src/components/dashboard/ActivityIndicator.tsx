@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
 import type React from 'react'
 import { Circle, CircleDashed, Diamond } from '@phosphor-icons/react'
 import type { WorkspaceActivityDetail } from '@shared/types'
+import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
 
-const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
 const TOOL_FRAMES = ['◐', '◓', '◑', '◒'] as const
 const COMPACT_FRAMES = [
   '▁',
@@ -21,16 +20,6 @@ const COMPACT_FRAMES = [
   '▃',
   '▂'
 ] as const
-
-function useAnimatedFrame(frames: readonly string[], intervalMs: number, active: boolean): string {
-  const [index, setIndex] = useState(0)
-  useEffect(() => {
-    if (!active) return
-    const id = setInterval(() => setIndex((i) => (i + 1) % frames.length), intervalMs)
-    return () => clearInterval(id)
-  }, [frames, intervalMs, active])
-  return frames[index] ?? frames[0] ?? ''
-}
 
 interface ActivityIndicatorProps {
   detail: WorkspaceActivityDetail | undefined

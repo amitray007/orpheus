@@ -1,8 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type React from 'react'
-import { SidebarSimple, ArrowSquareOut, PushPin } from '@phosphor-icons/react'
+import {
+  SidebarSimple,
+  ArrowSquareOut,
+  PushPin,
+  WifiHigh,
+  WifiMedium,
+  WifiLow,
+  WifiX,
+  WifiSlash,
+  Wrench
+} from '@phosphor-icons/react'
 import type { ClaudeStatusSnapshot } from '@shared/types'
+import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,9 +25,12 @@ interface TopBarProps {
   sidebarWidth: number
 }
 
-// macOS traffic lights + toggle button need at least this much room before
-// the workspace content starts.
-const MIN_LEFT_WIDTH = 112
+// macOS traffic lights + toggle button + status chip need at least this much
+// room before the workspace content starts.
+const MIN_LEFT_WIDTH = 144
+
+// Components filtered out of the popover and settings list
+const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
 
 // ---------------------------------------------------------------------------
 // Status helpers
@@ -40,21 +54,21 @@ function indicatorDotClass(indicator: Indicator | null): string {
   }
 }
 
-function chipLabel(snapshot: ClaudeStatusSnapshot | null, loading: boolean): string {
-  if (loading) return 'Checking...'
-  if (!snapshot) return 'Status unavailable'
-  if (!snapshot.fetchOk) return 'Status unavailable'
+function chipTooltip(snapshot: ClaudeStatusSnapshot | null, loading: boolean): string {
+  if (loading) return 'Claude · Checking...'
+  if (!snapshot) return 'Claude · Status unavailable'
+  if (!snapshot.fetchOk) return 'Claude · Status unavailable'
   switch (snapshot.watchedIndicator) {
     case 'none':
       return 'Claude · Operational'
     case 'minor':
-      return 'Claude API · Degraded'
+      return 'Claude API · Degraded performance'
     case 'major':
       return 'Claude · Partial outage'
     case 'critical':
       return 'Claude · Major outage'
     case 'maintenance':
-      return 'Claude · Maintenance'
+      return 'Claude · Under maintenance'
     default:
       return 'Claude · Unknown'
   }
@@ -122,21 +136,62 @@ function impactLabel(impact: ClaudeStatusSnapshot['incidents'][number]['impact']
 }
 
 // ---------------------------------------------------------------------------
-// StatusPopover — portal-anchored, escape + outside-click dismissible
+// StatusIcon — the Phosphor icon that represents the current indicator
+// ---------------------------------------------------------------------------
+
+interface StatusIconProps {
+  indicator: Indicator | null
+  loading: boolean
+}
+
+function StatusIcon({ indicator, loading }: StatusIconProps): React.JSX.Element {
+  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, loading)
+
+  if (loading) {
+    return (
+      <span className="text-zinc-400 font-mono text-xs leading-none w-4 h-4 inline-flex items-center justify-center">
+        {braille}
+      </span>
+    )
+  }
+
+  switch (indicator) {
+    case 'none':
+      return <WifiHigh size={16} className="text-green-500" weight="bold" />
+    case 'minor':
+      return <WifiMedium size={16} className="text-amber-400" weight="bold" />
+    case 'major':
+      return <WifiLow size={16} className="text-orange-500" weight="bold" />
+    case 'critical':
+      return <WifiX size={16} className="text-red-500" weight="bold" />
+    case 'maintenance':
+      return <Wrench size={16} className="text-blue-400" weight="bold" />
+    default:
+      return <WifiSlash size={16} className="text-zinc-400" weight="bold" />
+  }
+}
+
+// ---------------------------------------------------------------------------
+// StatusPopover — sidebar-constrained in-renderer portal popover
 // ---------------------------------------------------------------------------
 
 interface StatusPopoverProps {
   snapshot: ClaudeStatusSnapshot | null
   triggerRef: React.RefObject<HTMLButtonElement | null>
+  sidebarWidth: number
   onClose: () => void
 }
 
-function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): React.JSX.Element {
+function StatusPopover({
+  snapshot,
+  triggerRef,
+  sidebarWidth,
+  onClose
+}: StatusPopoverProps): React.JSX.Element {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{
     left: number
-    top: number | undefined
-    bottom: number | undefined
+    top: number
     width: number
   } | null>(null)
   const [, setTick] = useState(0)
@@ -147,21 +202,14 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
     return () => clearInterval(id)
   }, [])
 
+  // Compute and apply position: anchored below chip, constrained to sidebar bounds
   useLayoutEffect(() => {
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
-    const margin = 8
-    const estimatedHeight = 320
-    const spaceBelow = window.innerHeight - rect.bottom - margin
-    const above = spaceBelow < estimatedHeight && rect.top > estimatedHeight + margin
-    setPos({
-      left: Math.max(margin, rect.right - 320),
-      top: above ? undefined : rect.bottom + 4,
-      bottom: above ? window.innerHeight - rect.top + 4 : undefined,
-      width: 320
-    })
-  }, [triggerRef])
+    const maxWidth = Math.min(320, sidebarWidth - 8)
+    setPos({ left: 4, top: rect.bottom + 6, width: maxWidth })
+  }, [triggerRef, sidebarWidth])
 
   // Reposition on resize
   useEffect(() => {
@@ -169,20 +217,12 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
       const trigger = triggerRef.current
       if (!trigger) return
       const rect = trigger.getBoundingClientRect()
-      const margin = 8
-      const estimatedHeight = 320
-      const spaceBelow = window.innerHeight - rect.bottom - margin
-      const above = spaceBelow < estimatedHeight && rect.top > estimatedHeight + margin
-      setPos({
-        left: Math.max(margin, rect.right - 320),
-        top: above ? undefined : rect.bottom + 4,
-        bottom: above ? window.innerHeight - rect.top + 4 : undefined,
-        width: 320
-      })
+      const maxWidth = Math.min(320, sidebarWidth - 8)
+      setPos({ left: 4, top: rect.bottom + 6, width: maxWidth })
     }
     window.addEventListener('resize', reposition)
     return () => window.removeEventListener('resize', reposition)
-  }, [triggerRef])
+  }, [triggerRef, sidebarWidth])
 
   // Close on outside mousedown
   useEffect(() => {
@@ -213,15 +253,18 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
     onClose()
   }
 
+  const visibleComponents = snapshot
+    ? snapshot.components.filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
+    : []
+
   return createPortal(
     <div
       ref={popoverRef}
       style={{
         position: 'fixed',
-        left: pos?.left,
-        top: pos?.top,
-        bottom: pos?.bottom,
-        width: pos?.width ?? 320,
+        left: pos?.left ?? 4,
+        top: pos?.top ?? 40,
+        width: pos?.width ?? 312,
         zIndex: 1000
       }}
       className="bg-surface-overlay border border-border-default rounded-lg shadow-xl overflow-hidden text-sm"
@@ -232,7 +275,7 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
           <div className="px-4 py-3 border-b border-border-default/50">
             <div className="flex items-center gap-2">
               <span
-                className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(snapshot.watchedIndicator)}`}
+                className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(snapshot.fetchOk ? snapshot.watchedIndicator : null)}`}
               />
               <span className="text-xs font-medium text-text-primary truncate">
                 {snapshot.description}
@@ -245,10 +288,10 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
             </p>
           </div>
 
-          {/* Components */}
-          {snapshot.components.length > 0 && (
+          {/* Components (filtered) */}
+          {visibleComponents.length > 0 && (
             <div className="px-4 py-2 flex flex-col gap-0.5 max-h-48 overflow-y-auto">
-              {snapshot.components.map((c) => {
+              {visibleComponents.map((c) => {
                 const ind = componentStatusToIndicator(c.status)
                 return (
                   <div key={c.id} className="flex items-center gap-2 py-1">
@@ -321,21 +364,24 @@ function StatusPopover({ snapshot, triggerRef, onClose }: StatusPopoverProps): R
 }
 
 // ---------------------------------------------------------------------------
-// StatusChip — the always-visible top-bar button
+// StatusChip — compact icon-only button in the left section
 // ---------------------------------------------------------------------------
 
-function StatusChip(): React.JSX.Element {
+interface StatusChipProps {
+  sidebarWidth: number
+  sidebarCollapsed: boolean
+  onToggleCollapsed: () => void
+}
+
+function StatusChip({
+  sidebarWidth,
+  sidebarCollapsed,
+  onToggleCollapsed
+}: StatusChipProps): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ClaudeStatusSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const [, setTick] = useState(0)
-
-  // Tick every 15s to keep the "Checking..." label fresh
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 15_000)
-    return () => clearInterval(id)
-  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -362,27 +408,44 @@ function StatusChip(): React.JSX.Element {
     }
   }, [])
 
-  const chipIndicator = snapshot?.fetchOk !== false ? (snapshot?.watchedIndicator ?? null) : null
-  const label = chipLabel(snapshot, loading && !snapshot)
+  const chipIndicator =
+    !loading && snapshot?.fetchOk !== false ? (snapshot?.watchedIndicator ?? null) : null
+  const isLoading = loading && !snapshot
+  const tooltip = chipTooltip(snapshot, isLoading)
+
+  function handleClick(): void {
+    if (sidebarCollapsed) {
+      // Expand sidebar first, then open popover on next frame
+      onToggleCollapsed()
+      requestAnimationFrame(() => {
+        setOpen(true)
+      })
+    } else {
+      setOpen((o) => !o)
+    }
+  }
 
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-label="Claude service status"
+        onClick={handleClick}
+        aria-label={tooltip}
+        title={tooltip}
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 flex-shrink-0"
+        className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 flex-shrink-0"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${indicatorDotClass(chipIndicator)}`}
-        />
-        <span className="whitespace-nowrap">{label}</span>
+        <StatusIcon indicator={chipIndicator} loading={isLoading} />
       </button>
       {open && (
-        <StatusPopover snapshot={snapshot} triggerRef={triggerRef} onClose={() => setOpen(false)} />
+        <StatusPopover
+          snapshot={snapshot}
+          triggerRef={triggerRef}
+          sidebarWidth={sidebarWidth}
+          onClose={() => setOpen(false)}
+        />
       )}
     </>
   )
@@ -421,16 +484,18 @@ export function TopBar({
           <SidebarSimple size={16} />
         </button>
 
+        {/* Status chip — immediately after sidebar toggle */}
+        <StatusChip
+          sidebarWidth={sidebarWidth}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleCollapsed={onToggleCollapsed}
+        />
+
         <div className="flex-1" />
       </div>
 
       {/* Workspace title bar gets portaled into here when in workspace view */}
       <div id="topbar-workspace-slot" className="flex-1 flex items-center min-w-0" />
-
-      {/* Status chip — right side, after workspace slot */}
-      <div className="flex items-center pr-3 flex-shrink-0">
-        <StatusChip />
-      </div>
     </header>
   )
 }
