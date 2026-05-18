@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
 import { DotmSquare11 } from './components/ui/dotm-square-11'
+import { OverlayModeProvider } from './lib/OverlayModeProvider'
 import type { DoctorResult } from '@shared/types'
 
 function App(): React.JSX.Element {
@@ -28,11 +29,27 @@ function App(): React.JSX.Element {
   const showMissingModal = doctor !== null && !doctor.claudeInstalled
 
   return (
+    <OverlayModeProvider>
+      <AppShell doctor={doctor} runDoctor={runDoctor} showMissingModal={showMissingModal} />
+    </OverlayModeProvider>
+  )
+}
+
+interface AppShellProps {
+  doctor: DoctorResult | null
+  runDoctor: () => Promise<void>
+  showMissingModal: boolean
+}
+
+function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React.JSX.Element {
+  return (
     <main className="app h-full">
       {doctor === null ? (
         // Boot splash — Geist Pixel wordmark + Echo Ring, shown briefly
-        // while the doctor IPC resolves on first paint.
-        <div className="h-full flex items-center justify-center">
+        // while the doctor IPC resolves on first paint. bg-surface-base
+        // because body is transparent (terminal NSView shows through) and
+        // there's no ghostty view to reveal yet during boot.
+        <div className="h-full flex items-center justify-center bg-surface-base">
           <div className="flex flex-col items-center gap-6">
             <h1 className="text-6xl tracking-tight text-text-primary leading-none select-none">
               Orpheus<span className="text-accent">.</span>

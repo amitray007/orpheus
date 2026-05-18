@@ -107,6 +107,15 @@
     return YES;
 }
 
+- (BOOL)isOpaque {
+    // libghostty installs an IOSurfaceLayer that fully paints the view's
+    // frame. Returning YES lets AppKit's display machinery skip drawing
+    // anything below us in the region we occupy — meaningful win when we
+    // sit on top of the WebContents (the default fast path) because the
+    // OS compositor can cull the alpha-blend pass for this rect entirely.
+    return YES;
+}
+
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
@@ -669,6 +678,268 @@ struct GhosttySurfaceEntry {
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+#if 0
+// ---------------------------------------------------------------------------
+// WebContents -hitTest: swizzle.
+//
+// Why we need this: the libghostty NSView is parented as the BOTTOM sibling
+// of the BrowserWindow's contentView so DOM popovers / overlays from the
+// renderer naturally z-order on top of the terminal pixels. The downside is
+// that mouse / drag / drop events at the terminal region default-route to
+// the transparent WebContents NSView sitting above us — Chromium's
+// -nonWebContentView hook only helps for views ABOVE the WebContents, not
+// below — so typing, click-to-select, paste, and image drop into the
+// terminal all break.
+//
+// Fix: install a method-impl swap on the WebContents NSView class's
+// -hitTest: so that when the point falls inside any attached ghostty
+// surface's frame, we return nil. AppKit then falls through to the next
+// sibling at that point, which is the ghostty view. Outside terminal
+// regions, the original implementation runs unchanged so DOM clicks /
+// scrolls / drags work exactly as before.
+//
+// The swap is class-wide (affects all instances of that NSView class) but
+// Orpheus only opens one BrowserWindow so we just see the main window's
+// WebContents — and the override is a no-op when no ghostty surface is
+// attached. Installed exactly once via dispatch_once on the first Mount()
+// call. Falls back gracefully (logs + leaves clicks routed to the web
+// layer) if Electron's class hierarchy shifts and we can't find the view.
+// ---------------------------------------------------------------------------
+
+// Held implementations of the WebContents NSView class's original methods so
+// our swizzles can chain to them when the cursor / drag is outside terminal
+// regions.
+static IMP g_origWebContentsHitTestIMP = NULL;
+static IMP g_origWebContentsDraggingEnteredIMP = NULL;
+static IMP g_origWebContentsDraggingUpdatedIMP = NULL;
+static IMP g_origWebContentsDraggingExitedIMP = NULL;
+static IMP g_origWebContentsPrepareForDragOpIMP = NULL;
+static IMP g_origWebContentsPerformDragOpIMP = NULL;
+static IMP g_origWebContentsConcludeDragOpIMP = NULL;
+
+// Tracks the ghostty view that "owns" the in-flight drag while it hovers
+// inside a terminal frame. Cleared on exit / drop / window cross.
+// __strong so the view stays alive for the drag's lifetime even if the
+// surface map mutates mid-drag (defensive — shouldn't happen in practice).
+static OrpheusGhosttyView* __strong g_dragForwardingTo = nil;
+
+// Mouse hit-test override. Returns nil when `point` is inside a known
+// ghostty frame so AppKit falls through to that sibling and delivers
+// mouseDown:/etc. there instead of into Blink.
+static NSView* orpheus_webContents_hitTest(id self, SEL _cmd, NSPoint point) {
+    NSView* selfView = (NSView*)self;
+    NSView* superview = selfView.superview;
+    if (superview) {
+        // `point` is in superview's coordinate space (AppKit's -hitTest:
+        // contract). Each ghostty view's .frame is in the SAME coord space
+        // because they're siblings under the same contentView.
+        for (auto& kv : g_surfaces) {
+            OrpheusGhosttyView* gv = kv.second.view;
+            if (!gv || !kv.second.isAttached) continue;
+            if (NSPointInRect(point, gv.frame)) {
+                return nil;
+            }
+        }
+    }
+    if (g_origWebContentsHitTestIMP) {
+        typedef NSView* (*Fn)(id, SEL, NSPoint);
+        return ((Fn)g_origWebContentsHitTestIMP)(self, _cmd, point);
+    }
+    return selfView;
+}
+
+// Drag-destination resolution does NOT go through -hitTest:; AppKit picks
+// the topmost view registered for the dragged pasteboard types, which (for
+// file URLs) is the WebContents — its Chromium-side machinery registers
+// for HTML5 file drag. So we swizzle the NSDraggingDestination methods on
+// the WebContents class and forward to whichever ghostty view is under the
+// cursor when the drag is happening, falling back to Chromium otherwise.
+
+static OrpheusGhosttyView* findGhosttyForDrag(id self, id<NSDraggingInfo> sender) {
+    NSView* selfView = (NSView*)self;
+    NSView* superview = selfView.superview;
+    if (!superview) return nil;
+    NSPoint windowLoc = [sender draggingLocation];
+    NSPoint inSuperview = [superview convertPoint:windowLoc fromView:nil];
+    for (auto& kv : g_surfaces) {
+        OrpheusGhosttyView* gv = kv.second.view;
+        if (!gv || !kv.second.isAttached) continue;
+        if (NSPointInRect(inSuperview, gv.frame)) {
+            return gv;
+        }
+    }
+    return nil;
+}
+
+static NSDragOperation orpheus_webContents_draggingEntered(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    OrpheusGhosttyView* gv = findGhosttyForDrag(self, sender);
+    if (gv) {
+        g_dragForwardingTo = gv;
+        return [gv draggingEntered:sender];
+    }
+    if (g_origWebContentsDraggingEnteredIMP) {
+        typedef NSDragOperation (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsDraggingEnteredIMP)(self, _cmd, sender);
+    }
+    return NSDragOperationNone;
+}
+
+static NSDragOperation orpheus_webContents_draggingUpdated(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    OrpheusGhosttyView* gv = findGhosttyForDrag(self, sender);
+    if (gv) {
+        if (g_dragForwardingTo != gv) {
+            // Drag crossed boundaries (from web region or another terminal).
+            if (g_dragForwardingTo) {
+                [g_dragForwardingTo draggingExited:sender];
+            }
+            g_dragForwardingTo = gv;
+            return [gv draggingEntered:sender];
+        }
+        return [gv draggingUpdated:sender];
+    }
+    if (g_dragForwardingTo) {
+        [g_dragForwardingTo draggingExited:sender];
+        g_dragForwardingTo = nil;
+    }
+    if (g_origWebContentsDraggingUpdatedIMP) {
+        typedef NSDragOperation (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsDraggingUpdatedIMP)(self, _cmd, sender);
+    }
+    return NSDragOperationNone;
+}
+
+static void orpheus_webContents_draggingExited(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        [g_dragForwardingTo draggingExited:sender];
+        g_dragForwardingTo = nil;
+        return;
+    }
+    if (g_origWebContentsDraggingExitedIMP) {
+        typedef void (*Fn)(id, SEL, id<NSDraggingInfo>);
+        ((Fn)g_origWebContentsDraggingExitedIMP)(self, _cmd, sender);
+    }
+}
+
+static BOOL orpheus_webContents_prepareForDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        return [g_dragForwardingTo prepareForDragOperation:sender];
+    }
+    if (g_origWebContentsPrepareForDragOpIMP) {
+        typedef BOOL (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsPrepareForDragOpIMP)(self, _cmd, sender);
+    }
+    return NO;
+}
+
+static BOOL orpheus_webContents_performDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    if (g_dragForwardingTo) {
+        BOOL result = [g_dragForwardingTo performDragOperation:sender];
+        g_dragForwardingTo = nil;
+        return result;
+    }
+    if (g_origWebContentsPerformDragOpIMP) {
+        typedef BOOL (*Fn)(id, SEL, id<NSDraggingInfo>);
+        return ((Fn)g_origWebContentsPerformDragOpIMP)(self, _cmd, sender);
+    }
+    return NO;
+}
+
+static void orpheus_webContents_concludeDragOperation(id self, SEL _cmd, id<NSDraggingInfo> sender) {
+    // performDragOperation should have already cleared g_dragForwardingTo on
+    // a successful drop; clear defensively in case the drop was rejected.
+    g_dragForwardingTo = nil;
+    if (g_origWebContentsConcludeDragOpIMP) {
+        typedef void (*Fn)(id, SEL, id<NSDraggingInfo>);
+        ((Fn)g_origWebContentsConcludeDragOpIMP)(self, _cmd, sender);
+    }
+}
+
+// Swap one method's implementation, caching the original. If the class
+// doesn't have the method defined directly (only inherited), add it first
+// so we override only this class without polluting the parent. Returns the
+// original IMP (NULL on failure).
+static IMP installSwizzle(Class cls, SEL sel, IMP newImpl, const char* typeEncoding) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return NULL;
+    // If the method is inherited, add it locally first so method_setImplementation
+    // only affects `cls` and its subclasses.
+    if (!class_addMethod(cls, sel, newImpl, typeEncoding)) {
+        // Method already exists on cls — swap in place.
+        return method_setImplementation(m, newImpl);
+    }
+    return method_getImplementation(m);
+}
+
+static void installWebContentsRoutingSwizzles(NSView* contentView) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (!contentView) return;
+        // Find Electron's WebContents-hosting NSView among the contentView's
+        // siblings. Class name varies across Chromium versions — match on
+        // both the wrapper (WebContentsViewCocoa) and the leaf
+        // (RenderWidgetHostViewCocoa). Prefer the wrapper because that's
+        // the sibling level where ghostty also lives, and Chromium hangs
+        // the file-drag registration off the wrapper.
+        NSView* wcv = nil;
+        for (NSView* sub in contentView.subviews) {
+            NSString* cls = NSStringFromClass([sub class]);
+            if ([cls containsString:@"WebContentsView"]) {
+                wcv = sub;
+                break;
+            }
+        }
+        if (!wcv) {
+            for (NSView* sub in contentView.subviews) {
+                NSString* cls = NSStringFromClass([sub class]);
+                if ([cls containsString:@"RenderWidgetHostView"]) {
+                    wcv = sub;
+                    break;
+                }
+            }
+        }
+        if (!wcv) {
+            NSLog(@"[ghostty-native] WebContents NSView not found in contentView.subviews; "
+                  @"terminal-region input + drag routing will not work. Subview classes seen:");
+            for (NSView* sub in contentView.subviews) {
+                NSLog(@"[ghostty-native]   - %@", NSStringFromClass([sub class]));
+            }
+            return;
+        }
+        Class cls = [wcv class];
+
+        // -hitTest: routes mouse events. Returns nil over a terminal frame so
+        // AppKit falls through to ghostty's sibling NSView.
+        g_origWebContentsHitTestIMP = installSwizzle(
+            cls, @selector(hitTest:), (IMP)orpheus_webContents_hitTest,
+            "@@:{CGPoint=dd}");
+
+        // NSDraggingDestination methods — forward to ghostty's own
+        // implementations when the cursor is over a terminal frame.
+        g_origWebContentsDraggingEnteredIMP = installSwizzle(
+            cls, @selector(draggingEntered:), (IMP)orpheus_webContents_draggingEntered,
+            "L@:@");
+        g_origWebContentsDraggingUpdatedIMP = installSwizzle(
+            cls, @selector(draggingUpdated:), (IMP)orpheus_webContents_draggingUpdated,
+            "L@:@");
+        g_origWebContentsDraggingExitedIMP = installSwizzle(
+            cls, @selector(draggingExited:), (IMP)orpheus_webContents_draggingExited,
+            "v@:@");
+        g_origWebContentsPrepareForDragOpIMP = installSwizzle(
+            cls, @selector(prepareForDragOperation:),
+            (IMP)orpheus_webContents_prepareForDragOperation, "B@:@");
+        g_origWebContentsPerformDragOpIMP = installSwizzle(
+            cls, @selector(performDragOperation:),
+            (IMP)orpheus_webContents_performDragOperation, "B@:@");
+        g_origWebContentsConcludeDragOpIMP = installSwizzle(
+            cls, @selector(concludeDragOperation:),
+            (IMP)orpheus_webContents_concludeDragOperation, "v@:@");
+
+        NSLog(@"[ghostty-native] installed input + drag routing swizzles on %s",
+              class_getName(cls));
+    });
+}
+#endif
 
 // Reverse map: surface pointer → workspaceId.
 // Maintained in sync with g_surfaces to give O(log n) lookup in action_cb
@@ -1617,6 +1888,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
+    // Dynamic z-order keeps ghostty on top by default, so AppKit's natural
+    // hit-test + drag-destination resolution routes terminal-region events
+    // straight to us. While overlay mode is active (ghostty moved to the
+    // back so DOM popovers stack above), we *want* the WebContents to keep
+    // those events so the popover/backdrop can respond. No swizzles needed
+    // in either state.
+
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
         Napi::TypeError::New(env, "arg 1 must be object {workspaceId,rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
@@ -1693,7 +1971,15 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            [contentView addSubview:entry.view];
+            // DEFAULT FAST PATH: insert ghostty at the TOP of the sibling
+            // stack. Opaque NSView on top of WebContents means the OS
+            // compositor culls alpha blending in the terminal region — same
+            // perf as the pre-z-order-inversion architecture. When a DOM
+            // overlay needs to render above the terminal, JS calls
+            // terminal:setOverlay(true) which moves us below WebContents
+            // for the duration of the overlay; setOverlay(false) snaps us
+            // back here.
+            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
 
             // Wake the renderer — surface is no longer occluded.
             ghostty_surface_set_occlusion(entry.surface, false);
@@ -1734,7 +2020,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    [contentView addSubview:termView];
+    // Default to the top of the sibling z-order — see the matching comment
+    // in the re-attach branch above. setOverlay(true) moves us below the
+    // WebContents on demand when a DOM overlay needs to paint on top.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
@@ -2126,6 +2415,44 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// NAPI: setOverlay(workspaceId, on)
+//
+// Toggle a workspace's terminal NSView between the FAST PATH (top sibling of
+// the BrowserWindow's contentView — opaque, no alpha-blend overhead) and the
+// OVERLAY PATH (bottom sibling — DOM elements stack above the terminal pixels
+// because the WebContents draws with alpha on top of us).
+//
+// JS owns the policy: the renderer's useTerminalOverlay() hook refcounts how
+// many React popovers / modals / drawers want to paint above the terminal,
+// and calls setOverlay(true) on 0→1 and setOverlay(false) on 1→0 so the
+// blend cost is only paid while overlays are actually on screen.
+//
+// Idempotent: re-asserting the same mode is a cheap reorder (AppKit just
+// moves the view within the superview's subview array).
+static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    bool on = info[1].As<Napi::Boolean>().Value();
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return env.Undefined();
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached || !entry.view) return env.Undefined();
+    NSView* superview = entry.view.superview;
+    if (!superview) return env.Undefined();
+    // Reorder happens immediately on the main thread (NAPI handlers run on
+    // it) so the very next display refresh reflects the new z-order.
+    NSWindowOrderingMode mode = on ? NSWindowBelow : NSWindowAbove;
+    [superview addSubview:entry.view positioned:mode relativeTo:nil];
+    NSLog(@"[ghostty-native] setOverlay workspaceId=%s on=%d (z=%s)",
+          workspaceId.c_str(), on ? 1 : 0, on ? "below" : "above");
+    return env.Undefined();
+}
+
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -2235,6 +2562,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
+    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));

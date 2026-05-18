@@ -9,6 +9,7 @@ import type {
 } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
+import { useSetActiveOverlayWorkspace } from '@/lib/overlayMode'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -44,6 +45,12 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
+
+  // Tell the overlay-mode provider which workspace's NSView to flip when a
+  // popover / modal / drawer mounts useTerminalOverlay(). Cleared on unmount
+  // so navigating away (back to Sessions / Project / Settings) disables
+  // overlay flipping until we re-enter a workspace.
+  useSetActiveOverlayWorkspace(workspace.id)
 
   // Subscribe to live activity changes for this workspace.
   useEffect(() => {

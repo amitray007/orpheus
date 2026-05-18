@@ -482,12 +482,21 @@ function createWindow(): void {
     }
   }
 
+  // Transparent web layer is a macOS-only requirement: it lets the ghostty
+  // NSView (parented as a sibling of contentView in addon.mm) z-order above
+  // the WebContents in the fast path, and below the WebContents in overlay
+  // mode (DOM popovers visible). On Linux/Windows we don't load libghostty
+  // and transparent windows have well-documented perf/rendering quirks, so
+  // keep the original opaque backing there.
+  const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: '#0b0b0c',
+    ...(isMac
+      ? { transparent: true, backgroundColor: '#00000000' }
+      : { backgroundColor: '#0b0b0c' }),
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
@@ -1178,6 +1187,7 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
+  setOverlay: (workspaceId: string, on: boolean) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (
@@ -1332,6 +1342,19 @@ ipcMain.handle(
   ): void => {
     const addon = loadTerminalAddon()
     addon.resize(workspaceId, rect, scaleFactor)
+  }
+)
+
+// Move the workspace's ghostty NSView between the FAST PATH (top sibling,
+// opaque, no compositor blend) and the OVERLAY PATH (bottom sibling so DOM
+// popovers stack above the terminal pixels). The renderer's
+// useTerminalOverlay hook refcounts open overlays and only flips when the
+// count transitions across zero, so this IPC fires rarely and is cheap.
+ipcMain.handle(
+  'terminal:setOverlay',
+  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+    const addon = loadTerminalAddon()
+    addon.setOverlay(workspaceId, on)
   }
 )
 
