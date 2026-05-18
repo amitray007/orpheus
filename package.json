@@ -1,6 +1,6 @@
 {
   "name": "orpheus",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "A closed-source Mac IDE built around Claude Code",
   "main": "./out/main/index.js",
