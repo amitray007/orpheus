@@ -860,9 +860,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
         <main
           className={
-            view.kind === 'workspace' || view.kind === 'settings'
+            // body is transparent so the ghostty NSView shows through in
+            // workspace view. Every OTHER view needs to paint surface-base
+            // explicitly or it would bleed through to a hidden NSView /
+            // empty window backing. Workspace view leaves <main> bg-less so
+            // WorkspaceView's terminal placeholder div cuts a clean hole.
+            view.kind === 'workspace'
               ? 'flex-1 overflow-hidden min-h-0'
-              : 'flex-1 overflow-y-auto px-8 py-6'
+              : view.kind === 'settings'
+                ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
+                : 'flex-1 overflow-y-auto px-8 py-6 bg-surface-base'
           }
         >
           <MainContent

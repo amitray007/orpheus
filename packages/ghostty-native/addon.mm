@@ -111,6 +111,20 @@
     return YES;
 }
 
+// Chromium-sanctioned hit-test bypass. RenderWidgetHostViewCocoa's
+// -shouldIgnoreMouseEvent: walks up the AppKit superview chain at the click
+// location looking for any view that responds to -nonWebContentView. When it
+// finds one (us), it forwards the event to the standard responder chain
+// instead of routing into Blink. Result: mouse events in the terminal region
+// land on our keyDown:/mouseDown:/... handlers even though the WebContents
+// NSView is z-ordered above us. No method swizzling required.
+//
+// Source: content/app_shim_remote_cocoa/render_widget_host_view_cocoa.mm
+// (the same hook AppKit sheets and Chromium autofill popovers rely on).
+- (BOOL)nonWebContentView {
+    return YES;
+}
+
 // ---------------------------------------------------------------------------
 // Modifier flag → Ghostty mods bitmask
 // Source: Ghostty.Input.swift ghosttyMods() method.
@@ -1693,7 +1707,14 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            [contentView addSubview:entry.view];
+            // Insert at the BOTTOM of the sibling stack so the WebContents
+            // (and Electron's content_view_ for user widgets) z-order above
+            // us. The transparent web layer composites over ghostty's pixels
+            // wherever the DOM has a transparent background; DOM popovers /
+            // overlays then naturally stack above the terminal via normal
+            // CSS z-index. AppKit treats relativeTo:nil + NSWindowBelow as
+            // "insert at subview index 0."
+            [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
 
             // Wake the renderer — surface is no longer occluded.
             ghostty_surface_set_occlusion(entry.surface, false);
@@ -1734,7 +1755,11 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    [contentView addSubview:termView];
+    // Bottom-of-stack insert — see the matching addSubview:positioned: comment
+    // in the re-attach branch above for the rationale. Keeps the WebContents
+    // NSView (and Electron's content_view_ sibling) z-ordered above us so DOM
+    // overlays / popovers can sit on top of the terminal.
+    [contentView addSubview:termView positioned:NSWindowBelow relativeTo:nil];
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 

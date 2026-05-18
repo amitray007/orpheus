@@ -154,7 +154,15 @@ body,
 }
 
 body {
-  background: var(--color-surface-base, #0b0b0c);
+  /* Transparent so the libghostty NSView (parented as the bottom sibling of
+     Electron's contentView — see packages/ghostty-native/addon.mm) shows
+     through wherever no DOM element paints over it.
+     Chrome surfaces (TopBar, Sidebar, modals, the WorkspaceDrawer) paint
+     their own surface-raised / surface-overlay backgrounds, so they stay
+     visually opaque. Non-workspace pages explicitly paint surface-base on
+     <main> in Dashboard.tsx so they don't accidentally bleed through to
+     a hidden ghostty surface or the window backing. */
+  background: transparent;
   color: var(--color-text-primary, #f4f4f5);
   font-family: var(--font-sans);
   font-size: 14px;

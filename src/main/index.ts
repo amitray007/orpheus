@@ -487,7 +487,13 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: '#0b0b0c',
+    // Transparent web layer so the ghostty NSView (parented as the bottom
+    // sibling of contentView in packages/ghostty-native/addon.mm) shows
+    // through wherever the renderer paints with alpha. Without transparent:
+    // true the NSWindow forces an opaque backing and webContents alpha is
+    // discarded — the terminal would be invisible behind a solid surface.
+    transparent: true,
+    backgroundColor: '#00000000',
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
@@ -499,6 +505,11 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  // Note: BrowserWindow({transparent:true,backgroundColor:'#00000000'}) is
+  // sufficient on Electron 39 — Chromium's compositor honors the alpha
+  // backing without an additional webContents.setBackgroundColor call. (The
+  // latter is not in WebContents' TypeScript surface in this version.)
 
   // Cache the main window reference for use in hot-path broadcasts.
   mainWindowRef = mainWindow

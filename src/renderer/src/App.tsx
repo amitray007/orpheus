@@ -31,8 +31,10 @@ function App(): React.JSX.Element {
     <main className="app h-full">
       {doctor === null ? (
         // Boot splash — Geist Pixel wordmark + Echo Ring, shown briefly
-        // while the doctor IPC resolves on first paint.
-        <div className="h-full flex items-center justify-center">
+        // while the doctor IPC resolves on first paint. bg-surface-base
+        // because body is transparent (terminal NSView shows through) and
+        // there's no ghostty view to reveal yet during boot.
+        <div className="h-full flex items-center justify-center bg-surface-base">
           <div className="flex flex-col items-center gap-6">
             <h1 className="text-6xl tracking-tight text-text-primary leading-none select-none">
               Orpheus<span className="text-accent">.</span>
