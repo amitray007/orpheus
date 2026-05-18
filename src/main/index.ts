@@ -482,18 +482,21 @@ function createWindow(): void {
     }
   }
 
+  // Transparent web layer is a macOS-only requirement: it lets the ghostty
+  // NSView (parented as a sibling of contentView in addon.mm) z-order above
+  // the WebContents in the fast path, and below the WebContents in overlay
+  // mode (DOM popovers visible). On Linux/Windows we don't load libghostty
+  // and transparent windows have well-documented perf/rendering quirks, so
+  // keep the original opaque backing there.
+  const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
     minWidth: 960,
     minHeight: 600,
     show: false,
-    // Transparent web layer so the ghostty NSView (parented as the bottom
-    // sibling of contentView in packages/ghostty-native/addon.mm) shows
-    // through wherever the renderer paints with alpha. Without transparent:
-    // true the NSWindow forces an opaque backing and webContents alpha is
-    // discarded — the terminal would be invisible behind a solid surface.
-    transparent: true,
-    backgroundColor: '#00000000',
+    ...(isMac
+      ? { transparent: true, backgroundColor: '#00000000' }
+      : { backgroundColor: '#0b0b0c' }),
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
@@ -505,11 +508,6 @@ function createWindow(): void {
       sandbox: false
     }
   })
-
-  // Note: BrowserWindow({transparent:true,backgroundColor:'#00000000'}) is
-  // sufficient on Electron 39 — Chromium's compositor honors the alpha
-  // backing without an additional webContents.setBackgroundColor call. (The
-  // latter is not in WebContents' TypeScript surface in this version.)
 
   // Cache the main window reference for use in hot-path broadcasts.
   mainWindowRef = mainWindow
