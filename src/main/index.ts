@@ -80,7 +80,6 @@ import {
   shimPath,
   onActivityChange,
   onSessionStart,
-  resetWorkspaceActivity,
   heartbeatFromTitle,
   clearWorkspaceActivity,
   invalidateWatchdogCache
@@ -1055,10 +1054,6 @@ ipcMain.on(
     setCurrentlyViewedWorkspace(workspaceId)
   }
 )
-
-ipcMain.handle('workspace:resetActivity', (_e, { workspaceId }: { workspaceId: string }) => {
-  resetWorkspaceActivity(workspaceId)
-})
 
 ipcMain.handle('notifications:test', () => {
   fireTestNotification()

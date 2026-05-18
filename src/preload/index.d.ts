@@ -127,7 +127,6 @@ declare global {
           }) => void
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
-        resetActivity: (workspaceId: string) => Promise<void>
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
       }
       pins: {

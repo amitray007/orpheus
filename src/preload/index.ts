@@ -188,8 +188,6 @@ const api = {
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    resetActivity: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('workspace:resetActivity', { workspaceId }),
     onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
       const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
         cb(e.workspaceId)

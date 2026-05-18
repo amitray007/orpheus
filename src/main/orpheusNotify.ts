@@ -279,11 +279,6 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
   sessionStartListeners.add(cb)
 }
 
-export function resetWorkspaceActivity(workspaceId: string): void {
-  clearWatchdog(workspaceId)
-  dispatch(workspaceId, 'awaiting_input')
-}
-
 /**
  * After unarchive: forget any stale runtime activity for this workspace.
  * Without this the in-memory activityMap (and renderer's cache) may still
