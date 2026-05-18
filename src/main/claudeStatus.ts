@@ -258,15 +258,19 @@ function maybeNotifyTransition(
     return
   }
 
-  // Flap protection: require two consecutive samples in the new state
+  // Flap protection: require two consecutive samples in the new state.
+  // First sample establishes the candidate (count=1, no notify). Second
+  // sample in the same state commits to notifying — we compare nextCount,
+  // not the pre-increment pending.count, otherwise the guard fires on the
+  // third sample instead of the second.
   const pending = pendingTransitions.get(component.id)
   if (!pending || pending.indicator !== newIndicator) {
     pendingTransitions.set(component.id, { indicator: newIndicator, count: 1 })
     return
   }
-  // Second consecutive sample in same new state
-  pendingTransitions.set(component.id, { indicator: newIndicator, count: pending.count + 1 })
-  if (pending.count < 2) return
+  const nextCount = pending.count + 1
+  pendingTransitions.set(component.id, { indicator: newIndicator, count: nextCount })
+  if (nextCount < 2) return
 
   // Clear pending — we're committing to notify (or not)
   pendingTransitions.delete(component.id)

@@ -1500,11 +1500,14 @@ function migrate(db: Database.Database): void {
     db.prepare('UPDATE schema_version SET version = ?').run(41)
   }
 
-  // Version 42: status polling preferences on app_ui_state
+  // Version 42: status polling preferences on app_ui_state.
+  // Default = 1800s (30 min) — matches the allowed Select option set
+  // (5/10/15/30 min + 1/2/3 hr) so freshly migrated rows are valid against
+  // validateIntervalSec in main/uiState.ts and the UI Select options.
   if (currentVersion < 42) {
     try {
       db.exec(
-        'ALTER TABLE app_ui_state ADD COLUMN status_poll_interval_sec INTEGER NOT NULL DEFAULT 60'
+        'ALTER TABLE app_ui_state ADD COLUMN status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800'
       )
     } catch {
       /* ignore */
@@ -1538,24 +1541,60 @@ function healWorkspacesCheck(db: Database.Database): void {
   const hasLegacy = sql.includes("'in_review'") || sql.includes("'completed'")
   if (hasAllCurrent && !hasLegacy) return
 
-  console.log('[db] workspaces CHECK is stale — dropping table to recreate from canonical schema')
+  console.log('[db] workspaces CHECK is stale — rebuilding via copy-migration to preserve rows')
   db.pragma('foreign_keys = OFF')
   try {
-    db.exec('DROP TABLE workspaces')
-    db.exec(WORKSPACES_SCHEMA_SQL)
-    // The drop left orphaned references behind (FK cascade only fires on DELETE,
-    // not DROP). Clean them up so the rebuilt schema is internally consistent.
-    // Wrapped because either table may not exist on partially-migrated installs.
-    try {
-      db.exec('UPDATE app_ui_state SET last_workspace_id = NULL')
-    } catch {
-      /* table absent */
-    }
-    try {
-      db.exec('DELETE FROM claude_workspace_settings')
-    } catch {
-      /* table absent */
-    }
+    const rebuild = db.transaction(() => {
+      // Create the new table with the canonical CHECK. Inline rather than
+      // re-using WORKSPACES_SCHEMA_SQL so we can name it _new for the swap.
+      db.exec(`
+        CREATE TABLE workspaces_new (
+          id TEXT PRIMARY KEY NOT NULL,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          pinned_at INTEGER,
+          created_at INTEGER NOT NULL,
+          last_opened_at INTEGER,
+          archived_at INTEGER,
+          status TEXT NOT NULL DEFAULT 'idle'
+            CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
+          name_is_auto INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER,
+          claude_session_id TEXT,
+          last_title TEXT
+        )
+      `)
+      // Copy every workspace row, normalising any legacy status value that
+      // the old CHECK accepted but the new one doesn't. Archived rows keep
+      // their state; everything else falls back to 'idle' if unknown (the
+      // startup reset will redrive it once the user activates the workspace).
+      db.exec(`
+        INSERT INTO workspaces_new (
+          id, project_id, name, cwd, pinned_at, created_at, last_opened_at,
+          archived_at, status, name_is_auto, sort_order, claude_session_id, last_title
+        )
+        SELECT
+          id, project_id, name, cwd, pinned_at, created_at, last_opened_at,
+          archived_at,
+          CASE
+            WHEN status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')
+              THEN status
+            WHEN archived_at IS NOT NULL THEN 'archived'
+            ELSE 'idle'
+          END,
+          name_is_auto, sort_order, claude_session_id, last_title
+        FROM workspaces
+      `)
+      db.exec('DROP TABLE workspaces')
+      db.exec('ALTER TABLE workspaces_new RENAME TO workspaces')
+      db.exec('CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id)')
+      db.exec('CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at)')
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort ON workspaces(project_id, sort_order, created_at DESC)'
+      )
+    })
+    rebuild()
   } finally {
     db.pragma('foreign_keys = ON')
   }

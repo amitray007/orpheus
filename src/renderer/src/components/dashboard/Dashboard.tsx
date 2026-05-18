@@ -114,7 +114,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           playInteractionSounds: true,
           soundPack: 'core',
           autoCheckUpdates: true,
-          statusPollIntervalSec: 60,
+          statusPollIntervalSec: 1800,
           muteStatusNotifications: false,
           updatedAt: 0
         })
@@ -172,11 +172,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
-  // Single hoisted title subscription — replaces per-workspace listeners in WorkspaceCard / PinnedRow / WorkspaceSubRow
+  // Single hoisted title subscription — replaces per-workspace listeners in WorkspaceCard / PinnedRow / WorkspaceSubRow.
+  // Main emits { title: null } on terminal:destroy to clear stale titles, so a
+  // null payload deletes the key (not just skips) — otherwise destroyed
+  // workspaces would keep showing the last-seen title.
   useEffect(() => {
     return window.api.workspaces.onTitleChanged((e) => {
-      if (!e.title) return
-      setTitleByWorkspaceId((prev) => ({ ...prev, [e.workspaceId]: e.title as string }))
+      setTitleByWorkspaceId((prev) => {
+        if (e.title) return { ...prev, [e.workspaceId]: e.title }
+        if (!(e.workspaceId in prev)) return prev
+        const next = { ...prev }
+        delete next[e.workspaceId]
+        return next
+      })
     })
   }, [])
 

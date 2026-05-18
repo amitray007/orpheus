@@ -47,13 +47,16 @@ export async function getPrForBranch(cwd: string, branch: string): Promise<GhPul
 async function fetchPrFromGh(cwd: string, branch: string): Promise<GhPullRequest | null> {
   // Finder-launched Electron starts with a stripped PATH; getUserShellPath()
   // grabs the user's login-shell PATH so `gh` resolves the same way it does
-  // in their terminal.
-  let pathEnv: string
+  // in their terminal. The helper RESOLVES (doesn't throw) to '' on failure,
+  // so guard both the catch path and the empty-resolve path — otherwise
+  // PATH would become '' even when process.env.PATH is perfectly valid.
+  let shellPath = ''
   try {
-    pathEnv = await getUserShellPath()
+    shellPath = await getUserShellPath()
   } catch {
-    pathEnv = process.env['PATH'] ?? ''
+    shellPath = ''
   }
+  const pathEnv = shellPath || process.env['PATH'] || ''
 
   try {
     const { stdout } = await execFile(
