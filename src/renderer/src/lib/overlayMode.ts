@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useEffect } from 'react'
 
 // Dynamic z-order coordination for the libghostty NSView.
 //
@@ -14,53 +14,18 @@ import { createContext, useCallback, useContext, useEffect, useRef, type ReactNo
 // WebContents for the lifetime of the overlay. The 1→0 transition restores
 // the fast path. Nested overlays nest cleanly because of the refcount.
 //
-// The provider tracks the "active" workspaceId so that setOverlay targets
-// the right surface. WorkspaceView calls useSetActiveOverlayWorkspace at
-// mount time and clears it on unmount, so navigating away from a workspace
-// quietly disables overlay flipping until the user returns.
+// The provider (in OverlayModeProvider.tsx) holds the refcount and tracks
+// the "active" workspaceId so setOverlay targets the right surface;
+// WorkspaceView calls useSetActiveOverlayWorkspace at mount time and clears
+// it on unmount.
 
-interface OverlayModeApi {
+export interface OverlayModeApi {
   setActiveWorkspace: (workspaceId: string | null) => void
   acquire: () => void
   release: () => void
 }
 
-const OverlayModeContext = createContext<OverlayModeApi | null>(null)
-
-export function OverlayModeProvider({ children }: { children: ReactNode }): React.JSX.Element {
-  const activeRef = useRef<string | null>(null)
-  const countRef = useRef(0)
-
-  const setActiveWorkspace = useCallback((workspaceId: string | null): void => {
-    activeRef.current = workspaceId
-  }, [])
-
-  const acquire = useCallback((): void => {
-    const prev = countRef.current
-    countRef.current = prev + 1
-    if (prev === 0 && activeRef.current) {
-      window.api.terminal.setOverlay(activeRef.current, true).catch((e) => {
-        console.error('[overlay] setOverlay(true) failed:', e)
-      })
-    }
-  }, [])
-
-  const release = useCallback((): void => {
-    const prev = countRef.current
-    countRef.current = Math.max(0, prev - 1)
-    if (prev === 1 && activeRef.current) {
-      window.api.terminal.setOverlay(activeRef.current, false).catch((e) => {
-        console.error('[overlay] setOverlay(false) failed:', e)
-      })
-    }
-  }, [])
-
-  return (
-    <OverlayModeContext.Provider value={{ setActiveWorkspace, acquire, release }}>
-      {children}
-    </OverlayModeContext.Provider>
-  )
-}
+export const OverlayModeContext = createContext<OverlayModeApi | null>(null)
 
 // Hook for any component that paints visually above the terminal. While the
 // caller is mounted, the terminal NSView is z-ordered behind the WebContents

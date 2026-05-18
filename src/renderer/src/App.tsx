@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
 import { DotmSquare11 } from './components/ui/dotm-square-11'
-import { OverlayModeProvider } from './lib/overlayMode'
+import { OverlayModeProvider } from './lib/OverlayModeProvider'
 import type { DoctorResult } from '@shared/types'
 
 function App(): React.JSX.Element {
