@@ -230,16 +230,18 @@ const VALID_STATUSES: WorkspaceStatus[] = [
 ]
 
 /**
- * On app launch no claude processes are running yet, so any workspace still
- * persisted as 'in_progress' or 'attention' is left over from a prior session
- * (e.g. crash, hard quit). Reset them to 'idle' so the UI doesn't show a
- * forever-spinning "thinking" indicator. Archived workspaces are untouched.
+ * On app launch no claude processes are running yet, so any non-archived
+ * runtime status persisted from a prior session is stale by definition.
+ * Demote everything except 'archived' to 'idle' so the Workspaces kanban lands
+ * each row in "Waiting" until the user actually activates it and a SessionStart
+ * hook dispatches a fresh status. Without this, workspaces shown as
+ * in_progress / attention / awaiting_input from the prior session would
+ * surface as forever-thinking, attention-needed, or ready-to-go before the
+ * user has done anything.
  */
 export function resetTransientStatusesOnStartup(): number {
   const db = getDb()
-  const res = db
-    .prepare("UPDATE workspaces SET status = 'idle' WHERE status IN ('in_progress', 'attention')")
-    .run()
+  const res = db.prepare("UPDATE workspaces SET status = 'idle' WHERE status != 'archived'").run()
   return res.changes
 }
 

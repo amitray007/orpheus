@@ -120,7 +120,17 @@ export function MainContent({
     // key forces React to unmount the old WorkspaceView and mount a fresh
     // one when the workspace changes — without this the useEffect with []
     // deps doesn't re-run and terminal:hide/mount never fires.
-    return <WorkspaceView key={workspace.id} workspace={workspace} />
+    // Seed initialDetail from the live activity map so re-mount after
+    // navigation keeps the right glyph (tool / compacting / asking) instead
+    // of falling back to the coarser status-derived value until the next
+    // hook event lands.
+    return (
+      <WorkspaceView
+        key={workspace.id}
+        workspace={workspace}
+        initialDetail={workspaceActivities?.[workspace.id]}
+      />
+    )
   }
 
   // project view

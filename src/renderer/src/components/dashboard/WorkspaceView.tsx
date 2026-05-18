@@ -7,9 +7,13 @@ import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
+  /** Last-seen activity detail from Dashboard's live cache; seeds the drawer
+   *  glyph on re-mount so a tool / compacting / asking sub-state survives a
+   *  navigation round-trip until the next hook event refreshes it. */
+  initialDetail?: WorkspaceActivityDetail
 }
 
-export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Element {
+export function WorkspaceView({ workspace, initialDetail }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
   const mountedRef = useRef(false)
@@ -21,7 +25,7 @@ export function WorkspaceView({ workspace }: WorkspaceViewProps): React.JSX.Elem
   // Activity status driven by claude hook events
   const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
   // Detail sub-state (thinking / tool / compacting / ready / etc.)
-  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(undefined)
+  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(initialDetail)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 

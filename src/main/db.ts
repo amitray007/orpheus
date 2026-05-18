@@ -41,6 +41,11 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions(updated_at);
 `
 
+// CHECK kept in sync with WorkspaceStatus (shared/types.ts). When this drifted
+// historically (v21 enum survived past v28's value migration), every dispatch to
+// 'awaiting_input'|'attention'|'idle' raised CHECK constraint failed and got
+// swallowed in setWorkspaceStatus's catch — leaving rows frozen at 'in_progress'
+// and surfacing as a stuck "Claude is thinking" indicator across restarts.
 const WORKSPACES_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY NOT NULL,
@@ -51,13 +56,17 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
-    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'in_review', 'completed', 'archived')),
+    status TEXT NOT NULL DEFAULT 'idle'
+      CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER,
-    claude_session_id TEXT
+    claude_session_id TEXT,
+    last_title TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
+  CREATE INDEX IF NOT EXISTS idx_workspaces_project_sort
+    ON workspaces(project_id, sort_order, created_at DESC);
 `
 
 const CLAUDE_SETTINGS_SCHEMA_SQL = `
@@ -266,6 +275,13 @@ function migrate(db: Database.Database): void {
     | undefined
 
   const currentVersion = row?.version ?? 0
+
+  // Heal the workspaces CHECK before the fast-path check. The CHECK silently
+  // drifted from the WorkspaceStatus enum across several version bumps without
+  // any version flagging the problem, so versioning it now would just leave
+  // existing installs stuck. This is idempotent and a no-op once the table is
+  // healthy.
+  healWorkspacesCheck(db)
 
   // Fast path: already up-to-date — skip all DDL and migration steps
   if (currentVersion === CURRENT_VERSION) return
@@ -1479,5 +1495,46 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(41)
+  }
+}
+
+function healWorkspacesCheck(db: Database.Database): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workspaces'")
+    .get() as { sql: string } | undefined
+  if (!row) return
+  const sql = row.sql
+  // Treat the table as stale if it lacks any current status value or still
+  // mentions a removed one. Match the CHECK shape without depending on exact
+  // whitespace / quoting.
+  const hasAllCurrent =
+    sql.includes("'in_progress'") &&
+    sql.includes("'awaiting_input'") &&
+    sql.includes("'attention'") &&
+    sql.includes("'idle'") &&
+    sql.includes("'archived'")
+  const hasLegacy = sql.includes("'in_review'") || sql.includes("'completed'")
+  if (hasAllCurrent && !hasLegacy) return
+
+  console.log('[db] workspaces CHECK is stale — dropping table to recreate from canonical schema')
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.exec('DROP TABLE workspaces')
+    db.exec(WORKSPACES_SCHEMA_SQL)
+    // The drop left orphaned references behind (FK cascade only fires on DELETE,
+    // not DROP). Clean them up so the rebuilt schema is internally consistent.
+    // Wrapped because either table may not exist on partially-migrated installs.
+    try {
+      db.exec('UPDATE app_ui_state SET last_workspace_id = NULL')
+    } catch {
+      /* table absent */
+    }
+    try {
+      db.exec('DELETE FROM claude_workspace_settings')
+    } catch {
+      /* table absent */
+    }
+  } finally {
+    db.pragma('foreign_keys = ON')
   }
 }
