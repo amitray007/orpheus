@@ -14,7 +14,7 @@ import type {
 } from '../shared/types'
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getWorkspace } from './workspaces'
+import { getWorkspace, getWorkspaceForkedFromSessionId } from './workspaces'
 
 // Returns true if claude's transcript file for this session already exists on
 // disk. The path follows claude's encoding: slashes in the cwd become dashes.
@@ -688,13 +688,30 @@ export function composeClaudeLaunch(
   // --resume <uuid> which attaches to the existing transcript. This is
   // deterministic and survives Orpheus restarts even if the user quits
   // immediately after the first message.
+  //
+  // Fork support (Plan A — validated 2025-05): when forked_from_session_id is
+  // set, the first launch emits --session-id <our-uuid> --resume <parent-uuid>
+  // --fork-session so claude creates an independent branch of the parent
+  // transcript under our UUID. Subsequent launches switch to bare --resume
+  // once the .jsonl exists (same as any other workspace).
   if (workspaceId) {
     const ws = getWorkspace(workspaceId)
     if (ws?.claudeSessionId) {
       if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
+        // Session already exists — normal resume
         flagParts.push(`--resume ${ws.claudeSessionId}`)
       } else {
-        flagParts.push(`--session-id ${ws.claudeSessionId}`)
+        // No session yet — check if this is a forked workspace
+        const forkedFromSessionId = getWorkspaceForkedFromSessionId(workspaceId)
+        if (forkedFromSessionId) {
+          // Plan A fork: pre-assign our UUID and branch from parent
+          flagParts.push(
+            `--session-id ${ws.claudeSessionId} --resume ${forkedFromSessionId} --fork-session`
+          )
+        } else {
+          // Normal first launch
+          flagParts.push(`--session-id ${ws.claudeSessionId}`)
+        }
       }
     }
   }

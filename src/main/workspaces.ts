@@ -19,6 +19,8 @@ type WorkspaceRow = {
   sort_order: number | null
   claude_session_id: string | null
   last_title: string | null
+  // v43: fork session support (Plan A)
+  forked_from_session_id: string | null
 }
 
 type ProjectRow = {
@@ -51,6 +53,22 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null
+  }
+}
+
+/**
+ * Get the forked_from_session_id for a workspace (Plan A fork support).
+ * Returns null when the column doesn't exist yet (pre-v43 DBs) or has no value.
+ */
+export function getWorkspaceForkedFromSessionId(id: string): string | null {
+  const db = getDb()
+  try {
+    const row = db.prepare('SELECT forked_from_session_id FROM workspaces WHERE id = ?').get(id) as
+      | { forked_from_session_id: string | null }
+      | undefined
+    return row?.forked_from_session_id ?? null
+  } catch {
+    return null
   }
 }
 
