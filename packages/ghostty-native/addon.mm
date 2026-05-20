@@ -1820,6 +1820,19 @@ static bool ensureApp() {
     NSLog(@"[ghostty-native] loading user config (default files)");
     ghostty_config_load_default_files(g_config);
 
+    // Orpheus overrides — applied after the user's config so these values win.
+    // Currently: window-padding-y = 0 to flush the terminal against the
+    // Orpheus footer + title bar (chrome already provides the spacing).
+    if (resDir) {
+        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
+            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            ghostty_config_load_file(g_config, [overridePath UTF8String]);
+        } else {
+            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+        }
+    }
+
     NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
     ghostty_config_load_recursive_files(g_config);
 
