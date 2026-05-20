@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 42
+const CURRENT_VERSION = 43
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -192,6 +192,22 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
   );
 `
 
+// action_audit_log — ring-buffer audit trail for mutating Quick Actions.
+// Fresh-install CREATE. Defensive ALTER below (v43) for existing DBs.
+const ACTION_AUDIT_LOG_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS action_audit_log (
+    id INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    result_code TEXT NOT NULL,
+    consumer_hint TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_action_audit_workspace_created
+    ON action_audit_log(workspace_id, created_at DESC);
+`
+
 const CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS claude_project_settings (
     project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -296,6 +312,7 @@ function migrate(db: Database.Database): void {
   db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
+  db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -1520,6 +1537,28 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(42)
+  }
+
+  // Version 43: Quick Actions phase 2 — audit log + fork session support.
+  // action_audit_log: ring-buffer audit trail for mutating actions (CREATE IF
+  //   NOT EXISTS handles fresh installs via ACTION_AUDIT_LOG_SCHEMA_SQL above;
+  //   defensive ALTER here is a no-op for them).
+  // workspaces.forked_from_session_id: stores the parent session ID for Plan A
+  //   fork implementation (--session-id <new> --resume <parent> --fork-session).
+  if (currentVersion < 43) {
+    // action_audit_log — already created by ACTION_AUDIT_LOG_SCHEMA_SQL for
+    // fresh installs; no ALTER needed. Index also created there.
+    // For existing installs the CREATE IF NOT EXISTS above runs first and is
+    // sufficient — there's no column to ALTER on a brand-new table.
+
+    // workspaces.forked_from_session_id — enables Plan A fork behavior.
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN forked_from_session_id TEXT')
+    } catch {
+      /* Column may already exist (e.g. partial migration) — ignore */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(43)
   }
 }
 

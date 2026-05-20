@@ -654,3 +654,63 @@ export type TerminalSendKeyDescriptor = {
   mods?: number
   action?: 'press' | 'release' | 'repeat'
 }
+
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 2: registry types + session + workspace data types
+// ---------------------------------------------------------------------------
+
+export type ActionKind = 'mutator' | 'query' | 'subscription'
+
+export type ActionInvocation = {
+  id: string
+  params: Record<string, unknown>
+  workspaceId: string
+}
+
+export type ActionAuditEntry = {
+  id: number
+  workspaceId: string
+  actionId: string
+  /** SECRET_KEYS-redacted JSON of the params */
+  paramsJson: string
+  /** 'ok' | ActionErrorCode */
+  resultCode: string
+  consumerHint: string
+  createdAt: number
+}
+
+export type SessionMeta = {
+  sessionId: string
+  model: string
+  startedAt: number
+  lastMessageAt: number | null
+  turnCount: number
+}
+
+export type SessionUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  /** Effective maxContextTokens from global settings (or default 200k) */
+  contextBudget: number
+  /** (inputTokens + cacheReadTokens + cacheCreationTokens) / contextBudget * 100, capped at 100 */
+  usedPct: number
+}
+
+export type SessionCost = {
+  usd: number
+  byModel: Record<string, number>
+}
+
+export type SessionLastTurn = {
+  userText: string | null
+  assistantText: string | null
+  userAt: number | null
+  assistantAt: number | null
+}
+
+export type WorkspaceForkParams = {
+  worktree?: boolean
+  name?: string
+}
