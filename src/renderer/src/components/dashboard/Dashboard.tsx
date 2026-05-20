@@ -238,6 +238,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // Re-fetch when navigating to the sessions/workspaces view so data is fresh
   }, [view.kind])
 
+  // Subscribe to workspaces:created so renderer state stays in sync with main's
+  // DB writes across ALL creation paths (normal create, fork, duplicate,
+  // session-resume). Without this, fork navigation lands before
+  // workspacesByProject includes the new row → "Not Found" in WorkspaceView.
+  useEffect(() => {
+    return window.api.workspaces.onCreated((workspace) => {
+      setWorkspacesByProject((prev) => {
+        const current = prev[workspace.projectId] ?? []
+        // De-dupe defensively in case a parallel fetch raced.
+        if (current.some((w) => w.id === workspace.id)) return prev
+        return { ...prev, [workspace.projectId]: [...current, workspace] }
+      })
+      // Ensure the project row is expanded so the new workspace is visible.
+      setExpandedProjectIds((prev) => {
+        if (prev.has(workspace.projectId)) return prev
+        const next = new Set(prev)
+        next.add(workspace.projectId)
+        window.api.projects.setExpandedInSidebar(workspace.projectId, true).catch(console.error)
+        return next
+      })
+    })
+  }, [])
+
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
       const allWorkspaces = Object.values(workspacesByProject).flat()

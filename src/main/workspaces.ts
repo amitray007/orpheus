@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 
@@ -95,6 +96,21 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
 // CRUD
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Broadcast helper — fan out a workspaces:created event to all renderer
+// windows so they can merge the new record into state before any navigation
+// fires. Called from createWorkspace() so every creation path (normal, fork,
+// duplicate, session-resume) emits the event automatically.
+// ---------------------------------------------------------------------------
+
+function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:created', { workspace })
+    }
+  }
+}
+
 export function createWorkspace({
   projectId,
   name,
@@ -124,7 +140,9 @@ export function createWorkspace({
     )
     .get(id, projectId, name, cwd, createdAt, claudeSessionId) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
-  return rowToWorkspaceRecord(row)
+  const workspace = rowToWorkspaceRecord(row)
+  broadcastWorkspaceCreated(workspace)
+  return workspace
 }
 
 export function listWorkspacesForProject(

@@ -214,6 +214,12 @@ const api = {
         cb(e.workspaceId)
       ipcRenderer.on('workspace:navigateTo', listener)
       return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
+    },
+    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void =>
+        cb(e.workspace)
+      ipcRenderer.on('workspaces:created', listener)
+      return () => ipcRenderer.removeListener('workspaces:created', listener)
     }
   },
   pins: {

@@ -143,6 +143,7 @@ declare global {
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
+        onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
