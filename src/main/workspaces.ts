@@ -133,12 +133,22 @@ export function createWorkspace({
   // claudeSessionId stayed null, so the next launch started fresh).
   const claudeSessionId = crypto.randomUUID()
 
+  // Assign sort_order so new workspaces appear at the top of the project's
+  // list — even above existing drag-reordered ones. MIN(sort_order) - 1 keeps
+  // the order open-ended downward; drag-reorder still works to move it later.
+  const minRow = db
+    .prepare('SELECT MIN(sort_order) AS minSort FROM workspaces WHERE project_id = ?')
+    .get(projectId) as { minSort: number | null } | undefined
+  const sortOrder = minRow?.minSort != null ? minRow.minSort - 1 : 0
+
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id)
-       VALUES (?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
-    .get(id, projectId, name, cwd, createdAt, claudeSessionId) as WorkspaceRow | undefined
+    .get(id, projectId, name, cwd, createdAt, claudeSessionId, sortOrder) as
+    | WorkspaceRow
+    | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
   broadcastWorkspaceCreated(workspace)

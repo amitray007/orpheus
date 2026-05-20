@@ -248,7 +248,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const current = prev[workspace.projectId] ?? []
         // De-dupe defensively in case a parallel fetch raced.
         if (current.some((w) => w.id === workspace.id)) return prev
-        return { ...prev, [workspace.projectId]: [...current, workspace] }
+        return { ...prev, [workspace.projectId]: [workspace, ...current] }
       })
       // Ensure the project row is expanded so the new workspace is visible.
       setExpandedProjectIds((prev) => {
@@ -664,7 +664,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const current = prev[projectId] ?? []
         // De-dupe defensively in case a parallel fetch raced.
         if (current.some((w) => w.id === newWs.id)) return prev
-        return { ...prev, [projectId]: [...current, newWs] }
+        return { ...prev, [projectId]: [newWs, ...current] }
       })
       // Expand the project row so the new workspace is visible.
       // Persist the expanded state so it survives a relaunch.
