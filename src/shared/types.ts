@@ -639,3 +639,18 @@ export type ClaudeStatusSnapshot = {
   /** True while a fetch is in flight */
   isFetching: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 1: terminal interaction primitives
+// ---------------------------------------------------------------------------
+
+export type ActionResultOk<T = unknown> = { ok: true; value?: T }
+export type ActionErrorCode = 'busy' | 'not_found' | 'invalid' | 'failed'
+export type ActionResultErr = { ok: false; error: string; code: ActionErrorCode }
+export type ActionResult<T = unknown> = ActionResultOk<T> | ActionResultErr
+
+export type TerminalSendKeyDescriptor = {
+  keycode: number
+  mods?: number
+  action?: 'press' | 'release' | 'repeat'
+}

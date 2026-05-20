@@ -124,6 +124,8 @@ import type {
   ContextMenuNativeItem
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
+import * as terminalActions from './actions/terminal'
+import type { TerminalSendKeyDescriptor } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1202,6 +1204,11 @@ type GhosttyNativeAddon = {
     isDark: boolean
     tintAlpha: number
   }) => void
+  sendInput: (workspaceId: string, utf8Text: string) => boolean
+  sendKeys: (
+    workspaceId: string,
+    keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
+  ) => boolean
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1368,6 +1375,40 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
+})
+
+// ---------------------------------------------------------------------------
+// Quick Actions — terminal interaction primitives
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'terminal:sendInput',
+  (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
+    const addon = loadTerminalAddon()
+    return terminalActions.sendInput(addon, workspaceId, text)
+  }
+)
+
+ipcMain.handle(
+  'terminal:sendKeys',
+  (_e, { workspaceId, keys }: { workspaceId: string; keys: TerminalSendKeyDescriptor[] }) => {
+    const addon = loadTerminalAddon()
+    return terminalActions.sendKeys(addon, workspaceId, keys)
+  }
+)
+
+ipcMain.handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.submit(addon, workspaceId)
+})
+
+ipcMain.handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.clearInput(addon, workspaceId)
+})
+
+ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
+  return terminalActions.canInject(workspaceId)
 })
 
 ipcMain.handle(
