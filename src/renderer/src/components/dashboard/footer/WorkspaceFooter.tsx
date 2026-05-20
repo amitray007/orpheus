@@ -51,7 +51,7 @@ export function WorkspaceFooter({
       className={[
         'flex items-center justify-between',
         'h-9 px-3 flex-shrink-0',
-        'bg-surface-raised/80 backdrop-blur-sm',
+        'bg-surface-raised',
         'border-t border-border-default/60',
         'gap-1'
       ].join(' ')}

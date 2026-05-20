@@ -127,7 +127,7 @@ export function ActionChip({
           'border border-transparent',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
           disabled
-            ? 'opacity-40 cursor-not-allowed text-text-muted bg-surface-overlay/30'
+            ? 'cursor-not-allowed text-text-muted/70 bg-surface-overlay/40'
             : [
                 'text-text-primary bg-surface-overlay/60',
                 'hover:bg-surface-overlay hover:border-border-default/60',
