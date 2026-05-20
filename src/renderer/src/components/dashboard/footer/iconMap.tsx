@@ -64,7 +64,20 @@ import {
   Hourglass,
   Rocket,
   Sparkle,
-  Command
+  Command,
+  // Additional icons for the icon picker grid
+  Flame,
+  Lightbulb,
+  Stack,
+  Note,
+  PushPin,
+  Tag,
+  Clock,
+  Flag,
+  Bookmark,
+  Wrench,
+  FilePlus,
+  FileCode
 } from '@phosphor-icons/react'
 
 type PhosphorIcon = React.ComponentType<{
@@ -139,7 +152,20 @@ const ICON_MAP: Record<string, PhosphorIcon> = {
   Hourglass,
   Rocket,
   Sparkle,
-  Command
+  Command,
+  // Additional icons for the picker grid
+  Flame,
+  Lightbulb,
+  Stack,
+  Note,
+  PushPin,
+  Tag,
+  Clock,
+  Flag,
+  Bookmark,
+  Wrench,
+  FilePlus,
+  FileCode
 }
 
 interface IconByNameProps {
