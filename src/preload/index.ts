@@ -462,7 +462,9 @@ const api = {
       scope: FooterActionScope,
       scopeId: string | null,
       orderedIds: string[]
-    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds })
+    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
+
+    resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
   }
 }
 

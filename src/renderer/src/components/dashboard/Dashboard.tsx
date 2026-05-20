@@ -116,6 +116,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           autoCheckUpdates: true,
           statusPollIntervalSec: 1800,
           muteStatusNotifications: false,
+          showWorkspaceFooter: true,
           updatedAt: 0
         })
       })

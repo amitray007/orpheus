@@ -145,7 +145,8 @@ import {
   update as updateFooterAction,
   remove as removeFooterAction,
   reorder as reorderFooterActions,
-  seedDefaultFooterActions
+  seedDefaultFooterActions,
+  resetToDefaults as resetFooterActionsToDefaults
 } from './footerActions'
 import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 
@@ -1554,6 +1555,10 @@ ipcMain.handle(
     }: { scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }
   ) => reorderFooterActions(scope, scopeId, orderedIds)
 )
+
+ipcMain.handle('footerActions:resetDefaults', () => {
+  resetFooterActionsToDefaults()
+})
 
 ipcMain.handle(
   'workspace:getTitle',

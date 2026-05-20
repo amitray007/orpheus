@@ -300,6 +300,7 @@ declare global {
           scopeId: string | null,
           orderedIds: string[]
         ) => Promise<void>
+        resetDefaults: () => Promise<void>
       }
     }
   }

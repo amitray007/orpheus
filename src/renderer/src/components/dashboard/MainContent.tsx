@@ -134,6 +134,8 @@ export function MainContent({
         workspace={workspace}
         initialDetail={workspaceActivities?.[workspace.id]}
         pr={prByWorkspaceId?.[workspace.id] ?? null}
+        onSelectWorkspace={onSelectWorkspace}
+        allWorkspaces={allWorkspaces}
       />
     )
   }

@@ -9,6 +9,7 @@ import type {
 } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
+import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useSetActiveOverlayWorkspace } from '@/lib/overlayMode'
 
 interface WorkspaceViewProps {
@@ -19,12 +20,18 @@ interface WorkspaceViewProps {
   initialDetail?: WorkspaceActivityDetail
   /** Open PR for this workspace's current branch, fetched at Dashboard level. */
   pr?: GhPullRequest | null
+  /** Callback to navigate to a workspace — used by footer post-fork. */
+  onSelectWorkspace?: (workspaceId: string, projectId: string) => void
+  /** All workspaces across projects — used by title bar "forked from" chip. */
+  allWorkspaces?: WorkspaceRecord[]
 }
 
 export function WorkspaceView({
   workspace,
   initialDetail,
-  pr
+  pr,
+  onSelectWorkspace,
+  allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode.
@@ -200,16 +207,25 @@ export function WorkspaceView({
             drawer={drawer}
             onSetDrawer={setDrawer}
             pr={pr}
+            allWorkspaces={allWorkspaces}
           />,
           titleBarHost
         )}
 
       {/* Content row: terminal host + optional drawer */}
       <div className="flex h-full min-h-0">
-        {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
-            ResizeObserver on this div fires when the drawer opens/closes (flex layout narrows it),
-            which triggers terminal:resize and repositions the native NSView. */}
-        <div ref={containerRef} className="flex-1 min-w-0 relative" />
+        {/* Terminal column: terminal host + footer strip */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
+              ResizeObserver on this div fires when the footer height changes the container. */}
+          <div ref={containerRef} className="flex-1 min-w-0 relative" />
+
+          <WorkspaceFooter
+            workspaceId={workspace.id}
+            projectId={workspace.projectId}
+            onSelectWorkspace={onSelectWorkspace}
+          />
+        </div>
 
         {drawer !== null && (
           <div className="w-80 flex-shrink-0 border-l border-border-default bg-surface-raised flex flex-col">

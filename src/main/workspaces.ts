@@ -52,7 +52,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     archivedAt: row.archived_at,
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
-    claudeSessionId: row.claude_session_id ?? null
+    claudeSessionId: row.claude_session_id ?? null,
+    forkedFromSessionId: row.forked_from_session_id ?? null
   }
 }
 

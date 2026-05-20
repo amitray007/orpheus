@@ -98,6 +98,8 @@ export type WorkspaceRecord = {
   sortOrder: number | null
   status: WorkspaceStatus
   claudeSessionId: string | null
+  /** Set when this workspace was forked from another session (v43). */
+  forkedFromSessionId: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context
@@ -181,6 +183,8 @@ export type AppUiState = {
   // Status polling preferences (v42)
   statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
   muteStatusNotifications: boolean
+  // Workspace footer visibility (v45)
+  showWorkspaceFooter: boolean
   updatedAt: number
 }
 
