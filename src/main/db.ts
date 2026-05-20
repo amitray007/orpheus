@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 44
+const CURRENT_VERSION = 45
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -302,6 +302,8 @@ const UI_STATE_SCHEMA_SQL = `
     -- Status polling preferences (v42)
     status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800,
     mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
+    -- Workspace footer visibility (v45)
+    show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -1680,6 +1682,46 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(44)
+  }
+
+  // Version 45: workspace footer toggle + phosphor icon migration for footer actions.
+  // (a) Adds show_workspace_footer column to app_ui_state (default 1 = visible).
+  // (b) Migrates the 6 seeded lucide icon names to their phosphor PascalCase equivalents.
+  //     Matches on both icon AND label to avoid touching user-customised rows.
+  if (currentVersion < 45) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1))'
+      )
+    } catch {
+      /* column may already exist on a fresh install that ran the updated schema */
+    }
+
+    // Lucide → Phosphor icon name migration for the 6 default seeds
+    const ICON_MIGRATIONS: Array<[string, string, string]> = [
+      // [oldIcon, newIcon, label]
+      ['git-fork', 'GitFork', 'Fork'],
+      ['clipboard', 'Clipboard', '/copy'],
+      ['brain', 'Brain', '/context'],
+      ['eraser', 'Eraser', '/clear'],
+      ['gauge', 'Gauge', 'Context'],
+      ['activity', 'Pulse', 'Status']
+    ]
+    const updateIcon = db.prepare(
+      'UPDATE footer_actions_global SET icon = ? WHERE icon = ? AND label = ?'
+    )
+    const migrateIconsTx = db.transaction(() => {
+      for (const [oldIcon, newIcon, label] of ICON_MIGRATIONS) {
+        updateIcon.run(newIcon, oldIcon, label)
+      }
+    })
+    try {
+      migrateIconsTx()
+    } catch {
+      /* footer_actions_global may not exist yet on a clean install; safe to skip */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(45)
   }
 }
 

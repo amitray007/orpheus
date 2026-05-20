@@ -393,42 +393,42 @@ const DEFAULT_SEEDS: Array<{
 }> = [
   {
     label: 'Fork',
-    icon: 'git-fork',
+    icon: 'GitFork',
     actionId: 'workspace.fork',
     params: {},
     visibleWhen: 'always'
   },
   {
     label: '/copy',
-    icon: 'clipboard',
+    icon: 'Clipboard',
     actionId: 'terminal.sendInput',
     params: { text: '/copy\r' },
     visibleWhen: 'idle'
   },
   {
     label: '/context',
-    icon: 'brain',
+    icon: 'Brain',
     actionId: 'terminal.sendInput',
     params: { text: '/context\r' },
     visibleWhen: 'always'
   },
   {
     label: '/clear',
-    icon: 'eraser',
+    icon: 'Eraser',
     actionId: 'terminal.sendInput',
     params: { text: '/clear\r' },
     visibleWhen: 'idle'
   },
   {
     label: 'Context',
-    icon: 'gauge',
+    icon: 'Gauge',
     actionId: 'session.getUsage',
     params: {},
     visibleWhen: 'always'
   },
   {
     label: 'Status',
-    icon: 'activity',
+    icon: 'Pulse',
     actionId: 'workspace.getActivityStatus',
     params: {},
     visibleWhen: 'always'
@@ -468,4 +468,15 @@ export function seedDefaultFooterActions(): void {
   seedTx()
 
   console.log('[footerActions] seeded', DEFAULT_SEEDS.length, 'default global footer actions')
+}
+
+// ---------------------------------------------------------------------------
+// Reset to defaults: delete all global rows then re-seed.
+// ---------------------------------------------------------------------------
+
+export function resetToDefaults(): void {
+  const db = getDb()
+  db.prepare('DELETE FROM footer_actions_global').run()
+  seedDefaultFooterActions()
+  console.log('[footerActions] reset to defaults complete')
 }
