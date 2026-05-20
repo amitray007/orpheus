@@ -36,7 +36,9 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
-  ClaudeStatusSnapshot
+  ClaudeStatusSnapshot,
+  ActionResult,
+  TerminalSendKeyDescriptor
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -66,6 +68,11 @@ declare global {
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
         setOverlay: (workspaceId: string, on: boolean) => Promise<void>
+        sendInput: (workspaceId: string, text: string) => Promise<ActionResult>
+        sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]) => Promise<ActionResult>
+        submit: (workspaceId: string) => Promise<ActionResult>
+        clearInput: (workspaceId: string) => Promise<ActionResult>
+        canInject: (workspaceId: string) => Promise<boolean>
       }
       config: {
         openFolder: () => Promise<string | null>

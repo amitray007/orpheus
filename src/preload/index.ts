@@ -38,7 +38,9 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
-  ClaudeStatusSnapshot
+  ClaudeStatusSnapshot,
+  ActionResult,
+  TerminalSendKeyDescriptor
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -74,7 +76,17 @@ const api = {
     destroy: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:destroy', { workspaceId }),
     setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
-      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on })
+      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
+    sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
+    sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:sendKeys', { workspaceId, keys }),
+    submit: (workspaceId: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:submit', { workspaceId }),
+    clearInput: (workspaceId: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
+    canInject: (workspaceId: string): Promise<boolean> =>
+      ipcRenderer.invoke('terminal:canInject', { workspaceId })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
