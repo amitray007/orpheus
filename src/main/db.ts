@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 43
+const CURRENT_VERSION = 44
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -208,6 +208,54 @@ const ACTION_AUDIT_LOG_SCHEMA_SQL = `
     ON action_audit_log(workspace_id, created_at DESC);
 `
 
+// Footer actions — phase 3a. Three-scope additive list.
+// Fresh-install CREATE IF NOT EXISTS. Defensive try/catch CREATE below (v44).
+const FOOTER_ACTIONS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS footer_actions_global (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS footer_actions_project (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_footer_actions_project_project_id
+    ON footer_actions_project(project_id);
+
+  CREATE TABLE IF NOT EXISTS footer_actions_workspace (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_footer_actions_workspace_workspace_id
+    ON footer_actions_workspace(workspace_id);
+`
+
 const CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS claude_project_settings (
     project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -313,6 +361,7 @@ function migrate(db: Database.Database): void {
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
   db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
+  db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -1559,6 +1608,78 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(43)
+  }
+
+  // Version 44: Footer actions — phase 3a storage layer.
+  // Three new tables (footer_actions_global / project / workspace) with indexes.
+  // For fresh installs, FOOTER_ACTIONS_SCHEMA_SQL (executed unconditionally above)
+  // already creates all three tables via CREATE TABLE IF NOT EXISTS.
+  // For existing installs the defensive try/catch here is a no-op when the
+  // tables already exist — SQLite CREATE TABLE IF NOT EXISTS is idempotent.
+  if (currentVersion < 44) {
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_global (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `)
+    } catch {
+      /* table already exists — ignore */
+    }
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_project (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_footer_actions_project_project_id ON footer_actions_project(project_id)'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_workspace (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_footer_actions_workspace_workspace_id ON footer_actions_workspace(workspace_id)'
+      )
+    } catch {
+      /* ignore */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(44)
   }
 }
 

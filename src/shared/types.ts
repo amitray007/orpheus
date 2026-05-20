@@ -714,3 +714,29 @@ export type WorkspaceForkParams = {
   worktree?: boolean
   name?: string
 }
+
+// ---------------------------------------------------------------------------
+// Footer actions — phase 3a storage types
+// ---------------------------------------------------------------------------
+
+export type FooterActionScope = 'global' | 'project' | 'workspace'
+export type FooterActionVisibility = 'always' | 'idle' | 'awaitingInput'
+
+export type FooterActionDescriptor = {
+  id: string
+  scope: FooterActionScope
+  scopeId: string | null // null for global; projectId or workspaceId otherwise
+  label: string
+  icon: string | null // lucide name, optional
+  actionId: string // 'terminal.sendInput' | 'workspace.fork' | 'session.getUsage' | etc.
+  params: Record<string, unknown> // {} or { text: "/copy\r" } etc.
+  visibleWhen: FooterActionVisibility
+  position: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type FooterActionDraft = Omit<
+  FooterActionDescriptor,
+  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId'
+>
