@@ -86,8 +86,23 @@ export function LiveChip({
   useEffect(() => {
     if (!workspaceId) return
 
-    if (kind === 'subscription') {
-      // Subscribe once; retain dispose
+    // Subscribe for explicit subscription kind OR any session.* action.
+    // session.* actions are backed by fs.watch on the JSONL (200ms debounce)
+    // so subscription gives ~200ms latency vs the 2s poll — much snappier.
+    const useSubscription = kind === 'subscription' || actionId.startsWith('session.')
+
+    if (useSubscription) {
+      // Initial fetch so the chip shows a value immediately; then let
+      // subscription updates take over as claude writes new turns.
+      window.api.actions
+        .invoke({ id: actionId, params, workspaceId }, 'footer-live')
+        .then((result) => {
+          if (result.ok) setValue(result.value ?? null)
+        })
+        .catch(() => {
+          /* silently skip on error */
+        })
+
       const handle = window.api.actions.subscribe(actionId, params, workspaceId, (v) => {
         setValue(v)
       })
@@ -98,7 +113,7 @@ export function LiveChip({
       }
     }
 
-    // kind === 'query' — poll every 2s
+    // kind === 'query' (non-session) — poll every 2s
     let cancelled = false
     const fetchOnce = (): void => {
       window.api.actions
