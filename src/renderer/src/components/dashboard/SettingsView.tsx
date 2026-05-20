@@ -18,7 +18,8 @@ import {
   Command,
   Robot,
   Bell,
-  Pulse
+  Pulse,
+  Lightning
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -43,6 +44,7 @@ import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
 import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
+import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -66,6 +68,7 @@ export type SectionId =
   | 'orpheus-notifications'
   | 'orpheus-updates'
   | 'orpheus-status'
+  | 'orpheus-footer'
   | 'orpheus-developer'
   | 'orpheus-about'
 
@@ -118,6 +121,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Service status',
         icon: Pulse,
         Component: OrpheusStatusSection
+      },
+      {
+        id: 'orpheus-footer',
+        label: 'Workspace Footer',
+        icon: Lightning,
+        Component: OrpheusFooterSection
       },
       {
         id: 'orpheus-developer',
