@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 45
+const CURRENT_VERSION = 46
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1722,6 +1722,61 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(45)
+  }
+
+  // Version 46: footer action seed fixes.
+  // (a) Migrate the three slash-command chips from '\r'-embedded text to the
+  //     new { text, submit: true } params shape so Enter is sent as a real key
+  //     event (kVK_Return) rather than a raw IME byte — claude recognises it
+  //     as "submit" rather than a newline character.
+  // (b) Delete the default Status chip — user-requested removal from defaults.
+  //     The workspace.getActivityStatus action itself is NOT removed.
+  //     Matches on label + icon + action_id + old params to avoid touching
+  //     user-customised rows that happen to share the same label.
+  if (currentVersion < 46) {
+    const updateSlash = db.prepare(
+      `UPDATE footer_actions_global
+       SET params_json = ?, updated_at = ?
+       WHERE label = ? AND action_id = 'terminal.sendInput' AND params_json = ?`
+    )
+    const now = Date.now()
+    const slashMigrationsTx = db.transaction(() => {
+      updateSlash.run(
+        JSON.stringify({ text: '/copy', submit: true }),
+        now,
+        '/copy',
+        JSON.stringify({ text: '/copy\r' })
+      )
+      updateSlash.run(
+        JSON.stringify({ text: '/context', submit: true }),
+        now,
+        '/context',
+        JSON.stringify({ text: '/context\r' })
+      )
+      updateSlash.run(
+        JSON.stringify({ text: '/clear', submit: true }),
+        now,
+        '/clear',
+        JSON.stringify({ text: '/clear\r' })
+      )
+    })
+    try {
+      slashMigrationsTx()
+    } catch {
+      /* footer_actions_global may not exist on a pre-v44 clean install — safe to skip */
+    }
+
+    // Remove the default Status chip; preserve user-created rows with the same label
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Status' AND icon = 'Pulse' AND action_id = 'workspace.getActivityStatus'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(46)
   }
 }
 

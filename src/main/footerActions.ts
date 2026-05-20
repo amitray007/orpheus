@@ -402,34 +402,27 @@ const DEFAULT_SEEDS: Array<{
     label: '/copy',
     icon: 'Clipboard',
     actionId: 'terminal.sendInput',
-    params: { text: '/copy\r' },
+    params: { text: '/copy', submit: true },
     visibleWhen: 'idle'
   },
   {
     label: '/context',
     icon: 'Brain',
     actionId: 'terminal.sendInput',
-    params: { text: '/context\r' },
+    params: { text: '/context', submit: true },
     visibleWhen: 'always'
   },
   {
     label: '/clear',
     icon: 'Eraser',
     actionId: 'terminal.sendInput',
-    params: { text: '/clear\r' },
+    params: { text: '/clear', submit: true },
     visibleWhen: 'idle'
   },
   {
     label: 'Context',
     icon: 'Gauge',
     actionId: 'session.getUsage',
-    params: {},
-    visibleWhen: 'always'
-  },
-  {
-    label: 'Status',
-    icon: 'Pulse',
-    actionId: 'workspace.getActivityStatus',
     params: {},
     visibleWhen: 'always'
   }

@@ -164,12 +164,28 @@ export function bootActions(): void {
     kind: 'mutator',
     validate: (p) => {
       if (p === null || typeof p !== 'object') return false
-      return typeof (p as Record<string, unknown>)['text'] === 'string'
+      const params = p as Record<string, unknown>
+      if (typeof params['text'] !== 'string') return false
+      if (
+        'submit' in params &&
+        params['submit'] !== undefined &&
+        typeof params['submit'] !== 'boolean'
+      )
+        return false
+      return true
     },
     handler: async (params, workspaceId): Promise<ActionResult> => {
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
-      const { sendInput } = await import('./terminal')
-      return sendInput(addonRef, workspaceId, params['text'] as string)
+      const { sendInput, sendKeys } = await import('./terminal')
+      const result = sendInput(addonRef, workspaceId, params['text'] as string)
+      if (!result.ok) return result
+      // When submit:true, follow the text with a real Return key event so
+      // claude's input handler registers it as "submit" (not just a newline byte).
+      // kVK_Return = 0x24 (macOS Carbon virtual keycode for Return).
+      if (params['submit'] === true) {
+        return sendKeys(addonRef, workspaceId, [{ keycode: 0x24, mods: 0 }])
+      }
+      return result
     }
   })
 
