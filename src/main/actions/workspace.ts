@@ -13,9 +13,10 @@
 // duplicate: fresh workspace at the same cwd/settings, no session fork.
 // ---------------------------------------------------------------------------
 
-import type { ActionResult, WorkspaceForkParams } from '../../shared/types'
+import type { ActionResult, WorkspaceStatus, WorkspaceForkParams } from '../../shared/types'
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
 import { getDb } from '../db'
+import { getWorkspaceActivity } from '../orpheusNotify'
 
 // ---------------------------------------------------------------------------
 // Internal: set the forked_from_session_id column after creation.
@@ -131,4 +132,18 @@ export async function handleDuplicate(
   })
 
   return { ok: true, value: { workspaceId: newWorkspace.id } }
+}
+
+// ---------------------------------------------------------------------------
+// workspace.getActivityStatus — query
+// Returns the current live activity status for the workspace.
+// Delegates to the in-memory activityMap maintained by orpheusNotify.
+// ---------------------------------------------------------------------------
+
+export async function handleGetActivityStatus(
+  _params: Record<string, unknown>,
+  workspaceId: string
+): Promise<ActionResult<{ status: WorkspaceStatus }>> {
+  const status = getWorkspaceActivity(workspaceId)
+  return { ok: true, value: { status } }
 }

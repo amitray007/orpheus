@@ -18,7 +18,13 @@ import type { ActionResult } from '../../shared/types'
 import { handleGetMeta, handleGetUsage, handleGetCost, handleGetLastTurn } from './session'
 
 // Workspace handlers
-import { handleFork, handleArchive, handleRename, handleDuplicate } from './workspace'
+import {
+  handleFork,
+  handleArchive,
+  handleRename,
+  handleDuplicate,
+  handleGetActivityStatus
+} from './workspace'
 
 // Re-export registry + subscriptions for use by index.ts IPC handlers
 export { invoke, list } from './registry'
@@ -141,6 +147,13 @@ export function bootActions(): void {
     handler: handleDuplicate
   })
 
+  register({
+    id: 'workspace.getActivityStatus',
+    kind: 'query',
+    validate: (_p) => true,
+    handler: handleGetActivityStatus
+  })
+
   // -------------------------------------------------------------------------
   // terminal.* — kind: mutator (phase-1 re-registration for registry surface)
   // These delegate through the addonRef set by setTerminalAddonRef().
@@ -214,5 +227,5 @@ export function bootActions(): void {
     }
   })
 
-  console.log('[actions] registered', 5 + 5, 'actions')
+  console.log('[actions] registered', 5 + 6, 'actions')
 }
