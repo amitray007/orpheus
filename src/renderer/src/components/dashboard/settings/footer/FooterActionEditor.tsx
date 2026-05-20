@@ -208,6 +208,7 @@ export function FooterActionEditor({
 
   // Reset form when action changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: form fields sync to the selected action prop.
     setLabel(action?.label ?? '')
     setIcon(action?.icon ?? null)
     setActionType(action ? typeForActionId(action.actionId, action.params) : 'sendInput')

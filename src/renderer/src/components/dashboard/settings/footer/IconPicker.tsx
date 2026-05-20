@@ -9,6 +9,7 @@ import { IconByName } from '../../footer/iconMap'
 // These must all be registered in iconMap.tsx
 // ---------------------------------------------------------------------------
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located constant; lives with the component that consumes it.
 export const PICKER_ICONS: string[] = [
   'GitFork',
   'Clipboard',

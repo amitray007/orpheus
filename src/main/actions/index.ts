@@ -68,28 +68,28 @@ export function bootActions(): void {
   register({
     id: 'session.getMeta',
     kind: 'query',
-    validate: (_p) => true, // no params required
+    validate: () => true, // no params required
     handler: handleGetMeta
   })
 
   register({
     id: 'session.getUsage',
     kind: 'query',
-    validate: (_p) => true,
+    validate: () => true,
     handler: handleGetUsage
   })
 
   register({
     id: 'session.getCost',
     kind: 'query',
-    validate: (_p) => true,
+    validate: () => true,
     handler: handleGetCost
   })
 
   register({
     id: 'session.getLastTurn',
     kind: 'query',
-    validate: (_p) => true,
+    validate: () => true,
     handler: handleGetLastTurn
   })
 
@@ -119,7 +119,7 @@ export function bootActions(): void {
   register({
     id: 'workspace.archive',
     kind: 'mutator',
-    validate: (_p) => true, // workspaceId from invocation, no params needed
+    validate: () => true, // workspaceId from invocation, no params needed
     handler: handleArchive
   })
 
@@ -150,7 +150,7 @@ export function bootActions(): void {
   register({
     id: 'workspace.getActivityStatus',
     kind: 'query',
-    validate: (_p) => true,
+    validate: () => true,
     handler: handleGetActivityStatus
   })
 
@@ -214,7 +214,7 @@ export function bootActions(): void {
   register({
     id: 'terminal.submit',
     kind: 'mutator',
-    validate: (_p) => true,
+    validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { submit } = await import('./terminal')
@@ -225,7 +225,7 @@ export function bootActions(): void {
   register({
     id: 'terminal.clearInput',
     kind: 'mutator',
-    validate: (_p) => true,
+    validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { clearInput } = await import('./terminal')
@@ -236,7 +236,7 @@ export function bootActions(): void {
   register({
     id: 'terminal.canInject',
     kind: 'query',
-    validate: (_p) => true,
+    validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult<boolean>> => {
       const { canInject } = await import('./terminal')
       return { ok: true, value: canInject(workspaceId) }

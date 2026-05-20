@@ -257,6 +257,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
   useEffect(() => {
     if (loading) return
     let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: scope change triggers async fetch; clear UI immediately.
     setActionsLoading(true)
     setSelectedId(null)
     setIsCreating(false)

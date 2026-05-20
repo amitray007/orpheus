@@ -27,6 +27,7 @@ export function useFooterActions(workspaceId: string): UseFooterActionsResult {
   useEffect(() => {
     if (!workspaceId) return
     let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: clear UI state to "loading" before async fetch.
     setLoading(true)
     setError(null)
 
