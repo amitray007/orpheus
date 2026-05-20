@@ -315,7 +315,7 @@ export function FooterActionEditor({
     [sendText]
   )
 
-  const scopeLabel = scope === 'global' ? 'global' : scope === 'project' ? 'project' : 'workspace'
+  const scopeLabel = scope === 'global' ? 'global' : 'project'
 
   return (
     <>

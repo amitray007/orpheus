@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, FooterActionDescriptor, FooterActionScope } from '@shared/types'
+import type {
+  AppUiState,
+  FooterActionDescriptor,
+  FooterActionScope,
+  ProjectRecord
+} from '@shared/types'
 import { SettingRow, Toggle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ConfirmModal } from '../../ConfirmModal'
@@ -184,12 +189,13 @@ export function OrpheusFooterSection(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Scope picker
+  // Scope picker — only Global and Project (workspace scope deliberately dropped
+  // as too micro). The full projects list is loaded so the user can pick which
+  // project to author against directly from Settings (not tied to whatever
+  // they last opened in the nav).
   const [scope, setScope] = useState<FooterActionScope>('global')
+  const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
-  const [projectName, setProjectName] = useState<string | null>(null)
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
-  const [workspaceName, setWorkspaceName] = useState<string | null>(null)
 
   // Actions list for the current scope
   const [actions, setActions] = useState<FooterActionDescriptor[]>([])
@@ -211,44 +217,26 @@ export function OrpheusFooterSection(): React.JSX.Element {
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [resetting, setResetting] = useState(false)
 
-  // Bootstrap: load uiState + figure out current project/workspace context
+  // Bootstrap: load uiState + the full projects list so the user can pick
+  // which project to author against. Default-select the last-opened project
+  // if it still exists; otherwise fall back to the first project (if any).
   useEffect(() => {
     let cancelled = false
 
     async function boot(): Promise<void> {
       try {
-        const [s, projects] = await Promise.all([
+        const [s, projectsList] = await Promise.all([
           window.api.uiState.get(),
           window.api.projects.list()
         ])
         if (cancelled) return
         setUiState(s)
+        setProjects(projectsList)
 
-        // Try to pick up the last-open project + workspace from uiState
         const lastPid = s.lastProjectId
-        const lastWid = s.lastWorkspaceId
-
-        if (lastPid) {
-          const proj = projects.find((p) => p.id === lastPid)
-          if (proj) {
-            setProjectId(proj.id)
-            setProjectName(proj.name)
-          }
-        }
-
-        if (lastWid && lastPid) {
-          try {
-            const workspaces = await window.api.workspaces.listForProject(lastPid)
-            if (cancelled) return
-            const ws = workspaces.find((w) => w.id === lastWid)
-            if (ws) {
-              setWorkspaceId(ws.id)
-              setWorkspaceName(ws.name)
-            }
-          } catch {
-            // non-fatal — workspace scope just stays disabled
-          }
-        }
+        const defaultProj =
+          (lastPid && projectsList.find((p) => p.id === lastPid)) ?? projectsList[0] ?? null
+        if (defaultProj) setProjectId(defaultProj.id)
 
         setLoading(false)
       } catch (err) {
@@ -273,12 +261,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
     setSelectedId(null)
     setIsCreating(false)
 
-    const sid =
-      scope === 'global'
-        ? undefined
-        : scope === 'project'
-          ? (projectId ?? undefined)
-          : (workspaceId ?? undefined)
+    const sid = scope === 'global' ? undefined : (projectId ?? undefined)
 
     window.api.footerActions
       .listAtScope(scope, sid)
@@ -295,15 +278,10 @@ export function OrpheusFooterSection(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [scope, projectId, workspaceId, loading])
+  }, [scope, projectId, loading])
 
   function refetchActions(): void {
-    const sid =
-      scope === 'global'
-        ? undefined
-        : scope === 'project'
-          ? (projectId ?? undefined)
-          : (workspaceId ?? undefined)
+    const sid = scope === 'global' ? undefined : (projectId ?? undefined)
     setActionsLoading(true)
     window.api.footerActions
       .listAtScope(scope, sid)
@@ -382,8 +360,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
       .filter(Boolean) as FooterActionDescriptor[]
     setActions(reordered)
 
-    const sid =
-      scope === 'global' ? null : scope === 'project' ? (projectId ?? null) : (workspaceId ?? null)
+    const sid = scope === 'global' ? null : (projectId ?? null)
     window.api.footerActions.reorder(scope, sid, ids).catch((err) => {
       console.error('[settings] reorder failed', err)
       refetchActions()
@@ -456,7 +433,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
     return <SettingsSectionSkeleton />
   }
 
-  const scopeId = scope === 'global' ? null : scope === 'project' ? projectId : workspaceId
+  const scopeId = scope === 'global' ? null : projectId
 
   const selectedAction = selectedId ? (actions.find((a) => a.id === selectedId) ?? null) : null
   const showEditor = isCreating || selectedId !== null
@@ -468,8 +445,8 @@ export function OrpheusFooterSection(): React.JSX.Element {
           title="Reset footer actions?"
           body={
             <p className="text-sm text-text-secondary">
-              This will delete all global footer actions and restore the 6 default actions. Project-
-              and workspace-scoped actions are not affected.
+              This will delete all global footer actions and restore the 5 default actions.
+              Project-scoped actions are not affected.
             </p>
           }
           confirmLabel={resetting ? 'Resetting…' : 'Reset to defaults'}
@@ -510,7 +487,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
           </SettingRow>
         </div>
 
-        {/* Scope picker */}
+        {/* Scope picker — Global + Project (workspace scope deliberately omitted). */}
         <div className="flex flex-col gap-2">
           <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
             Scope
@@ -520,21 +497,28 @@ export function OrpheusFooterSection(): React.JSX.Element {
             <ScopeRadio
               value="project"
               current={scope}
-              label={projectName ? `Project: ${projectName}` : 'Project'}
-              disabled={!projectId}
+              label="Project"
+              disabled={projects.length === 0}
               onChange={setScope}
             />
-            <ScopeRadio
-              value="workspace"
-              current={scope}
-              label={workspaceName ? `Workspace: ${workspaceName}` : 'Workspace'}
-              disabled={!workspaceId}
-              onChange={setScope}
-            />
+            {scope === 'project' && projects.length > 0 && (
+              <select
+                value={projectId ?? ''}
+                onChange={(e) => setProjectId(e.target.value)}
+                className="text-xs bg-surface-overlay border border-border-default/60 rounded px-2 py-1 text-text-primary outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                aria-label="Project for scoped actions"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
-          {!projectId && (
+          {projects.length === 0 && (
             <p className="text-[11px] text-text-muted">
-              Open a project and workspace to edit project- or workspace-scoped actions.
+              Add a project to author project-scoped actions.
             </p>
           )}
         </div>
