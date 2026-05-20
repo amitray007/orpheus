@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
+import { Terminal as TerminalIcon, Folder, Gear, ArrowBendUpLeft } from '@phosphor-icons/react'
 import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 
@@ -9,13 +9,16 @@ interface WorkspaceTitleBarProps {
   drawer: null | 'status' | 'overrides'
   onSetDrawer: (drawer: null | 'status' | 'overrides') => void
   pr?: GhPullRequest | null
+  /** All workspaces — used to resolve the parent workspace name for forked-from chip. */
+  allWorkspaces?: WorkspaceRecord[]
 }
 
 export function WorkspaceTitleBar({
   workspace,
   drawer,
   onSetDrawer,
-  pr
+  pr,
+  allWorkspaces
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
@@ -29,6 +32,14 @@ export function WorkspaceTitleBar({
       if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
   }, [workspace.id])
+
+  // Resolve parent name for the "forked from" chip
+  const forkedFromSessionId = workspace.forkedFromSessionId ?? null
+  let forkedFromName: string | null = null
+  if (forkedFromSessionId && allWorkspaces) {
+    const parent = allWorkspaces.find((w) => w.claudeSessionId === forkedFromSessionId)
+    forkedFromName = parent ? parent.name : null
+  }
 
   return (
     <div
@@ -52,6 +63,19 @@ export function WorkspaceTitleBar({
       {pr && (
         <span className="flex-shrink-0">
           <PrChip pr={pr} variant="chip" />
+        </span>
+      )}
+
+      {/* Forked-from chip — shown when this workspace was forked from another session */}
+      {forkedFromSessionId && (
+        <span
+          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-surface-overlay/50 border border-border-default/40"
+          title={
+            forkedFromName ? `Forked from: ${forkedFromName}` : 'Forked from another workspace'
+          }
+        >
+          <ArrowBendUpLeft size={9} className="flex-shrink-0" />
+          {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
         </span>
       )}
 
