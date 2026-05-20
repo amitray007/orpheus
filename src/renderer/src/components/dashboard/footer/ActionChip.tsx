@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { ActionResult } from '@shared/types'
 import { playSound } from '../../../lib/sound'
+import { expandPlaceholders } from '../../../lib/footerPlaceholders'
 import { DotmFooterLoader } from '../../ui/dotm-footer-loader'
 import { IconByName } from './iconMap'
 
@@ -11,6 +12,10 @@ interface ActionChipProps {
   icon: string | null
   params: Record<string, unknown>
   workspaceId: string
+  /** Session ID for placeholder expansion in terminal.sendInput params. */
+  sessionId?: string | null
+  /** Working directory for placeholder expansion in terminal.sendInput params. */
+  cwd?: string
   /** Called after a successful workspace.fork with the new workspace ID. */
   onForkSuccess?: (newWorkspaceId: string) => void
 }
@@ -25,6 +30,8 @@ export function ActionChip({
   icon,
   params,
   workspaceId,
+  sessionId = null,
+  cwd = '',
   onForkSuccess
 }: ActionChipProps): React.JSX.Element {
   const [inFlight, setInFlight] = useState(false)
@@ -76,9 +83,26 @@ export function ActionChip({
     setInFlight(true)
     setTooltip(null)
 
+    // Expand placeholders in terminal.sendInput text and workspace.rename name
+    let resolvedParams = params
+    if (
+      (actionId === 'terminal.sendInput' || actionId === 'workspace.rename') &&
+      (cwd || workspaceId || sessionId)
+    ) {
+      const ctx = { sessionId, workspaceId, cwd }
+      if (actionId === 'terminal.sendInput' && typeof params.text === 'string') {
+        resolvedParams = { ...params, text: expandPlaceholders(params.text, ctx) }
+      } else if (actionId === 'workspace.rename' && typeof params.name === 'string') {
+        resolvedParams = { ...params, name: expandPlaceholders(params.name, ctx) }
+      }
+    }
+
     let result: ActionResult
     try {
-      result = await window.api.actions.invoke({ id: actionId, params, workspaceId }, 'footer')
+      result = await window.api.actions.invoke(
+        { id: actionId, params: resolvedParams, workspaceId },
+        'footer'
+      )
     } catch (err) {
       setInFlight(false)
       playSound('error')
@@ -109,7 +133,17 @@ export function ActionChip({
         showTooltip(result.error ?? 'Action failed')
       }
     }
-  }, [inFlight, disabled, actionId, params, workspaceId, onForkSuccess, showTooltip])
+  }, [
+    inFlight,
+    disabled,
+    actionId,
+    params,
+    workspaceId,
+    sessionId,
+    cwd,
+    onForkSuccess,
+    showTooltip
+  ])
 
   return (
     <div className="relative flex-shrink-0">
