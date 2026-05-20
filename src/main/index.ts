@@ -125,7 +125,17 @@ import type {
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 import * as terminalActions from './actions/terminal'
-import type { TerminalSendKeyDescriptor } from '../shared/types'
+import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
+import {
+  bootActions,
+  invoke as actionsInvoke,
+  list as actionsList,
+  getAuditHistory,
+  setTerminalAddonRef,
+  startSubscription,
+  stopSubscription,
+  registerWebContentsCleanup
+} from './actions/index'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -513,6 +523,10 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     if (mainWindowRef === mainWindow) mainWindowRef = null
   })
+
+  // Register subscription cleanup so actions:subscribe subscriptions are
+  // automatically torn down when the window (and its webContents) is destroyed.
+  registerWebContentsCleanup(mainWindow.webContents)
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -1236,6 +1250,9 @@ function loadTerminalAddon(): GhosttyNativeAddon {
   try {
     terminalAddon = createRequire(import.meta.url)(addonPath) as GhosttyNativeAddon
     console.log('[terminal] addon loaded OK')
+    // Wire the addon reference into the actions registry so terminal.*
+    // actions can delegate through the same addon instance.
+    setTerminalAddonRef(terminalAddon)
     return terminalAddon
   } catch (err) {
     const msg = String(err)
@@ -1411,6 +1428,70 @@ ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string
   return terminalActions.canInject(workspaceId)
 })
 
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 2: registry IPC surface
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'actions:invoke',
+  (
+    _e,
+    {
+      actionId,
+      params,
+      workspaceId,
+      consumerHint
+    }: {
+      actionId: string
+      params: Record<string, unknown>
+      workspaceId: string
+      consumerHint?: string
+    }
+  ) => {
+    const invocation: ActionInvocation = { id: actionId, params, workspaceId }
+    return actionsInvoke(invocation, consumerHint ?? 'ipc')
+  }
+)
+
+ipcMain.handle('actions:list', () => actionsList())
+
+ipcMain.handle(
+  'actions:history',
+  (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
+    getAuditHistory(workspaceId, limit)
+)
+
+ipcMain.handle(
+  'actions:subscribe',
+  (
+    e,
+    {
+      subscriptionId,
+      actionId,
+      params,
+      workspaceId
+    }: {
+      subscriptionId: string
+      actionId: string
+      params: Record<string, unknown>
+      workspaceId: string
+    }
+  ) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('actions:subscription-update', { subscriptionId, value })
+      }
+    })
+    return { ok: true }
+  }
+)
+
+ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
+  stopSubscription(subscriptionId)
+  return { ok: true }
+})
+
 ipcMain.handle(
   'workspace:getTitle',
   (_e, { workspaceId }: { workspaceId: string }): string | null =>
@@ -1425,6 +1506,10 @@ app.whenReady().then(() => {
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+
+  // Boot Quick Actions registry — registers all action descriptors so they're
+  // available before any IPC can invoke them.
+  bootActions()
 
   // Clear stale in_progress / attention statuses left over from a prior
   // session (crash, hard quit). Without this, the WorkspaceView would show a

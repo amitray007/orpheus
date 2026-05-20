@@ -38,6 +38,8 @@ import type {
   UpdateCheckResult,
   ClaudeStatusSnapshot,
   ActionResult,
+  ActionAuditEntry,
+  ActionKind,
   TerminalSendKeyDescriptor
 } from '../shared/types'
 
@@ -262,6 +264,20 @@ declare global {
         refresh: () => Promise<ClaudeStatusSnapshot>
         openPage: () => Promise<void>
         onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void) => () => void
+      }
+      actions: {
+        invoke: (
+          invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
+          consumerHint?: string
+        ) => Promise<ActionResult>
+        list: () => Promise<Array<{ id: string; kind: ActionKind }>>
+        history: (workspaceId: string, limit?: number) => Promise<ActionAuditEntry[]>
+        subscribe: (
+          actionId: string,
+          params: Record<string, unknown>,
+          workspaceId: string,
+          onUpdate: (value: unknown) => void
+        ) => { dispose: () => void }
       }
     }
   }

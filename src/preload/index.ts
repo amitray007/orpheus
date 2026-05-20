@@ -40,6 +40,8 @@ import type {
   UpdateCheckResult,
   ClaudeStatusSnapshot,
   ActionResult,
+  ActionAuditEntry,
+  ActionKind,
   TerminalSendKeyDescriptor
 } from '../shared/types'
 
@@ -384,6 +386,54 @@ const api = {
         cb(snapshot)
       ipcRenderer.on('status:change', listener)
       return () => ipcRenderer.removeListener('status:change', listener)
+    }
+  },
+  actions: {
+    invoke: (
+      invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
+      consumerHint?: string
+    ): Promise<ActionResult> =>
+      ipcRenderer.invoke('actions:invoke', {
+        actionId: invocation.id,
+        params: invocation.params,
+        workspaceId: invocation.workspaceId,
+        consumerHint: consumerHint ?? 'renderer'
+      }),
+
+    list: (): Promise<Array<{ id: string; kind: ActionKind }>> =>
+      ipcRenderer.invoke('actions:list'),
+
+    history: (workspaceId: string, limit?: number): Promise<ActionAuditEntry[]> =>
+      ipcRenderer.invoke('actions:history', { workspaceId, limit }),
+
+    subscribe: (
+      actionId: string,
+      params: Record<string, unknown>,
+      workspaceId: string,
+      onUpdate: (value: unknown) => void
+    ): { dispose: () => void } => {
+      const subscriptionId = crypto.randomUUID()
+
+      const listener = (
+        _evt: IpcRendererEvent,
+        payload: { subscriptionId: string; value: unknown }
+      ): void => {
+        if (payload.subscriptionId === subscriptionId) {
+          onUpdate(payload.value)
+        }
+      }
+
+      ipcRenderer.on('actions:subscription-update', listener)
+      ipcRenderer.invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
+
+      return {
+        dispose: () => {
+          ipcRenderer.removeListener('actions:subscription-update', listener)
+          ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }).catch(() => {
+            /* ignore cleanup errors */
+          })
+        }
+      }
     }
   }
 }
