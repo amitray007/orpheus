@@ -7,6 +7,10 @@ import { LiveChip } from './LiveChip'
 
 interface WorkspaceFooterProps {
   workspaceId: string
+  /** Claude session id for placeholder expansion in terminal.sendInput params. */
+  sessionId?: string | null
+  /** Working directory for placeholder expansion in terminal.sendInput params. */
+  cwd?: string
   /** Navigates to a workspace after a fork action resolves. */
   onSelectWorkspace?: (workspaceId: string, projectId: string) => void
   /** projectId of the current workspace — needed for post-fork navigation. */
@@ -22,6 +26,8 @@ interface WorkspaceFooterProps {
  */
 export function WorkspaceFooter({
   workspaceId,
+  sessionId = null,
+  cwd = '',
   onSelectWorkspace,
   projectId
 }: WorkspaceFooterProps): React.JSX.Element | null {
@@ -68,6 +74,8 @@ export function WorkspaceFooter({
               icon={item.icon}
               params={item.params}
               workspaceId={workspaceId}
+              sessionId={sessionId}
+              cwd={cwd}
               onForkSuccess={handleForkSuccess}
             />
           ))}

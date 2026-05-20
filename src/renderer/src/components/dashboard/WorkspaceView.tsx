@@ -222,6 +222,8 @@ export function WorkspaceView({
 
           <WorkspaceFooter
             workspaceId={workspace.id}
+            sessionId={workspace.claudeSessionId}
+            cwd={workspace.cwd}
             projectId={workspace.projectId}
             onSelectWorkspace={onSelectWorkspace}
           />
