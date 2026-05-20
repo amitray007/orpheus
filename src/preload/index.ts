@@ -42,7 +42,10 @@ import type {
   ActionResult,
   ActionAuditEntry,
   ActionKind,
-  TerminalSendKeyDescriptor
+  TerminalSendKeyDescriptor,
+  FooterActionDescriptor,
+  FooterActionDraft,
+  FooterActionScope
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -435,6 +438,31 @@ const api = {
         }
       }
     }
+  },
+  footerActions: {
+    listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
+      ipcRenderer.invoke('footerActions:listMerged', { workspaceId }),
+
+    listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
+      ipcRenderer.invoke('footerActions:listAtScope', { scope, scopeId }),
+
+    create: (
+      scope: FooterActionScope,
+      scopeId: string | null,
+      draft: FooterActionDraft
+    ): Promise<FooterActionDescriptor> =>
+      ipcRenderer.invoke('footerActions:create', { scope, scopeId, draft }),
+
+    update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
+      ipcRenderer.invoke('footerActions:update', { id, patch }),
+
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('footerActions:remove', { id }),
+
+    reorder: (
+      scope: FooterActionScope,
+      scopeId: string | null,
+      orderedIds: string[]
+    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds })
   }
 }
 

@@ -136,6 +136,18 @@ import {
   stopSubscription,
   registerWebContentsCleanup
 } from './actions/index'
+import {
+  listGlobal as listGlobalFooterActions,
+  listForProject as listProjectFooterActions,
+  listForWorkspace as listWorkspaceFooterActions,
+  listMerged as listMergedFooterActions,
+  create as createFooterAction,
+  update as updateFooterAction,
+  remove as removeFooterAction,
+  reorder as reorderFooterActions,
+  seedDefaultFooterActions
+} from './footerActions'
+import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1492,6 +1504,57 @@ ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId:
   return { ok: true }
 })
 
+// ---------------------------------------------------------------------------
+// Footer actions — phase 3a: CRUD + merge IPC surface
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
+  listMergedFooterActions(workspaceId)
+)
+
+ipcMain.handle(
+  'footerActions:listAtScope',
+  (_e, { scope, scopeId }: { scope: FooterActionScope; scopeId?: string }) => {
+    if (scope === 'global') return listGlobalFooterActions()
+    if (scope === 'project') return listProjectFooterActions(scopeId ?? '')
+    return listWorkspaceFooterActions(scopeId ?? '')
+  }
+)
+
+ipcMain.handle(
+  'footerActions:create',
+  (
+    _e,
+    {
+      scope,
+      scopeId,
+      draft
+    }: { scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }
+  ) => createFooterAction(scope, scopeId, draft)
+)
+
+ipcMain.handle(
+  'footerActions:update',
+  (_e, { id, patch }: { id: string; patch: Partial<FooterActionDraft> }) =>
+    updateFooterAction(id, patch)
+)
+
+ipcMain.handle('footerActions:remove', (_e, { id }: { id: string }) => {
+  removeFooterAction(id)
+})
+
+ipcMain.handle(
+  'footerActions:reorder',
+  (
+    _e,
+    {
+      scope,
+      scopeId,
+      orderedIds
+    }: { scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }
+  ) => reorderFooterActions(scope, scopeId, orderedIds)
+)
+
 ipcMain.handle(
   'workspace:getTitle',
   (_e, { workspaceId }: { workspaceId: string }): string | null =>
@@ -1510,6 +1573,13 @@ app.whenReady().then(() => {
   // Boot Quick Actions registry — registers all action descriptors so they're
   // available before any IPC can invoke them.
   bootActions()
+
+  // Seed default footer actions on first install (idempotent: no-op if rows exist).
+  try {
+    seedDefaultFooterActions()
+  } catch (err) {
+    console.error('[footerActions] failed to seed defaults:', err)
+  }
 
   // Clear stale in_progress / attention statuses left over from a prior
   // session (crash, hard quit). Without this, the WorkspaceView would show a

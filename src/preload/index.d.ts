@@ -40,7 +40,10 @@ import type {
   ActionResult,
   ActionAuditEntry,
   ActionKind,
-  TerminalSendKeyDescriptor
+  TerminalSendKeyDescriptor,
+  FooterActionDescriptor,
+  FooterActionDraft,
+  FooterActionScope
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -278,6 +281,25 @@ declare global {
           workspaceId: string,
           onUpdate: (value: unknown) => void
         ) => { dispose: () => void }
+      }
+      footerActions: {
+        listMerged: (workspaceId: string) => Promise<FooterActionDescriptor[]>
+        listAtScope: (
+          scope: FooterActionScope,
+          scopeId?: string
+        ) => Promise<FooterActionDescriptor[]>
+        create: (
+          scope: FooterActionScope,
+          scopeId: string | null,
+          draft: FooterActionDraft
+        ) => Promise<FooterActionDescriptor>
+        update: (id: string, patch: Partial<FooterActionDraft>) => Promise<FooterActionDescriptor>
+        remove: (id: string) => Promise<void>
+        reorder: (
+          scope: FooterActionScope,
+          scopeId: string | null,
+          orderedIds: string[]
+        ) => Promise<void>
       }
     }
   }
