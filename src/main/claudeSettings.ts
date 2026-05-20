@@ -16,39 +16,18 @@ import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
 
-// Cache for sessionJsonlExists — keyed by `${workspaceId}:${sessionId}`, TTL 5s.
-// Invalidated when the workspace's session id changes (call invalidateSessionJsonlCache).
-const sessionJsonlCache = new Map<string, { exists: boolean; at: number }>()
-const SESSION_JSONL_CACHE_TTL_MS = 5_000
-
-export function invalidateSessionJsonlCache(workspaceId: string): void {
-  // Invalidate any entry whose key starts with this workspaceId prefix.
-  // Keys are `${workspaceId}:${sessionId}`.
-  for (const k of sessionJsonlCache.keys()) {
-    if (k.startsWith(`${workspaceId}:`)) sessionJsonlCache.delete(k)
-  }
-}
-
 // Returns true if claude's transcript file for this session already exists on
 // disk. The path follows claude's encoding: slashes in the cwd become dashes.
-function sessionJsonlExists(cwd: string, sessionId: string, workspaceId?: string): boolean {
-  const cacheKey = workspaceId ? `${workspaceId}:${sessionId}` : null
-  if (cacheKey) {
-    const cached = sessionJsonlCache.get(cacheKey)
-    if (cached && Date.now() - cached.at < SESSION_JSONL_CACHE_TTL_MS) {
-      return cached.exists
-    }
-  }
+// Called once per terminal:mount — fs.statSync is cheap enough to skip caching,
+// and any cache would race against claude writing the JSONL between mounts.
+function sessionJsonlExists(cwd: string, sessionId: string): boolean {
   const encoded = cwd.replace(/\//g, '-')
   const path = nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
-  let exists = false
   try {
-    exists = fs.statSync(path).isFile()
+    return fs.statSync(path).isFile()
   } catch {
-    exists = false
+    return false
   }
-  if (cacheKey) sessionJsonlCache.set(cacheKey, { exists, at: Date.now() })
-  return exists
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +691,7 @@ export function composeClaudeLaunch(
   if (workspaceId) {
     const ws = getWorkspace(workspaceId)
     if (ws?.claudeSessionId) {
-      if (sessionJsonlExists(ws.cwd, ws.claudeSessionId, workspaceId)) {
+      if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
         flagParts.push(`--resume ${ws.claudeSessionId}`)
       } else {
         flagParts.push(`--session-id ${ws.claudeSessionId}`)

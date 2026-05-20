@@ -48,8 +48,7 @@ import {
 import {
   getClaudeGlobalSettings,
   updateClaudeGlobalSettings,
-  composeClaudeLaunch,
-  invalidateSessionJsonlCache
+  composeClaudeLaunch
 } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import {
@@ -376,8 +375,6 @@ async function captureWorkspaceSessionId(workspaceId: string, cwd: string): Prom
       if (current.claudeSessionId === sessionId) return // already stored
 
       setWorkspaceClaudeSessionId(workspaceId, sessionId)
-      // The session id changed — old cache entry (session-id path) is stale.
-      invalidateSessionJsonlCache(workspaceId)
       console.log('[claude-session] captured', { workspaceId, sessionId })
 
       // Re-snapshot with the --resume flag so the dirty-tracker doesn't flag
