@@ -124,7 +124,7 @@ const GROUPS: SectionGroup[] = [
       },
       {
         id: 'orpheus-footer',
-        label: 'Workspace Footer',
+        label: 'Quick Actions',
         icon: Lightning,
         Component: OrpheusFooterSection
       },
