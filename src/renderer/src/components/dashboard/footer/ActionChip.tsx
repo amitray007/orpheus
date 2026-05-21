@@ -115,9 +115,9 @@ export function ActionChip({
 
     if (result.ok) {
       playSound('success')
-      // Post-fork navigation
+      // Post-fork/duplicate navigation
       if (
-        actionId === 'workspace.fork' &&
+        (actionId === 'workspace.fork' || actionId === 'workspace.duplicate') &&
         result.value &&
         typeof result.value === 'object' &&
         'workspaceId' in (result.value as Record<string, unknown>)
