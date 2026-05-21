@@ -22,6 +22,10 @@ type ActionType =
   | 'archive'
   | 'rename'
   | 'duplicate'
+  | 'openInFinder'
+  | 'openInEditor'
+  | 'copyPath'
+  | 'cancel'
   | 'liveUsage'
   | 'liveCost'
   | 'liveStatus'
@@ -32,6 +36,10 @@ const ACTION_TYPE_OPTIONS: { value: ActionType; label: string }[] = [
   { value: 'archive', label: 'Archive workspace' },
   { value: 'rename', label: 'Rename workspace' },
   { value: 'duplicate', label: 'Duplicate workspace' },
+  { value: 'openInFinder', label: 'Open in Finder' },
+  { value: 'openInEditor', label: 'Open in Editor' },
+  { value: 'copyPath', label: 'Copy path' },
+  { value: 'cancel', label: 'Cancel input' },
   { value: 'liveUsage', label: 'Live indicator — Context usage' },
   { value: 'liveCost', label: 'Live indicator — Cost' },
   { value: 'liveStatus', label: 'Live indicator — Activity status' }
@@ -56,6 +64,14 @@ function actionIdForType(type: ActionType): string {
       return 'workspace.rename'
     case 'duplicate':
       return 'workspace.duplicate'
+    case 'openInFinder':
+      return 'workspace.openInFinder'
+    case 'openInEditor':
+      return 'workspace.openInEditor'
+    case 'copyPath':
+      return 'workspace.copyPath'
+    case 'cancel':
+      return 'terminal.cancel'
     case 'liveUsage':
       return 'session.getUsage'
     case 'liveCost':
@@ -78,6 +94,14 @@ function typeForActionId(actionId: string, params: Record<string, unknown>): Act
       return 'rename'
     case 'workspace.duplicate':
       return 'duplicate'
+    case 'workspace.openInFinder':
+      return 'openInFinder'
+    case 'workspace.openInEditor':
+      return 'openInEditor'
+    case 'workspace.copyPath':
+      return 'copyPath'
+    case 'terminal.cancel':
+      return 'cancel'
     case 'session.getUsage':
       return 'liveUsage'
     case 'session.getCost':
@@ -225,7 +249,9 @@ export function FooterActionEditor({
   // Validation
   const labelTrimmed = label.trim()
   const isValid =
-    labelTrimmed.length > 0 && (actionType !== 'sendInput' || sendText.trim().length > 0)
+    labelTrimmed.length > 0 &&
+    (actionType !== 'sendInput' || sendText.trim().length > 0) &&
+    (actionType !== 'rename' || renameName.trim().length > 0)
 
   function buildDraft(): FooterActionDraft {
     const baseActionId = actionIdForType(actionType)
