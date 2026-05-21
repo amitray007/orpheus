@@ -7,9 +7,8 @@
 // JSONL path: ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
 // Encoding: slashes in cwd become dashes (mirrors claudeSettings.ts:23-31).
 //
-// Pricing table source: https://www.anthropic.com/api#pricing (accessed 2025-05)
-// Rates are per-1M tokens. These are hardcoded to avoid a network dependency;
-// update when Anthropic changes the pricing page.
+// Pricing is delegated to src/main/pricing.ts which fetches live data from
+// models.dev at boot and falls back to a hardcoded table for offline use.
 // ---------------------------------------------------------------------------
 
 import * as fs from 'node:fs'
@@ -24,86 +23,7 @@ import type {
 } from '../../shared/types'
 import { getClaudeGlobalSettings } from '../claudeSettings'
 import { getWorkspace } from '../workspaces'
-
-// ---------------------------------------------------------------------------
-// Pricing table (per 1M tokens, USD)
-// Source: https://www.anthropic.com/api#pricing (2025-05)
-// ---------------------------------------------------------------------------
-
-type ModelPricing = {
-  inputPerMillion: number
-  outputPerMillion: number
-  cacheReadPerMillion: number
-  cacheWritePerMillion: number
-}
-
-const PRICING: Record<string, ModelPricing> = {
-  // Claude 4 Opus
-  'claude-opus-4': {
-    inputPerMillion: 15.0,
-    outputPerMillion: 75.0,
-    cacheReadPerMillion: 1.5,
-    cacheWritePerMillion: 18.75
-  },
-  // Claude 4 Sonnet
-  'claude-sonnet-4': {
-    inputPerMillion: 3.0,
-    outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 3.75
-  },
-  // Claude 3.7 Sonnet
-  'claude-sonnet-3-7': {
-    inputPerMillion: 3.0,
-    outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 3.75
-  },
-  // Claude 3.5 Sonnet / Haiku aliases
-  'claude-3-5-sonnet': {
-    inputPerMillion: 3.0,
-    outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 3.75
-  },
-  'claude-3-5-haiku': {
-    inputPerMillion: 0.8,
-    outputPerMillion: 4.0,
-    cacheReadPerMillion: 0.08,
-    cacheWritePerMillion: 1.0
-  },
-  // Generic aliases used in Orpheus UI
-  sonnet: {
-    inputPerMillion: 3.0,
-    outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 3.75
-  },
-  opus: {
-    inputPerMillion: 15.0,
-    outputPerMillion: 75.0,
-    cacheReadPerMillion: 1.5,
-    cacheWritePerMillion: 18.75
-  },
-  haiku: {
-    inputPerMillion: 0.8,
-    outputPerMillion: 4.0,
-    cacheReadPerMillion: 0.08,
-    cacheWritePerMillion: 1.0
-  }
-}
-
-/** Resolve pricing for a model string. Falls back to sonnet rates on unknown model. */
-function getPricing(model: string): ModelPricing {
-  // Try exact match first
-  if (PRICING[model]) return PRICING[model]!
-  // Try prefix match (e.g. "claude-opus-4-20251215" → "claude-opus-4")
-  for (const key of Object.keys(PRICING)) {
-    if (model.startsWith(key)) return PRICING[key]!
-  }
-  // Final fallback: sonnet rates
-  return PRICING['sonnet']!
-}
+import { getPricing } from '../pricing'
 
 // ---------------------------------------------------------------------------
 // Parse cache with 5-second TTL
@@ -258,16 +178,22 @@ function parseJsonl(jsonlPath: string): ParsedSession {
         cacheReadTokens += cacheRead
         cacheCreationTokens += cacheCreate
 
-        // Cost per model
-        const lineModelKey = lineModel ?? model ?? 'sonnet'
-        const pricing = getPricing(lineModelKey)
-        const lineCost =
-          (inp / 1_000_000) * pricing.inputPerMillion +
-          (out / 1_000_000) * pricing.outputPerMillion +
-          (cacheRead / 1_000_000) * pricing.cacheReadPerMillion +
-          (cacheCreate / 1_000_000) * pricing.cacheWritePerMillion
+        // Cost per model — skip if pricing is unknown (avoids double-counting with stale data)
+        const lineModelKey = lineModel ?? model ?? ''
+        if (lineModelKey) {
+          const pricing = getPricing(lineModelKey)
+          if (pricing) {
+            const lineCost =
+              (inp / 1_000_000) * pricing.input +
+              (out / 1_000_000) * pricing.output +
+              (cacheRead / 1_000_000) * pricing.cacheRead +
+              (cacheCreate / 1_000_000) * pricing.cacheWrite
 
-        costByModel[lineModelKey] = (costByModel[lineModelKey] ?? 0) + lineCost
+            costByModel[lineModelKey] = (costByModel[lineModelKey] ?? 0) + lineCost
+          } else {
+            console.warn(`[actions:session] unknown model for cost accounting: ${lineModelKey}`)
+          }
+        }
       }
 
       const text = extractText(parsed.message?.content)
