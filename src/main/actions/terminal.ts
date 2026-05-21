@@ -42,12 +42,13 @@ type TerminalAddonSlice = {
 }
 
 // ---------------------------------------------------------------------------
-// macOS virtual key code for 'u' (used by Ctrl-U / clear-line).
-// kVK_ANSI_U = 0x20 from Carbon's Events.h — confirmed in Ghostty's own
-// key mapping tests.  We pass the raw macOS vkey (not a GHOSTTY_KEY_* enum)
-// because that's what keyDown: passes and what libghostty's key codec expects.
+// macOS virtual key codes and modifiers.
+// kVK_ANSI_U = 0x20 (Ctrl-U: clear line)
+// kVK_ANSI_C = 0x08 (Ctrl-C: cancel / interrupt)
+// GHOSTTY_MODS_CTRL = 1 << 1 = 2
 // ---------------------------------------------------------------------------
 const VKEY_U = 0x20
+const VKEY_C = 0x08
 
 // ghostty_input_mods_e bit for Control (GHOSTTY_MODS_CTRL = 1 << 1 = 2).
 const MODS_CTRL = 2
@@ -119,4 +120,22 @@ export function submit(addon: TerminalAddonSlice, workspaceId: string): ActionRe
 // ---------------------------------------------------------------------------
 export function clearInput(addon: TerminalAddonSlice, workspaceId: string): ActionResult {
   return sendKeys(addon, workspaceId, [{ keycode: VKEY_U, mods: MODS_CTRL, action: 'press' }])
+}
+
+// ---------------------------------------------------------------------------
+// cancel — Ctrl-C: interrupt the running process / cancel input.
+// Sends a single key event with keycode=kVK_ANSI_C and mods=CTRL.
+// Unlike clearInput, cancel does NOT guard on canInject() — it should work
+// even when the workspace is busy (that's precisely when you want to cancel).
+// ---------------------------------------------------------------------------
+export function cancel(addon: TerminalAddonSlice, workspaceId: string): ActionResult {
+  try {
+    const ok = addon.sendKeys(workspaceId, [{ keycode: VKEY_C, mods: MODS_CTRL, action: 'press' }])
+    if (!ok) {
+      return { ok: false, code: 'not_found', error: 'No terminal surface for workspace' }
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, code: 'failed', error: String(err) }
+  }
 }

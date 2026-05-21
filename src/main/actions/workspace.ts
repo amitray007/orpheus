@@ -13,6 +13,7 @@
 // duplicate: fresh workspace at the same cwd/settings, no session fork.
 // ---------------------------------------------------------------------------
 
+import { shell, clipboard } from 'electron'
 import type { ActionResult, WorkspaceStatus, WorkspaceForkParams } from '../../shared/types'
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
 import { getDb } from '../db'
@@ -146,4 +147,58 @@ export async function handleGetActivityStatus(
 ): Promise<ActionResult<{ status: WorkspaceStatus }>> {
   const status = getWorkspaceActivity(workspaceId)
   return { ok: true, value: { status } }
+}
+
+// ---------------------------------------------------------------------------
+// workspace.openInFinder — mutator
+// Opens the workspace's cwd in macOS Finder.
+// ---------------------------------------------------------------------------
+
+export async function handleOpenInFinder(
+  _params: Record<string, unknown>,
+  workspaceId: string
+): Promise<ActionResult<void>> {
+  const ws = getWorkspace(workspaceId)
+  if (!ws) {
+    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+  }
+  shell.showItemInFolder(ws.cwd)
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// workspace.openInEditor — mutator
+// Opens the workspace's cwd in the user's default editor/app for that path.
+// ---------------------------------------------------------------------------
+
+export async function handleOpenInEditor(
+  _params: Record<string, unknown>,
+  workspaceId: string
+): Promise<ActionResult<void>> {
+  const ws = getWorkspace(workspaceId)
+  if (!ws) {
+    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+  }
+  const errMsg = await shell.openPath(ws.cwd)
+  if (errMsg) {
+    return { ok: false, code: 'failed', error: errMsg }
+  }
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// workspace.copyPath — mutator
+// Copies the workspace's cwd to the system clipboard.
+// ---------------------------------------------------------------------------
+
+export async function handleCopyPath(
+  _params: Record<string, unknown>,
+  workspaceId: string
+): Promise<ActionResult<{ copied: string }>> {
+  const ws = getWorkspace(workspaceId)
+  if (!ws) {
+    return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
+  }
+  clipboard.writeText(ws.cwd)
+  return { ok: true, value: { copied: ws.cwd } }
 }

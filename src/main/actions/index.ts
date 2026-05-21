@@ -23,7 +23,10 @@ import {
   handleArchive,
   handleRename,
   handleDuplicate,
-  handleGetActivityStatus
+  handleGetActivityStatus,
+  handleOpenInFinder,
+  handleOpenInEditor,
+  handleCopyPath
 } from './workspace'
 
 // Re-export registry + subscriptions for use by index.ts IPC handlers
@@ -154,6 +157,27 @@ export function bootActions(): void {
     handler: handleGetActivityStatus
   })
 
+  register({
+    id: 'workspace.openInFinder',
+    kind: 'mutator',
+    validate: () => true,
+    handler: handleOpenInFinder
+  })
+
+  register({
+    id: 'workspace.openInEditor',
+    kind: 'mutator',
+    validate: () => true,
+    handler: handleOpenInEditor
+  })
+
+  register({
+    id: 'workspace.copyPath',
+    kind: 'mutator',
+    validate: () => true,
+    handler: handleCopyPath
+  })
+
   // -------------------------------------------------------------------------
   // terminal.* — kind: mutator (phase-1 re-registration for registry surface)
   // These delegate through the addonRef set by setTerminalAddonRef().
@@ -243,5 +267,16 @@ export function bootActions(): void {
     }
   })
 
-  console.log('[actions] registered', 5 + 6, 'actions')
+  register({
+    id: 'terminal.cancel',
+    kind: 'mutator',
+    validate: () => true,
+    handler: async (_params, workspaceId): Promise<ActionResult> => {
+      if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
+      const { cancel } = await import('./terminal')
+      return cancel(addonRef, workspaceId)
+    }
+  })
+
+  console.log('[actions] registered', 5 + 6 + 4, 'actions')
 }

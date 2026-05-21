@@ -149,6 +149,7 @@ import {
   resetToDefaults as resetFooterActionsToDefaults
 } from './footerActions'
 import type { FooterActionScope, FooterActionDraft } from '../shared/types'
+import { refreshFromModelsDev } from './pricing'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1585,6 +1586,9 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('[footerActions] failed to seed defaults:', err)
   }
+
+  // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
+  refreshFromModelsDev().catch(() => {})
 
   // Clear stale in_progress / attention statuses left over from a prior
   // session (crash, hard quit). Without this, the WorkspaceView would show a
