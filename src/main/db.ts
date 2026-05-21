@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 47
+const CURRENT_VERSION = 48
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1804,6 +1804,84 @@ function migrate(db: Database.Database): void {
       /* safe to skip if table doesn't exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(47)
+  }
+
+  // Version 48: Seed three new global footer action chips (/compact, /cost, /model).
+  // Only inserts if the current global table matches the previous default set exactly:
+  // Fork + /copy + /context + /clear + Context = 5 rows with those exact labels.
+  // If user has customised (count ≠ 5 or labels differ), skips silently.
+  if (currentVersion < 48) {
+    try {
+      type LabelRow = { label: string }
+      const rows = db
+        .prepare('SELECT label FROM footer_actions_global ORDER BY position ASC')
+        .all() as LabelRow[]
+      const labels = rows.map((r) => r.label)
+      const PREV_DEFAULT_LABELS = ['Fork', '/copy', '/context', '/clear', 'Context']
+      const matchesPrevDefault =
+        labels.length === PREV_DEFAULT_LABELS.length &&
+        PREV_DEFAULT_LABELS.every((lbl, i) => labels[i] === lbl)
+
+      if (matchesPrevDefault) {
+        const now = Date.now()
+        // Insert at positions 4, 5, 6 (before 'Context' at 4 — shift it to 7).
+        // First shift 'Context' to position 7.
+        db.prepare(
+          `UPDATE footer_actions_global SET position = 7 WHERE label = 'Context' AND action_id = 'session.getUsage'`
+        ).run()
+
+        const insertSeed = db.prepare(`
+          INSERT INTO footer_actions_global
+            (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+
+        const { randomUUID } = require('node:crypto') as typeof import('node:crypto')
+        const seedTx = db.transaction(() => {
+          insertSeed.run(
+            randomUUID(),
+            '/compact',
+            'ArrowsInLineHorizontal',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/compact', submit: true }),
+            'idle',
+            4,
+            now,
+            now
+          )
+          insertSeed.run(
+            randomUUID(),
+            '/cost',
+            'CurrencyDollar',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/cost', submit: true }),
+            'always',
+            5,
+            now,
+            now
+          )
+          insertSeed.run(
+            randomUUID(),
+            '/model',
+            'Robot',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/model', submit: true }),
+            'always',
+            6,
+            now,
+            now
+          )
+        })
+        seedTx()
+        console.log('[db] v48: inserted /compact, /cost, /model footer action seeds')
+      } else {
+        console.log('[db] v48: footer actions customised — skipping seed insertion')
+      }
+    } catch (err) {
+      /* footer_actions_global may not exist or table is in an unexpected state — skip */
+      console.warn('[db] v48: footer action seed skipped:', err)
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(48)
   }
 }
 

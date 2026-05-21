@@ -420,6 +420,27 @@ const DEFAULT_SEEDS: Array<{
     visibleWhen: 'idle'
   },
   {
+    label: '/compact',
+    icon: 'ArrowsInLineHorizontal',
+    actionId: 'terminal.sendInput',
+    params: { text: '/compact', submit: true },
+    visibleWhen: 'idle'
+  },
+  {
+    label: '/cost',
+    icon: 'CurrencyDollar',
+    actionId: 'terminal.sendInput',
+    params: { text: '/cost', submit: true },
+    visibleWhen: 'always'
+  },
+  {
+    label: '/model',
+    icon: 'Robot',
+    actionId: 'terminal.sendInput',
+    params: { text: '/model', submit: true },
+    visibleWhen: 'always'
+  },
+  {
     label: 'Context',
     icon: 'Gauge',
     actionId: 'session.getUsage',
