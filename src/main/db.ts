@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -1836,7 +1837,6 @@ function migrate(db: Database.Database): void {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
 
-        const { randomUUID } = require('node:crypto') as typeof import('node:crypto')
         const seedTx = db.transaction(() => {
           insertSeed.run(
             randomUUID(),
