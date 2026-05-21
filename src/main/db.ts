@@ -6,7 +6,7 @@ import * as nodePath from 'node:path'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 46
+const CURRENT_VERSION = 47
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -1777,6 +1777,33 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(46)
+  }
+
+  // Version 47: scrub Archive and Rename rows from the global footer action seed.
+  // These actions were seeded in intermediate dev builds before the phase 3a clean
+  // seed (v44+). workspace.archive has no broadcast event so the sidebar doesn't
+  // update; workspace.rename has no UI prompt for the new name so it's useless as
+  // a quick-action. Both are dropped from defaults; users can re-add via Settings
+  // once the proper lifecycle is wired. Matches on label + action_id to avoid
+  // touching any user-customised rows with different icons or labels.
+  if (currentVersion < 47) {
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Archive' AND action_id = 'workspace.archive'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Rename' AND action_id = 'workspace.rename'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(47)
   }
 }
 
