@@ -46,6 +46,17 @@ function formatValue(actionId: string, value: unknown): string | null {
     }
   }
 
+  // session.getCost — render "$ 0.0042" or "< $0.01"
+  if (actionId === 'session.getCost' && typeof value === 'object' && value !== null) {
+    const v = value as Record<string, unknown>
+    if (typeof v.usd === 'number') {
+      const usd = v.usd as number
+      if (usd < 0.01) return '< $0.01'
+      if (usd < 1) return `$${usd.toFixed(4)}`
+      return `$${usd.toFixed(2)}`
+    }
+  }
+
   // workspace.getActivityStatus — show the detail string
   if (actionId === 'workspace.getActivityStatus' && typeof value === 'string') {
     return value
