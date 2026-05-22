@@ -4,7 +4,8 @@ import type {
   FooterActionDescriptor,
   FooterActionDraft,
   FooterActionScope,
-  FooterActionVisibility
+  FooterActionVisibility,
+  PromptDescriptor
 } from '@shared/types'
 import { Select, Toggle } from '../primitives'
 import { playSound } from '../../../../lib/sound'
@@ -214,11 +215,20 @@ export function FooterActionEditor({
   const [submit, setSubmit] = useState<boolean>(
     action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true
   )
-  const [renameName, setRenameName] = useState<string>(
-    action?.actionId === 'workspace.rename' ? String(action.params.name ?? '') : ''
-  )
   const [dupSuffix, setDupSuffix] = useState<string>(
     action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
+  )
+  // Prompt configuration for workspace.rename — label and pre-fill default for
+  // the inline popover that collects the new name before invoking.
+  const [renamePromptLabel, setRenamePromptLabel] = useState<string>(
+    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      ? action.prompts[0].label
+      : 'New name'
+  )
+  const [renamePromptDefault, setRenamePromptDefault] = useState<string>(
+    action?.actionId === 'workspace.rename' && action.prompts?.[0]
+      ? (action.prompts[0].default ?? '{workspaceName}')
+      : '{workspaceName}'
   )
   const [visibility, setVisibility] = useState<FooterActionVisibility>(
     action?.visibleWhen ?? 'always'
@@ -238,29 +248,48 @@ export function FooterActionEditor({
     setActionType(action ? typeForActionId(action.actionId, action.params) : 'sendInput')
     setSendText(action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : '')
     setSubmit(action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true)
-    setRenameName(action?.actionId === 'workspace.rename' ? String(action.params.name ?? '') : '')
     setDupSuffix(
       action?.actionId === 'workspace.duplicate' ? String(action.params.nameSuffix ?? '') : ''
+    )
+    setRenamePromptLabel(
+      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+        ? action.prompts[0].label
+        : 'New name'
+    )
+    setRenamePromptDefault(
+      action?.actionId === 'workspace.rename' && action.prompts?.[0]
+        ? (action.prompts[0].default ?? '{workspaceName}')
+        : '{workspaceName}'
     )
     setVisibility(action?.visibleWhen ?? 'always')
     setError(null)
   }, [action])
 
-  // Validation
+  // Validation — rename is always valid once it has a label (the name is
+  // collected at invocation time via the inline prompt popover).
   const labelTrimmed = label.trim()
   const isValid =
-    labelTrimmed.length > 0 &&
-    (actionType !== 'sendInput' || sendText.trim().length > 0) &&
-    (actionType !== 'rename' || renameName.trim().length > 0)
+    labelTrimmed.length > 0 && (actionType !== 'sendInput' || sendText.trim().length > 0)
 
   function buildDraft(): FooterActionDraft {
     const baseActionId = actionIdForType(actionType)
     let params: Record<string, unknown> = {}
+    let prompts: PromptDescriptor[] | undefined
 
     if (actionType === 'sendInput') {
       params = { text: sendText, submit }
     } else if (actionType === 'rename') {
-      params = { name: renameName }
+      // Rename collects the new name at invocation time via a prompt popover.
+      // params stay empty; the prompt descriptor carries the label and default.
+      params = {}
+      prompts = [
+        {
+          key: 'name',
+          label: renamePromptLabel.trim() || 'New name',
+          placeholder: 'Workspace name',
+          default: renamePromptDefault
+        }
+      ]
     } else if (actionType === 'duplicate') {
       const suffix = dupSuffix.trim()
       params = suffix ? { nameSuffix: suffix } : {}
@@ -272,7 +301,8 @@ export function FooterActionEditor({
       actionId: baseActionId,
       params,
       visibleWhen: visibility,
-      position: action?.position ?? 999
+      position: action?.position ?? 999,
+      ...(prompts ? { prompts } : {})
     }
   }
 
@@ -456,17 +486,37 @@ export function FooterActionEditor({
           )}
 
           {actionType === 'rename' && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
-                New name
-              </label>
-              <input
-                type="text"
-                value={renameName}
-                onChange={(e) => setRenameName(e.target.value)}
-                placeholder="e.g. My workspace or {cwd}"
-                className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-              />
+            <div className="flex flex-col gap-2">
+              <div className="text-[10px] text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+                When clicked, a prompt will appear asking the user for the new workspace name.
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                  Prompt label
+                </label>
+                <input
+                  type="text"
+                  value={renamePromptLabel}
+                  onChange={(e) => setRenamePromptLabel(e.target.value)}
+                  placeholder="New name"
+                  className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                  Default value{' '}
+                  <span className="text-text-muted normal-case tracking-normal">
+                    (use &#123;workspaceName&#125; for current name)
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={renamePromptDefault}
+                  onChange={(e) => setRenamePromptDefault(e.target.value)}
+                  placeholder="{workspaceName}"
+                  className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
+                />
+              </div>
             </div>
           )}
 
