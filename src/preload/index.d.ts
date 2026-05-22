@@ -116,6 +116,9 @@ declare global {
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
         refreshMetadata: (projectId: string) => Promise<void>
         delete: (id: string) => Promise<void>
+        getContextBudget: (
+          workspaceId: string
+        ) => Promise<{ contextBudget: number; modelId: string }>
       }
       workspaces: {
         listForProject: (

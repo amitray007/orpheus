@@ -28,7 +28,8 @@ import {
   setSessionStatus,
   createWorkspaceResumingSession,
   refreshSessionMetadata,
-  deleteSession
+  deleteSession,
+  getContextBudget
 } from './sessions'
 import {
   listWorkspacesForProject,
@@ -915,6 +916,10 @@ ipcMain.handle('sessions:refreshMetadata', (_e, { projectId }: { projectId: stri
 )
 
 ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
+
+ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
+  getContextBudget(workspaceId)
+)
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC

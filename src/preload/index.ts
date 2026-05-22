@@ -152,7 +152,9 @@ const api = {
       ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
       ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id })
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),
+    getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
+      ipcRenderer.invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
     listForProject: (
