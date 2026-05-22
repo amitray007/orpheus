@@ -6,6 +6,7 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { WorkspaceOverridesSkeleton } from '../Skeleton'
 import {
   CLAUDE_MODEL_OPTIONS,
+  CLAUDE_MODEL_ALIAS_START_INDEX,
   type WorkspaceRecord,
   type WorkspaceStatus,
   type WorkspaceActivityDetail,
@@ -84,7 +85,17 @@ function ActivitySection({ activity, detail }: ActivitySectionProps): React.JSX.
 // Overrides section
 // ---------------------------------------------------------------------------
 
-const MODEL_OPTIONS = [{ value: 'default', label: 'Default' }, ...CLAUDE_MODEL_OPTIONS] as const
+// Grouped model options: default → specific versions → separator → aliases.
+// The separator sentinel value is never committed; the Select renders it as a
+// visual divider. We use a plain array (not `as const`) so we can add the
+// dynamic separator without fighting TypeScript's tuple inference.
+const MODEL_SEP = '__sep_model' as const
+const MODEL_OPTIONS = [
+  { value: 'default', label: 'Default' },
+  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: MODEL_SEP, label: '── Always latest ──' },
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
+] as const
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Default' },
@@ -160,6 +171,8 @@ function OverridesSection({
   }
 
   function handleModel(v: ModelOption): void {
+    // Guard: separator values start with '__sep' and should never be committed
+    if ((v as string).startsWith('__sep')) return
     patch({ model: v === 'default' ? undefined : v })
   }
 

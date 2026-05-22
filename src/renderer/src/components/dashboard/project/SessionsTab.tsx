@@ -62,10 +62,41 @@ function formatBytes(n: number): string {
 function shortModel(model: string | null): string {
   if (!model) return '—'
   const m = model.toLowerCase()
-  if (m.includes('opus')) return 'Opus'
-  if (m.includes('sonnet')) return 'Sonnet'
-  if (m.includes('haiku')) return 'Haiku'
-  return model
+
+  // Detect family first
+  const isOpus = m.includes('opus')
+  const isSonnet = m.includes('sonnet')
+  const isHaiku = m.includes('haiku')
+  if (!isOpus && !isSonnet && !isHaiku) return model
+
+  const family = isOpus ? 'Opus' : isSonnet ? 'Sonnet' : 'Haiku'
+
+  // Extract version numbers from patterns like:
+  //   "claude-opus-4-7"    → "4.7"
+  //   "claude-sonnet-4-6"  → "4.6"
+  //   "claude-haiku-4-5"   → "4.5"
+  //   "opus" / "sonnet"    → "" (alias, add "(latest)" suffix)
+  //
+  // Family aliases (no digits) → show with "(latest)" marker.
+  // Date-stamped IDs like "claude-sonnet-4-6-20260416" → "Sonnet 4.6"
+  const stripped = m
+    .replace(/^claude-/, '')
+    .replace(/(opus|sonnet|haiku)-?/, '')
+    .replace(/-\d{8}$/, '') // strip trailing date stamp (e.g. 20260416)
+    .trim()
+
+  // After stripping the family name, remaining segments are the version
+  // e.g. "4-7" → "4.7"
+  const versionParts = stripped.split('-').filter((p) => /^\d+$/.test(p))
+  if (versionParts.length >= 2) {
+    return `${family} ${versionParts.join('.')}`
+  }
+  if (versionParts.length === 1) {
+    return `${family} ${versionParts[0]}`
+  }
+
+  // Pure alias (e.g. model = "opus", "sonnet", "haiku")
+  return `${family}*`
 }
 
 // ---------------------------------------------------------------------------

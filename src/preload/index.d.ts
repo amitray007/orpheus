@@ -36,7 +36,14 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
-  ClaudeStatusSnapshot
+  ClaudeStatusSnapshot,
+  ActionResult,
+  ActionAuditEntry,
+  ActionKind,
+  TerminalSendKeyDescriptor,
+  FooterActionDescriptor,
+  FooterActionDraft,
+  FooterActionScope
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -66,6 +73,11 @@ declare global {
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
         setOverlay: (workspaceId: string, on: boolean) => Promise<void>
+        sendInput: (workspaceId: string, text: string) => Promise<ActionResult>
+        sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]) => Promise<ActionResult>
+        submit: (workspaceId: string) => Promise<ActionResult>
+        clearInput: (workspaceId: string) => Promise<ActionResult>
+        canInject: (workspaceId: string) => Promise<boolean>
       }
       config: {
         openFolder: () => Promise<string | null>
@@ -104,6 +116,9 @@ declare global {
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
         refreshMetadata: (projectId: string) => Promise<void>
         delete: (id: string) => Promise<void>
+        getContextBudget: (
+          workspaceId: string
+        ) => Promise<{ contextBudget: number; modelId: string }>
       }
       workspaces: {
         listForProject: (
@@ -131,6 +146,8 @@ declare global {
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
+        onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void
+        onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
@@ -161,6 +178,7 @@ declare global {
       uiState: {
         get: () => Promise<AppUiState>
         update: (patch: AppUiStatePatch) => Promise<AppUiState>
+        onChanged: (cb: (state: AppUiState) => void) => () => void
       }
       git: {
         status: (cwd: string) => Promise<GitStatus | null>
@@ -255,6 +273,40 @@ declare global {
         refresh: () => Promise<ClaudeStatusSnapshot>
         openPage: () => Promise<void>
         onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void) => () => void
+      }
+      actions: {
+        invoke: (
+          invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
+          consumerHint?: string
+        ) => Promise<ActionResult>
+        list: () => Promise<Array<{ id: string; kind: ActionKind }>>
+        history: (workspaceId: string, limit?: number) => Promise<ActionAuditEntry[]>
+        subscribe: (
+          actionId: string,
+          params: Record<string, unknown>,
+          workspaceId: string,
+          onUpdate: (value: unknown) => void
+        ) => { dispose: () => void }
+      }
+      footerActions: {
+        listMerged: (workspaceId: string) => Promise<FooterActionDescriptor[]>
+        listAtScope: (
+          scope: FooterActionScope,
+          scopeId?: string
+        ) => Promise<FooterActionDescriptor[]>
+        create: (
+          scope: FooterActionScope,
+          scopeId: string | null,
+          draft: FooterActionDraft
+        ) => Promise<FooterActionDescriptor>
+        update: (id: string, patch: Partial<FooterActionDraft>) => Promise<FooterActionDescriptor>
+        remove: (id: string) => Promise<void>
+        reorder: (
+          scope: FooterActionScope,
+          scopeId: string | null,
+          orderedIds: string[]
+        ) => Promise<void>
+        resetDefaults: () => Promise<void>
       }
     }
   }

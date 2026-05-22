@@ -4,6 +4,8 @@ import * as nodePath from 'node:path'
 import { getDb } from './db'
 import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
+import { getPricing } from './pricing'
+import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
 import type {
   ProjectRecord,
   SessionRecord,
@@ -894,4 +896,74 @@ export async function deleteSession(id: string): Promise<void> {
   }
 
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+}
+
+// ---------------------------------------------------------------------------
+// Context budget resolution — used by the title-bar chip and future footers.
+//
+// Resolution order for the effective model ID:
+//   1. Last assistant turn's `model` field in the JSONL (most authoritative —
+//      reflects what claude actually ran with in the most recent response).
+//   2. composeClaudeLaunch's merged model (workspace → project → global setting).
+//   3. Fallback to 'sonnet' if neither produces a value.
+//
+// Then: getPricing(modelId).context gives the native context window.
+// If disable1mContext is set, clamp to 200 000 tokens.
+// ---------------------------------------------------------------------------
+
+export type ContextBudgetResult = {
+  /** Effective context window size in tokens after applying all settings. */
+  contextBudget: number
+  /** The model ID used to look up the budget. */
+  modelId: string
+}
+
+/**
+ * Resolve the context budget for a workspace.
+ * Returns the budget in tokens and the model ID used to derive it.
+ */
+export function getContextBudget(workspaceId: string): ContextBudgetResult {
+  const db = getDb()
+
+  // Pull the workspace row so we can get projectId + claudeSessionId
+  const ws = db
+    .prepare('SELECT project_id, claude_session_id FROM workspaces WHERE id = ?')
+    .get(workspaceId) as { project_id: string; claude_session_id: string | null } | undefined
+
+  // 1. Try the last JSONL turn's model field — most authoritative
+  let modelFromJSONL: string | null = null
+  if (ws?.claude_session_id) {
+    const sessionRow = db
+      .prepare('SELECT jsonl_path FROM sessions WHERE id = ?')
+      .get(ws.claude_session_id) as { jsonl_path: string | null } | undefined
+    if (sessionRow?.jsonl_path) {
+      modelFromJSONL = extractModel(sessionRow.jsonl_path)
+    }
+  }
+
+  // 2. Compose launch settings to get the merged model (workspace → project → global)
+  let modelFromSettings: string | null = null
+  if (ws) {
+    try {
+      const launch = composeClaudeLaunch(ws.project_id, workspaceId)
+      // The flag is '--model <id>', so extract the value
+      const match = launch.flags.match(/--model\s+(\S+)/)
+      if (match?.[1]) modelFromSettings = match[1]
+    } catch {
+      // ignore — settings DB may not be ready
+    }
+  }
+
+  // 3. Determine effective model ID
+  const modelId = modelFromJSONL ?? modelFromSettings ?? 'sonnet'
+
+  // 4. Resolve pricing → context window
+  const pricing = getPricing(modelId)
+  const nativeContext = pricing?.context ?? 200_000
+
+  // 5. Apply disable1mContext clamp
+  const globals = getClaudeGlobalSettings()
+  const contextBudget = globals.disable1mContext ? Math.min(nativeContext, 200_000) : nativeContext
+
+  return { contextBudget, modelId }
 }

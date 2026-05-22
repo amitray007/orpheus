@@ -3,6 +3,7 @@ import type React from 'react'
 import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import {
   CLAUDE_MODEL_OPTIONS,
+  CLAUDE_MODEL_ALIAS_START_INDEX,
   type ClaudeEffort,
   type ClaudePermissionMode,
   type ClaudeProjectSettings,
@@ -19,7 +20,13 @@ import { Select } from '../settings/primitives'
 // side panel slot like WorkspaceView does).
 // ---------------------------------------------------------------------------
 
-const MODEL_OPTIONS = [{ value: 'default', label: 'Use global' }, ...CLAUDE_MODEL_OPTIONS] as const
+// Grouped model options: "Use global" → specific versions → separator → aliases.
+const MODEL_OPTIONS = [
+  { value: 'default', label: 'Use global' },
+  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: '__sep_model', label: '' }, // visual divider — Select renders "Always latest"
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX)
+] as const
 
 const PERMISSION_OPTIONS = [
   { value: 'default', label: 'Use global' },
@@ -141,6 +148,8 @@ export function SettingsDrawer({
   }
 
   function handleModel(v: ModelOption): void {
+    // Guard: separator values start with '__sep' and should never be committed
+    if ((v as string).startsWith('__sep')) return
     patch({ model: v === 'default' ? undefined : v })
   }
   function handlePermission(v: PermissionOption): void {

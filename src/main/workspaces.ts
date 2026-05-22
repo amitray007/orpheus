@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 
@@ -19,6 +20,8 @@ type WorkspaceRow = {
   sort_order: number | null
   claude_session_id: string | null
   last_title: string | null
+  // v43: fork session support (Plan A)
+  forked_from_session_id: string | null
 }
 
 type ProjectRow = {
@@ -50,7 +53,24 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     archivedAt: row.archived_at,
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
-    claudeSessionId: row.claude_session_id ?? null
+    claudeSessionId: row.claude_session_id ?? null,
+    forkedFromSessionId: row.forked_from_session_id ?? null
+  }
+}
+
+/**
+ * Get the forked_from_session_id for a workspace (Plan A fork support).
+ * Returns null when the column doesn't exist yet (pre-v43 DBs) or has no value.
+ */
+export function getWorkspaceForkedFromSessionId(id: string): string | null {
+  const db = getDb()
+  try {
+    const row = db.prepare('SELECT forked_from_session_id FROM workspaces WHERE id = ?').get(id) as
+      | { forked_from_session_id: string | null }
+      | undefined
+    return row?.forked_from_session_id ?? null
+  } catch {
+    return null
   }
 }
 
@@ -76,14 +96,42 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
 // CRUD
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Broadcast helper — fan out a workspaces:created event to all renderer
+// windows so they can merge the new record into state before any navigation
+// fires. Called from createWorkspace() so every creation path (normal, fork,
+// duplicate, session-resume) emits the event automatically.
+// ---------------------------------------------------------------------------
+
+function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:created', { workspace })
+    }
+  }
+}
+
+function broadcastWorkspaceArchived(workspaceId: string, projectId: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:archived', { workspaceId, projectId })
+    }
+  }
+}
+
 export function createWorkspace({
   projectId,
   name,
-  cwd
+  cwd,
+  forkedFromSessionId = null
 }: {
   projectId: string
   name: string
   cwd: string
+  /** When creating a forked workspace, pass the parent session ID so the
+   *  record is written before broadcastWorkspaceCreated fires. Avoids a race
+   *  where the renderer receives workspaces:created with a null field. */
+  forkedFromSessionId?: string | null
 }): WorkspaceRecord {
   const db = getDb()
   const id = crypto.randomUUID()
@@ -98,14 +146,33 @@ export function createWorkspace({
   // claudeSessionId stayed null, so the next launch started fresh).
   const claudeSessionId = crypto.randomUUID()
 
+  // Assign sort_order so new workspaces appear at the top of the project's
+  // list — even above existing drag-reordered ones. MIN(sort_order) - 1 keeps
+  // the order open-ended downward; drag-reorder still works to move it later.
+  const minRow = db
+    .prepare('SELECT MIN(sort_order) AS minSort FROM workspaces WHERE project_id = ?')
+    .get(projectId) as { minSort: number | null } | undefined
+  const sortOrder = minRow?.minSort != null ? minRow.minSort - 1 : 0
+
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id)
-       VALUES (?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
-    .get(id, projectId, name, cwd, createdAt, claudeSessionId) as WorkspaceRow | undefined
+    .get(
+      id,
+      projectId,
+      name,
+      cwd,
+      createdAt,
+      claudeSessionId,
+      sortOrder,
+      forkedFromSessionId ?? null
+    ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
-  return rowToWorkspaceRecord(row)
+  const workspace = rowToWorkspaceRecord(row)
+  broadcastWorkspaceCreated(workspace)
+  return workspace
 }
 
 export function listWorkspacesForProject(
@@ -175,7 +242,16 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
  */
 export function archiveWorkspace(id: string): void {
   const db = getDb()
+  // Fetch the workspace record first so we have the projectId for the broadcast.
+  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
+    | { id: string; project_id: string }
+    | undefined
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  // Broadcast after delete so the renderer can remove the row from state and
+  // navigate away if the deleted workspace was currently selected.
+  if (ws) {
+    broadcastWorkspaceArchived(ws.id, ws.project_id)
+  }
 }
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {

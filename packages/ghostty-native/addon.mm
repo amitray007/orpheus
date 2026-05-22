@@ -1820,6 +1820,19 @@ static bool ensureApp() {
     NSLog(@"[ghostty-native] loading user config (default files)");
     ghostty_config_load_default_files(g_config);
 
+    // Orpheus overrides — applied after the user's config so these values win.
+    // Currently: window-padding-y = 0 to flush the terminal against the
+    // Orpheus footer + title bar (chrome already provides the spacing).
+    if (resDir) {
+        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
+            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            ghostty_config_load_file(g_config, [overridePath UTF8String]);
+        } else {
+            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+        }
+    }
+
     NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
     ghostty_config_load_recursive_files(g_config);
 
@@ -2538,6 +2551,136 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// NAPI: sendInput(workspaceId, utf8Text) → boolean
+//
+// Writes raw UTF-8 text directly into the workspace's PTY via
+// ghostty_surface_text.  Returns true on success, false when no surface
+// exists for the given workspaceId.
+//
+// Threading: NAPI handlers run on the main thread; ghostty_surface_text is
+// safe to call from there (mirrors performDragOperation which calls it
+// directly with no dispatch).
+// ---------------------------------------------------------------------------
+
+static Napi::Value SendInput(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "sendInput requires (workspaceId: string, text: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string utf8Text    = info[1].As<Napi::String>().Utf8Value();
+
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        NSLog(@"[ghostty-native] sendInput workspaceId=%s: no surface (returning false)",
+              workspaceId.c_str());
+        return Napi::Boolean::New(env, false);
+    }
+
+    ghostty_surface_t surface = it->second.surface;
+    if (!surface) {
+        return Napi::Boolean::New(env, false);
+    }
+
+    ghostty_surface_text(surface, utf8Text.c_str(), (uintptr_t)utf8Text.length());
+    return Napi::Boolean::New(env, true);
+}
+
+// ---------------------------------------------------------------------------
+// NAPI: sendKeys(workspaceId, keys) → boolean
+//
+// Sends an array of synthetic key events into the workspace's surface via
+// ghostty_surface_key.  Each element carries:
+//   keycode  — raw macOS virtual key code (same as NSEvent.keyCode)
+//   mods     — ghostty_input_mods_e bitmask (optional, defaults to NONE)
+//   action   — 'press' | 'release' | 'repeat' (optional, defaults to 'press')
+//
+// Returns false when no surface is found for the given workspaceId.
+//
+// key_ev.text is intentionally left nullptr: synthetic input injected via
+// this path goes through the keycode/mods channel; the text field is only
+// needed for real IME-committed characters (see insertText:replacementRange:
+// in OrpheusGhosttyView).  Libghostty derives the correct byte sequence from
+// keycode + mods for control characters, function keys, and printable ASCII.
+// ---------------------------------------------------------------------------
+
+static Napi::Value SendKeys(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsArray()) {
+        Napi::TypeError::New(env,
+            "sendKeys requires (workspaceId: string, keys: Array<{keycode,mods?,action?}>)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        NSLog(@"[ghostty-native] sendKeys workspaceId=%s: no surface (returning false)",
+              workspaceId.c_str());
+        return Napi::Boolean::New(env, false);
+    }
+
+    ghostty_surface_t surface = it->second.surface;
+    if (!surface) {
+        return Napi::Boolean::New(env, false);
+    }
+
+    Napi::Array keys = info[1].As<Napi::Array>();
+    uint32_t len = keys.Length();
+
+    for (uint32_t i = 0; i < len; i++) {
+        Napi::Value item = keys.Get(i);
+        if (!item.IsObject()) continue;
+        Napi::Object obj = item.As<Napi::Object>();
+
+        // keycode — required
+        Napi::Value keycodeVal = obj.Get("keycode");
+        if (!keycodeVal.IsNumber()) continue;
+        uint32_t keycode = keycodeVal.As<Napi::Number>().Uint32Value();
+
+        // mods — optional; defaults to GHOSTTY_MODS_NONE (0)
+        uint32_t mods = 0;
+        Napi::Value modsVal = obj.Get("mods");
+        if (modsVal.IsNumber()) {
+            mods = modsVal.As<Napi::Number>().Uint32Value();
+        }
+
+        // action — optional; defaults to GHOSTTY_ACTION_PRESS
+        ghostty_input_action_e action = GHOSTTY_ACTION_PRESS;
+        Napi::Value actionVal = obj.Get("action");
+        if (actionVal.IsString()) {
+            std::string actionStr = actionVal.As<Napi::String>().Utf8Value();
+            if (actionStr == "release") {
+                action = GHOSTTY_ACTION_RELEASE;
+            } else if (actionStr == "repeat") {
+                action = GHOSTTY_ACTION_REPEAT;
+            }
+            // 'press' and any unknown string → GHOSTTY_ACTION_PRESS (default)
+        }
+
+        ghostty_input_key_s key_ev = {};
+        key_ev.action             = action;
+        key_ev.mods               = (ghostty_input_mods_e)mods;
+        key_ev.consumed_mods      = (ghostty_input_mods_e)0;
+        key_ev.keycode            = keycode;
+        key_ev.text               = nullptr;
+        key_ev.unshifted_codepoint = 0;
+        key_ev.composing          = false;
+
+        ghostty_surface_key(surface, key_ev);
+    }
+
+    return Napi::Boolean::New(env, true);
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -2568,6 +2711,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
+    exports.Set("sendInput",                Napi::Function::New(env, SendInput));
+    exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     return exports;
 }
 

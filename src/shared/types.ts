@@ -98,6 +98,8 @@ export type WorkspaceRecord = {
   sortOrder: number | null
   status: WorkspaceStatus
   claudeSessionId: string | null
+  /** Set when this workspace was forked from another session (v43). */
+  forkedFromSessionId: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context
@@ -181,6 +183,8 @@ export type AppUiState = {
   // Status polling preferences (v42)
   statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
   muteStatusNotifications: boolean
+  // Workspace footer visibility (v45)
+  showWorkspaceFooter: boolean
   updatedAt: number
 }
 
@@ -199,13 +203,36 @@ export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 // Shared model picker options — keep this list in one place so the General
 // settings, ProjectView overrides, and WorkspaceDrawer all agree.
+//
+// Two groups:
+//   1. Explicit versioned IDs — unambiguous pricing + context lookup
+//   2. Always-latest aliases — claude resolves the exact version at launch
+//
+// The `family` field is used by the title-bar chip for color-coding and by
+// `getPricing` family-alias resolution.
 export const CLAUDE_MODEL_OPTIONS = [
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'opus', label: 'Opus' },
-  { value: 'haiku', label: 'Haiku' }
+  // Explicit versions — unambiguous pricing + context lookup
+  { value: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus' },
+  { value: 'claude-opus-4-5', label: 'Opus 4.5', family: 'opus' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet' },
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', family: 'sonnet' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku' },
+  // Always-latest aliases — claude resolves at launch
+  { value: 'opus', label: 'Opus (latest)', family: 'opus' },
+  { value: 'sonnet', label: 'Sonnet (latest)', family: 'sonnet' },
+  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' }
 ] as const
 
 export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
+
+// Index into CLAUDE_MODEL_OPTIONS where the "always-latest" aliases begin.
+// Options before this index are explicit versioned IDs; from this index onward
+// they are family aliases that claude resolves to the latest release at launch.
+// Derived from the array shape so adding/removing versioned entries doesn't
+// silently break the picker grouping — aliases are entries where value === family.
+export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
+  (o) => o.value === o.family
+)
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
@@ -638,4 +665,128 @@ export type ClaudeStatusSnapshot = {
   fetchOk: boolean
   /** True while a fetch is in flight */
   isFetching: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 1: terminal interaction primitives
+// ---------------------------------------------------------------------------
+
+export type ActionResultOk<T = unknown> = { ok: true; value?: T }
+export type ActionErrorCode = 'busy' | 'not_found' | 'invalid' | 'failed'
+export type ActionResultErr = { ok: false; error: string; code: ActionErrorCode }
+export type ActionResult<T = unknown> = ActionResultOk<T> | ActionResultErr
+
+export type TerminalSendKeyDescriptor = {
+  keycode: number
+  mods?: number
+  action?: 'press' | 'release' | 'repeat'
+}
+
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 2: registry types + session + workspace data types
+// ---------------------------------------------------------------------------
+
+export type ActionKind = 'mutator' | 'query' | 'subscription'
+
+export type ActionInvocation = {
+  id: string
+  params: Record<string, unknown>
+  workspaceId: string
+}
+
+export type ActionAuditEntry = {
+  id: number
+  workspaceId: string
+  actionId: string
+  /** SECRET_KEYS-redacted JSON of the params */
+  paramsJson: string
+  /** 'ok' | ActionErrorCode */
+  resultCode: string
+  consumerHint: string
+  createdAt: number
+}
+
+export type SessionMeta = {
+  sessionId: string
+  model: string
+  startedAt: number
+  lastMessageAt: number | null
+  turnCount: number
+}
+
+export type SessionUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  /** Effective maxContextTokens from global settings (or default 200k) */
+  contextBudget: number
+  /** (inputTokens + cacheReadTokens + cacheCreationTokens) / contextBudget * 100, capped at 100 */
+  usedPct: number
+}
+
+export type SessionCost = {
+  usd: number
+  byModel: Record<string, number>
+}
+
+export type SessionLastTurn = {
+  userText: string | null
+  assistantText: string | null
+  userAt: number | null
+  assistantAt: number | null
+}
+
+export type WorkspaceForkParams = {
+  worktree?: boolean
+  name?: string
+}
+
+// ---------------------------------------------------------------------------
+// Footer actions — phase 3a storage types
+// ---------------------------------------------------------------------------
+
+export type FooterActionScope = 'global' | 'project' | 'workspace'
+export type FooterActionVisibility = 'always' | 'idle' | 'awaitingInput'
+
+/**
+ * A single user-facing prompt that an action needs before it can execute.
+ * Used by workspace.rename to ask for the new name inline in the footer.
+ */
+export type PromptDescriptor = {
+  /** The param key the value fills (e.g. 'name'). */
+  key: string
+  /** User-visible label shown above the input (e.g. 'New name'). */
+  label: string
+  /** Placeholder text inside the input. */
+  placeholder?: string
+  /**
+   * Pre-fill value — supports {workspaceName}, {sessionId}, {workspaceId},
+   * {cwd} placeholder tokens that are expanded at display time.
+   */
+  default?: string
+}
+
+export type FooterActionDescriptor = {
+  id: string
+  scope: FooterActionScope
+  scopeId: string | null // null for global; projectId or workspaceId otherwise
+  label: string
+  icon: string | null // Phosphor PascalCase icon name (e.g. 'GitFork', 'Clipboard'), optional
+  actionId: string // 'terminal.sendInput' | 'workspace.fork' | 'session.getUsage' | etc.
+  params: Record<string, unknown> // {} or { text: '/copy', submit: true } etc.
+  visibleWhen: FooterActionVisibility
+  position: number
+  createdAt: number
+  updatedAt: number
+  /** Prompts to show before invoking (e.g. ask for new workspace name). */
+  prompts?: PromptDescriptor[]
+}
+
+export type FooterActionDraft = Omit<
+  FooterActionDescriptor,
+  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId' | 'position'
+> & {
+  /** When omitted on create, the backend assigns max(position)+1 for the scope. */
+  position?: number
 }

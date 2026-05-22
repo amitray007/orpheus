@@ -1,12 +1,13 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 42
+const CURRENT_VERSION = 49
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -192,6 +193,74 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
   );
 `
 
+// action_audit_log — ring-buffer audit trail for mutating Quick Actions.
+// Fresh-install CREATE. Defensive ALTER below (v43) for existing DBs.
+const ACTION_AUDIT_LOG_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS action_audit_log (
+    id INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    result_code TEXT NOT NULL,
+    consumer_hint TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_action_audit_workspace_created
+    ON action_audit_log(workspace_id, created_at DESC);
+`
+
+// Footer actions — phase 3a. Three-scope additive list.
+// Fresh-install CREATE IF NOT EXISTS. Defensive try/catch CREATE below (v44).
+// v49 adds prompts_json TEXT (nullable) to all three tables.
+const FOOTER_ACTIONS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS footer_actions_global (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompts_json TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS footer_actions_project (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompts_json TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_footer_actions_project_project_id
+    ON footer_actions_project(project_id);
+
+  CREATE TABLE IF NOT EXISTS footer_actions_workspace (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    visible_when TEXT NOT NULL DEFAULT 'always',
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompts_json TEXT,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_footer_actions_workspace_workspace_id
+    ON footer_actions_workspace(workspace_id);
+`
+
 const CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS claude_project_settings (
     project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -238,6 +307,8 @@ const UI_STATE_SCHEMA_SQL = `
     -- Status polling preferences (v42)
     status_poll_interval_sec INTEGER NOT NULL DEFAULT 1800,
     mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
+    -- Workspace footer visibility (v45)
+    show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -296,6 +367,8 @@ function migrate(db: Database.Database): void {
   db.exec(CLAUDE_PROJECT_SETTINGS_SCHEMA_SQL)
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
+  db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
+  db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -1520,6 +1593,406 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(42)
+  }
+
+  // Version 43: Quick Actions phase 2 — audit log + fork session support.
+  // action_audit_log: ring-buffer audit trail for mutating actions (CREATE IF
+  //   NOT EXISTS handles fresh installs via ACTION_AUDIT_LOG_SCHEMA_SQL above;
+  //   defensive ALTER here is a no-op for them).
+  // workspaces.forked_from_session_id: stores the parent session ID for Plan A
+  //   fork implementation (--session-id <new> --resume <parent> --fork-session).
+  if (currentVersion < 43) {
+    // action_audit_log — already created by ACTION_AUDIT_LOG_SCHEMA_SQL for
+    // fresh installs; no ALTER needed. Index also created there.
+    // For existing installs the CREATE IF NOT EXISTS above runs first and is
+    // sufficient — there's no column to ALTER on a brand-new table.
+
+    // workspaces.forked_from_session_id — enables Plan A fork behavior.
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN forked_from_session_id TEXT')
+    } catch {
+      /* Column may already exist (e.g. partial migration) — ignore */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(43)
+  }
+
+  // Version 44: Footer actions — phase 3a storage layer.
+  // Three new tables (footer_actions_global / project / workspace) with indexes.
+  // For fresh installs, FOOTER_ACTIONS_SCHEMA_SQL (executed unconditionally above)
+  // already creates all three tables via CREATE TABLE IF NOT EXISTS.
+  // For existing installs the defensive try/catch here is a no-op when the
+  // tables already exist — SQLite CREATE TABLE IF NOT EXISTS is idempotent.
+  if (currentVersion < 44) {
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_global (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `)
+    } catch {
+      /* table already exists — ignore */
+    }
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_project (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_footer_actions_project_project_id ON footer_actions_project(project_id)'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS footer_actions_workspace (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          icon TEXT,
+          action_id TEXT NOT NULL,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          visible_when TEXT NOT NULL DEFAULT 'always',
+          position INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_footer_actions_workspace_workspace_id ON footer_actions_workspace(workspace_id)'
+      )
+    } catch {
+      /* ignore */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(44)
+  }
+
+  // Version 45: workspace footer toggle + phosphor icon migration for footer actions.
+  // (a) Adds show_workspace_footer column to app_ui_state (default 1 = visible).
+  // (b) Migrates the 6 seeded lucide icon names to their phosphor PascalCase equivalents.
+  //     Matches on both icon AND label to avoid touching user-customised rows.
+  if (currentVersion < 45) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1))'
+      )
+    } catch {
+      /* column may already exist on a fresh install that ran the updated schema */
+    }
+
+    // Lucide → Phosphor icon name migration for the 6 default seeds
+    const ICON_MIGRATIONS: Array<[string, string, string]> = [
+      // [oldIcon, newIcon, label]
+      ['git-fork', 'GitFork', 'Fork'],
+      ['clipboard', 'Clipboard', '/copy'],
+      ['brain', 'Brain', '/context'],
+      ['eraser', 'Eraser', '/clear'],
+      ['gauge', 'Gauge', 'Context'],
+      ['activity', 'Pulse', 'Status']
+    ]
+    const updateIcon = db.prepare(
+      'UPDATE footer_actions_global SET icon = ? WHERE icon = ? AND label = ?'
+    )
+    const migrateIconsTx = db.transaction(() => {
+      for (const [oldIcon, newIcon, label] of ICON_MIGRATIONS) {
+        updateIcon.run(newIcon, oldIcon, label)
+      }
+    })
+    try {
+      migrateIconsTx()
+    } catch {
+      /* footer_actions_global may not exist yet on a clean install; safe to skip */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(45)
+  }
+
+  // Version 46: footer action seed fixes.
+  // (a) Migrate the three slash-command chips from '\r'-embedded text to the
+  //     new { text, submit: true } params shape so Enter is sent as a real key
+  //     event (kVK_Return) rather than a raw IME byte — claude recognises it
+  //     as "submit" rather than a newline character.
+  // (b) Delete the default Status chip — user-requested removal from defaults.
+  //     The workspace.getActivityStatus action itself is NOT removed.
+  //     Matches on label + icon + action_id + old params to avoid touching
+  //     user-customised rows that happen to share the same label.
+  if (currentVersion < 46) {
+    const updateSlash = db.prepare(
+      `UPDATE footer_actions_global
+       SET params_json = ?, updated_at = ?
+       WHERE label = ? AND action_id = 'terminal.sendInput' AND params_json = ?`
+    )
+    const now = Date.now()
+    const slashMigrationsTx = db.transaction(() => {
+      updateSlash.run(
+        JSON.stringify({ text: '/copy', submit: true }),
+        now,
+        '/copy',
+        JSON.stringify({ text: '/copy\r' })
+      )
+      updateSlash.run(
+        JSON.stringify({ text: '/context', submit: true }),
+        now,
+        '/context',
+        JSON.stringify({ text: '/context\r' })
+      )
+      updateSlash.run(
+        JSON.stringify({ text: '/clear', submit: true }),
+        now,
+        '/clear',
+        JSON.stringify({ text: '/clear\r' })
+      )
+    })
+    try {
+      slashMigrationsTx()
+    } catch {
+      /* footer_actions_global may not exist on a pre-v44 clean install — safe to skip */
+    }
+
+    // Remove the default Status chip; preserve user-created rows with the same label
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Status' AND icon = 'Pulse' AND action_id = 'workspace.getActivityStatus'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(46)
+  }
+
+  // Version 47: scrub Archive and Rename rows from the global footer action seed.
+  // These actions were seeded in intermediate dev builds before the phase 3a clean
+  // seed (v44+). workspace.archive has no broadcast event so the sidebar doesn't
+  // update; workspace.rename has no UI prompt for the new name so it's useless as
+  // a quick-action. Both are dropped from defaults; users can re-add via Settings
+  // once the proper lifecycle is wired. Matches on label + action_id to avoid
+  // touching any user-customised rows with different icons or labels.
+  if (currentVersion < 47) {
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Archive' AND action_id = 'workspace.archive'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+    try {
+      db.prepare(
+        `DELETE FROM footer_actions_global
+         WHERE label = 'Rename' AND action_id = 'workspace.rename'`
+      ).run()
+    } catch {
+      /* safe to skip if table doesn't exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(47)
+  }
+
+  // Version 48: Seed three new global footer action chips (/compact, /cost, /model).
+  // Only inserts if the current global table matches the previous default set exactly:
+  // Fork + /copy + /context + /clear + Context = 5 rows with those exact labels.
+  // If user has customised (count ≠ 5 or labels differ), skips silently.
+  if (currentVersion < 48) {
+    try {
+      type LabelRow = { label: string }
+      const rows = db
+        .prepare('SELECT label FROM footer_actions_global ORDER BY position ASC')
+        .all() as LabelRow[]
+      const labels = rows.map((r) => r.label)
+      const PREV_DEFAULT_LABELS = ['Fork', '/copy', '/context', '/clear', 'Context']
+      const matchesPrevDefault =
+        labels.length === PREV_DEFAULT_LABELS.length &&
+        PREV_DEFAULT_LABELS.every((lbl, i) => labels[i] === lbl)
+
+      if (matchesPrevDefault) {
+        const now = Date.now()
+        // Insert at positions 4, 5, 6 (before 'Context' at 4 — shift it to 7).
+        // First shift 'Context' to position 7.
+        db.prepare(
+          `UPDATE footer_actions_global SET position = 7 WHERE label = 'Context' AND action_id = 'session.getUsage'`
+        ).run()
+
+        const insertSeed = db.prepare(`
+          INSERT INTO footer_actions_global
+            (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+
+        const seedTx = db.transaction(() => {
+          insertSeed.run(
+            randomUUID(),
+            '/compact',
+            'ArrowsInLineHorizontal',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/compact', submit: true }),
+            'idle',
+            4,
+            now,
+            now
+          )
+          insertSeed.run(
+            randomUUID(),
+            '/cost',
+            'CurrencyDollar',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/cost', submit: true }),
+            'always',
+            5,
+            now,
+            now
+          )
+          insertSeed.run(
+            randomUUID(),
+            '/model',
+            'Robot',
+            'terminal.sendInput',
+            JSON.stringify({ text: '/model', submit: true }),
+            'always',
+            6,
+            now,
+            now
+          )
+        })
+        seedTx()
+        console.log('[db] v48: inserted /compact, /cost, /model footer action seeds')
+      } else {
+        console.log('[db] v48: footer actions customised — skipping seed insertion')
+      }
+    } catch (err) {
+      /* footer_actions_global may not exist or table is in an unexpected state — skip */
+      console.warn('[db] v48: footer action seed skipped:', err)
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(48)
+  }
+
+  // Version 49:
+  // (a) Add prompts_json TEXT column to all three footer_actions_* tables.
+  //     Defensive try/catch — fresh installs already have it via FOOTER_ACTIONS_SCHEMA_SQL.
+  // (b) Seed Archive and Rename global footer action chips, but ONLY if the current
+  //     global table matches the v48 default set exactly (8 rows in order):
+  //       Fork, /copy, /context, /clear, /compact, /cost, /model, Context
+  //     If the user has customised the table, skip silently.
+  if (currentVersion < 49) {
+    // (a) Add prompts_json column
+    try {
+      db.exec('ALTER TABLE footer_actions_global ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE footer_actions_project ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists */
+    }
+    try {
+      db.exec('ALTER TABLE footer_actions_workspace ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists */
+    }
+
+    // (b) Seed Archive + Rename if the table still has the v48 default set.
+    try {
+      type LabelRow = { label: string; position: number }
+      const rows = db
+        .prepare('SELECT label, position FROM footer_actions_global ORDER BY position ASC')
+        .all() as LabelRow[]
+      const labels = rows.map((r) => r.label)
+      const V48_DEFAULT_LABELS = [
+        'Fork',
+        '/copy',
+        '/context',
+        '/clear',
+        '/compact',
+        '/cost',
+        '/model',
+        'Context'
+      ]
+      const matchesV48Default =
+        labels.length === V48_DEFAULT_LABELS.length &&
+        V48_DEFAULT_LABELS.every((lbl, i) => labels[i] === lbl)
+
+      if (matchesV48Default) {
+        const now = Date.now()
+        // Archive and Rename go between /model (position 6) and Context (position 7).
+        // Shift Context from 7 → 9.
+        db.prepare(
+          `UPDATE footer_actions_global SET position = 9 WHERE label = 'Context' AND action_id = 'session.getUsage'`
+        ).run()
+
+        const insertSeed = db.prepare(`
+          INSERT INTO footer_actions_global
+            (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+
+        const renamePrompts = JSON.stringify([
+          {
+            key: 'name',
+            label: 'New name',
+            placeholder: 'Workspace name',
+            default: '{workspaceName}'
+          }
+        ])
+
+        const seedV49Tx = db.transaction(() => {
+          insertSeed.run(
+            randomUUID(),
+            'Archive',
+            'Archive',
+            'workspace.archive',
+            JSON.stringify({}),
+            'idle',
+            7,
+            now,
+            now,
+            null
+          )
+          insertSeed.run(
+            randomUUID(),
+            'Rename',
+            'PencilSimple',
+            'workspace.rename',
+            JSON.stringify({}),
+            'idle',
+            8,
+            now,
+            now,
+            renamePrompts
+          )
+        })
+        seedV49Tx()
+        console.log('[db] v49: inserted Archive and Rename footer action seeds')
+      } else {
+        console.log('[db] v49: footer actions customised — skipping Archive/Rename seed insertion')
+      }
+    } catch (err) {
+      console.warn('[db] v49: footer action seed skipped:', err)
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(49)
   }
 }
 

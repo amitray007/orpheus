@@ -66,6 +66,8 @@ type AppUiStateRow = {
   // Status polling preferences (v42)
   status_poll_interval_sec: number | null
   mute_status_notifications: number | null
+  // Workspace footer visibility (v45)
+  show_workspace_footer: number | null
   updated_at: number
 }
 
@@ -126,6 +128,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Status polling preferences (v42)
     statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
+    // Workspace footer visibility (v45) — default true
+    showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
     updatedAt: row.updated_at
   }
 }
@@ -211,6 +215,11 @@ function validatePatch(patch: AppUiStatePatch): void {
       throw new Error('uiState: muteStatusNotifications must be a boolean')
     }
   }
+  if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
+    if (typeof patch.showWorkspaceFooter !== 'boolean') {
+      throw new Error('uiState: showWorkspaceFooter must be a boolean')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +299,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     autoCheckUpdates: 'auto_check_updates',
     // Status polling preferences (v42)
     statusPollIntervalSec: 'status_poll_interval_sec',
-    muteStatusNotifications: 'mute_status_notifications'
+    muteStatusNotifications: 'mute_status_notifications',
+    // Workspace footer visibility (v45)
+    showWorkspaceFooter: 'show_workspace_footer'
   }
 
   const setClauses: string[] = []

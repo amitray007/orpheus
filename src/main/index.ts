@@ -28,7 +28,8 @@ import {
   setSessionStatus,
   createWorkspaceResumingSession,
   refreshSessionMetadata,
-  deleteSession
+  deleteSession,
+  getContextBudget
 } from './sessions'
 import {
   listWorkspacesForProject,
@@ -40,7 +41,6 @@ import {
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
-  setWorkspaceClaudeSessionId,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup
@@ -48,8 +48,7 @@ import {
 import {
   getClaudeGlobalSettings,
   updateClaudeGlobalSettings,
-  composeClaudeLaunch,
-  invalidateSessionJsonlCache
+  composeClaudeLaunch
 } from './claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import {
@@ -125,6 +124,32 @@ import type {
   ContextMenuNativeItem
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
+import * as terminalActions from './actions/terminal'
+import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
+import {
+  bootActions,
+  invoke as actionsInvoke,
+  list as actionsList,
+  getAuditHistory,
+  setTerminalAddonRef,
+  startSubscription,
+  stopSubscription,
+  registerWebContentsCleanup
+} from './actions/index'
+import {
+  listGlobal as listGlobalFooterActions,
+  listForProject as listProjectFooterActions,
+  listForWorkspace as listWorkspaceFooterActions,
+  listMerged as listMergedFooterActions,
+  create as createFooterAction,
+  update as updateFooterAction,
+  remove as removeFooterAction,
+  reorder as reorderFooterActions,
+  seedDefaultFooterActions,
+  resetToDefaults as resetFooterActionsToDefaults
+} from './footerActions'
+import type { FooterActionScope, FooterActionDraft } from '../shared/types'
+import { refreshFromModelsDev } from './pricing'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -319,78 +344,10 @@ function recomputeDirty(): void {
 // Claude session-ID capture (v26)
 // ---------------------------------------------------------------------------
 
-/**
- * Encode an absolute cwd path into the format claude uses for its project
- * directory names under ~/.claude/projects/: slashes become dashes.
- * e.g. "/Users/maverick/code/orpheus" → "-Users-maverick-code-orpheus"
- */
-function encodedClaudeCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-')
-}
-
-/**
- * After a new workspace mounts (no session ID stored yet), poll the
- * ~/.claude/projects/<encoded-cwd>/ directory until a .jsonl appears,
- * then persist the session ID so subsequent mounts can pass --resume.
- * Also re-snapshots the launch so the --resume flag doesn't look like drift.
- */
-async function captureWorkspaceSessionId(workspaceId: string, cwd: string): Promise<void> {
-  const claudeProjectsDir = nodePath.join(
-    os.homedir(),
-    '.claude',
-    'projects',
-    encodedClaudeCwd(cwd)
-  )
-
-  // Poll with increasing back-off — claude may not write the .jsonl immediately.
-  for (const delay of [2000, 5000, 12000]) {
-    await new Promise((r) => setTimeout(r, delay))
-
-    if (!fs.existsSync(claudeProjectsDir)) continue
-
-    try {
-      const entries = fs
-        .readdirSync(claudeProjectsDir, { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
-
-      if (entries.length === 0) continue
-
-      // Pick the newest by mtime — this workspace's session is the most recent.
-      // Stat all files in parallel to avoid sequential blocking on slow filesystems.
-      const withStats = await Promise.all(
-        entries.map(async (e) => {
-          const full = nodePath.join(claudeProjectsDir, e.name)
-          try {
-            const stat = await fs.promises.stat(full)
-            return { name: e.name, mtimeMs: stat.mtimeMs }
-          } catch {
-            return { name: e.name, mtimeMs: 0 }
-          }
-        })
-      )
-      withStats.sort((a, b) => b.mtimeMs - a.mtimeMs)
-      const sessionId = withStats[0]!.name.replace(/\.jsonl$/, '')
-
-      const current = getWorkspace(workspaceId)
-      if (!current) return
-      if (current.claudeSessionId === sessionId) return // already stored
-
-      setWorkspaceClaudeSessionId(workspaceId, sessionId)
-      // The session id changed — old cache entry (session-id path) is stale.
-      invalidateSessionJsonlCache(workspaceId)
-      console.log('[claude-session] captured', { workspaceId, sessionId })
-
-      // Re-snapshot with the --resume flag so the dirty-tracker doesn't flag
-      // the session_id addition as a phantom settings change.
-      const fresh = composeClaudeLaunch(current.projectId, workspaceId)
-      launchSnapshots.set(workspaceId, fresh)
-      setDirty(workspaceId, false)
-      return
-    } catch (err) {
-      console.error('[claude-session] capture attempt failed:', err)
-    }
-  }
-}
+// Note: captureWorkspaceSessionId + encodedClaudeCwd were removed in v0.0.3.
+// They polled ~/.claude/projects/<encoded-cwd>/ to back-fill a workspace's
+// session id after first mount, but since the v26 pre-assignment refactor
+// createWorkspace generates the UUID up-front so that path was unreachable.
 
 // ---------------------------------------------------------------------------
 // Launch at login + global hotkey helpers
@@ -514,6 +471,10 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     if (mainWindowRef === mainWindow) mainWindowRef = null
   })
+
+  // Register subscription cleanup so actions:subscribe subscriptions are
+  // automatically torn down when the window (and its webContents) is destroyed.
+  registerWebContentsCleanup(mainWindow.webContents)
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -830,6 +791,15 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+  // Destroy the libghostty surface so the NSView is freed before the DB row
+  // disappears. Silently no-ops when the terminal was never mounted.
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
   archiveWorkspace(id)
   // Drop any stale runtime activity entries for the deleted workspace so the
   // sidebar / project view stop trying to render a dot for a row that no
@@ -888,6 +858,10 @@ ipcMain.handle('sessions:refreshMetadata', (_e, { projectId }: { projectId: stri
 )
 
 ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
+
+ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
+  getContextBudget(workspaceId)
+)
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC
@@ -1039,6 +1013,12 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+  // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
+  // can react without polling.
+  const win = getMainWindow()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('uiState:changed', result)
+  }
   return result
 })
 
@@ -1205,6 +1185,11 @@ type GhosttyNativeAddon = {
     isDark: boolean
     tintAlpha: number
   }) => void
+  sendInput: (workspaceId: string, utf8Text: string) => boolean
+  sendKeys: (
+    workspaceId: string,
+    keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
+  ) => boolean
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1232,6 +1217,9 @@ function loadTerminalAddon(): GhosttyNativeAddon {
   try {
     terminalAddon = createRequire(import.meta.url)(addonPath) as GhosttyNativeAddon
     console.log('[terminal] addon loaded OK')
+    // Wire the addon reference into the actions registry so terminal.*
+    // actions can delegate through the same addon instance.
+    setTerminalAddonRef(terminalAddon)
     return terminalAddon
   } catch (err) {
     const msg = String(err)
@@ -1308,16 +1296,6 @@ ipcMain.handle(
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
 
-    // Fire-and-forget: capture the claude session ID written to disk after this
-    // mount. Only needed on the first mount (no stored session yet); subsequent
-    // mounts pass --resume so the .jsonl already exists and we skip re-capture.
-    // Reuse the `ws` we already fetched above instead of querying again.
-    if (ws && !ws.claudeSessionId) {
-      captureWorkspaceSessionId(workspaceId, cwd ?? ws.cwd).catch((err) =>
-        console.error('[claude-session] capture failed:', err)
-      )
-    }
-
     return result
   }
 )
@@ -1373,6 +1351,159 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   addon.destroy(workspaceId)
 })
 
+// ---------------------------------------------------------------------------
+// Quick Actions — terminal interaction primitives
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'terminal:sendInput',
+  (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
+    const addon = loadTerminalAddon()
+    return terminalActions.sendInput(addon, workspaceId, text)
+  }
+)
+
+ipcMain.handle(
+  'terminal:sendKeys',
+  (_e, { workspaceId, keys }: { workspaceId: string; keys: TerminalSendKeyDescriptor[] }) => {
+    const addon = loadTerminalAddon()
+    return terminalActions.sendKeys(addon, workspaceId, keys)
+  }
+)
+
+ipcMain.handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.submit(addon, workspaceId)
+})
+
+ipcMain.handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.clearInput(addon, workspaceId)
+})
+
+ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
+  return terminalActions.canInject(workspaceId)
+})
+
+// ---------------------------------------------------------------------------
+// Quick Actions — phase 2: registry IPC surface
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'actions:invoke',
+  (
+    _e,
+    {
+      actionId,
+      params,
+      workspaceId,
+      consumerHint
+    }: {
+      actionId: string
+      params: Record<string, unknown>
+      workspaceId: string
+      consumerHint?: string
+    }
+  ) => {
+    const invocation: ActionInvocation = { id: actionId, params, workspaceId }
+    return actionsInvoke(invocation, consumerHint ?? 'ipc')
+  }
+)
+
+ipcMain.handle('actions:list', () => actionsList())
+
+ipcMain.handle(
+  'actions:history',
+  (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
+    getAuditHistory(workspaceId, limit)
+)
+
+ipcMain.handle(
+  'actions:subscribe',
+  (
+    e,
+    {
+      subscriptionId,
+      actionId,
+      params,
+      workspaceId
+    }: {
+      subscriptionId: string
+      actionId: string
+      params: Record<string, unknown>
+      workspaceId: string
+    }
+  ) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('actions:subscription-update', { subscriptionId, value })
+      }
+    })
+    return { ok: true }
+  }
+)
+
+ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
+  stopSubscription(subscriptionId)
+  return { ok: true }
+})
+
+// ---------------------------------------------------------------------------
+// Footer actions — phase 3a: CRUD + merge IPC surface
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
+  listMergedFooterActions(workspaceId)
+)
+
+ipcMain.handle(
+  'footerActions:listAtScope',
+  (_e, { scope, scopeId }: { scope: FooterActionScope; scopeId?: string }) => {
+    if (scope === 'global') return listGlobalFooterActions()
+    if (scope === 'project') return listProjectFooterActions(scopeId ?? '')
+    return listWorkspaceFooterActions(scopeId ?? '')
+  }
+)
+
+ipcMain.handle(
+  'footerActions:create',
+  (
+    _e,
+    {
+      scope,
+      scopeId,
+      draft
+    }: { scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }
+  ) => createFooterAction(scope, scopeId, draft)
+)
+
+ipcMain.handle(
+  'footerActions:update',
+  (_e, { id, patch }: { id: string; patch: Partial<FooterActionDraft> }) =>
+    updateFooterAction(id, patch)
+)
+
+ipcMain.handle('footerActions:remove', (_e, { id }: { id: string }) => {
+  removeFooterAction(id)
+})
+
+ipcMain.handle(
+  'footerActions:reorder',
+  (
+    _e,
+    {
+      scope,
+      scopeId,
+      orderedIds
+    }: { scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }
+  ) => reorderFooterActions(scope, scopeId, orderedIds)
+)
+
+ipcMain.handle('footerActions:resetDefaults', () => {
+  resetFooterActionsToDefaults()
+})
+
 ipcMain.handle(
   'workspace:getTitle',
   (_e, { workspaceId }: { workspaceId: string }): string | null =>
@@ -1387,6 +1518,20 @@ app.whenReady().then(() => {
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+
+  // Boot Quick Actions registry — registers all action descriptors so they're
+  // available before any IPC can invoke them.
+  bootActions()
+
+  // Seed default footer actions on first install (idempotent: no-op if rows exist).
+  try {
+    seedDefaultFooterActions()
+  } catch (err) {
+    console.error('[footerActions] failed to seed defaults:', err)
+  }
+
+  // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
+  refreshFromModelsDev().catch(() => {})
 
   // Clear stale in_progress / attention statuses left over from a prior
   // session (crash, hard quit). Without this, the WorkspaceView would show a

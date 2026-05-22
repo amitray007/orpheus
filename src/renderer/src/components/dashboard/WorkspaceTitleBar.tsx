@@ -1,21 +1,105 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Folder, Gear } from '@phosphor-icons/react'
+import { Terminal as TerminalIcon, Folder, Gear, ArrowBendUpLeft, Cpu } from '@phosphor-icons/react'
+import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
 import { PrChip } from '../github/PrChip'
+
+// ---------------------------------------------------------------------------
+// Model label helper — derives a short human-readable label from a model ID.
+// ---------------------------------------------------------------------------
+function modelLabel(modelId: string): string {
+  // 1. Exact match in known options
+  const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === modelId)
+  if (known) return known.label
+
+  // 2. Prefix match — handles date-stamped variants like "claude-opus-4-7-20260416"
+  //    by finding the longest known option whose value is a prefix of the incoming ID.
+  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).sort(
+    (a, b) => b.value.length - a.value.length
+  )[0]
+  if (prefixMatch) return prefixMatch.label
+
+  // 3. Structural parse: "claude-<family>-<v1>-<v2>..." → "<Family> <v1>.<v2>"
+  //    Strips the leading "claude-" then splits on "-".
+  //    family = first segment (capitalized), version = subsequent numeric segments joined by ".".
+  const parts = modelId.replace(/^claude-/, '').split('-')
+  if (parts.length >= 1) {
+    const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
+    const versionParts = parts.slice(1).filter((p) => /^\d/.test(p))
+    if (versionParts.length > 0) {
+      return `${family} ${versionParts.join('.')}`
+    }
+    return family
+  }
+
+  return modelId
+}
+
+// ---------------------------------------------------------------------------
+// Context label helper — formats a token count as a human-readable string.
+// ---------------------------------------------------------------------------
+function contextLabel(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M ctx`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k ctx`
+  return `${tokens} ctx`
+}
+
+// ---------------------------------------------------------------------------
+// ModelContextChip — small read-only chip showing model + context mode.
+// Fetches context budget once on mount; stays static until workspace changes.
+// ---------------------------------------------------------------------------
+
+interface ModelContextChipProps {
+  workspaceId: string
+}
+
+function ModelContextChip({ workspaceId }: ModelContextChipProps): React.JSX.Element | null {
+  const [info, setInfo] = useState<{ contextBudget: number; modelId: string } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.sessions
+      .getContextBudget(workspaceId)
+      .then((result) => {
+        if (!cancelled) setInfo(result)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  if (!info) return null
+
+  const label = `${modelLabel(info.modelId)} · ${contextLabel(info.contextBudget)}`
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
+      title={`Model: ${info.modelId} · Context: ${info.contextBudget.toLocaleString()} tokens`}
+    >
+      <Cpu size={10} className="flex-shrink-0 opacity-60" />
+      <span>{label}</span>
+    </span>
+  )
+}
 
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
   drawer: null | 'status' | 'overrides'
   onSetDrawer: (drawer: null | 'status' | 'overrides') => void
   pr?: GhPullRequest | null
+  /** All workspaces — used to resolve the parent workspace name for forked-from chip. */
+  allWorkspaces?: WorkspaceRecord[]
 }
 
 export function WorkspaceTitleBar({
   workspace,
   drawer,
   onSetDrawer,
-  pr
+  pr,
+  allWorkspaces
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
@@ -29,6 +113,14 @@ export function WorkspaceTitleBar({
       if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
   }, [workspace.id])
+
+  // Resolve parent name for the "forked from" chip
+  const forkedFromSessionId = workspace.forkedFromSessionId ?? null
+  let forkedFromName: string | null = null
+  if (forkedFromSessionId && allWorkspaces) {
+    const parent = allWorkspaces.find((w) => w.claudeSessionId === forkedFromSessionId)
+    forkedFromName = parent ? parent.name : null
+  }
 
   return (
     <div
@@ -54,6 +146,22 @@ export function WorkspaceTitleBar({
           <PrChip pr={pr} variant="chip" />
         </span>
       )}
+
+      {/* Forked-from chip — shown when this workspace was forked from another session */}
+      {forkedFromSessionId && (
+        <span
+          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-surface-overlay/50 border border-border-default/40"
+          title={
+            forkedFromName ? `Forked from: ${forkedFromName}` : 'Forked from another workspace'
+          }
+        >
+          <ArrowBendUpLeft size={9} className="flex-shrink-0" />
+          {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
+        </span>
+      )}
+
+      {/* Model + context chip — read-only, fetched from main via IPC */}
+      <ModelContextChip workspaceId={workspace.id} />
 
       <span className="text-text-muted text-xs">·</span>
       <span

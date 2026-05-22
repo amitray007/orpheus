@@ -1,7 +1,16 @@
 import type React from 'react'
 import { useState, useEffect, useRef } from 'react'
 import type { Icon } from '@phosphor-icons/react'
-import { Kanban, Plus, CaretDown, CaretRight, Stack, Archive, Gear } from '@phosphor-icons/react'
+import {
+  Kanban,
+  Plus,
+  CaretDown,
+  CaretRight,
+  Stack,
+  Archive,
+  Gear,
+  GitFork
+} from '@phosphor-icons/react'
 import type {
   PinnedItem,
   ProjectRecord,
@@ -234,6 +243,15 @@ function WorkspaceSubRow({
             />
           )}
         </span>
+
+        {workspace.forkedFromSessionId && (
+          <GitFork
+            size={10}
+            weight="duotone"
+            className="text-text-muted/70 flex-shrink-0"
+            aria-label="forked workspace"
+          />
+        )}
 
         {/* Right: single-line name + optional git chip.
             Preview lives on the Workspaces kanban view (and in this row's

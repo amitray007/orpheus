@@ -38,7 +38,14 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
-  ClaudeStatusSnapshot
+  ClaudeStatusSnapshot,
+  ActionResult,
+  ActionAuditEntry,
+  ActionKind,
+  TerminalSendKeyDescriptor,
+  FooterActionDescriptor,
+  FooterActionDraft,
+  FooterActionScope
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -74,7 +81,17 @@ const api = {
     destroy: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:destroy', { workspaceId }),
     setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
-      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on })
+      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
+    sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
+    sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:sendKeys', { workspaceId, keys }),
+    submit: (workspaceId: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:submit', { workspaceId }),
+    clearInput: (workspaceId: string): Promise<ActionResult> =>
+      ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
+    canInject: (workspaceId: string): Promise<boolean> =>
+      ipcRenderer.invoke('terminal:canInject', { workspaceId })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
@@ -135,7 +152,9 @@ const api = {
       ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
       ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id })
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),
+    getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
+      ipcRenderer.invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
     listForProject: (
@@ -197,6 +216,20 @@ const api = {
         cb(e.workspaceId)
       ipcRenderer.on('workspace:navigateTo', listener)
       return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
+    },
+    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void =>
+        cb(e.workspace)
+      ipcRenderer.on('workspaces:created', listener)
+      return () => ipcRenderer.removeListener('workspaces:created', listener)
+    },
+    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; projectId: string }
+      ): void => cb(e)
+      ipcRenderer.on('workspaces:archived', listener)
+      return () => ipcRenderer.removeListener('workspaces:archived', listener)
     }
   },
   pins: {
@@ -235,7 +268,12 @@ const api = {
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
     update: (patch: AppUiStatePatch): Promise<AppUiState> =>
-      ipcRenderer.invoke('uiState:update', patch)
+      ipcRenderer.invoke('uiState:update', patch),
+    onChanged: (cb: (state: AppUiState) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: AppUiState): void => cb(state)
+      ipcRenderer.on('uiState:changed', handler)
+      return () => ipcRenderer.removeListener('uiState:changed', handler)
+    }
   },
   git: {
     status: (cwd: string): Promise<GitStatus | null> => ipcRenderer.invoke('git:status', { cwd }),
@@ -373,6 +411,81 @@ const api = {
       ipcRenderer.on('status:change', listener)
       return () => ipcRenderer.removeListener('status:change', listener)
     }
+  },
+  actions: {
+    invoke: (
+      invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
+      consumerHint?: string
+    ): Promise<ActionResult> =>
+      ipcRenderer.invoke('actions:invoke', {
+        actionId: invocation.id,
+        params: invocation.params,
+        workspaceId: invocation.workspaceId,
+        consumerHint: consumerHint ?? 'renderer'
+      }),
+
+    list: (): Promise<Array<{ id: string; kind: ActionKind }>> =>
+      ipcRenderer.invoke('actions:list'),
+
+    history: (workspaceId: string, limit?: number): Promise<ActionAuditEntry[]> =>
+      ipcRenderer.invoke('actions:history', { workspaceId, limit }),
+
+    subscribe: (
+      actionId: string,
+      params: Record<string, unknown>,
+      workspaceId: string,
+      onUpdate: (value: unknown) => void
+    ): { dispose: () => void } => {
+      const subscriptionId = crypto.randomUUID()
+
+      const listener = (
+        _evt: IpcRendererEvent,
+        payload: { subscriptionId: string; value: unknown }
+      ): void => {
+        if (payload.subscriptionId === subscriptionId) {
+          onUpdate(payload.value)
+        }
+      }
+
+      ipcRenderer.on('actions:subscription-update', listener)
+      ipcRenderer.invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
+
+      return {
+        dispose: () => {
+          ipcRenderer.removeListener('actions:subscription-update', listener)
+          ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }).catch(() => {
+            /* ignore cleanup errors */
+          })
+        }
+      }
+    }
+  },
+  footerActions: {
+    listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
+      ipcRenderer.invoke('footerActions:listMerged', { workspaceId }),
+
+    listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
+      ipcRenderer.invoke('footerActions:listAtScope', { scope, scopeId }),
+
+    create: (
+      scope: FooterActionScope,
+      scopeId: string | null,
+      draft: FooterActionDraft
+    ): Promise<FooterActionDescriptor> =>
+      ipcRenderer.invoke('footerActions:create', { scope, scopeId, draft }),
+
+    update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
+      ipcRenderer.invoke('footerActions:update', { id, patch }),
+
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('footerActions:remove', { id }),
+
+    reorder: (
+      scope: FooterActionScope,
+      scopeId: string | null,
+      orderedIds: string[]
+    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
+
+    resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
   }
 }
 
