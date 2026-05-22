@@ -225,6 +225,7 @@ export function WorkspaceView({
             sessionId={workspace.claudeSessionId}
             cwd={workspace.cwd}
             projectId={workspace.projectId}
+            workspaceName={workspace.name}
             onSelectWorkspace={onSelectWorkspace}
           />
         </div>

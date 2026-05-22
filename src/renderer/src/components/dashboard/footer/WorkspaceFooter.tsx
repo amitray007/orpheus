@@ -15,6 +15,8 @@ interface WorkspaceFooterProps {
   onSelectWorkspace?: (workspaceId: string, projectId: string) => void
   /** projectId of the current workspace — needed for post-fork navigation. */
   projectId?: string
+  /** Current workspace name — for {workspaceName} placeholder expansion in prompts. */
+  workspaceName?: string
 }
 
 /**
@@ -29,7 +31,8 @@ export function WorkspaceFooter({
   sessionId = null,
   cwd = '',
   onSelectWorkspace,
-  projectId
+  projectId,
+  workspaceName = ''
 }: WorkspaceFooterProps): React.JSX.Element | null {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
   const { items, loading } = useFooterActions(workspaceId)
@@ -73,9 +76,11 @@ export function WorkspaceFooter({
               label={item.label}
               icon={item.icon}
               params={item.params}
+              prompts={item.prompts}
               workspaceId={workspaceId}
               sessionId={sessionId}
               cwd={cwd}
+              workspaceName={workspaceName}
               onForkSuccess={handleForkSuccess}
             />
           ))}
