@@ -49,6 +49,16 @@ export function ActionChip({
   const [canInject, setCanInject] = useState(true)
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Clear pending tooltip timer on unmount to avoid setState on unmounted component.
+  useEffect(() => {
+    return () => {
+      if (tooltipTimer.current) {
+        clearTimeout(tooltipTimer.current)
+        tooltipTimer.current = null
+      }
+    }
+  }, [])
+
   // Prompt popover state
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptValues, setPromptValues] = useState<Record<string, string>>({})
@@ -253,13 +263,13 @@ export function ActionChip({
             role="dialog"
             aria-label={`${label} — enter value`}
           >
-            {prompts.map((p) => (
+            {prompts.map((p, idx) => (
               <div key={p.key} className="flex flex-col gap-0.5">
                 <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">
                   {p.label}
                 </span>
                 <input
-                  ref={promptInputRef}
+                  ref={idx === 0 ? promptInputRef : null}
                   type="text"
                   value={promptValues[p.key] ?? ''}
                   placeholder={p.placeholder ?? ''}
