@@ -228,7 +228,11 @@ export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
 // Index into CLAUDE_MODEL_OPTIONS where the "always-latest" aliases begin.
 // Options before this index are explicit versioned IDs; from this index onward
 // they are family aliases that claude resolves to the latest release at launch.
-export const CLAUDE_MODEL_ALIAS_START_INDEX = 5
+// Derived from the array shape so adding/removing versioned entries doesn't
+// silently break the picker grouping — aliases are entries where value === family.
+export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
+  (o) => o.value === o.family
+)
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)

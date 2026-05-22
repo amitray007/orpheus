@@ -34,6 +34,17 @@ export async function handleFork(
     return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
   }
 
+  // Fork semantics require a parent session to branch from. Without one there's
+  // nothing to fork — fail loudly so the caller (footer chip / palette) can
+  // suggest workspace.duplicate instead of silently starting a fresh session.
+  if (!parent.claudeSessionId) {
+    return {
+      ok: false,
+      code: 'invalid',
+      error: 'Parent workspace has no session to fork from — use duplicate instead'
+    }
+  }
+
   const newName = name ?? (parent.name ? `${parent.name} (fork)` : 'Forked workspace')
 
   // Plan A: pass forkedFromSessionId into createWorkspace so the INSERT and
@@ -43,7 +54,7 @@ export async function handleFork(
     projectId: parent.projectId,
     name: newName,
     cwd: parent.cwd,
-    forkedFromSessionId: parent.claudeSessionId ?? null
+    forkedFromSessionId: parent.claudeSessionId
   })
 
   return { ok: true, value: { workspaceId: newWorkspace.id } }

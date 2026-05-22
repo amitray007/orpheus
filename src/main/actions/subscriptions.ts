@@ -155,7 +155,10 @@ function startSessionSubscription(
     watchParentDir()
   }
 
-  // Fire an initial update immediately so the subscriber gets the current value
+  // Schedule the first update — fireUpdate is debounced (200ms), so subscribers
+  // see an initial value within one debounce window of subscribing. We don't
+  // bypass the debounce because a synchronous read on every subscribe would
+  // hot-loop when callers re-subscribe rapidly (component remounts).
   fireUpdate()
 
   return () => {

@@ -14,7 +14,7 @@ import type {
 } from '../shared/types'
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getWorkspace, getWorkspaceForkedFromSessionId } from './workspaces'
+import { getWorkspace } from './workspaces'
 
 // Returns true if claude's transcript file for this session already exists on
 // disk. The path follows claude's encoding: slashes in the cwd become dashes.
@@ -700,18 +700,15 @@ export function composeClaudeLaunch(
       if (sessionJsonlExists(ws.cwd, ws.claudeSessionId)) {
         // Session already exists — normal resume
         flagParts.push(`--resume ${ws.claudeSessionId}`)
+      } else if (ws.forkedFromSessionId) {
+        // Plan A fork: pre-assign our UUID and branch from parent. Reuse the
+        // already-loaded workspace record's field instead of a second DB query.
+        flagParts.push(
+          `--session-id ${ws.claudeSessionId} --resume ${ws.forkedFromSessionId} --fork-session`
+        )
       } else {
-        // No session yet — check if this is a forked workspace
-        const forkedFromSessionId = getWorkspaceForkedFromSessionId(workspaceId)
-        if (forkedFromSessionId) {
-          // Plan A fork: pre-assign our UUID and branch from parent
-          flagParts.push(
-            `--session-id ${ws.claudeSessionId} --resume ${forkedFromSessionId} --fork-session`
-          )
-        } else {
-          // Normal first launch
-          flagParts.push(`--session-id ${ws.claudeSessionId}`)
-        }
+        // Normal first launch
+        flagParts.push(`--session-id ${ws.claudeSessionId}`)
       }
     }
   }

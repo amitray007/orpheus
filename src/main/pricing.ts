@@ -219,15 +219,18 @@ export function getPricing(modelId: string): ModelPricing | null {
   // 2. Exact match in FALLBACK_PRICING
   if (FALLBACK_PRICING[modelId]) return FALLBACK_PRICING[modelId]!
 
-  // 3. Prefix match in runtimeCache (e.g. "claude-opus-4-7-20260416" → "claude-opus-4-7")
+  // 3. Prefix match in runtimeCache — longest match wins so
+  // "claude-opus-4-7-20260416" resolves to "claude-opus-4-7", not "claude-opus-4".
   if (runtimeCache) {
-    for (const key of Object.keys(runtimeCache)) {
+    const keys = Object.keys(runtimeCache).sort((a, b) => b.length - a.length)
+    for (const key of keys) {
       if (modelId.startsWith(key)) return runtimeCache[key]!
     }
   }
 
-  // 4. Prefix match in FALLBACK_PRICING
-  for (const key of Object.keys(FALLBACK_PRICING)) {
+  // 4. Prefix match in FALLBACK_PRICING — same longest-wins semantics.
+  const fallbackKeys = Object.keys(FALLBACK_PRICING).sort((a, b) => b.length - a.length)
+  for (const key of fallbackKeys) {
     if (modelId.startsWith(key)) return FALLBACK_PRICING[key]!
   }
 
