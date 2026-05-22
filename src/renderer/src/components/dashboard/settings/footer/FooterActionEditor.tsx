@@ -83,7 +83,7 @@ function actionIdForType(type: ActionType): string {
 }
 
 // Determine ActionType from a descriptor
-function typeForActionId(actionId: string, params: Record<string, unknown>): ActionType {
+function typeForActionId(actionId: string): ActionType {
   switch (actionId) {
     case 'terminal.sendInput':
       return 'sendInput'
@@ -112,7 +112,6 @@ function typeForActionId(actionId: string, params: Record<string, unknown>): Act
     default:
       return 'sendInput'
   }
-  void params
 }
 
 function isLiveType(type: ActionType): boolean {
@@ -207,7 +206,7 @@ export function FooterActionEditor({
   const [label, setLabel] = useState(action?.label ?? '')
   const [icon, setIcon] = useState<string | null>(action?.icon ?? null)
   const [actionType, setActionType] = useState<ActionType>(
-    action ? typeForActionId(action.actionId, action.params) : 'sendInput'
+    action ? typeForActionId(action.actionId) : 'sendInput'
   )
   const [sendText, setSendText] = useState<string>(
     action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : ''
@@ -301,7 +300,9 @@ export function FooterActionEditor({
       actionId: baseActionId,
       params,
       visibleWhen: visibility,
-      position: action?.position ?? 999,
+      // Omit position on create so the backend assigns max(position)+1 for
+      // the scope. On edit, preserve the existing position.
+      ...(action !== null ? { position: action.position } : {}),
       ...(prompts ? { prompts } : {})
     }
   }
