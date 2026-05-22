@@ -37,7 +37,6 @@ export function Identicon({ seed, size = 20, avatarUrl }: IdenticonProps): React
   return (
     <span
       style={{ width: size, height: size, minWidth: size }}
-      // eslint-disable-next-line react/no-danger
       dangerouslySetInnerHTML={{ __html: svg }}
       className="inline-block rounded overflow-hidden flex-shrink-0"
     />

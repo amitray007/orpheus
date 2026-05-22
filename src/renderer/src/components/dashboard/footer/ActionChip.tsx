@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import type { ActionResult, PromptDescriptor } from '@shared/types'
 import { playSound } from '../../../lib/sound'
@@ -85,7 +85,10 @@ export function ActionChip({
     tooltipTimer.current = setTimeout(() => setTooltip(null), 2500)
   }, [])
 
-  const placeholderCtx = { sessionId, workspaceId, cwd, workspaceName }
+  const placeholderCtx = useMemo(
+    () => ({ sessionId, workspaceId, cwd, workspaceName }),
+    [sessionId, workspaceId, cwd, workspaceName]
+  )
 
   /** Open the prompt popover, pre-filling defaults with expanded placeholders. */
   const openPromptPopover = useCallback((): void => {
@@ -98,7 +101,7 @@ export function ActionChip({
     setShowPrompt(true)
     // Focus the first input after the popover renders
     setTimeout(() => promptInputRef.current?.focus(), 0)
-  }, [prompts, placeholderCtx]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [prompts, placeholderCtx])
 
   const invokeAction = useCallback(
     async (overrideParams?: Record<string, unknown>): Promise<void> => {

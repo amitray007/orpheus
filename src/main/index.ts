@@ -41,7 +41,6 @@ import {
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
-  setWorkspaceClaudeSessionId,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup
@@ -345,76 +344,10 @@ function recomputeDirty(): void {
 // Claude session-ID capture (v26)
 // ---------------------------------------------------------------------------
 
-/**
- * Encode an absolute cwd path into the format claude uses for its project
- * directory names under ~/.claude/projects/: slashes become dashes.
- * e.g. "/Users/maverick/code/orpheus" → "-Users-maverick-code-orpheus"
- */
-function encodedClaudeCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-')
-}
-
-/**
- * After a new workspace mounts (no session ID stored yet), poll the
- * ~/.claude/projects/<encoded-cwd>/ directory until a .jsonl appears,
- * then persist the session ID so subsequent mounts can pass --resume.
- * Also re-snapshots the launch so the --resume flag doesn't look like drift.
- */
-async function captureWorkspaceSessionId(workspaceId: string, cwd: string): Promise<void> {
-  const claudeProjectsDir = nodePath.join(
-    os.homedir(),
-    '.claude',
-    'projects',
-    encodedClaudeCwd(cwd)
-  )
-
-  // Poll with increasing back-off — claude may not write the .jsonl immediately.
-  for (const delay of [2000, 5000, 12000]) {
-    await new Promise((r) => setTimeout(r, delay))
-
-    if (!fs.existsSync(claudeProjectsDir)) continue
-
-    try {
-      const entries = fs
-        .readdirSync(claudeProjectsDir, { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
-
-      if (entries.length === 0) continue
-
-      // Pick the newest by mtime — this workspace's session is the most recent.
-      // Stat all files in parallel to avoid sequential blocking on slow filesystems.
-      const withStats = await Promise.all(
-        entries.map(async (e) => {
-          const full = nodePath.join(claudeProjectsDir, e.name)
-          try {
-            const stat = await fs.promises.stat(full)
-            return { name: e.name, mtimeMs: stat.mtimeMs }
-          } catch {
-            return { name: e.name, mtimeMs: 0 }
-          }
-        })
-      )
-      withStats.sort((a, b) => b.mtimeMs - a.mtimeMs)
-      const sessionId = withStats[0]!.name.replace(/\.jsonl$/, '')
-
-      const current = getWorkspace(workspaceId)
-      if (!current) return
-      if (current.claudeSessionId === sessionId) return // already stored
-
-      setWorkspaceClaudeSessionId(workspaceId, sessionId)
-      console.log('[claude-session] captured', { workspaceId, sessionId })
-
-      // Re-snapshot with the --resume flag so the dirty-tracker doesn't flag
-      // the session_id addition as a phantom settings change.
-      const fresh = composeClaudeLaunch(current.projectId, workspaceId)
-      launchSnapshots.set(workspaceId, fresh)
-      setDirty(workspaceId, false)
-      return
-    } catch (err) {
-      console.error('[claude-session] capture attempt failed:', err)
-    }
-  }
-}
+// Note: captureWorkspaceSessionId + encodedClaudeCwd were removed in v0.0.3.
+// They polled ~/.claude/projects/<encoded-cwd>/ to back-fill a workspace's
+// session id after first mount, but since the v26 pre-assignment refactor
+// createWorkspace generates the UUID up-front so that path was unreachable.
 
 // ---------------------------------------------------------------------------
 // Launch at login + global hotkey helpers
@@ -1356,16 +1289,6 @@ ipcMain.handle(
     // Snapshot the composed launch so we can detect settings drift later.
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
-
-    // Fire-and-forget: capture the claude session ID written to disk after this
-    // mount. Only needed on the first mount (no stored session yet); subsequent
-    // mounts pass --resume so the .jsonl already exists and we skip re-capture.
-    // Reuse the `ws` we already fetched above instead of querying again.
-    if (ws && !ws.claudeSessionId) {
-      captureWorkspaceSessionId(workspaceId, cwd ?? ws.cwd).catch((err) =>
-        console.error('[claude-session] capture failed:', err)
-      )
-    }
 
     return result
   }

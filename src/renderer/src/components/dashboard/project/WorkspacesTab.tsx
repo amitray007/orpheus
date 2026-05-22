@@ -294,7 +294,6 @@ export function WorkspacesTab({
     }
 
     return out
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, activityFilter, debouncedSearch, titleByWs, sessionStats])
 
   const activeSorted = useMemo(() => {
