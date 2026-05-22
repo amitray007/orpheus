@@ -111,10 +111,12 @@ export function sendKeys(
 }
 
 // ---------------------------------------------------------------------------
-// submit — send a carriage-return to confirm the current prompt line.
+// submit — confirm the current prompt line via a real Return key event.
+// Uses sendKeys(kVK_Return = 0x24) to match the submit:true path in
+// terminal.sendInput so libghostty registers it identically.
 // ---------------------------------------------------------------------------
 export function submit(addon: TerminalAddonSlice, workspaceId: string): ActionResult {
-  return sendInput(addon, workspaceId, '\r')
+  return sendKeys(addon, workspaceId, [{ keycode: 0x24, mods: 0 }])
 }
 
 // ---------------------------------------------------------------------------
