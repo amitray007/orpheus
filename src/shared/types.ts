@@ -745,6 +745,24 @@ export type WorkspaceForkParams = {
 export type FooterActionScope = 'global' | 'project' | 'workspace'
 export type FooterActionVisibility = 'always' | 'idle' | 'awaitingInput'
 
+/**
+ * A single user-facing prompt that an action needs before it can execute.
+ * Used by workspace.rename to ask for the new name inline in the footer.
+ */
+export type PromptDescriptor = {
+  /** The param key the value fills (e.g. 'name'). */
+  key: string
+  /** User-visible label shown above the input (e.g. 'New name'). */
+  label: string
+  /** Placeholder text inside the input. */
+  placeholder?: string
+  /**
+   * Pre-fill value — supports {workspaceName}, {sessionId}, {workspaceId},
+   * {cwd} placeholder tokens that are expanded at display time.
+   */
+  default?: string
+}
+
 export type FooterActionDescriptor = {
   id: string
   scope: FooterActionScope
@@ -757,6 +775,8 @@ export type FooterActionDescriptor = {
   position: number
   createdAt: number
   updatedAt: number
+  /** Prompts to show before invoking (e.g. ask for new workspace name). */
+  prompts?: PromptDescriptor[]
 }
 
 export type FooterActionDraft = Omit<

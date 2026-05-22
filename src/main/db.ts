@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 48
+const CURRENT_VERSION = 49
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -211,6 +211,7 @@ const ACTION_AUDIT_LOG_SCHEMA_SQL = `
 
 // Footer actions — phase 3a. Three-scope additive list.
 // Fresh-install CREATE IF NOT EXISTS. Defensive try/catch CREATE below (v44).
+// v49 adds prompts_json TEXT (nullable) to all three tables.
 const FOOTER_ACTIONS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS footer_actions_global (
     id TEXT PRIMARY KEY,
@@ -221,7 +222,8 @@ const FOOTER_ACTIONS_SCHEMA_SQL = `
     visible_when TEXT NOT NULL DEFAULT 'always',
     position INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    prompts_json TEXT
   );
 
   CREATE TABLE IF NOT EXISTS footer_actions_project (
@@ -235,6 +237,7 @@ const FOOTER_ACTIONS_SCHEMA_SQL = `
     position INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    prompts_json TEXT,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_footer_actions_project_project_id
@@ -251,6 +254,7 @@ const FOOTER_ACTIONS_SCHEMA_SQL = `
     position INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    prompts_json TEXT,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_footer_actions_workspace_workspace_id
@@ -1882,6 +1886,113 @@ function migrate(db: Database.Database): void {
       console.warn('[db] v48: footer action seed skipped:', err)
     }
     db.prepare('UPDATE schema_version SET version = ?').run(48)
+  }
+
+  // Version 49:
+  // (a) Add prompts_json TEXT column to all three footer_actions_* tables.
+  //     Defensive try/catch — fresh installs already have it via FOOTER_ACTIONS_SCHEMA_SQL.
+  // (b) Seed Archive and Rename global footer action chips, but ONLY if the current
+  //     global table matches the v48 default set exactly (8 rows in order):
+  //       Fork, /copy, /context, /clear, /compact, /cost, /model, Context
+  //     If the user has customised the table, skip silently.
+  if (currentVersion < 49) {
+    // (a) Add prompts_json column
+    try {
+      db.exec('ALTER TABLE footer_actions_global ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE footer_actions_project ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists */
+    }
+    try {
+      db.exec('ALTER TABLE footer_actions_workspace ADD COLUMN prompts_json TEXT')
+    } catch {
+      /* already exists */
+    }
+
+    // (b) Seed Archive + Rename if the table still has the v48 default set.
+    try {
+      type LabelRow = { label: string; position: number }
+      const rows = db
+        .prepare('SELECT label, position FROM footer_actions_global ORDER BY position ASC')
+        .all() as LabelRow[]
+      const labels = rows.map((r) => r.label)
+      const V48_DEFAULT_LABELS = [
+        'Fork',
+        '/copy',
+        '/context',
+        '/clear',
+        '/compact',
+        '/cost',
+        '/model',
+        'Context'
+      ]
+      const matchesV48Default =
+        labels.length === V48_DEFAULT_LABELS.length &&
+        V48_DEFAULT_LABELS.every((lbl, i) => labels[i] === lbl)
+
+      if (matchesV48Default) {
+        const now = Date.now()
+        // Archive and Rename go between /model (position 6) and Context (position 7).
+        // Shift Context from 7 → 9.
+        db.prepare(
+          `UPDATE footer_actions_global SET position = 9 WHERE label = 'Context' AND action_id = 'session.getUsage'`
+        ).run()
+
+        const insertSeed = db.prepare(`
+          INSERT INTO footer_actions_global
+            (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+
+        const renamePrompts = JSON.stringify([
+          {
+            key: 'name',
+            label: 'New name',
+            placeholder: 'Workspace name',
+            default: '{workspaceName}'
+          }
+        ])
+
+        const seedV49Tx = db.transaction(() => {
+          insertSeed.run(
+            randomUUID(),
+            'Archive',
+            'Archive',
+            'workspace.archive',
+            JSON.stringify({}),
+            'idle',
+            7,
+            now,
+            now,
+            null
+          )
+          insertSeed.run(
+            randomUUID(),
+            'Rename',
+            'PencilSimple',
+            'workspace.rename',
+            JSON.stringify({}),
+            'idle',
+            8,
+            now,
+            now,
+            renamePrompts
+          )
+        })
+        seedV49Tx()
+        console.log('[db] v49: inserted Archive and Rename footer action seeds')
+      } else {
+        console.log('[db] v49: footer actions customised — skipping Archive/Rename seed insertion')
+      }
+    } catch (err) {
+      console.warn('[db] v49: footer action seed skipped:', err)
+    }
+
+    db.prepare('UPDATE schema_version SET version = ?').run(49)
   }
 }
 

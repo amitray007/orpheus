@@ -11,7 +11,12 @@
 
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
-import type { FooterActionDescriptor, FooterActionDraft, FooterActionScope } from '../shared/types'
+import type {
+  FooterActionDescriptor,
+  FooterActionDraft,
+  FooterActionScope,
+  PromptDescriptor
+} from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Row shapes from SQLite
@@ -27,6 +32,7 @@ type GlobalRow = {
   position: number
   created_at: number
   updated_at: number
+  prompts_json: string | null
 }
 
 type ProjectRow = GlobalRow & { project_id: string }
@@ -48,12 +54,24 @@ function parseParams(json: string): Record<string, unknown> {
   return {}
 }
 
+function parsePrompts(json: string | null): PromptDescriptor[] | undefined {
+  if (!json) return undefined
+  try {
+    const parsed = JSON.parse(json)
+    if (Array.isArray(parsed)) return parsed as PromptDescriptor[]
+  } catch {
+    // fall through
+  }
+  return undefined
+}
+
 function coerceVisibility(raw: string): FooterActionDescriptor['visibleWhen'] {
   if (raw === 'always' || raw === 'idle' || raw === 'awaitingInput') return raw
   return 'always'
 }
 
 function fromGlobalRow(row: GlobalRow): FooterActionDescriptor {
+  const prompts = parsePrompts(row.prompts_json)
   return {
     id: row.id,
     scope: 'global',
@@ -65,11 +83,13 @@ function fromGlobalRow(row: GlobalRow): FooterActionDescriptor {
     visibleWhen: coerceVisibility(row.visible_when),
     position: row.position,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    ...(prompts ? { prompts } : {})
   }
 }
 
 function fromProjectRow(row: ProjectRow): FooterActionDescriptor {
+  const prompts = parsePrompts(row.prompts_json)
   return {
     id: row.id,
     scope: 'project',
@@ -81,11 +101,13 @@ function fromProjectRow(row: ProjectRow): FooterActionDescriptor {
     visibleWhen: coerceVisibility(row.visible_when),
     position: row.position,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    ...(prompts ? { prompts } : {})
   }
 }
 
 function fromWorkspaceRow(row: WorkspaceRow): FooterActionDescriptor {
+  const prompts = parsePrompts(row.prompts_json)
   return {
     id: row.id,
     scope: 'workspace',
@@ -97,7 +119,8 @@ function fromWorkspaceRow(row: WorkspaceRow): FooterActionDescriptor {
     visibleWhen: coerceVisibility(row.visible_when),
     position: row.position,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    ...(prompts ? { prompts } : {})
   }
 }
 
@@ -156,6 +179,8 @@ export function create(
   const now = Date.now()
   const paramsJson = JSON.stringify(draft.params ?? {})
 
+  const promptsJson = draft.prompts ? JSON.stringify(draft.prompts) : null
+
   if (scope === 'global') {
     const maxRow = db
       .prepare('SELECT COALESCE(MAX(position), -1) AS m FROM footer_actions_global')
@@ -164,8 +189,8 @@ export function create(
     db.prepare(
       `
       INSERT INTO footer_actions_global
-        (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       id,
@@ -176,7 +201,8 @@ export function create(
       draft.visibleWhen,
       position,
       now,
-      now
+      now,
+      promptsJson
     )
     return fromGlobalRow(
       db.prepare('SELECT * FROM footer_actions_global WHERE id = ?').get(id) as GlobalRow
@@ -194,8 +220,8 @@ export function create(
     db.prepare(
       `
       INSERT INTO footer_actions_project
-        (id, project_id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, project_id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       id,
@@ -207,7 +233,8 @@ export function create(
       draft.visibleWhen,
       position,
       now,
-      now
+      now,
+      promptsJson
     )
     return fromProjectRow(
       db.prepare('SELECT * FROM footer_actions_project WHERE id = ?').get(id) as ProjectRow
@@ -225,8 +252,8 @@ export function create(
   db.prepare(
     `
     INSERT INTO footer_actions_workspace
-      (id, workspace_id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, workspace_id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     id,
@@ -238,7 +265,8 @@ export function create(
     draft.visibleWhen,
     position,
     now,
-    now
+    now,
+    promptsJson
   )
   return fromWorkspaceRow(
     db.prepare('SELECT * FROM footer_actions_workspace WHERE id = ?').get(id) as WorkspaceRow
@@ -259,7 +287,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       `
       UPDATE footer_actions_global
       SET label = ?, icon = ?, action_id = ?, params_json = ?, visible_when = ?,
-          position = ?, updated_at = ?
+          position = ?, updated_at = ?, prompts_json = ?
       WHERE id = ?
     `
     ).run(
@@ -270,6 +298,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       merged.visible_when,
       merged.position,
       merged.updated_at,
+      merged.prompts_json,
       id
     )
     return fromGlobalRow(
@@ -286,7 +315,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       `
       UPDATE footer_actions_project
       SET label = ?, icon = ?, action_id = ?, params_json = ?, visible_when = ?,
-          position = ?, updated_at = ?
+          position = ?, updated_at = ?, prompts_json = ?
       WHERE id = ?
     `
     ).run(
@@ -297,6 +326,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       merged.visible_when,
       merged.position,
       merged.updated_at,
+      merged.prompts_json,
       id
     )
     return fromProjectRow(
@@ -313,7 +343,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       `
       UPDATE footer_actions_workspace
       SET label = ?, icon = ?, action_id = ?, params_json = ?, visible_when = ?,
-          position = ?, updated_at = ?
+          position = ?, updated_at = ?, prompts_json = ?
       WHERE id = ?
     `
     ).run(
@@ -324,6 +354,7 @@ export function update(id: string, patch: Partial<FooterActionDraft>): FooterAct
       merged.visible_when,
       merged.position,
       merged.updated_at,
+      merged.prompts_json,
       id
     )
     return fromWorkspaceRow(
@@ -343,7 +374,13 @@ function applyPatch(row: GlobalRow, patch: Partial<FooterActionDraft>, now: numb
     params_json: patch.params !== undefined ? JSON.stringify(patch.params) : row.params_json,
     visible_when: patch.visibleWhen ?? row.visible_when,
     position: patch.position ?? row.position,
-    updated_at: now
+    updated_at: now,
+    prompts_json:
+      'prompts' in patch
+        ? patch.prompts !== undefined
+          ? JSON.stringify(patch.prompts)
+          : null
+        : row.prompts_json
   }
 }
 
@@ -390,6 +427,7 @@ const DEFAULT_SEEDS: Array<{
   actionId: string
   params: Record<string, unknown>
   visibleWhen: FooterActionDescriptor['visibleWhen']
+  prompts?: PromptDescriptor[]
 }> = [
   {
     label: 'Fork',
@@ -441,6 +479,28 @@ const DEFAULT_SEEDS: Array<{
     visibleWhen: 'always'
   },
   {
+    label: 'Archive',
+    icon: 'Archive',
+    actionId: 'workspace.archive',
+    params: {},
+    visibleWhen: 'idle'
+  },
+  {
+    label: 'Rename',
+    icon: 'PencilSimple',
+    actionId: 'workspace.rename',
+    params: {},
+    visibleWhen: 'idle',
+    prompts: [
+      {
+        key: 'name',
+        label: 'New name',
+        placeholder: 'Workspace name',
+        default: '{workspaceName}'
+      }
+    ]
+  },
+  {
     label: 'Context',
     icon: 'Gauge',
     actionId: 'session.getUsage',
@@ -460,8 +520,8 @@ export function seedDefaultFooterActions(): void {
   const now = Date.now()
   const insert = db.prepare(`
     INSERT INTO footer_actions_global
-      (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const seedTx = db.transaction(() => {
@@ -475,7 +535,8 @@ export function seedDefaultFooterActions(): void {
         seed.visibleWhen,
         idx,
         now,
-        now
+        now,
+        seed.prompts ? JSON.stringify(seed.prompts) : null
       )
     })
   })
