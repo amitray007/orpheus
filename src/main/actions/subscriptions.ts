@@ -127,7 +127,9 @@ function startSessionSubscription(
 
     try {
       watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
-        if (!filename?.endsWith('.jsonl')) return
+        // filename can be Buffer on some platforms — coerce to string before comparing.
+        const fname = typeof filename === 'string' ? filename : filename?.toString()
+        if (!fname?.endsWith('.jsonl')) return
 
         // Once the target file appears, switch to watching it directly
         const jsonlPath = resolveJsonlPath(workspaceId)
