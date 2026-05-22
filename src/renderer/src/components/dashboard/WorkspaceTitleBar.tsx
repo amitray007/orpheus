@@ -9,27 +9,22 @@ import { PrChip } from '../github/PrChip'
 // Model label helper — derives a short human-readable label from a model ID.
 // ---------------------------------------------------------------------------
 function modelLabel(modelId: string): string {
-  // Look for an exact match in our known model options first
+  // 1. Exact match in known options
   const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === modelId)
   if (known) return known.label
 
-  // Try to derive a label from the model ID string.
-  // e.g. "claude-opus-4-7-20260416" → "Opus 4.7"
-  const lower = modelId.toLowerCase()
-  const familyMatch = lower.match(/(?:claude-)?(?:claude-)?(opus|sonnet|haiku)/)
-  const versionMatch = lower.match(/(\d+[-.]?\d*)(?:-\d{8})?$/)
-  if (familyMatch) {
-    const family = familyMatch[1].charAt(0).toUpperCase() + familyMatch[1].slice(1)
-    if (versionMatch && !lower.endsWith(versionMatch[0].replace(/[^0-9]/g, ''))) {
-      return `${family}`
-    }
-    return family
-  }
+  // 2. Prefix match — handles date-stamped variants like "claude-opus-4-7-20260416"
+  //    by finding the longest known option whose value is a prefix of the incoming ID.
+  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).sort(
+    (a, b) => b.value.length - a.value.length
+  )[0]
+  if (prefixMatch) return prefixMatch.label
 
-  // For versioned IDs like "claude-opus-4-7" that aren't in CLAUDE_MODEL_OPTIONS yet,
-  // parse family + version from parts.
+  // 3. Structural parse: "claude-<family>-<v1>-<v2>..." → "<Family> <v1>.<v2>"
+  //    Strips the leading "claude-" then splits on "-".
+  //    family = first segment (capitalized), version = subsequent numeric segments joined by ".".
   const parts = modelId.replace(/^claude-/, '').split('-')
-  if (parts.length >= 2) {
+  if (parts.length >= 1) {
     const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
     const versionParts = parts.slice(1).filter((p) => /^\d/.test(p))
     if (versionParts.length > 0) {
