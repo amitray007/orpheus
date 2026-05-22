@@ -215,6 +215,11 @@ function validatePatch(patch: AppUiStatePatch): void {
       throw new Error('uiState: muteStatusNotifications must be a boolean')
     }
   }
+  if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
+    if (typeof patch.showWorkspaceFooter !== 'boolean') {
+      throw new Error('uiState: showWorkspaceFooter must be a boolean')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
