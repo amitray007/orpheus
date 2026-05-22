@@ -52,11 +52,26 @@ let addonRef: {
     workspaceId: string,
     keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
   ) => boolean
+  destroy: (workspaceId: string) => void
 } | null = null
 
 /** Called from index.ts once the addon is loaded, to wire terminal actions. */
 export function setTerminalAddonRef(addon: typeof addonRef): void {
   addonRef = addon
+}
+
+/**
+ * Destroy the libghostty surface for a workspace.
+ * Silently no-ops when the addon isn't loaded or the surface wasn't mounted.
+ * Used by handleArchive so workspace.ts doesn't need a direct addon import.
+ */
+export function destroyAddonSurface(workspaceId: string): void {
+  if (!addonRef) return
+  try {
+    addonRef.destroy(workspaceId)
+  } catch {
+    // Surface was never mounted or already destroyed — ignore.
+  }
 }
 
 // ---------------------------------------------------------------------------

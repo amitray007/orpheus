@@ -858,6 +858,15 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+  // Destroy the libghostty surface so the NSView is freed before the DB row
+  // disappears. Silently no-ops when the terminal was never mounted.
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
   archiveWorkspace(id)
   // Drop any stale runtime activity entries for the deleted workspace so the
   // sidebar / project view stop trying to render a dot for a row that no

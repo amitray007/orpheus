@@ -41,6 +41,9 @@ type TerminalAddonSlice = {
   sendKeys: SendKeysFn
 }
 
+type DestroyFn = (workspaceId: string) => void
+type DestroyAddonSlice = { destroy: DestroyFn }
+
 // ---------------------------------------------------------------------------
 // macOS virtual key codes and modifiers.
 // kVK_ANSI_U = 0x20 (Ctrl-U: clear line)
@@ -120,6 +123,20 @@ export function submit(addon: TerminalAddonSlice, workspaceId: string): ActionRe
 // ---------------------------------------------------------------------------
 export function clearInput(addon: TerminalAddonSlice, workspaceId: string): ActionResult {
   return sendKeys(addon, workspaceId, [{ keycode: VKEY_U, mods: MODS_CTRL, action: 'press' }])
+}
+
+// ---------------------------------------------------------------------------
+// destroyTerminalSurface — tear down a workspace's libghostty surface.
+// Safe to call even if the surface was never mounted; errors are swallowed.
+// Used by workspace.archive to ensure the NSView is freed before the DB row
+// is deleted.
+// ---------------------------------------------------------------------------
+export function destroyTerminalSurface(addon: DestroyAddonSlice, workspaceId: string): void {
+  try {
+    addon.destroy(workspaceId)
+  } catch {
+    // Surface was never mounted or already destroyed — ignore.
+  }
 }
 
 // ---------------------------------------------------------------------------

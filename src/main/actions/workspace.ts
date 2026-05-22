@@ -18,6 +18,7 @@ import type { ActionResult, WorkspaceStatus, WorkspaceForkParams } from '../../s
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
 import { getDb } from '../db'
 import { getWorkspaceActivity } from '../orpheusNotify'
+import { destroyAddonSurface } from './index'
 
 // ---------------------------------------------------------------------------
 // Internal: set the forked_from_session_id column after creation.
@@ -83,6 +84,11 @@ export async function handleArchive(
   if (!ws) {
     return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
   }
+  // Destroy the libghostty surface first. Silently no-ops when the terminal
+  // was never mounted (the addon ref may not even be loaded yet).
+  destroyAddonSurface(workspaceId)
+  // archiveWorkspace now broadcasts workspaces:archived after the DELETE so
+  // the renderer removes the row from state and navigates away if needed.
   archiveWorkspace(workspaceId)
   return { ok: true }
 }

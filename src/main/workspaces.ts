@@ -111,6 +111,14 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   }
 }
 
+function broadcastWorkspaceArchived(workspaceId: string, projectId: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:archived', { workspaceId, projectId })
+    }
+  }
+}
+
 export function createWorkspace({
   projectId,
   name,
@@ -222,7 +230,16 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
  */
 export function archiveWorkspace(id: string): void {
   const db = getDb()
+  // Fetch the workspace record first so we have the projectId for the broadcast.
+  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
+    | { id: string; project_id: string }
+    | undefined
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  // Broadcast after delete so the renderer can remove the row from state and
+  // navigate away if the deleted workspace was currently selected.
+  if (ws) {
+    broadcastWorkspaceArchived(ws.id, ws.project_id)
+  }
 }
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
