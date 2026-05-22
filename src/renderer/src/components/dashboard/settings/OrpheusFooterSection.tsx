@@ -446,7 +446,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
           title="Reset footer actions?"
           body={
             <p className="text-sm text-text-secondary">
-              This will delete all global footer actions and restore the 5 default actions.
+              This will delete all global footer actions and restore the default actions.
               Project-scoped actions are not affected.
             </p>
           }

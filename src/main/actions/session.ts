@@ -75,8 +75,12 @@ function getJsonlPath(cwd: string, sessionId: string): string {
 // ---------------------------------------------------------------------------
 // Aggregate parse
 //
-// Reads the JSONL line by line (no full read into memory — sessions can be MB+).
-// Aggregates into a single ParsedSession object.
+// Reads the entire JSONL into memory via readFileSync then splits on newlines.
+// A 5-second TTL cache (parseCache) limits repeat reads to at most one per 5s
+// per workspace. Subscriptions invalidate the cache on each file-change event
+// (debounced 200ms) so live updates are low-latency without true streaming.
+//
+// TODO: replace with a line-buffered streaming read for very large sessions.
 // ---------------------------------------------------------------------------
 
 // Minimal JSONL line shape — only the fields we actually access.

@@ -768,9 +768,9 @@ export type FooterActionDescriptor = {
   scope: FooterActionScope
   scopeId: string | null // null for global; projectId or workspaceId otherwise
   label: string
-  icon: string | null // lucide name, optional
+  icon: string | null // Phosphor PascalCase icon name (e.g. 'GitFork', 'Clipboard'), optional
   actionId: string // 'terminal.sendInput' | 'workspace.fork' | 'session.getUsage' | etc.
-  params: Record<string, unknown> // {} or { text: "/copy\r" } etc.
+  params: Record<string, unknown> // {} or { text: '/copy', submit: true } etc.
   visibleWhen: FooterActionVisibility
   position: number
   createdAt: number

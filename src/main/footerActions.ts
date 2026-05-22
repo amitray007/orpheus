@@ -417,7 +417,7 @@ export function reorder(
 
 // ---------------------------------------------------------------------------
 // First-install seed
-// Inserts 6 default global footer actions when the table is empty.
+// Inserts the default global footer actions when the table is empty.
 // Idempotent: skips entirely if any row already exists.
 // ---------------------------------------------------------------------------
 

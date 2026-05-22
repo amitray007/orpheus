@@ -293,5 +293,5 @@ export function bootActions(): void {
     }
   })
 
-  console.log('[actions] registered', 5 + 6 + 4, 'actions')
+  console.log('[actions] registered actions')
 }
