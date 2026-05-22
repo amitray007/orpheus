@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type React from 'react'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
-import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
 import { playSound } from '../../../lib/sound'
 
 // ---------------------------------------------------------------------------
@@ -142,16 +142,24 @@ export function Select<T extends string>({
     above: boolean
   } | null>(null)
 
-  const selectedIndex = options.findIndex((o) => o.value === value)
-  const selectedLabel = selectedIndex >= 0 ? options[selectedIndex].label : (placeholder ?? '')
+  // Navigable options are those whose value does NOT start with '__sep'.
+  // Separator sentinel values are rendered as non-interactive dividers and are
+  // skipped by keyboard navigation. highlight indexes into navigable[], not options[].
+  const navigable = options.filter((o) => !o.value.startsWith('__sep'))
+  const selectedNavIndex = navigable.findIndex((o) => o.value === value)
+  const selectedLabel =
+    navigable[selectedNavIndex]?.label ??
+    options.find((o) => o.value === value)?.label ??
+    placeholder ??
+    ''
+  // Keep selectedIndex for the legacy trigger muted-text class (negative = no selection)
+  const selectedIndex = selectedNavIndex
 
   function openMenu(): void {
     if (disabled) return
-    // No options = nothing to choose. Treat as disabled so the keyboard
-    // handler's `(h + 1) % options.length` can't produce NaN and the
-    // popover doesn't open into an empty listbox.
-    if (options.length === 0) return
-    setHighlight(selectedIndex >= 0 ? selectedIndex : 0)
+    // No navigable options = nothing to choose.
+    if (navigable.length === 0) return
+    setHighlight(selectedNavIndex >= 0 ? selectedNavIndex : 0)
     setOpen(true)
   }
 
@@ -161,8 +169,8 @@ export function Select<T extends string>({
     triggerRef.current?.focus()
   }
 
-  function commit(idx: number): void {
-    const opt = options[idx]
+  function commit(navIdx: number): void {
+    const opt = navigable[navIdx]
     if (!opt) return
     onChange(opt.value)
     setOpen(false)
@@ -238,7 +246,7 @@ export function Select<T extends string>({
   // Scroll highlighted option into view as the user navigates.
   useEffect(() => {
     if (!open || highlight < 0) return
-    const el = popoverRef.current?.querySelector<HTMLElement>(`[data-option-index="${highlight}"]`)
+    const el = popoverRef.current?.querySelector<HTMLElement>(`[data-nav-index="${highlight}"]`)
     el?.scrollIntoView({ block: 'nearest' })
   }, [open, highlight])
 
@@ -258,12 +266,12 @@ export function Select<T extends string>({
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setHighlight((h) => (h + 1) % options.length)
+      setHighlight((h) => (h + 1) % navigable.length)
       return
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setHighlight((h) => (h - 1 + options.length) % options.length)
+      setHighlight((h) => (h - 1 + navigable.length) % navigable.length)
       return
     }
     if (e.key === 'Home') {
@@ -273,7 +281,7 @@ export function Select<T extends string>({
     }
     if (e.key === 'End') {
       e.preventDefault()
-      setHighlight(options.length - 1)
+      setHighlight(navigable.length - 1)
       return
     }
     if (e.key === 'Enter' || e.key === ' ') {
@@ -281,6 +289,9 @@ export function Select<T extends string>({
       if (highlight >= 0) commit(highlight)
     }
   }
+
+  // Track navigable index across the flat options list for correct keyboard highlight
+  let navIdxCounter = -1
 
   return (
     <div className={['relative inline-flex w-full', className ?? ''].join(' ')}>
@@ -337,18 +348,33 @@ export function Select<T extends string>({
             }}
             className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
           >
-            {options.map((opt, idx) => {
+            {options.map((opt) => {
+              // Separator — render as non-interactive section divider
+              if (opt.value.startsWith('__sep')) {
+                return (
+                  <div
+                    key={opt.value}
+                    aria-hidden="true"
+                    className="px-2.5 py-1 mt-1 text-[10px] text-text-muted uppercase tracking-wider font-medium border-t border-border-default/40"
+                  >
+                    Always latest
+                  </div>
+                )
+              }
+              // Regular navigable option — assign a stable nav index
+              navIdxCounter++
+              const myNavIdx = navIdxCounter
               const isSelected = opt.value === value
-              const isHighlighted = idx === highlight
+              const isHighlighted = myNavIdx === highlight
               return (
                 <button
                   key={opt.value}
                   type="button"
                   role="option"
                   aria-selected={isSelected}
-                  data-option-index={idx}
-                  onMouseEnter={() => setHighlight(idx)}
-                  onClick={() => commit(idx)}
+                  data-nav-index={myNavIdx}
+                  onMouseEnter={() => setHighlight(myNavIdx)}
+                  onClick={() => commit(myNavIdx)}
                   className={[
                     'w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left transition-colors duration-100 cursor-pointer',
                     isHighlighted ? 'bg-surface-raised' : '',
@@ -591,53 +617,53 @@ export function RuleListEditor({
   )
 }
 
+// ---------------------------------------------------------------------------
+// ModelPicker — dropdown select for model with two grouped sections:
+//   • "Specific versions" — explicit versioned IDs (unambiguous pricing)
+//   • "Always latest" — family aliases that claude resolves at launch
+// A separator sentinel (__sep_*) renders the section label between groups.
+// A "Custom…" mode falls through to a free-form text input.
+// ---------------------------------------------------------------------------
+
+// Build the flat options list with a separator between the two groups.
+// The separator value starts with '__sep' so the updated Select renders it as a divider.
+const MODEL_PICKER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  ...CLAUDE_MODEL_OPTIONS.slice(0, CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: '__sep_model', label: '' }, // divider — label unused; Select renders "Always latest"
+  ...CLAUDE_MODEL_OPTIONS.slice(CLAUDE_MODEL_ALIAS_START_INDEX),
+  { value: 'custom', label: 'Custom…' }
+]
+
 export interface ModelPickerProps {
   value: string
   onChange: (v: string) => void
 }
+
 export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.Element {
-  // Pre-defined aliases + a "Custom..." option that reveals a text input
-  const aliases = CLAUDE_MODEL_OPTIONS
-  const isCustom = !aliases.some((a) => a.value === value)
+  const isKnown = CLAUDE_MODEL_OPTIONS.some((a) => a.value === value)
+  const isCustom = !isKnown
   const [showCustom, setShowCustom] = useState(isCustom)
   const [customValue, setCustomValue] = useState(isCustom ? value : '')
 
+  const selectValue = isCustom ? 'custom' : value
+
+  function handleSelect(v: string): void {
+    if (v === 'custom') {
+      setShowCustom(true)
+      return
+    }
+    setShowCustom(false)
+    onChange(v)
+  }
+
   return (
-    <div className="flex flex-col gap-1.5 items-end">
-      <div className="inline-flex bg-surface-overlay border border-border-default rounded-md p-0.5">
-        {aliases.map((opt) => (
-          <button
-            key={opt.value}
-            role="radio"
-            aria-checked={!isCustom && value === opt.value}
-            onClick={() => {
-              setShowCustom(false)
-              onChange(opt.value)
-            }}
-            className={[
-              'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-              !isCustom && value === opt.value
-                ? 'bg-accent/15 text-text-primary'
-                : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
-            ].join(' ')}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <button
-          role="radio"
-          aria-checked={isCustom}
-          onClick={() => setShowCustom(true)}
-          className={[
-            'px-3 py-1.5 text-xs font-medium rounded transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            isCustom
-              ? 'bg-accent/15 text-text-primary'
-              : 'text-text-muted hover:text-text-primary hover:bg-surface-raised'
-          ].join(' ')}
-        >
-          Custom…
-        </button>
-      </div>
+    <div className="flex flex-col gap-1.5 items-end w-56">
+      <Select
+        options={MODEL_PICKER_OPTIONS}
+        value={selectValue}
+        onChange={handleSelect}
+        ariaLabel="Model"
+      />
       {showCustom && (
         <input
           value={customValue}
@@ -646,8 +672,8 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
             const v = customValue.trim()
             if (v) onChange(v)
           }}
-          placeholder="model-id (e.g. claude-sonnet-4-6)"
-          className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
+          placeholder="model-id (e.g. claude-opus-4-7)"
+          className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus:border-accent/50 transition-colors duration-150 font-mono"
         />
       )}
     </div>
