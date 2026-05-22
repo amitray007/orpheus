@@ -1013,6 +1013,12 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+  // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
+  // can react without polling.
+  const win = getMainWindow()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('uiState:changed', result)
+  }
   return result
 })
 

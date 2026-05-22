@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState } from '@shared/types'
+import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
@@ -17,6 +17,26 @@ interface WorkspaceFooterProps {
   projectId?: string
   /** Current workspace name — for {workspaceName} placeholder expansion in prompts. */
   workspaceName?: string
+  /** Live activity detail for visibleWhen filtering. Provided by WorkspaceView. */
+  activityDetail?: WorkspaceActivityDetail
+}
+
+/**
+ * Whether a chip should be shown given the current activity detail.
+ * - 'always'        → always visible
+ * - 'idle'          → idle or awaiting_input (ready to receive input)
+ * - 'awaitingInput' → awaiting_input, asking, or attention (blocked / needs user)
+ */
+function isVisible(
+  when: FooterActionVisibility,
+  detail: WorkspaceActivityDetail | undefined
+): boolean {
+  if (when === 'always') return true
+  if (!detail) return when === 'always'
+  if (when === 'idle') return detail === 'idle' || detail === 'ready'
+  if (when === 'awaitingInput')
+    return detail === 'ready' || detail === 'asking' || detail === 'attention'
+  return true
 }
 
 /**
@@ -25,6 +45,7 @@ interface WorkspaceFooterProps {
  * Right zone: live indicator chips (query / subscription).
  *
  * Hidden when uiState.showWorkspaceFooter is false.
+ * Chips are filtered by their visibleWhen field vs the workspace activity detail.
  */
 export function WorkspaceFooter({
   workspaceId,
@@ -32,13 +53,17 @@ export function WorkspaceFooter({
   cwd = '',
   onSelectWorkspace,
   projectId,
-  workspaceName = ''
+  workspaceName = '',
+  activityDetail
 }: WorkspaceFooterProps): React.JSX.Element | null {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
   const { items, loading } = useFooterActions(workspaceId)
 
   useEffect(() => {
+    // Fetch initial state
     window.api.uiState.get().then(setUiState).catch(console.error)
+    // Subscribe to changes so toggling showWorkspaceFooter is immediately reactive
+    return window.api.uiState.onChanged(setUiState)
   }, [])
 
   // Hide when toggled off (once uiState loads; during load render nothing)
@@ -46,8 +71,12 @@ export function WorkspaceFooter({
   // Don't render the bar at all during initial uiState load to avoid flicker
   if (!uiState) return null
 
-  const mutators = items.filter((it) => it.kind === 'mutator')
-  const displays = items.filter((it) => it.kind !== 'mutator')
+  const mutators = items.filter(
+    (it) => it.kind === 'mutator' && isVisible(it.visibleWhen, activityDetail)
+  )
+  const displays = items.filter(
+    (it) => it.kind !== 'mutator' && isVisible(it.visibleWhen, activityDetail)
+  )
 
   const handleForkSuccess = (newWorkspaceId: string): void => {
     if (onSelectWorkspace && projectId) {

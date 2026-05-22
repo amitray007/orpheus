@@ -178,6 +178,7 @@ declare global {
       uiState: {
         get: () => Promise<AppUiState>
         update: (patch: AppUiStatePatch) => Promise<AppUiState>
+        onChanged: (cb: (state: AppUiState) => void) => () => void
       }
       git: {
         status: (cwd: string) => Promise<GitStatus | null>

@@ -227,6 +227,7 @@ export function WorkspaceView({
             projectId={workspace.projectId}
             workspaceName={workspace.name}
             onSelectWorkspace={onSelectWorkspace}
+            activityDetail={detail}
           />
         </div>
 

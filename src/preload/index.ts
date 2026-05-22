@@ -268,7 +268,12 @@ const api = {
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
     update: (patch: AppUiStatePatch): Promise<AppUiState> =>
-      ipcRenderer.invoke('uiState:update', patch)
+      ipcRenderer.invoke('uiState:update', patch),
+    onChanged: (cb: (state: AppUiState) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: AppUiState): void => cb(state)
+      ipcRenderer.on('uiState:changed', handler)
+      return () => ipcRenderer.removeListener('uiState:changed', handler)
+    }
   },
   git: {
     status: (cwd: string): Promise<GitStatus | null> => ipcRenderer.invoke('git:status', { cwd }),
