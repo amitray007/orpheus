@@ -1,8 +1,94 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Folder, Gear, ArrowBendUpLeft } from '@phosphor-icons/react'
+import { Terminal as TerminalIcon, Folder, Gear, ArrowBendUpLeft, Cpu } from '@phosphor-icons/react'
+import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
 import { PrChip } from '../github/PrChip'
+
+// ---------------------------------------------------------------------------
+// Model label helper — derives a short human-readable label from a model ID.
+// ---------------------------------------------------------------------------
+function modelLabel(modelId: string): string {
+  // Look for an exact match in our known model options first
+  const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === modelId)
+  if (known) return known.label
+
+  // Try to derive a label from the model ID string.
+  // e.g. "claude-opus-4-7-20260416" → "Opus 4.7"
+  const lower = modelId.toLowerCase()
+  const familyMatch = lower.match(/(?:claude-)?(?:claude-)?(opus|sonnet|haiku)/)
+  const versionMatch = lower.match(/(\d+[-.]?\d*)(?:-\d{8})?$/)
+  if (familyMatch) {
+    const family = familyMatch[1].charAt(0).toUpperCase() + familyMatch[1].slice(1)
+    if (versionMatch && !lower.endsWith(versionMatch[0].replace(/[^0-9]/g, ''))) {
+      return `${family}`
+    }
+    return family
+  }
+
+  // For versioned IDs like "claude-opus-4-7" that aren't in CLAUDE_MODEL_OPTIONS yet,
+  // parse family + version from parts.
+  const parts = modelId.replace(/^claude-/, '').split('-')
+  if (parts.length >= 2) {
+    const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
+    const versionParts = parts.slice(1).filter((p) => /^\d/.test(p))
+    if (versionParts.length > 0) {
+      return `${family} ${versionParts.join('.')}`
+    }
+    return family
+  }
+
+  return modelId
+}
+
+// ---------------------------------------------------------------------------
+// Context label helper — formats a token count as a human-readable string.
+// ---------------------------------------------------------------------------
+function contextLabel(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M ctx`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k ctx`
+  return `${tokens} ctx`
+}
+
+// ---------------------------------------------------------------------------
+// ModelContextChip — small read-only chip showing model + context mode.
+// Fetches context budget once on mount; stays static until workspace changes.
+// ---------------------------------------------------------------------------
+
+interface ModelContextChipProps {
+  workspaceId: string
+}
+
+function ModelContextChip({ workspaceId }: ModelContextChipProps): React.JSX.Element | null {
+  const [info, setInfo] = useState<{ contextBudget: number; modelId: string } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.sessions
+      .getContextBudget(workspaceId)
+      .then((result) => {
+        if (!cancelled) setInfo(result)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  if (!info) return null
+
+  const label = `${modelLabel(info.modelId)} · ${contextLabel(info.contextBudget)}`
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
+      title={`Model: ${info.modelId} · Context: ${info.contextBudget.toLocaleString()} tokens`}
+    >
+      <Cpu size={10} className="flex-shrink-0 opacity-60" />
+      <span>{label}</span>
+    </span>
+  )
+}
 
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
@@ -78,6 +164,9 @@ export function WorkspaceTitleBar({
           {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
         </span>
       )}
+
+      {/* Model + context chip — read-only, fetched from main via IPC */}
+      <ModelContextChip workspaceId={workspace.id} />
 
       <span className="text-text-muted text-xs">·</span>
       <span
