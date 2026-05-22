@@ -14,24 +14,10 @@
 // ---------------------------------------------------------------------------
 
 import { shell, clipboard } from 'electron'
-import type { ActionResult, WorkspaceStatus, WorkspaceForkParams } from '../../shared/types'
+import type { ActionResult, WorkspaceForkParams } from '../../shared/types'
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
-import { getDb } from '../db'
-import { getWorkspaceActivity } from '../orpheusNotify'
+import { getWorkspaceActivity, computeDetail } from '../orpheusNotify'
 import { destroyAddonSurface } from './index'
-
-// ---------------------------------------------------------------------------
-// Internal: set the forked_from_session_id column after creation.
-// The column is added by the v43 migration in db.ts.
-// ---------------------------------------------------------------------------
-
-function setForkedFromSessionId(workspaceId: string, parentSessionId: string): void {
-  const db = getDb()
-  db.prepare('UPDATE workspaces SET forked_from_session_id = ? WHERE id = ?').run(
-    parentSessionId,
-    workspaceId
-  )
-}
 
 // ---------------------------------------------------------------------------
 // workspace.fork
@@ -50,24 +36,15 @@ export async function handleFork(
 
   const newName = name ?? (parent.name ? `${parent.name} (fork)` : 'Forked workspace')
 
-  // createWorkspace pre-assigns a new claudeSessionId (Plan A step 1)
+  // Plan A: pass forkedFromSessionId into createWorkspace so the INSERT and
+  // the broadcastWorkspaceCreated happen atomically — renderer sees the correct
+  // forked_from_session_id immediately without a second UPDATE race.
   const newWorkspace = createWorkspace({
     projectId: parent.projectId,
     name: newName,
-    cwd: parent.cwd
+    cwd: parent.cwd,
+    forkedFromSessionId: parent.claudeSessionId ?? null
   })
-
-  // Plan A: store the parent session ID so composeClaudeLaunch can emit
-  // --session-id <newId> --resume <parent> --fork-session
-  if (parent.claudeSessionId) {
-    try {
-      setForkedFromSessionId(newWorkspace.id, parent.claudeSessionId)
-    } catch (err) {
-      // Column may not exist on fresh install before v43 migration runs —
-      // log but don't fail the fork; the workspace will just start fresh.
-      console.warn('[actions:workspace.fork] setForkedFromSessionId failed:', err)
-    }
-  }
 
   return { ok: true, value: { workspaceId: newWorkspace.id } }
 }
@@ -126,9 +103,16 @@ export async function handleDuplicate(
     return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
   }
 
-  const name =
-    (params['name'] as string | undefined) ??
-    (parent.name ? `${parent.name} (copy)` : 'Duplicate workspace')
+  // Accept both `name` (fully-qualified name) and `nameSuffix` (appended to
+  // parent name) so the editor's { nameSuffix } draft and legacy { name } both work.
+  let name: string
+  if (typeof params['name'] === 'string') {
+    name = params['name']
+  } else if (typeof params['nameSuffix'] === 'string' && params['nameSuffix'].length > 0) {
+    name = parent.name ? `${parent.name}${params['nameSuffix']}` : params['nameSuffix']
+  } else {
+    name = parent.name ? `${parent.name} (copy)` : 'Duplicate workspace'
+  }
 
   // Fresh workspace — createWorkspace already assigns a new UUID session ID.
   // No forked_from_session_id needed.
@@ -143,16 +127,19 @@ export async function handleDuplicate(
 
 // ---------------------------------------------------------------------------
 // workspace.getActivityStatus — query
-// Returns the current live activity status for the workspace.
-// Delegates to the in-memory activityMap maintained by orpheusNotify.
+// Returns the current WorkspaceActivityDetail string for the workspace.
+// Delegates to the in-memory activityMap maintained by orpheusNotify and
+// maps WorkspaceStatus → WorkspaceActivityDetail via computeDetail().
+// LiveChip reads this value directly as a string for dot-color and label.
 // ---------------------------------------------------------------------------
 
 export async function handleGetActivityStatus(
   _params: Record<string, unknown>,
   workspaceId: string
-): Promise<ActionResult<{ status: WorkspaceStatus }>> {
+): Promise<ActionResult<string>> {
   const status = getWorkspaceActivity(workspaceId)
-  return { ok: true, value: { status } }
+  const detail = computeDetail(workspaceId, status)
+  return { ok: true, value: detail }
 }
 
 // ---------------------------------------------------------------------------

@@ -122,11 +122,16 @@ function broadcastWorkspaceArchived(workspaceId: string, projectId: string): voi
 export function createWorkspace({
   projectId,
   name,
-  cwd
+  cwd,
+  forkedFromSessionId = null
 }: {
   projectId: string
   name: string
   cwd: string
+  /** When creating a forked workspace, pass the parent session ID so the
+   *  record is written before broadcastWorkspaceCreated fires. Avoids a race
+   *  where the renderer receives workspaces:created with a null field. */
+  forkedFromSessionId?: string | null
 }): WorkspaceRecord {
   const db = getDb()
   const id = crypto.randomUUID()
@@ -151,12 +156,19 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
-    .get(id, projectId, name, cwd, createdAt, claudeSessionId, sortOrder) as
-    | WorkspaceRow
-    | undefined
+    .get(
+      id,
+      projectId,
+      name,
+      cwd,
+      createdAt,
+      claudeSessionId,
+      sortOrder,
+      forkedFromSessionId ?? null
+    ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
   broadcastWorkspaceCreated(workspace)
