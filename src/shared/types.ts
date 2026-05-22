@@ -203,13 +203,32 @@ export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 // Shared model picker options — keep this list in one place so the General
 // settings, ProjectView overrides, and WorkspaceDrawer all agree.
+//
+// Two groups:
+//   1. Explicit versioned IDs — unambiguous pricing + context lookup
+//   2. Always-latest aliases — claude resolves the exact version at launch
+//
+// The `family` field is used by the title-bar chip for color-coding and by
+// `getPricing` family-alias resolution.
 export const CLAUDE_MODEL_OPTIONS = [
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'opus', label: 'Opus' },
-  { value: 'haiku', label: 'Haiku' }
+  // Explicit versions — unambiguous pricing + context lookup
+  { value: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus' },
+  { value: 'claude-opus-4-5', label: 'Opus 4.5', family: 'opus' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet' },
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', family: 'sonnet' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku' },
+  // Always-latest aliases — claude resolves at launch
+  { value: 'opus', label: 'Opus (latest)', family: 'opus' },
+  { value: 'sonnet', label: 'Sonnet (latest)', family: 'sonnet' },
+  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' }
 ] as const
 
 export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
+
+// Index into CLAUDE_MODEL_OPTIONS where the "always-latest" aliases begin.
+// Options before this index are explicit versioned IDs; from this index onward
+// they are family aliases that claude resolves to the latest release at launch.
+export const CLAUDE_MODEL_ALIAS_START_INDEX = 5
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
