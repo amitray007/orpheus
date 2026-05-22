@@ -127,8 +127,9 @@ function startSessionSubscription(
 
     try {
       watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
-        // filename can be Buffer on some platforms — coerce to string before comparing.
-        const fname = typeof filename === 'string' ? filename : filename?.toString()
+        // filename is string | null per Node types; coerce to string to be safe
+        // before calling .endsWith (avoids potential Buffer on some Node builds).
+        const fname = filename != null ? String(filename) : null
         if (!fname?.endsWith('.jsonl')) return
 
         // Once the target file appears, switch to watching it directly

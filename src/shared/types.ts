@@ -781,7 +781,7 @@ export type FooterActionDescriptor = {
 
 export type FooterActionDraft = Omit<
   FooterActionDescriptor,
-  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId'
+  'id' | 'createdAt' | 'updatedAt' | 'scope' | 'scopeId' | 'position'
 > & {
   /** When omitted on create, the backend assigns max(position)+1 for the scope. */
   position?: number

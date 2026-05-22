@@ -244,7 +244,7 @@ export function FooterActionEditor({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: form fields sync to the selected action prop.
     setLabel(action?.label ?? '')
     setIcon(action?.icon ?? null)
-    setActionType(action ? typeForActionId(action.actionId, action.params) : 'sendInput')
+    setActionType(action ? typeForActionId(action.actionId) : 'sendInput')
     setSendText(action?.actionId === 'terminal.sendInput' ? String(action.params.text ?? '') : '')
     setSubmit(action?.actionId === 'terminal.sendInput' ? Boolean(action.params.submit) : true)
     setDupSuffix(

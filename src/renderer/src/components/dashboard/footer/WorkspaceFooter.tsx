@@ -32,7 +32,8 @@ function isVisible(
   detail: WorkspaceActivityDetail | undefined
 ): boolean {
   if (when === 'always') return true
-  if (!detail) return when === 'always'
+  // No detail yet (workspace not yet active) — show only 'always' chips
+  if (!detail) return false
   if (when === 'idle') return detail === 'idle' || detail === 'ready'
   if (when === 'awaitingInput')
     return detail === 'ready' || detail === 'asking' || detail === 'attention'
