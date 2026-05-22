@@ -222,6 +222,14 @@ const api = {
         cb(e.workspace)
       ipcRenderer.on('workspaces:created', listener)
       return () => ipcRenderer.removeListener('workspaces:created', listener)
+    },
+    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; projectId: string }
+      ): void => cb(e)
+      ipcRenderer.on('workspaces:archived', listener)
+      return () => ipcRenderer.removeListener('workspaces:archived', listener)
     }
   },
   pins: {

@@ -73,6 +73,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
+  // Refs kept in sync with state so event handlers with empty dep arrays can
+  // read the current value without becoming stale (avoid re-subscribing each render).
+  const selectedWorkspaceIdRef = useRef<string | null>(null)
+  const selectedProjectIdRef = useRef<string | null>(null)
+  selectedWorkspaceIdRef.current = selectedWorkspaceId
+  selectedProjectIdRef.current = selectedProjectId
+
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
 
@@ -256,6 +263,58 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const next = new Set(prev)
         next.add(workspace.projectId)
         window.api.projects.setExpandedInSidebar(workspace.projectId, true).catch(console.error)
+        return next
+      })
+    })
+  }, [])
+
+  // Subscribe to workspaces:archived so the sidebar and view routing stay
+  // consistent after a workspace.archive action (footer chip or sidebar button).
+  // Uses refs to read current selectedWorkspaceId / selectedProjectId without
+  // requiring this effect to re-subscribe on every render.
+  useEffect(() => {
+    return window.api.workspaces.onArchived(({ workspaceId, projectId }) => {
+      // Remove the workspace from local cache.
+      setWorkspacesByProject((prev) => {
+        const list = prev[projectId]
+        if (!list) return prev
+        const next = list.filter((w) => w.id !== workspaceId)
+        return { ...prev, [projectId]: next }
+      })
+      // If this was the active workspace, navigate to a fallback.
+      if (selectedWorkspaceIdRef.current === workspaceId) {
+        setWorkspacesByProject((prev) => {
+          const remaining = (prev[projectId] ?? []).filter((w) => w.id !== workspaceId)
+          if (remaining.length > 0) {
+            // Navigate to the first remaining workspace in the project.
+            const next = remaining[0]
+            setSelectedProjectId(projectId)
+            setSelectedWorkspaceId(next.id)
+            setView({ kind: 'workspace', workspaceId: next.id, projectId })
+            window.api.uiState
+              .update({
+                lastViewKind: 'workspace',
+                lastProjectId: projectId,
+                lastWorkspaceId: next.id
+              })
+              .catch(console.error)
+          } else {
+            // No workspaces left — go to the project view.
+            setSelectedProjectId(projectId)
+            setSelectedWorkspaceId(null)
+            setView({ kind: 'project', projectId })
+            window.api.uiState
+              .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
+              .catch(console.error)
+          }
+          return prev // no change — already updated above
+        })
+      }
+      // Clear any stale activity entry for the deleted workspace.
+      setWorkspaceActivities((prev) => {
+        if (prev[workspaceId] === undefined) return prev
+        const next = { ...prev }
+        delete next[workspaceId]
         return next
       })
     })
