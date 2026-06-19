@@ -143,15 +143,15 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
       {/* Row 2: project name (left) + relative time (right) */}
       <span className="flex items-center justify-between gap-2 min-w-0">
-        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
+        <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
           {projectName}
         </span>
-        <span className="text-[11px] text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
+        <span className="text-sm text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
       </span>
 
       {/* Row 3: git branch + (when PR exists for this branch) PR chip on the right */}
       {(branch || pr) && (
-        <span className="flex items-center gap-2 text-[11px] text-text-muted min-w-0">
+        <span className="flex items-center gap-2 text-sm text-text-muted min-w-0">
           {branch && (
             <span className="flex items-center gap-1 min-w-0">
               <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
@@ -168,7 +168,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
       {/* Row 4: user prompt preview — up to 2 lines, italic, muted */}
       {userPrompt && (
-        <span className="text-[11px] text-text-muted italic line-clamp-2 leading-relaxed">
+        <span className="text-sm text-text-muted italic line-clamp-2 leading-relaxed">
           &ldquo;{userPrompt}&rdquo;
         </span>
       )}
@@ -208,7 +208,7 @@ const KanbanColumn = memo(function KanbanColumn({
       {/* Column header — sticky when the column body scrolls */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border-default bg-surface-raised sticky top-0 z-10">
         <ActivityIndicator detail={config.indicatorDetail} className="flex-shrink-0" />
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
           {config.label}
           <span className="font-normal text-text-muted normal-case tracking-normal">
             · {workspaces.length}

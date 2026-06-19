@@ -296,7 +296,7 @@ function StatusPopover({
             <button
               type="button"
               onClick={handleOpenPage}
-              className="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none"
+              className="inline-flex items-center gap-1 text-sm text-text-muted hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none"
             >
               View status page
               <ArrowSquareOut size={11} />
@@ -325,7 +325,7 @@ function StatusPopover({
                 <ArrowClockwise size={11} />
               </button>
             </div>
-            <p className="text-[11px] text-text-muted mt-0.5 flex items-center gap-1.5">
+            <p className="text-sm text-text-muted mt-0.5 flex items-center gap-1.5">
               {snapshot.isFetching ? (
                 <>
                   <span className="text-text-secondary font-mono leading-none">
@@ -355,17 +355,13 @@ function StatusPopover({
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${indicatorDotClass(ind)}`}
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-[11px] text-text-primary truncate leading-tight">
-                        {primary}
-                      </p>
+                      <p className="text-sm text-text-primary truncate leading-tight">{primary}</p>
                       {subtitle && (
-                        <p className="text-[10px] text-text-muted truncate leading-tight">
-                          {subtitle}
-                        </p>
+                        <p className="text-xs text-text-muted truncate leading-tight">{subtitle}</p>
                       )}
                     </div>
                     <span
-                      className={`text-[11px] flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
+                      className={`text-sm flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
                     >
                       {componentStatusLabel(c.status)}
                     </span>
@@ -378,20 +374,20 @@ function StatusPopover({
           {/* Incidents */}
           {snapshot.incidents.length > 0 && (
             <div className="px-4 py-2 border-t border-border-default/50">
-              <p className="text-[10px] uppercase tracking-wider font-medium text-text-muted mb-1.5">
+              <p className="text-xs uppercase tracking-wider font-medium text-text-muted mb-1.5">
                 Active incidents
               </p>
               {snapshot.incidents.map((inc) => (
                 <div key={inc.id} className="py-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] font-medium text-text-primary truncate">
+                    <span className="text-sm font-medium text-text-primary truncate">
                       {inc.name}
                     </span>
-                    <span className="flex-shrink-0 text-[9px] uppercase border border-border-default rounded px-1 py-0.5 text-text-muted leading-none">
+                    <span className="flex-shrink-0 text-xs uppercase border border-border-default rounded px-1 py-0.5 text-text-muted leading-none">
                       {impactLabel(inc.impact)}
                     </span>
                   </div>
-                  <p className="text-[10px] text-text-muted">
+                  <p className="text-xs text-text-muted">
                     {inc.status} &middot; Updated {timeAgo(new Date(inc.updatedAt).getTime())}
                   </p>
                 </div>
@@ -404,7 +400,7 @@ function StatusPopover({
             <button
               type="button"
               onClick={handleOpenPage}
-              className="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none"
+              className="inline-flex items-center gap-1 text-sm text-text-muted hover:text-text-primary transition-colors cursor-pointer focus-visible:outline-none"
             >
               View status page
               <ArrowSquareOut size={11} />

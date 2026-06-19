@@ -126,7 +126,7 @@ function McpServerForm({
 
   const inputClass =
     'w-full text-xs bg-surface-overlay border border-border-default rounded-md px-2.5 py-1.5 text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50'
-  const labelClass = 'block text-[10px] font-medium text-text-muted mb-1 uppercase tracking-wider'
+  const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
   const isStdio = values.transport === 'stdio'
 
   return (
@@ -237,7 +237,7 @@ function McpServerForm({
           <button
             type="button"
             onClick={() => set('showAdvanced', !values.showAdvanced)}
-            className="text-[10px] uppercase tracking-wider text-accent hover:text-accent/80 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+            className="text-xs uppercase tracking-wider text-accent hover:text-accent/80 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
           >
             {values.showAdvanced ? '▲ Hide advanced' : '▶ Show advanced (args, env)'}
           </button>
@@ -568,7 +568,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
             <div className="flex flex-col gap-4">
               {groups.map((group) => (
                 <div key={group.key} className="flex flex-col">
-                  <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+                  <div className="text-xs uppercase tracking-wider text-text-muted mb-1.5">
                     {group.label}
                   </div>
                   {group.servers.map((s) => {
@@ -597,12 +597,12 @@ export function ClaudeToolsSection(): React.JSX.Element {
                       >
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-sm text-text-primary truncate">{s.name}</span>
-                          <span className="text-[10px] uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
+                          <span className="text-xs uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
                             {s.transport}
                           </span>
                           {s.command && (
                             <span
-                              className="text-[10px] text-text-muted font-mono truncate max-w-[180px]"
+                              className="text-xs text-text-muted font-mono truncate max-w-[180px]"
                               title={s.command}
                             >
                               {s.command}
@@ -610,7 +610,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
                           )}
                           {s.url && (
                             <span
-                              className="text-[10px] text-text-muted font-mono truncate max-w-[180px]"
+                              className="text-xs text-text-muted font-mono truncate max-w-[180px]"
                               title={s.url}
                             >
                               {s.url}

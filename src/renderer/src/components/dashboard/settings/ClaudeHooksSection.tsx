@@ -126,7 +126,7 @@ function HookForm({
 
   const inputClass =
     'w-full text-xs bg-surface-overlay border border-border-default rounded-md px-2.5 py-1.5 text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50'
-  const labelClass = 'block text-[10px] font-medium text-text-muted mb-1 uppercase tracking-wider'
+  const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
 
   return (
     <div className="bg-surface-raised border border-border-default rounded-lg p-4 flex flex-col gap-3">
@@ -401,13 +401,13 @@ export function ClaudeHooksSection(): React.JSX.Element {
                 <div key={group.key} className="flex flex-col gap-2">
                   {/* Source group header */}
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] uppercase tracking-wider text-text-muted truncate">
+                    <div className="text-xs uppercase tracking-wider text-text-muted truncate">
                       {group.label}
                     </div>
                     <button
                       type="button"
                       onClick={() => window.api.claudeHooks.openFile(group.filePath)}
-                      className="flex-shrink-0 text-[10px] text-accent hover:underline focus:outline-none"
+                      className="flex-shrink-0 text-xs text-accent hover:underline focus:outline-none"
                     >
                       Open file
                     </button>
@@ -416,9 +416,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
                   {/* Events within the group */}
                   {group.byEvent.map(({ event, entries }) => (
                     <div key={event} className="flex flex-col">
-                      <div className="text-[10px] font-medium text-text-muted mb-1 pl-0.5">
-                        {event}
-                      </div>
+                      <div className="text-xs font-medium text-text-muted mb-1 pl-0.5">{event}</div>
                       {entries.map((entry) => {
                         const key = entryKey(entry)
                         const isEditing = editingKey === key
@@ -449,7 +447,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
                             className="group flex items-center gap-2 py-2 border-b border-border-default/40 last:border-b-0 min-w-0"
                           >
                             {entry.matcher !== null && (
-                              <span className="flex-shrink-0 text-[10px] font-mono bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 text-text-secondary">
+                              <span className="flex-shrink-0 text-xs font-mono bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 text-text-secondary">
                                 {entry.matcher}
                               </span>
                             )}

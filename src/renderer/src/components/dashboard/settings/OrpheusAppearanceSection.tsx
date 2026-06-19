@@ -217,7 +217,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                     playSound('tick')
                     patch({ accentColor: null })
                   }}
-                  className="ml-1 text-[10px] text-text-muted hover:text-text-secondary border border-border-default rounded px-1.5 py-0.5 transition-colors cursor-pointer leading-tight"
+                  className="ml-1 text-xs text-text-muted hover:text-text-secondary border border-border-default rounded px-1.5 py-0.5 transition-colors cursor-pointer leading-tight"
                 >
                   Reset
                 </button>

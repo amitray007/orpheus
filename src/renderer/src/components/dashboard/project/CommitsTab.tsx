@@ -111,7 +111,7 @@ function CommitRow({ commit }: { commit: GitCommit }): React.JSX.Element {
           {relativeTime(commit.timestamp)}
         </span>
         {hasStats && (
-          <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px]">
+          <span className="ml-auto inline-flex items-center gap-2 font-mono text-sm">
             <span
               className="inline-flex items-center gap-1 text-text-muted"
               title={`${commit.filesChanged} file${commit.filesChanged === 1 ? '' : 's'} changed`}

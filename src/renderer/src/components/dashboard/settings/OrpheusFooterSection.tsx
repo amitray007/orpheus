@@ -153,7 +153,7 @@ function ActionRow({
       <span className="flex-1 min-w-0 text-xs truncate">{action.label}</span>
 
       {/* Scope chip */}
-      <span className="flex-shrink-0 text-[9px] font-mono text-text-muted bg-surface-overlay px-1 py-0.5 rounded">
+      <span className="flex-shrink-0 text-xs font-mono text-text-muted bg-surface-overlay px-1 py-0.5 rounded">
         {scopeChip(action.scope)}
       </span>
 
@@ -518,7 +518,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
             )}
           </div>
           {projects.length === 0 && (
-            <p className="text-[11px] text-text-muted">
+            <p className="text-sm text-text-muted">
               Add a project to author project-scoped actions.
             </p>
           )}
@@ -542,7 +542,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
               ) : actions.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-1 px-4 py-6 text-center">
                   <p className="text-xs text-text-muted">No actions at this scope.</p>
-                  <p className="text-[11px] text-text-muted">
+                  <p className="text-sm text-text-muted">
                     Global actions apply everywhere; project and workspace actions are additive.
                   </p>
                 </div>

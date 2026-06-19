@@ -78,7 +78,7 @@ function OverrideField<T extends string>({
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
       <div className="flex items-center justify-between mb-1.5">
-        <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+        <label className="text-sm font-medium text-text-secondary uppercase tracking-wider">
           {label}
         </label>
         {isOverridden && (
@@ -208,7 +208,7 @@ export function SettingsDrawer({
       <div className="w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
         {/* Header — matches WorkspaceDrawer */}
         <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
-          <span className="text-[11px] font-medium text-text-muted px-1.5">Project Settings</span>
+          <span className="text-sm font-medium text-text-muted px-1.5">Project Settings</span>
           <button
             type="button"
             onClick={onClose}
@@ -227,7 +227,7 @@ export function SettingsDrawer({
                 {projectName}
               </span>
               {hasAnyOverride && (
-                <span className="text-[10px] font-mono text-text-muted">
+                <span className="text-xs font-mono text-text-muted">
                   {overrideCount} override{overrideCount === 1 ? '' : 's'}
                 </span>
               )}
@@ -267,7 +267,7 @@ export function SettingsDrawer({
               <div className="px-4 py-4 mt-2">
                 <button
                   onClick={resetAll}
-                  className="inline-flex items-center gap-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
+                  className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
                 >
                   <ArrowCounterClockwise size={11} weight="bold" />
                   Reset all overrides

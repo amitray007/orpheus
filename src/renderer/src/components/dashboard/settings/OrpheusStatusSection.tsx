@@ -283,7 +283,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
                               {primary}
                             </p>
                             {subtitle && (
-                              <p className="text-[11px] text-text-muted truncate leading-tight">
+                              <p className="text-sm text-text-muted truncate leading-tight">
                                 {subtitle}
                               </p>
                             )}
@@ -309,11 +309,11 @@ export function OrpheusStatusSection(): React.JSX.Element {
                     <div key={inc.id} className="flex flex-col gap-0.5">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium text-text-primary">{inc.name}</span>
-                        <span className="text-[10px] text-text-muted border border-border-default rounded px-1.5 py-0.5 leading-none">
+                        <span className="text-xs text-text-muted border border-border-default rounded px-1.5 py-0.5 leading-none">
                           {impactLabel(inc.impact)}
                         </span>
                       </div>
-                      <span className="text-[11px] text-text-muted">
+                      <span className="text-sm text-text-muted">
                         {inc.status} &middot; Updated {timeAgo(new Date(inc.updatedAt).getTime())}
                       </span>
                     </div>

@@ -167,7 +167,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
               </button>
               <div className="relative flex items-center opacity-50 cursor-not-allowed select-none">
                 <span className="px-3 py-1.5 text-xs font-medium text-text-muted">Beta</span>
-                <span className="mr-1.5 text-[9px] font-semibold uppercase tracking-wide bg-surface-overlay border border-border-default text-text-muted rounded px-1 py-0.5 leading-none">
+                <span className="mr-1.5 text-xs font-semibold uppercase tracking-wide bg-surface-overlay border border-border-default text-text-muted rounded px-1 py-0.5 leading-none">
                   Soon
                 </span>
               </div>

@@ -272,7 +272,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
 
 export function ComingSoonChip(): React.JSX.Element {
   return (
-    <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 whitespace-nowrap">
+    <span className="text-xs font-medium uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 whitespace-nowrap">
       Coming soon
     </span>
   )
