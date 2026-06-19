@@ -356,6 +356,7 @@ function migrate(db: Database.Database): void {
   // existing installs stuck. This is idempotent and a no-op once the table is
   // healthy.
   healWorkspacesCheck(db)
+  healProjectsArchivedAt(db)
 
   // Fast path: already up-to-date — skip all DDL and migration steps
   if (currentVersion === CURRENT_VERSION) return
@@ -1993,6 +1994,27 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(49)
+  }
+}
+
+// projects.archived_at was dropped by the Version 3 migration, but it is still declared
+// in the projects CREATE TABLE and is referenced by listAllSessions
+// (WHERE p.archived_at IS NULL) and the idx_projects_archived_at index. A DB that
+// migrated through v3 lost the column and — once it reaches the latest schema version —
+// never re-runs migrations (fast-path return), so it stays broken with
+// "no such column: p.archived_at". Re-add it defensively on every boot if missing.
+// Idempotent; runs before the fast-path return so even up-to-date DBs are healed.
+function healProjectsArchivedAt(db: Database.Database): void {
+  try {
+    const hasColumn = db
+      .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'archived_at'")
+      .get()
+    if (!hasColumn) {
+      db.exec('ALTER TABLE projects ADD COLUMN archived_at INTEGER')
+      console.log('[db] healed projects.archived_at (re-added column dropped at v3)')
+    }
+  } catch (err) {
+    console.error('[db] healProjectsArchivedAt failed:', err)
   }
 }
 
