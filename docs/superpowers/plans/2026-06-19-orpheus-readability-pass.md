@@ -349,87 +349,158 @@ git commit -m "fix(ui): bring text tokens to WCAG AA in all themes, add contrast
 
 - Consumes: the harness from Task 2. Produces: harness that also checks text against accent-tinted surfaces for all 5 accents.
 
-- [ ] **Step 1: Soften Eclipse off pure black/white**
+- [ ] **Step 1: Rename raw raised/overlay tokens + soften Eclipse**
 
-In `[data-theme='eclipse']` replace surfaces `:88-91`:
+The accent tint must read a **separate raw token**, never `--color-surface-raised` itself (that creates a CSS custom-property cycle and the surfaces resolve to invalid). So rename the raised/overlay raw values to `--color-surface-raised-base` / `--color-surface-overlay-base` in **all three** theme blocks (base + border keep their names; Eclipse's are softened off pure black). Replace each theme's surface lines:
+
+`:root,[data-theme='midnight']` (`:61-64`):
+
+```css
+--color-surface-base: #0b0b0c;
+--color-surface-raised-base: #16161a;
+--color-surface-overlay-base: #1f1f24;
+--color-border-default: #27272a;
+```
+
+`[data-theme='daylight']` (`:75-78`):
+
+```css
+--color-surface-base: #fafaf7;
+--color-surface-raised-base: #ffffff;
+--color-surface-overlay-base: #f0f0eb;
+--color-border-default: #d4d4d0;
+```
+
+`[data-theme='eclipse']` (`:88-91`) — softened off pure `#000`/`#fff` (`text-primary` is already off-white `oklch(97%)` from Task 2):
 
 ```css
 --color-surface-base: oklch(13% 0.002 264);
---color-surface-raised: oklch(16% 0.003 264);
---color-surface-overlay: oklch(20% 0.004 264);
+--color-surface-raised-base: oklch(16% 0.003 264);
+--color-surface-overlay-base: oklch(20% 0.004 264);
 --color-border-default: oklch(26% 0.004 264);
 ```
 
-(`text-primary` is already off-white `oklch(97%)` from Task 2, so pure `#fff` is gone too.)
+These `--color-surface-*-base` tokens live only in `[data-theme]` blocks (not `@theme`), so Tailwind generates no stray utilities from them.
 
-- [ ] **Step 2: Add a faint accent echo to raised/overlay surfaces**
+- [ ] **Step 2: Point the Tailwind surface utilities at the accent-mixed values**
 
-Append after the accent blocks (`main.css:124`), so it applies on top of whatever theme+accent is active:
-
-```css
-/* Accent-aware chrome: raised/overlay surfaces echo the active accent ~4%.
-   Tiny mix; text contrast against these is re-verified by verify-contrast.mjs. */
-:root {
-  --color-surface-raised: color-mix(in oklch, var(--color-accent) 4%, var(--color-surface-raised));
-  --color-surface-overlay: color-mix(
-    in oklch,
-    var(--color-accent) 5%,
-    var(--color-surface-overlay)
-  );
-}
-```
-
-NOTE: this `:root` rule must come _after_ the theme blocks so the theme value is defined first; because `color-mix` reads the already-resolved `--color-surface-raised`, give the mixed result a distinct token instead to avoid self-reference. Implement as:
+In the `@theme` block (`main.css:27-28`), the two surface seeds currently read
+`--color-surface-raised: var(--color-surface-raised);` (and `-overlay`). Replace
+them so the utility value is the accent mix of the **raw base** token:
 
 ```css
-:root,
-[data-theme] {
-  --surface-raised-tinted: color-mix(in oklch, var(--color-accent) 4%, var(--color-surface-raised));
-  --surface-overlay-tinted: color-mix(
-    in oklch,
-    var(--color-accent) 5%,
-    var(--color-surface-overlay)
-  );
-}
+--color-surface-raised: color-mix(
+  in oklch,
+  var(--color-accent) 4%,
+  var(--color-surface-raised-base)
+);
+--color-surface-overlay: color-mix(
+  in oklch,
+  var(--color-accent) 5%,
+  var(--color-surface-overlay-base)
+);
 ```
 
-Then point the Tailwind utilities at the tinted tokens in `@theme` (`main.css:27-28`):
+Leave `--color-surface-base: var(--color-surface-base);` untouched (base stays raw —
+it is the AA-critical background and must not move with the accent). No cycle: the mix
+reads `--color-surface-*-base` (raw, theme-block) and `--color-accent` (raw), never
+`--color-surface-raised` itself. Every `bg-surface-raised` / `bg-surface-overlay`
+utility in the app now resolves to the tinted value — that is the intent. Confirm no
+CSS rule consumes `var(--color-surface-raised-base)` directly (it is a brand-new name,
+so nothing should).
 
-```css
---color-surface-raised: var(--surface-raised-tinted, var(--color-surface-raised));
---color-surface-overlay: var(--surface-overlay-tinted, var(--color-surface-overlay));
-```
+- [ ] **Step 3: Point the main loop at base only, add an accurate accent-mix dimension**
 
-- [ ] **Step 3: Extend the harness with the accent dimension**
+Two edits in `scripts/verify-contrast.mjs`:
 
-In `scripts/verify-contrast.mjs`, before the final summary, add accent-mixed checks. Append this block after the theme loop (reuses `oklchToLin`/`luminance`/`contrast`):
+(a) The main loop's surface list must stop grabbing the now-renamed raised/overlay
+(they no longer exist as `--color-surface-raised`; with the null guard it would report
+"missing token"). Change:
 
 ```js
-// ---- accent-tinted surfaces: text must still clear AA on the mixed chrome ----
+const surfaces = ['surface-base']
+```
+
+so the main loop gates text only against the untinted base. Raised/overlay are gated —
+**tinted, per accent** — by the block below.
+
+(b) Before the final summary, add the accent dimension. A linear-luminance lerp is
+**invalid** for this (it wildly overestimates the shift `color-mix(in oklch)` produces);
+convert to OKLab, interpolate there, convert back to luminance:
+
+```js
+// ---- accent-aware chrome: text must clear AA on the *tinted* raised/overlay ---
+// color-mix(in oklch, accent P%, base): interpolate in OKLab (≈ oklch for these
+// small P, no hue-arc edge cases) and convert the result to WCAG luminance.
+function toOklab(value) {
+  const v = value.trim()
+  if (v.startsWith('oklch')) {
+    const m = v.match(/oklch\(\s*([\d.]+)%?\s+([\d.]+)\s+([\d.]+)/i)
+    let L = parseFloat(m[1])
+    if (v.includes('%')) L /= 100
+    const C = parseFloat(m[2])
+    const H = (parseFloat(m[3]) * Math.PI) / 180
+    return { L, a: C * Math.cos(H), b: C * Math.sin(H) }
+  }
+  const [r, g, b] = hexToLin(v) // linear sRGB
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+  return {
+    L: 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    a: 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    b: 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+  }
+}
+function oklabToLum({ L, a, b }) {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b
+  const l = l_ ** 3,
+    m = m_ ** 3,
+    s = s_ ** 3
+  const R = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+  const G = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+  const B = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+  const cl = (x) => Math.min(1, Math.max(0, x))
+  return lumFromLinear(cl(R), cl(G), cl(B))
+}
+function mixLum(baseVal, accentVal, t) {
+  const A = toOklab(baseVal),
+    B = toOklab(accentVal)
+  return oklabToLum({
+    L: A.L + (B.L - A.L) * t,
+    a: A.a + (B.a - A.a) * t,
+    b: A.b + (B.b - A.b) * t
+  })
+}
+const ratioL = (l1, l2) => {
+  const [hi, lo] = [l1, l2].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
 const ACCENTS = {}
-for (const m of CSS.matchAll(/\[data-accent='([a-z]+)'\]\s*\{[^}]*--color-accent:\s*([^;]+);/g)) {
+for (const m of CSS.matchAll(/\[data-accent='([a-z]+)'\]\s*\{[^}]*?--color-accent:\s*([^;]+);/g)) {
   ACCENTS[m[1]] = m[2].trim()
 }
-// oklab lerp approximates color-mix(in oklch) for tiny percentages (luminance guard)
-function mixLin(aHex, bVal, t) {
-  const la = luminance(aHex),
-    lb = luminance(bVal)
-  return la * (1 - t) + lb * t // luminance is ~linear under small oklab mixes
-}
+console.log('\naccent-tinted chrome (raised 4% / overlay 5%)')
 for (const [theme, re] of Object.entries(THEMES)) {
   const block = CSS.match(re)?.[1]
   if (!block) continue
-  const overlay = grab(block, 'surface-overlay')
-  for (const t of texts.filter((x) => x !== 'text-primary')) {
-    const tv = grab(block, t)
-    for (const [name, acc] of Object.entries(ACCENTS)) {
-      const lo = mixLin(overlay, acc, 0.05)
-      const hi = luminance(tv)
-      const [a, b] = [hi, lo].sort((x, y) => y - x)
-      const ratio = (a + 0.05) / (b + 0.05)
-      if (ratio < TARGET) {
-        failed++
-        console.log(`  ✗ ${theme}/${name}: ${t} on overlay+accent ${ratio.toFixed(2)}:1`)
+  const accents = { default: grab(block, 'accent'), ...ACCENTS }
+  const mixes = [
+    ['raised', grab(block, 'surface-raised-base'), 0.04],
+    ['overlay', grab(block, 'surface-overlay-base'), 0.05]
+  ]
+  for (const t of texts) {
+    const tl = luminance(grab(block, t))
+    for (const [an, av] of Object.entries(accents)) {
+      for (const [sname, sbase, pct] of mixes) {
+        const r = ratioL(tl, mixLum(sbase, av, pct))
+        if (r < TARGET) {
+          failed++
+          console.log(`  ✗ ${theme}/${an}: ${t} on ${sname} ${r.toFixed(2)}:1`)
+        }
       }
     }
   }
