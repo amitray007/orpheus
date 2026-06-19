@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight, CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
-import { SettingRow, SegmentedControl } from './primitives'
+import { SettingRow, SegmentedControl, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import type { ClaudeAuthState, ClaudeAuthTestResult, ClaudeCloudProvider } from '@shared/types'
 
@@ -277,7 +277,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
   // ---------------------------------------------------------------------------
   const header = (
     <div>
-      <h2 className="text-base font-semibold text-text-primary">Authentication</h2>
+      <SectionTitle>Authentication</SectionTitle>
       <p className="text-xs text-text-muted mt-1">
         API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
         database (single-user macOS).
@@ -309,9 +309,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
 
       {/* Provider selection */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Cloud provider
-        </h3>
+        <Eyebrow className="mb-3">Cloud provider</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow label="Provider" description="Which cloud backend Claude Code connects to.">
             <SegmentedControl<ClaudeCloudProvider>
@@ -327,9 +325,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
       {/* Credentials — shown for anthropic only; Foundry and Bedrock use provider-specific fields */}
       {state.cloudProvider === 'anthropic' && (
         <section className="flex flex-col">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-            Credentials
-          </h3>
+          <Eyebrow className="mb-3">Credentials</Eyebrow>
           <div className="bg-surface-raised border border-border-default rounded-lg px-5">
             <SettingRow
               label="API key"

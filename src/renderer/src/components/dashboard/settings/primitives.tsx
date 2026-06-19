@@ -679,3 +679,35 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
     </div>
   )
 }
+
+// SectionTitle — the pixel-accented heading for settings sections / page panels.
+export function SectionTitle({
+  children,
+  className = ''
+}: {
+  children: React.ReactNode
+  className?: string
+}): React.JSX.Element {
+  return (
+    <h2 className={`font-pixel text-base font-semibold text-text-primary ${className}`}>
+      {children}
+    </h2>
+  )
+}
+
+// Eyebrow — small uppercase group label; pixel for signature, tracked for legibility.
+export function Eyebrow({
+  children,
+  className = ''
+}: {
+  children: React.ReactNode
+  className?: string
+}): React.JSX.Element {
+  return (
+    <p
+      className={`font-pixel text-xs font-medium uppercase tracking-wider text-text-secondary ${className}`}
+    >
+      {children}
+    </p>
+  )
+}

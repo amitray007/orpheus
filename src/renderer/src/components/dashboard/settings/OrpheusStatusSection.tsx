@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
-import { SettingRow, Toggle, Select } from './primitives'
+import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ArrowSquareOut } from '@phosphor-icons/react'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
@@ -194,7 +194,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Claude Service Status</h2>
+          <SectionTitle>Claude Service Status</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Live status of the Claude API and Claude Code service.
           </p>
@@ -220,7 +220,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Claude Service Status</h2>
+        <SectionTitle>Claude Service Status</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Live status of the Claude API and Claude Code service.
         </p>
@@ -228,9 +228,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Live snapshot */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Current status
-        </h3>
+        <Eyebrow className="mb-3">Current status</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex flex-col gap-4">
           {initialLoading ? (
             <div className="flex items-center justify-center gap-2 py-3">
@@ -351,9 +349,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Polling preferences */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Polling
-        </h3>
+        <Eyebrow className="mb-3">Polling</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Check interval"
@@ -381,9 +377,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Status page link */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          External
-        </h3>
+        <Eyebrow className="mb-3">External</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>

@@ -3,7 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSubagent, ClaudeSubagentDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select } from './primitives'
+import { Select, SectionTitle } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSubagentsSection — full CRUD for ~/.claude/agents/ and project .claude/agents/
@@ -375,7 +375,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Subagents</h2>
+        <SectionTitle>Subagents</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Custom subagents from ~/.claude/agents/ and each project&apos;s .claude/agents/.
         </p>

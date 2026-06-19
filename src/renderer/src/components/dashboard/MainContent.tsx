@@ -2,6 +2,7 @@ import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
+import { Eyebrow } from './settings/primitives'
 import type {
   GhPullRequest,
   GitStatus,
@@ -18,9 +19,7 @@ import type {
 function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
   return (
     <section>
-      <h2 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-2">
-        {title}
-      </h2>
+      <Eyebrow className="mb-2">{title}</Eyebrow>
       <div className="bg-surface-raised border border-border-default rounded-lg p-8 text-sm text-text-muted text-center">
         Not found
       </div>

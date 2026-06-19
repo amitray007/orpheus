@@ -51,7 +51,7 @@ function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React
         // there's no ghostty view to reveal yet during boot.
         <div className="h-full flex items-center justify-center bg-surface-base">
           <div className="flex flex-col items-center gap-6">
-            <h1 className="text-6xl tracking-tight text-text-primary leading-none select-none">
+            <h1 className="font-pixel text-6xl tracking-tight text-text-primary leading-none select-none">
               Orpheus<span className="text-accent">.</span>
             </h1>
             <DotmSquare11 size={32} dotSize={3} speed={1.25} animated />

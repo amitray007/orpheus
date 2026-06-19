@@ -3,7 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSlashCommand, ClaudeSlashCommandDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select } from './primitives'
+import { Select, SectionTitle } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSlashCommandsSection — full CRUD for ~/.claude/commands/ and project .claude/commands/
@@ -379,7 +379,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Slash commands</h2>
+        <SectionTitle>Slash commands</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Custom commands from ~/.claude/commands/ and each project&apos;s .claude/commands/.
         </p>

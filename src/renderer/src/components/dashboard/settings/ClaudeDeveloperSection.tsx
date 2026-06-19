@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight, Trash, Plus } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, ClaudeLogLevel } from '@shared/types'
-import { SettingRow, Toggle, SegmentedControl, NumberInput } from './primitives'
+import {
+  SettingRow,
+  Toggle,
+  SegmentedControl,
+  NumberInput,
+  SectionTitle,
+  Eyebrow
+} from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -247,7 +254,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Developer</h2>
+          <SectionTitle>Developer</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Debug logging, telemetry controls, error reporting, and experimental feature flags for
             power users.
@@ -261,7 +268,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Developer</h2>
+        <SectionTitle>Developer</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Debug logging, telemetry controls, error reporting, and experimental feature flags for
           power users. Changes save automatically.
@@ -270,9 +277,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Logging */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Logging
-        </h3>
+        <Eyebrow className="mb-3">Logging</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Debug logging"
@@ -302,9 +307,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Privacy */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Privacy
-        </h3>
+        <Eyebrow className="mb-3">Privacy</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Disable telemetry"
@@ -397,9 +400,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Network */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Network
-        </h3>
+        <Eyebrow className="mb-3">Network</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="HTTP_PROXY"
@@ -506,9 +507,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Privacy & background tasks */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Privacy &amp; background tasks
-        </h3>
+        <Eyebrow className="mb-3">Privacy &amp; background tasks</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Disable nonessential traffic"
@@ -636,9 +635,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Advanced */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Advanced
-        </h3>
+        <Eyebrow className="mb-3">Advanced</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Anthropic-Beta headers"
@@ -672,9 +669,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
 
       {/* Custom environment variables */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Custom environment variables
-        </h3>
+        <Eyebrow className="mb-3">Custom environment variables</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <p className="text-xs text-text-muted mb-4">
             Raw key/value pairs merged into the claude launch env. Power-user override — your keys

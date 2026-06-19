@@ -13,7 +13,7 @@ import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@share
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
-import { Select } from '../settings/primitives'
+import { Eyebrow, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
@@ -443,10 +443,10 @@ export function WorkspacesTab({
           replaces the archived table that lived here before v34. */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2 min-w-0">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+          <Eyebrow>
             Workspaces · {filtered.length}
             {filtered.length !== active.length && ` of ${active.length}`}
-          </h3>
+          </Eyebrow>
 
           {/* Filter bar */}
           <div className="flex items-center gap-3">
@@ -517,17 +517,13 @@ export function WorkspacesTab({
         </div>
 
         <div className="flex flex-col gap-2 min-w-0">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Sessions
-          </h3>
+          <Eyebrow>Sessions</Eyebrow>
           <SessionsTab projectId={projectId} onResumedInWorkspace={onResumedInWorkspace} compact />
         </div>
       </div>
 
       <div className="flex flex-col gap-2 mt-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Recent commits
-        </h3>
+        <Eyebrow>Recent commits</Eyebrow>
         <CommitsTab cwd={projectPath} />
       </div>
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
-import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingRow, Toggle, NumberInput, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Sidebar</h2>
+          <SectionTitle>Sidebar</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Control sidebar sections, workspace counts, and default expand behavior for new
             projects.
@@ -64,7 +64,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Sidebar</h2>
+          <SectionTitle>Sidebar</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Control sidebar sections, workspace counts, and default expand behavior for new
             projects.
@@ -78,7 +78,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Sidebar</h2>
+        <SectionTitle>Sidebar</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Control sidebar sections, workspace counts, and default expand behavior for new projects.
         </p>
@@ -86,9 +86,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
 
       {/* Visibility */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Sections
-        </h3>
+        <Eyebrow className="mb-3">Sections</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Workspace count inline"
@@ -117,9 +115,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
 
       {/* Expand behavior */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Expand behavior
-        </h3>
+        <Eyebrow className="mb-3">Expand behavior</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Default project expanded"
@@ -136,9 +132,7 @@ export function OrpheusSidebarSection(): React.JSX.Element {
 
       {/* Layout */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Layout
-        </h3>
+        <Eyebrow className="mb-3">Layout</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow label="Sidebar width" description="Pixel width when the sidebar is expanded.">
             <div className="flex items-center gap-1.5">

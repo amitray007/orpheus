@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, Theme, AccentColor, UiFontScale, SoundPack } from '@shared/types'
-import { SettingRow, Toggle, Select } from './primitives'
+import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { playSound, setSoundPack } from '../../../lib/sound'
 
@@ -100,7 +100,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+          <SectionTitle>Appearance</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Theme, accent color, and font size scale for the Orpheus UI.
           </p>
@@ -114,7 +114,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+          <SectionTitle>Appearance</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Theme, accent color, and font size scale for the Orpheus UI.
           </p>
@@ -131,7 +131,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+        <SectionTitle>Appearance</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Theme, accent color, and font size scale for the Orpheus UI.
         </p>
@@ -139,9 +139,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
       {/* Theme */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Theme
-        </h3>
+        <Eyebrow className="mb-3">Theme</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Color theme"
@@ -173,9 +171,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
       {/* Accent color */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Accent color
-        </h3>
+        <Eyebrow className="mb-3">Accent color</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Accent"
@@ -229,9 +225,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
       {/* Font size */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Typography
-        </h3>
+        <Eyebrow className="mb-3">Typography</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="UI font size scale"
@@ -263,9 +257,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
       {/* Sound */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Sound
-        </h3>
+        <Eyebrow className="mb-3">Sound</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Interaction sounds"
@@ -298,9 +290,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
 
       {/* Privacy */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Privacy
-        </h3>
+        <Eyebrow className="mb-3">Privacy</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="GitHub avatars"

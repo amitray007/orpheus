@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import { ArrowSquareOut } from '@phosphor-icons/react'
 import { Skeleton } from '../../Skeleton'
+import { SectionTitle, Eyebrow } from './primitives'
 
 // ---------------------------------------------------------------------------
 // OrpheusAboutSection — Orpheus version, paths, links
@@ -22,7 +23,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">About Orpheus</h2>
+        <SectionTitle>About Orpheus</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Version info, key file paths, and project links.
         </p>
@@ -30,9 +31,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
 
       {/* App identity */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Orpheus
-        </h3>
+        <Eyebrow>Orpheus</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <p className="text-sm text-text-secondary leading-relaxed">
             Orpheus is a closed-source Mac IDE built around Claude Code. It wraps Claude Code inside
@@ -48,9 +47,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
 
       {/* Version */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Version
-        </h3>
+        <Eyebrow>Version</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <InfoRow
             label="Orpheus version"
@@ -65,9 +62,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
 
       {/* Key paths */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Key paths
-        </h3>
+        <Eyebrow>Key paths</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <InfoRow label="Database" value={dbPath} mono />
           <InfoRow label="Claude config" value={configDir} mono />
@@ -77,7 +72,7 @@ export function OrpheusAboutSection(): React.JSX.Element {
 
       {/* Links */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">Links</h3>
+        <Eyebrow>Links</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <ExternalLinkRow
             label="GitHub repository (private)"

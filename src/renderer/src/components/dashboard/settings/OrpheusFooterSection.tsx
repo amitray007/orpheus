@@ -6,7 +6,7 @@ import type {
   FooterActionScope,
   ProjectRecord
 } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import { Eyebrow, SettingRow, Toggle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ConfirmModal } from '../../ConfirmModal'
 import { IconByName } from '../footer/iconMap'
@@ -490,9 +490,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
 
         {/* Scope picker — Global + Project (workspace scope deliberately omitted). */}
         <div className="flex flex-col gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Scope
-          </h3>
+          <Eyebrow>Scope</Eyebrow>
           <div className="flex items-center gap-4 flex-wrap">
             <ScopeRadio value="global" current={scope} label="Global" onChange={setScope} />
             <ScopeRadio
@@ -529,9 +527,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
           {/* Left: action list */}
           <div className="flex flex-col gap-2 lg:w-[45%] flex-shrink-0">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-                Actions at this scope
-              </h3>
+              <Eyebrow>Actions at this scope</Eyebrow>
             </div>
 
             <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 min-h-[200px]">

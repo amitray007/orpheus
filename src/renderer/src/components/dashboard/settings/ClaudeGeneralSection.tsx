@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { ClaudeGlobalSettings, ClaudePermissionMode, ClaudeEffort } from '@shared/types'
-import { SettingRow, SegmentedControl, Toggle, ModelPicker, NumberInput } from './primitives'
+import {
+  SettingRow,
+  SegmentedControl,
+  Toggle,
+  ModelPicker,
+  NumberInput,
+  SectionTitle,
+  Eyebrow
+} from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -45,7 +53,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">General</h2>
+          <SectionTitle>General</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Defaults applied when claude launches in any workspace.
           </p>
@@ -59,7 +67,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">General</h2>
+          <SectionTitle>General</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Defaults applied when claude launches in any workspace.
           </p>
@@ -72,16 +80,14 @@ export function ClaudeGeneralSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">General</h2>
+        <SectionTitle>General</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Defaults applied when claude launches in any workspace. Changes save automatically.
         </p>
       </div>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Claude defaults
-        </h3>
+        <Eyebrow className="mb-3">Claude defaults</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Model"
@@ -130,9 +136,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Memory &amp; reasoning
-        </h3>
+        <Eyebrow className="mb-3">Memory &amp; reasoning</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Auto-load memory"
@@ -160,9 +164,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Fallback &amp; overload
-        </h3>
+        <Eyebrow className="mb-3">Fallback &amp; overload</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Fallback model"
@@ -182,9 +184,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Model behavior
-        </h3>
+        <Eyebrow className="mb-3">Model behavior</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Disable extended thinking"
@@ -223,9 +223,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Model capabilities
-        </h3>
+        <Eyebrow className="mb-3">Model capabilities</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Disable 1M context"

@@ -3,7 +3,7 @@ import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeHookEntry, ClaudeHookDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select } from './primitives'
+import { Select, SectionTitle, Eyebrow } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeHooksSection — lifecycle event handlers (full CRUD)
@@ -322,7 +322,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Hooks</h2>
+        <SectionTitle>Hooks</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Lifecycle event handlers — run shell scripts or commands at key points in every Claude
           Code session.
@@ -331,9 +331,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
 
       {/* What are hooks */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          What are hooks?
-        </h3>
+        <Eyebrow>What are hooks?</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <p className="text-sm text-text-secondary leading-relaxed">
             Hooks let you run arbitrary shell commands at lifecycle events — before a tool fires,
@@ -350,9 +348,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
       {/* Configured hooks */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Configured hooks
-          </h3>
+          <Eyebrow>Configured hooks</Eyebrow>
           <button
             type="button"
             onClick={() => {

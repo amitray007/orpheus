@@ -7,7 +7,7 @@ import type {
   McpServerDraft,
   ProjectRecord
 } from '@shared/types'
-import { SettingRow, Toggle, NumberInput, Select } from './primitives'
+import { SettingRow, Toggle, NumberInput, Select, SectionTitle, Eyebrow } from './primitives'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
@@ -494,7 +494,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Tools</h2>
+          <SectionTitle>Tools</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             MCP server toggles, Bash limits, tool concurrency, and browser integration.
           </p>
@@ -509,7 +509,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Tools</h2>
+        <SectionTitle>Tools</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           MCP server toggles (auto-discovered from ~/.claude.json and each project&apos;s
           .mcp.json), Bash limits, tool concurrency, and browser integration. Changes save
@@ -520,9 +520,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
       {/* MCP servers */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            MCP servers
-          </h3>
+          <Eyebrow>MCP servers</Eyebrow>
           <button
             ref={addButtonRef}
             type="button"
@@ -677,9 +675,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
 
       {/* Bash limits */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Bash limits
-        </h3>
+        <Eyebrow className="mb-3">Bash limits</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Bash default timeout (ms)"
@@ -719,9 +715,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
 
       {/* Concurrency & integrations */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Concurrency &amp; integrations
-        </h3>
+        <Eyebrow className="mb-3">Concurrency &amp; integrations</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Tool concurrency"
@@ -749,9 +743,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
 
       {/* File operations */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          File operations
-        </h3>
+        <Eyebrow className="mb-3">File operations</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Bash maintains project cwd"
@@ -835,9 +827,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
 
       {/* Shell */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Shell
-        </h3>
+        <Eyebrow className="mb-3">Shell</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Shell override"

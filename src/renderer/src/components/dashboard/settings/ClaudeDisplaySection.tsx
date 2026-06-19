@@ -6,7 +6,14 @@ import type {
   ClaudeTuiMode,
   ClaudeEditorMode
 } from '@shared/types'
-import { SettingRow, SegmentedControl, Toggle, NumberInput } from './primitives'
+import {
+  SettingRow,
+  SegmentedControl,
+  Toggle,
+  NumberInput,
+  SectionTitle,
+  Eyebrow
+} from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -45,7 +52,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Display</h2>
+          <SectionTitle>Display</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Control how Claude renders output, TUI mode, editor keybindings, and accessibility
             preferences.
@@ -59,7 +66,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Display</h2>
+        <SectionTitle>Display</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Control how Claude renders output, TUI mode, editor keybindings, and accessibility
           preferences. Changes save automatically.
@@ -68,9 +75,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
 
       {/* Output behavior */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Output behavior
-        </h3>
+        <Eyebrow className="mb-3">Output behavior</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Output style"
@@ -109,9 +114,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
 
       {/* Editor & input */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Editor &amp; input
-        </h3>
+        <Eyebrow className="mb-3">Editor &amp; input</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Editor mode"
@@ -155,9 +158,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
 
       {/* Accessibility */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Accessibility
-        </h3>
+        <Eyebrow className="mb-3">Accessibility</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Reduce motion"
@@ -175,9 +176,7 @@ export function ClaudeDisplaySection(): React.JSX.Element {
 
       {/* Rendering */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Rendering
-        </h3>
+        <Eyebrow className="mb-3">Rendering</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="No flicker"
