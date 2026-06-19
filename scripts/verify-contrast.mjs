@@ -84,12 +84,21 @@ for (const [theme, re] of Object.entries(THEMES)) {
   console.log(`\n${theme}`)
   for (const t of texts) {
     const tv = grab(block, t)
+    if (!tv) {
+      console.error(`  ✗ missing token: ${t} in ${theme}`)
+      failed++
+      continue
+    }
     for (const s of surfaces) {
       const sv = grab(block, s)
+      if (!sv) {
+        console.error(`  ✗ missing token: ${s} in ${theme}`)
+        failed++
+        continue
+      }
       const ratio = contrast(tv, sv)
-      const ok = ratio >= TARGET || t === 'text-primary' // primary always strong
-      const flag = ratio >= TARGET ? '✓' : ok ? '~' : '✗'
-      if (ratio < TARGET && t !== 'text-primary') failed++
+      const flag = ratio >= TARGET ? '✓' : '✗'
+      if (ratio < TARGET) failed++
       console.log(`  ${flag} ${t.padEnd(14)} on ${s.padEnd(15)} ${ratio.toFixed(2)}:1`)
     }
   }
