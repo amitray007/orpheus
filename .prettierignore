@@ -10,3 +10,4 @@ tsconfig.*.json
 vendor
 resources/ghostty
 packages/ghostty-native/build
+.superpowers
