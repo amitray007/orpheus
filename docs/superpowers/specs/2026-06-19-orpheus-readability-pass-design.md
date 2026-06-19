@@ -1,7 +1,7 @@
 # Orpheus Readability Pass — Typography + Color Grading
 
 - **Date:** 2026-06-19
-- **Status:** Approved (design); pending implementation plan
+- **Status:** Shipped 2026-06-19
 - **Scope:** App chrome only (renderer). Terminal font/colors (ghostty) untouched.
 - **Context:** see `.impeccable.md` (audience, tone, brand colors)
 
