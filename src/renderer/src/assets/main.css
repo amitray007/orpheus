@@ -128,7 +128,7 @@
   --color-surface-raised-base: oklch(16% 0.003 264);
   --color-surface-overlay-base: oklch(20% 0.004 264);
   --color-border-default: oklch(26% 0.004 264);
-  --color-text-primary: oklch(97% 0 0);
+  --color-text-primary: oklch(97% 0.003 264);
   --color-text-secondary: oklch(76% 0.004 264);
   --color-text-muted: oklch(61% 0.004 264);
   --color-accent: #e8c060;

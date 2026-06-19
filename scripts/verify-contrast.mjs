@@ -166,7 +166,14 @@ for (const [theme, re] of Object.entries(THEMES)) {
   const mixes = [
     ['raised', grab(block, 'surface-raised-base'), 0.04],
     ['overlay', grab(block, 'surface-overlay-base'), 0.03]
-  ]
+  ].filter(([sname, sbase]) => {
+    if (!sbase) {
+      console.error(`  ✗ missing token: surface-${sname}-base in ${theme}`)
+      failed++
+      return false
+    }
+    return true
+  })
   for (const t of texts) {
     const tl = luminance(grab(block, t))
     for (const [an, av] of Object.entries(accents)) {
