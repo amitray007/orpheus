@@ -49,6 +49,7 @@
     var(--color-surface-overlay-base)
   );
   --color-border-default: var(--color-border-default);
+  --color-border-hover: var(--color-border-hover);
   --color-border-focus: var(--color-accent);
 
   --color-text-primary: var(--color-text-primary);
@@ -99,6 +100,7 @@
   --color-surface-raised-base: #16161a;
   --color-surface-overlay-base: #1f1f24;
   --color-border-default: #27272a;
+  --color-border-hover: #3f3f46;
   --color-text-primary: oklch(96.5% 0.003 264);
   --color-text-secondary: oklch(72% 0.005 264);
   --color-text-muted: oklch(64% 0.005 264);
@@ -114,6 +116,7 @@
   --color-surface-raised-base: #ffffff;
   --color-surface-overlay-base: #f0f0eb;
   --color-border-default: #d4d4d0;
+  --color-border-hover: #a1a19e;
   --color-text-primary: oklch(22% 0.004 264);
   --color-text-secondary: oklch(42% 0.006 264);
   --color-text-muted: oklch(52% 0.006 264);
@@ -128,6 +131,7 @@
   --color-surface-raised-base: oklch(16% 0.003 264);
   --color-surface-overlay-base: oklch(20% 0.004 264);
   --color-border-default: oklch(26% 0.004 264);
+  --color-border-hover: oklch(36% 0.004 264);
   --color-text-primary: oklch(97% 0.003 264);
   --color-text-secondary: oklch(76% 0.004 264);
   --color-text-muted: oklch(61% 0.004 264);
