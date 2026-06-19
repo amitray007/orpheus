@@ -451,38 +451,36 @@ export function WorkspacesTab({
             {filtered.length !== active.length && ` of ${active.length}`}
           </Eyebrow>
 
-          {/* Filter bar — only shown when there are workspaces to filter */}
-          {hasWorkspaces && (
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1 min-w-0">
-                <MagnifyingGlass
-                  size={12}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-                />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value)
-                    setActivePage(1)
-                  }}
-                  placeholder="Search workspaces"
-                  className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-                />
-              </div>
-              <div className="w-44 flex-shrink-0">
-                <Select<ActivityFilterKey>
-                  ariaLabel="Activity filter"
-                  options={FILTER_OPTIONS}
-                  value={activityFilter}
-                  onChange={(v) => {
-                    setActivityFilter(v)
-                    setActivePage(1)
-                  }}
-                />
-              </div>
+          {/* Filter bar — always present so search + filter stay available, even when empty */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 min-w-0">
+              <MagnifyingGlass
+                size={12}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value)
+                  setActivePage(1)
+                }}
+                placeholder="Search workspaces"
+                className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+              />
             </div>
-          )}
+            <div className="w-44 flex-shrink-0">
+              <Select<ActivityFilterKey>
+                ariaLabel="Activity filter"
+                options={FILTER_OPTIONS}
+                value={activityFilter}
+                onChange={(v) => {
+                  setActivityFilter(v)
+                  setActivePage(1)
+                }}
+              />
+            </div>
+          </div>
 
           <DataTable<WorkspaceRecord>
             columns={activeColumns}
