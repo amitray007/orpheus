@@ -156,7 +156,7 @@ function SlashCommandForm({
           <label htmlFor="cmd-name" className={labelClass}>
             Name{' '}
             {nameFixed && (
-              <span className="normal-case text-text-muted/60">(locked — delete to rename)</span>
+              <span className="normal-case text-text-muted">(locked — delete to rename)</span>
             )}
           </label>
           <input
@@ -204,7 +204,7 @@ function SlashCommandForm({
         </div>
         <div className="flex-1 min-w-0">
           <label htmlFor="cmd-tools" className={labelClass}>
-            Allowed tools <span className="normal-case text-text-muted/60">(comma-separated)</span>
+            Allowed tools <span className="normal-case text-text-muted">(comma-separated)</span>
           </label>
           <input
             id="cmd-tools"

@@ -36,7 +36,7 @@ function DragHandle(): React.JSX.Element {
       viewBox="0 0 10 10"
       fill="currentColor"
       aria-hidden="true"
-      className="text-text-muted/50"
+      className="text-text-muted"
     >
       <rect y="1.5" width="10" height="1.2" rx="0.6" />
       <rect y="4.4" width="10" height="1.2" rx="0.6" />
@@ -153,7 +153,7 @@ function ActionRow({
       <span className="flex-1 min-w-0 text-xs truncate">{action.label}</span>
 
       {/* Scope chip */}
-      <span className="flex-shrink-0 text-[9px] font-mono text-text-muted/60 bg-surface-overlay px-1 py-0.5 rounded">
+      <span className="flex-shrink-0 text-[9px] font-mono text-text-muted bg-surface-overlay px-1 py-0.5 rounded">
         {scopeChip(action.scope)}
       </span>
 
@@ -542,7 +542,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
               ) : actions.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-1 px-4 py-6 text-center">
                   <p className="text-xs text-text-muted">No actions at this scope.</p>
-                  <p className="text-[11px] text-text-muted/60">
+                  <p className="text-[11px] text-text-muted">
                     Global actions apply everywhere; project and workspace actions are additive.
                   </p>
                 </div>

@@ -159,7 +159,7 @@ function StatusIcon({ indicator, loading }: StatusIconProps): React.JSX.Element 
 
   if (loading) {
     return (
-      <span className="text-zinc-400 font-mono text-xs leading-none w-4 h-4 inline-flex items-center justify-center">
+      <span className="text-text-secondary font-mono text-xs leading-none w-4 h-4 inline-flex items-center justify-center">
         {braille}
       </span>
     )
@@ -177,7 +177,7 @@ function StatusIcon({ indicator, loading }: StatusIconProps): React.JSX.Element 
     case 'maintenance':
       return <Wrench size={16} className="text-blue-400" weight="bold" />
     default:
-      return <WifiSlash size={16} className="text-zinc-400" weight="bold" />
+      return <WifiSlash size={16} className="text-text-secondary" weight="bold" />
   }
 }
 
@@ -287,7 +287,9 @@ function StatusPopover({
       {initialLoading ? (
         <>
           <div className="px-4 py-5 flex items-center justify-center gap-2">
-            <span className="text-zinc-400 font-mono text-xs leading-none">{headerBraille}</span>
+            <span className="text-text-secondary font-mono text-xs leading-none">
+              {headerBraille}
+            </span>
             <span className="text-xs text-text-secondary">Claude APIs are being checked</span>
           </div>
           <div className="px-4 py-2 border-t border-border-default/50">
@@ -326,7 +328,9 @@ function StatusPopover({
             <p className="text-[11px] text-text-muted mt-0.5 flex items-center gap-1.5">
               {snapshot.isFetching ? (
                 <>
-                  <span className="text-zinc-400 font-mono leading-none">{headerBraille}</span>
+                  <span className="text-text-secondary font-mono leading-none">
+                    {headerBraille}
+                  </span>
                   <span>Checking now</span>
                 </>
               ) : snapshot.fetchedAt !== null ? (

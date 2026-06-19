@@ -249,7 +249,7 @@ function McpServerForm({
         <div className="flex flex-col gap-3 border-l-2 border-border-default/40 pl-3">
           <div>
             <label htmlFor="mcp-args" className={labelClass}>
-              Args <span className="normal-case text-text-muted/60">(comma-separated)</span>
+              Args <span className="normal-case text-text-muted">(comma-separated)</span>
             </label>
             <input
               id="mcp-args"
@@ -262,8 +262,7 @@ function McpServerForm({
           </div>
           <div>
             <label htmlFor="mcp-env" className={labelClass}>
-              Env vars{' '}
-              <span className="normal-case text-text-muted/60">(one KEY=VALUE per line)</span>
+              Env vars <span className="normal-case text-text-muted">(one KEY=VALUE per line)</span>
             </label>
             <textarea
               id="mcp-env"

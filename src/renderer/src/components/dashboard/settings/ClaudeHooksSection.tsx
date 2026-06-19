@@ -170,7 +170,7 @@ function HookForm({
           <label className={labelClass}>
             Matcher{' '}
             {!matcherApplies && (
-              <span className="normal-case text-text-muted/60">(n/a for this event)</span>
+              <span className="normal-case text-text-muted">(n/a for this event)</span>
             )}
           </label>
           <input
@@ -416,7 +416,7 @@ export function ClaudeHooksSection(): React.JSX.Element {
                   {/* Events within the group */}
                   {group.byEvent.map(({ event, entries }) => (
                     <div key={event} className="flex flex-col">
-                      <div className="text-[10px] font-medium text-text-muted/70 mb-1 pl-0.5">
+                      <div className="text-[10px] font-medium text-text-muted mb-1 pl-0.5">
                         {event}
                       </div>
                       {entries.map((entry) => {

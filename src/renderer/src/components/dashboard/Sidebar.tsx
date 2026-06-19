@@ -248,7 +248,7 @@ function WorkspaceSubRow({
           <GitFork
             size={10}
             weight="duotone"
-            className="text-text-muted/70 flex-shrink-0"
+            className="text-text-muted flex-shrink-0"
             aria-label="forked workspace"
           />
         )}

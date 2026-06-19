@@ -234,7 +234,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex flex-col gap-4">
           {initialLoading ? (
             <div className="flex items-center justify-center gap-2 py-3">
-              <span className="text-zinc-400 font-mono text-xs leading-none">{braille}</span>
+              <span className="text-text-secondary font-mono text-xs leading-none">{braille}</span>
               <span className="text-xs text-text-secondary">Claude APIs are being checked</span>
             </div>
           ) : snapshot ? (
@@ -252,7 +252,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
                 <span className="text-xs text-text-muted flex-shrink-0 flex items-center gap-1.5">
                   {snapshot.isFetching ? (
                     <>
-                      <span className="text-zinc-400 font-mono leading-none">{braille}</span>
+                      <span className="text-text-secondary font-mono leading-none">{braille}</span>
                       <span>Checking now</span>
                     </>
                   ) : snapshot.fetchedAt !== null ? (

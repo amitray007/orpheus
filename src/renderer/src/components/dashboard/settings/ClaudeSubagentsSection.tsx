@@ -154,7 +154,7 @@ function SubagentForm({
           <label htmlFor="agent-name" className={labelClass}>
             Name{' '}
             {nameFixed && (
-              <span className="normal-case text-text-muted/60">(locked — delete to rename)</span>
+              <span className="normal-case text-text-muted">(locked — delete to rename)</span>
             )}
           </label>
           <input
@@ -172,7 +172,7 @@ function SubagentForm({
         {/* Model */}
         <div className="w-36 flex-shrink-0">
           <label htmlFor="agent-model" className={labelClass}>
-            Model <span className="normal-case text-text-muted/60">(empty = inherit)</span>
+            Model <span className="normal-case text-text-muted">(empty = inherit)</span>
           </label>
           <input
             id="agent-model"
@@ -204,9 +204,7 @@ function SubagentForm({
       <div>
         <label htmlFor="agent-tools" className={labelClass}>
           Tools{' '}
-          <span className="normal-case text-text-muted/60">
-            (comma-separated, empty = all tools)
-          </span>
+          <span className="normal-case text-text-muted">(comma-separated, empty = all tools)</span>
         </label>
         <input
           id="agent-tools"

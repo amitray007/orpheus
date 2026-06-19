@@ -227,7 +227,7 @@ export function ActionChip({
           'border border-transparent',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
           disabled
-            ? 'cursor-not-allowed text-text-muted/70 bg-surface-overlay/40'
+            ? 'cursor-not-allowed text-text-muted bg-surface-overlay/40'
             : showPrompt
               ? 'text-text-primary bg-surface-overlay border border-border-default/60'
               : [
