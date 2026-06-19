@@ -7,7 +7,7 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
-import { GitMerge } from '@phosphor-icons/react'
+import { GitMerge, Kanban } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
@@ -218,9 +218,7 @@ const KanbanColumn = memo(function KanbanColumn({
       {/* Column body — vertically scrollable */}
       <div className="flex-1 overflow-y-auto min-h-0 p-2 flex flex-col gap-2">
         {workspaces.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center py-8">
-            <span className="text-xs text-text-muted">No workspaces</span>
-          </div>
+          <p className="pt-3 px-3 text-xs text-text-muted">No workspaces</p>
         ) : (
           workspaces.map((ws) => {
             const project = projectsById.get(ws.projectId)
@@ -297,10 +295,25 @@ export function WorkspacesView({
     return result
   }, [activeWorkspaces, workspaceActivities])
 
+  const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
+
+  if (totalWorkspaces === 0) {
+    return (
+      <div className="flex flex-col h-full min-h-0 items-center justify-center">
+        <div className="flex flex-col items-center gap-3 max-w-xs text-center">
+          <Kanban size={28} className="text-text-muted" weight="thin" />
+          <p className="text-lg font-semibold text-text-primary">No workspaces yet</p>
+          <p className="text-sm text-text-muted">
+            Open a project and start a Claude session — your workspaces will appear here, grouped by
+            activity.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Kanban board — always render the 4-column shell; per-column "No workspaces"
-          handles the empty case so the layout stays consistent. */}
       <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
         {COLUMN_CONFIGS.map((config) => (
           <KanbanColumn
