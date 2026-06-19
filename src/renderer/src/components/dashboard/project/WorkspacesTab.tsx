@@ -5,7 +5,6 @@ import {
   MagnifyingGlass,
   PencilSimple,
   PushPin,
-  Terminal,
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
@@ -437,6 +436,14 @@ export function WorkspacesTab({
     [gitByWs, titleByWs, workspaceActivities, renamingId, renameValue, sessionStats]
   )
 
+  // Whether the raw workspace list (before any filtering) has any entries.
+  // Used to distinguish "no workspaces at all" from "filtered to zero".
+  const hasWorkspaces = active.length > 0
+  // Whether the current filter/search yields any results.
+  const hasFilteredWorkspaces = filtered.length > 0
+  // Whether any filter is active (search term or non-default activity filter).
+  const isFiltering = debouncedSearch !== '' || activityFilter !== 'all'
+
   return (
     <div className="flex flex-col gap-4">
       {/* Active workspaces (left) + Sessions panel (right) — Sessions
@@ -448,72 +455,72 @@ export function WorkspacesTab({
             {filtered.length !== active.length && ` of ${active.length}`}
           </Eyebrow>
 
-          {/* Filter bar */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 min-w-0">
-              <MagnifyingGlass
-                size={12}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-              />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setActivePage(1)
-                }}
-                placeholder="Search workspaces"
-                className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-              />
-            </div>
-            <div className="w-44 flex-shrink-0">
-              <Select<ActivityFilterKey>
-                ariaLabel="Activity filter"
-                options={FILTER_OPTIONS}
-                value={activityFilter}
-                onChange={(v) => {
-                  setActivityFilter(v)
-                  setActivePage(1)
-                }}
-              />
-            </div>
-          </div>
-
-          <DataTable<WorkspaceRecord>
-            columns={activeColumns}
-            rows={activePaginated}
-            rowKey={(ws) => ws.id}
-            loading={loading}
-            emptyState={
-              <div className="flex flex-col items-center gap-2">
-                <Terminal size={20} className="text-text-muted opacity-50" />
-                <p className="text-xs text-text-muted">
-                  {debouncedSearch || activityFilter !== 'all'
-                    ? 'No workspaces match your filter'
-                    : 'No workspaces yet'}
-                </p>
+          {/* Filter bar — only shown when there are workspaces to filter */}
+          {hasWorkspaces && (
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 min-w-0">
+                <MagnifyingGlass
+                  size={12}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+                />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value)
+                    setActivePage(1)
+                  }}
+                  placeholder="Search workspaces"
+                  className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+                />
               </div>
-            }
-            sortBy={activeSortBy}
-            sortDir={activeSortDir}
-            onSortChange={(by, dir) => {
-              if (by === 'lastOpenedAt' || by === 'messages') {
-                setActiveSortBy(by)
-                setActiveSortDir(dir)
-                setActivePage(1)
-              }
-            }}
-            onRowClick={(ws) => {
-              if (renamingId === ws.id) return
-              onSelectWorkspace(ws.id)
-            }}
-            pagination={{
-              page: activePage,
-              pageSize: PAGE_SIZE,
-              total: filtered.length,
-              onPageChange: setActivePage
-            }}
-          />
+              <div className="w-44 flex-shrink-0">
+                <Select<ActivityFilterKey>
+                  ariaLabel="Activity filter"
+                  options={FILTER_OPTIONS}
+                  value={activityFilter}
+                  onChange={(v) => {
+                    setActivityFilter(v)
+                    setActivePage(1)
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {!hasWorkspaces && !loading ? (
+            <p className="text-sm text-text-muted py-6 text-center">
+              No workspaces yet. Use + New workspace to start one.
+            </p>
+          ) : !hasFilteredWorkspaces && isFiltering ? (
+            <p className="text-sm text-text-muted py-6 text-center">No matching workspaces.</p>
+          ) : (
+            <DataTable<WorkspaceRecord>
+              columns={activeColumns}
+              rows={activePaginated}
+              rowKey={(ws) => ws.id}
+              loading={loading}
+              sortBy={activeSortBy}
+              sortDir={activeSortDir}
+              onSortChange={(by, dir) => {
+                if (by === 'lastOpenedAt' || by === 'messages') {
+                  setActiveSortBy(by)
+                  setActiveSortDir(dir)
+                  setActivePage(1)
+                }
+              }}
+              onRowClick={(ws) => {
+                if (renamingId === ws.id) return
+                onSelectWorkspace(ws.id)
+              }}
+              pagination={{
+                page: activePage,
+                pageSize: PAGE_SIZE,
+                total: filtered.length,
+                onPageChange: setActivePage
+              }}
+            />
+          )}
         </div>
 
         <div className="flex flex-col gap-2 min-w-0">

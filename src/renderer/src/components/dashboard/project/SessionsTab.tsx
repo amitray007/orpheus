@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { MagnifyingGlass, ChatCircle, Play, Trash } from '@phosphor-icons/react'
+import { MagnifyingGlass, Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { Select } from '../settings/primitives'
@@ -141,6 +141,11 @@ export function SessionsTab({
   const [resumingId, setResumingId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<SessionRecord | null>(null)
 
+  // Tracks whether the project has any sessions at all (unfiltered). Used to
+  // distinguish "no sessions ever" from "filtered to zero" so we can hide
+  // search/filter controls only in the former case.
+  const [hasAnySessions, setHasAnySessions] = useState<boolean | null>(null)
+
   // Debounce search input
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
@@ -163,6 +168,24 @@ export function SessionsTab({
       cancelled = true
     }
   }, [projectId])
+
+  // One-shot check: does this project have any sessions at all (ignoring all
+  // filters)? Re-runs when sessions are deleted (metadataVersion bump).
+  useEffect(() => {
+    let cancelled = false
+    window.api.sessions
+      .listForProjectPaged({ projectId, offset: 0, limit: 1 })
+      .then((res) => {
+        if (!cancelled) setHasAnySessions(res.total > 0)
+      })
+      .catch(() => {
+        // On error assume there could be sessions — keeps controls visible.
+        if (!cancelled) setHasAnySessions(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, metadataVersion])
 
   // Snapshot the IPC call so a stale request can be ignored once it returns.
   const reqIdRef = useRef(0)
@@ -381,64 +404,68 @@ export function SessionsTab({
     }
   }
 
-  const emptyState = (
-    <div className="flex flex-col items-center gap-2">
-      <ChatCircle size={22} className="text-text-muted opacity-50" />
-      <p className="text-sm text-text-muted">
-        {debouncedSearch ? 'No sessions match your search' : 'No sessions yet'}
-      </p>
-      {!debouncedSearch && (
-        <p className="text-xs text-text-muted max-w-xs text-center">
-          Start Claude Code in this project and your sessions will appear here.
-        </p>
-      )}
-    </div>
+  // hasAnySessions=null means the unfiltered check is still in flight — treat
+  // as indeterminate (don't hide controls prematurely).
+  const noSessionsAtAll = hasAnySessions === false && !loading
+
+  // "No matches" empty state shown inside the DataTable when filters are
+  // active and yield zero results, but sessions do exist.
+  const filteredEmptyState = (
+    <p className="text-sm text-text-muted py-6 text-center">No matching sessions.</p>
   )
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Filter bar */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 min-w-0">
-          <MagnifyingGlass
-            size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-          />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => changeSearch(e.target.value)}
-            placeholder="Search prompts"
-            className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-          />
+      {/* Filter bar — hidden when the project has no sessions at all */}
+      {!noSessionsAtAll && (
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1 min-w-0">
+            <MagnifyingGlass
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => changeSearch(e.target.value)}
+              placeholder="Search prompts"
+              className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+            />
+          </div>
+          <div className="w-44 flex-shrink-0">
+            <Select<DateRange>
+              ariaLabel="Date range"
+              options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
+              value={dateRange}
+              onChange={changeDateRange}
+            />
+          </div>
         </div>
-        <div className="w-44 flex-shrink-0">
-          <Select<DateRange>
-            ariaLabel="Date range"
-            options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
-            value={dateRange}
-            onChange={changeDateRange}
-          />
-        </div>
-      </div>
+      )}
 
-      <DataTable<SessionRecord>
-        columns={columns}
-        rows={rows}
-        rowKey={(r) => r.id}
-        loading={loading}
-        emptyState={emptyState}
-        sortBy={sortBy}
-        sortDir={sortDir}
-        onSortChange={(by, dir) => changeSort(by as SortBy, dir)}
-        pagination={{
-          page,
-          pageSize: PAGE_SIZE,
-          total,
-          onPageChange: setPage
-        }}
-        onRowClick={handleRowClick}
-      />
+      {noSessionsAtAll ? (
+        <p className="text-sm text-text-muted py-6 text-center">
+          No sessions yet — start Claude Code in this project and your sessions will appear here.
+        </p>
+      ) : (
+        <DataTable<SessionRecord>
+          columns={columns}
+          rows={rows}
+          rowKey={(r) => r.id}
+          loading={loading}
+          emptyState={filteredEmptyState}
+          sortBy={sortBy}
+          sortDir={sortDir}
+          onSortChange={(by, dir) => changeSort(by as SortBy, dir)}
+          pagination={{
+            page,
+            pageSize: PAGE_SIZE,
+            total,
+            onPageChange: setPage
+          }}
+          onRowClick={handleRowClick}
+        />
+      )}
 
       {pendingDelete && (
         <ConfirmModal
