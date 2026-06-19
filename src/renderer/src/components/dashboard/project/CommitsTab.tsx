@@ -250,7 +250,11 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   // No git repo at all, or no commits on this branch (unfiltered).
   const noDataAtAll = hasFetchedOnce && (branches.length === 0 || allTimeTotal === 0) && !error
   // Data exists but current filter/search/date-range yields zero results.
-  const filteredToZero = hasFetchedOnce && !noDataAtAll && commits.length === 0 && !error
+  // Guard with allTimeTotal !== null to avoid a brief flash while the unfiltered
+  // count resolves on branch switch — without the guard the list may briefly
+  // show "No matching commits." before allTimeTotal arrives and flips noDataAtAll.
+  const filteredToZero =
+    allTimeTotal !== null && !noDataAtAll && hasFetchedOnce && commits.length === 0 && !error
 
   return (
     <div className="flex flex-col gap-3">
@@ -301,13 +305,13 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
       {/* Commits list */}
       {error ? (
         <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
-          <GitBranch size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
+          <GitBranch size={22} className="text-text-muted mx-auto mb-2" />
           <p className="text-sm text-text-muted">{error}</p>
         </div>
       ) : !hasFetchedOnce ? (
         <CommitListSkeleton count={5} />
       ) : noDataAtAll ? (
-        <p className="text-sm text-text-muted py-6 text-center">No commits in this range.</p>
+        <p className="text-sm text-text-muted py-6 text-center">No commits yet on this branch.</p>
       ) : filteredToZero ? (
         <p className="text-sm text-text-muted py-6 text-center">No matching commits.</p>
       ) : (
