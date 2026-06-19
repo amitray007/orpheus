@@ -102,7 +102,7 @@ export function PrChip({ pr, variant = 'chip', clickable = true }: PrChipProps):
         <StateIcon state={pr.state} size={11} />
       </span>
     ) : (
-      <span className="inline-flex items-center gap-1 text-[11px] font-mono" title={tooltip}>
+      <span className="inline-flex items-center gap-1 text-sm font-mono" title={tooltip}>
         <span className={`inline-flex items-center ${stateColor}`}>
           <StateIcon state={pr.state} size={11} />
         </span>

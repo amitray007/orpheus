@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, UpdateCheckResult } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ComingSoonChip } from './ClaudeGeneralSection'
 import { DotmSquare11 } from '@/components/ui/dotm-square-11'
@@ -128,7 +128,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Updates</h2>
+          <SectionTitle>Updates</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Control how and when Orpheus checks for and applies updates.
           </p>
@@ -141,7 +141,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Updates</h2>
+        <SectionTitle>Updates</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Control how and when Orpheus checks for and applies updates.
         </p>
@@ -149,9 +149,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
 
       {/* Release channel */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Release channel
-        </h3>
+        <Eyebrow className="mb-3">Release channel</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Update channel"
@@ -167,7 +165,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
               </button>
               <div className="relative flex items-center opacity-50 cursor-not-allowed select-none">
                 <span className="px-3 py-1.5 text-xs font-medium text-text-muted">Beta</span>
-                <span className="mr-1.5 text-[9px] font-semibold uppercase tracking-wide bg-surface-overlay border border-border-default text-text-muted rounded px-1 py-0.5 leading-none">
+                <span className="mr-1.5 text-xs font-semibold uppercase tracking-wide bg-surface-overlay border border-border-default text-text-muted rounded px-1 py-0.5 leading-none">
                   Soon
                 </span>
               </div>
@@ -178,9 +176,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
 
       {/* Update policy */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Update policy
-        </h3>
+        <Eyebrow className="mb-3">Update policy</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Auto-check for updates"
@@ -206,9 +202,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
 
       {/* Manual check */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Manual
-        </h3>
+        <Eyebrow className="mb-3">Manual</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div>

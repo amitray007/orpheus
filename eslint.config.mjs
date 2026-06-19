@@ -28,5 +28,15 @@ export default defineConfig(
       ...eslintPluginReactRefresh.configs.vite.rules
     }
   },
+  {
+    // Plain JS/MJS build + utility scripts (e.g. scripts/*.mjs) can't carry TS
+    // type annotations, so the typescript-eslint type-signature rules don't
+    // apply to them — turn them off here to avoid unsatisfiable lint errors.
+    files: ['**/*.{js,mjs,cjs}'],
+    rules: {
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/explicit-module-boundary-types': 'off'
+    }
+  },
   eslintConfigPrettier
 )

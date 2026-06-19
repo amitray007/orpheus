@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
-import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingRow, Toggle, NumberInput, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 export function OrpheusNotificationsSection(): React.JSX.Element {
@@ -52,7 +52,7 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Notifications</h2>
+          <SectionTitle>Notifications</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Native macOS alerts for Claude activity transitions.
           </p>
@@ -66,7 +66,7 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Notifications</h2>
+          <SectionTitle>Notifications</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Native macOS alerts for Claude activity transitions.
           </p>
@@ -79,16 +79,14 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Notifications</h2>
+        <SectionTitle>Notifications</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Native macOS alerts for Claude activity transitions.
         </p>
       </div>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Events
-        </h3>
+        <Eyebrow className="mb-3">Events</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Claude needs you"
@@ -134,9 +132,7 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Behavior
-        </h3>
+        <Eyebrow className="mb-3">Behavior</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Notify even when Orpheus is focused"
@@ -152,9 +148,7 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
       </section>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Test
-        </h3>
+        <Eyebrow className="mb-3">Test</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex flex-col gap-0.5">

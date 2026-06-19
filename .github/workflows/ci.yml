@@ -13,9 +13,11 @@ concurrency:
 jobs:
   check:
     name: typecheck + lint
-    # macOS runner because postinstall fetches a macOS xcframework. Cheaper
-    # ubuntu would need --ignore-scripts plus a manual partial install; not
-    # worth the complexity for a single-developer repo.
+    # typecheck + lint don't need the native xcframework or compiled addons, so
+    # we skip the postinstall (--ignore-scripts below). This also decouples CI
+    # from the third-party libghostty "storage" releases, which rotate weekly
+    # and 404 once the pinned tag is rotated out. (Runner could be ubuntu now;
+    # kept on macOS-14 to match the rest of the toolchain.)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +27,10 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # --ignore-scripts: skip the postinstall (libghostty fetch + native
+        # rebuild); neither is needed to typecheck or lint, and the libghostty
+        # download depends on a rotating third-party release that 404s.
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Typecheck
         run: bun run typecheck

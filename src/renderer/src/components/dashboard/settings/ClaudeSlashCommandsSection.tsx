@@ -3,7 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSlashCommand, ClaudeSlashCommandDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select } from './primitives'
+import { Select, SectionTitle, Eyebrow } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSlashCommandsSection — full CRUD for ~/.claude/commands/ and project .claude/commands/
@@ -117,7 +117,7 @@ function SlashCommandForm({
 
   const inputClass =
     'w-full text-xs bg-surface-overlay border border-border-default rounded-md px-2.5 py-1.5 text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50'
-  const labelClass = 'block text-[10px] font-medium text-text-muted mb-1 uppercase tracking-wider'
+  const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
 
   return (
     <div
@@ -156,7 +156,7 @@ function SlashCommandForm({
           <label htmlFor="cmd-name" className={labelClass}>
             Name{' '}
             {nameFixed && (
-              <span className="normal-case text-text-muted/60">(locked — delete to rename)</span>
+              <span className="normal-case text-text-muted">(locked — delete to rename)</span>
             )}
           </label>
           <input
@@ -204,7 +204,7 @@ function SlashCommandForm({
         </div>
         <div className="flex-1 min-w-0">
           <label htmlFor="cmd-tools" className={labelClass}>
-            Allowed tools <span className="normal-case text-text-muted/60">(comma-separated)</span>
+            Allowed tools <span className="normal-case text-text-muted">(comma-separated)</span>
           </label>
           <input
             id="cmd-tools"
@@ -379,7 +379,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Slash commands</h2>
+        <SectionTitle>Slash commands</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Custom commands from ~/.claude/commands/ and each project&apos;s .claude/commands/.
         </p>
@@ -387,9 +387,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
 
       {/* Header + add button */}
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Configured commands
-        </span>
+        <Eyebrow>Configured commands</Eyebrow>
         <button
           ref={addButtonRef}
           type="button"
@@ -435,7 +433,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
           <div className="flex flex-col gap-4">
             {groupCommands(commands).map((group) => (
               <div key={group.key} className="flex flex-col">
-                <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+                <div className="text-xs uppercase tracking-wider text-text-muted mb-1.5">
                   {group.label}
                 </div>
                 {group.commands.map((cmd) => {
@@ -483,13 +481,13 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                                 /{cmd.name}
                               </span>
                               {cmd.argumentHint && (
-                                <span className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
+                                <span className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
                                   {cmd.argumentHint}
                                 </span>
                               )}
                               {cmd.allowedTools && (
                                 <span
-                                  className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
+                                  className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
                                   title={cmd.allowedTools.join(', ')}
                                 >
                                   {cmd.allowedTools.length} tool
@@ -548,7 +546,7 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                                 const v = cmd.frontmatter[k]
                                 const display = Array.isArray(v) ? v.join(', ') : v
                                 return (
-                                  <div key={k} className="flex gap-2 text-[11px]">
+                                  <div key={k} className="flex gap-2 text-sm">
                                     <span className="text-text-muted font-mono flex-shrink-0">
                                       {k}:
                                     </span>
@@ -559,17 +557,15 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
                             </div>
                           )}
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                            <span className="text-xs uppercase tracking-wider text-text-muted">
                               Body
                             </span>
                             {cmd.bodyPreview ? (
-                              <div className="font-mono whitespace-pre-wrap text-[11px] text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
+                              <div className="font-mono whitespace-pre-wrap text-sm text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
                                 {cmd.bodyPreview}
                               </div>
                             ) : (
-                              <p className="text-[11px] text-text-muted italic">
-                                (no body content)
-                              </p>
+                              <p className="text-sm text-text-muted italic">(no body content)</p>
                             )}
                           </div>
                         </div>

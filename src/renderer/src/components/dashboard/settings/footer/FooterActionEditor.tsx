@@ -403,7 +403,7 @@ export function FooterActionEditor({
         <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
           {/* Label */}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
               Label
             </label>
             <input
@@ -423,7 +423,7 @@ export function FooterActionEditor({
 
           {/* Icon */}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
               Icon
             </label>
             <IconPicker value={icon} onChange={setIcon} />
@@ -431,7 +431,7 @@ export function FooterActionEditor({
 
           {/* Type */}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
               Type
             </label>
             <Select
@@ -447,7 +447,7 @@ export function FooterActionEditor({
           {actionType === 'sendInput' && (
             <>
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
                   Text
                 </label>
                 <textarea
@@ -464,13 +464,13 @@ export function FooterActionEditor({
                 />
                 {/* Placeholder chips */}
                 <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                  <span className="text-[10px] text-text-muted">Insert:</span>
+                  <span className="text-xs text-text-muted">Insert:</span>
                   {['{sessionId}', '{workspaceId}', '{cwd}'].map((ph) => (
                     <button
                       key={ph}
                       type="button"
                       onClick={() => insertPlaceholder(ph)}
-                      className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-muted hover:text-text-primary hover:border-border-hover transition-colors cursor-pointer"
+                      className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-muted hover:text-text-primary hover:border-border-hover transition-colors cursor-pointer"
                     >
                       {ph}
                     </button>
@@ -478,7 +478,7 @@ export function FooterActionEditor({
                 </div>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                <span className="text-sm font-medium text-text-secondary uppercase tracking-wide">
                   Submit immediately
                 </span>
                 <Toggle value={submit} onChange={setSubmit} ariaLabel="Submit immediately" />
@@ -488,11 +488,11 @@ export function FooterActionEditor({
 
           {actionType === 'rename' && (
             <div className="flex flex-col gap-2">
-              <div className="text-[10px] text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+              <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
                 When clicked, a prompt will appear asking the user for the new workspace name.
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
                   Prompt label
                 </label>
                 <input
@@ -504,7 +504,7 @@ export function FooterActionEditor({
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
                   Default value{' '}
                   <span className="text-text-muted normal-case tracking-normal">
                     (use &#123;workspaceName&#125; for current name)
@@ -523,7 +523,7 @@ export function FooterActionEditor({
 
           {actionType === 'duplicate' && (
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+              <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
                 Name suffix{' '}
                 <span className="text-text-muted normal-case tracking-normal">(optional)</span>
               </label>
@@ -539,7 +539,7 @@ export function FooterActionEditor({
 
           {/* Visibility */}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
               Visible when
             </label>
             <Select
@@ -553,12 +553,12 @@ export function FooterActionEditor({
 
           {/* Live preview */}
           <div className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+            <span className="text-sm font-medium text-text-secondary uppercase tracking-wide">
               Preview
             </span>
             <div className="flex items-center gap-2 px-3 py-2 bg-surface-raised/50 rounded-md border border-border-default/40 min-h-[36px]">
               <PreviewChip label={labelTrimmed} icon={icon} type={actionType} valid={isValid} />
-              <span className="text-[10px] text-text-muted">
+              <span className="text-xs text-text-muted">
                 {isLiveType(actionType) ? '· right zone' : '· left zone'}
               </span>
             </div>
@@ -566,7 +566,7 @@ export function FooterActionEditor({
 
           {/* Error */}
           {error && (
-            <p className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-2">
+            <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-2">
               {error}
             </p>
           )}

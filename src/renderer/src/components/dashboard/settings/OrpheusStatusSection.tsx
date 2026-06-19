@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
-import { SettingRow, Toggle, Select } from './primitives'
+import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ArrowSquareOut } from '@phosphor-icons/react'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
@@ -194,7 +194,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Claude Service Status</h2>
+          <SectionTitle>Claude Service Status</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Live status of the Claude API and Claude Code service.
           </p>
@@ -220,7 +220,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Claude Service Status</h2>
+        <SectionTitle>Claude Service Status</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Live status of the Claude API and Claude Code service.
         </p>
@@ -228,13 +228,11 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Live snapshot */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Current status
-        </h3>
+        <Eyebrow className="mb-3">Current status</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex flex-col gap-4">
           {initialLoading ? (
             <div className="flex items-center justify-center gap-2 py-3">
-              <span className="text-zinc-400 font-mono text-xs leading-none">{braille}</span>
+              <span className="text-text-secondary font-mono text-xs leading-none">{braille}</span>
               <span className="text-xs text-text-secondary">Claude APIs are being checked</span>
             </div>
           ) : snapshot ? (
@@ -252,7 +250,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
                 <span className="text-xs text-text-muted flex-shrink-0 flex items-center gap-1.5">
                   {snapshot.isFetching ? (
                     <>
-                      <span className="text-zinc-400 font-mono leading-none">{braille}</span>
+                      <span className="text-text-secondary font-mono leading-none">{braille}</span>
                       <span>Checking now</span>
                     </>
                   ) : snapshot.fetchedAt !== null ? (
@@ -283,7 +281,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
                               {primary}
                             </p>
                             {subtitle && (
-                              <p className="text-[11px] text-text-muted truncate leading-tight">
+                              <p className="text-sm text-text-muted truncate leading-tight">
                                 {subtitle}
                               </p>
                             )}
@@ -309,11 +307,11 @@ export function OrpheusStatusSection(): React.JSX.Element {
                     <div key={inc.id} className="flex flex-col gap-0.5">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium text-text-primary">{inc.name}</span>
-                        <span className="text-[10px] text-text-muted border border-border-default rounded px-1.5 py-0.5 leading-none">
+                        <span className="text-xs text-text-muted border border-border-default rounded px-1.5 py-0.5 leading-none">
                           {impactLabel(inc.impact)}
                         </span>
                       </div>
-                      <span className="text-[11px] text-text-muted">
+                      <span className="text-sm text-text-muted">
                         {inc.status} &middot; Updated {timeAgo(new Date(inc.updatedAt).getTime())}
                       </span>
                     </div>
@@ -351,9 +349,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Polling preferences */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Polling
-        </h3>
+        <Eyebrow className="mb-3">Polling</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Check interval"
@@ -381,9 +377,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
 
       {/* Status page link */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          External
-        </h3>
+        <Eyebrow className="mb-3">External</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>

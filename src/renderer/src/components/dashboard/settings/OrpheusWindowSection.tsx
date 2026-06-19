@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Window</h2>
+          <SectionTitle>Window</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Geometry persistence, close behavior, and what view Orpheus opens to on launch.
           </p>
@@ -165,7 +165,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Window</h2>
+          <SectionTitle>Window</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Geometry persistence, close behavior, and what view Orpheus opens to on launch.
           </p>
@@ -178,7 +178,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Window</h2>
+        <SectionTitle>Window</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Geometry persistence, close behavior, and what view Orpheus opens to on launch.
         </p>
@@ -186,9 +186,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
 
       {/* Geometry */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Geometry
-        </h3>
+        <Eyebrow className="mb-3">Geometry</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Restore window geometry on launch"
@@ -205,9 +203,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
 
       {/* Close behavior */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Close behavior
-        </h3>
+        <Eyebrow className="mb-3">Close behavior</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Close button hides Orpheus"
@@ -224,9 +220,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
 
       {/* Navigation */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Navigation
-        </h3>
+        <Eyebrow className="mb-3">Navigation</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Open at last view"
@@ -243,9 +237,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
 
       {/* Launch + hotkey */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Launch + hotkey
-        </h3>
+        <Eyebrow className="mb-3">Launch + hotkey</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Launch at login"

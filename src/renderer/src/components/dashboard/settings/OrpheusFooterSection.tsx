@@ -6,7 +6,7 @@ import type {
   FooterActionScope,
   ProjectRecord
 } from '@shared/types'
-import { SettingRow, Toggle } from './primitives'
+import { Eyebrow, SettingRow, Toggle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ConfirmModal } from '../../ConfirmModal'
 import { IconByName } from '../footer/iconMap'
@@ -36,7 +36,7 @@ function DragHandle(): React.JSX.Element {
       viewBox="0 0 10 10"
       fill="currentColor"
       aria-hidden="true"
-      className="text-text-muted/50"
+      className="text-text-muted"
     >
       <rect y="1.5" width="10" height="1.2" rx="0.6" />
       <rect y="4.4" width="10" height="1.2" rx="0.6" />
@@ -153,7 +153,7 @@ function ActionRow({
       <span className="flex-1 min-w-0 text-xs truncate">{action.label}</span>
 
       {/* Scope chip */}
-      <span className="flex-shrink-0 text-[9px] font-mono text-text-muted/60 bg-surface-overlay px-1 py-0.5 rounded">
+      <span className="flex-shrink-0 text-xs font-mono text-text-muted bg-surface-overlay px-1 py-0.5 rounded">
         {scopeChip(action.scope)}
       </span>
 
@@ -490,9 +490,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
 
         {/* Scope picker — Global + Project (workspace scope deliberately omitted). */}
         <div className="flex flex-col gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Scope
-          </h3>
+          <Eyebrow>Scope</Eyebrow>
           <div className="flex items-center gap-4 flex-wrap">
             <ScopeRadio value="global" current={scope} label="Global" onChange={setScope} />
             <ScopeRadio
@@ -518,7 +516,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
             )}
           </div>
           {projects.length === 0 && (
-            <p className="text-[11px] text-text-muted">
+            <p className="text-sm text-text-muted">
               Add a project to author project-scoped actions.
             </p>
           )}
@@ -529,9 +527,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
           {/* Left: action list */}
           <div className="flex flex-col gap-2 lg:w-[45%] flex-shrink-0">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-                Actions at this scope
-              </h3>
+              <Eyebrow>Actions at this scope</Eyebrow>
             </div>
 
             <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 min-h-[200px]">
@@ -542,7 +538,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
               ) : actions.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-1 px-4 py-6 text-center">
                   <p className="text-xs text-text-muted">No actions at this scope.</p>
-                  <p className="text-[11px] text-text-muted/60">
+                  <p className="text-sm text-text-muted">
                     Global actions apply everywhere; project and workspace actions are additive.
                   </p>
                 </div>

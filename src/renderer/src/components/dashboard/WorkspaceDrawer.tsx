@@ -220,7 +220,7 @@ function OverridesSection({
           Workspace overrides
         </span>
         {hasAnyOverride && (
-          <span className="text-[10px] font-mono text-text-muted">{overrideCount} set</span>
+          <span className="text-xs font-mono text-text-muted">{overrideCount} set</span>
         )}
       </header>
 
@@ -258,10 +258,10 @@ function OverridesSection({
       {isDirty && (
         <div className="mx-4 mt-3 rounded-md border border-amber-400/30 bg-amber-400/[0.04] px-3 py-2.5 flex items-center gap-3">
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-          <span className="text-[11px] text-amber-200/90 flex-shrink-0">Settings changed</span>
+          <span className="text-sm text-amber-200/90 flex-shrink-0">Settings changed</span>
           <button
             onClick={onRestart}
-            className="ml-auto text-[11px] font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
+            className="ml-auto text-sm font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
           >
             Restart to apply
           </button>
@@ -272,7 +272,7 @@ function OverridesSection({
         <div className="px-4 py-4 mt-2">
           <button
             onClick={resetAll}
-            className="inline-flex items-center gap-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
+            className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
           >
             <ArrowCounterClockwise size={11} weight="bold" />
             Reset all overrides
@@ -309,7 +309,7 @@ function OverrideField<T extends string>({
   return (
     <div className="px-4 py-3 border-t border-border-default/30 first:border-t-0">
       <div className="flex items-center justify-between mb-1.5">
-        <label className="text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+        <label className="text-sm font-medium text-text-secondary uppercase tracking-wider">
           {label}
         </label>
         {isOverridden && (
@@ -360,7 +360,7 @@ export function WorkspaceDrawer({
     <div className="flex flex-col h-full w-full">
       {/* Drawer header — just the close button */}
       <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
-        <span className="text-[11px] font-medium text-text-muted px-1.5">Workspace Settings</span>
+        <span className="text-sm font-medium text-text-muted px-1.5">Workspace Settings</span>
         <button
           onClick={onClose}
           className="ml-auto w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"

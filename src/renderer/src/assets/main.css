@@ -1,10 +1,24 @@
 @import 'tailwindcss';
 
 /*
- * Geist Pixel (Square variant) — used for every font role in the app.
- * © Vercel Inc. — licensed under the SIL Open Font License 1.1
- * https://github.com/vercel/geist-pixel-font
+ * Geist family — self-hosted from the `geist` npm package (woff2 copied into
+ * ./fonts). Sans = UI/body, Mono = code/data, Pixel = wordmark + headers only.
+ * © Vercel Inc. — SIL Open Font License 1.1
  */
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('./fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 @font-face {
   font-family: 'Geist Pixel';
   src: url('./fonts/GeistPixel-Square.woff2') format('woff2');
@@ -24,9 +38,18 @@
    * before JS applies a data-theme attribute.
    */
   --color-surface-base: var(--color-surface-base);
-  --color-surface-raised: var(--color-surface-raised);
-  --color-surface-overlay: var(--color-surface-overlay);
+  --color-surface-raised: color-mix(
+    in oklch,
+    var(--color-accent) 4%,
+    var(--color-surface-raised-base)
+  );
+  --color-surface-overlay: color-mix(
+    in oklch,
+    var(--color-accent) 3%,
+    var(--color-surface-overlay-base)
+  );
   --color-border-default: var(--color-border-default);
+  --color-border-hover: var(--color-border-hover);
   --color-border-focus: var(--color-accent);
 
   --color-text-primary: var(--color-text-primary);
@@ -46,8 +69,23 @@
   --color-gh-draft: #6e7781;
 
   --font-sans:
-    'Geist Pixel', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-  --font-mono: 'Geist Pixel', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    'Geist Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-pixel: 'Geist Pixel', 'Geist Sans', monospace;
+
+  /* Type scale — rem is relative to the 14px default root, so values land on the
+     px targets below at the `default` font-scale and ride the small/large setting.
+     Do NOT change the html font-size to "fix" these — that rescales all spacing. */
+  --text-xs: 0.857rem; /* 12px  — caption / metadata (was 0.75rem ≈ 10.5px) */
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.929rem; /* 13px  — secondary UI */
+  --text-sm--line-height: 1.45;
+  --text-base: 1.071rem; /* 15px — body */
+  --text-base--line-height: 1.55;
+  --text-lg: 1.286rem; /* 18px  — subheading */
+  --text-lg--line-height: 1.3;
+  --text-xl: 1.571rem; /* 22px  — heading */
+  --text-xl--line-height: 1.2;
 }
 
 /* ---------------------------------------------------------------------------
@@ -59,42 +97,48 @@
 :root,
 [data-theme='midnight'] {
   --color-surface-base: #0b0b0c;
-  --color-surface-raised: #16161a;
-  --color-surface-overlay: #1f1f24;
+  --color-surface-raised-base: #16161a;
+  --color-surface-overlay-base: #1f1f24;
   --color-border-default: #27272a;
-  --color-text-primary: #f4f4f5;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted: #71717a;
+  --color-border-hover: #3f3f46;
+  --color-text-primary: oklch(96.5% 0.003 264);
+  --color-text-secondary: oklch(72% 0.005 264);
+  --color-text-muted: oklch(64% 0.005 264);
   /* theme-default accent; may be overridden by [data-accent] below */
   --color-accent: #d4a847;
   --color-accent-hover: #e0b558;
   --color-accent-on: #0b0b0c;
+  --body-weight: 350;
 }
 
 [data-theme='daylight'] {
   --color-surface-base: #fafaf7;
-  --color-surface-raised: #ffffff;
-  --color-surface-overlay: #f0f0eb;
+  --color-surface-raised-base: #ffffff;
+  --color-surface-overlay-base: #f0f0eb;
   --color-border-default: #d4d4d0;
-  --color-text-primary: #18181b;
-  --color-text-secondary: #52525b;
-  --color-text-muted: #8b8b8e;
+  --color-border-hover: #a1a19e;
+  --color-text-primary: oklch(22% 0.004 264);
+  --color-text-secondary: oklch(42% 0.006 264);
+  --color-text-muted: oklch(52% 0.006 264);
   --color-accent: #b8902f;
   --color-accent-hover: #c9a040;
   --color-accent-on: #ffffff;
+  --body-weight: 400;
 }
 
 [data-theme='eclipse'] {
-  --color-surface-base: #000000;
-  --color-surface-raised: #0a0a0a;
-  --color-surface-overlay: #141414;
-  --color-border-default: #1f1f1f;
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #b4b4b4;
-  --color-text-muted: #6b6b6b;
+  --color-surface-base: oklch(13% 0.002 264);
+  --color-surface-raised-base: oklch(16% 0.003 264);
+  --color-surface-overlay-base: oklch(20% 0.004 264);
+  --color-border-default: oklch(26% 0.004 264);
+  --color-border-hover: oklch(36% 0.004 264);
+  --color-text-primary: oklch(97% 0.003 264);
+  --color-text-secondary: oklch(76% 0.004 264);
+  --color-text-muted: oklch(61% 0.004 264);
   --color-accent: #e8c060;
   --color-accent-hover: #f0cc72;
   --color-accent-on: #000000;
+  --body-weight: 350;
 }
 
 /* ---------------------------------------------------------------------------
@@ -165,11 +209,22 @@ body {
   background: transparent;
   color: var(--color-text-primary, #f4f4f5);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--text-base);
+  font-weight: var(--body-weight, 400);
+  line-height: 1.55;
+  font-kerning: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   user-select: none;
   overflow: hidden;
+}
+
+/* Tabular figures + no ligatures where columns/code must align */
+code,
+pre,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-variant-ligatures: none;
 }
 
 .app {

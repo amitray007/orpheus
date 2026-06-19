@@ -1,11 +1,11 @@
 import type React from 'react'
-import { SettingRow } from './primitives'
+import { SettingRow, SectionTitle, Eyebrow } from './primitives'
 
 export function OrpheusDeveloperSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Developer</h2>
+        <SectionTitle>Developer</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Diagnostics for debugging Orpheus itself. Different from the Claude developer section,
           which controls claude code&apos;s debug + telemetry flags.
@@ -13,9 +13,7 @@ export function OrpheusDeveloperSection(): React.JSX.Element {
       </div>
 
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Diagnostics
-        </h3>
+        <Eyebrow className="mb-3">Diagnostics</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Open DevTools"

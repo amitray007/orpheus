@@ -43,7 +43,7 @@ export function SettingRow({
           {chips.map((key) => (
             <code
               key={key}
-              className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
+              className="text-xs font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
             >
               {key}
             </code>
@@ -355,7 +355,7 @@ export function Select<T extends string>({
                   <div
                     key={opt.value}
                     aria-hidden="true"
-                    className="px-2.5 py-1 mt-1 text-[10px] text-text-muted uppercase tracking-wider font-medium border-t border-border-default/40"
+                    className="px-2.5 py-1 mt-1 text-xs text-text-muted uppercase tracking-wider font-medium border-t border-border-default/40"
                   >
                     Always latest
                   </div>
@@ -567,7 +567,7 @@ export function RuleListEditor({
           {chips.map((key) => (
             <code
               key={key}
-              className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
+              className="text-xs font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none"
             >
               {key}
             </code>
@@ -677,5 +677,37 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
         />
       )}
     </div>
+  )
+}
+
+// SectionTitle — the pixel-accented heading for settings sections / page panels.
+export function SectionTitle({
+  children,
+  className = ''
+}: {
+  children: React.ReactNode
+  className?: string
+}): React.JSX.Element {
+  return (
+    <h2 className={`font-pixel text-base font-semibold text-text-primary ${className}`}>
+      {children}
+    </h2>
+  )
+}
+
+// Eyebrow — small uppercase group label; pixel for signature, tracked for legibility.
+export function Eyebrow({
+  children,
+  className = ''
+}: {
+  children: React.ReactNode
+  className?: string
+}): React.JSX.Element {
+  return (
+    <p
+      className={`font-pixel text-xs font-medium uppercase tracking-wider text-text-secondary ${className}`}
+    >
+      {children}
+    </p>
   )
 }

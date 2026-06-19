@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type React from 'react'
 import { ArrowSquareOut } from '@phosphor-icons/react'
 import { Skeleton } from '../../Skeleton'
+import { SectionTitle, Eyebrow } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeAboutSection — claude binary info, paths, docs links
@@ -25,7 +26,7 @@ export function ClaudeAboutSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">About Claude</h2>
+        <SectionTitle>About Claude</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Claude Code version, binary path, and links to documentation.
         </p>
@@ -33,9 +34,7 @@ export function ClaudeAboutSection(): React.JSX.Element {
 
       {/* Claude Code info */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Claude Code
-        </h3>
+        <Eyebrow>Claude Code</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <InfoRow label="Version" value={claudeVersion} mono pendingWidth="6rem" />
           <InfoRow label="Binary path" value={claudePath} mono pendingWidth="18rem" />
@@ -49,9 +48,7 @@ export function ClaudeAboutSection(): React.JSX.Element {
 
       {/* Documentation links */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Documentation
-        </h3>
+        <Eyebrow>Documentation</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg divide-y divide-border-default/40">
           <ExternalLinkRow label="Claude Code docs" url="https://code.claude.com/docs" />
           <ExternalLinkRow

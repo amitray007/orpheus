@@ -76,7 +76,7 @@ function ModelContextChip({ workspaceId }: ModelContextChipProps): React.JSX.Ele
 
   return (
     <span
-      className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
+      className="inline-flex items-center gap-1 text-xs text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
       title={`Model: ${info.modelId} · Context: ${info.contextBudget.toLocaleString()} tokens`}
     >
       <Cpu size={10} className="flex-shrink-0 opacity-60" />
@@ -150,7 +150,7 @@ export function WorkspaceTitleBar({
       {/* Forked-from chip — shown when this workspace was forked from another session */}
       {forkedFromSessionId && (
         <span
-          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-surface-overlay/50 border border-border-default/40"
+          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-text-muted bg-surface-overlay/50 border border-border-default/40"
           title={
             forkedFromName ? `Forked from: ${forkedFromName}` : 'Forked from another workspace'
           }

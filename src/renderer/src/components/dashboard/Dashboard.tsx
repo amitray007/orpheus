@@ -964,7 +964,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
               ? 'flex-1 overflow-hidden min-h-0'
               : view.kind === 'settings'
                 ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
-                : 'flex-1 overflow-y-auto px-8 py-6 bg-surface-base'
+                : view.kind === 'sessions'
+                  ? // Workspaces kanban: tight padding so the board sits close to the app edges
+                    'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
+                  : 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
           }
         >
           <MainContent

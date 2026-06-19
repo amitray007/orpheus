@@ -248,7 +248,7 @@ function WorkspaceSubRow({
           <GitFork
             size={10}
             weight="duotone"
-            className="text-text-muted/70 flex-shrink-0"
+            className="text-text-muted flex-shrink-0"
             aria-label="forked workspace"
           />
         )}
@@ -284,7 +284,7 @@ function WorkspaceSubRow({
           )}
           {/* Git diff chip */}
           {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
-            <span className="text-[10px] font-mono flex items-center gap-1 flex-shrink-0">
+            <span className="text-xs font-mono flex items-center gap-1 flex-shrink-0">
               {gitStatus.insertions > 0 && (
                 <span className="text-emerald-400">+{gitStatus.insertions}</span>
               )}
@@ -407,7 +407,7 @@ function PinnedRow({
           >
             {dn.text}
           </span>
-          <span className="text-[10px] text-text-muted truncate leading-none">{project.name}</span>
+          <span className="text-xs text-text-muted truncate leading-none">{project.name}</span>
         </span>
       </button>
       {menu && (

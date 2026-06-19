@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import {
-  Check,
-  Copy,
-  Files,
-  GitBranch,
-  GitCommit as GitCommitIcon,
-  MagnifyingGlass
-} from '@phosphor-icons/react'
+import { Check, Copy, Files, GitBranch, MagnifyingGlass } from '@phosphor-icons/react'
 import type { GitBranchInfo, GitCommit } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { CommitListSkeleton } from '../../Skeleton'
@@ -111,7 +104,7 @@ function CommitRow({ commit }: { commit: GitCommit }): React.JSX.Element {
           {relativeTime(commit.timestamp)}
         </span>
         {hasStats && (
-          <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px]">
+          <span className="ml-auto inline-flex items-center gap-2 font-mono text-sm">
             <span
               className="inline-flex items-center gap-1 text-text-muted"
               title={`${commit.filesChanged} file${commit.filesChanged === 1 ? '' : 's'} changed`}
@@ -150,6 +143,9 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
   const [total, setTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
+  // Total commits on the selected branch with no filters applied. Used to
+  // distinguish "no commits at all on this branch" from "filtered to zero".
+  const [allTimeTotal, setAllTimeTotal] = useState<number | null>(null)
 
   // Debounce search
   useEffect(() => {
@@ -186,6 +182,27 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
       cancelled = true
     }
   }, [cwd])
+
+  // Fetch unfiltered commit count for the selected branch so we can distinguish
+  // "no commits at all" from "filtered to zero" for the empty-state UI.
+  useEffect(() => {
+    if (!branch) return
+    let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting derived state before async fetch is the idiomatic pattern
+    setAllTimeTotal(null)
+    window.api.git
+      .count(cwd, { branch })
+      .then((count) => {
+        if (!cancelled) setAllTimeTotal(count)
+      })
+      .catch(() => {
+        // On error assume there could be commits — keeps controls visible.
+        if (!cancelled) setAllTimeTotal(1)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [cwd, branch])
 
   // Reset to page 1 whenever the filters change (branch / search / date range)
   useEffect(() => {
@@ -230,64 +247,80 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
 
   const branchOptions = branches.map((b) => ({ value: b.name, label: b.name }))
 
+  // No git repo at all, or no commits on this branch (unfiltered).
+  const noDataAtAll = hasFetchedOnce && (branches.length === 0 || allTimeTotal === 0) && !error
+  // Data exists but current filter/search/date-range yields zero results.
+  // Guard with allTimeTotal !== null to avoid a brief flash while the unfiltered
+  // count resolves on branch switch — without the guard the list may briefly
+  // show "No matching commits." before allTimeTotal arrives and flips noDataAtAll.
+  const filteredToZero =
+    allTimeTotal !== null && !noDataAtAll && hasFetchedOnce && commits.length === 0 && !error
+
   return (
     <div className="flex flex-col gap-3">
-      {/* Filter bar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[180px] max-w-sm">
-          <MagnifyingGlass
-            size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-          />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search commits"
-            className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-          />
-        </div>
-        <div className="w-44">
-          <Select<DateRange>
-            ariaLabel="Date range"
-            options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
-            value={dateRange}
-            onChange={setDateRange}
-          />
-        </div>
-        <div className="ml-auto inline-flex items-center gap-2">
-          <span className="text-xs text-text-muted">Branch</span>
+      {/* Filter bar — hidden when there are no commits to search/filter */}
+      {!noDataAtAll && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[180px] max-w-sm">
+            <MagnifyingGlass
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search commits"
+              className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+            />
+          </div>
           <div className="w-44">
-            {branches.length > 0 ? (
-              <Select
-                ariaLabel="Branch"
-                options={branchOptions}
-                value={branch}
-                onChange={(v) => setBranch(v)}
-              />
-            ) : (
-              <div className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted">
-                —
-              </div>
-            )}
+            <Select<DateRange>
+              ariaLabel="Date range"
+              options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
+              value={dateRange}
+              onChange={setDateRange}
+            />
+          </div>
+          <div className="ml-auto inline-flex items-center gap-2">
+            <span className="text-xs text-text-muted">Branch</span>
+            <div className="w-44">
+              {branches.length > 0 ? (
+                <Select
+                  ariaLabel="Branch"
+                  options={branchOptions}
+                  value={branch}
+                  onChange={(v) => setBranch(v)}
+                />
+              ) : (
+                <div className="px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-muted">
+                  —
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Commits list */}
       {error ? (
         <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
-          <GitBranch size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
+          <GitBranch size={22} className="text-text-muted mx-auto mb-2" />
           <p className="text-sm text-text-muted">{error}</p>
         </div>
       ) : !hasFetchedOnce ? (
         <CommitListSkeleton count={5} />
-      ) : hasFetchedOnce && commits.length === 0 ? (
-        <div className="rounded-lg border border-border-default bg-surface-raised py-10 text-center">
-          <GitCommitIcon size={22} className="text-text-muted opacity-50 mx-auto mb-2" />
-          <p className="text-sm text-text-muted">
-            {debouncedSearch ? 'No commits match your search' : 'No commits in this range'}
-          </p>
+      ) : noDataAtAll || filteredToZero ? (
+        <div className="relative rounded-lg border border-border-default bg-surface-raised overflow-hidden">
+          <div aria-hidden className="blur-[3px] opacity-40 pointer-events-none select-none">
+            <CommitListSkeleton count={5} />
+          </div>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-4 text-center">
+            <GitBranch size={20} className="text-text-muted" />
+            <p className="text-sm text-text-muted">
+              {noDataAtAll ? 'No commits yet on this branch.' : 'No matching commits.'}
+            </p>
+          </div>
         </div>
       ) : (
         <div className="flex flex-col gap-2">

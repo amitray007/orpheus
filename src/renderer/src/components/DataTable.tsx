@@ -260,12 +260,14 @@ export function DataTable<R>({
 
           if (rows.length === 0) {
             return (
-              <div
-                role="rowgroup"
-                style={{ minHeight: minBodyHeight }}
-                className="flex items-center justify-center px-4"
-              >
-                {emptyState ?? <span className="text-sm text-text-muted">No data</span>}
+              <div role="rowgroup" style={{ minHeight: minBodyHeight }} className="relative">
+                {/* Ghosted rows preview the table structure behind the empty message */}
+                <div aria-hidden className="blur-[3px] opacity-40 pointer-events-none select-none">
+                  <SkeletonRows columns={columns} count={skeletonCount} />
+                </div>
+                <div className="absolute inset-0 flex items-center justify-center px-4">
+                  {emptyState ?? <span className="text-sm text-text-muted">No data</span>}
+                </div>
               </div>
             )
           }

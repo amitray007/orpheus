@@ -7,11 +7,10 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
-import { GitMerge } from '@phosphor-icons/react'
+import { GitMerge, Kanban } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
-import { DotmSquare18 } from '../ui/dotm-square-18'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -143,15 +142,15 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
       {/* Row 2: project name (left) + relative time (right) */}
       <span className="flex items-center justify-between gap-2 min-w-0">
-        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
+        <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-secondary truncate min-w-0 max-w-[70%]">
           {projectName}
         </span>
-        <span className="text-[11px] text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
+        <span className="text-sm text-text-muted flex-shrink-0">{relativeTime(timestamp)}</span>
       </span>
 
       {/* Row 3: git branch + (when PR exists for this branch) PR chip on the right */}
       {(branch || pr) && (
-        <span className="flex items-center gap-2 text-[11px] text-text-muted min-w-0">
+        <span className="flex items-center gap-2 text-sm text-text-muted min-w-0">
           {branch && (
             <span className="flex items-center gap-1 min-w-0">
               <GitMerge size={11} className="flex-shrink-0 opacity-60" weight="bold" />
@@ -168,7 +167,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
       {/* Row 4: user prompt preview — up to 2 lines, italic, muted */}
       {userPrompt && (
-        <span className="text-[11px] text-text-muted italic line-clamp-2 leading-relaxed">
+        <span className="text-sm text-text-muted italic line-clamp-2 leading-relaxed">
           &ldquo;{userPrompt}&rdquo;
         </span>
       )}
@@ -208,7 +207,7 @@ const KanbanColumn = memo(function KanbanColumn({
       {/* Column header — sticky when the column body scrolls */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border-default bg-surface-raised sticky top-0 z-10">
         <ActivityIndicator detail={config.indicatorDetail} className="flex-shrink-0" />
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
           {config.label}
           <span className="font-normal text-text-muted normal-case tracking-normal">
             · {workspaces.length}
@@ -219,9 +218,7 @@ const KanbanColumn = memo(function KanbanColumn({
       {/* Column body — vertically scrollable */}
       <div className="flex-1 overflow-y-auto min-h-0 p-2 flex flex-col gap-2">
         {workspaces.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center py-8">
-            <span className="text-xs text-text-muted">No workspaces</span>
-          </div>
+          <p className="pt-3 px-3 text-xs text-text-muted">No workspaces</p>
         ) : (
           workspaces.map((ws) => {
             const project = projectsById.get(ws.projectId)
@@ -298,39 +295,50 @@ export function WorkspacesView({
     return result
   }, [activeWorkspaces, workspaceActivities])
 
-  return (
-    <div className="flex flex-col gap-4 h-full min-h-0">
-      {/* Header — Sound Bars (DotmSquare18) in top-right signals "live activity tracking".
-          Persistent-pulse approach: wiring a sessionsLoading bool down through
-          MainContent → WorkspacesView is possible but hairy since the kanban also
-          reacts to real-time IPC events (onActivityChanged), not just the initial fetch.
-          A persistent, faint indicator communicates "always listening" semantics more
-          accurately and avoids a loading flicker on every navigation. */}
-      <div className="flex-shrink-0 flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-text-primary">Workspaces</h1>
-        <span className="text-text-muted opacity-50" title="Live activity">
-          <DotmSquare18 size={16} dotSize={2} speed={0.8} animated />
-        </span>
-      </div>
+  const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
 
-      {/* Kanban board — always render the 4-column shell; per-column "No workspaces"
-          handles the empty case so the layout stays consistent. */}
-      <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
-        {COLUMN_CONFIGS.map((config) => (
-          <KanbanColumn
-            key={config.key}
-            config={config}
-            workspaces={grouped[config.key]}
-            projectsById={projectsById}
-            sessionsById={sessionsById}
-            activities={workspaceActivities}
-            titleByWorkspaceId={titleByWorkspaceId}
-            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-            prByWorkspaceId={prByWorkspaceId}
-            onNavigateToWorkspace={onNavigateToWorkspace}
-          />
-        ))}
+  const columns = COLUMN_CONFIGS.map((config) => (
+    <KanbanColumn
+      key={config.key}
+      config={config}
+      workspaces={grouped[config.key]}
+      projectsById={projectsById}
+      sessionsById={sessionsById}
+      activities={workspaceActivities}
+      titleByWorkspaceId={titleByWorkspaceId}
+      gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+      prByWorkspaceId={prByWorkspaceId}
+      onNavigateToWorkspace={onNavigateToWorkspace}
+    />
+  ))
+
+  // Empty board: preview the kanban structure blurred behind a centered empty state.
+  if (totalWorkspaces === 0) {
+    return (
+      <div className="relative flex flex-col h-full min-h-0">
+        <div
+          aria-hidden
+          className="grid grid-cols-4 gap-3 flex-1 min-h-0 blur-[3px] opacity-40 pointer-events-none select-none"
+        >
+          {columns}
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 max-w-xs text-center">
+            <Kanban size={28} className="text-text-muted" weight="thin" />
+            <p className="text-lg font-semibold text-text-primary">No workspaces yet</p>
+            <p className="text-sm text-text-muted">
+              Open a project and start a Claude session — your workspaces will appear here, grouped
+              by activity.
+            </p>
+          </div>
+        </div>
       </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">{columns}</div>
     </div>
   )
 }

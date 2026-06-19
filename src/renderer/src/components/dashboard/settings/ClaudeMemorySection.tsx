@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { ClaudeGlobalSettings } from '@shared/types'
-import { SettingRow, Toggle, NumberInput } from './primitives'
+import { SettingRow, Toggle, NumberInput, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         <div>
-          <h2 className="text-base font-semibold text-text-primary">Memory &amp; Context</h2>
+          <SectionTitle>Memory &amp; Context</SectionTitle>
           <p className="text-xs text-text-muted mt-1">
             Fine-grained control over CLAUDE.md auto-load behavior, context window limits, and
             compaction thresholds.
@@ -54,7 +54,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Memory &amp; Context</h2>
+        <SectionTitle>Memory &amp; Context</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Fine-grained control over CLAUDE.md auto-load behavior, context window limits, and
           compaction thresholds. Changes save automatically.
@@ -63,9 +63,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
 
       {/* Memory files */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Memory files
-        </h3>
+        <Eyebrow className="mb-3">Memory files</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Disable git instructions"
@@ -83,9 +81,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
 
       {/* Token limits */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Token limits
-        </h3>
+        <Eyebrow className="mb-3">Token limits</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Max output tokens"
@@ -114,9 +110,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
 
       {/* Compaction */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Compaction
-        </h3>
+        <Eyebrow className="mb-3">Compaction</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Compaction threshold"
@@ -138,9 +132,7 @@ export function ClaudeMemorySection(): React.JSX.Element {
 
       {/* Token limits & memory */}
       <section className="flex flex-col">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary mb-3">
-          Token limits &amp; memory
-        </h3>
+        <Eyebrow className="mb-3">Token limits &amp; memory</Eyebrow>
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Max thinking tokens"

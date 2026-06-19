@@ -327,14 +327,14 @@ function SearchResults(props: {
             onClick={() => props.onSelect(r)}
             className="w-full flex flex-col gap-0.5 px-3 py-2 text-left transition-colors duration-150 cursor-pointer hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40"
           >
-            <span className="text-[10px] text-text-muted leading-none">
+            <span className="text-xs text-text-muted leading-none">
               {r.entry.sectionGroup} › {r.entry.sectionLabel}
             </span>
             <span className="text-sm text-text-primary leading-snug">
               <HighlightedLabel label={r.entry.label} query={props.query} />
             </span>
             {r.matchedField === 'mapsTo' && r.matchedText && (
-              <code className="text-[10px] font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none self-start">
+              <code className="text-xs font-mono text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 leading-none self-start">
                 {r.matchedText}
               </code>
             )}
@@ -361,7 +361,7 @@ function GroupedNav(props: {
           {/* Divider between groups */}
           {groupIdx > 0 && <div className="my-3 mx-3 border-t border-border-default/60" />}
           {/* Group label */}
-          <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-text-muted select-none">
+          <p className="px-3 mb-1 text-xs font-semibold uppercase tracking-widest text-text-muted select-none">
             {group.label}
           </p>
           {/* Section items — no mx-* so active bg stretches full nav width */}

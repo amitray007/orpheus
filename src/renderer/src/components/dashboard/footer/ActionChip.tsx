@@ -227,7 +227,7 @@ export function ActionChip({
           'border border-transparent',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
           disabled
-            ? 'cursor-not-allowed text-text-muted/70 bg-surface-overlay/40'
+            ? 'cursor-not-allowed text-text-muted bg-surface-overlay/40'
             : showPrompt
               ? 'text-text-primary bg-surface-overlay border border-border-default/60'
               : [
@@ -265,7 +265,7 @@ export function ActionChip({
           >
             {prompts.map((p, idx) => (
               <div key={p.key} className="flex flex-col gap-0.5">
-                <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">
+                <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
                   {p.label}
                 </span>
                 <input
@@ -293,14 +293,14 @@ export function ActionChip({
               <button
                 type="button"
                 onClick={() => setShowPrompt(false)}
-                className="text-[10px] text-text-muted hover:text-text-primary px-2 py-0.5 rounded hover:bg-surface-raised transition-colors cursor-pointer"
+                className="text-xs text-text-muted hover:text-text-primary px-2 py-0.5 rounded hover:bg-surface-raised transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handlePromptSubmit}
-                className="text-[10px] font-medium text-white bg-accent hover:bg-accent/90 px-2 py-0.5 rounded transition-colors cursor-pointer"
+                className="text-xs font-medium text-white bg-accent hover:bg-accent/90 px-2 py-0.5 rounded transition-colors cursor-pointer"
               >
                 Apply
               </button>
@@ -312,7 +312,7 @@ export function ActionChip({
       {/* Tooltip */}
       {tooltip && !showPrompt && (
         <div
-          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-[10px] text-text-primary bg-surface-overlay border border-border-default shadow-md whitespace-nowrap z-50 pointer-events-none"
+          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-xs text-text-primary bg-surface-overlay border border-border-default shadow-md whitespace-nowrap z-50 pointer-events-none"
           role="tooltip"
         >
           {tooltip}

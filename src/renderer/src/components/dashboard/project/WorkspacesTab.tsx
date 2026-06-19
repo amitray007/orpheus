@@ -5,7 +5,6 @@ import {
   MagnifyingGlass,
   PencilSimple,
   PushPin,
-  Terminal,
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
@@ -13,7 +12,7 @@ import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@share
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
-import { Select } from '../settings/primitives'
+import { Eyebrow, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
@@ -437,18 +436,22 @@ export function WorkspacesTab({
     [gitByWs, titleByWs, workspaceActivities, renamingId, renameValue, sessionStats]
   )
 
+  // Whether the raw workspace list (before any filtering) has any entries.
+  // Used to distinguish "no workspaces at all" from "filtered to zero".
+  const hasWorkspaces = active.length > 0
+
   return (
     <div className="flex flex-col gap-4">
       {/* Active workspaces (left) + Sessions panel (right) — Sessions
           replaces the archived table that lived here before v34. */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2 min-w-0">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+          <Eyebrow>
             Workspaces · {filtered.length}
             {filtered.length !== active.length && ` of ${active.length}`}
-          </h3>
+          </Eyebrow>
 
-          {/* Filter bar */}
+          {/* Filter bar — always present so search + filter stay available, even when empty */}
           <div className="flex items-center gap-3">
             <div className="relative flex-1 min-w-0">
               <MagnifyingGlass
@@ -485,14 +488,13 @@ export function WorkspacesTab({
             rowKey={(ws) => ws.id}
             loading={loading}
             emptyState={
-              <div className="flex flex-col items-center gap-2">
-                <Terminal size={20} className="text-text-muted opacity-50" />
-                <p className="text-xs text-text-muted">
-                  {debouncedSearch || activityFilter !== 'all'
-                    ? 'No workspaces match your filter'
-                    : 'No workspaces yet'}
+              !hasWorkspaces ? (
+                <p className="text-sm text-text-muted text-center">
+                  No workspaces yet. Use + New workspace to start one.
                 </p>
-              </div>
+              ) : (
+                <p className="text-sm text-text-muted text-center">No matching workspaces.</p>
+              )
             }
             sortBy={activeSortBy}
             sortDir={activeSortDir}
@@ -517,17 +519,13 @@ export function WorkspacesTab({
         </div>
 
         <div className="flex flex-col gap-2 min-w-0">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-            Sessions
-          </h3>
+          <Eyebrow>Sessions</Eyebrow>
           <SessionsTab projectId={projectId} onResumedInWorkspace={onResumedInWorkspace} compact />
         </div>
       </div>
 
       <div className="flex flex-col gap-2 mt-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Recent commits
-        </h3>
+        <Eyebrow>Recent commits</Eyebrow>
         <CommitsTab cwd={projectPath} />
       </div>
 

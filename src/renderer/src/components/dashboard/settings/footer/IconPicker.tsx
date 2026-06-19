@@ -217,7 +217,7 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
             {/* Icon grid */}
             <div className="overflow-y-auto p-2">
               {filtered.length === 0 ? (
-                <p className="text-[11px] text-text-muted text-center py-4">No icons match</p>
+                <p className="text-sm text-text-muted text-center py-4">No icons match</p>
               ) : (
                 <div className="grid grid-cols-8 gap-0.5">
                   {filtered.map((name) => (

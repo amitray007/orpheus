@@ -3,7 +3,7 @@ import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSubagent, ClaudeSubagentDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select } from './primitives'
+import { Select, SectionTitle, Eyebrow } from './primitives'
 
 // ---------------------------------------------------------------------------
 // ClaudeSubagentsSection — full CRUD for ~/.claude/agents/ and project .claude/agents/
@@ -115,7 +115,7 @@ function SubagentForm({
 
   const inputClass =
     'w-full text-xs bg-surface-overlay border border-border-default rounded-md px-2.5 py-1.5 text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50'
-  const labelClass = 'block text-[10px] font-medium text-text-muted mb-1 uppercase tracking-wider'
+  const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
 
   return (
     <div
@@ -154,7 +154,7 @@ function SubagentForm({
           <label htmlFor="agent-name" className={labelClass}>
             Name{' '}
             {nameFixed && (
-              <span className="normal-case text-text-muted/60">(locked — delete to rename)</span>
+              <span className="normal-case text-text-muted">(locked — delete to rename)</span>
             )}
           </label>
           <input
@@ -172,7 +172,7 @@ function SubagentForm({
         {/* Model */}
         <div className="w-36 flex-shrink-0">
           <label htmlFor="agent-model" className={labelClass}>
-            Model <span className="normal-case text-text-muted/60">(empty = inherit)</span>
+            Model <span className="normal-case text-text-muted">(empty = inherit)</span>
           </label>
           <input
             id="agent-model"
@@ -204,9 +204,7 @@ function SubagentForm({
       <div>
         <label htmlFor="agent-tools" className={labelClass}>
           Tools{' '}
-          <span className="normal-case text-text-muted/60">
-            (comma-separated, empty = all tools)
-          </span>
+          <span className="normal-case text-text-muted">(comma-separated, empty = all tools)</span>
         </label>
         <input
           id="agent-tools"
@@ -377,7 +375,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <div>
-        <h2 className="text-base font-semibold text-text-primary">Subagents</h2>
+        <SectionTitle>Subagents</SectionTitle>
         <p className="text-xs text-text-muted mt-1">
           Custom subagents from ~/.claude/agents/ and each project&apos;s .claude/agents/.
         </p>
@@ -385,9 +383,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
 
       {/* Header + add button */}
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-          Configured subagents
-        </span>
+        <Eyebrow>Configured subagents</Eyebrow>
         <button
           ref={addButtonRef}
           type="button"
@@ -433,7 +429,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
           <div className="flex flex-col gap-4">
             {groupAgents(agents).map((group) => (
               <div key={group.key} className="flex flex-col">
-                <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+                <div className="text-xs uppercase tracking-wider text-text-muted mb-1.5">
                   {group.label}
                 </div>
                 {group.agents.map((agent) => {
@@ -481,13 +477,13 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                                 {agent.name}
                               </span>
                               {agent.model && (
-                                <span className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
+                                <span className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
                                   {agent.model}
                                 </span>
                               )}
                               {agent.tools && (
                                 <span
-                                  className="text-[10px] text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
+                                  className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
                                   title={agent.tools.join(', ')}
                                 >
                                   {agent.tools.length} tool{agent.tools.length !== 1 ? 's' : ''}
@@ -547,7 +543,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                                 const v = agent.frontmatter[k]
                                 const display = Array.isArray(v) ? v.join(', ') : v
                                 return (
-                                  <div key={k} className="flex gap-2 text-[11px]">
+                                  <div key={k} className="flex gap-2 text-sm">
                                     <span className="text-text-muted font-mono flex-shrink-0">
                                       {k}:
                                     </span>
@@ -558,17 +554,15 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                             </div>
                           )}
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                            <span className="text-xs uppercase tracking-wider text-text-muted">
                               Body
                             </span>
                             {agent.bodyPreview ? (
-                              <div className="font-mono whitespace-pre-wrap text-[11px] text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
+                              <div className="font-mono whitespace-pre-wrap text-sm text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
                                 {agent.bodyPreview}
                               </div>
                             ) : (
-                              <p className="text-[11px] text-text-muted italic">
-                                (no body content)
-                              </p>
+                              <p className="text-sm text-text-muted italic">(no body content)</p>
                             )}
                           </div>
                         </div>

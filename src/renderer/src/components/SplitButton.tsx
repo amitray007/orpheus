@@ -111,7 +111,7 @@ export function SplitButton<T extends string>({
           className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
         >
           {popoverHeader && (
-            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted border-b border-border-default/60">
+            <div className="px-3 py-1.5 text-xs uppercase tracking-wider text-text-muted border-b border-border-default/60">
               {popoverHeader}
             </div>
           )}
