@@ -91,9 +91,9 @@
   --color-surface-raised: #16161a;
   --color-surface-overlay: #1f1f24;
   --color-border-default: #27272a;
-  --color-text-primary: #f4f4f5;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted: #71717a;
+  --color-text-primary: oklch(96.5% 0.003 264);
+  --color-text-secondary: oklch(72% 0.005 264);
+  --color-text-muted: oklch(62% 0.005 264);
   /* theme-default accent; may be overridden by [data-accent] below */
   --color-accent: #d4a847;
   --color-accent-hover: #e0b558;
@@ -106,9 +106,9 @@
   --color-surface-raised: #ffffff;
   --color-surface-overlay: #f0f0eb;
   --color-border-default: #d4d4d0;
-  --color-text-primary: #18181b;
-  --color-text-secondary: #52525b;
-  --color-text-muted: #8b8b8e;
+  --color-text-primary: oklch(22% 0.004 264);
+  --color-text-secondary: oklch(42% 0.006 264);
+  --color-text-muted: oklch(52% 0.006 264);
   --color-accent: #b8902f;
   --color-accent-hover: #c9a040;
   --color-accent-on: #ffffff;
@@ -120,9 +120,9 @@
   --color-surface-raised: #0a0a0a;
   --color-surface-overlay: #141414;
   --color-border-default: #1f1f1f;
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #b4b4b4;
-  --color-text-muted: #6b6b6b;
+  --color-text-primary: oklch(97% 0 0);
+  --color-text-secondary: oklch(76% 0.004 264);
+  --color-text-muted: oklch(61% 0.004 264);
   --color-accent: #e8c060;
   --color-accent-hover: #f0cc72;
   --color-accent-on: #000000;
