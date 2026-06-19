@@ -22,9 +22,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Prebuilt xcframework — Lakr233/libghostty-spm (MIT, weekly auto-rebuilds)
-GHOSTTYKIT_URL="https://github.com/Lakr233/libghostty-spm/releases/download/storage.1.1.4/GhosttyKit.xcframework.zip"
-GHOSTTYKIT_SHA256="feab989335ed9be4ab0a01923b4d7f319c3bff63aabb4104474c686812cd3fd1"
-GHOSTTYKIT_LABEL="storage.1.1.4 (Ghostty rolling)"
+GHOSTTYKIT_URL="https://github.com/Lakr233/libghostty-spm/releases/download/storage.1.2.6/GhosttyKit.xcframework.zip"
+GHOSTTYKIT_SHA256="3e9bb7768f5e1d57bd7d4ceb7b5f53a60673933b69758a36775390ceed60264d"
+GHOSTTYKIT_LABEL="storage.1.2.6 (Ghostty rolling)"
 
 # Ghostty source clone — for terminfo/78/xterm-ghostty and shell-integration files
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
