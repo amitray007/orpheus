@@ -439,10 +439,6 @@ export function WorkspacesTab({
   // Whether the raw workspace list (before any filtering) has any entries.
   // Used to distinguish "no workspaces at all" from "filtered to zero".
   const hasWorkspaces = active.length > 0
-  // Whether the current filter/search yields any results.
-  const hasFilteredWorkspaces = filtered.length > 0
-  // Whether any filter is active (search term or non-default activity filter).
-  const isFiltering = debouncedSearch !== '' || activityFilter !== 'all'
 
   return (
     <div className="flex flex-col gap-4">
@@ -488,39 +484,40 @@ export function WorkspacesTab({
             </div>
           )}
 
-          {!hasWorkspaces && !loading ? (
-            <p className="text-sm text-text-muted py-6 text-center">
-              No workspaces yet. Use + New workspace to start one.
-            </p>
-          ) : !hasFilteredWorkspaces && isFiltering ? (
-            <p className="text-sm text-text-muted py-6 text-center">No matching workspaces.</p>
-          ) : (
-            <DataTable<WorkspaceRecord>
-              columns={activeColumns}
-              rows={activePaginated}
-              rowKey={(ws) => ws.id}
-              loading={loading}
-              sortBy={activeSortBy}
-              sortDir={activeSortDir}
-              onSortChange={(by, dir) => {
-                if (by === 'lastOpenedAt' || by === 'messages') {
-                  setActiveSortBy(by)
-                  setActiveSortDir(dir)
-                  setActivePage(1)
-                }
-              }}
-              onRowClick={(ws) => {
-                if (renamingId === ws.id) return
-                onSelectWorkspace(ws.id)
-              }}
-              pagination={{
-                page: activePage,
-                pageSize: PAGE_SIZE,
-                total: filtered.length,
-                onPageChange: setActivePage
-              }}
-            />
-          )}
+          <DataTable<WorkspaceRecord>
+            columns={activeColumns}
+            rows={activePaginated}
+            rowKey={(ws) => ws.id}
+            loading={loading}
+            emptyState={
+              !hasWorkspaces ? (
+                <p className="text-sm text-text-muted text-center">
+                  No workspaces yet. Use + New workspace to start one.
+                </p>
+              ) : (
+                <p className="text-sm text-text-muted text-center">No matching workspaces.</p>
+              )
+            }
+            sortBy={activeSortBy}
+            sortDir={activeSortDir}
+            onSortChange={(by, dir) => {
+              if (by === 'lastOpenedAt' || by === 'messages') {
+                setActiveSortBy(by)
+                setActiveSortDir(dir)
+                setActivePage(1)
+              }
+            }}
+            onRowClick={(ws) => {
+              if (renamingId === ws.id) return
+              onSelectWorkspace(ws.id)
+            }}
+            pagination={{
+              page: activePage,
+              pageSize: PAGE_SIZE,
+              total: filtered.length,
+              onPageChange: setActivePage
+            }}
+          />
         </div>
 
         <div className="flex flex-col gap-2 min-w-0">

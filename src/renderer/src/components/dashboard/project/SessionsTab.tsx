@@ -443,29 +443,32 @@ export function SessionsTab({
         </div>
       )}
 
-      {noSessionsAtAll ? (
-        <p className="text-sm text-text-muted py-6 text-center">
-          No sessions yet — start Claude Code in this project and your sessions will appear here.
-        </p>
-      ) : (
-        <DataTable<SessionRecord>
-          columns={columns}
-          rows={rows}
-          rowKey={(r) => r.id}
-          loading={loading}
-          emptyState={filteredEmptyState}
-          sortBy={sortBy}
-          sortDir={sortDir}
-          onSortChange={(by, dir) => changeSort(by as SortBy, dir)}
-          pagination={{
-            page,
-            pageSize: PAGE_SIZE,
-            total,
-            onPageChange: setPage
-          }}
-          onRowClick={handleRowClick}
-        />
-      )}
+      <DataTable<SessionRecord>
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.id}
+        loading={loading}
+        emptyState={
+          noSessionsAtAll ? (
+            <p className="text-sm text-text-muted text-center">
+              No sessions yet — start Claude Code in this project and your sessions will appear
+              here.
+            </p>
+          ) : (
+            filteredEmptyState
+          )
+        }
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSortChange={(by, dir) => changeSort(by as SortBy, dir)}
+        pagination={{
+          page,
+          pageSize: PAGE_SIZE,
+          total,
+          onPageChange: setPage
+        }}
+        onRowClick={handleRowClick}
+      />
 
       {pendingDelete && (
         <ConfirmModal

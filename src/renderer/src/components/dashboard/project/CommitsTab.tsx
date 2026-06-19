@@ -310,10 +310,18 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
         </div>
       ) : !hasFetchedOnce ? (
         <CommitListSkeleton count={5} />
-      ) : noDataAtAll ? (
-        <p className="text-sm text-text-muted py-6 text-center">No commits yet on this branch.</p>
-      ) : filteredToZero ? (
-        <p className="text-sm text-text-muted py-6 text-center">No matching commits.</p>
+      ) : noDataAtAll || filteredToZero ? (
+        <div className="relative rounded-lg border border-border-default bg-surface-raised overflow-hidden">
+          <div aria-hidden className="blur-[3px] opacity-40 pointer-events-none select-none">
+            <CommitListSkeleton count={5} />
+          </div>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-4 text-center">
+            <GitBranch size={20} className="text-text-muted" />
+            <p className="text-sm text-text-muted">
+              {noDataAtAll ? 'No commits yet on this branch.' : 'No matching commits.'}
+            </p>
+          </div>
+        </div>
       ) : (
         <div className="flex flex-col gap-2">
           {commits.map((c) => (
