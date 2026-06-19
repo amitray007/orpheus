@@ -192,7 +192,7 @@ export function ProjectHeader({
 
         <div className="flex-1 min-w-0 flex flex-col gap-1">
           <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
-            <h1 className="text-xl font-semibold text-text-primary truncate">{project.name}</h1>
+            <h1 className="text-lg font-semibold text-text-primary truncate">{project.name}</h1>
             {/* Path + copy as a single unit so they never wrap apart. */}
             <span className="inline-flex items-center gap-1 min-w-0 flex-1">
               <p
