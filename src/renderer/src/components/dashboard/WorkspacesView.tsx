@@ -297,16 +297,40 @@ export function WorkspacesView({
 
   const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
 
+  const columns = COLUMN_CONFIGS.map((config) => (
+    <KanbanColumn
+      key={config.key}
+      config={config}
+      workspaces={grouped[config.key]}
+      projectsById={projectsById}
+      sessionsById={sessionsById}
+      activities={workspaceActivities}
+      titleByWorkspaceId={titleByWorkspaceId}
+      gitStatusByWorkspaceId={gitStatusByWorkspaceId}
+      prByWorkspaceId={prByWorkspaceId}
+      onNavigateToWorkspace={onNavigateToWorkspace}
+    />
+  ))
+
+  // Empty board: preview the kanban structure blurred behind a centered empty state.
   if (totalWorkspaces === 0) {
     return (
-      <div className="flex flex-col h-full min-h-0 items-center justify-center">
-        <div className="flex flex-col items-center gap-3 max-w-xs text-center">
-          <Kanban size={28} className="text-text-muted" weight="thin" />
-          <p className="text-lg font-semibold text-text-primary">No workspaces yet</p>
-          <p className="text-sm text-text-muted">
-            Open a project and start a Claude session — your workspaces will appear here, grouped by
-            activity.
-          </p>
+      <div className="relative flex flex-col h-full min-h-0">
+        <div
+          aria-hidden
+          className="grid grid-cols-4 gap-3 flex-1 min-h-0 blur-[3px] opacity-40 pointer-events-none select-none"
+        >
+          {columns}
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 max-w-xs text-center">
+            <Kanban size={28} className="text-text-muted" weight="thin" />
+            <p className="text-lg font-semibold text-text-primary">No workspaces yet</p>
+            <p className="text-sm text-text-muted">
+              Open a project and start a Claude session — your workspaces will appear here, grouped
+              by activity.
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -314,22 +338,7 @@ export function WorkspacesView({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
-        {COLUMN_CONFIGS.map((config) => (
-          <KanbanColumn
-            key={config.key}
-            config={config}
-            workspaces={grouped[config.key]}
-            projectsById={projectsById}
-            sessionsById={sessionsById}
-            activities={workspaceActivities}
-            titleByWorkspaceId={titleByWorkspaceId}
-            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-            prByWorkspaceId={prByWorkspaceId}
-            onNavigateToWorkspace={onNavigateToWorkspace}
-          />
-        ))}
-      </div>
+      <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">{columns}</div>
     </div>
   )
 }
