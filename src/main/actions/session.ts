@@ -9,6 +9,11 @@
 //
 // Pricing is delegated to src/main/pricing.ts which fetches live data from
 // models.dev at boot and falls back to a hardcoded table for offline use.
+//
+// Incremental parsing: instead of reading the whole file on every cache miss,
+// an AccumulatorState per workspace tracks the byte offset consumed so far.
+// Only newly-appended bytes are read. On truncation or inode change the
+// accumulator resets and re-reads from byte 0.
 // ---------------------------------------------------------------------------
 
 import * as fs from 'node:fs'
@@ -26,7 +31,7 @@ import { getWorkspace } from '../workspaces'
 import { getPricing } from '../pricing'
 
 // ---------------------------------------------------------------------------
-// Parse cache with 5-second TTL
+// Parse cache — short-circuit repeated reads within the TTL window
 // ---------------------------------------------------------------------------
 
 type ParsedSession = {
@@ -58,7 +63,9 @@ function setCache(workspaceId: string, data: ParsedSession): void {
   parseCache.set(workspaceId, { data, expiresAt: Date.now() + TTL_MS })
 }
 
-/** Invalidate a workspace's cached parse result. Called by subscriptions on file change. */
+/** Invalidate a workspace's cached parse result. Called by subscriptions on file change.
+ *  Clears the derived ParsedSession cache so the next read re-derives from the
+ *  accumulator (which is still valid — only a truncation/inode change resets it). */
 export function invalidateSessionCache(workspaceId: string): void {
   parseCache.delete(workspaceId)
 }
@@ -73,14 +80,15 @@ function getJsonlPath(cwd: string, sessionId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate parse
+// Incremental accumulator
 //
-// Reads the entire JSONL into memory via readFileSync then splits on newlines.
-// A 5-second TTL cache (parseCache) limits repeat reads to at most one per 5s
-// per workspace. Subscriptions invalidate the cache on each file-change event
-// (debounced 200ms) so live updates are low-latency without true streaming.
+// One AccumulatorState per workspace. Stores running aggregates and the file
+// position consumed so far. On each getParsed call we stat the file, read
+// only the new bytes [offset, size), split on newlines, process complete
+// lines, and save any incomplete trailing fragment for the next call.
 //
-// TODO: replace with a line-buffered streaming read for very large sessions.
+// Per-model token tallies are stored raw; cost is derived at read time via
+// getPricing so late-loaded or updated pricing is always reflected.
 // ---------------------------------------------------------------------------
 
 // Minimal JSONL line shape — only the fields we actually access.
@@ -105,6 +113,93 @@ type JsonlLine = {
   summary?: string
 }
 
+// Per-model raw token tallies (cost derived on demand from these).
+type ModelTokens = {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreate: number
+}
+
+// Running aggregates. Does NOT store all lines — only scalars + last texts.
+type AccumulatorState = {
+  // File identity / position
+  offset: number // bytes ingested so far (tail included)
+  inode: number // inode at last stat — rotation/replacement detection
+  fileSize: number // size at last stat (for truncation detection)
+  tail: string // incomplete line fragment after the last newline
+
+  // Aggregates (updated incrementally)
+  sessionId: string | null
+  model: string | null
+  startedAt: number | null
+  lastMessageAt: number | null
+  turnCount: number
+
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+
+  // Per-model token tallies for deferred cost computation
+  tokensByModel: Map<string, ModelTokens>
+
+  // Last-wins text fields — capped to MAX_TEXT_PREVIEW_BYTES
+  lastUserText: string | null
+  lastUserAt: number | null
+  lastAssistantText: string | null
+  lastAssistantAt: number | null
+}
+
+// Cap preview text to 4 KB — keeps the accumulator memory-bounded.
+const MAX_TEXT_PREVIEW_BYTES = 4096
+
+const accumulators = new Map<string, AccumulatorState>()
+
+function newAccumulator(): AccumulatorState {
+  return {
+    offset: 0,
+    inode: -1,
+    fileSize: 0,
+    tail: '',
+    sessionId: null,
+    model: null,
+    startedAt: null,
+    lastMessageAt: null,
+    turnCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    tokensByModel: new Map(),
+    lastUserText: null,
+    lastUserAt: null,
+    lastAssistantText: null,
+    lastAssistantAt: null
+  }
+}
+
+function resetAccumulator(acc: AccumulatorState): void {
+  acc.offset = 0
+  acc.inode = -1
+  acc.fileSize = 0
+  acc.tail = ''
+  acc.sessionId = null
+  acc.model = null
+  acc.startedAt = null
+  acc.lastMessageAt = null
+  acc.turnCount = 0
+  acc.inputTokens = 0
+  acc.outputTokens = 0
+  acc.cacheReadTokens = 0
+  acc.cacheCreationTokens = 0
+  acc.tokensByModel.clear()
+  acc.lastUserText = null
+  acc.lastUserAt = null
+  acc.lastAssistantText = null
+  acc.lastAssistantAt = null
+}
+
 function extractText(content: unknown): string | null {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -117,105 +212,178 @@ function extractText(content: unknown): string | null {
   return null
 }
 
-// TODO(perf): replace readFileSync with a streaming tail reader that avoids
-// loading the full JSONL into memory for large sessions (audit rank 12).
-function parseJsonl(jsonlPath: string): ParsedSession {
-  const raw = fs.readFileSync(jsonlPath, 'utf8')
-  const lines = raw.split('\n')
+/** Process a single complete JSONL line string into the accumulator. */
+function processLine(acc: AccumulatorState, rawLine: string): void {
+  const line = rawLine.trim()
+  if (!line) return
 
-  // Aggregation state
-  let sessionId: string | null = null
-  let model: string | null = null
-  let startedAt: number | null = null
-  let lastMessageAt: number | null = null
-  let turnCount = 0
+  let parsed: JsonlLine
+  try {
+    parsed = JSON.parse(line) as JsonlLine
+  } catch {
+    return
+  }
 
-  let inputTokens = 0
-  let outputTokens = 0
-  let cacheReadTokens = 0
-  let cacheCreationTokens = 0
+  const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : null
+  if (ts && !isNaN(ts)) {
+    if (acc.startedAt === null || ts < acc.startedAt) acc.startedAt = ts
+    if (acc.lastMessageAt === null || ts > acc.lastMessageAt) acc.lastMessageAt = ts
+  }
 
-  const costByModel: Record<string, number> = {}
+  // Session ID and model from system events
+  if (parsed.type === 'system' && parsed.sessionId) {
+    acc.sessionId = parsed.sessionId
+  }
 
-  let lastUserText: string | null = null
-  let lastUserAt: number | null = null
-  let lastAssistantText: string | null = null
-  let lastAssistantAt: number | null = null
+  const lineModel = parsed.message?.model ?? parsed.model ?? null
+  if (lineModel && !acc.model) {
+    acc.model = lineModel
+  }
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) continue
+  // Token accounting from assistant message events
+  if (parsed.type === 'assistant' || parsed.message?.role === 'assistant') {
+    acc.turnCount++
+    const usage = parsed.message?.usage
+    if (usage) {
+      const inp = usage.input_tokens ?? 0
+      const out = usage.output_tokens ?? 0
+      const cacheRead = usage.cache_read_input_tokens ?? 0
+      const cacheCreate = usage.cache_creation_input_tokens ?? 0
 
-    let parsed: JsonlLine
-    try {
-      parsed = JSON.parse(line) as JsonlLine
-    } catch {
-      continue
-    }
+      acc.inputTokens += inp
+      acc.outputTokens += out
+      acc.cacheReadTokens += cacheRead
+      acc.cacheCreationTokens += cacheCreate
 
-    const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : null
-    if (ts && !isNaN(ts)) {
-      if (startedAt === null || ts < startedAt) startedAt = ts
-      if (lastMessageAt === null || ts > lastMessageAt) lastMessageAt = ts
-    }
-
-    // Session ID and model from system events
-    if (parsed.type === 'system' && parsed.sessionId) {
-      sessionId = parsed.sessionId
-    }
-
-    const lineModel = parsed.message?.model ?? parsed.model ?? null
-    if (lineModel && !model) {
-      model = lineModel
-    }
-
-    // Token accounting from assistant message events
-    if (parsed.type === 'assistant' || parsed.message?.role === 'assistant') {
-      turnCount++
-      const usage = parsed.message?.usage
-      if (usage) {
-        const inp = usage.input_tokens ?? 0
-        const out = usage.output_tokens ?? 0
-        const cacheRead = usage.cache_read_input_tokens ?? 0
-        const cacheCreate = usage.cache_creation_input_tokens ?? 0
-
-        inputTokens += inp
-        outputTokens += out
-        cacheReadTokens += cacheRead
-        cacheCreationTokens += cacheCreate
-
-        // Cost per model — skip if pricing is unknown (avoids double-counting with stale data)
-        const lineModelKey = lineModel ?? model ?? ''
-        if (lineModelKey) {
-          const pricing = getPricing(lineModelKey)
-          if (pricing) {
-            const lineCost =
-              (inp / 1_000_000) * pricing.input +
-              (out / 1_000_000) * pricing.output +
-              (cacheRead / 1_000_000) * pricing.cacheRead +
-              (cacheCreate / 1_000_000) * pricing.cacheWrite
-
-            costByModel[lineModelKey] = (costByModel[lineModelKey] ?? 0) + lineCost
-          } else {
-            console.warn(`[actions:session] unknown model for cost accounting: ${lineModelKey}`)
-          }
+      // Accumulate per-model token tallies for deferred cost computation
+      const lineModelKey = lineModel ?? acc.model ?? ''
+      if (lineModelKey) {
+        let mt = acc.tokensByModel.get(lineModelKey)
+        if (!mt) {
+          mt = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 }
+          acc.tokensByModel.set(lineModelKey, mt)
         }
-      }
-
-      const text = extractText(parsed.message?.content)
-      if (text !== null && ts !== null) {
-        lastAssistantText = text
-        lastAssistantAt = ts
+        mt.input += inp
+        mt.output += out
+        mt.cacheRead += cacheRead
+        mt.cacheCreate += cacheCreate
       }
     }
 
-    // User messages
-    if (parsed.type === 'user' || parsed.message?.role === 'user') {
-      const text = extractText(parsed.message?.content)
-      if (text !== null && ts !== null) {
-        lastUserText = text
-        lastUserAt = ts
+    const text = extractText(parsed.message?.content)
+    if (text !== null && ts !== null) {
+      acc.lastAssistantText =
+        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+      acc.lastAssistantAt = ts
+    }
+  }
+
+  // User messages
+  if (parsed.type === 'user' || parsed.message?.role === 'user') {
+    const text = extractText(parsed.message?.content)
+    if (text !== null && ts !== null) {
+      acc.lastUserText =
+        text.length > MAX_TEXT_PREVIEW_BYTES ? text.slice(0, MAX_TEXT_PREVIEW_BYTES) : text
+      acc.lastUserAt = ts
+    }
+  }
+}
+
+/** Advance the accumulator by reading newly-appended bytes from the file.
+ *  Returns false only on unrecoverable I/O error (caller should give up). */
+function advanceAccumulator(acc: AccumulatorState, jsonlPath: string): boolean {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(jsonlPath)
+  } catch {
+    return false
+  }
+
+  const currentInode = stat.ino
+  const currentSize = stat.size
+
+  // Detect rotation/replacement (inode change) or truncation (size shrank)
+  const inodeChanged = acc.inode !== -1 && currentInode !== acc.inode
+  const truncated = currentSize < acc.offset
+  if (inodeChanged || truncated) {
+    resetAccumulator(acc)
+  }
+
+  // Record file identity
+  acc.inode = currentInode
+  acc.fileSize = currentSize
+
+  const bytesToRead = currentSize - acc.offset
+  if (bytesToRead <= 0) {
+    // Nothing new to read — accumulator is up to date
+    return true
+  }
+
+  // Read only the new bytes
+  let chunk: string
+  let fd: number | null = null
+  try {
+    fd = fs.openSync(jsonlPath, 'r')
+    const buf = Buffer.allocUnsafe(bytesToRead)
+    const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, acc.offset)
+    chunk = buf.slice(0, bytesRead).toString('utf8')
+  } catch {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* ignore */
       }
+    }
+    return false
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // Advance offset unconditionally — offset tracks how many file bytes have been
+  // ingested (tail included), NOT the last-newline boundary. On the next read we
+  // start here and prepend acc.tail so the incomplete fragment is re-joined.
+  acc.offset += bytesToRead
+
+  // Normalize \r\n to \n so the split works correctly
+  const combined = acc.tail + chunk.replace(/\r\n/g, '\n')
+
+  // Split on newlines — the last fragment may be an incomplete line
+  const parts = combined.split('\n')
+
+  // Everything except the last element is a complete line
+  const completeLines = parts.slice(0, -1)
+  // The last element is either empty (if combined ended with '\n') or a partial line
+  acc.tail = parts[parts.length - 1]
+
+  for (const rawLine of completeLines) {
+    processLine(acc, rawLine)
+  }
+
+  return true
+}
+
+/** Build a ParsedSession from the current accumulator state.
+ *  Cost is derived on-demand from per-model token tallies via getPricing. */
+function accumulatorToSession(acc: AccumulatorState): ParsedSession {
+  const costByModel: Record<string, number> = {}
+  for (const [modelKey, mt] of acc.tokensByModel) {
+    const pricing = getPricing(modelKey)
+    if (pricing) {
+      const lineCost =
+        (mt.input / 1_000_000) * pricing.input +
+        (mt.output / 1_000_000) * pricing.output +
+        (mt.cacheRead / 1_000_000) * pricing.cacheRead +
+        (mt.cacheCreate / 1_000_000) * pricing.cacheWrite
+      costByModel[modelKey] = lineCost
+    } else {
+      console.warn(`[actions:session] unknown model for cost accounting: ${modelKey}`)
     }
   }
 
@@ -223,26 +391,26 @@ function parseJsonl(jsonlPath: string): ParsedSession {
 
   return {
     meta: {
-      sessionId: sessionId ?? '',
-      model: model ?? '',
-      startedAt: startedAt ?? 0,
-      lastMessageAt,
-      turnCount
+      sessionId: acc.sessionId ?? '',
+      model: acc.model ?? '',
+      startedAt: acc.startedAt ?? 0,
+      lastMessageAt: acc.lastMessageAt,
+      turnCount: acc.turnCount
     },
     usage: {
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
+      inputTokens: acc.inputTokens,
+      outputTokens: acc.outputTokens,
+      cacheReadTokens: acc.cacheReadTokens,
+      cacheCreationTokens: acc.cacheCreationTokens,
       contextBudget: 0, // filled in by getUsage — needs workspace context
       usedPct: 0
     },
     cost: { usd: totalCost, byModel: costByModel },
     lastTurn: {
-      userText: lastUserText,
-      assistantText: lastAssistantText,
-      userAt: lastUserAt,
-      assistantAt: lastAssistantAt
+      userText: acc.lastUserText,
+      assistantText: acc.lastAssistantText,
+      userAt: acc.lastUserAt,
+      assistantAt: acc.lastAssistantAt
     }
   }
 }
@@ -270,6 +438,7 @@ function getEffectiveContextBudget(): number {
 // ---------------------------------------------------------------------------
 
 function getParsed(workspaceId: string): ParsedSession | null {
+  // Short-circuit: TTL cache avoids even the stat() call during hot windows
   const cached = getCached(workspaceId)
   if (cached) return cached
 
@@ -280,7 +449,16 @@ function getParsed(workspaceId: string): ParsedSession | null {
   if (!fs.existsSync(jsonlPath)) return null
 
   try {
-    const parsed = parseJsonl(jsonlPath)
+    let acc = accumulators.get(workspaceId)
+    if (!acc) {
+      acc = newAccumulator()
+      accumulators.set(workspaceId, acc)
+    }
+
+    const ok = advanceAccumulator(acc, jsonlPath)
+    if (!ok) return null
+
+    const parsed = accumulatorToSession(acc)
     setCache(workspaceId, parsed)
     return parsed
   } catch (err) {
