@@ -1,6 +1,6 @@
 name: Release
 
-# Triggered automatically when release-please pushes a v*.*.* tag.
+# Triggered automatically when release-please publishes a GitHub release.
 # Also runnable manually (workflow_dispatch) for one-off builds.
 #
 # What this does NOT do (release-please already handled it):
@@ -19,9 +19,8 @@ name: Release
 #                        amitray007/homebrew-tap
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -44,6 +43,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
           else
             TAG="${{ github.ref_name }}"
           fi
