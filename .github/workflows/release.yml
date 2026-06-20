@@ -1,135 +1,64 @@
 name: Release
 
-# Manual-trigger release pipeline. Two ways to use:
-#   1. Pick a bump type (patch/minor/major) — workflow bumps package.json,
-#      tags, releases, and pushes a cask update to homebrew-tap.
-#   2. Pass an explicit version (e.g. "0.0.1") that overrides the bump.
+# Triggered automatically when release-please pushes a v*.*.* tag.
+# Also runnable manually (workflow_dispatch) for one-off builds.
 #
-# Secrets required on this repo:
-#   HOMEBREW_TAP_TOKEN  — fine-grained PAT with `contents: write` on
-#                         amitray007/homebrew-tap. Used to push the cask.
+# What this does NOT do (release-please already handled it):
+#   - bump package.json version
+#   - create the git tag
+#   - create the GitHub release shell
 #
-# Branch protection: this workflow pushes the version-bump commit back to
-# main. If main is protected against direct pushes, allow bypass for the
-# Actions bot OR replace the push with a "release PR" pattern (release-please
-# does this; out of scope for v1).
+# What this does:
+#   - build the native addon + renderer + .dmg on macos-14
+#   - upload the .dmg to the existing GitHub release
+#   - render the Homebrew cask and push it to amitray007/homebrew-tap
+#
+# Secrets required:
+#   HOMEBREW_TAP_TOKEN — fine-grained PAT with `contents: write` on
+#                        amitray007/homebrew-tap
 
 on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
-      bump:
-        description: 'Version bump (ignored if `version` is set)'
-        required: false
-        type: choice
-        options: [patch, minor, major]
-        default: patch
-      version:
-        description: 'Explicit version, e.g. 0.0.1 (overrides bump)'
-        required: false
+      tag:
+        description: 'Existing tag to build (e.g. v0.2.0)'
+        required: true
         type: string
-  push:
-    branches: [main]
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  preflight:
-    # Decide whether the release job should run. Job-level `if:` expressions
-    # in GHA can only call contains() on the full commit message (subject +
-    # body), which produces false positives when commit bodies discuss the
-    # [release] marker. So we extract just the first line (subject) here
-    # and let downstream jobs gate on the output.
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.gate.outputs.should_run }}
-    steps:
-      - name: Resolve trigger gate
-        id: gate
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "[preflight] workflow_dispatch → run"
-            exit 0
-          fi
-          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
-          # Anchor the marker at end-of-subject so prose mentions of the
-          # token (e.g. "fix the marker check") don't trigger releases.
-          if echo "$SUBJECT" | grep -qE '\[release(\s+(patch|minor|major))?\][[:space:]]*$' &&
-             ! echo "$SUBJECT" | grep -qE '^chore\(release\)'; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject ends with release marker → run"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "[preflight] subject does not end with release marker → skip"
-          fi
-
   release:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
     runs-on: macos-14
     permissions:
       contents: write
     steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "[release] tag=$TAG version=$VERSION"
+
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history so we can push the bump commit
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Configure git
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Parse bump type from commit (push trigger only)
-        id: parse_commit
-        if: github.event_name == 'push'
-        env:
-          MSG: ${{ github.event.head_commit.message }}
-        run: |
-          BUMP=patch
-          if echo "$MSG" | grep -qE "\[release[[:space:]]+major\]"; then
-            BUMP=major
-          elif echo "$MSG" | grep -qE "\[release[[:space:]]+minor\]"; then
-            BUMP=minor
-          fi
-          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-          echo "[parse_commit] bump=$BUMP (from commit message)"
-
-      - name: Resolve target version
-        id: ver
-        env:
-          INPUT_BUMP: ${{ inputs.bump || steps.parse_commit.outputs.bump }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          node <<'EOF'
-          const fs = require('fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'))
-          const explicit = process.env.INPUT_VERSION?.trim()
-          const bump = process.env.INPUT_BUMP || 'patch'
-          let next
-          if (explicit) {
-            next = explicit.replace(/^v/, '')
-          } else {
-            const [maj, min, pat] = pkg.version.split('.').map(Number)
-            if (bump === 'major') next = `${maj + 1}.0.0`
-            else if (bump === 'minor') next = `${maj}.${min + 1}.0`
-            else next = `${maj}.${min}.${pat + 1}`
-          }
-          pkg.version = next
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
-          const out = process.env.GITHUB_OUTPUT
-          fs.appendFileSync(out, `version=${next}\n`)
-          fs.appendFileSync(out, `tag=v${next}\n`)
-          console.log(`[release] bumped to ${next}`)
-          EOF
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -143,46 +72,28 @@ jobs:
           bun run build
 
       - name: Build .dmg
-        # `--publish never` keeps electron-builder from auto-publishing to
-        # GitHub Releases when CI=true. We do the upload explicitly via
-        # gh release create below.
         run: bunx electron-builder --mac --publish never
 
       - name: Compute sha256
         id: sha
         run: |
-          DMG="dist/orpheus-${{ steps.ver.outputs.version }}.dmg"
+          DMG="dist/orpheus-${{ steps.tag.outputs.version }}.dmg"
           if [ ! -f "$DMG" ]; then
             echo "::error::expected dmg not found at $DMG"
             ls -la dist || true
             exit 1
           fi
           SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
-          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
-          echo "dmg=$DMG"   >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
-      - name: Commit version bump + tag
-        run: |
-          git add package.json
-          git commit -m "chore(release): ${{ steps.ver.outputs.tag }}"
-          git tag "${{ steps.ver.outputs.tag }}"
-          git push origin HEAD --tags
-
-      - name: Generate release notes
-        run: |
-          chmod +x scripts/release-changelog.sh
-          bash scripts/release-changelog.sh "${{ steps.ver.outputs.tag }}" > release-notes.md
-          echo "--- preview (first 50 lines) ---"
-          head -n 50 release-notes.md
-
-      - name: Create GitHub release
+      - name: Upload .dmg to existing GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
+          gh release upload "${{ steps.tag.outputs.tag }}" \
             "${{ steps.sha.outputs.dmg }}" \
-            --title "${{ steps.ver.outputs.tag }}" \
-            --notes-file release-notes.md
+            --clobber
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -191,10 +102,10 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Render and push cask + scoped tag
+      - name: Render and push cask
         run: |
           mkdir -p homebrew-tap/Casks
-          sed -e "s/{{VERSION}}/${{ steps.ver.outputs.version }}/g" \
+          sed -e "s/{{VERSION}}/${{ steps.tag.outputs.version }}/g" \
               -e "s/{{SHA256}}/${{ steps.sha.outputs.sha }}/g" \
               scripts/orpheus-cask.template.rb > homebrew-tap/Casks/orpheus.rb
 
@@ -202,10 +113,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/orpheus.rb
-          git commit -m "orpheus: bump to ${{ steps.ver.outputs.version }}"
+          git commit -m "orpheus: bump to ${{ steps.tag.outputs.version }}"
 
-          # Per-cask scoped tag: `orpheus/v0.0.2`. Gives git-level traceability
-          # per app without colliding with future casks that might share a vX.Y.Z.
-          SCOPED_TAG="orpheus/${{ steps.ver.outputs.tag }}"
+          SCOPED_TAG="orpheus/${{ steps.tag.outputs.tag }}"
           git tag "$SCOPED_TAG"
           git push origin HEAD "$SCOPED_TAG"
