@@ -4,6 +4,7 @@ import { importSessionsForProject } from './sessions'
 import { createWorkspace } from './workspaces'
 import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
+import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -133,6 +134,9 @@ export function deleteProject(id: string): void {
   const db = getDb()
   // ON DELETE CASCADE in the schema removes associated workspaces and sessions.
   db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  // Evict the settings cache entry so a stale value can't be served after the
+  // row (and its CASCADE-deleted workspace settings) is gone.
+  invalidateClaudeProjectSettingsCache(id)
 }
 
 export function renameProject(id: string, name: string): void {

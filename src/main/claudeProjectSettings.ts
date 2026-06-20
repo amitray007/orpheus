@@ -51,18 +51,30 @@ function validatePatch(patch: ClaudeProjectSettingsOverrides): void {
 }
 
 // ---------------------------------------------------------------------------
+// Module-level cache — keyed by projectId. Invalidated on write.
+// ---------------------------------------------------------------------------
+
+const cachedProjectSettings = new Map<string, ClaudeProjectSettings>()
+
+export function invalidateClaudeProjectSettingsCache(projectId: string): void {
+  cachedProjectSettings.delete(projectId)
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export function getClaudeProjectSettings(projectId: string): ClaudeProjectSettings {
+  const cached = cachedProjectSettings.get(projectId)
+  if (cached) return cached
+
   const db = getDb()
   const row = db
     .prepare('SELECT * FROM claude_project_settings WHERE project_id = ?')
     .get(projectId) as Row | undefined
-  if (!row) {
-    return { projectId, overrides: {}, updatedAt: 0 }
-  }
-  return rowToRecord(row)
+  const result = row ? rowToRecord(row) : { projectId, overrides: {}, updatedAt: 0 }
+  cachedProjectSettings.set(projectId, result)
+  return result
 }
 
 export function updateClaudeProjectSettings(
@@ -92,5 +104,7 @@ export function updateClaudeProjectSettings(
      ON CONFLICT(project_id) DO UPDATE SET overrides_json = excluded.overrides_json, updated_at = excluded.updated_at`
   ).run(projectId, json, now)
 
+  // Invalidate cache so next read (recomputeDirty, terminal:mount) sees fresh data
+  invalidateClaudeProjectSettingsCache(projectId)
   return getClaudeProjectSettings(projectId)
 }

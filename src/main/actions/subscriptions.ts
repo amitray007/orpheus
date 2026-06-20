@@ -78,8 +78,82 @@ function throttleLeadingTrailing<T extends unknown[]>(
 }
 
 // ---------------------------------------------------------------------------
+// Ref-counted shared watcher registry
+//
+// Multiple mounted workspaces watching the same ~/.claude/projects/<cwd>/
+// directory used to create N independent fs.watch instances that all wake on
+// every write to any file in that dir. This registry collapses N → 1 per
+// directory: the first subscriber opens the watcher; subsequent ones
+// increment the refCount and register their callback. The watcher is closed
+// only when the last subscriber disposes.
+// ---------------------------------------------------------------------------
+
+type SharedWatcherEntry = {
+  watcher: fs.FSWatcher | null
+  refCount: number
+  callbacks: Set<(event: fs.WatchEventType, filename: string | null) => void>
+}
+
+const sharedWatchers = new Map<string, SharedWatcherEntry>()
+
+function acquireSharedWatcher(
+  dir: string,
+  cb: (event: fs.WatchEventType, filename: string | null) => void
+): () => void {
+  let entry = sharedWatchers.get(dir)
+  if (!entry) {
+    entry = { watcher: null, refCount: 0, callbacks: new Set() }
+    sharedWatchers.set(dir, entry)
+    try {
+      entry.watcher = fs.watch(dir, { persistent: false }, (event, filename) => {
+        const e = sharedWatchers.get(dir)
+        if (!e) return
+        for (const fn of e.callbacks) {
+          try {
+            fn(event, filename)
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+      entry.watcher.on('error', () => {
+        /* dir may be temporarily unavailable — no-op */
+      })
+    } catch {
+      /* dir may not exist yet — callbacks will never fire, that's fine */
+    }
+  }
+
+  entry.refCount++
+  entry.callbacks.add(cb)
+
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const e = sharedWatchers.get(dir)
+    if (!e) return
+    e.callbacks.delete(cb)
+    e.refCount--
+    if (e.refCount <= 0) {
+      if (e.watcher) {
+        try {
+          e.watcher.close()
+        } catch {
+          /* ignore */
+        }
+        e.watcher = null
+      }
+      sharedWatchers.delete(dir)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Session subscription — watches the JSONL file (or its parent dir until the
-// file appears, then re-watches the file directly).
+// file appears, then re-watches the file directly). Uses acquireSharedWatcher
+// for the parent-dir watch so N workspaces in the same project share one
+// fs.watch handle instead of N.
 // ---------------------------------------------------------------------------
 
 function startSessionSubscription(
@@ -89,11 +163,14 @@ function startSessionSubscription(
   workspaceId: string,
   sendUpdate: (value: unknown) => void
 ): () => void {
-  let watcher: fs.FSWatcher | null = null
+  // Track the per-file watcher (for the JSONL file itself) and the shared
+  // parent-dir release fn separately so we can cleanly swap between them.
+  let fileWatcher: fs.FSWatcher | null = null
+  let releaseParentWatcher: (() => void) | null = null
   let disposed = false
 
-  function getParentDir(workspaceId: string): string | null {
-    const ws = getWorkspace(workspaceId)
+  function getParentDir(wid: string): string | null {
+    const ws = getWorkspace(wid)
     if (!ws) return null
     const encoded = ws.cwd.replace(/\//g, '-')
     return nodePath.join(os.homedir(), '.claude', 'projects', encoded)
@@ -112,33 +189,38 @@ function startSessionSubscription(
     }
   }, SUBSCRIPTION_DEBOUNCE_MS)
 
-  function watchFile(filePath: string): void {
-    if (disposed) return
-    if (watcher) {
+  function stopFileWatcher(): void {
+    if (fileWatcher) {
       try {
-        watcher.close()
+        fileWatcher.close()
       } catch {
         /* ignore */
       }
-      watcher = null
+      fileWatcher = null
     }
+  }
+
+  function stopParentWatcher(): void {
+    if (releaseParentWatcher) {
+      releaseParentWatcher()
+      releaseParentWatcher = null
+    }
+  }
+
+  function watchFile(filePath: string): void {
+    if (disposed) return
+    stopFileWatcher()
+    stopParentWatcher()
 
     try {
-      watcher = fs.watch(filePath, { persistent: false }, (event) => {
+      fileWatcher = fs.watch(filePath, { persistent: false }, (event) => {
         if (event === 'change' || event === 'rename') {
           fireUpdate()
         }
       })
-      watcher.on('error', () => {
+      fileWatcher.on('error', () => {
         // File may have been renamed/deleted — fall back to parent dir watch
-        if (watcher) {
-          try {
-            watcher.close()
-          } catch {
-            /* ignore */
-          }
-          watcher = null
-        }
+        stopFileWatcher()
         watchParentDir()
       })
     } catch {
@@ -148,38 +230,25 @@ function startSessionSubscription(
 
   function watchParentDir(): void {
     if (disposed) return
-    if (watcher) {
-      try {
-        watcher.close()
-      } catch {
-        /* ignore */
-      }
-      watcher = null
-    }
+    stopFileWatcher()
+    stopParentWatcher()
 
     const dir = getParentDir(workspaceId)
     if (!dir) return
 
-    try {
-      watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
-        // filename is string | null per Node types; coerce to string to be safe
-        // before calling .endsWith (avoids potential Buffer on some Node builds).
-        const fname = filename != null ? String(filename) : null
-        if (!fname?.endsWith('.jsonl')) return
+    releaseParentWatcher = acquireSharedWatcher(dir, (_event, filename) => {
+      // filename is string | null per Node types; coerce to string to be safe
+      // before calling .endsWith (avoids potential Buffer on some Node builds).
+      const fname = filename != null ? String(filename) : null
+      if (!fname?.endsWith('.jsonl')) return
 
-        // Once the target file appears, switch to watching it directly
-        const jsonlPath = resolveJsonlPath(workspaceId)
-        if (jsonlPath && fs.existsSync(jsonlPath)) {
-          watchFile(jsonlPath)
-          fireUpdate()
-        }
-      })
-      watcher.on('error', () => {
-        /* dir may not exist yet — no-op */
-      })
-    } catch {
-      /* dir may not exist — that's fine, we'll pick it up later */
-    }
+      // Once the target file appears, switch to watching it directly
+      const jsonlPath = resolveJsonlPath(workspaceId)
+      if (jsonlPath && fs.existsSync(jsonlPath)) {
+        watchFile(jsonlPath)
+        fireUpdate()
+      }
+    })
   }
 
   // Start watching — file first, fall back to parent dir
@@ -199,14 +268,8 @@ function startSessionSubscription(
 
   return () => {
     disposed = true
-    if (watcher) {
-      try {
-        watcher.close()
-      } catch {
-        /* ignore */
-      }
-      watcher = null
-    }
+    stopFileWatcher()
+    stopParentWatcher()
   }
 }
 

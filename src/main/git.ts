@@ -1,5 +1,8 @@
 import * as childProcess from 'node:child_process'
+import * as fs from 'node:fs'
+import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
+import type { WebContents } from 'electron'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -243,5 +246,245 @@ export function listCommits(
     return commits
   } catch {
     return []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Git fs.watch push infrastructure
+//
+// Watches .git/HEAD and .git/index for a repo so that git status + PR
+// updates can be pushed to the renderer instead of polled every 30s.
+//
+// Ref-counted by directory: multiple workspaces pointing at the same repo
+// share a single pair of watchers. On branch change (HEAD changed), also
+// refreshes PRs via the provided pr-refresh callback.
+// ---------------------------------------------------------------------------
+
+import { getPrForBranch } from './github'
+
+type GitWatchEntry = {
+  watchers: fs.FSWatcher[]
+  refCount: number
+  // workspaceId → { cwd, webContents, lastBranch }
+  clients: Map<string, { cwd: string; webContents: WebContents; lastBranch: string | null }>
+  debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+const gitWatchers = new Map<string, GitWatchEntry>()
+
+// Debounce window for coalescing rapid filesystem events (index lock files
+// during a commit generate 4-6 events in quick succession).
+const GIT_WATCH_DEBOUNCE_MS = 350
+
+async function refreshGitForDir(dir: string): Promise<void> {
+  const entry = gitWatchers.get(dir)
+  if (!entry) return
+  if (entry.clients.size === 0) return
+
+  // Re-run git status for each client workspace; detect branch changes and
+  // refresh PRs if the branch flipped.
+  const clientList = Array.from(entry.clients.entries())
+  for (const [workspaceId, client] of clientList) {
+    const { cwd, webContents, lastBranch } = client
+    if (webContents.isDestroyed()) continue
+
+    let status: GitStatus | null = null
+    try {
+      status = await getGitStatus(cwd)
+    } catch {
+      // git may be unavailable or cwd may have been deleted — skip
+    }
+
+    if (!webContents.isDestroyed() && status !== null) {
+      webContents.send('git:statusChanged', { workspaceId, status })
+    }
+
+    // If branch changed, also refresh the PR
+    const newBranch = status?.branch ?? null
+    if (newBranch !== lastBranch) {
+      client.lastBranch = newBranch
+      if (newBranch) {
+        getPrForBranch(cwd, newBranch)
+          .then((pr) => {
+            if (!webContents.isDestroyed()) {
+              webContents.send('github:prChanged', { workspaceId, pr })
+            }
+          })
+          .catch(() => {
+            /* gh unavailable — ignore */
+          })
+      } else if (!webContents.isDestroyed()) {
+        // Detached HEAD or no branch — clear the PR chip
+        webContents.send('github:prChanged', { workspaceId, pr: null })
+      }
+    }
+  }
+}
+
+function scheduleRefresh(dir: string): void {
+  const entry = gitWatchers.get(dir)
+  if (!entry) return
+  if (entry.debounceTimer !== null) {
+    clearTimeout(entry.debounceTimer)
+  }
+  entry.debounceTimer = setTimeout(() => {
+    if (entry.debounceTimer !== null) {
+      entry.debounceTimer = null
+    }
+    refreshGitForDir(dir).catch(() => {
+      /* swallow — non-fatal */
+    })
+  }, GIT_WATCH_DEBOUNCE_MS)
+}
+
+function watchGitFiles(dir: string, gitDir: string): fs.FSWatcher[] {
+  const watchers: fs.FSWatcher[] = []
+  // Watch HEAD (branch changes) and index (staging/commit changes)
+  for (const file of ['HEAD', 'index']) {
+    const filePath = nodePath.join(gitDir, file)
+    try {
+      const watcher = fs.watch(filePath, { persistent: false }, () => {
+        scheduleRefresh(dir)
+      })
+      watcher.on('error', () => {
+        /* file may not exist in some git states — ignore */
+      })
+      watchers.push(watcher)
+    } catch {
+      // File doesn't exist (bare repo, shallow clone, etc.) — skip
+    }
+  }
+  return watchers
+}
+
+/**
+ * Start watching a workspace's git repo for status changes.
+ * On every HEAD or index change, pushes `git:statusChanged` and
+ * (on branch flip) `github:prChanged` to the provided webContents.
+ * An initial push fires shortly after watch starts so the renderer
+ * gets current status without the 30s polling round-trip.
+ *
+ * Safe to call multiple times for the same cwd — ref-counted.
+ */
+export function startGitWatch(workspaceId: string, cwd: string, webContents: WebContents): void {
+  if (!cwd) return
+
+  // Find the .git directory; skip if not a git repo
+  let gitDir: string
+  try {
+    const out = childProcess.execFileSync('git', ['-C', cwd, 'rev-parse', '--git-dir'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+      encoding: 'utf-8'
+    })
+    const rel = out.trim()
+    gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
+  } catch {
+    // Not a git repo or git unavailable — nothing to watch
+    return
+  }
+
+  // Use the resolved absolute git dir as the dedup key (handles worktrees
+  // where multiple cwds share the same .git dir).
+  const dir = nodePath.resolve(cwd)
+
+  let entry = gitWatchers.get(dir)
+  if (!entry) {
+    const watchers = watchGitFiles(dir, gitDir)
+    entry = { watchers, refCount: 0, clients: new Map(), debounceTimer: null }
+    gitWatchers.set(dir, entry)
+  }
+
+  // Re-mount guard: if this workspaceId is already a client, update its record
+  // and re-emit the initial status push WITHOUT incrementing refCount — avoids
+  // double-counting on hide→mount cycles and the resulting watcher leak.
+  if (entry.clients.has(workspaceId)) {
+    const existing = entry.clients.get(workspaceId)!
+    entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
+    getGitStatus(cwd)
+      .then((status) => {
+        if (!webContents.isDestroyed() && status !== null) {
+          webContents.send('git:statusChanged', { workspaceId, status })
+        }
+      })
+      .catch(() => {
+        /* git unavailable — skip */
+      })
+    return
+  }
+
+  entry.refCount++
+  entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
+
+  // Emit an initial status push so the renderer gets current state without
+  // waiting for the next file-change event.
+  getGitStatus(cwd)
+    .then((status) => {
+      if (!webContents.isDestroyed() && status !== null) {
+        webContents.send('git:statusChanged', { workspaceId, status })
+        const branch = status.branch
+        if (branch) {
+          const client = entry?.clients.get(workspaceId)
+          if (client) client.lastBranch = branch
+          getPrForBranch(cwd, branch)
+            .then((pr) => {
+              if (!webContents.isDestroyed()) {
+                webContents.send('github:prChanged', { workspaceId, pr })
+              }
+            })
+            .catch(() => {
+              /* gh unavailable */
+            })
+        }
+      }
+    })
+    .catch(() => {
+      /* git unavailable — skip initial push */
+    })
+}
+
+/**
+ * Stop watching a workspace's git repo. Decrements the ref-count for the
+ * shared watcher; closes the underlying fs.watch handles only when the last
+ * subscriber is removed.
+ */
+export function stopGitWatch(workspaceId: string, cwd: string): void {
+  if (!cwd) return
+  const dir = nodePath.resolve(cwd)
+  const entry = gitWatchers.get(dir)
+  if (!entry) return
+
+  entry.clients.delete(workspaceId)
+  entry.refCount--
+
+  if (entry.refCount <= 0) {
+    // Last subscriber — tear down the watchers and the debounce timer.
+    if (entry.debounceTimer !== null) clearTimeout(entry.debounceTimer)
+    for (const w of entry.watchers) {
+      try {
+        w.close()
+      } catch {
+        /* ignore */
+      }
+    }
+    gitWatchers.delete(dir)
+  }
+}
+
+/**
+ * Stop all git watchers whose webContents has been destroyed. Called on
+ * window close so no orphaned watchers remain after the renderer exits.
+ */
+export function stopAllGitWatches(): void {
+  for (const [dir, entry] of gitWatchers.entries()) {
+    if (entry.debounceTimer !== null) clearTimeout(entry.debounceTimer)
+    for (const w of entry.watchers) {
+      try {
+        w.close()
+      } catch {
+        /* ignore */
+      }
+    }
+    gitWatchers.delete(dir)
   }
 }

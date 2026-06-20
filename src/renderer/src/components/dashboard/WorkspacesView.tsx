@@ -202,9 +202,15 @@ const KanbanColumn = memo(function KanbanColumn({
 }: KanbanColumnProps): React.JSX.Element {
   return (
     <div className="flex flex-col min-h-0 bg-surface-raised rounded-lg border border-border-default overflow-hidden">
-      {/* Column header — sticky when the column body scrolls */}
+      {/* Column header — sticky when the column body scrolls.
+           animated={false}: column headers are decorative; they must never
+           subscribe to the shared ticker (no spinning glyphs at idle). */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border-default bg-surface-raised sticky top-0 z-10">
-        <ActivityIndicator detail={config.indicatorDetail} className="flex-shrink-0" />
+        <ActivityIndicator
+          detail={config.indicatorDetail}
+          className="flex-shrink-0"
+          animated={false}
+        />
         <span className="text-sm font-semibold uppercase tracking-wider text-text-secondary leading-none flex items-baseline gap-1.5">
           {config.label}
           <span className="font-normal text-text-muted normal-case tracking-normal">

@@ -64,26 +64,49 @@ export function ActionChip({
   const [promptValues, setPromptValues] = useState<Record<string, string>>({})
   const promptInputRef = useRef<HTMLInputElement>(null)
 
-  // Poll canInject every 1s for terminal.* actions
+  // Subscribe to canInject push updates for terminal.* actions.
+  // NOTE: depends on arch-main onCanInjectChanged — channel `terminal:canInjectChanged`,
+  // payload { workspaceId: string; canInject: boolean }.
+  // Preload method: window.api.terminal.onCanInjectChanged returning an unsubscribe fn.
   const isTerminalAction = actionId.startsWith('terminal.')
+
+  // Renderer-local ambient type until the preload types are reconciled.
+  type TerminalApiWithPush = typeof window.api.terminal & {
+    onCanInjectChanged?: (
+      cb: (e: { workspaceId: string; canInject: boolean }) => void
+    ) => () => void
+  }
+
   useEffect(() => {
     if (!isTerminalAction) return
-    let cancelled = false
-    const poll = (): void => {
-      window.api.terminal
-        .canInject(workspaceId)
-        .then((ok) => {
-          if (!cancelled) setCanInject(ok)
-        })
-        .catch(() => {
-          if (!cancelled) setCanInject(false)
-        })
+    const terminalApi = window.api.terminal as TerminalApiWithPush
+
+    let alive = true
+
+    // Initial fetch so the chip reflects the current state before any push lands.
+    window.api.terminal
+      .canInject(workspaceId)
+      .then((ok) => {
+        if (alive) setCanInject(ok)
+      })
+      .catch(() => {
+        if (alive) setCanInject(false)
+      })
+
+    if (typeof terminalApi.onCanInjectChanged !== 'function') {
+      // Push channel not yet available — no subscription, initial value is enough.
+      return () => {
+        alive = false
+      }
     }
-    poll()
-    const id = setInterval(poll, 1000)
+
+    // Subscribe to push updates; filter to this chip's workspace.
+    const unsub = terminalApi.onCanInjectChanged((e) => {
+      if (e.workspaceId === workspaceId) setCanInject(e.canInject)
+    })
     return () => {
-      cancelled = true
-      clearInterval(id)
+      alive = false
+      unsub()
     }
   }, [isTerminalAction, workspaceId])
 

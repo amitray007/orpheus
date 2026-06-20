@@ -79,6 +79,9 @@ declare global {
         submit: (workspaceId: string) => Promise<ActionResult>
         clearInput: (workspaceId: string) => Promise<ActionResult>
         canInject: (workspaceId: string) => Promise<boolean>
+        onCanInjectChanged: (
+          cb: (e: { workspaceId: string; canInject: boolean }) => void
+        ) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>
@@ -208,9 +211,13 @@ declare global {
           cwd: string,
           opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
         ) => Promise<number>
+        onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void) => () => void
       }
       github: {
         prForBranch: (cwd: string, branch: string) => Promise<GhPullRequest | null>
+        onPrChanged: (
+          cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
+        ) => () => void
       }
       shell: {
         revealInFinder: (path: string) => Promise<void>

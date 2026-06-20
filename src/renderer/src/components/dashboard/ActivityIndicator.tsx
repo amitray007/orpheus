@@ -25,6 +25,10 @@ const COMPACT_FRAMES = [
 interface ActivityIndicatorProps {
   detail: WorkspaceActivityDetail | undefined
   className?: string
+  /** When false all ticker subscriptions are disabled and a static frame-0
+   *  glyph is rendered. Use for decorative / column-header contexts where the
+   *  animation serves no informational purpose. Defaults to true. */
+  animated?: boolean
 }
 
 // Fixed 12×12 box with flex centering so SVG and text content share an
@@ -34,13 +38,16 @@ const BASE_CLS = 'inline-flex items-center justify-center flex-shrink-0 leading-
 
 export function ActivityIndicator({
   detail,
-  className
+  className,
+  animated = true
 }: ActivityIndicatorProps): React.JSX.Element | null {
   // useSharedFrame shares ONE interval per distinct ms across all mounted indicators.
   // When active=false no interval is registered and frame stays 0.
-  const brailleFrame = useSharedFrame(80, detail === 'thinking')
-  const toolFrame = useSharedFrame(200, detail === 'tool')
-  const compactFrame = useSharedFrame(100, detail === 'compacting')
+  // animated=false forces active=false for every ticker so static headers never
+  // create a subscription (the 80ms interval stops when subscriber count hits 0).
+  const brailleFrame = useSharedFrame(80, animated && detail === 'thinking')
+  const toolFrame = useSharedFrame(200, animated && detail === 'tool')
+  const compactFrame = useSharedFrame(100, animated && detail === 'compacting')
 
   if (!detail || detail === 'archived') return null
 
@@ -66,7 +73,7 @@ export function ActivityIndicator({
   }
   if (detail === 'attention') {
     return (
-      <span className={`${cls} text-amber-400 animate-pulse`}>
+      <span className={`${cls} text-amber-400${animated ? ' animate-pulse' : ''}`}>
         <Diamond size={11} weight="fill" />
       </span>
     )
@@ -95,7 +102,11 @@ export function ActivityIndicator({
   }
   if (detail === 'asking') {
     return (
-      <span className={`${cls} text-amber-400 text-xs font-mono font-bold animate-pulse`}>?</span>
+      <span
+        className={`${cls} text-amber-400 text-xs font-mono font-bold${animated ? ' animate-pulse' : ''}`}
+      >
+        ?
+      </span>
     )
   }
   return null

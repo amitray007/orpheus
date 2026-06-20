@@ -75,6 +75,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   selectedWorkspaceIdRef.current = selectedWorkspaceId
   selectedProjectIdRef.current = selectedProjectId
 
+  // Tracks workspace ids for which we've already issued an imperative git fetch
+  // so a stale-closure read of gitStatusByWorkspaceId can't trigger duplicate
+  // IPC calls when the effect re-runs because workspacesPollKey changed.
+  const hasFetchedRef = useRef<Set<string>>(new Set())
+
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
 
@@ -388,31 +393,69 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [workspacesByProject]
   )
 
-  // Poll git status for all non-archived workspaces every 30s.
-  // 300ms debounce prevents burst spawns when workspacesByProject updates rapidly.
-  // Self-scheduling setTimeout chain (not setInterval) so a slow refresh
-  // can't overlap with the next tick — gh can take seconds on flaky networks,
-  // and concurrent IPC calls produced out-of-order state patches before.
+  // Subscribe to git status and PR push updates emitted by main's fs.watch watcher.
+  // NOTE: depends on arch-main channels:
+  //   git:statusChanged  → { workspaceId: string; status: GitStatus }
+  //   github:prChanged   → { workspaceId: string; pr: GhPullRequest | null }
+  // Preload methods: window.api.git.onStatusChanged / window.api.github.onPrChanged
+  // each returning an unsubscribe fn.
+  //
+  // Renderer-local ambient types until the preload types are reconciled.
+  type GitApiWithPush = typeof window.api.git & {
+    onStatusChanged?: (cb: (e: { workspaceId: string; status: GitStatus }) => void) => () => void
+  }
+  type GithubApiWithPush = typeof window.api.github & {
+    onPrChanged?: (cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void) => () => void
+  }
+
+  useEffect(() => {
+    const gitApi = window.api.git as GitApiWithPush
+    const githubApi = window.api.github as GithubApiWithPush
+
+    const unsubGit =
+      typeof gitApi.onStatusChanged === 'function'
+        ? gitApi.onStatusChanged((e) => {
+            setGitStatusByWorkspaceId((prev) => ({ ...prev, [e.workspaceId]: e.status }))
+          })
+        : undefined
+
+    const unsubPr =
+      typeof githubApi.onPrChanged === 'function'
+        ? githubApi.onPrChanged((e) => {
+            setPrByWorkspaceId((prev) => ({ ...prev, [e.workspaceId]: e.pr }))
+          })
+        : undefined
+
+    return () => {
+      unsubGit?.()
+      unsubPr?.()
+    }
+  }, [])
+
+  // Belt-and-suspenders: one-time imperative fetch for workspaces visible at
+  // mount / when new workspace ids appear, in case the push subscription
+  // attaches after main has already emitted the initial statusChanged events.
+  // Subsequent updates come via the push channels above.
   useEffect(() => {
     const workspaces = Object.values(workspacesByProject)
       .flat()
       .filter((w) => w.archivedAt === null)
     if (workspaces.length === 0) return
-
     let cancelled = false
-    let nextTickId: ReturnType<typeof setTimeout> | null = null
 
-    async function refresh(): Promise<void> {
+    async function fetchMissing(): Promise<void> {
       const gitResults: Record<string, GitStatus | null> = {}
       const prResults: Record<string, GhPullRequest | null> = {}
-      // Sequential to avoid spawning N git processes at once
-      for (const ws of workspaces) {
+      // Only fetch for workspaces we haven't already fetched — use a ref-based
+      // set so we don't read stale state from the closure, which would trigger
+      // duplicate IPC calls when workspacesPollKey re-runs.
+      const missing = workspaces.filter((w) => !hasFetchedRef.current.has(w.id))
+      for (const ws of missing) {
+        hasFetchedRef.current.add(ws.id)
         if (cancelled) return
         try {
           const status = await window.api.git.status(ws.cwd)
           gitResults[ws.id] = status
-          // Branch came back — ask gh for the PR. The IPC layer caches with a
-          // 2-min TTL so the 30s loop doesn't actually re-shell on every tick.
           if (status?.branch) {
             try {
               prResults[ws.id] = await window.api.github.prForBranch(ws.cwd, status.branch)
@@ -430,25 +473,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
       }
       if (!cancelled) {
-        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...gitResults }))
-        setPrByWorkspaceId((prev) => ({ ...prev, ...prResults }))
+        if (Object.keys(gitResults).length > 0)
+          setGitStatusByWorkspaceId((prev) => ({ ...prev, ...gitResults }))
+        if (Object.keys(prResults).length > 0)
+          setPrByWorkspaceId((prev) => ({ ...prev, ...prResults }))
       }
     }
 
-    function schedule(delay: number): void {
-      nextTickId = setTimeout(async () => {
-        nextTickId = null
-        if (cancelled) return
-        await refresh()
-        if (!cancelled) schedule(30000)
-      }, delay)
-    }
-
-    schedule(300) // initial debounce, then every 30s after each completes
-
+    fetchMissing().catch((err) => console.error('[dashboard] initial git fetch failed', err))
     return () => {
       cancelled = true
-      if (nextTickId !== null) clearTimeout(nextTickId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspacesPollKey])
@@ -677,20 +711,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     if (!workspacesByProject[projectId]) {
       fetchWorkspacesForProject(projectId)
     }
-    // workspaces.open updates last_opened_at server-side; merge the returned
-    // record back into local cache so the project view shows fresh activity.
-    window.api.workspaces
-      .open(workspaceId)
-      .then((updated) => {
+    // workspaces.open and uiState.update are independent DB writes — issue them
+    // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
+    Promise.all([
+      window.api.workspaces.open(workspaceId).then((updated) => {
         setWorkspacesByProject((prev) => ({
           ...prev,
           [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
         }))
+      }),
+      window.api.uiState.update({
+        lastViewKind: 'workspace',
+        lastProjectId: projectId,
+        lastWorkspaceId: workspaceId
       })
-      .catch(console.error)
-    window.api.uiState
-      .update({ lastViewKind: 'workspace', lastProjectId: projectId, lastWorkspaceId: workspaceId })
-      .catch(console.error)
+    ]).catch(console.error)
   }
 
   async function handleToggleWorkspacePin(workspaceId: string, projectId: string): Promise<void> {

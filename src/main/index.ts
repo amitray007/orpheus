@@ -16,7 +16,15 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
-import { getGitStatus, listBranches, listCommits, countCommits } from './git'
+import {
+  getGitStatus,
+  listBranches,
+  listCommits,
+  countCommits,
+  startGitWatch,
+  stopGitWatch,
+  stopAllGitWatches
+} from './git'
 import { getPrForBranch } from './github'
 import { getDb } from './db'
 import {
@@ -483,6 +491,9 @@ function createWindow(): void {
   // Register subscription cleanup so actions:subscribe subscriptions are
   // automatically torn down when the window (and its webContents) is destroyed.
   registerWebContentsCleanup(mainWindow.webContents)
+  // Tear down all git watchers when the renderer goes away so we don't hold
+  // destroyed WebContents references until will-quit.
+  mainWindow.webContents.on('destroyed', () => stopAllGitWatches())
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -807,6 +818,11 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+  // Tear down git watcher before DB row disappears (while we can still look up cwd).
+  const wsBeforeArchive = getWorkspace(id)
+  if (wsBeforeArchive?.cwd) {
+    stopGitWatch(id, wsBeforeArchive.cwd)
+  }
   // Destroy the libghostty surface so the NSView is freed before the DB row
   // disappears. Silently no-ops when the terminal was never mounted.
   if (terminalAddon) {
@@ -1312,6 +1328,19 @@ ipcMain.handle(
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
 
+    // Push the current canInject state so the renderer chip gets an immediate
+    // value without waiting for the next activity transition.
+    {
+      const injectable = terminalActions.canInject(workspaceId)
+      e.sender.send('terminal:canInjectChanged', { workspaceId, canInject: injectable })
+    }
+
+    // Start (or re-join) the fs.watch watcher for this workspace's git repo so
+    // status is pushed on change instead of polled every 30s.
+    if (cwd) {
+      startGitWatch(workspaceId, cwd, e.sender)
+    }
+
     return result
   }
 )
@@ -1362,6 +1391,12 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   // Clear title and notify renderer so stale claude titles don't linger
   if (workspaceTitles.delete(workspaceId)) {
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+  }
+  // Tear down the git watcher for this workspace (ref-counted: only closes
+  // underlying fs.watch when the last subscriber for this cwd is removed).
+  const wsForGit = getWorkspace(workspaceId)
+  if (wsForGit?.cwd) {
+    stopGitWatch(workspaceId, wsForGit.cwd)
   }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
@@ -1610,7 +1645,21 @@ app.whenReady().then(() => {
       // The renderer switches to onActivityBatch; batchListeners fan out to
       // the legacy per-event listeners as well so onActivityChanged still works.
       onActivityBatch((updates) => {
-        getMainWindow()?.webContents.send('workspace:activityBatch', updates)
+        const win = getMainWindow()
+        if (!win) return
+        win.webContents.send('workspace:activityBatch', updates)
+        // Push canInject state for each workspace that changed activity so the
+        // renderer chips don't need to poll terminal:canInject every second.
+        // Use the authoritative terminalActions.canInject() so 'attention' and
+        // any future status additions are handled identically to the IPC handler.
+        for (const { workspaceId } of updates) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send('terminal:canInjectChanged', {
+              workspaceId,
+              canInject: terminalActions.canInject(workspaceId)
+            })
+          }
+        }
       })
       // Legacy onActivityChange registration removed — the renderer uses
       // onActivityBatch as primary. The preload onActivityChanged method and
@@ -1637,6 +1686,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
   stopStatusPoller()
+  stopAllGitWatches()
 })
 
 app.on('window-all-closed', () => {

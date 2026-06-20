@@ -92,7 +92,17 @@ const api = {
     clearInput: (workspaceId: string): Promise<ActionResult> =>
       ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
     canInject: (workspaceId: string): Promise<boolean> =>
-      ipcRenderer.invoke('terminal:canInject', { workspaceId })
+      ipcRenderer.invoke('terminal:canInject', { workspaceId }),
+    onCanInjectChanged: (
+      cb: (e: { workspaceId: string; canInject: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; canInject: boolean }
+      ): void => cb(e)
+      ipcRenderer.on('terminal:canInjectChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
+    }
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
@@ -314,11 +324,31 @@ const api = {
     count: (
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts })
+    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts }),
+    onStatusChanged: (
+      cb: (e: { workspaceId: string; status: GitStatus }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; status: GitStatus }
+      ): void => cb(e)
+      ipcRenderer.on('git:statusChanged', listener)
+      return () => ipcRenderer.removeListener('git:statusChanged', listener)
+    }
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
-      ipcRenderer.invoke('github:prForBranch', { cwd, branch })
+      ipcRenderer.invoke('github:prForBranch', { cwd, branch }),
+    onPrChanged: (
+      cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; pr: GhPullRequest | null }
+      ): void => cb(e)
+      ipcRenderer.on('github:prChanged', listener)
+      return () => ipcRenderer.removeListener('github:prChanged', listener)
+    }
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>

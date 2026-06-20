@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
+import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -247,6 +248,9 @@ export function archiveWorkspace(id: string): void {
     | { id: string; project_id: string }
     | undefined
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  // Evict the settings cache entry so a stale value can't be served after the
+  // row is gone.
+  invalidateClaudeWorkspaceSettingsCache(id)
   // Broadcast after delete so the renderer can remove the row from state and
   // navigate away if the deleted workspace was currently selected.
   if (ws) {

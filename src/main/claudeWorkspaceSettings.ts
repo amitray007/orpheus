@@ -51,18 +51,30 @@ function validatePatch(patch: ClaudeWorkspaceSettingsOverrides): void {
 }
 
 // ---------------------------------------------------------------------------
+// Module-level cache — keyed by workspaceId. Invalidated on write.
+// ---------------------------------------------------------------------------
+
+const cachedWorkspaceSettings = new Map<string, ClaudeWorkspaceSettings>()
+
+export function invalidateClaudeWorkspaceSettingsCache(workspaceId: string): void {
+  cachedWorkspaceSettings.delete(workspaceId)
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export function getClaudeWorkspaceSettings(workspaceId: string): ClaudeWorkspaceSettings {
+  const cached = cachedWorkspaceSettings.get(workspaceId)
+  if (cached) return cached
+
   const db = getDb()
   const row = db
     .prepare('SELECT * FROM claude_workspace_settings WHERE workspace_id = ?')
     .get(workspaceId) as Row | undefined
-  if (!row) {
-    return { workspaceId, overrides: {}, updatedAt: 0 }
-  }
-  return rowToRecord(row)
+  const result = row ? rowToRecord(row) : { workspaceId, overrides: {}, updatedAt: 0 }
+  cachedWorkspaceSettings.set(workspaceId, result)
+  return result
 }
 
 export function updateClaudeWorkspaceSettings(
@@ -92,5 +104,7 @@ export function updateClaudeWorkspaceSettings(
      ON CONFLICT(workspace_id) DO UPDATE SET overrides_json = excluded.overrides_json, updated_at = excluded.updated_at`
   ).run(workspaceId, json, now)
 
+  // Invalidate cache so next read (recomputeDirty, terminal:mount) sees fresh data
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
   return getClaudeWorkspaceSettings(workspaceId)
 }
