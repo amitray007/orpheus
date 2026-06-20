@@ -12,26 +12,27 @@
 // Persistence model:
 //   Each workspace owns exactly one GhosttySurfaceEntry keyed by workspace.id.
 //   mount()   — creates on first call; re-attaches on subsequent calls.
-//   hide()    — removeFromSuperview + occlusion + stop CVDisplayLink; keeps entry alive.
+//   hide()    — removeFromSuperview + occlusion; keeps entry alive.
 //   destroy() — full teardown; removes from map.
 //   Orpheus quit → process exit GCs everything naturally.
 //
 // Threading model:
 //   • NAPI handlers run on the main thread — all ghostty_* calls here are safe.
-//   • CVDisplayLink fires its callback on a private thread.  The callback
-//     dispatches ghostty_surface_draw back to the main queue so Metal/AppKit
-//     keep running on the same thread that created the surface.
+//   • ghostty's Metal renderer owns its own internal CVDisplayLink (created in
+//     renderer/generic.zig:loopEnter) that fires on a private renderer thread,
+//     notifying renderer.Thread's draw_now async → drawFrame(true).  This drives
+//     all continuous rendering autonomously at vsync.  We do NOT need a second
+//     host-side CVDisplayLink.  ghostty_surface_draw is called only for one-shot
+//     events where an immediate sync draw is required (mount, resize).
 
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
-#import <CoreVideo/CoreVideo.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <string>
 #include <map>
 #include <atomic>
-#include <memory>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -667,26 +668,10 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 // Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
 @class OrpheusLoadingOverlayView;
 
-// DrawContext is heap-allocated and owned by GhosttySurfaceEntry (via shared_ptr).
-// The CVDisplayLink callback receives a raw DrawContext* as its context pointer.
-//
-// Lifetime guarantee: we always call CVDisplayLinkStop (which synchronously waits
-// for the in-flight callback to return) BEFORE the shared_ptr is released.  This
-// means the raw pointer the callback holds is always valid while the callback can
-// fire.  drawEnabled guards the main-queue dispatch blocks that may already be
-// queued when Hide()/Destroy() runs — those blocks re-check drawEnabled and skip
-// ghostty_surface_draw if drawing has been disabled.
-struct DrawContext {
-    ghostty_surface_t surface;
-    std::atomic<bool> drawEnabled{false};
-};
-
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
     OrpheusGhosttyView* __strong view;
-    CVDisplayLinkRef displayLink;
-    std::shared_ptr<DrawContext> drawCtx; // shared with CVDisplayLink callback
-    BOOL isAttached;              // YES = view is in contentView superview, displayLink running
+    BOOL isAttached;              // YES = view is in contentView superview
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
@@ -1477,6 +1462,14 @@ static std::atomic<bool> g_inited;
 static uv_async_t g_tickAsync;
 static std::atomic<bool> g_tickAsyncInited{false};
 
+// Safety-net damage flag. Set (from wakeup_cb on Ghostty's IO thread) whenever
+// Ghostty has IO activity that should produce a frame. Drained by a 10Hz
+// NSTimer on the main thread that issues one ghostty_surface_draw per attached
+// surface when the flag is set. Guarantees any damage presents within 100ms
+// even if the internal display link misses it (e.g. right after a re-attach).
+// At true idle the flag stays 0 → zero GPU work.
+static std::atomic<uint32_t> g_damageFlag{0};
+
 static void tick_async_cb(uv_async_t* /*handle*/) {
     if (g_inited.load(std::memory_order_acquire) && g_app) {
         ghostty_app_tick(g_app);
@@ -1485,7 +1478,9 @@ static void tick_async_cb(uv_async_t* /*handle*/) {
 
 static void wakeup_cb(void* /*userdata*/) {
     // Called from Ghostty's IO thread — do not call ghostty_* here.
-    // Marshal to the JS main thread, which will call ghostty_app_tick().
+    // Set the damage flag so the main-thread safety timer can issue a draw;
+    // then marshal to the JS main thread to call ghostty_app_tick().
+    g_damageFlag.store(1, std::memory_order_release);
     if (g_tickAsyncInited.load(std::memory_order_acquire)) {
         uv_async_send(&g_tickAsync);
     }
@@ -1591,6 +1586,19 @@ static bool action_cb(ghostty_app_t /*app*/,
             }
         }
     }
+
+    // Note: GHOSTTY_ACTION_RENDER is NOT handled here.
+    //
+    // For the embedded apprt (Orpheus), must_draw_from_app_thread is false
+    // (it's only true for apprt/gtk/App.zig).  Ghostty's renderer.Thread.drawFrame
+    // therefore calls self.renderer.drawFrame(false) directly on its own renderer
+    // thread rather than pushing a redraw_surface action.  Because hasVsync()
+    // returns true (ghostty's own internal CVDisplayLink is running in
+    // generic.zig:loopEnter), drawFrame(false) also returns immediately when
+    // called from the normal render timer path — the display link drives all
+    // continuous rendering autonomously.  GHOSTTY_ACTION_RENDER is never emitted
+    // for this build.  All rendering is handled by ghostty's own display link
+    // without any host involvement.
 
     return false;
 }
@@ -1775,55 +1783,6 @@ static NSRect cssRectToAppKit(double x, double y, double w, double h,
 }
 
 // ---------------------------------------------------------------------------
-// CVDisplayLink callback — fires on a private thread
-// ---------------------------------------------------------------------------
-
-static CVReturn displayLinkCallback(CVDisplayLinkRef /*displayLink*/,
-                                    const CVTimeStamp* /*inNow*/,
-                                    const CVTimeStamp* /*inOutputTime*/,
-                                    CVOptionFlags /*flagsIn*/,
-                                    CVOptionFlags* /*flagsOut*/,
-                                    void* displayLinkContext) {
-    // displayLinkContext is a raw DrawContext* (non-owning; lifetime is guaranteed
-    // by the entry's shared_ptr which outlives the CVDisplayLink — we always call
-    // CVDisplayLinkStop before releasing the shared_ptr, so the callback cannot
-    // fire after the DrawContext is freed).
-    //
-    // Shared-ptr-by-value capture rationale: CVDisplayLink requires a plain C
-    // function pointer for its callback, so there is no owning shared_ptr
-    // directly accessible inside this function.  Instead, safety is ensured by
-    // the main-thread-ordering invariant: Destroy() and Hide() both run on the
-    // AppKit main thread (all NAPI exports are called from the Node.js main
-    // thread, which is the same thread as the AppKit main queue in Electron).
-    // CVDisplayLinkStop() is called on the main thread before the shared_ptr is
-    // released, so by the time the DrawContext is freed no further callbacks can
-    // fire.  The drawEnabled acquire-loads below provide additional defence for
-    // the race window between the CVDisplayLink thread and the main thread.
-    DrawContext* ctx = reinterpret_cast<DrawContext*>(displayLinkContext);
-
-    // Atomic early-out: if the surface was hidden, drawEnabled is false and we
-    // skip the dispatch entirely — no main-queue pressure from hidden surfaces.
-    if (!ctx->drawEnabled.load(std::memory_order_acquire)) {
-        return kCVReturnSuccess;
-    }
-
-    // Capture the surface pointer (stable for the callback's lifetime since
-    // Destroy() stops the display link before releasing the DrawContext).
-    ghostty_surface_t surface = ctx->surface;
-
-    // Dispatch draw to the AppKit main thread.  Re-check drawEnabled inside the
-    // block: the surface may have been hidden in the window between the atomic
-    // read above and the block executing on the main queue.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (ctx->drawEnabled.load(std::memory_order_acquire)) {
-            ghostty_surface_draw(surface);
-        }
-    });
-
-    return kCVReturnSuccess;
-}
-
-// ---------------------------------------------------------------------------
 // Lazy init — called once on the first mount
 // ---------------------------------------------------------------------------
 
@@ -1913,6 +1872,27 @@ static bool ensureApp() {
 
     g_inited.store(true, std::memory_order_release);
     NSLog(@"[ghostty-native] ghostty app ready");
+
+    // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
+    // Ghostty has IO activity), issue one synchronous draw per attached surface
+    // on the main thread. This guarantees any missed frame from the internal
+    // display link presents within 100ms. At idle g_damageFlag==0 → no GPU
+    // work. Added to NSRunLoopCommonModes so it fires during scroll/tracking.
+    // g_surfaces is only mutated on the main thread; the timer fires on main
+    // (same thread), so iteration is safe without additional locking.
+    NSTimer* safetyTimer = [NSTimer timerWithTimeInterval:0.1
+                                                  repeats:YES
+                                                    block:^(NSTimer* /*t*/) {
+        if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
+        for (auto& kv : g_surfaces) {
+            GhosttySurfaceEntry& e = kv.second;
+            if (e.isAttached && e.surface) {
+                ghostty_surface_draw(e.surface);
+            }
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
+
     return true;
 }
 
@@ -2021,7 +2001,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
         } else {
-            // Re-attach: add back to superview, wake display link.
+            // Re-attach: add back to superview, wake renderer.
             NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
                   workspaceId.c_str());
 
@@ -2038,19 +2018,27 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // back here.
             [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
 
-            // Wake the renderer — surface is no longer occluded.
-            ghostty_surface_set_occlusion(entry.surface, false);
-
-            // Re-enable drawing then re-start the display link so the very first
-            // callback after restart already sees drawEnabled=true.
-            entry.drawCtx->drawEnabled.store(true, std::memory_order_release);
-            CVDisplayLinkStart(entry.displayLink);
+            // Wake the renderer: the ghostty_surface_set_occlusion parameter is
+            // `visible` (NOT `occluded`). Setting it true marks the surface
+            // visible → ghostty's setVisible(true) restarts the internal
+            // CVDisplayLink (generic.zig:setVisible). The link only starts when
+            // BOTH visible AND focused are true (generic.zig:1059), so we set
+            // focus first to open that gate. makeFirstResponder may be async;
+            // setting focus here synchronously ensures the gate is open before
+            // the display link tries to start. The 10Hz safety timer covers any
+            // residual window between these calls and the first tick.
+            ghostty_surface_set_focus(entry.surface, true);
+            ghostty_surface_set_occlusion(entry.surface, true);  // visible=true → restarts display link
 
             // Update size in case the window was resized while hidden.
             uint32_t physW = (uint32_t)(rw * scaleFactor);
             uint32_t physH = (uint32_t)(rh * scaleFactor);
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+
+            // One synchronous draw so the first frame paints immediately,
+            // before the display link fires its first tick. Runs on main ✓.
+            ghostty_surface_draw(entry.surface);
 
             // Re-grab first responder.
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -2219,35 +2207,25 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     ghostty_surface_set_size(surface, physW, physH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
 
-    // Create CVDisplayLink — one per workspace, lives until destroy().
-    // The display link is stopped/started on hide/mount but never recreated.
-    //
-    // DrawContext is heap-allocated and shared between this entry and the
-    // CVDisplayLink callback so the callback can atomically check drawEnabled
-    // without touching the (potentially-gone) map entry.
-    auto drawCtx = std::make_shared<DrawContext>();
-    drawCtx->surface = surface;
-
-    CVDisplayLinkRef displayLink = nullptr;
-    CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
-    // Pass the raw DrawContext* as context — safe because the entry's shared_ptr
-    // keeps it alive, and we always stop the display link before dropping the ptr.
-    CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback,
-                                   reinterpret_cast<void*>(drawCtx.get()));
-    // Enable drawing then start the link so the very first callback fires with
-    // drawEnabled already true (avoids a single dropped frame at mount time).
-    drawCtx->drawEnabled.store(true, std::memory_order_release);
-    CVDisplayLinkStart(displayLink);
+    // Ghostty defaults visible=true for new surfaces, so the display link
+    // should start as soon as focus is set. Set focus explicitly here for
+    // parity with the re-attach path and to satisfy the visible+focused gate
+    // (generic.zig:1059) before the first draw. Then issue a synchronous
+    // one-shot draw so the first frame paints before the display link ticks.
+    // Runs on main ✓.
+    ghostty_surface_set_focus(surface, true);
+    ghostty_surface_draw(surface);
 
     // Store entry — view is retained by the map (ARC __strong).
+    // ghostty's own internal CVDisplayLink (created in generic.zig:loopEnter)
+    // drives all rendering autonomously on a private renderer thread; we do
+    // not need a host-side display link.
     GhosttySurfaceEntry entry;
-    entry.surface     = surface;
-    entry.view        = termView;
-    entry.displayLink = displayLink;
-    entry.drawCtx     = drawCtx;
-    entry.isAttached  = YES;
-    entry.lastRect    = CGRectMake(rx, ry, rw, rh);
-    entry.lastScale   = scaleFactor;
+    entry.surface    = surface;
+    entry.view       = termView;
+    entry.isAttached = YES;
+    entry.lastRect   = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale  = scaleFactor;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
 
@@ -2263,7 +2241,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 // ---------------------------------------------------------------------------
 // NAPI: hide(workspaceId) → void
 //
-// Removes the NSView from its superview and stops the display link.
+// Removes the NSView from its superview and signals occlusion to ghostty.
 // The surface + shell process keep running in the background.
 // isAttached is set to NO. View is retained in the map entry.
 // ---------------------------------------------------------------------------
@@ -2291,18 +2269,12 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
 
     NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
 
-    // Tell Ghostty the surface is now occluded — renderer thread sleeps.
-    ghostty_surface_set_occlusion(entry.surface, true);
-
-    // Atomically disable drawing BEFORE stopping the display link so any
-    // in-flight callback that fires between now and CVDisplayLinkStop completes
-    // without dispatching to the main queue.  Also guards the already-dispatched
-    // blocks that haven't yet run on the main queue — they re-check drawEnabled
-    // inside the block before calling ghostty_surface_draw.
-    entry.drawCtx->drawEnabled.store(false, std::memory_order_release);
-
-    // Stop the display link — no more draw dispatches until mount re-attaches.
-    CVDisplayLinkStop(entry.displayLink);
+    // Tell Ghostty the surface is no longer visible — parameter is `visible`
+    // (NOT `occluded`), so visible=false stops the internal display link
+    // (generic.zig:setVisible). Clear focus first so both visible and focused
+    // gates are false; this prevents the link from accidentally restarting.
+    ghostty_surface_set_focus(entry.surface, false);
+    ghostty_surface_set_occlusion(entry.surface, false);  // visible=false → stops display link
 
     // Remove from view hierarchy — view is retained in the map, not freed.
     [entry.view removeFromSuperview];
@@ -2591,20 +2563,6 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         [doomed.view removeFromSuperview];
     }
 
-    // Disable drawing atomically BEFORE stopping the display link.  This drains
-    // any in-flight callbacks that already passed the atomic check — they will
-    // dispatch to the main queue but re-check drawEnabled inside the block and
-    // skip ghostty_surface_draw on the (about-to-be-freed) surface.
-    if (doomed.drawCtx) {
-        doomed.drawCtx->drawEnabled.store(false, std::memory_order_release);
-    }
-
-    // Stop the display link so no more draw callbacks fire on the
-    // to-be-freed surface. (Release is deferred to the async block.)
-    if (doomed.displayLink) {
-        CVDisplayLinkStop(doomed.displayLink);
-    }
-
     // ---- Asynchronous, slow — process teardown after the IPC return ----
     // ghostty_surface_free MUST run on the main thread per Ghostty's API
     // contract, but it doesn't have to be synchronous with this NAPI call.
@@ -2612,10 +2570,6 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // (avoids ObjC++ __block + std::move ARC interaction uncertainty).
     GhosttySurfaceEntry* heap = new GhosttySurfaceEntry(std::move(doomed));
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (heap->displayLink) {
-            CVDisplayLinkRelease(heap->displayLink);
-            heap->displayLink = nullptr;
-        }
         if (heap->surface) {
             // Slow: blocks main thread here, but AFTER the IPC call has returned.
             ghostty_surface_free(heap->surface);
