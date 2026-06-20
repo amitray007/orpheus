@@ -1,0 +1,57 @@
+name: Bump libghostty pin
+
+# Lakr233/libghostty-spm rebuilds weekly and rotates old `storage.*` releases
+# out (the pinned tag eventually 404s). This resolves the newest release,
+# updates the SHA-verified pin in scripts/fetch-libghostty.sh, and opens a PR
+# for review. Runs on a schedule and on demand. The pin stays SHA-verified;
+# a human reviews + build-checks the bump before merge (the rolling C API can drift).
+on:
+  schedule:
+    - cron: '0 8 * * 1' # Mondays 08:00 UTC, after the upstream weekly rebuild
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-libghostty
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest # only resolves a URL + hashes a download — no macOS toolchain needed
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Resolve newest release + update the pin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun run bump:libghostty
+
+      - name: Open a review PR if the pin changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- scripts/fetch-libghostty.sh; then
+            echo "Pin already current — nothing to do."
+            exit 0
+          fi
+          label="$(grep -oE 'GHOSTTYKIT_LABEL="[^"]+"' scripts/fetch-libghostty.sh | sed -E 's/.*="([^"]+)".*/\1/')"
+          branch="chore/bump-libghostty"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "chore(deps): bump GhosttyKit xcframework to ${label}"
+          git push -f -u origin "$branch"
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            echo "PR already open for ${branch} — updated by the force-push."
+          else
+            gh pr create --base main --head "$branch" \
+              --title "chore(deps): bump GhosttyKit xcframework to ${label}" \
+              --body $'Automated bump of the pinned `GhosttyKit.xcframework` (URL + SHA-256) to the newest `storage.*` release from `Lakr233/libghostty-spm`, computed by `scripts/bump-libghostty.mjs`.\n\n**Before merging:** verify the native addon still builds against this rolling version (`bun run build:native`) — the libghostty C API can drift between releases.'
+          fi
