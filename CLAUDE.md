@@ -6,6 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Orpheus is a **source-available macOS Electron app** that wraps `claude` (the Claude Code CLI) in a project/workspace UI. The renderer is React + Tailwind v4; the main process is TypeScript on Node; the terminal is rendered by a native NAPI addon that embeds prebuilt **libghostty** (`vendor/GhosttyKit.xcframework`) as an `NSView` parented onto Electron's `BrowserWindow` native handle. Persistence is `better-sqlite3` at `~/Library/Application Support/Orpheus/orpheus.sqlite`.
 
+## Git workflow (branching)
+
+**All work happens on the `staging` branch.** Features, fixes, chores — everything
+is committed to `staging`. We do **not** create per-feature/per-task branches and we
+do not work off `main` directly. There is one long-lived working branch: `staging`.
+
+Releases ship by raising a PR from `staging` → `main`. `main` is the release branch;
+`staging` is where development lands first. So:
+
+- Build/commit new work on `staging`.
+- When it's time to release, open a PR `staging` → `main`.
+- Don't spin up extra topic branches unless explicitly asked.
+
 ## Build + verify loop (the only one that matters)
 
 Local builds **always build the DEV variant** (`Orpheus Dev.app`). Production
