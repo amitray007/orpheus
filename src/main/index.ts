@@ -1,3 +1,5 @@
+declare const __ORPHEUS_MODE__: 'development' | 'production'
+
 import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'
@@ -483,6 +485,9 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    if (__ORPHEUS_MODE__ === 'development') {
+      mainWindow.setTitle('Orpheus DEV')
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -733,6 +738,11 @@ ipcMain.handle('config:openFolder', async () => {
 })
 
 ipcMain.handle('app:getVersion', () => app.getVersion())
+
+ipcMain.handle('app:getPaths', () => ({
+  userData: app.getPath('userData'),
+  logs: app.getPath('logs')
+}))
 
 ipcMain.handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
@@ -1514,7 +1524,8 @@ ipcMain.handle(
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('dev.orpheus.app')
+  const appId = __ORPHEUS_MODE__ === 'development' ? 'dev.orpheus.dev' : 'dev.orpheus.app'
+  electronApp.setAppUserModelId(appId)
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()

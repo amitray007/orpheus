@@ -10,14 +10,15 @@ import { SectionTitle, Eyebrow } from './primitives'
 
 export function OrpheusAboutSection(): React.JSX.Element {
   const [orpheusVersion, setOrpheusVersion] = useState<string | null>(null)
+  const [paths, setPaths] = useState<{ userData: string; logs: string } | null>(null)
 
   useEffect(() => {
     window.api.app.getVersion().then(setOrpheusVersion).catch(console.error)
+    window.api.app.getPaths().then(setPaths).catch(console.error)
   }, [])
 
-  // Stable paths derived at render time — no IPC needed
-  const dbPath = '~/Library/Application Support/Orpheus/orpheus.sqlite'
-  const logPath = '~/Library/Logs/Orpheus/'
+  const dbPath = paths ? `${paths.userData}/orpheus.sqlite` : null
+  const logPath = paths ? paths.logs : null
   const configDir = '~/.claude/'
 
   return (

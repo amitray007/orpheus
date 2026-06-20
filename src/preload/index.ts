@@ -53,7 +53,8 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 // Custom APIs for renderer
 const api = {
   app: {
-    getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion')
+    getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
+    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths')
   },
   window: {
     openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
