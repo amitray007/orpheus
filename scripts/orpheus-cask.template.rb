@@ -18,8 +18,8 @@ cask "orpheus" do
   # a unified ad-hoc re-sign normalises them.
   postflight do
     system_command "/usr/bin/xattr",
-                   args: ["-cr", "#{appdir}/Orpheus.app"],
-                   sudo: false
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Orpheus.app"],
+                   sudo: true
     system_command "/usr/bin/codesign",
                    args: ["--force", "--deep", "--sign", "-", "#{appdir}/Orpheus.app"],
                    sudo: false
