@@ -86,7 +86,7 @@ import {
   startNotifyServer,
   ensureManagedHooks,
   shimPath,
-  onActivityChange,
+  onActivityBatch,
   onSessionStart,
   heartbeatFromTitle,
   clearWorkspaceActivity,
@@ -1606,13 +1606,16 @@ app.whenReady().then(() => {
     // Start the Unix-domain socket server that hook shims post to.
     try {
       notifyServer = startNotifyServer()
-      onActivityChange((workspaceId, status, detail) => {
-        getMainWindow()?.webContents.send('workspace:activityChanged', {
-          workspaceId,
-          status,
-          detail
-        })
+      // Batch channel: sends the entire coalesced flush as one IPC message.
+      // The renderer switches to onActivityBatch; batchListeners fan out to
+      // the legacy per-event listeners as well so onActivityChanged still works.
+      onActivityBatch((updates) => {
+        getMainWindow()?.webContents.send('workspace:activityBatch', updates)
       })
+      // Legacy onActivityChange registration removed — the renderer uses
+      // onActivityBatch as primary. The preload onActivityChanged method and
+      // the renderer's fallback listener are intentionally kept as dead-but-safe
+      // code so older code paths compile without changes.
     } catch (err) {
       console.error('[orpheusNotify] failed to start notify server:', err)
     }

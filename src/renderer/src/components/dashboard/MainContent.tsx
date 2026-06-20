@@ -3,12 +3,12 @@ import { WorkspacesView } from './WorkspacesView'
 import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import { Eyebrow } from './settings/primitives'
+import { getActivitySnapshot } from '@/lib/activityStore'
 import type {
   GhPullRequest,
   GitStatus,
   ProjectRecord,
   SessionRecord,
-  WorkspaceActivityDetail,
   WorkspaceRecord
 } from '@shared/types'
 
@@ -57,7 +57,6 @@ interface MainContentProps {
   ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
-  workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
   // Workspaces view props
   projects?: ProjectRecord[]
@@ -81,7 +80,6 @@ export function MainContent({
   onRenameWorkspace,
   onArchiveWorkspace,
   onToggleWorkspacePin,
-  workspaceActivities,
   onResumedInWorkspace,
   projects,
   allWorkspaces,
@@ -103,7 +101,6 @@ export function MainContent({
         onNavigateToWorkspace={onSelectWorkspace}
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}
-        workspaceActivities={workspaceActivities ?? {}}
         titleByWorkspaceId={titleByWorkspaceId ?? {}}
         sessions={allSessions ?? []}
         gitStatusByWorkspaceId={gitStatusByWorkspaceId}
@@ -131,7 +128,7 @@ export function MainContent({
       <WorkspaceView
         key={workspace.id}
         workspace={workspace}
-        initialDetail={workspaceActivities?.[workspace.id]}
+        initialDetail={getActivitySnapshot().get(workspace.id)}
         pr={prByWorkspaceId?.[workspace.id] ?? null}
         onSelectWorkspace={onSelectWorkspace}
         allWorkspaces={allWorkspaces}
@@ -152,7 +149,6 @@ export function MainContent({
     <ProjectView
       project={project}
       workspaces={workspacesForProject}
-      workspaceActivities={workspaceActivities}
       onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onAddWorkspace={onAddWorkspace}

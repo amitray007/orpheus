@@ -31,6 +31,7 @@
 #include <string>
 #include <map>
 #include <atomic>
+#include <memory>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -666,10 +667,25 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 // Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
 @class OrpheusLoadingOverlayView;
 
+// DrawContext is heap-allocated and owned by GhosttySurfaceEntry (via shared_ptr).
+// The CVDisplayLink callback receives a raw DrawContext* as its context pointer.
+//
+// Lifetime guarantee: we always call CVDisplayLinkStop (which synchronously waits
+// for the in-flight callback to return) BEFORE the shared_ptr is released.  This
+// means the raw pointer the callback holds is always valid while the callback can
+// fire.  drawEnabled guards the main-queue dispatch blocks that may already be
+// queued when Hide()/Destroy() runs — those blocks re-check drawEnabled and skip
+// ghostty_surface_draw if drawing has been disabled.
+struct DrawContext {
+    ghostty_surface_t surface;
+    std::atomic<bool> drawEnabled{false};
+};
+
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
     OrpheusGhosttyView* __strong view;
     CVDisplayLinkRef displayLink;
+    std::shared_ptr<DrawContext> drawCtx; // shared with CVDisplayLink callback
     BOOL isAttached;              // YES = view is in contentView superview, displayLink running
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
@@ -1768,12 +1784,40 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef /*displayLink*/,
                                     CVOptionFlags /*flagsIn*/,
                                     CVOptionFlags* /*flagsOut*/,
                                     void* displayLinkContext) {
-    // displayLinkContext is the ghostty_surface_t pointer.
-    ghostty_surface_t surface = reinterpret_cast<ghostty_surface_t>(displayLinkContext);
+    // displayLinkContext is a raw DrawContext* (non-owning; lifetime is guaranteed
+    // by the entry's shared_ptr which outlives the CVDisplayLink — we always call
+    // CVDisplayLinkStop before releasing the shared_ptr, so the callback cannot
+    // fire after the DrawContext is freed).
+    //
+    // Shared-ptr-by-value capture rationale: CVDisplayLink requires a plain C
+    // function pointer for its callback, so there is no owning shared_ptr
+    // directly accessible inside this function.  Instead, safety is ensured by
+    // the main-thread-ordering invariant: Destroy() and Hide() both run on the
+    // AppKit main thread (all NAPI exports are called from the Node.js main
+    // thread, which is the same thread as the AppKit main queue in Electron).
+    // CVDisplayLinkStop() is called on the main thread before the shared_ptr is
+    // released, so by the time the DrawContext is freed no further callbacks can
+    // fire.  The drawEnabled acquire-loads below provide additional defence for
+    // the race window between the CVDisplayLink thread and the main thread.
+    DrawContext* ctx = reinterpret_cast<DrawContext*>(displayLinkContext);
 
-    // Dispatch draw to the AppKit main thread.
+    // Atomic early-out: if the surface was hidden, drawEnabled is false and we
+    // skip the dispatch entirely — no main-queue pressure from hidden surfaces.
+    if (!ctx->drawEnabled.load(std::memory_order_acquire)) {
+        return kCVReturnSuccess;
+    }
+
+    // Capture the surface pointer (stable for the callback's lifetime since
+    // Destroy() stops the display link before releasing the DrawContext).
+    ghostty_surface_t surface = ctx->surface;
+
+    // Dispatch draw to the AppKit main thread.  Re-check drawEnabled inside the
+    // block: the surface may have been hidden in the window between the atomic
+    // read above and the block executing on the main queue.
     dispatch_async(dispatch_get_main_queue(), ^{
-        ghostty_surface_draw(surface);
+        if (ctx->drawEnabled.load(std::memory_order_acquire)) {
+            ghostty_surface_draw(surface);
+        }
     });
 
     return kCVReturnSuccess;
@@ -1997,7 +2041,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // Wake the renderer — surface is no longer occluded.
             ghostty_surface_set_occlusion(entry.surface, false);
 
-            // Re-start the display link.
+            // Re-enable drawing then re-start the display link so the very first
+            // callback after restart already sees drawEnabled=true.
+            entry.drawCtx->drawEnabled.store(true, std::memory_order_release);
             CVDisplayLinkStart(entry.displayLink);
 
             // Update size in case the window was resized while hidden.
@@ -2175,10 +2221,22 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     // Create CVDisplayLink — one per workspace, lives until destroy().
     // The display link is stopped/started on hide/mount but never recreated.
+    //
+    // DrawContext is heap-allocated and shared between this entry and the
+    // CVDisplayLink callback so the callback can atomically check drawEnabled
+    // without touching the (potentially-gone) map entry.
+    auto drawCtx = std::make_shared<DrawContext>();
+    drawCtx->surface = surface;
+
     CVDisplayLinkRef displayLink = nullptr;
     CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
+    // Pass the raw DrawContext* as context — safe because the entry's shared_ptr
+    // keeps it alive, and we always stop the display link before dropping the ptr.
     CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback,
-                                   reinterpret_cast<void*>(surface));
+                                   reinterpret_cast<void*>(drawCtx.get()));
+    // Enable drawing then start the link so the very first callback fires with
+    // drawEnabled already true (avoids a single dropped frame at mount time).
+    drawCtx->drawEnabled.store(true, std::memory_order_release);
     CVDisplayLinkStart(displayLink);
 
     // Store entry — view is retained by the map (ARC __strong).
@@ -2186,6 +2244,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.surface     = surface;
     entry.view        = termView;
     entry.displayLink = displayLink;
+    entry.drawCtx     = drawCtx;
     entry.isAttached  = YES;
     entry.lastRect    = CGRectMake(rx, ry, rw, rh);
     entry.lastScale   = scaleFactor;
@@ -2234,6 +2293,13 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
 
     // Tell Ghostty the surface is now occluded — renderer thread sleeps.
     ghostty_surface_set_occlusion(entry.surface, true);
+
+    // Atomically disable drawing BEFORE stopping the display link so any
+    // in-flight callback that fires between now and CVDisplayLinkStop completes
+    // without dispatching to the main queue.  Also guards the already-dispatched
+    // blocks that haven't yet run on the main queue — they re-check drawEnabled
+    // inside the block before calling ghostty_surface_draw.
+    entry.drawCtx->drawEnabled.store(false, std::memory_order_release);
 
     // Stop the display link — no more draw dispatches until mount re-attaches.
     CVDisplayLinkStop(entry.displayLink);
@@ -2523,6 +2589,14 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     if (doomed.view) {
         doomed.view.surface = nullptr;
         [doomed.view removeFromSuperview];
+    }
+
+    // Disable drawing atomically BEFORE stopping the display link.  This drains
+    // any in-flight callbacks that already passed the atomic check — they will
+    // dispatch to the main queue but re-check drawEnabled inside the block and
+    // skip ghostty_surface_draw on the (about-to-be-freed) surface.
+    if (doomed.drawCtx) {
+        doomed.drawCtx->drawEnabled.store(false, std::memory_order_release);
     }
 
     // Stop the display link so no more draw callbacks fire on the

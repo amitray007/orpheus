@@ -1,16 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type React from 'react'
-import type {
-  GhPullRequest,
-  WorkspaceRecord,
-  WorkspaceStatus,
-  WorkspaceActivityDetail
-} from '@shared/types'
+import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@shared/types'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useSetActiveOverlayWorkspace } from '@/lib/overlayMode'
+import { useWorkspaceActivity } from '@/lib/activityStore'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -41,10 +37,6 @@ export function WorkspaceView({
   const [remountKey, setRemountKey] = useState(0)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
-  // Activity status driven by claude hook events
-  const [activity, setActivity] = useState<WorkspaceStatus>(workspace.status)
-  // Detail sub-state (thinking / tool / compacting / ready / etc.)
-  const [detail, setDetail] = useState<WorkspaceActivityDetail | undefined>(initialDetail)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -59,19 +51,20 @@ export function WorkspaceView({
   // overlay flipping until we re-enter a workspace.
   useSetActiveOverlayWorkspace(workspace.id)
 
-  // Subscribe to live activity changes for this workspace.
-  useEffect(() => {
-    const workspaceId = workspace.id
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync initial status when workspace changes, then subscribe
-    setActivity(workspace.status)
-    const unsub = window.api.workspaces.onActivityChanged((e) => {
-      if (e.workspaceId === workspaceId) {
-        setActivity(e.status)
-        setDetail(e.detail)
-      }
-    })
-    return unsub
-  }, [workspace.id, workspace.status])
+  // Activity status and detail from the per-key store — re-renders only when
+  // THIS workspace's activity changes (not when any other workspace fires).
+  // Replaces the old onActivityChanged subscription that was registering
+  // a duplicate listener on top of Dashboard's.
+  const storeDetail = useWorkspaceActivity(workspace.id)
+
+  // detail: prefer live store value; fall back to initialDetail (seed from Dashboard
+  // snapshot passed at mount time) so the drawer glyph is correct before the
+  // first hook event fires.
+  const detail: WorkspaceActivityDetail | undefined = storeDetail ?? initialDetail
+
+  // Activity status (coarse) — derived from the detail for the drawer.
+  // Mirrors the mapping in orpheusNotify.ts / WorkspaceActivityDetail definitions.
+  const activity = workspace.status
 
   async function handleRestart(): Promise<void> {
     await window.api.terminal.destroy(workspace.id)
@@ -90,6 +83,16 @@ export function WorkspaceView({
     mountedRef.current = true
 
     const workspaceId = workspace.id
+
+    // Pending mount debounce timer — allows cancellation on rapid navigation.
+    let mountTimerId: ReturnType<typeof setTimeout> | null = null
+    // rAF spawned inside the 75ms mount timer — stored so cleanup can cancel it.
+    let mountRafId: number | null = null
+    // rAF guard for resize coalescing
+    let resizeRafId: number | null = null
+    // Pending resize rect — latest measurement, flushed in the rAF
+    let pendingResizeRect: { x: number; y: number; w: number; h: number } | null = null
+    let pendingResizeSf = 1
 
     const doMount = async (): Promise<void> => {
       const rect = el.getBoundingClientRect()
@@ -132,55 +135,79 @@ export function WorkspaceView({
       }
     }
 
-    // Small rAF delay to ensure the div has been laid out and painted before
-    // we measure its rect.  This avoids a zero-size rect on first mount.
-    requestAnimationFrame(() => {
-      doMount()
-    })
+    // 75ms debounce before mounting — rapid navigation (e.g. clicking through
+    // the sidebar quickly) will cancel the pending mount and only the final
+    // destination surface actually mounts. The cleanup function cancels the
+    // timer before calling terminal.hide, so no mount fires after unmount.
+    mountTimerId = setTimeout(() => {
+      mountTimerId = null
+      // Small rAF delay after the debounce to ensure the div has been laid
+      // out and painted before we measure its rect.
+      mountRafId = requestAnimationFrame(() => {
+        mountRafId = null
+        if (!mountedRef.current) return // guard: unmounted during rAF
+        doMount()
+      })
+    }, 75)
+
+    // Flush the latest pending resize measurement via a single IPC call.
+    const flushResize = (): void => {
+      resizeRafId = null
+      if (!pendingResizeRect) return
+      window.api.terminal
+        .resize(workspaceId, pendingResizeRect, pendingResizeSf)
+        .catch((e) => console.error('[WorkspaceView] resize failed:', e))
+      pendingResizeRect = null
+    }
+
+    // Schedule one rAF-coalesced resize IPC. Intermediate measurements during
+    // a window drag are stored in the ref and only the last one is flushed.
+    const scheduleResize = (rect: DOMRect): void => {
+      pendingResizeSf = window.devicePixelRatio ?? 1
+      pendingResizeRect = {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height)
+      }
+      if (resizeRafId === null) {
+        resizeRafId = requestAnimationFrame(flushResize)
+      }
+    }
 
     // ResizeObserver — fires when the div's intrinsic size changes.
     // This fires automatically when the drawer opens/closes and changes the
     // terminal host div's width via flex layout.
     const ro = new ResizeObserver(() => {
       if (!el) return
-      const newRect = el.getBoundingClientRect()
-      const sf = window.devicePixelRatio ?? 1
-      window.api.terminal
-        .resize(
-          workspaceId,
-          {
-            x: Math.round(newRect.left),
-            y: Math.round(newRect.top),
-            w: Math.round(newRect.width),
-            h: Math.round(newRect.height)
-          },
-          sf
-        )
-        .catch((e) => console.error('[WorkspaceView] resize failed:', e))
+      scheduleResize(el.getBoundingClientRect())
     })
     ro.observe(el)
 
     // window resize — bounding rect position shifts even if our div size doesn't.
     const onWindowResize = (): void => {
       if (!el) return
-      const newRect = el.getBoundingClientRect()
-      const sf = window.devicePixelRatio ?? 1
-      window.api.terminal
-        .resize(
-          workspaceId,
-          {
-            x: Math.round(newRect.left),
-            y: Math.round(newRect.top),
-            w: Math.round(newRect.width),
-            h: Math.round(newRect.height)
-          },
-          sf
-        )
-        .catch((e) => console.error('[WorkspaceView] window-resize failed:', e))
+      scheduleResize(el.getBoundingClientRect())
     }
     window.addEventListener('resize', onWindowResize)
 
     return () => {
+      // Cancel any pending debounced mount — prevents mount from firing after unmount.
+      if (mountTimerId !== null) {
+        clearTimeout(mountTimerId)
+        mountTimerId = null
+      }
+      // Cancel the rAF spawned inside the mount timer, if it hasn't fired yet.
+      if (mountRafId !== null) {
+        cancelAnimationFrame(mountRafId)
+        mountRafId = null
+      }
+      // Cancel any pending rAF resize flush.
+      if (resizeRafId !== null) {
+        cancelAnimationFrame(resizeRafId)
+        resizeRafId = null
+      }
+
       ro.disconnect()
       window.removeEventListener('resize', onWindowResize)
 

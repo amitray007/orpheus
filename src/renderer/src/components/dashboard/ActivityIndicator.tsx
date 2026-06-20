@@ -1,7 +1,8 @@
 import type React from 'react'
 import { Circle, CircleDashed, Diamond } from '@phosphor-icons/react'
 import type { WorkspaceActivityDetail } from '@shared/types'
-import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
+import { BRAILLE_FRAMES } from '@/lib/braille'
+import { useSharedFrame } from '@/lib/sharedTicker'
 
 const TOOL_FRAMES = ['◐', '◓', '◑', '◒'] as const
 const COMPACT_FRAMES = [
@@ -35,9 +36,11 @@ export function ActivityIndicator({
   detail,
   className
 }: ActivityIndicatorProps): React.JSX.Element | null {
-  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, detail === 'thinking')
-  const tool = useAnimatedFrame(TOOL_FRAMES, 200, detail === 'tool')
-  const compact = useAnimatedFrame(COMPACT_FRAMES, 100, detail === 'compacting')
+  // useSharedFrame shares ONE interval per distinct ms across all mounted indicators.
+  // When active=false no interval is registered and frame stays 0.
+  const brailleFrame = useSharedFrame(80, detail === 'thinking')
+  const toolFrame = useSharedFrame(200, detail === 'tool')
+  const compactFrame = useSharedFrame(100, detail === 'compacting')
 
   if (!detail || detail === 'archived') return null
 
@@ -70,13 +73,25 @@ export function ActivityIndicator({
   }
   // Animated states stay text-rendered — the frames are unicode sequences.
   if (detail === 'thinking') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{braille}</span>
+    return (
+      <span className={`${cls} text-accent text-xs font-mono`}>
+        {BRAILLE_FRAMES[brailleFrame % BRAILLE_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'tool') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{tool}</span>
+    return (
+      <span className={`${cls} text-accent text-xs font-mono`}>
+        {TOOL_FRAMES[toolFrame % TOOL_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'compacting') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{compact}</span>
+    return (
+      <span className={`${cls} text-accent text-xs font-mono`}>
+        {COMPACT_FRAMES[compactFrame % COMPACT_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'asking') {
     return (

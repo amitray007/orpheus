@@ -37,6 +37,8 @@ type SessionRow = {
   last_message_preview: string | null
   // v35
   last_user_message_preview: string | null
+  // v50
+  jsonl_mtime: number | null
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
@@ -272,61 +274,62 @@ function extractFileSize(jsonlPath: string): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// Last-message preview extraction (v34)
+// Preview constants (v34 / v35)
 // ---------------------------------------------------------------------------
 
 const MAX_PREVIEW_LENGTH = 100
 
-/**
- * Reads the last chunk of the JSONL, finds the most recent assistant message,
- * and returns a cleaned preview string (≤100 chars). Falls back to the most
- * recent user message if no assistant content is found.
- */
-function extractLastMessagePreview(jsonlPath: string): string | null {
-  try {
-    const stat = fs.statSync(jsonlPath)
-    const fileSize = stat.size
-    const readSize = Math.min(fileSize, MAX_BYTES)
-    const offset = fileSize - readSize
+// ---------------------------------------------------------------------------
+// Single-pass extraction helpers
+//
+// Instead of opening the fd 5 separate times per JSONL file, we do at most
+// 2 reads: one head read (~200KB from offset 0) for title/model/messageCount,
+// and one tail read (~200KB from the end) for lastMessageRole/previews.
+// The stat call is shared between the two reads.
+// ---------------------------------------------------------------------------
 
-    const fd = fs.openSync(jsonlPath, 'r')
-    const buf = Buffer.allocUnsafe(readSize)
+type HeadExtracted = {
+  title: string | null
+  model: string | null
+  messageCount: number
+}
+
+type TailExtracted = {
+  lastMessageRole: string | null
+  lastMessagePreview: string | null
+  lastUserMessagePreview: string | null
+}
+
+function extractFromHead(text: string): HeadExtracted {
+  const lines = text.split('\n')
+  let title: string | null = null
+  let model: string | null = null
+  let messageCount = 0
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let parsed: Record<string, unknown>
     try {
-      fs.readSync(fd, buf, 0, readSize, offset)
-    } finally {
-      fs.closeSync(fd)
+      parsed = JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
     }
 
-    const text = buf.toString('utf-8')
-    const lines = text.split('\n').reverse()
+    const type = parsed['type']
+    if (type !== 'user' && type !== 'assistant') continue
+    messageCount++
 
-    let fallbackUserText: string | null = null
+    const message = parsed['message']
+    if (typeof message !== 'object' || message === null) continue
 
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (typeof parsed !== 'object' || parsed === null) continue
-      const p = parsed as Record<string, unknown>
-      const type = p['type']
-      if (type !== 'assistant' && type !== 'user') continue
-
-      const message = p['message']
-      if (typeof message !== 'object' || message === null) continue
+    // Extract title from first user message
+    if (title === null && type === 'user') {
       const content = (message as Record<string, unknown>)['content']
-
       let raw: string | null = null
-
       if (typeof content === 'string') {
         raw = content
       } else if (Array.isArray(content)) {
-        const parts: string[] = []
         for (const part of content) {
           if (
             typeof part === 'object' &&
@@ -334,130 +337,118 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
             (part as Record<string, unknown>)['type'] === 'text'
           ) {
             const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string' && t.trim()) parts.push(t)
+            if (typeof t === 'string') {
+              raw = t
+              break
+            }
           }
         }
-        if (parts.length > 0) raw = parts.join(' ')
       }
+      if (raw) {
+        const trimmedRaw = raw.trim()
+        title =
+          trimmedRaw.length > MAX_TITLE_LENGTH
+            ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
+            : trimmedRaw
+      }
+    }
 
-      if (!raw) continue
+    // Extract model from first assistant message
+    if (model === null && type === 'assistant') {
+      const m = (message as Record<string, unknown>)['model']
+      if (typeof m === 'string' && m.length > 0) model = m
+    }
+  }
 
-      // Strip markdown noise: code fences, inline backticks, headers, bold/italic stars
-      const cleaned = raw
-        .replace(/```[\s\S]*?```/g, '') // fenced code blocks
-        .replace(/`[^`]*`/g, '') // inline code
-        .replace(/^#{1,6}\s+/gm, '') // ATX headers
-        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1') // bold/italic
-        .replace(/_([^_]+)_/g, '$1') // underline italic
-        .replace(/\s+/g, ' ') // collapse whitespace
-        .trim()
+  return { title, model, messageCount }
+}
 
-      if (!cleaned) continue
+function extractFromTail(text: string): TailExtracted {
+  const lines = text.split('\n').reverse()
+  let lastMessageRole: string | null = null
+  let lastMessagePreview: string | null = null
+  let fallbackUserText: string | null = null
+  let lastUserMessagePreview: string | null = null
 
-      const preview =
-        cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
+    }
 
+    const type = parsed['type']
+    if (type !== 'user' && type !== 'assistant') continue
+
+    const message = parsed['message']
+    if (typeof message !== 'object' || message === null) continue
+
+    // Extract last_message_role from first qualifying line (reversed = last in file)
+    if (lastMessageRole === null) {
+      const role = (message as Record<string, unknown>)['role']
+      if (typeof role === 'string') lastMessageRole = role
+    }
+
+    const content = (message as Record<string, unknown>)['content']
+    let raw: string | null = null
+    if (typeof content === 'string') {
+      raw = content
+    } else if (Array.isArray(content)) {
+      const parts: string[] = []
+      for (const part of content) {
+        if (
+          typeof part === 'object' &&
+          part !== null &&
+          (part as Record<string, unknown>)['type'] === 'text'
+        ) {
+          const t = (part as Record<string, unknown>)['text']
+          if (typeof t === 'string' && t.trim()) parts.push(t)
+        }
+      }
+      if (parts.length > 0) raw = parts.join(' ')
+    }
+
+    if (!raw) continue
+
+    const cleaned = raw
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`[^`]*`/g, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!cleaned) continue
+
+    const preview =
+      cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
+
+    // last_message_preview: prefer assistant, fall back to user
+    if (lastMessagePreview === null) {
       if (type === 'assistant') {
-        return preview
-      }
-
-      // Save user message as fallback but keep scanning for an assistant message
-      if (fallbackUserText === null) {
+        lastMessagePreview = preview
+      } else if (fallbackUserText === null) {
         fallbackUserText = preview
       }
     }
 
-    return fallbackUserText
-  } catch {
-    return null
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Last user-message preview extraction (v35)
-// ---------------------------------------------------------------------------
-
-/**
- * Reads the last chunk of the JSONL, walks backward, and returns the most
- * recent *user* message as a cleaned preview (≤100 chars). Returns null if
- * no user message is found.
- */
-function extractLastUserMessagePreview(jsonlPath: string): string | null {
-  try {
-    const stat = fs.statSync(jsonlPath)
-    const fileSize = stat.size
-    const readSize = Math.min(fileSize, MAX_BYTES)
-    const offset = fileSize - readSize
-
-    const fd = fs.openSync(jsonlPath, 'r')
-    const buf = Buffer.allocUnsafe(readSize)
-    try {
-      fs.readSync(fd, buf, 0, readSize, offset)
-    } finally {
-      fs.closeSync(fd)
+    // last_user_message_preview: first user line seen (reversed = last in file)
+    if (lastUserMessagePreview === null && type === 'user') {
+      lastUserMessagePreview = preview
     }
 
-    const text = buf.toString('utf-8')
-    const lines = text.split('\n').reverse()
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (typeof parsed !== 'object' || parsed === null) continue
-      const p = parsed as Record<string, unknown>
-      if (p['type'] !== 'user') continue
-
-      const message = p['message']
-      if (typeof message !== 'object' || message === null) continue
-      const content = (message as Record<string, unknown>)['content']
-
-      let raw: string | null = null
-
-      if (typeof content === 'string') {
-        raw = content
-      } else if (Array.isArray(content)) {
-        const parts: string[] = []
-        for (const part of content) {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            (part as Record<string, unknown>)['type'] === 'text'
-          ) {
-            const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string' && t.trim()) parts.push(t)
-          }
-        }
-        if (parts.length > 0) raw = parts.join(' ')
-      }
-
-      if (!raw) continue
-
-      const cleaned = raw
-        .replace(/```[\s\S]*?```/g, '')
-        .replace(/`[^`]*`/g, '')
-        .replace(/^#{1,6}\s+/gm, '')
-        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
-        .replace(/_([^_]+)_/g, '$1')
-        .replace(/\s+/g, ' ')
-        .trim()
-
-      if (!cleaned) continue
-
-      return cleaned.length > MAX_PREVIEW_LENGTH
-        ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…'
-        : cleaned
-    }
-  } catch {
-    // ignore
+    // Stop once we have everything we need (all three fields populated).
+    if (lastMessagePreview !== null && lastUserMessagePreview !== null && lastMessageRole !== null)
+      break
   }
-  return null
+
+  if (lastMessagePreview === null) lastMessagePreview = fallbackUserText
+
+  return { lastMessageRole, lastMessagePreview, lastUserMessagePreview }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,14 +457,29 @@ function extractLastUserMessagePreview(jsonlPath: string): string | null {
 
 /**
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
- * not yet in the sessions table. Returns the list of inserted session IDs.
+ * not yet in the sessions table.
+ *
+ * Extraction is gated: we only open the file when the INSERT actually inserts
+ * a new row (better-sqlite3 `.changes > 0`). Already-imported rows skip all
+ * fd opens, paying only a readdirSync + stat per file. At most 2 reads per
+ * file (head ~200KB + tail ~200KB) instead of 5 separate fd opens.
  */
 function upsertSessionFilesForProject(projectId: string, dir: string): void {
   const db = getDb()
-  const insert = db.prepare(
+  // INSERT OR IGNORE so re-running is idempotent; we check .changes to know
+  // whether the row was actually inserted (and therefore needs extraction).
+  const insertStub = db.prepare(
     `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes, last_message_preview, last_user_message_preview)
-     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, project_id, jsonl_path, status, created_at, updated_at, jsonl_mtime)
+     VALUES (?, ?, ?, 'in_review', ?, ?, ?)`
+  )
+  const updateMeta = db.prepare(
+    `UPDATE sessions
+     SET title = ?, model = ?, last_message_role = ?,
+         message_count = ?, jsonl_size_bytes = ?,
+         last_message_preview = ?, last_user_message_preview = ?,
+         jsonl_mtime = ?
+     WHERE id = ?`
   )
 
   let entries: fs.Dirent[]
@@ -489,38 +495,79 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     const sessionId = entry.name.replace(/\.jsonl$/, '')
     const jsonlPath = nodePath.join(dir, entry.name)
 
-    let mtime: number
+    let stat: fs.Stats
     try {
-      mtime = Math.floor(fs.statSync(jsonlPath).mtimeMs)
+      stat = fs.statSync(jsonlPath)
     } catch {
-      mtime = Date.now()
+      continue
+    }
+    const mtime = Math.floor(stat.mtimeMs)
+    const fileSize = stat.size
+
+    try {
+      // Pass null for jsonl_mtime at INSERT time. Only updateMeta.run() — inside
+      // the successful extraction try block — writes the real mtime. If extraction
+      // throws before updateMeta runs, the null mtime ensures the mtime guard
+      // (~line 679) treats this row as "needs extraction" on the next scan.
+      const info = insertStub.run(sessionId, projectId, jsonlPath, mtime, mtime, null)
+      if (info.changes === 0) {
+        // Row already existed — skip extraction entirely.
+        continue
+      }
+    } catch {
+      // Ignore individual row failures (e.g. malformed UUID)
+      continue
     }
 
-    const title = extractTitle(jsonlPath)
-    const model = extractModel(jsonlPath)
-    const lastMessageRole = extractLastMessageRole(jsonlPath)
-    const messageCount = extractMessageCount(jsonlPath)
-    const jsonlSizeBytes = extractFileSize(jsonlPath)
-    const lastMessagePreview = extractLastMessagePreview(jsonlPath)
-    const lastUserMessagePreview = extractLastUserMessagePreview(jsonlPath)
-
+    // New row inserted — run extraction (at most 2 reads).
     try {
-      insert.run(
-        sessionId,
-        projectId,
-        jsonlPath,
+      const readSize = Math.min(fileSize, MAX_BYTES)
+
+      // Head read: title, model, messageCount
+      const headBuf = Buffer.allocUnsafe(readSize)
+      let headText: string
+      {
+        const fd = fs.openSync(jsonlPath, 'r')
+        try {
+          const bytesRead = fs.readSync(fd, headBuf, 0, readSize, 0)
+          headText = headBuf.slice(0, bytesRead).toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+      const { title, model, messageCount } = extractFromHead(headText)
+
+      // Tail read: lastMessageRole, previews (skip if file fits in head read)
+      let tailText: string
+      if (fileSize <= MAX_BYTES) {
+        tailText = headText
+      } else {
+        const tailOffset = fileSize - readSize
+        const tailBuf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(jsonlPath, 'r')
+        try {
+          fs.readSync(fd, tailBuf, 0, readSize, tailOffset)
+          tailText = tailBuf.toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+      const { lastMessageRole, lastMessagePreview, lastUserMessagePreview } =
+        extractFromTail(tailText)
+
+      updateMeta.run(
         title,
-        mtime,
-        mtime,
         model,
         lastMessageRole,
         messageCount,
-        jsonlSizeBytes,
+        fileSize,
         lastMessagePreview,
-        lastUserMessagePreview
+        lastUserMessagePreview,
+        mtime,
+        sessionId
       )
     } catch {
-      // Ignore individual row failures (e.g. malformed UUID)
+      // Extraction failure is non-fatal — row stays with NULL metadata
     }
   }
 }
@@ -545,6 +592,10 @@ export function importSessionsForProject(project: ProjectRecord): SessionRecord[
  * For all sessions in a project where title / model / last_message_role is NULL,
  * re-runs the extractors and fills in the missing values.
  * Also scans for new .jsonl files not yet in the sessions table and inserts them.
+ *
+ * mtime guard: for non-archived sessions we skip re-extraction when the JSONL
+ * file's mtime matches the stored jsonl_mtime — this avoids N×stat+read calls
+ * on every project-tab open when sessions haven't changed.
  */
 export function refreshSessionMetadata(projectId: string): void {
   const db = getDb()
@@ -561,7 +612,8 @@ export function refreshSessionMetadata(projectId: string): void {
     }
   }
 
-  // Backfill any NULL metadata columns (title, model, role, counts).
+  // Backfill any NULL metadata columns (title, model, role, counts) for rows
+  // that were inserted before the single-pass extractor was wired.
   type NullMetaRow = { id: string; jsonl_path: string }
   const nullRows = db
     .prepare(
@@ -599,34 +651,67 @@ export function refreshSessionMetadata(projectId: string): void {
   })
   runMetadataUpdates(nullRows)
 
-  // Always re-extract last_message_preview and last_user_message_preview for
-  // non-archived sessions so the snippets stay fresh as sessions accumulate more messages.
-  type ActiveRow = { id: string; jsonl_path: string }
+  // Re-extract last_message_preview and last_user_message_preview for non-archived
+  // sessions, but only when the JSONL file has changed since the last extraction
+  // (mtime guard). This avoids re-reading every file on every project-tab open.
+  type ActiveRow = { id: string; jsonl_path: string; jsonl_mtime: number | null }
   const activeRows = db
     .prepare(
-      `SELECT id, jsonl_path FROM sessions
+      `SELECT id, jsonl_path, jsonl_mtime FROM sessions
        WHERE project_id = ? AND status != 'archived'`
     )
     .all(projectId) as ActiveRow[]
 
-  const previewStmt = db.prepare(`UPDATE sessions SET last_message_preview = ? WHERE id = ?`)
-  const userPreviewStmt = db.prepare(
-    `UPDATE sessions SET last_user_message_preview = ? WHERE id = ?`
+  const previewUpdateStmt = db.prepare(
+    `UPDATE sessions
+     SET last_message_preview = ?, last_user_message_preview = ?, jsonl_mtime = ?
+     WHERE id = ?`
   )
 
   const runPreviewUpdates = db.transaction((rows: ActiveRow[]) => {
     for (const row of rows) {
-      const preview = extractLastMessagePreview(row.jsonl_path)
+      let currentMtime: number
+      let fileSize: number
       try {
-        previewStmt.run(preview, row.id)
+        const stat = fs.statSync(row.jsonl_path)
+        currentMtime = Math.floor(stat.mtimeMs)
+        fileSize = stat.size
       } catch {
-        // Ignore individual row failures
+        continue
       }
-      const userPreview = extractLastUserMessagePreview(row.jsonl_path)
+
+      // Skip re-extraction if the file hasn't changed since last time.
+      if (row.jsonl_mtime !== null && row.jsonl_mtime === currentMtime) continue
+
       try {
-        userPreviewStmt.run(userPreview, row.id)
+        const readSize = Math.min(fileSize, MAX_BYTES)
+        let tailText: string
+        if (fileSize <= MAX_BYTES) {
+          // Small file — one read covers both head and tail
+          const buf = Buffer.allocUnsafe(readSize)
+          const fd = fs.openSync(row.jsonl_path, 'r')
+          try {
+            const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
+            tailText = buf.slice(0, bytesRead).toString('utf-8')
+          } finally {
+            fs.closeSync(fd)
+          }
+        } else {
+          const tailOffset = fileSize - readSize
+          const buf = Buffer.allocUnsafe(readSize)
+          const fd = fs.openSync(row.jsonl_path, 'r')
+          try {
+            fs.readSync(fd, buf, 0, readSize, tailOffset)
+            tailText = buf.toString('utf-8')
+          } finally {
+            fs.closeSync(fd)
+          }
+        }
+
+        const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
+        previewUpdateStmt.run(lastMessagePreview, lastUserMessagePreview, currentMtime, row.id)
       } catch {
-        // Ignore individual row failures
+        // Extraction failure is non-fatal
       }
     }
   })

@@ -42,7 +42,7 @@ type CacheEntry = {
 }
 
 const parseCache = new Map<string, CacheEntry>()
-const TTL_MS = 5000
+const TTL_MS = 30_000 // raised from 5s to reduce synchronous full-file reads under load
 
 function getCached(workspaceId: string): ParsedSession | null {
   const entry = parseCache.get(workspaceId)
@@ -117,6 +117,8 @@ function extractText(content: unknown): string | null {
   return null
 }
 
+// TODO(perf): replace readFileSync with a streaming tail reader that avoids
+// loading the full JSONL into memory for large sessions (audit rank 12).
 function parseJsonl(jsonlPath: string): ParsedSession {
   const raw = fs.readFileSync(jsonlPath, 'utf8')
   const lines = raw.split('\n')

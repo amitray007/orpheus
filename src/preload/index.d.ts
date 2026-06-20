@@ -145,6 +145,15 @@ declare global {
             detail: WorkspaceActivityDetail
           }) => void
         ) => () => void
+        onActivityBatch: (
+          cb: (
+            updates: Array<{
+              workspaceId: string
+              status: WorkspaceStatus
+              detail: WorkspaceActivityDetail
+            }>
+          ) => void
+        ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
         onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void

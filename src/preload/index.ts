@@ -209,6 +209,26 @@ const api = {
       ipcRenderer.on('workspace:activityChanged', listener)
       return () => ipcRenderer.removeListener('workspace:activityChanged', listener)
     },
+    onActivityBatch: (
+      cb: (
+        updates: Array<{
+          workspaceId: string
+          status: WorkspaceStatus
+          detail: WorkspaceActivityDetail
+        }>
+      ) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        updates: Array<{
+          workspaceId: string
+          status: WorkspaceStatus
+          detail: WorkspaceActivityDetail
+        }>
+      ): void => cb(updates)
+      ipcRenderer.on('workspace:activityBatch', listener)
+      return () => ipcRenderer.removeListener('workspace:activityBatch', listener)
+    },
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },

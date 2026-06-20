@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type React from 'react'
-import type {
-  ClaudeProjectSettings,
-  ProjectRecord,
-  WorkspaceActivityDetail,
-  WorkspaceRecord
-} from '@shared/types'
+import type { ClaudeProjectSettings, ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectHeader } from './project/ProjectHeader'
 import { WorkspacesTab } from './project/WorkspacesTab'
 import { SettingsDrawer } from './project/SettingsDrawer'
@@ -22,7 +17,6 @@ import { SettingsDrawer } from './project/SettingsDrawer'
 interface ProjectViewProps {
   project: ProjectRecord
   workspaces: WorkspaceRecord[] | null
-  workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onRequestRemove: () => void
   onSelectWorkspace: (workspaceId: string) => void
   onAddWorkspace: (projectId: string) => void | Promise<void>
@@ -42,7 +36,6 @@ interface ProjectViewProps {
 export function ProjectView({
   project,
   workspaces,
-  workspaceActivities = {},
   onRequestRemove,
   onSelectWorkspace,
   onAddWorkspace,
@@ -133,7 +126,6 @@ export function ProjectView({
         projectId={project.id}
         projectPath={project.path}
         workspaces={workspaces}
-        workspaceActivities={workspaceActivities}
         onSelectWorkspace={onSelectWorkspace}
         onRenameWorkspace={onRenameWorkspace}
         onArchiveWorkspace={onArchiveWorkspace}

@@ -3,7 +3,9 @@
 //
 // For session.* actions: fs.watch on the JSONL file (or parent dir if the
 // file doesn't exist yet). On file change: invalidate cache, re-query via
-// the registry handler, and push the result via sendUpdate. Debounced 200ms.
+// the registry handler, and push the result via sendUpdate. Throttled 1500ms
+// (leading + trailing) so the token-counter/context-chip responds immediately
+// on the first event but avoids hammering the main process during streaming.
 //
 // Subscriptions are tracked in a Map<subId, dispose>. They are automatically
 // cleaned up when webContents is destroyed.
@@ -28,17 +30,50 @@ type SubscriptionEntry = {
 const subscriptions = new Map<string, SubscriptionEntry>()
 
 // ---------------------------------------------------------------------------
-// Debounce helper
+// Leading+trailing throttle helper
 // ---------------------------------------------------------------------------
 
-function debounce<T extends unknown[]>(fn: (...args: T) => void, ms: number): (...args: T) => void {
+// Interval for the leading+trailing throttle applied to file-change events.
+const SUBSCRIPTION_DEBOUNCE_MS = 1500
+
+/**
+ * Returns a throttled version of `fn` that fires immediately on the first
+ * call within a quiet window (leading edge) and again after the window
+ * expires if any further calls arrived during it (trailing edge).
+ */
+function throttleLeadingTrailing<T extends unknown[]>(
+  fn: (...args: T) => void,
+  ms: number
+): (...args: T) => void {
+  let lastFiredAt = 0
   let timer: ReturnType<typeof setTimeout> | null = null
+  let pendingArgs: T | null = null
   return (...args: T) => {
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
+    const now = Date.now()
+    if (now - lastFiredAt >= ms) {
+      // Leading edge: fire immediately.
+      lastFiredAt = now
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+        pendingArgs = null
+      }
       fn(...args)
-    }, ms)
+    } else {
+      // Within the quiet window — schedule/reset the trailing fire.
+      pendingArgs = args
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(
+        () => {
+          timer = null
+          lastFiredAt = Date.now()
+          const a = pendingArgs!
+          pendingArgs = null
+          fn(...a)
+        },
+        ms - (now - lastFiredAt)
+      )
+    }
   }
 }
 
@@ -64,7 +99,7 @@ function startSessionSubscription(
     return nodePath.join(os.homedir(), '.claude', 'projects', encoded)
   }
 
-  const fireUpdate = debounce(async () => {
+  const fireUpdate = throttleLeadingTrailing(async () => {
     if (disposed) return
     invalidateSessionCache(workspaceId)
     try {
@@ -75,7 +110,7 @@ function startSessionSubscription(
     } catch (err) {
       console.error('[actions:subscriptions] update invoke failed', { subId, actionId, err })
     }
-  }, 200)
+  }, SUBSCRIPTION_DEBOUNCE_MS)
 
   function watchFile(filePath: string): void {
     if (disposed) return
@@ -155,10 +190,11 @@ function startSessionSubscription(
     watchParentDir()
   }
 
-  // Schedule the first update — fireUpdate is debounced (200ms), so subscribers
-  // see an initial value within one debounce window of subscribing. We don't
-  // bypass the debounce because a synchronous read on every subscribe would
-  // hot-loop when callers re-subscribe rapidly (component remounts).
+  // Schedule the first update — fireUpdate is throttled (leading+trailing,
+  // SUBSCRIPTION_DEBOUNCE_MS). The leading edge fires immediately so new
+  // subscribers see an initial value right away. We still go through the
+  // throttle rather than calling invoke() directly here to avoid hot-looping
+  // when callers re-subscribe rapidly (component remounts).
   fireUpdate()
 
   return () => {

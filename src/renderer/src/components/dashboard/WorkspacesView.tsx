@@ -11,6 +11,7 @@ import { GitMerge, Kanban } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
+import { useWorkspaceActivity, getActivitySnapshot } from '@/lib/activityStore'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,16 +39,13 @@ function relativeTime(ms: number): string {
 
 type GroupKey = 'in_review' | 'in_progress' | 'done' | 'waiting'
 
-function deriveGroup(
-  ws: WorkspaceRecord,
-  activities: Record<string, WorkspaceActivityDetail>
-): GroupKey {
+function deriveGroup(ws: WorkspaceRecord, activity: WorkspaceActivityDetail | undefined): GroupKey {
   // Live activity wins
-  const a = activities[ws.id]
-  if (a === 'attention' || a === 'asking') return 'in_review'
-  if (a === 'thinking' || a === 'tool' || a === 'compacting') return 'in_progress'
-  if (a === 'ready') return 'done'
-  if (a === 'idle') return 'waiting'
+  if (activity === 'attention' || activity === 'asking') return 'in_review'
+  if (activity === 'thinking' || activity === 'tool' || activity === 'compacting')
+    return 'in_progress'
+  if (activity === 'ready') return 'done'
+  if (activity === 'idle') return 'waiting'
 
   // No live activity — if workspace was never activated (no claude session), it's just waiting.
   if (!ws.claudeSessionId) return 'waiting'
@@ -92,7 +90,6 @@ interface WorkspaceCardProps {
   workspace: WorkspaceRecord
   projectName: string
   session: SessionRecord | undefined
-  activityDetail: WorkspaceActivityDetail | undefined
   terminalTitle: string | null
   gitStatus: GitStatus | null
   pr: GhPullRequest | null
@@ -103,12 +100,15 @@ const WorkspaceCard = memo(function WorkspaceCard({
   workspace,
   projectName,
   session,
-  activityDetail,
   terminalTitle,
   gitStatus,
   pr,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
+  // Subscribe to this workspace's activity from the per-key store — re-renders
+  // only when THIS card's activity changes, not when any other workspace changes.
+  const activityDetail = useWorkspaceActivity(workspace.id)
+
   const sessionTitle = session?.title ?? null
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
 
@@ -184,7 +184,6 @@ interface KanbanColumnProps {
   workspaces: WorkspaceRecord[]
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
-  activities: Record<string, WorkspaceActivityDetail>
   titleByWorkspaceId: Record<string, string>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   prByWorkspaceId: Record<string, GhPullRequest | null>
@@ -196,7 +195,6 @@ const KanbanColumn = memo(function KanbanColumn({
   workspaces,
   projectsById,
   sessionsById,
-  activities,
   titleByWorkspaceId,
   gitStatusByWorkspaceId,
   prByWorkspaceId,
@@ -229,7 +227,6 @@ const KanbanColumn = memo(function KanbanColumn({
                 workspace={ws}
                 projectName={project?.name ?? 'Unknown'}
                 session={session}
-                activityDetail={activities[ws.id]}
                 terminalTitle={titleByWorkspaceId[ws.id] ?? null}
                 gitStatus={gitStatusByWorkspaceId[ws.id] ?? null}
                 pr={prByWorkspaceId[ws.id] ?? null}
@@ -253,7 +250,6 @@ export interface WorkspacesViewProps {
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
   projects: ProjectRecord[]
   workspaces: WorkspaceRecord[]
-  workspaceActivities: Record<string, WorkspaceActivityDetail>
   titleByWorkspaceId: Record<string, string>
   sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
   gitStatusByWorkspaceId?: Record<string, GitStatus | null>
@@ -264,7 +260,6 @@ export function WorkspacesView({
   onNavigateToWorkspace,
   projects,
   workspaces,
-  workspaceActivities,
   titleByWorkspaceId,
   sessions,
   gitStatusByWorkspaceId = {},
@@ -280,8 +275,16 @@ export function WorkspacesView({
     [workspaces]
   )
 
-  // Derive groups — recomputes whenever activities or workspaces change
+  // Derive column groups from the store snapshot at render time.  This is
+  // intentionally NOT reactive to activity changes: each WorkspaceCard calls
+  // useWorkspaceActivity(ws.id) and re-renders its own glyph live, but the
+  // column grouping (which bucket a card lives in) only re-runs when
+  // activeWorkspaces changes (workspace open / create / archive triggers a
+  // re-fetch).  Cards don't jump columns mid-task — that would be jarring — so
+  // the trade-off is deliberate: per-card glyphs are live, column placement is
+  // stable until the next workspace-list refresh.
   const grouped = useMemo<Record<GroupKey, WorkspaceRecord[]>>(() => {
+    const snapshot = getActivitySnapshot()
     const result: Record<GroupKey, WorkspaceRecord[]> = {
       in_review: [],
       in_progress: [],
@@ -289,11 +292,11 @@ export function WorkspacesView({
       waiting: []
     }
     for (const ws of activeWorkspaces) {
-      const g = deriveGroup(ws, workspaceActivities)
+      const g = deriveGroup(ws, snapshot.get(ws.id))
       result[g].push(ws)
     }
     return result
-  }, [activeWorkspaces, workspaceActivities])
+  }, [activeWorkspaces])
 
   const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
 
@@ -304,7 +307,6 @@ export function WorkspacesView({
       workspaces={grouped[config.key]}
       projectsById={projectsById}
       sessionsById={sessionsById}
-      activities={workspaceActivities}
       titleByWorkspaceId={titleByWorkspaceId}
       gitStatusByWorkspaceId={gitStatusByWorkspaceId}
       prByWorkspaceId={prByWorkspaceId}

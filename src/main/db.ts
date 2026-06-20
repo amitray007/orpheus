@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 49
+const CURRENT_VERSION = 50
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -34,7 +34,8 @@ const SCHEMA_SQL = `
     updated_at INTEGER NOT NULL,
     archived_at INTEGER,
     model TEXT,
-    last_message_role TEXT
+    last_message_role TEXT,
+    jsonl_mtime INTEGER
   );
 
   CREATE INDEX IF NOT EXISTS sessions_project_id_idx ON sessions(project_id);
@@ -1994,6 +1995,17 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(49)
+  }
+
+  // Version 50: jsonl_mtime on sessions — stores the last-seen file mtime so
+  // refreshSessionMetadata can skip re-extraction when the JSONL hasn't changed.
+  if (currentVersion < 50) {
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN jsonl_mtime INTEGER')
+    } catch {
+      /* already exists on fresh install (column declared in CREATE TABLE) */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(50)
   }
 }
 

@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   Kanban,
@@ -17,8 +17,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
-  GhPullRequest,
-  WorkspaceActivityDetail
+  GhPullRequest
 } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
@@ -28,6 +27,7 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
+import { useWorkspaceActivity } from '@/lib/activityStore'
 
 // ---------------------------------------------------------------------------
 // Module-level stable empty maps (avoid new Map() on every render as fallback)
@@ -103,7 +103,6 @@ interface WorkspaceRowProps {
   workspace: WorkspaceRecord
   project: ProjectRecord
   active: boolean
-  activity: WorkspaceActivityDetail | undefined
   gitStatus?: GitStatus | null
   /** Open PR for this workspace's current branch (null when none). */
   pr?: GhPullRequest | null
@@ -122,10 +121,9 @@ interface WorkspaceRowProps {
   onTogglePin: () => void
 }
 
-function WorkspaceSubRow({
+const WorkspaceSubRow = memo(function WorkspaceSubRow({
   workspace,
   active,
-  activity,
   gitStatus,
   pr,
   terminalTitle,
@@ -139,6 +137,8 @@ function WorkspaceSubRow({
   onArchive,
   onTogglePin
 }: WorkspaceRowProps): React.JSX.Element {
+  // Subscribe to this workspace's activity key only — no re-render on other workspaces
+  const activity = useWorkspaceActivity(workspace.id)
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -320,7 +320,7 @@ function WorkspaceSubRow({
       )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Pinned workspace row (appears in the Pinned section above Projects)
@@ -329,16 +329,14 @@ function WorkspaceSubRow({
 interface PinnedRowProps {
   item: PinnedItem
   active: boolean
-  activity: WorkspaceActivityDetail | undefined
   terminalTitle: string | null
   onSelect: () => void
   onUnpin: () => void
 }
 
-function PinnedRow({
+const PinnedRow = memo(function PinnedRow({
   item,
   active,
-  activity,
   terminalTitle,
   onSelect,
   onUnpin
@@ -346,6 +344,9 @@ function PinnedRow({
   const { workspace, project } = item
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
+
+  // Subscribe to this workspace's activity from the per-key store
+  const activity = useWorkspaceActivity(workspace.id)
 
   // Session title is per-project; we don't pull it for cross-project pinned
   // rows. Terminal title (live OSC + persisted last_title from getTitle)
@@ -421,7 +422,7 @@ function PinnedRow({
       )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Project row (with identicon, expand chevron, workspace count)
@@ -436,7 +437,6 @@ interface ProjectRowProps {
   workspaceCountInline: boolean
   fetchGithubAvatars: boolean
   selectedWorkspaceId?: string | null
-  workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   prByWorkspaceId: Record<string, GhPullRequest | null>
   titleByWorkspaceId: Record<string, string>
@@ -479,7 +479,7 @@ interface ProjectRowProps {
   onWorkspaceDragEnd: () => void
 }
 
-function ProjectRow({
+const ProjectRow = memo(function ProjectRow({
   project,
   active,
   expanded,
@@ -488,7 +488,6 @@ function ProjectRow({
   workspaceCountInline,
   fetchGithubAvatars,
   selectedWorkspaceId,
-  workspaceActivities,
   gitStatusByWorkspaceId,
   prByWorkspaceId,
   titleByWorkspaceId,
@@ -691,7 +690,6 @@ function ProjectRow({
                     currentViewKind === 'workspace' &&
                     (currentWorkspaceId === ws.id || selectedWorkspaceId === ws.id)
                   }
-                  activity={workspaceActivities[ws.id]}
                   gitStatus={gitStatusByWorkspaceId[ws.id]}
                   pr={prByWorkspaceId[ws.id]}
                   terminalTitle={titleByWorkspaceId[ws.id] ?? null}
@@ -713,7 +711,7 @@ function ProjectRow({
       )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Drop indicator
@@ -744,7 +742,6 @@ interface SidebarProps {
   currentViewKind: string
   expandedProjectIds: Set<string>
   workspacesByProject: Record<string, WorkspaceRecord[]>
-  workspaceActivities: Record<string, WorkspaceActivityDetail>
   gitStatusByWorkspaceId: Record<string, GitStatus | null>
   prByWorkspaceId: Record<string, GhPullRequest | null>
   /** Hoisted terminal titles keyed by workspaceId — eliminates per-row onTitleChanged subscriptions */
@@ -787,7 +784,6 @@ export function Sidebar({
   currentViewKind,
   expandedProjectIds,
   workspacesByProject,
-  workspaceActivities,
   gitStatusByWorkspaceId,
   prByWorkspaceId,
   titleByWorkspaceId,
@@ -1047,7 +1043,6 @@ export function Sidebar({
                 key={item.workspace.id}
                 item={item}
                 active={selectedWorkspaceId === item.workspace.id}
-                activity={workspaceActivities[item.workspace.id]}
                 terminalTitle={titleByWorkspaceId[item.workspace.id] ?? null}
                 onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
                 onUnpin={async () => {
@@ -1098,7 +1093,6 @@ export function Sidebar({
                           workspaceCountInline={workspaceCountInline}
                           fetchGithubAvatars={fetchGithubAvatars}
                           selectedWorkspaceId={selectedWorkspaceId}
-                          workspaceActivities={workspaceActivities}
                           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
                           prByWorkspaceId={prByWorkspaceId}
                           titleByWorkspaceId={titleByWorkspaceId}

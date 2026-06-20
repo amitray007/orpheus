@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
   DotsThree,
@@ -8,7 +8,7 @@ import {
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
-import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
+import type { GitStatus, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -16,6 +16,7 @@ import { Eyebrow, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
+import { useWorkspaceActivity } from '@/lib/activityStore'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -74,7 +75,6 @@ interface WorkspacesTabProps {
   /** Project filesystem path — used by the embedded Recent commits + Sessions panels. */
   projectPath: string
   workspaces: WorkspaceRecord[] | null
-  workspaceActivities: Record<string, WorkspaceActivityDetail>
   onSelectWorkspace: (workspaceId: string) => void
   onRenameWorkspace: (
     workspaceId: string,
@@ -87,11 +87,85 @@ interface WorkspacesTabProps {
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
 }
 
+// ---------------------------------------------------------------------------
+// WorkspaceNameCell — isolated sub-component so useWorkspaceActivity is called
+// as a proper hook (not inside a DataTable render callback). Re-renders only
+// when this workspace's activity key changes.
+// ---------------------------------------------------------------------------
+
+interface WorkspaceNameCellProps {
+  ws: WorkspaceRecord
+  renamingId: string | null
+  renameValue: string
+  titleByWs: Record<string, string | null>
+  sessionStats: Record<
+    string,
+    { messageCount: number | null; jsonlSizeBytes: number | null; title: string | null }
+  >
+  setRenameValue: (v: string) => void
+  commitRename: (ws: WorkspaceRecord) => void
+  setRenamingId: (id: string | null) => void
+}
+
+const WorkspaceNameCell = memo(function WorkspaceNameCell({
+  ws,
+  renamingId,
+  renameValue,
+  titleByWs,
+  sessionStats,
+  setRenameValue,
+  commitRename,
+  setRenamingId
+}: WorkspaceNameCellProps): React.JSX.Element {
+  // Subscribes to this workspace's key only — re-renders when activity changes.
+  const activity = useWorkspaceActivity(ws.id)
+  const isPinned = ws.pinnedAt !== null
+  const dn = resolveWorkspaceName({
+    workspace: ws,
+    terminalTitle: titleByWs[ws.id] ?? null,
+    sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+  })
+  return (
+    <span className="flex items-center gap-2 min-w-0">
+      <span className="flex items-center justify-center w-3 flex-shrink-0">
+        {activity && activity !== 'archived' ? (
+          <ActivityIndicator detail={activity} />
+        ) : (
+          <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
+        )}
+      </span>
+      {renamingId === ws.id ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename(ws)
+            if (e.key === 'Escape') setRenamingId(null)
+          }}
+          onBlur={() => commitRename(ws)}
+          onClick={(e) => e.stopPropagation()}
+          className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
+        />
+      ) : (
+        <span
+          className={['truncate', dn.muted ? 'text-text-muted italic' : ''].join(' ')}
+          title={dn.text}
+        >
+          {dn.text}
+        </span>
+      )}
+      {isPinned && !renamingId && (
+        <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
+      )}
+    </span>
+  )
+})
+
 export function WorkspacesTab({
   projectId,
   projectPath,
   workspaces,
-  workspaceActivities,
   onSelectWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
@@ -320,52 +394,18 @@ export function WorkspacesTab({
       {
         key: 'name',
         label: 'Workspace',
-        render: (ws) => {
-          const activity = workspaceActivities[ws.id]
-          const isPinned = ws.pinnedAt !== null
-          const dn = resolveWorkspaceName({
-            workspace: ws,
-            terminalTitle: titleByWs[ws.id] ?? null,
-            sessionTitle: ws.claudeSessionId
-              ? (sessionStats[ws.claudeSessionId]?.title ?? null)
-              : null
-          })
-          return (
-            <span className="flex items-center gap-2 min-w-0">
-              <span className="flex items-center justify-center w-3 flex-shrink-0">
-                {activity && activity !== 'archived' ? (
-                  <ActivityIndicator detail={activity} />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
-                )}
-              </span>
-              {renamingId === ws.id ? (
-                <input
-                  autoFocus
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(ws)
-                    if (e.key === 'Escape') setRenamingId(null)
-                  }}
-                  onBlur={() => commitRename(ws)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
-                />
-              ) : (
-                <span
-                  className={['truncate', dn.muted ? 'text-text-muted italic' : ''].join(' ')}
-                  title={dn.text}
-                >
-                  {dn.text}
-                </span>
-              )}
-              {isPinned && !renamingId && (
-                <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
-              )}
-            </span>
-          )
-        }
+        render: (ws) => (
+          <WorkspaceNameCell
+            ws={ws}
+            renamingId={renamingId}
+            renameValue={renameValue}
+            titleByWs={titleByWs}
+            sessionStats={sessionStats}
+            setRenameValue={setRenameValue}
+            commitRename={commitRename}
+            setRenamingId={setRenamingId}
+          />
+        )
       },
       {
         key: 'branch',
@@ -433,7 +473,7 @@ export function WorkspacesTab({
         )
       }
     ],
-    [gitByWs, titleByWs, workspaceActivities, renamingId, renameValue, sessionStats]
+    [gitByWs, titleByWs, renamingId, renameValue, sessionStats]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

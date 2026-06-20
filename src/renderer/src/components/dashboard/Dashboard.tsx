@@ -4,6 +4,7 @@ import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
+import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import type {
   AppUiState,
   PinnedItem,
@@ -11,8 +12,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
-  GhPullRequest,
-  WorkspaceActivityDetail
+  GhPullRequest
 } from '@shared/types'
 
 const Sidebar = memo(SidebarBase)
@@ -42,11 +42,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
-
-  // Activity detail keyed by workspaceId — driven by claude hook events via IPC
-  const [workspaceActivities, setWorkspaceActivities] = useState<
-    Record<string, WorkspaceActivityDetail>
-  >({})
 
   // Git status per workspace id
   const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<
@@ -165,18 +160,45 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // NOTE: depends on main-layer onActivityBatch — wired via frozen contract:
+  // channel `workspace:activityBatch`, payload Array<{workspaceId,status,detail}>,
+  // preload window.api.workspaces.onActivityBatch.
+  // Falls back to onActivityChanged if the batched API isn't available yet.
   useEffect(() => {
-    return window.api.workspaces.onActivityChanged((e) => {
-      setWorkspaceActivities((prev) => {
-        const prevDetail = prev[e.workspaceId]
-        const next = { ...prev, [e.workspaceId]: e.detail }
-        // Play only on TRANSITION into a new state
-        if (prevDetail !== e.detail) {
-          if (e.detail === 'ready') playSound('ding')
-          else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+    const api = window.api.workspaces as typeof window.api.workspaces & {
+      onActivityBatch?: (
+        cb: (
+          batch: Array<{
+            workspaceId: string
+            status: import('@shared/types').WorkspaceStatus
+            detail: import('@shared/types').WorkspaceActivityDetail
+          }>
+        ) => void
+      ) => () => void
+    }
+
+    if (typeof api.onActivityBatch === 'function') {
+      return api.onActivityBatch((batch) => {
+        // Sound effects: play on first status transition per batch
+        for (const { workspaceId, detail } of batch) {
+          const prevDetail = getActivitySnapshot().get(workspaceId)
+          if (prevDetail !== detail) {
+            if (detail === 'ready') playSound('ding')
+            else if (detail === 'attention' || detail === 'asking') playSound('notification')
+          }
         }
-        return next
+        setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
       })
+    }
+
+    // Fallback: legacy per-event channel (used until main-layer lands onActivityBatch)
+    return window.api.workspaces.onActivityChanged((e) => {
+      const prevDetail = getActivitySnapshot().get(e.workspaceId)
+      if (prevDetail !== e.detail) {
+        if (e.detail === 'ready') playSound('ding')
+        else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+      }
+      setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
     })
   }, [])
 
@@ -310,13 +332,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           return prev // no change — already updated above
         })
       }
-      // Clear any stale activity entry for the deleted workspace.
-      setWorkspaceActivities((prev) => {
-        if (prev[workspaceId] === undefined) return prev
-        const next = { ...prev }
-        delete next[workspaceId]
-        return next
-      })
+      // Clear any stale activity entry for the deleted workspace from the store.
+      deleteActivity(workspaceId)
     })
   }, [])
 
@@ -774,14 +791,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     window.api.terminal
       .destroy(workspaceId)
       .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
-    // Optimistically drop any cached activity for the workspace — once the
-    // backend deletes the row there's nothing for the dot to track.
-    setWorkspaceActivities((prev) => {
-      if (prev[workspaceId] === undefined) return prev
-      const next = { ...prev }
-      delete next[workspaceId]
-      return next
-    })
+    // Optimistically drop any cached activity for the workspace from the store —
+    // once the backend deletes the row there's nothing for the dot to track.
+    deleteActivity(workspaceId)
     try {
       // "Archive" is a hard delete now (v34+). The DB row is gone after this.
       await window.api.workspaces.archive(workspaceId)
@@ -822,17 +834,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     const target = removeConfirmTarget
     // Destroy all terminal surfaces for this project's workspaces before the
     // DB cascade-delete removes the workspace rows.
+    // Serialised with a microtask yield between each destroy so AppKit can drain
+    // main-queue work (ghostty_surface_free stalls ~200ms-2s per surface) without
+    // blocking the event loop for the full N-surface burst.
     const projectWorkspaces = workspacesByProject[target.id] ?? []
     for (const ws of projectWorkspaces) {
-      window.api.terminal
+      await window.api.terminal
         .destroy(ws.id)
         .catch((e) =>
           console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
         )
+      // Yield to the event loop between each destroy so AppKit can drain between frees.
+      await new Promise<void>((r) => setTimeout(r, 0))
     }
     await window.api.projects.remove(target.id)
     playSound('delete')
     setRemoveConfirmTarget(null)
+    // Drop cached activity for all removed workspaces — mirrors the pattern in
+    // handleArchiveWorkspaceFromSidebar. Must run before the setProjects filter
+    // so we still have the workspace IDs available.
+    for (const ws of projectWorkspaces) {
+      deleteActivity(ws.id)
+    }
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
     setExpandedProjectIds((prev) => {
       const next = new Set(prev)
@@ -927,7 +950,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           currentViewKind={view.kind}
           expandedProjectIds={expandedProjectIds}
           workspacesByProject={workspacesByProject}
-          workspaceActivities={workspaceActivities}
           gitStatusByWorkspaceId={gitStatusByWorkspaceId}
           prByWorkspaceId={prByWorkspaceId}
           titleByWorkspaceId={titleByWorkspaceId}
@@ -983,7 +1005,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             onRenameWorkspace={handleRenameWorkspace}
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
             onToggleWorkspacePin={handleToggleWorkspacePin}
-            workspaceActivities={workspaceActivities}
             onResumedInWorkspace={handleResumedInWorkspace}
             projects={projects}
             allWorkspaces={allWorkspaces}
