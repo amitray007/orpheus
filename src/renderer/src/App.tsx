@@ -1,16 +1,29 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
-import { DotmSquare11 } from './components/ui/dotm-square-11'
 import { OverlayModeProvider } from './lib/OverlayModeProvider'
 import type { DoctorResult } from '@shared/types'
 
+// Optimistic initial state: assume claude is installed so the Dashboard
+// mounts immediately on first paint. The real doctor.check() IPC resolves
+// asynchronously and updates this state; the missing-claude modal only shows
+// once the real check comes back false (never during the optimistic window).
+const OPTIMISTIC_DOCTOR: DoctorResult = {
+  claudeInstalled: true,
+  claudeVersion: null,
+  claudePath: null
+}
+
 function App(): React.JSX.Element {
-  const [doctor, setDoctor] = useState<DoctorResult | null>(null)
+  const [doctor, setDoctor] = useState<DoctorResult>(OPTIMISTIC_DOCTOR)
+  // Track whether the real doctor check has resolved so we never flash the
+  // missing-claude modal during the optimistic boot window.
+  const [doctorResolved, setDoctorResolved] = useState(false)
 
   async function runDoctor(): Promise<void> {
     const result = await window.api.doctor.check()
     setDoctor(result)
+    setDoctorResolved(true)
   }
 
   useEffect(() => {
@@ -18,7 +31,10 @@ function App(): React.JSX.Element {
     window.api.doctor
       .check()
       .then((result) => {
-        if (!cancelled) setDoctor(result)
+        if (!cancelled) {
+          setDoctor(result)
+          setDoctorResolved(true)
+        }
       })
       .catch((err) => console.error('[app] doctor check failed', err))
     return () => {
@@ -26,7 +42,9 @@ function App(): React.JSX.Element {
     }
   }, [])
 
-  const showMissingModal = doctor !== null && !doctor.claudeInstalled
+  // Only show the modal after the real check resolves — never during the
+  // optimistic window — so claude-installed users never see a flash.
+  const showMissingModal = doctorResolved && !doctor.claudeInstalled
 
   return (
     <OverlayModeProvider>
@@ -36,7 +54,7 @@ function App(): React.JSX.Element {
 }
 
 interface AppShellProps {
-  doctor: DoctorResult | null
+  doctor: DoctorResult
   runDoctor: () => Promise<void>
   showMissingModal: boolean
 }
@@ -44,25 +62,8 @@ interface AppShellProps {
 function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React.JSX.Element {
   return (
     <main className="app h-full">
-      {doctor === null ? (
-        // Boot splash — Geist Pixel wordmark + Echo Ring, shown briefly
-        // while the doctor IPC resolves on first paint. bg-surface-base
-        // because body is transparent (terminal NSView shows through) and
-        // there's no ghostty view to reveal yet during boot.
-        <div className="h-full flex items-center justify-center bg-surface-base">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="font-pixel text-6xl tracking-tight text-text-primary leading-none select-none">
-              Orpheus<span className="text-accent">.</span>
-            </h1>
-            <DotmSquare11 size={32} dotSize={3} speed={1.25} animated />
-          </div>
-        </div>
-      ) : (
-        <>
-          <Dashboard claudeInstalled={doctor.claudeInstalled} />
-          {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
-        </>
-      )}
+      <Dashboard claudeInstalled={doctor.claudeInstalled} />
+      {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
     </main>
   )
 }

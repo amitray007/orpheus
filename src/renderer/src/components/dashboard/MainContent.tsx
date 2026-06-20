@@ -1,8 +1,10 @@
+import { lazy, Suspense } from 'react'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
-import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import { Eyebrow } from './settings/primitives'
+
+const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
 import { getActivitySnapshot } from '@/lib/activityStore'
 import type {
   GhPullRequest,
@@ -90,7 +92,11 @@ export function MainContent({
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
   if (view.kind === 'settings') {
-    return <SettingsView />
+    return (
+      <Suspense fallback={null}>
+        <SettingsView />
+      </Suspense>
+    )
   }
 
   if (view.kind === 'sessions') {

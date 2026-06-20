@@ -13,10 +13,8 @@ import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as nodePath from 'node:path'
-import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
+import { promisify } from 'node:util'
+import type { DoctorResult, GitStatus } from '../shared/types'
 import {
   getGitStatus,
   listBranches,
@@ -663,11 +661,16 @@ async function checkClaude(): Promise<{
   const userPath = await getUserShellPath()
   const env = { ...process.env, PATH: userPath || process.env['PATH'] || '' }
 
+  const execFile = promisify(childProcess.execFile)
+
   let claudePath: string
   try {
-    claudePath = childProcess
-      .execSync('which claude', { encoding: 'utf-8', env, timeout: 3000 })
-      .trim()
+    const { stdout } = await execFile('which', ['claude'], {
+      encoding: 'utf-8',
+      env,
+      timeout: 3000
+    })
+    claudePath = stdout.trim()
     if (!claudePath) {
       const result = { installed: false, version: null, path: null }
       cachedClaudeCheck = { result, at: Date.now() }
@@ -681,7 +684,7 @@ async function checkClaude(): Promise<{
 
   let version: string | null = null
   try {
-    const versionOutput = childProcess.execSync('claude --version', {
+    const { stdout: versionOutput } = await execFile('claude', ['--version'], {
       encoding: 'utf-8',
       env,
       timeout: 3000
@@ -694,54 +697,6 @@ async function checkClaude(): Promise<{
   const result = { installed: true, version, path: claudePath }
   cachedClaudeCheck = { result, at: Date.now() }
   return result
-}
-
-function readClaudeProjects(): ExistingProject[] {
-  const projectsDir = nodePath.join(os.homedir(), '.claude', 'projects')
-
-  if (!fs.existsSync(projectsDir)) return []
-
-  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
-  const dirs = entries.filter((e) => e.isDirectory())
-
-  const projects: ExistingProject[] = dirs.map((dir) => {
-    const encodedName = dir.name
-    // TODO: handle paths with literal dashes — naive decode treats every `-` as `/`,
-    // so a path like `/Users/foo/my-cool-repo` (encoded: `-Users-foo-my-cool-repo`)
-    // decodes ambiguously. Acceptable for v0 minimal.
-    const decoded = encodedName.replace(/-/g, '/')
-    const name = nodePath.basename(decoded)
-
-    const dirPath = nodePath.join(projectsDir, encodedName)
-    const jsonlFiles = fs
-      .readdirSync(dirPath)
-      .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => nodePath.join(dirPath, f))
-
-    const sessionCount = jsonlFiles.length
-
-    let lastActivity: number | null = null
-    for (const file of jsonlFiles) {
-      try {
-        const mtime = fs.statSync(file).mtimeMs
-        if (lastActivity === null || mtime > lastActivity) {
-          lastActivity = mtime
-        }
-      } catch {
-        // skip unreadable files
-      }
-    }
-
-    return { encodedName, path: decoded, name, sessionCount, lastActivity }
-  })
-
-  // Sort by lastActivity descending; null sinks to bottom
-  return projects.sort((a, b) => {
-    if (a.lastActivity === null && b.lastActivity === null) return 0
-    if (a.lastActivity === null) return 1
-    if (b.lastActivity === null) return -1
-    return b.lastActivity - a.lastActivity
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,8 +1073,7 @@ ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
   return {
     claudeInstalled: installed,
     claudeVersion: version,
-    claudePath,
-    existingProjects: readClaudeProjects()
+    claudePath
   }
 })
 
@@ -1591,6 +1545,12 @@ ipcMain.handle(
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
+  // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
+  // This is a no-op after the first call (getUserShellPath caches internally).
+  getUserShellPath().catch(() => {
+    /* swallow — logged inside getUserShellPath */
+  })
+
   electronApp.setAppUserModelId(APP_ID)
 
   // Event-loop delay monitor — logs p99 and max lag every 10s so we have
@@ -1672,11 +1632,6 @@ app.whenReady().then(() => {
   // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
   startStatusPoller()
 
-  // Pre-warm the shell PATH resolution so doctor:check doesn't block on first call.
-  getUserShellPath().catch(() => {
-    /* swallow — logged inside getUserShellPath */
-  })
-
   // Defer notify server + hook install until after the first frame — keeps
   // createWindow() hot so the UI appears faster on launch.
   setImmediate(() => {
@@ -1716,6 +1671,15 @@ app.whenReady().then(() => {
       ensureManagedHooks()
     } catch (err) {
       console.error('[orpheusNotify] failed to install managed hooks:', err)
+    }
+
+    // Pre-load the native terminal addon during idle time so the first
+    // terminal:mount call doesn't pay the dlopen stall (50–300ms).
+    // loadTerminalAddon() is idempotent — if already loaded it returns early.
+    try {
+      loadTerminalAddon()
+    } catch {
+      // Failure is non-fatal here; terminal:mount will surface the error when needed.
     }
   })
 

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 50
+const CURRENT_VERSION = 51
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -41,6 +41,8 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS sessions_project_id_idx ON sessions(project_id);
   CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
   CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions(updated_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_project_active
+    ON sessions(project_id, updated_at ASC) WHERE status != 'archived';
 `
 
 // CHECK kept in sync with WorkspaceStatus (shared/types.ts). When this drifted
@@ -2006,6 +2008,20 @@ function migrate(db: Database.Database): void {
       /* already exists on fresh install (column declared in CREATE TABLE) */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(50)
+  }
+
+  // Version 51: partial index for active (non-archived) sessions.
+  // Covers listSessionsForProject and the active-rows scan in refreshSessionMetadata.
+  if (currentVersion < 51) {
+    try {
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_sessions_project_active
+         ON sessions(project_id, updated_at ASC) WHERE status != 'archived'`
+      )
+    } catch {
+      /* already exists on a fresh install that ran the updated SCHEMA_SQL */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(51)
   }
 }
 

@@ -514,11 +514,13 @@ async function upsertSessionFilesForProject(projectId: string, dir: string): Pro
   const pendingInserts: PendingInsert[] = []
   const pendingUpdates: PendingUpdate[] = []
 
-  for (const entry of entries) {
+  for (let _i = 0; _i < entries.length; _i++) {
+    const entry = entries[_i]
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
 
-    // Yield between files so IPC and clicks interleave during large scans.
-    await yieldToEventLoop()
+    // Yield every 10 files so IPC and clicks interleave during large scans
+    // without paying scheduling overhead on every file.
+    if (_i % 10 === 0) await yieldToEventLoop()
 
     const sessionId = entry.name.replace(/\.jsonl$/, '')
     const jsonlPath = nodePath.join(dir, entry.name)
@@ -737,9 +739,11 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
     jsonlSizeBytes: number | null
   }
   const nullMetaResults: NullMetaResult[] = []
-  for (const row of nullRows) {
-    // Yield between files so IPC/clicks can interleave.
-    await yieldToEventLoop()
+  for (let i = 0; i < nullRows.length; i++) {
+    const row = nullRows[i]
+    // Yield every 10 iterations so IPC/clicks can interleave without
+    // paying pure scheduling overhead on every file.
+    if (i % 10 === 0) await yieldToEventLoop()
     nullMetaResults.push({
       id: row.id,
       title: extractTitle(row.jsonl_path),
@@ -786,9 +790,11 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
     currentMtime: number
   }
   const previewResults: PreviewResult[] = []
-  for (const row of activeRows) {
-    // Yield between files so IPC/clicks can interleave.
-    await yieldToEventLoop()
+  for (let i = 0; i < activeRows.length; i++) {
+    const row = activeRows[i]
+    // Yield every 10 iterations so IPC/clicks can interleave without
+    // paying pure scheduling overhead on unchanged-mtime scans.
+    if (i % 10 === 0) await yieldToEventLoop()
 
     let currentMtime: number
     let fileSize: number
@@ -946,11 +952,18 @@ export function listAllSessions(filter?: { status?: SessionStatus }): SessionRec
     params.push(filter.status)
   }
 
+  // Slim projection: the WorkspacesView renderer only reads id, title, and
+  // lastUserMessagePreview; emit only the columns needed for rowToRecord to
+  // produce those fields correctly. Non-projected columns default to null.
   const rows = db
     .prepare(
-      `SELECT s.* FROM sessions s
+      `SELECT s.id, s.project_id, s.jsonl_path, s.title, s.status,
+              s.created_at, s.updated_at, s.archived_at, s.model,
+              s.last_message_role, s.last_user_message_preview
+       FROM sessions s
        JOIN projects p ON p.id = s.project_id
        ${whereClause}
+       AND s.status != 'archived'
        ORDER BY ${statusOrder}, s.updated_at DESC`
     )
     .all(...params) as SessionRow[]
@@ -1140,13 +1153,17 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
     .prepare('SELECT project_id, claude_session_id FROM workspaces WHERE id = ?')
     .get(workspaceId) as { project_id: string; claude_session_id: string | null } | undefined
 
-  // 1. Try the last JSONL turn's model field — most authoritative
+  // 1. Try the session's cached model column first — avoids reading the JSONL.
+  //    Fall back to extractModel() only when the DB column is NULL (not yet populated).
   let modelFromJSONL: string | null = null
   if (ws?.claude_session_id) {
     const sessionRow = db
-      .prepare('SELECT jsonl_path FROM sessions WHERE id = ?')
-      .get(ws.claude_session_id) as { jsonl_path: string | null } | undefined
-    if (sessionRow?.jsonl_path) {
+      .prepare('SELECT model, jsonl_path FROM sessions WHERE id = ?')
+      .get(ws.claude_session_id) as { model: string | null; jsonl_path: string | null } | undefined
+    if (sessionRow?.model) {
+      modelFromJSONL = sessionRow.model
+    } else if (sessionRow?.jsonl_path) {
+      // model column is NULL — fall back to JSONL extraction
       modelFromJSONL = extractModel(sessionRow.jsonl_path)
     }
   }

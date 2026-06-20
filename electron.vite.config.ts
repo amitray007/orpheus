@@ -23,6 +23,10 @@ export default defineConfig({
         '@shared': resolve('src/shared')
       }
     },
-    plugins: [tailwindcss(), react()]
+    plugins: [tailwindcss(), react()],
+    build: {
+      minify: 'esbuild',
+      sourcemap: false
+    }
   }
 })
