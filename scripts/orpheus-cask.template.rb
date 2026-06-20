@@ -13,10 +13,13 @@ cask "orpheus" do
 
   app "Orpheus.app"
 
-  # Re-sign ad-hoc after install so macOS 15+ accepts the bundle.
+  # Strip quarantine + re-sign ad-hoc after install so macOS 15+ accepts the bundle.
   # electron-builder leaves inner frameworks with mismatched Team IDs;
   # a unified ad-hoc re-sign normalises them.
   postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-cr", "#{appdir}/Orpheus.app"],
+                   sudo: false
     system_command "/usr/bin/codesign",
                    args: ["--force", "--deep", "--sign", "-", "#{appdir}/Orpheus.app"],
                    sudo: false
