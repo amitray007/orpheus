@@ -54,6 +54,7 @@ declare global {
     api: {
       app: {
         getVersion: () => Promise<string>
+        getPaths: () => Promise<{ userData: string; logs: string }>
       }
       window: {
         openDevTools: () => Promise<void>
