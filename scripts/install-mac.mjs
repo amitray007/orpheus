@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+/**
+ * Install the built Orpheus .app bundle to /Applications/.
+ *
+ * Usage:
+ *   node scripts/install-mac.mjs           # production  (dist/)
+ *   node scripts/install-mac.mjs --dev     # dev         (dist-dev/)
+ */
 import { execSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -9,12 +16,13 @@ if (process.platform !== 'darwin') {
   process.exit(0)
 }
 
+const isDev = process.argv.includes('--dev')
+const tag = isDev ? '[install-mac-dev]' : '[install-mac]'
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const distDir = resolve(projectRoot, 'dist')
+const distDir = resolve(projectRoot, isDev ? 'dist-dev' : 'dist')
 
-// Tell Spotlight to skip dist/ so the build-output Orpheus.app doesn't appear
-// alongside the real one in /Applications when searching. The marker file
-// applies to the whole tree below it; we drop it idempotently every install.
+// Tell Spotlight to skip dist/ so the build-output .app doesn't appear
+// alongside the real one in /Applications when searching.
 if (existsSync(distDir)) {
   const marker = resolve(distDir, '.metadata_never_index')
   if (!existsSync(marker)) {
@@ -43,7 +51,7 @@ const findAppBundle = (dir) => {
 
 const appBundle = findAppBundle(distDir)
 if (!appBundle) {
-  console.error(`[install-mac] no .app found under ${distDir}. Did the build succeed?`)
+  console.error(`${tag} no .app found under ${distDir}. Did the build succeed?`)
   process.exit(1)
 }
 
@@ -60,37 +68,32 @@ const isAppRunning = () => {
 }
 
 if (existsSync(target) && isAppRunning()) {
-  console.error(`[install-mac] ${appName} is currently running. Quit it (⌘Q) and re-run the build.`)
+  console.error(`${tag} ${appName} is currently running. Quit it (⌘Q) and re-run the build.`)
   process.exit(1)
 }
 
 try {
-  // electron-builder's ad-hoc signing leaves the inner frameworks (Electron Framework,
-  // Squirrel, Helpers, etc.) with mismatched Team IDs. macOS 15+ refuses to load
-  // any framework whose Team ID doesn't match the loading process, so the app
-  // crashes on launch with a "Library not loaded" dyld error and Finder shows the
-  // misleading "check with the developer" Gatekeeper-style dialog. Re-signing the
-  // whole bundle as one ad-hoc unit normalizes the Team IDs across components.
-  console.log(`[install-mac] re-signing ${appBundle} (ad-hoc, unified Team IDs)`)
+  // electron-builder's ad-hoc signing leaves inner frameworks with mismatched
+  // Team IDs. macOS 15+ refuses to load them, so we re-sign the whole bundle
+  // as one ad-hoc unit to normalise Team IDs across all components.
+  console.log(`${tag} re-signing ${appBundle} (ad-hoc, unified Team IDs)`)
   execSync(`codesign --force --deep --sign - "${appBundle}"`, { stdio: 'inherit' })
   execSync(`codesign --verify --deep --strict "${appBundle}"`, { stdio: 'pipe' })
 
   if (existsSync(target)) {
-    console.log(`[install-mac] removing existing ${target}`)
+    console.log(`${tag} removing existing ${target}`)
     rmSync(target, { recursive: true, force: true })
   }
-  console.log(`[install-mac] installing ${appBundle} -> ${target}`)
+  console.log(`${tag} installing ${appBundle} -> ${target}`)
   execSync(`/usr/bin/ditto "${appBundle}" "${target}"`, { stdio: 'inherit' })
 
-  // Remove the build-output bundle so there's only ever ONE Orpheus.app on
-  // disk after install. Without this, dist/mac-arm64/Orpheus.app lingers as
-  // a real bundle next to the installed copy — mdfind reports both, and a
-  // stray double-click on the dist/ one would launch a stale build.
-  console.log(`[install-mac] cleaning ${distDir}`)
+  // Remove the build-output bundle so there's only ever one copy on disk
+  // after install — avoids stale builds appearing in Spotlight / Finder.
+  console.log(`${tag} cleaning ${distDir}`)
   rmSync(distDir, { recursive: true, force: true })
 
-  console.log(`[install-mac] done. Open with: open "${target}"`)
+  console.log(`${tag} done. Open with: open "${target}"`)
 } catch (err) {
-  console.error(`[install-mac] failed: ${err.message}`)
+  console.error(`${tag} failed: ${err.message}`)
   process.exit(1)
 }
