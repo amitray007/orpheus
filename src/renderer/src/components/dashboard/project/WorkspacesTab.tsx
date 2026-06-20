@@ -440,6 +440,11 @@ export function WorkspacesTab({
   // Used to distinguish "no workspaces at all" from "filtered to zero".
   const hasWorkspaces = active.length > 0
 
+  // The activity filter narrowed everything away even though workspaces exist —
+  // surface a one-click "Show all" so the list isn't a confusing empty state
+  // (mirrors the SessionsTab auto-widen hint).
+  const filteredToEmpty = hasWorkspaces && filtered.length === 0 && activityFilter !== 'all'
+
   return (
     <div className="flex flex-col gap-4">
       {/* Active workspaces (left) + Sessions panel (right) — Sessions
@@ -491,6 +496,20 @@ export function WorkspacesTab({
               !hasWorkspaces ? (
                 <p className="text-sm text-text-muted text-center">
                   No workspaces yet. Use + New workspace to start one.
+                </p>
+              ) : filteredToEmpty ? (
+                <p className="text-sm text-text-muted text-center">
+                  No workspaces match this filter.{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivityFilter('all')
+                      setActivePage(1)
+                    }}
+                    className="text-accent hover:underline cursor-pointer"
+                  >
+                    Show all
+                  </button>
                 </p>
               ) : (
                 <p className="text-sm text-text-muted text-center">No matching workspaces.</p>
