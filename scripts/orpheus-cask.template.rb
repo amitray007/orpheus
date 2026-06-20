@@ -2,8 +2,8 @@ cask "orpheus" do
   version "{{VERSION}}"
   sha256 "{{SHA256}}"
 
-  url "https://github.com/amitray007/orpheus/releases/download/v#{version}/orpheus-#{version}.dmg",
-      verified: "github.com/amitray007/orpheus/"
+  url "https://github.com/amitray007/homebrew-tap/releases/download/orpheus-v#{version}/orpheus-#{version}.dmg",
+      verified: "github.com/amitray007/homebrew-tap/"
   name "Orpheus"
   desc "Mac IDE built around Claude Code"
   homepage "https://github.com/amitray007/orpheus"

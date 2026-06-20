@@ -51,8 +51,8 @@ export type GitCommit = {
 }
 
 export type ExistingProject = {
-  encodedName: string // e.g. "-Users-maverick-code-projects-orpheus"
-  path: string // decoded absolute path, e.g. "/Users/maverick/code/projects/orpheus"
+  encodedName: string // e.g. "-Users-alice-code-myproject"
+  path: string // decoded absolute path, e.g. "/Users/alice/code/myproject"
   name: string // basename, e.g. "orpheus"
   sessionCount: number // number of .jsonl files inside the dir
   lastActivity: number | null // ms timestamp of most recent .jsonl mtime, or null
