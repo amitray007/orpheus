@@ -19,7 +19,7 @@ cask "orpheus" do
   postflight do
     system_command "/usr/bin/xattr",
                    args: ["-dr", "com.apple.quarantine", "#{appdir}/Orpheus.app"],
-                   sudo: true
+                   sudo: false
     system_command "/usr/bin/codesign",
                    args: ["--force", "--deep", "--sign", "-", "#{appdir}/Orpheus.app"],
                    sudo: false
