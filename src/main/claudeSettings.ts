@@ -16,15 +16,25 @@ import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
 
+// One-way-true cache for session JSONL existence checks.
+// Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
+// is permanent — claude never deletes a transcript mid-session — so we can
+// skip the fs.statSync on every subsequent mount. We only cache the TRUE
+// result; false entries are re-checked on the next mount because the file may
+// appear once claude writes its first message.
+const sessionJsonlExistsCache = new Map<string, true>()
+
 // Returns true if claude's transcript file for this session already exists on
 // disk. The path follows claude's encoding: slashes in the cwd become dashes.
-// Called once per terminal:mount — fs.statSync is cheap enough to skip caching,
-// and any cache would race against claude writing the JSONL between mounts.
 function sessionJsonlExists(cwd: string, sessionId: string): boolean {
+  const key = `${cwd}:${sessionId}`
+  if (sessionJsonlExistsCache.has(key)) return true
   const encoded = cwd.replace(/\//g, '-')
   const path = nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
   try {
-    return fs.statSync(path).isFile()
+    const exists = fs.statSync(path).isFile()
+    if (exists) sessionJsonlExistsCache.set(key, true)
+    return exists
   } catch {
     return false
   }

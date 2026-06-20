@@ -11,6 +11,19 @@ import * as fs from 'node:fs'
 // ---------------------------------------------------------------------------
 
 let shellPathPromise: Promise<string> | null = null
+// Settled value of shellPathPromise — populated when the promise resolves so
+// terminal:mount can read it synchronously without awaiting.
+let resolvedShellPath: string | null = null
+
+/**
+ * Returns the cached shell PATH string if the initial resolution has already
+ * completed; null if resolution is still pending (e.g. the very first terminal
+ * mount fires before the startup spawn finishes — rare in practice); or empty
+ * string if resolution failed (SHELL not set, rejected path, or spawn error).
+ */
+export function getCachedShellPath(): string | null {
+  return resolvedShellPath
+}
 
 export function getUserShellPath(): Promise<string> {
   if (shellPathPromise !== null) return shellPathPromise
@@ -40,9 +53,11 @@ export function getUserShellPath(): Promise<string> {
       (err, stdout) => {
         if (err) {
           console.warn('[shellHelpers] failed to read user shell PATH:', err)
+          resolvedShellPath = ''
           resolve('')
         } else {
-          resolve(stdout.trim())
+          resolvedShellPath = stdout.trim()
+          resolve(resolvedShellPath)
         }
       }
     )

@@ -122,7 +122,8 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath
+  getUserShellPath,
+  getCachedShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -1271,6 +1272,14 @@ ipcMain.handle(
     // NEVER log authEnv values — they contain plaintext secrets.
     const authEnv = getClaudeAuthEnv()
 
+    // Inject the user's full shell PATH (captured once at app start via a
+    // login+interactive shell spawn). The wrapper script applies it before
+    // launching claude, replacing the expensive upfront .zshrc source that
+    // was the original reason PATH additions were available. If the promise
+    // hasn't settled yet (extremely rare — it fires at whenReady start), the
+    // key is omitted and the script falls back to sourcing ~/.zshrc.
+    const cachedUserPath = getCachedShellPath()
+
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
       ...authEnv, // auth env wins on conflict
@@ -1278,7 +1287,8 @@ ipcMain.handle(
       ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
       ORPHEUS_WORKSPACE_ID: workspaceId,
       ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
-      ORPHEUS_NOTIFY: shimPath()
+      ORPHEUS_NOTIFY: shimPath(),
+      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {})
     }
 
     console.log(
