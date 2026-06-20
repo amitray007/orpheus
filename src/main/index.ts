@@ -1,4 +1,12 @@
+import { APP_NAME, APP_ID, isDev } from './appMode'
 import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
+
+// Set app name before anything reads app.getPath('userData'). Electron derives
+// userData from app.name, which defaults to package.json "name" ("orpheus") for
+// both variants. Setting it here gives each build its own isolated data directory:
+//   prod → ~/Library/Application Support/Orpheus/
+//   dev  → ~/Library/Application Support/Orpheus Dev/
+app.setName(APP_NAME)
 import { join } from 'path'
 import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -483,6 +491,9 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    if (isDev) {
+      mainWindow.setTitle(app.getName())
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -733,6 +744,11 @@ ipcMain.handle('config:openFolder', async () => {
 })
 
 ipcMain.handle('app:getVersion', () => app.getVersion())
+
+ipcMain.handle('app:getPaths', () => ({
+  userData: app.getPath('userData'),
+  logs: app.getPath('logs')
+}))
 
 ipcMain.handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
@@ -1514,7 +1530,7 @@ ipcMain.handle(
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('dev.orpheus.app')
+  electronApp.setAppUserModelId(APP_ID)
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()

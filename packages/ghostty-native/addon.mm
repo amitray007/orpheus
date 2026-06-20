@@ -2084,8 +2084,13 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     }
     NSString* wrapperNSPath = [resourcePath
                                stringByAppendingPathComponent:@"orpheus-claude.sh"];
-    const char* commandPath = [wrapperNSPath UTF8String];
     NSLog(@"[ghostty-native] wrapper script path: %@", wrapperNSPath);
+
+    // Single-quote the path so ghostty's shell command ("bash -c exec -l <cmd>")
+    // handles spaces in the bundle path (e.g. "Orpheus Dev.app") correctly.
+    // The path is a filesystem path and cannot contain single quotes.
+    NSString* quotedPath = [NSString stringWithFormat:@"'%@'", wrapperNSPath];
+    const char* commandPath = [quotedPath UTF8String];
 
     surface_cfg.command = commandPath;
 
