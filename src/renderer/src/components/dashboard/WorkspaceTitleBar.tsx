@@ -48,27 +48,61 @@ function contextLabel(tokens: number): string {
 // ---------------------------------------------------------------------------
 // ModelContextChip — small read-only chip showing model + context mode.
 // Fetches context budget once on mount; stays static until workspace changes.
+//
+// Module-level cache: seeded on first fetch per workspace, invalidated when
+// the session ID changes (handled by the workspaceId + sessionId key below).
+// On switch-back the chip renders the stale value immediately (no layout shift
+// or late-appear flash) while the fresh fetch runs in the background.
 // ---------------------------------------------------------------------------
+
+type ContextBudgetInfo = { contextBudget: number; modelId: string }
+
+// Keyed by `${workspaceId}:${claudeSessionId}` so the cache is automatically
+// invalidated when the session changes (new conversation in same workspace).
+const contextBudgetCache = new Map<string, ContextBudgetInfo>()
 
 interface ModelContextChipProps {
   workspaceId: string
+  /** claudeSessionId — used as part of the cache key so the chip
+   *  re-fetches when the session changes (workspace restarts, forks, etc.). */
+  claudeSessionId: string | null
 }
 
-function ModelContextChip({ workspaceId }: ModelContextChipProps): React.JSX.Element | null {
-  const [info, setInfo] = useState<{ contextBudget: number; modelId: string } | null>(null)
+function ModelContextChip({
+  workspaceId,
+  claudeSessionId
+}: ModelContextChipProps): React.JSX.Element | null {
+  const cacheKey = `${workspaceId}:${claudeSessionId ?? ''}`
+  const cached = contextBudgetCache.get(cacheKey) ?? null
+  const [info, setInfo] = useState<ContextBudgetInfo | null>(cached)
 
   useEffect(() => {
     let cancelled = false
+    const key = `${workspaceId}:${claudeSessionId ?? ''}`
+
+    // Serve cache immediately; still revalidate so the chip stays fresh after
+    // a session's first message (context budget updates as tokens are used).
+    const stale = contextBudgetCache.get(key)
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: seed chip from cache on workspace/session change before async result arrives
+    if (stale) setInfo(stale)
+
     window.api.sessions
       .getContextBudget(workspaceId)
       .then((result) => {
-        if (!cancelled) setInfo(result)
+        if (!cancelled && result) {
+          // Skip caching for pre-session workspaces (claudeSessionId === null)
+          // so a stale model chip isn't shown after a global model change.
+          if (claudeSessionId !== null) {
+            contextBudgetCache.set(key, result)
+          }
+          setInfo(result)
+        }
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [workspaceId])
+  }, [workspaceId, claudeSessionId])
 
   if (!info) return null
 
@@ -161,7 +195,7 @@ export function WorkspaceTitleBar({
       )}
 
       {/* Model + context chip — read-only, fetched from main via IPC */}
-      <ModelContextChip workspaceId={workspace.id} />
+      <ModelContextChip workspaceId={workspace.id} claudeSessionId={workspace.claudeSessionId} />
 
       <span className="text-text-muted text-xs">·</span>
       <span

@@ -10,6 +10,11 @@ import { useWorkspaceActivity } from '@/lib/activityStore'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
+  /** Whether this workspace is currently the active (visible) one.
+   *  When false the view is CSS-hidden; the native surface is also hidden
+   *  via terminal:hide so it stops drawing. When flipped to true the surface
+   *  is re-attached via terminal:mount (fast rAF, no 75ms debounce). */
+  active?: boolean
   /** Last-seen activity detail from Dashboard's live cache; seeds the drawer
    *  glyph on re-mount so a tool / compacting / asking sub-state survives a
    *  navigation round-trip until the next hook event refreshes it. */
@@ -24,14 +29,26 @@ interface WorkspaceViewProps {
 
 export function WorkspaceView({
   workspace,
+  active = true,
   initialDetail,
   pr,
   onSelectWorkspace,
   allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  // mountedRef guards against double-mount in React StrictMode.
+  // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
+  // surfaceCreatedRef — true once terminal:mount has been called at least once
+  // for this workspace ID (i.e. the native surface exists in the addon's map).
+  // When active flips true on an already-created surface we skip the 75ms
+  // debounce and use a single rAF (fast re-activate path).
+  const surfaceCreatedRef = useRef(false)
+  // activeRef — mirrors the `active` prop as a ref so stable callbacks
+  // (resize listeners) can read the latest value without re-subscribing.
+  const activeRef = useRef(active)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track latest active prop for resize listeners
+  activeRef.current = active
+
   // remountKey — incrementing this triggers the mount effect to re-run,
   // which tears down the old surface and boots a fresh one with new settings.
   const [remountKey, setRemountKey] = useState(0)
@@ -46,10 +63,12 @@ export function WorkspaceView({
   }, [])
 
   // Tell the overlay-mode provider which workspace's NSView to flip when a
-  // popover / modal / drawer mounts useTerminalOverlay(). Cleared on unmount
-  // so navigating away (back to Sessions / Project / Settings) disables
-  // overlay flipping until we re-enter a workspace.
-  useSetActiveOverlayWorkspace(workspace.id)
+  // popover / modal / drawer mounts useTerminalOverlay(). With LRU keep-alive,
+  // multiple WorkspaceViews are mounted simultaneously as siblings — only the
+  // active one should register so overlays target the correct surface. Passing
+  // null for inactive views clears registration without clobbering the active
+  // workspace's registration (setActiveWorkspace early-returns on identity match).
+  useSetActiveOverlayWorkspace(active ? workspace.id : null)
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
@@ -76,21 +95,42 @@ export function WorkspaceView({
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
+  // ---------------------------------------------------------------------------
+  // Mount / resize / active-toggle lifecycle
+  //
+  // A single effect owns:
+  //   • First-create (75ms debounce + rAF) — runs when component mounts active
+  //   • Resize observers — only active while the surface is visible
+  //   • Unmount cleanup (terminal:hide)
+  //
+  // The active-toggle effect (below) reacts to active prop changes AFTER the
+  // first render:
+  //   • false → terminal:hide
+  //   • true  → terminal:mount (fast rAF, no debounce)
+  //
+  // Shared mutable state between the two effects is held in refs so both
+  // closures read the same live values without re-registering.
+  // ---------------------------------------------------------------------------
+
+  // Ref bundle shared between the two effects below.
+  // Callbacks are written into it by Effect 1 so Effect 2 can call them.
+  const effectStateRef = useRef<{
+    attachResizeListeners: () => void
+    detachResizeListeners: () => void
+  } | null>(null)
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    // StrictMode double-mount guard
     if (mountedRef.current) return
     mountedRef.current = true
 
     const workspaceId = workspace.id
+    const cwd = workspace.cwd
 
-    // Pending mount debounce timer — allows cancellation on rapid navigation.
-    let mountTimerId: ReturnType<typeof setTimeout> | null = null
-    // rAF spawned inside the 75ms mount timer — stored so cleanup can cancel it.
-    let mountRafId: number | null = null
     // rAF guard for resize coalescing
     let resizeRafId: number | null = null
-    // Pending resize rect — latest measurement, flushed in the rAF
     let pendingResizeRect: { x: number; y: number; w: number; h: number } | null = null
     let pendingResizeSf = 1
 
@@ -118,12 +158,16 @@ export function WorkspaceView({
         remountKey
       )
       try {
-        const result = await window.api.terminal.mount(
-          workspaceId,
-          termRect,
-          scaleFactor,
-          workspace.cwd
-        )
+        const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
+        surfaceCreatedRef.current = true
+        // Guard: if the user navigated away while mount was resolving, hide
+        // immediately so the surface doesn't draw while inactive.
+        if (!activeRef.current) {
+          window.api.terminal
+            .hide(workspaceId)
+            .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
+          return
+        }
         console.log(
           '[WorkspaceView] mounted workspaceId=',
           result.workspaceId,
@@ -134,21 +178,6 @@ export function WorkspaceView({
         console.error('[WorkspaceView] mount failed:', err)
       }
     }
-
-    // 75ms debounce before mounting — rapid navigation (e.g. clicking through
-    // the sidebar quickly) will cancel the pending mount and only the final
-    // destination surface actually mounts. The cleanup function cancels the
-    // timer before calling terminal.hide, so no mount fires after unmount.
-    mountTimerId = setTimeout(() => {
-      mountTimerId = null
-      // Small rAF delay after the debounce to ensure the div has been laid
-      // out and painted before we measure its rect.
-      mountRafId = requestAnimationFrame(() => {
-        mountRafId = null
-        if (!mountedRef.current) return // guard: unmounted during rAF
-        doMount()
-      })
-    }, 75)
 
     // Flush the latest pending resize measurement via a single IPC call.
     const flushResize = (): void => {
@@ -162,7 +191,10 @@ export function WorkspaceView({
 
     // Schedule one rAF-coalesced resize IPC. Intermediate measurements during
     // a window drag are stored in the ref and only the last one is flushed.
+    // Guard: skip if the surface is not active — inactive views are display:none
+    // and would report a 0×0 rect which would corrupt the IOSurface geometry.
     const scheduleResize = (rect: DOMRect): void => {
+      if (!activeRef.current) return
       pendingResizeSf = window.devicePixelRatio ?? 1
       pendingResizeRect = {
         x: Math.round(rect.left),
@@ -178,18 +210,70 @@ export function WorkspaceView({
     // ResizeObserver — fires when the div's intrinsic size changes.
     // This fires automatically when the drawer opens/closes and changes the
     // terminal host div's width via flex layout.
-    const ro = new ResizeObserver(() => {
-      if (!el) return
-      scheduleResize(el.getBoundingClientRect())
-    })
-    ro.observe(el)
+    // Lifecycle: attached when the view becomes active, detached when inactive.
+    let ro: ResizeObserver | null = null
+    let boundWindowResize: (() => void) | null = null
 
-    // window resize — bounding rect position shifts even if our div size doesn't.
-    const onWindowResize = (): void => {
-      if (!el) return
-      scheduleResize(el.getBoundingClientRect())
+    const attachResizeListeners = (): void => {
+      if (ro) return // idempotent
+      ro = new ResizeObserver(() => {
+        if (!el) return
+        scheduleResize(el.getBoundingClientRect())
+      })
+      ro.observe(el)
+
+      boundWindowResize = (): void => {
+        if (!el) return
+        scheduleResize(el.getBoundingClientRect())
+      }
+      window.addEventListener('resize', boundWindowResize)
     }
-    window.addEventListener('resize', onWindowResize)
+
+    const detachResizeListeners = (): void => {
+      ro?.disconnect()
+      ro = null
+      if (boundWindowResize) {
+        window.removeEventListener('resize', boundWindowResize)
+        boundWindowResize = null
+      }
+      if (resizeRafId !== null) {
+        cancelAnimationFrame(resizeRafId)
+        resizeRafId = null
+      }
+      pendingResizeRect = null
+    }
+
+    // Expose to the active-toggle effect so it can manage resize listeners
+    // without duplicating all the closure variables.
+    effectStateRef.current = { attachResizeListeners, detachResizeListeners }
+
+    // First-create mount path: 75ms debounce + rAF.
+    // If mounted inactive (pre-warmed by LRU keep-alive), skip — the
+    // active-toggle effect handles mount when active flips to true.
+    let mountTimerId: ReturnType<typeof setTimeout> | null = null
+    let mountRafId: number | null = null
+
+    if (active) {
+      // 75ms debounce before mounting — rapid navigation (e.g. clicking through
+      // the sidebar quickly) will cancel the pending mount and only the final
+      // destination surface actually mounts. The cleanup function cancels the
+      // timer before calling terminal.hide, so no mount fires after unmount.
+      mountTimerId = setTimeout(() => {
+        mountTimerId = null
+        // Small rAF delay after the debounce to ensure the div has been laid
+        // out and painted before we measure its rect.
+        mountRafId = requestAnimationFrame(() => {
+          mountRafId = null
+          if (!mountedRef.current) return // guard: unmounted during rAF
+          // Guard: if active was flipped to false after the debounce started
+          // (rapid navigation with keep-alive), abort the mount. Effect 2 will
+          // call terminal:hide for the active→false transition.
+          if (!activeRef.current) return
+          attachResizeListeners()
+          doMount()
+        })
+      }, 75)
+    }
 
     return () => {
       // Cancel any pending debounced mount — prevents mount from firing after unmount.
@@ -202,32 +286,134 @@ export function WorkspaceView({
         cancelAnimationFrame(mountRafId)
         mountRafId = null
       }
-      // Cancel any pending rAF resize flush.
-      if (resizeRafId !== null) {
-        cancelAnimationFrame(resizeRafId)
-        resizeRafId = null
-      }
 
-      ro.disconnect()
-      window.removeEventListener('resize', onWindowResize)
+      detachResizeListeners()
+      effectStateRef.current = null
 
       // hide() keeps the surface alive in the addon's map so that navigating
       // back re-attaches the same shell session. Destroy is fired only from
       // Dashboard on archive/project-remove, or from handleRestart above.
-      console.log('[WorkspaceView] hiding surface workspaceId=', workspaceId)
-      window.api.terminal
-        .hide(workspaceId)
-        .catch((e) => console.error('[WorkspaceView] hide failed:', e))
+      if (surfaceCreatedRef.current) {
+        console.log('[WorkspaceView] hiding surface on unmount workspaceId=', workspaceId)
+        window.api.terminal
+          .hide(workspaceId)
+          .catch((e) => console.error('[WorkspaceView] hide failed:', e))
+      }
       mountedRef.current = false
+      surfaceCreatedRef.current = false
     }
     // remountKey is intentionally included: bumping it re-runs this effect
     // to remount the surface with fresh launch params after a restart.
+    // active is intentionally excluded: active-toggle lifecycle is in the next effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remountKey])
 
+  // ---------------------------------------------------------------------------
+  // Active-toggle effect — drives terminal:hide / terminal:mount on switches.
+  //
+  // Skips the first render — Effect 1 owns first-create / initial mount.
+  // After the first render, active transitions drive:
+  //   true → false: terminal:hide, detach resize listeners
+  //   false → true: terminal:mount (fast rAF, no 75ms debounce), attach listeners
+  //
+  // Guard: only fires the hide/re-mount paths when the surface has been created
+  // (surfaceCreatedRef.current is true). This prevents a double-mount race with
+  // Effect 1 in React StrictMode, where both effects re-run after the teardown.
+  // ---------------------------------------------------------------------------
+  const isFirstActiveRenderRef = useRef(true)
+  useEffect(() => {
+    // Skip the first render — Effect 1 owns the first-create path.
+    if (isFirstActiveRenderRef.current) {
+      isFirstActiveRenderRef.current = false
+      return
+    }
+
+    const el = containerRef.current
+    const workspaceId = workspace.id
+    const cwd = workspace.cwd
+
+    if (!active) {
+      // Deactivating: hide the surface so ghostty's display link stops drawing.
+      // Only act if the surface was actually created (guards StrictMode teardown).
+      if (surfaceCreatedRef.current) {
+        console.log('[WorkspaceView] hiding surface (deactivated) workspaceId=', workspaceId)
+        window.api.terminal
+          .hide(workspaceId)
+          .catch((e) => console.error('[WorkspaceView] hide (deactivate) failed:', e))
+      }
+      // Detach resize listeners — inactive views are display:none so their rects
+      // are meaningless; we don't want to fire bogus resize IPCs.
+      effectStateRef.current?.detachResizeListeners()
+      return
+    }
+
+    // Activating: re-mount the surface. Fast rAF (no 75ms debounce) since the
+    // user explicitly navigated here.
+    // Guard: if Effect 1 hasn't run yet (effectStateRef.current is null), the
+    // shared closure state (resize listeners etc.) isn't ready. This happens
+    // in StrictMode double-mount teardown where both effects re-run in sequence.
+    // Effect 1 will handle the initial mount via its 75ms debounce.
+    if (!effectStateRef.current) return
+
+    let rafId: number | null = null
+    rafId = requestAnimationFrame(() => {
+      rafId = null
+      if (!el) return
+
+      const rect = el.getBoundingClientRect()
+      const scaleFactor = window.devicePixelRatio ?? 1
+      const termRect = {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height)
+      }
+
+      console.log(
+        '[WorkspaceView] re-mounting surface (activated) workspaceId=',
+        workspaceId,
+        termRect
+      )
+      window.api.terminal
+        .mount(workspaceId, termRect, scaleFactor, cwd)
+        .then((result) => {
+          surfaceCreatedRef.current = true
+          // Guard: if the user navigated away while re-mount was resolving, hide
+          // immediately so the surface doesn't draw while inactive.
+          if (!activeRef.current || !mountedRef.current) {
+            window.api.terminal
+              .hide(workspaceId)
+              .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
+            return
+          }
+          console.log(
+            '[WorkspaceView] re-mounted workspaceId=',
+            result.workspaceId,
+            'created=',
+            result.created
+          )
+          // Re-attach resize listeners now that the surface is live.
+          effectStateRef.current?.attachResizeListeners()
+        })
+        .catch((e) => console.error('[WorkspaceView] re-mount failed:', e))
+    })
+
+    return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    }
+    // workspace.cwd is stable for a given workspace record.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active])
+
   return (
     <>
-      {titleBarHost &&
+      {/* Only render the title bar portal when this workspace is active.
+          Inactive (keep-alive) views must not compete for the topbar slot. */}
+      {active &&
+        titleBarHost &&
         createPortal(
           <WorkspaceTitleBar
             workspace={workspace}
@@ -243,9 +429,13 @@ export function WorkspaceView({
       <div className="flex h-full min-h-0">
         {/* Terminal column: terminal host + footer strip */}
         <div className="flex-1 min-w-0 flex flex-col">
-          {/* Terminal area — transparent div; the native NSView renders directly behind/over this.
+          {/* Terminal area — the native ghostty NSView is parented above the DOM (NSWindowAbove)
+              and declares isOpaque=YES, so it composites in front of web content. bg-surface-base
+              here fills the brief gap during workspace switches where the surface has been
+              re-attached but hasn't drawn its first frame yet, preventing desktop bleed-through.
+              The ghostty surface covers this background entirely once it renders.
               ResizeObserver on this div fires when the footer height changes the container. */}
-          <div ref={containerRef} className="flex-1 min-w-0 relative" />
+          <div ref={containerRef} className="flex-1 min-w-0 relative bg-surface-base" />
 
           <WorkspaceFooter
             workspaceId={workspace.id}

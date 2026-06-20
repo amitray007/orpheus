@@ -68,6 +68,13 @@ function formatValue(actionId: string, value: unknown): string | null {
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Module-level value cache — keyed by `${actionId}:${workspaceId}`.
+// On workspace switch-back the chip immediately renders the stale value
+// (no null → value flash) while the subscription / poll catches up.
+// ---------------------------------------------------------------------------
+const chipValueCache = new Map<string, unknown>()
+
 interface LiveChipProps {
   actionId: string
   label: string
@@ -89,13 +96,22 @@ export function LiveChip({
   workspaceId,
   kind
 }: LiveChipProps): React.JSX.Element {
-  const [value, setValue] = useState<unknown>(null)
+  const cacheKey = `${actionId}:${workspaceId}`
+  const [value, setValue] = useState<unknown>(() => chipValueCache.get(cacheKey) ?? null)
   const disposeRef = useRef<(() => void) | null>(null)
 
   const isStatus = actionId === 'workspace.getActivityStatus'
 
   useEffect(() => {
     if (!workspaceId) return
+
+    const key = `${actionId}:${workspaceId}`
+
+    // Helper that writes through to both component state and the module cache.
+    const updateValue = (v: unknown): void => {
+      chipValueCache.set(key, v)
+      setValue(v)
+    }
 
     // Subscribe for explicit subscription kind OR any session.* action.
     // session.* actions are backed by fs.watch on the JSONL (200ms debounce)
@@ -108,14 +124,14 @@ export function LiveChip({
       window.api.actions
         .invoke({ id: actionId, params, workspaceId }, 'footer-live')
         .then((result) => {
-          if (result.ok) setValue(result.value ?? null)
+          if (result.ok) updateValue(result.value ?? null)
         })
         .catch(() => {
           /* silently skip on error */
         })
 
       const handle = window.api.actions.subscribe(actionId, params, workspaceId, (v) => {
-        setValue(v)
+        updateValue(v)
       })
       disposeRef.current = handle.dispose
       return () => {
@@ -130,7 +146,7 @@ export function LiveChip({
       window.api.actions
         .invoke({ id: actionId, params, workspaceId }, 'footer-live')
         .then((result) => {
-          if (!cancelled && result.ok) setValue(result.value ?? null)
+          if (!cancelled && result.ok) updateValue(result.value ?? null)
         })
         .catch(() => {
           /* silently skip on error */
