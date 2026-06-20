@@ -1,8 +1,10 @@
 {
   "name": "orpheus",
   "version": "0.1.0",
-  "private": true,
-  "description": "A closed-source Mac IDE built around Claude Code",
+  "private": false,
+  "description": "A Mac IDE built around Claude Code",
+  "author": "Amit Ray <amitray.private@gmail.com>",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "./out/main/index.js",
   "scripts": {
     "format": "prettier --write .",
