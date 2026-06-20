@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from 'electron'
-import { spawn, execSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { getDb } from './db'
 
 // ---------------------------------------------------------------------------
@@ -12,40 +12,6 @@ export interface UpdateCheckResult {
   available: boolean
   checkedAt: number
   error?: string
-}
-
-// ---------------------------------------------------------------------------
-// Token resolution
-// ---------------------------------------------------------------------------
-
-function resolveToken(): string {
-  if (process.env['HOMEBREW_GITHUB_API_TOKEN']) return process.env['HOMEBREW_GITHUB_API_TOKEN']
-  if (process.env['GH_TOKEN']) return process.env['GH_TOKEN']
-  try {
-    return execSync('gh auth token', {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8'
-    }).trim()
-  } catch {
-    return ''
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Semver comparison (major.minor.patch, no pre-release)
-// ---------------------------------------------------------------------------
-
-function isNewerVersion(latest: string, current: string): boolean {
-  const parse = (v: string): number[] =>
-    v
-      .replace(/^v/, '')
-      .split('.')
-      .map((n) => parseInt(n, 10) || 0)
-  const [lMaj, lMin, lPat] = parse(latest)
-  const [cMaj, cMin, cPat] = parse(current)
-  if (lMaj !== cMaj) return (lMaj ?? 0) > (cMaj ?? 0)
-  if (lMin !== cMin) return (lMin ?? 0) > (cMin ?? 0)
-  return (lPat ?? 0) > (cPat ?? 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -62,57 +28,58 @@ function broadcast(channel: string, payload: unknown): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function checkForUpdates(): Promise<UpdateCheckResult> {
+export function checkForUpdates(): Promise<UpdateCheckResult> {
   const current = app.getVersion()
   const checkedAt = Date.now()
-  const token = resolveToken()
 
-  try {
-    const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28'
-    }
-    if (token) headers['Authorization'] = `Bearer ${token}`
-
-    const res = await fetch('https://api.github.com/repos/amitray007/orpheus/releases/latest', {
-      headers,
-      signal: AbortSignal.timeout(10_000)
+  return new Promise((resolve) => {
+    // Use brew as the source of truth — it knows the tap's latest cask version
+    // and whether the installed cask is outdated. Avoids polling the private
+    // source repo's GitHub releases (which would need auth or always match).
+    const child = spawn('brew', ['outdated', '--cask', 'orpheus', '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe']
     })
-
-    // 404 from /releases/latest means the repo has zero published releases.
-    // Treat that as "you're already on the latest" rather than an error so
-    // the UI doesn't yell during the period before the first release ships.
-    if (res.status === 404) {
-      return { current, latest: null, available: false, checkedAt }
-    }
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      return {
-        current,
-        latest: null,
-        available: false,
-        checkedAt,
-        error: `GitHub API ${res.status}: ${text.slice(0, 120)}`
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        resolve({
+          current,
+          latest: null,
+          available: false,
+          checkedAt,
+          error: `brew outdated exited ${code}: ${stderr.slice(0, 120)}`
+        })
+        return
       }
-    }
-
-    const data = (await res.json()) as { tag_name?: string }
-    const tag = data.tag_name ?? ''
-    const latest = tag.replace(/^v/, '')
-
-    const available = Boolean(latest && isNewerVersion(latest, current))
-    return { current, latest: latest || null, available, checkedAt }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { current, latest: null, available: false, checkedAt, error: msg }
-  }
+      try {
+        const data = JSON.parse(stdout) as {
+          casks?: { name: string; installed_versions: string; current_version: string }[]
+        }
+        const entry = (data.casks ?? []).find((c) => c.name === 'orpheus')
+        if (entry) {
+          resolve({ current, latest: entry.current_version, available: true, checkedAt })
+        } else {
+          resolve({ current, latest: current, available: false, checkedAt })
+        }
+      } catch {
+        resolve({
+          current,
+          latest: null,
+          available: false,
+          checkedAt,
+          error: 'Failed to parse brew output'
+        })
+      }
+    })
+  })
 }
 
 export function installUpdate(): void {
-  const token = resolveToken()
   const child = spawn('brew', ['upgrade', '--cask', 'orpheus'], {
-    env: { ...process.env, ...(token ? { HOMEBREW_GITHUB_API_TOKEN: token } : {}) },
+    env: process.env,
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
