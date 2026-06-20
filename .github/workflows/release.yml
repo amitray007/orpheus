@@ -116,5 +116,5 @@ jobs:
           git commit -m "orpheus: bump to ${{ steps.tag.outputs.version }}"
 
           SCOPED_TAG="orpheus/${{ steps.tag.outputs.tag }}"
-          git tag "$SCOPED_TAG"
-          git push origin HEAD "$SCOPED_TAG"
+          git tag -f "$SCOPED_TAG"
+          git push origin HEAD "$SCOPED_TAG" --force
