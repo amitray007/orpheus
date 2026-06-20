@@ -1,4 +1,5 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
+import { monitorEventLoopDelay } from 'perf_hooks'
 import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
 
 // Set app name before anything reads app.getPath('userData'). Electron derives
@@ -152,6 +153,7 @@ import {
   stopSubscription,
   registerWebContentsCleanup
 } from './actions/index'
+import { evictAccumulator } from './actions/session'
 import {
   listGlobal as listGlobalFooterActions,
   listForProject as listProjectFooterActions,
@@ -837,6 +839,13 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
   // sidebar / project view stop trying to render a dot for a row that no
   // longer exists.
   clearWorkspaceActivity(id)
+  // Evict all per-workspace in-memory state so archived workspaces don't leak
+  // into launchSnapshots, dirtyWorkspaces, or the JSONL parse caches.
+  // evictAccumulator covers both accumulators and parseCache, so no need to
+  // call invalidateSessionCache separately.
+  launchSnapshots.delete(id)
+  dirtyWorkspaces.delete(id)
+  evictAccumulator(id)
 })
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
@@ -885,9 +894,12 @@ ipcMain.handle(
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
-ipcMain.handle('sessions:refreshMetadata', (_e, { projectId }: { projectId: string }) =>
-  refreshSessionMetadata(projectId)
-)
+ipcMain.handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
+  const t0 = process.hrtime.bigint()
+  await refreshSessionMetadata(projectId)
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  if (ms > 50) console.log('[perf] sessions:refreshMetadata %dms', Math.round(ms))
+})
 
 ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
 
@@ -1130,7 +1142,13 @@ ipcMain.handle(
   (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd)
 )
 
-ipcMain.handle('git:branches', (_e, { cwd }: { cwd: string }) => listBranches(cwd))
+ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
+  const t0 = process.hrtime.bigint()
+  const result = await listBranches(cwd)
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  if (ms > 50) console.log('[perf] git:branches %dms', Math.round(ms))
+  return result
+})
 
 ipcMain.handle(
   'git:log',
@@ -1150,8 +1168,16 @@ ipcMain.handle(
 
 ipcMain.handle(
   'git:count',
-  (_e, args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }) =>
-    countCommits(args.cwd, args)
+  async (
+    _e,
+    args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+  ) => {
+    const t0 = process.hrtime.bigint()
+    const result = await countCommits(args.cwd, args)
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6
+    if (ms > 50) console.log('[perf] git:count %dms', Math.round(ms))
+    return result
+  }
 )
 
 // ---------------------------------------------------------------------------
@@ -1566,6 +1592,22 @@ ipcMain.handle(
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
   electronApp.setAppUserModelId(APP_ID)
+
+  // Event-loop delay monitor — logs p99 and max lag every 10s so we have
+  // data on whether a future utilityProcess migration is worth the cost.
+  // All output is [perf]-tagged for easy grep/removal later.
+  {
+    const eld = monitorEventLoopDelay({ resolution: 10 })
+    eld.enable()
+    setInterval(() => {
+      console.log(
+        '[perf] eventloop p99=%dms max=%dms',
+        Math.round(eld.percentile(99) / 1e6),
+        Math.round(eld.max / 1e6)
+      )
+      eld.reset()
+    }, 10_000).unref()
+  }
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()

@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
 import type { WebContents } from 'electron'
+import { getWorkspace } from './workspaces'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -97,10 +98,10 @@ export type GitCommit = {
   deletions: number
 }
 
-export function listBranches(cwd: string): GitBranchInfo[] {
+export async function listBranches(cwd: string): Promise<GitBranchInfo[]> {
   if (!cwd) return []
   try {
-    const out = childProcess.execFileSync(
+    const { stdout } = await execFile(
       'git',
       [
         '-C',
@@ -109,9 +110,9 @@ export function listBranches(cwd: string): GitBranchInfo[] {
         'refs/heads/',
         '--format=%(refname:short)%09%(committerdate:unix)%09%(HEAD)'
       ],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf-8' }
+      { timeout: 2500 }
     )
-    const branches: GitBranchInfo[] = out
+    const branches: GitBranchInfo[] = stdout
       .split('\n')
       .filter((l) => l.trim().length > 0)
       .map((line) => {
@@ -135,7 +136,7 @@ export function listBranches(cwd: string): GitBranchInfo[] {
   }
 }
 
-export function countCommits(
+export async function countCommits(
   cwd: string,
   opts?: {
     branch?: string
@@ -143,7 +144,7 @@ export function countCommits(
     untilMs?: number
     grep?: string
   }
-): number {
+): Promise<number> {
   if (!cwd) return 0
   // `git rev-list --count` accepts the same date / grep filters as `git log`,
   // so the count tracks the listCommits view 1:1 (modulo pagination).
@@ -153,12 +154,8 @@ export function countCommits(
   if (opts?.grep) args.push('-i', `--grep=${opts.grep}`)
   args.push(opts?.branch ?? 'HEAD')
   try {
-    const out = childProcess.execFileSync('git', args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
-      encoding: 'utf-8'
-    })
-    const n = parseInt(out.trim(), 10)
+    const { stdout } = await execFile('git', args, { timeout: 3000 })
+    const n = parseInt(stdout.trim(), 10)
     return Number.isFinite(n) ? n : 0
   } catch {
     return 0
@@ -365,81 +362,87 @@ function watchGitFiles(dir: string, gitDir: string): fs.FSWatcher[] {
  * gets current status without the 30s polling round-trip.
  *
  * Safe to call multiple times for the same cwd — ref-counted.
+ *
+ * The git rev-parse to locate the .git dir is now async so terminal:mount
+ * returns immediately without blocking on the git subprocess. The watcher
+ * is set up once the async rev-parse resolves.
  */
 export function startGitWatch(workspaceId: string, cwd: string, webContents: WebContents): void {
   if (!cwd) return
 
-  // Find the .git directory; skip if not a git repo
-  let gitDir: string
-  try {
-    const out = childProcess.execFileSync('git', ['-C', cwd, 'rev-parse', '--git-dir'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1500,
-      encoding: 'utf-8'
-    })
-    const rel = out.trim()
-    gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
-  } catch {
-    // Not a git repo or git unavailable — nothing to watch
-    return
-  }
+  // Kick off the async rev-parse fire-and-forget — terminal:mount returns
+  // immediately without waiting for git. The watcher registers once resolved.
+  execFile('git', ['-C', cwd, 'rev-parse', '--git-dir'], { timeout: 1500 })
+    .then(({ stdout }) => {
+      // Guard: the workspace may have been archived/destroyed while the async
+      // rev-parse was in flight (stopGitWatch already ran and had nothing to
+      // clean up). Registering a watcher now would leak FSWatcher handles.
+      if (webContents.isDestroyed()) return
+      if (!getWorkspace(workspaceId)) return
 
-  // Use the resolved absolute git dir as the dedup key (handles worktrees
-  // where multiple cwds share the same .git dir).
-  const dir = nodePath.resolve(cwd)
+      const rel = stdout.trim()
+      const gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
 
-  let entry = gitWatchers.get(dir)
-  if (!entry) {
-    const watchers = watchGitFiles(dir, gitDir)
-    entry = { watchers, refCount: 0, clients: new Map(), debounceTimer: null }
-    gitWatchers.set(dir, entry)
-  }
+      // Use the resolved absolute git dir as the dedup key (handles worktrees
+      // where multiple cwds share the same .git dir).
+      const dir = nodePath.resolve(cwd)
 
-  // Re-mount guard: if this workspaceId is already a client, update its record
-  // and re-emit the initial status push WITHOUT incrementing refCount — avoids
-  // double-counting on hide→mount cycles and the resulting watcher leak.
-  if (entry.clients.has(workspaceId)) {
-    const existing = entry.clients.get(workspaceId)!
-    entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
-    getGitStatus(cwd)
-      .then((status) => {
-        if (!webContents.isDestroyed() && status !== null) {
-          webContents.send('git:statusChanged', { workspaceId, status })
-        }
-      })
-      .catch(() => {
-        /* git unavailable — skip */
-      })
-    return
-  }
-
-  entry.refCount++
-  entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
-
-  // Emit an initial status push so the renderer gets current state without
-  // waiting for the next file-change event.
-  getGitStatus(cwd)
-    .then((status) => {
-      if (!webContents.isDestroyed() && status !== null) {
-        webContents.send('git:statusChanged', { workspaceId, status })
-        const branch = status.branch
-        if (branch) {
-          const client = entry?.clients.get(workspaceId)
-          if (client) client.lastBranch = branch
-          getPrForBranch(cwd, branch)
-            .then((pr) => {
-              if (!webContents.isDestroyed()) {
-                webContents.send('github:prChanged', { workspaceId, pr })
-              }
-            })
-            .catch(() => {
-              /* gh unavailable */
-            })
-        }
+      let entry = gitWatchers.get(dir)
+      if (!entry) {
+        const watchers = watchGitFiles(dir, gitDir)
+        entry = { watchers, refCount: 0, clients: new Map(), debounceTimer: null }
+        gitWatchers.set(dir, entry)
       }
+
+      // Re-mount guard: if this workspaceId is already a client, update its record
+      // and re-emit the initial status push WITHOUT incrementing refCount — avoids
+      // double-counting on hide→mount cycles and the resulting watcher leak.
+      if (entry.clients.has(workspaceId)) {
+        const existing = entry.clients.get(workspaceId)!
+        entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
+        getGitStatus(cwd)
+          .then((status) => {
+            if (!webContents.isDestroyed() && status !== null) {
+              webContents.send('git:statusChanged', { workspaceId, status })
+            }
+          })
+          .catch(() => {
+            /* git unavailable — skip */
+          })
+        return
+      }
+
+      entry.refCount++
+      entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
+
+      // Emit an initial status push so the renderer gets current state without
+      // waiting for the next file-change event.
+      getGitStatus(cwd)
+        .then((status) => {
+          if (!webContents.isDestroyed() && status !== null) {
+            webContents.send('git:statusChanged', { workspaceId, status })
+            const branch = status.branch
+            if (branch) {
+              const client = entry?.clients.get(workspaceId)
+              if (client) client.lastBranch = branch
+              getPrForBranch(cwd, branch)
+                .then((pr) => {
+                  if (!webContents.isDestroyed()) {
+                    webContents.send('github:prChanged', { workspaceId, pr })
+                  }
+                })
+                .catch(() => {
+                  /* gh unavailable */
+                })
+            }
+          }
+        })
+        .catch(() => {
+          /* git unavailable — skip initial push */
+        })
     })
     .catch(() => {
-      /* git unavailable — skip initial push */
+      // Not a git repo or git unavailable — nothing to watch
     })
 }
 

@@ -455,6 +455,12 @@ function extractFromTail(text: string): TailExtracted {
 // Import
 // ---------------------------------------------------------------------------
 
+// Yield to the event loop so a long scan doesn't monopolize the main thread.
+// Called between files (or small batches) inside async loops.
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 /**
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
  * not yet in the sessions table.
@@ -463,24 +469,12 @@ function extractFromTail(text: string): TailExtracted {
  * a new row (better-sqlite3 `.changes > 0`). Already-imported rows skip all
  * fd opens, paying only a readdirSync + stat per file. At most 2 reads per
  * file (head ~200KB + tail ~200KB) instead of 5 separate fd opens.
+ *
+ * Yields to the event loop every file so IPC/clicks interleave during large
+ * project scans. The max contiguous main-thread block is bounded to O(1 file).
  */
-function upsertSessionFilesForProject(projectId: string, dir: string): void {
+async function upsertSessionFilesForProject(projectId: string, dir: string): Promise<void> {
   const db = getDb()
-  // INSERT OR IGNORE so re-running is idempotent; we check .changes to know
-  // whether the row was actually inserted (and therefore needs extraction).
-  const insertStub = db.prepare(
-    `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, status, created_at, updated_at, jsonl_mtime)
-     VALUES (?, ?, ?, 'in_review', ?, ?, ?)`
-  )
-  const updateMeta = db.prepare(
-    `UPDATE sessions
-     SET title = ?, model = ?, last_message_role = ?,
-         message_count = ?, jsonl_size_bytes = ?,
-         last_message_preview = ?, last_user_message_preview = ?,
-         jsonl_mtime = ?
-     WHERE id = ?`
-  )
 
   let entries: fs.Dirent[]
   try {
@@ -489,8 +483,42 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     return
   }
 
+  // Snapshot the set of already-known session IDs so we can decide during the
+  // read loop whether each file is new (needs extraction) — without writing
+  // anything to the DB yet. This lets us keep yields in the READ phase only
+  // and commit all inserts+updates in one synchronous transaction at the end.
+  const knownIds = new Set<string>(
+    (
+      db.prepare('SELECT id FROM sessions WHERE project_id = ?').all(projectId) as { id: string }[]
+    ).map((r) => r.id)
+  )
+
+  // Collected pending writes — populated during the (async) read phase.
+  type PendingInsert = {
+    sessionId: string
+    jsonlPath: string
+    mtime: number
+    createdAt: number
+  }
+  type PendingUpdate = {
+    sessionId: string
+    title: string | null
+    model: string | null
+    lastMessageRole: string | null
+    messageCount: number | null
+    fileSize: number
+    lastMessagePreview: string | null
+    lastUserMessagePreview: string | null
+    mtime: number
+  }
+  const pendingInserts: PendingInsert[] = []
+  const pendingUpdates: PendingUpdate[] = []
+
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+
+    // Yield between files so IPC and clicks interleave during large scans.
+    await yieldToEventLoop()
 
     const sessionId = entry.name.replace(/\.jsonl$/, '')
     const jsonlPath = nodePath.join(dir, entry.name)
@@ -504,22 +532,18 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     const mtime = Math.floor(stat.mtimeMs)
     const fileSize = stat.size
 
-    try {
-      // Pass null for jsonl_mtime at INSERT time. Only updateMeta.run() — inside
-      // the successful extraction try block — writes the real mtime. If extraction
-      // throws before updateMeta runs, the null mtime ensures the mtime guard
-      // (~line 679) treats this row as "needs extraction" on the next scan.
-      const info = insertStub.run(sessionId, projectId, jsonlPath, mtime, mtime, null)
-      if (info.changes === 0) {
-        // Row already existed — skip extraction entirely.
-        continue
-      }
-    } catch {
-      // Ignore individual row failures (e.g. malformed UUID)
+    if (knownIds.has(sessionId)) {
+      // Row already existed — skip extraction entirely.
       continue
     }
 
-    // New row inserted — run extraction (at most 2 reads).
+    // New file not yet in DB — queue an insert.
+    // Pass null for jsonl_mtime at INSERT time; only the updateMeta path writes
+    // the real mtime. If extraction throws, null mtime ensures the mtime guard
+    // treats this row as "needs extraction" on the next scan.
+    pendingInserts.push({ sessionId, jsonlPath, mtime, createdAt: mtime })
+
+    // Run extraction (at most 2 reads).
     try {
       const readSize = Math.min(fileSize, MAX_BYTES)
 
@@ -555,7 +579,8 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
       const { lastMessageRole, lastMessagePreview, lastUserMessagePreview } =
         extractFromTail(tailText)
 
-      updateMeta.run(
+      pendingUpdates.push({
+        sessionId,
         title,
         model,
         lastMessageRole,
@@ -563,13 +588,57 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
         fileSize,
         lastMessagePreview,
         lastUserMessagePreview,
-        mtime,
-        sessionId
-      )
+        mtime
+      })
     } catch {
       // Extraction failure is non-fatal — row stays with NULL metadata
     }
   }
+
+  if (pendingInserts.length === 0) return
+
+  // Commit all inserts and updates in one synchronous transaction — one fsync
+  // instead of N. No await inside the transaction (better-sqlite3 requirement).
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO sessions
+       (id, project_id, jsonl_path, status, created_at, updated_at, jsonl_mtime)
+     VALUES (?, ?, ?, 'in_review', ?, ?, ?)`
+  )
+  const updateMetaStmt = db.prepare(
+    `UPDATE sessions
+     SET title = ?, model = ?, last_message_role = ?,
+         message_count = ?, jsonl_size_bytes = ?,
+         last_message_preview = ?, last_user_message_preview = ?,
+         jsonl_mtime = ?
+     WHERE id = ?`
+  )
+
+  db.transaction(() => {
+    for (const ins of pendingInserts) {
+      try {
+        insertStmt.run(ins.sessionId, projectId, ins.jsonlPath, ins.createdAt, ins.createdAt, null)
+      } catch {
+        // Ignore individual row failures (e.g. malformed UUID)
+      }
+    }
+    for (const upd of pendingUpdates) {
+      try {
+        updateMetaStmt.run(
+          upd.title,
+          upd.model,
+          upd.lastMessageRole,
+          upd.messageCount,
+          upd.fileSize,
+          upd.lastMessagePreview,
+          upd.lastUserMessagePreview,
+          upd.mtime,
+          upd.sessionId
+        )
+      } catch {
+        // Ignore individual row failures
+      }
+    }
+  })()
 }
 
 /**
@@ -577,13 +646,13 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
  * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
  * Wrapped in a transaction by the caller (addProject).
  */
-export function importSessionsForProject(project: ProjectRecord): SessionRecord[] {
+export async function importSessionsForProject(project: ProjectRecord): Promise<SessionRecord[]> {
   if (!project.claudeEncodedName) return []
 
   const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
   if (!fs.existsSync(dir)) return []
 
-  upsertSessionFilesForProject(project.id, dir)
+  await upsertSessionFilesForProject(project.id, dir)
 
   return listSessionsForProject(project.id)
 }
@@ -596,8 +665,30 @@ export function importSessionsForProject(project: ProjectRecord): SessionRecord[
  * mtime guard: for non-archived sessions we skip re-extraction when the JSONL
  * file's mtime matches the stored jsonl_mtime — this avoids N×stat+read calls
  * on every project-tab open when sessions haven't changed.
+ *
+ * Yielding: file reads are interleaved with setImmediate yields so the event
+ * loop can service IPC/clicks between files. The max contiguous main-thread
+ * block is bounded to O(1 file) instead of O(N files).
  */
-export function refreshSessionMetadata(projectId: string): void {
+// Per-projectId in-flight dedup: if a refresh is already running for a given
+// project (e.g. user reopens a tab while the first scan is still yielding),
+// the second caller piggybacks on the first promise instead of starting a
+// parallel scan that would double I/O and bypass the mtime guard.
+const refreshInFlight = new Map<string, Promise<void>>()
+
+export async function refreshSessionMetadata(projectId: string): Promise<void> {
+  const existing = refreshInFlight.get(projectId)
+  if (existing) return existing
+  const work = _refreshSessionMetadata(projectId)
+  refreshInFlight.set(projectId, work)
+  try {
+    return await work
+  } finally {
+    refreshInFlight.delete(projectId)
+  }
+}
+
+async function _refreshSessionMetadata(projectId: string): Promise<void> {
   const db = getDb()
 
   // Pull the claudeEncodedName for this project so we can scan for new files.
@@ -608,7 +699,7 @@ export function refreshSessionMetadata(projectId: string): void {
   if (projectRow?.claude_encoded_name) {
     const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
     if (fs.existsSync(dir)) {
-      upsertSessionFilesForProject(projectId, dir)
+      await upsertSessionFilesForProject(projectId, dir)
     }
   }
 
@@ -634,22 +725,41 @@ export function refreshSessionMetadata(projectId: string): void {
      WHERE id = ?`
   )
 
-  // Wrap all UPDATEs in a single transaction — one fsync instead of N.
-  const runMetadataUpdates = db.transaction((rows: NullMetaRow[]) => {
-    for (const row of rows) {
-      const title = extractTitle(row.jsonl_path)
-      const model = extractModel(row.jsonl_path)
-      const lastMessageRole = extractLastMessageRole(row.jsonl_path)
-      const messageCount = extractMessageCount(row.jsonl_path)
-      const jsonlSizeBytes = extractFileSize(row.jsonl_path)
+  // Run extractions with per-file yields, then commit all UPDATEs in one
+  // transaction. better-sqlite3 transactions are synchronous, so we can't
+  // await inside them — instead we collect results first, then write in bulk.
+  type NullMetaResult = {
+    id: string
+    title: string | null
+    model: string | null
+    lastMessageRole: string | null
+    messageCount: number | null
+    jsonlSizeBytes: number | null
+  }
+  const nullMetaResults: NullMetaResult[] = []
+  for (const row of nullRows) {
+    // Yield between files so IPC/clicks can interleave.
+    await yieldToEventLoop()
+    nullMetaResults.push({
+      id: row.id,
+      title: extractTitle(row.jsonl_path),
+      model: extractModel(row.jsonl_path),
+      lastMessageRole: extractLastMessageRole(row.jsonl_path),
+      messageCount: extractMessageCount(row.jsonl_path),
+      jsonlSizeBytes: extractFileSize(row.jsonl_path)
+    })
+  }
+
+  // Commit all null-meta backfill rows in one transaction — one fsync.
+  db.transaction((results: NullMetaResult[]) => {
+    for (const r of results) {
       try {
-        updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
+        updateStmt.run(r.title, r.model, r.lastMessageRole, r.messageCount, r.jsonlSizeBytes, r.id)
       } catch {
         // Ignore individual row failures
       }
     }
-  })
-  runMetadataUpdates(nullRows)
+  })(nullMetaResults)
 
   // Re-extract last_message_preview and last_user_message_preview for non-archived
   // sessions, but only when the JSONL file has changed since the last extraction
@@ -668,54 +778,69 @@ export function refreshSessionMetadata(projectId: string): void {
      WHERE id = ?`
   )
 
-  const runPreviewUpdates = db.transaction((rows: ActiveRow[]) => {
-    for (const row of rows) {
-      let currentMtime: number
-      let fileSize: number
-      try {
-        const stat = fs.statSync(row.jsonl_path)
-        currentMtime = Math.floor(stat.mtimeMs)
-        fileSize = stat.size
-      } catch {
-        continue
-      }
+  // Run file reads with per-file yields; collect results; commit in one transaction.
+  type PreviewResult = {
+    id: string
+    lastMessagePreview: string | null
+    lastUserMessagePreview: string | null
+    currentMtime: number
+  }
+  const previewResults: PreviewResult[] = []
+  for (const row of activeRows) {
+    // Yield between files so IPC/clicks can interleave.
+    await yieldToEventLoop()
 
-      // Skip re-extraction if the file hasn't changed since last time.
-      if (row.jsonl_mtime !== null && row.jsonl_mtime === currentMtime) continue
-
-      try {
-        const readSize = Math.min(fileSize, MAX_BYTES)
-        let tailText: string
-        if (fileSize <= MAX_BYTES) {
-          // Small file — one read covers both head and tail
-          const buf = Buffer.allocUnsafe(readSize)
-          const fd = fs.openSync(row.jsonl_path, 'r')
-          try {
-            const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
-            tailText = buf.slice(0, bytesRead).toString('utf-8')
-          } finally {
-            fs.closeSync(fd)
-          }
-        } else {
-          const tailOffset = fileSize - readSize
-          const buf = Buffer.allocUnsafe(readSize)
-          const fd = fs.openSync(row.jsonl_path, 'r')
-          try {
-            fs.readSync(fd, buf, 0, readSize, tailOffset)
-            tailText = buf.toString('utf-8')
-          } finally {
-            fs.closeSync(fd)
-          }
-        }
-
-        const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
-        previewUpdateStmt.run(lastMessagePreview, lastUserMessagePreview, currentMtime, row.id)
-      } catch {
-        // Extraction failure is non-fatal
-      }
+    let currentMtime: number
+    let fileSize: number
+    try {
+      const stat = fs.statSync(row.jsonl_path)
+      currentMtime = Math.floor(stat.mtimeMs)
+      fileSize = stat.size
+    } catch {
+      continue
     }
-  })
-  runPreviewUpdates(activeRows)
+
+    // Skip re-extraction if the file hasn't changed since last time.
+    if (row.jsonl_mtime !== null && row.jsonl_mtime === currentMtime) continue
+
+    try {
+      const readSize = Math.min(fileSize, MAX_BYTES)
+      let tailText: string
+      if (fileSize <= MAX_BYTES) {
+        // Small file — one read covers both head and tail
+        const buf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(row.jsonl_path, 'r')
+        try {
+          const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
+          tailText = buf.slice(0, bytesRead).toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      } else {
+        const tailOffset = fileSize - readSize
+        const buf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(row.jsonl_path, 'r')
+        try {
+          fs.readSync(fd, buf, 0, readSize, tailOffset)
+          tailText = buf.toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+
+      const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
+      previewResults.push({ id: row.id, lastMessagePreview, lastUserMessagePreview, currentMtime })
+    } catch {
+      // Extraction failure is non-fatal
+    }
+  }
+
+  // Commit all preview updates in one transaction.
+  db.transaction((results: PreviewResult[]) => {
+    for (const r of results) {
+      previewUpdateStmt.run(r.lastMessagePreview, r.lastUserMessagePreview, r.currentMtime, r.id)
+    }
+  })(previewResults)
 
   // Auto-prune: drop oldest non-archived rows if a cap is configured.
   const uiState = getAppUiState()

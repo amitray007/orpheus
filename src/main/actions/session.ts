@@ -70,6 +70,13 @@ export function invalidateSessionCache(workspaceId: string): void {
   parseCache.delete(workspaceId)
 }
 
+/** Evict a workspace's JSONL accumulator and parse cache — called at archive time
+ *  so dead workspaces don't grow the in-memory accumulator map unboundedly. */
+export function evictAccumulator(workspaceId: string): void {
+  accumulators.delete(workspaceId)
+  parseCache.delete(workspaceId)
+}
+
 // ---------------------------------------------------------------------------
 // JSONL path resolution
 // ---------------------------------------------------------------------------

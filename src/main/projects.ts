@@ -93,8 +93,8 @@ export function addProject(path: string): ProjectRecord {
   const claudeEncodedName = path.replace(/\//g, '-')
   const addedAt = Date.now()
 
-  // Insert project + default workspace + import its sessions atomically.
-  const insertProjectAndSessions = db.transaction(() => {
+  // Insert project + default workspace atomically.
+  const insertProject = db.transaction(() => {
     db.prepare(
       `INSERT INTO projects (id, path, name, claude_encoded_name, added_at)
        VALUES (?, ?, ?, ?, ?)`
@@ -107,13 +107,16 @@ export function addProject(path: string): ProjectRecord {
     // Auto-create the Default workspace (cwd = project root)
     createWorkspace({ projectId: id, name: 'Default', cwd: path })
 
-    // importSessionsForProject writes inside the same transaction
-    importSessionsForProject(newProject)
-
     return newProject
   })
 
-  const project = insertProjectAndSessions()
+  const project = insertProject()
+
+  // Import sessions async so the main thread isn't blocked on N file reads
+  // during project addition. Fire-and-forget; errors are non-fatal.
+  importSessionsForProject(project).catch((err) => {
+    console.warn('[sessions] importSessionsForProject failed for', project.id, err)
+  })
 
   // Fire-and-forget: fetch GitHub avatar in the background after insert.
   void refreshGithubData(project.id).catch((err) => {
