@@ -17,6 +17,7 @@ import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
 import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -97,7 +98,6 @@ interface WorkspaceNameCellProps {
   ws: WorkspaceRecord
   renamingId: string | null
   renameValue: string
-  titleByWs: Record<string, string | null>
   sessionStats: Record<
     string,
     { messageCount: number | null; jsonlSizeBytes: number | null; title: string | null }
@@ -111,18 +111,18 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
   ws,
   renamingId,
   renameValue,
-  titleByWs,
   sessionStats,
   setRenameValue,
   commitRename,
   setRenamingId
 }: WorkspaceNameCellProps): React.JSX.Element {
-  // Subscribes to this workspace's key only — re-renders when activity changes.
+  // Subscribe to this workspace's key only — re-renders only when this key changes.
   const activity = useWorkspaceActivity(ws.id)
+  const terminalTitle = useWorkspaceTitle(ws.id)
   const isPinned = ws.pinnedAt !== null
   const dn = resolveWorkspaceName({
     workspace: ws,
-    terminalTitle: titleByWs[ws.id] ?? null,
+    terminalTitle,
     sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
   })
   return (
@@ -196,7 +196,6 @@ export function WorkspacesTab({
   const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
   const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
-  const [titleByWs, setTitleByWs] = useState<Record<string, string | null>>({})
   const [sessionStats, setSessionStats] = useState<
     Record<
       string,
@@ -236,33 +235,9 @@ export function WorkspacesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active.map((w) => w.id).join('|')])
 
-  // Subscribe to terminal title for every workspace in the list — the Name
-  // column shows the latest OSC title when one's available.
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of all) {
-      if (titleByWs[ws.id] !== undefined) continue
-      window.api.workspaces
-        .getTitle(ws.id)
-        .then((t) => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: t ?? null }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (cancelled) return
-      setTitleByWs((prev) => ({ ...prev, [e.workspaceId]: e.title || null }))
-    })
-    return () => {
-      cancelled = true
-      unsub()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all.map((w) => w.id).join('|')])
+  // Terminal titles are now served by the global titleStore (seeded from Dashboard's
+  // hoisted onTitleChanged subscription). WorkspaceNameCell calls useWorkspaceTitle
+  // directly, so no per-row subscription is needed here.
 
   // Refresh session metadata then load it for the Messages column lookup.
   useEffect(() => {
@@ -353,10 +328,14 @@ export function WorkspacesTab({
 
     if (debouncedSearch) {
       const q = debouncedSearch // already lowercased
+      // Read titles from the module-level titleStore snapshot at filter time.
+      // This is not reactive — search re-runs when debouncedSearch changes,
+      // which is the right trigger. Live title updates will apply on next search.
+      const titleSnapshot = getTitleSnapshot()
       out = out.filter((ws) => {
         const dn = resolveWorkspaceName({
           workspace: ws,
-          terminalTitle: titleByWs[ws.id] ?? null,
+          terminalTitle: titleSnapshot.get(ws.id) ?? null,
           sessionTitle: ws.claudeSessionId
             ? (sessionStats[ws.claudeSessionId]?.title ?? null)
             : null
@@ -367,7 +346,7 @@ export function WorkspacesTab({
     }
 
     return out
-  }, [active, activityFilter, debouncedSearch, titleByWs, sessionStats])
+  }, [active, activityFilter, debouncedSearch, sessionStats])
 
   const activeSorted = useMemo(() => {
     const copy = [...filtered]
@@ -399,7 +378,6 @@ export function WorkspacesTab({
             ws={ws}
             renamingId={renamingId}
             renameValue={renameValue}
-            titleByWs={titleByWs}
             sessionStats={sessionStats}
             setRenameValue={setRenameValue}
             commitRename={commitRename}
@@ -473,7 +451,7 @@ export function WorkspacesTab({
         )
       }
     ],
-    [gitByWs, titleByWs, renamingId, renameValue, sessionStats]
+    [gitByWs, renamingId, renameValue, sessionStats]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

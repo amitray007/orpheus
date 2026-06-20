@@ -3,15 +3,16 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   WorkspaceActivityDetail,
-  ProjectRecord,
-  GitStatus,
-  GhPullRequest
+  ProjectRecord
 } from '@shared/types'
 import { GitMerge, Kanban } from '@phosphor-icons/react'
 import { ActivityIndicator } from './ActivityIndicator'
 import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { useWorkspaceActivity, getActivitySnapshot } from '@/lib/activityStore'
+import { useWorkspaceTitle } from '@/lib/titleStore'
+import { useGitStatus } from '@/lib/gitStore'
+import { usePr } from '@/lib/prStore'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,9 +91,6 @@ interface WorkspaceCardProps {
   workspace: WorkspaceRecord
   projectName: string
   session: SessionRecord | undefined
-  terminalTitle: string | null
-  gitStatus: GitStatus | null
-  pr: GhPullRequest | null
   onClick: () => void
 }
 
@@ -100,14 +98,14 @@ const WorkspaceCard = memo(function WorkspaceCard({
   workspace,
   projectName,
   session,
-  terminalTitle,
-  gitStatus,
-  pr,
   onClick
 }: WorkspaceCardProps): React.JSX.Element {
-  // Subscribe to this workspace's activity from the per-key store — re-renders
-  // only when THIS card's activity changes, not when any other workspace changes.
+  // Subscribe to this workspace's data from per-key stores — re-renders only
+  // when THIS card's keys change, not when any other workspace changes.
   const activityDetail = useWorkspaceActivity(workspace.id)
+  const terminalTitle = useWorkspaceTitle(workspace.id)
+  const gitStatus = useGitStatus(workspace.id)
+  const pr = usePr(workspace.id)
 
   const sessionTitle = session?.title ?? null
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
@@ -184,9 +182,6 @@ interface KanbanColumnProps {
   workspaces: WorkspaceRecord[]
   projectsById: Map<string, ProjectRecord>
   sessionsById: Map<string, SessionRecord>
-  titleByWorkspaceId: Record<string, string>
-  gitStatusByWorkspaceId: Record<string, GitStatus | null>
-  prByWorkspaceId: Record<string, GhPullRequest | null>
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
 }
 
@@ -195,9 +190,6 @@ const KanbanColumn = memo(function KanbanColumn({
   workspaces,
   projectsById,
   sessionsById,
-  titleByWorkspaceId,
-  gitStatusByWorkspaceId,
-  prByWorkspaceId,
   onNavigateToWorkspace
 }: KanbanColumnProps): React.JSX.Element {
   return (
@@ -233,9 +225,6 @@ const KanbanColumn = memo(function KanbanColumn({
                 workspace={ws}
                 projectName={project?.name ?? 'Unknown'}
                 session={session}
-                terminalTitle={titleByWorkspaceId[ws.id] ?? null}
-                gitStatus={gitStatusByWorkspaceId[ws.id] ?? null}
-                pr={prByWorkspaceId[ws.id] ?? null}
                 onClick={() => onNavigateToWorkspace(ws.id, ws.projectId)}
               />
             )
@@ -256,20 +245,14 @@ export interface WorkspacesViewProps {
   onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
   projects: ProjectRecord[]
   workspaces: WorkspaceRecord[]
-  titleByWorkspaceId: Record<string, string>
   sessions: SessionRecord[] // for looking up session metadata via claudeSessionId
-  gitStatusByWorkspaceId?: Record<string, GitStatus | null>
-  prByWorkspaceId?: Record<string, GhPullRequest | null>
 }
 
 export function WorkspacesView({
   onNavigateToWorkspace,
   projects,
   workspaces,
-  titleByWorkspaceId,
-  sessions,
-  gitStatusByWorkspaceId = {},
-  prByWorkspaceId = {}
+  sessions
 }: WorkspacesViewProps): React.JSX.Element {
   // Build fast lookups
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects])
@@ -306,19 +289,23 @@ export function WorkspacesView({
 
   const totalWorkspaces = Object.values(grouped).reduce((sum, col) => sum + col.length, 0)
 
-  const columns = COLUMN_CONFIGS.map((config) => (
-    <KanbanColumn
-      key={config.key}
-      config={config}
-      workspaces={grouped[config.key]}
-      projectsById={projectsById}
-      sessionsById={sessionsById}
-      titleByWorkspaceId={titleByWorkspaceId}
-      gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-      prByWorkspaceId={prByWorkspaceId}
-      onNavigateToWorkspace={onNavigateToWorkspace}
-    />
-  ))
+  // Memoize columns so memo(KanbanColumn) is effective — deps are exactly
+  // what KanbanColumn needs; the per-key stores (title/git/pr/activity) are
+  // subscribed inside each WorkspaceCard, not here.
+  const columns = useMemo(
+    () =>
+      COLUMN_CONFIGS.map((config) => (
+        <KanbanColumn
+          key={config.key}
+          config={config}
+          workspaces={grouped[config.key]}
+          projectsById={projectsById}
+          sessionsById={sessionsById}
+          onNavigateToWorkspace={onNavigateToWorkspace}
+        />
+      )),
+    [grouped, projectsById, sessionsById, onNavigateToWorkspace]
+  )
 
   // Empty board: preview the kanban structure blurred behind a centered empty state.
   if (totalWorkspaces === 0) {
