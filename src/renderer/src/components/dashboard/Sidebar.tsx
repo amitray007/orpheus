@@ -1029,7 +1029,7 @@ export function Sidebar({
         )}
 
         {/* Projects section */}
-        <div className="mt-4 flex flex-col gap-0.5">
+        <div className="mt-4 flex flex-col gap-0.5 flex-1 min-h-0">
           {!collapsed ? (
             <>
               <SectionHeader label="Projects" action={addProjectButton} />
@@ -1038,7 +1038,7 @@ export function Sidebar({
               ) : projects.length === 0 ? (
                 <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
               ) : (
-                <div className="flex flex-col gap-0.5 overflow-y-auto max-h-[40vh]">
+                <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
                   {projects.map((p) => {
                     const expanded = expandedProjectIds.has(p.id)
                     const workspaces = (workspacesByProject[p.id] ?? []).filter(
@@ -1109,7 +1109,7 @@ export function Sidebar({
             </>
           ) : (
             /* Collapsed: show identicons only */
-            <div className="flex flex-col gap-1 items-center">
+            <div className="flex flex-col gap-1 items-center overflow-y-auto flex-1 min-h-0 no-scrollbar">
               <div className="flex justify-center mb-1">{addProjectButton}</div>
               {!projectsLoading &&
                 projects.map((p) => {
@@ -1138,9 +1138,6 @@ export function Sidebar({
             </div>
           )}
         </div>
-
-        {/* Spacer pushes Settings to the bottom */}
-        <div className="flex-1" />
 
         {/* Bottom: Settings */}
         <NavItem

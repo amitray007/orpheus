@@ -254,3 +254,10 @@ pre,
     outline-color: transparent;
   }
 }
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
