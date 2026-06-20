@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IMPORTANT: Orchestration model (always follow)
+
+For any non-trivial code work in this repo (features, fixes, refactors, performance
+work), **the top-level/main agent acts only as an orchestrator**: it researches,
+brainstorms, plans, and reviews — but it does **not** write or edit feature/fix code
+itself. **All code building, fixes, and edits MUST be delegated to subagents running
+the SONNET model.** Spawn Sonnet subagents (via the Agent tool or Workflow with
+`model: 'sonnet'`) to do the actual implementation. The orchestrator guides them,
+verifies their output, and integrates — it never does the hands-on coding directly.
+
+(Trivial conversational answers and pure research don't require delegation; the rule
+applies to substantive code changes.)
+
 ## What this is
 
 Orpheus is a **source-available macOS Electron app** that wraps `claude` (the Claude Code CLI) in a project/workspace UI. The renderer is React + Tailwind v4; the main process is TypeScript on Node; the terminal is rendered by a native NAPI addon that embeds prebuilt **libghostty** (`vendor/GhosttyKit.xcframework`) as an `NSView` parented onto Electron's `BrowserWindow` native handle. Persistence is `better-sqlite3` at `~/Library/Application Support/Orpheus/orpheus.sqlite`.
