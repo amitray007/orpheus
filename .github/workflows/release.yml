@@ -50,9 +50,15 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
           else
-            # Only proceed on release-please bump commits ("chore(release): orpheus vX.Y.Z")
+            # Proceed on release-please commits. Two forms land on main:
+            #   1. Direct:  "chore(release): orpheus vX.Y.Z"  (squash/rebase merge)
+            #   2. Merge:   "Merge pull request #N from .../release-please--branches--main..."
+            # Both are safe signals — no other PRs come from the release-please branch prefix.
             COMMIT_MSG=$(git log -1 --pretty=%s)
-            if ! echo "$COMMIT_MSG" | grep -qE '^chore\(release\):'; then
+            COMMIT_BRANCH="${{ github.event.head_commit.message }}"
+            PR_BRANCH=$(git log -1 --pretty=%b | grep -o 'release-please--branches--main' || true)
+            if ! echo "$COMMIT_MSG" | grep -qE '^chore\(release\):' && \
+               ! echo "$COMMIT_MSG" | grep -qE 'release-please--branches--main'; then
               echo "skip=true" >> "$GITHUB_OUTPUT"
               echo "[release] skipping: not a release-please commit ($COMMIT_MSG)"
               exit 0
