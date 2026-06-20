@@ -1,7 +1,7 @@
 {
   "name": "orpheus",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "A Mac IDE built around Claude Code",
   "author": "Amit Ray <hey@amitray.dev>",
   "license": "SEE LICENSE IN LICENSE",
