@@ -1,6 +1,8 @@
 name: Release
 
-# Triggered automatically when release-please publishes a GitHub release.
+# Triggered automatically when release-please merges its bump PR to main.
+# release-please commits are "chore(release): orpheus vX.Y.Z" — we extract
+# the version from package.json and build from the tagged commit.
 # Also runnable manually (workflow_dispatch) for one-off builds.
 #
 # What this does NOT do (release-please already handled it):
@@ -19,8 +21,8 @@ name: Release
 #                        amitray007/homebrew-tap
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -38,45 +40,57 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Resolve tag
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
-          elif [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
           else
-            TAG="${{ github.ref_name }}"
+            # Only proceed on release-please bump commits ("chore(release): orpheus vX.Y.Z")
+            COMMIT_MSG=$(git log -1 --pretty=%s)
+            if ! echo "$COMMIT_MSG" | grep -qE '^chore\(release\):'; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "[release] skipping: not a release-please commit ($COMMIT_MSG)"
+              exit 0
+            fi
+            VERSION=$(node -p "require('./package.json').version")
+            TAG="v${VERSION}"
           fi
           VERSION="${TAG#v}"
+          echo "skip=false"       >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "[release] tag=$TAG version=$VERSION"
 
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.tag.outputs.tag }}
-          fetch-depth: 0
-
       - uses: oven-sh/setup-bun@v2
+        if: steps.tag.outputs.skip != 'true'
         with:
           bun-version: latest
 
       - name: Install dependencies
+        if: steps.tag.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
       - name: Typecheck (gate)
+        if: steps.tag.outputs.skip != 'true'
         run: bun run typecheck
 
       - name: Build native + renderer
+        if: steps.tag.outputs.skip != 'true'
         run: |
           bun run build:native
           bun run build
 
       - name: Build .dmg
+        if: steps.tag.outputs.skip != 'true'
         run: bunx electron-builder --mac --publish never
 
       - name: Compute sha256
+        if: steps.tag.outputs.skip != 'true'
         id: sha
         run: |
           DMG="dist/orpheus-${{ steps.tag.outputs.version }}.dmg"
@@ -90,6 +104,7 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
+        if: steps.tag.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: amitray007/homebrew-tap
@@ -97,6 +112,7 @@ jobs:
           path: homebrew-tap
 
       - name: Create release on homebrew-tap and upload .dmg
+        if: steps.tag.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -114,6 +130,7 @@ jobs:
                  --clobber
 
       - name: Render and push cask
+        if: steps.tag.outputs.skip != 'true'
         run: |
           mkdir -p homebrew-tap/Casks
           sed -e "s/{{VERSION}}/${{ steps.tag.outputs.version }}/g" \
