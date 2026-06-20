@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { getDb } from './db'
 
 // ---------------------------------------------------------------------------
@@ -13,6 +14,31 @@ export interface UpdateCheckResult {
   checkedAt: number
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Brew path resolution
+// ---------------------------------------------------------------------------
+
+function findBrew(): string {
+  for (const candidate of [
+    '/opt/homebrew/bin/brew', // Apple Silicon default
+    '/usr/local/bin/brew', // Intel default
+    '/home/linuxbrew/.linuxbrew/bin/brew' // Linux
+  ]) {
+    if (existsSync(candidate)) return candidate
+  }
+  // Fallback: ask the login shell (slower, but works if brew is in a custom prefix)
+  try {
+    return execFileSync('/bin/zsh', ['-lc', 'which brew'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+  } catch {
+    return 'brew' // last resort; will ENOENT if not found
+  }
+}
+
+const BREW = findBrew()
 
 // ---------------------------------------------------------------------------
 // Broadcast helpers
@@ -36,7 +62,9 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
     // Use brew as the source of truth — it knows the tap's latest cask version
     // and whether the installed cask is outdated. Avoids polling the private
     // source repo's GitHub releases (which would need auth or always match).
-    const child = spawn('brew', ['outdated', '--cask', 'orpheus', '--json'], {
+    // --fetch refreshes the tap before checking so we always compare against
+    // the latest cask version, not stale local tap metadata.
+    const child = spawn(BREW, ['outdated', '--cask', 'orpheus', '--json', '--fetch'], {
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let stdout = ''
@@ -44,7 +72,9 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
     child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
     child.on('exit', (code) => {
-      if (code !== 0) {
+      // brew outdated exits 1 when casks are outdated — that's not an error.
+      // Only treat non-zero as an error when stdout is empty (real failure).
+      if (code !== 0 && !stdout.trim()) {
         resolve({
           current,
           latest: null,
@@ -78,7 +108,7 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
 }
 
 export function installUpdate(): void {
-  const child = spawn('brew', ['upgrade', '--cask', 'orpheus'], {
+  const child = spawn(BREW, ['upgrade', '--cask', 'orpheus'], {
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe']
   })
