@@ -1,5 +1,7 @@
 node_modules
 dist
+dist-dev/
+docs/
 out
 .DS_Store
 .eslintcache
