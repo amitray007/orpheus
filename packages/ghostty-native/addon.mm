@@ -1957,6 +1957,71 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 // ---------------------------------------------------------------------------
 
 static ghostty_config_t g_config = nullptr;
+static const char* g_resDir = nullptr;  // set once in ensureApp, used by reloadGhosttyConfig
+
+// ---------------------------------------------------------------------------
+// Build, load, and finalise a ghostty config using the standard Orpheus
+// load order:  default files → bundled overrides → user config → recursive
+// files → finalise.  resDir may be NULL (GHOSTTY_RESOURCES_DIR not set).
+// Returns a finalised ghostty_config_t; caller owns it (ghostty_config_free).
+// ---------------------------------------------------------------------------
+
+static ghostty_config_t buildGhosttyConfig(const char* resDir) {
+    ghostty_config_t cfg = ghostty_config_new();
+    if (!cfg) {
+        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
+        return nullptr;
+    }
+
+    NSLog(@"[ghostty-native] loading user config (default files)");
+    ghostty_config_load_default_files(cfg);
+
+    // Bundled Orpheus overrides — applied after the user's ~/.config/ghostty
+    // so these values win over the user's own Ghostty.app preferences.
+    if (resDir) {
+        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
+            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            ghostty_config_load_file(cfg, [overridePath UTF8String]);
+        } else {
+            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+        }
+    }
+
+    // User-editable Ghostty config — layered after bundled Orpheus overrides so
+    // user settings win. ORPHEUS_GHOSTTY_CONFIG is set by the main process and
+    // points to a runtime-generated file. When unset, this is a no-op.
+    const char* userCfgPath = getenv("ORPHEUS_GHOSTTY_CONFIG");
+    if (userCfgPath && userCfgPath[0] != '\0') {
+        NSString* userCfgNS = [NSString stringWithUTF8String:userCfgPath];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:userCfgNS]) {
+            NSLog(@"[ghostty-native] applying user Ghostty config: %@", userCfgNS);
+            ghostty_config_load_file(cfg, userCfgPath);
+        } else {
+            NSLog(@"[ghostty-native] ORPHEUS_GHOSTTY_CONFIG set but file not found: %@", userCfgNS);
+        }
+    }
+
+    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
+    ghostty_config_load_recursive_files(cfg);
+
+    ghostty_config_finalize(cfg);
+
+    // Log any config diagnostics so theme/parse errors are visible in Console.app.
+    uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
+    if (diagCount > 0) {
+        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
+        for (uint32_t i = 0; i < diagCount; i++) {
+            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
+            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
+                  diag.message ? diag.message : "(null)");
+        }
+    } else {
+        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
+    }
+
+    return cfg;
+}
 
 // ---------------------------------------------------------------------------
 // Coordinate helpers
@@ -1987,6 +2052,7 @@ static bool ensureApp() {
     } else {
         NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
     }
+    g_resDir = resDir;  // stash for config reloads
 
     int rc = ghostty_init(0, nullptr);
     if (rc != GHOSTTY_SUCCESS) {
@@ -1994,55 +2060,8 @@ static bool ensureApp() {
         return false;
     }
 
-    g_config = ghostty_config_new();
-    if (!g_config) {
-        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
-        return false;
-    }
-
-    // Match the upstream Ghostty.app config-load sequence (Ghostty.Config.swift):
-    //   1. ghostty_config_load_default_files  — discovers ~/.config/ghostty/config
-    //      and ~/Library/Application Support/com.mitchellh.ghostty/config
-    //   2. ghostty_config_load_recursive_files — resolves any `theme = ...` or
-    //      `config-file = ...` directives found in the loaded files
-    //   3. ghostty_config_finalize             — fills in defaults
-    //
-    // We intentionally skip ghostty_config_load_cli_args (not meaningful here).
-    // The user's preferences from their installed Ghostty.app (font, theme,
-    // palette, keybinds, etc.) now flow into this surface automatically.
-    NSLog(@"[ghostty-native] loading user config (default files)");
-    ghostty_config_load_default_files(g_config);
-
-    // Orpheus overrides — applied after the user's config so these values win.
-    // Currently: window-padding-y = 0 to flush the terminal against the
-    // Orpheus footer + title bar (chrome already provides the spacing).
-    if (resDir) {
-        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
-            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
-            ghostty_config_load_file(g_config, [overridePath UTF8String]);
-        } else {
-            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
-        }
-    }
-
-    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
-    ghostty_config_load_recursive_files(g_config);
-
-    ghostty_config_finalize(g_config);
-
-    // Log any config diagnostics so theme/parse errors are visible in Console.app.
-    uint32_t diagCount = ghostty_config_diagnostics_count(g_config);
-    if (diagCount > 0) {
-        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
-        for (uint32_t i = 0; i < diagCount; i++) {
-            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(g_config, i);
-            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
-                  diag.message ? diag.message : "(null)");
-        }
-    } else {
-        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
-    }
+    g_config = buildGhosttyConfig(resDir);
+    if (!g_config) return false;
 
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
@@ -2904,6 +2923,44 @@ static Napi::Value SendKeys(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// ReloadGhosttyConfig — rebuild config and push to the running app + surfaces.
+// Called from the main process after writing a new user Ghostty config file.
+// ---------------------------------------------------------------------------
+static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (!g_app) {
+        NSLog(@"[ghostty-native] reloadGhosttyConfig: called before init, ignoring");
+        return Napi::Boolean::New(env, false);
+    }
+
+    ghostty_config_t newConfig = buildGhosttyConfig(g_resDir);
+    if (!newConfig) {
+        NSLog(@"[ghostty-native] reloadGhosttyConfig: buildGhosttyConfig failed");
+        return Napi::Boolean::New(env, false);
+    }
+
+    // Push the new config to the app. ghostty_app_update_config takes *const Config —
+    // Ghostty clones the config internally (see embedded.zig performAction .config_change),
+    // so the caller retains ownership and must free the old g_config itself.
+    ghostty_app_update_config(g_app, newConfig);
+
+    // Also push to all live surfaces so already-open terminals pick up the change.
+    for (auto& [id, entry] : g_surfaces) {
+        if (entry.surface) {
+            ghostty_surface_update_config(entry.surface, newConfig);
+        }
+    }
+
+    // Free the old config now that update_config has cloned it, then adopt the new one.
+    ghostty_config_free(g_config);
+    g_config = newConfig;
+
+    NSLog(@"[ghostty-native] config reloaded successfully");
+    return Napi::Boolean::New(env, true);
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -2936,6 +2993,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
+    exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
     return exports;
 }
 
