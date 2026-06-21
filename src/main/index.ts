@@ -68,7 +68,8 @@ import {
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
-  updateClaudeWorkspaceSettings
+  updateClaudeWorkspaceSettings,
+  invalidateClaudeWorkspaceSettingsCache
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import {
@@ -105,8 +106,18 @@ import {
   hide as hideLoadingOverlay
 } from './loadingOverlay'
 import type { Theme } from '../shared/types'
-import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
-import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
+import {
+  setCurrentlyViewedWorkspace,
+  fireTestNotification,
+  cancelAttentionRetry
+} from './osNotifications'
+import {
+  checkForUpdates,
+  installUpdate,
+  relaunchApp,
+  startAutoCheckLoop,
+  stopAutoCheckLoop
+} from './updates'
 import {
   getStatusSnapshot,
   startStatusPoller,
@@ -342,6 +353,31 @@ function setDirty(workspaceId: string, dirty: boolean): void {
   if (dirty) dirtyWorkspaces.add(workspaceId)
   else dirtyWorkspaces.delete(workspaceId)
   if (was !== dirty) broadcastDirty(workspaceId, dirty)
+}
+
+// ---------------------------------------------------------------------------
+// Unified per-workspace teardown
+// ---------------------------------------------------------------------------
+
+// Evicts all per-workspace in-memory state for a workspace that has been
+// archived, destroyed, or removed. Idempotent — safe to call multiple times
+// for the same workspaceId. All .delete() calls are already idempotent.
+//
+// NOTE: only call this for provably-dead workspaces (archived / project-removed).
+// Do NOT call on terminal:destroy alone, because destroy is also issued during
+// live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
+function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  hideLoadingOverlay(workspaceId)
+  cancelAttentionRetry(workspaceId)
+  clearWorkspaceActivity(workspaceId)
+  launchSnapshots.delete(workspaceId)
+  if (dirtyWorkspaces.delete(workspaceId)) broadcastDirty(workspaceId, false)
+  evictAccumulator(workspaceId)
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  if (workspaceTitles.delete(workspaceId)) {
+    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+  }
+  if (cwd) stopGitWatch(workspaceId, cwd)
 }
 
 function recomputeDirty(): void {
@@ -749,7 +785,25 @@ ipcMain.handle('projects:pickAndAdd', async () => {
 
 ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => deleteProject(id))
+ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
+  // Enumerate workspaces before the cascade-delete removes the rows so we can
+  // tear down each one's in-memory state and native surface. The renderer
+  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
+  // self-sufficient even when called directly (double-cleanup is safe — all
+  // teardown operations are idempotent).
+  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
+  for (const ws of workspacesToRemove) {
+    if (terminalAddon) {
+      try {
+        terminalAddon.destroy(ws.id)
+      } catch {
+        // Surface not mounted or already destroyed — ignore.
+      }
+    }
+    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+  }
+  deleteProject(id)
+})
 
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
@@ -776,11 +830,8 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
-  // Tear down git watcher before DB row disappears (while we can still look up cwd).
-  const wsBeforeArchive = getWorkspace(id)
-  if (wsBeforeArchive?.cwd) {
-    stopGitWatch(id, wsBeforeArchive.cwd)
-  }
+  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
+  const ws = getWorkspace(id)
   // Destroy the libghostty surface so the NSView is freed before the DB row
   // disappears. Silently no-ops when the terminal was never mounted.
   if (terminalAddon) {
@@ -791,17 +842,9 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
     }
   }
   archiveWorkspace(id)
-  // Drop any stale runtime activity entries for the deleted workspace so the
-  // sidebar / project view stop trying to render a dot for a row that no
-  // longer exists.
-  clearWorkspaceActivity(id)
-  // Evict all per-workspace in-memory state so archived workspaces don't leak
-  // into launchSnapshots, dirtyWorkspaces, or the JSONL parse caches.
-  // evictAccumulator covers both accumulators and parseCache, so no need to
-  // call invalidateSessionCache separately.
-  launchSnapshots.delete(id)
-  dirtyWorkspaces.delete(id)
-  evictAccumulator(id)
+  // Evict all per-workspace in-memory state via the unified teardown so
+  // archived workspaces don't leak into any runtime cache.
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
 })
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
@@ -1372,8 +1415,17 @@ ipcMain.handle(
 )
 
 ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
-  // Clean up snapshot and dirty state before destroying the surface
+  // NOTE: terminal:destroy is called in two distinct scenarios:
+  //   1. Workspace death (archive / project-remove) — full teardown happens in
+  //      the archive/remove handlers via teardownWorkspaceResources; this path
+  //      only handles the surface + transient mount state.
+  //   2. Live restart (WorkspaceView.handleRestart) — workspace stays alive;
+  //      activity/accumulator/session state must NOT be evicted here.
+  //
+  // Clean up surface-level mount state that is always safe to evict — it is
+  // re-seeded by the next terminal:mount call in both scenarios.
   hideLoadingOverlay(workspaceId)
+  cancelAttentionRetry(workspaceId)
   launchSnapshots.delete(workspaceId)
   if (dirtyWorkspaces.delete(workspaceId)) {
     broadcastDirty(workspaceId, false)
@@ -1382,6 +1434,8 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   if (workspaceTitles.delete(workspaceId)) {
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
   }
+  // Settings cache is cheap to evict — will be re-read on the next mount.
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
   // Tear down the git watcher for this workspace (ref-counted: only closes
   // underlying fs.watch when the last subscriber for this cwd is removed).
   const wsForGit = getWorkspace(workspaceId)
@@ -1702,6 +1756,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
   stopStatusPoller()
+  stopAutoCheckLoop()
   stopAllGitWatches()
 })
 

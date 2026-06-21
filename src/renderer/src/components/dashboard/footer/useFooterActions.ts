@@ -21,6 +21,14 @@ interface UseFooterActionsResult {
 // Cache of enriched items per workspaceId.
 const itemsCache = new Map<string, FooterActionItem[]>()
 
+/**
+ * Evicts the cached footer actions for a workspace that has been archived or
+ * removed. Safe to call even if the workspace was never cached.
+ */
+export function clearFooterActionsCache(workspaceId: string): void {
+  itemsCache.delete(workspaceId)
+}
+
 // Actions registry — runtime-immutable after first load; fetch once and reuse.
 let registryPromise: Promise<Map<string, ActionKind>> | null = null
 

@@ -457,7 +457,12 @@ export function stopGitWatch(workspaceId: string, cwd: string): void {
   const entry = gitWatchers.get(dir)
   if (!entry) return
 
-  entry.clients.delete(workspaceId)
+  // Guard: only decrement when the workspaceId was actually a registered
+  // subscriber. Calling stopGitWatch twice for the same id (e.g. from both
+  // terminal:destroy and workspaces:archive in the same death path) would
+  // otherwise over-decrement and close the watcher for sibling workspaces.
+  const removed = entry.clients.delete(workspaceId)
+  if (!removed) return
   entry.refCount--
 
   if (entry.refCount <= 0) {

@@ -29,7 +29,7 @@ type AttentionRetry = {
 }
 const attentionRetries = new Map<string, AttentionRetry>()
 
-function cancelAttentionRetry(workspaceId: string): void {
+export function cancelAttentionRetry(workspaceId: string): void {
   const r = attentionRetries.get(workspaceId)
   if (!r) return
   clearTimeout(r.timer)

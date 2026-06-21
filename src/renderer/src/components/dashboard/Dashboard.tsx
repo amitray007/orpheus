@@ -8,6 +8,8 @@ import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/act
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
+import { clearFooterActionsCache } from './footer/useFooterActions'
+import { clearContextBudgetCache } from './WorkspaceTitleBar'
 import type {
   AppUiState,
   PinnedItem,
@@ -345,6 +347,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      hasFetchedRef.current.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
     })
   }, [])
 
@@ -873,6 +878,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      hasFetchedRef.current.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
       try {
         // "Archive" is a hard delete now (v34+). The DB row is gone after this.
         await window.api.workspaces.archive(workspaceId)
@@ -941,6 +949,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(ws.id)
       deleteGitStatus(ws.id)
       deletePr(ws.id)
+      hasFetchedRef.current.delete(ws.id)
+      clearFooterActionsCache(ws.id)
+      clearContextBudgetCache(ws.id)
     }
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
     setExpandedProjectIds((prev) => {
