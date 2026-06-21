@@ -244,6 +244,12 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   // Floating-ui hover card
   const [cardOpen, setCardOpen] = useState(false)
+
+  // Single source of truth: the card is only allowed when the row is inactive,
+  // not being renamed, and has something to show. Used for both the hover
+  // enable flag and the render gate so they can never disagree.
+  const cardAllowed = hasDetail && !renaming && !active
+
   const { refs, floatingStyles, context } = useFloating({
     open: cardOpen,
     onOpenChange: (open) => {
@@ -255,9 +261,23 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     placement: 'right-start',
     middleware: [offset(8), flip(), shift({ padding: 8 })]
   })
+
+  // If the card is open but no longer allowed to show (row became active,
+  // entered rename, or lost detail), close it. floating-ui's `enabled:false`
+  // stops NEW opens but does not close an already-open card, which would
+  // otherwise leave a DOM overlay over a now-live terminal (focus race).
+  useEffect(() => {
+    if (cardOpen && !cardAllowed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: close card when it becomes disallowed (active/renaming/no-detail); floating-ui `enabled:false` only prevents new opens, not closing an already-open card
+      setCardOpen(false)
+      // The card was over this workspace's terminal; reassert terminal focus.
+      void window.api.terminal.focus(workspace.id).catch(() => {})
+    }
+  }, [cardOpen, cardAllowed, workspace.id])
+
   // Don't show the hover card for the ACTIVE workspace's row: its terminal is live and a DOM overlay over it races with terminal keyboard focus. Inactive rows' terminals are hidden, so hovering them is race-free.
   const hover = useHover(context, {
-    enabled: hasDetail && !renaming && !active,
+    enabled: cardAllowed,
     delay: { open: 120, close: 80 }
   })
   const dismiss = useDismiss(context)
@@ -383,7 +403,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           />
         )}
       </div>
-      {cardOpen && hasDetail && (
+      {cardOpen && cardAllowed && (
         <FloatingPortal>
           <div
             // eslint-disable-next-line react-hooks/refs -- callback ref from @floating-ui/react, not .current access
