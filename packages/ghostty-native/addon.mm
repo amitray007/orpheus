@@ -2128,6 +2128,24 @@ static bool ensureApp() {
 // If no entry exists → create surface from scratch.
 // ---------------------------------------------------------------------------
 
+// Returns the CGColor used to fill the terminal view's layer background before
+// ghostty's GPU layer renders its first frame. Midnight theme surface-base
+// (#0b0b0c) hardcoded as gap-fill fallback. A sub-second flash; threading the
+// active theme into native is not worth it.
+static CGColorRef orpheusGapFillColor() {
+    static CGColorRef color = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        color = CGColorRetain(
+            [NSColor colorWithSRGBRed:0x0b/255.0
+                                green:0x0b/255.0
+                                 blue:0x0c/255.0
+                                alpha:1.0].CGColor
+        );
+    });
+    return color;
+}
+
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -2231,6 +2249,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // CSS z-index. AppKit treats relativeTo:nil + NSWindowBelow as
             // "insert at subview index 0."
             [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
+            // Gap-fill: paint the pre-first-frame gap app-dark so a workspace
+            // switch shows the background color instead of the desktop.
+            entry.view.layer.backgroundColor = orpheusGapFillColor();
 
             // Wake the renderer: the ghostty_surface_set_occlusion parameter is
             // `visible` (NOT `occluded`). Setting it true marks the surface
@@ -2286,6 +2307,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // NSView (and Electron's content_view_ sibling) z-ordered above us so DOM
     // overlays / popovers can sit on top of the terminal.
     [contentView addSubview:termView positioned:NSWindowBelow relativeTo:nil];
+    // Gap-fill: set background so the pre-first-frame gap shows app-dark.
+    termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
