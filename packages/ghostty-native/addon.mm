@@ -231,7 +231,7 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
     if (chars.length == 1) {
         unichar c = [chars characterAtIndex:0];
-        if (c < 0x20) return nil;               // control char
+        if (c < 0x20 || c == 0x7f) return nil;  // C0 control char or DEL (0x7f) — libghostty encodes these from the keycode
         if (c >= 0xF700 && c <= 0xF8FF) return nil; // PUA (function keys etc.)
     }
 
@@ -281,10 +281,72 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
         ? GHOSTTY_ACTION_REPEAT
         : GHOSTTY_ACTION_PRESS;
 
+    // Translate modifiers through ghostty's macos-option-as-alt logic.
+    // ghostty_surface_key_translation_mods maps raw AppKit mods to the
+    // mods ghostty wants to see — e.g. when option-as-alt is active,
+    // NSEventModifierFlagOption is remapped to Alt so that Option+Delete
+    // emits ESC DEL (backward-kill-word) instead of the composed glyph ∂.
+    // This mirrors the pattern in Ghostty's SurfaceView_AppKit.swift keyDown:.
+    ghostty_input_mods_e rawMods   = modsFromEvent(event);
+    ghostty_input_mods_e transMods = ghostty_surface_key_translation_mods(self.surface, rawMods);
+
+    // Build translated NSEventModifierFlags: start from the original event flags
+    // (preserves "hidden" bits used by dead-key / IME machinery) then force only
+    // the 4 standard modifier flags on/off to match what transMods says.
+    NSEventModifierFlags translationFlags = event.modifierFlags;
+    // Shift
+    if (transMods & GHOSTTY_MODS_SHIFT)
+        translationFlags |=  NSEventModifierFlagShift;
+    else
+        translationFlags &= ~NSEventModifierFlagShift;
+    // Control
+    if (transMods & GHOSTTY_MODS_CTRL)
+        translationFlags |=  NSEventModifierFlagControl;
+    else
+        translationFlags &= ~NSEventModifierFlagControl;
+    // Option / Alt
+    if (transMods & GHOSTTY_MODS_ALT)
+        translationFlags |=  NSEventModifierFlagOption;
+    else
+        translationFlags &= ~NSEventModifierFlagOption;
+    // Command / Super
+    if (transMods & GHOSTTY_MODS_SUPER)
+        translationFlags |=  NSEventModifierFlagCommand;
+    else
+        translationFlags &= ~NSEventModifierFlagCommand;
+
+    // Build the translation event.  If the flags are unchanged we reuse the
+    // original event object — important for IME correctness (object identity
+    // is used by some input methods).  Otherwise synthesise a new NSEvent with
+    // translated flags and recomputed characters so the text field reflects the
+    // translated modifiers (e.g. ESC DEL instead of ∂ for Option+Delete).
+    NSEvent *translationEvent = event;
+    if (translationFlags != event.modifierFlags) {
+        NSString *translatedChars = [event charactersByApplyingModifiers:translationFlags];
+        NSEvent *synth = [NSEvent keyEventWithType:event.type
+                                         location:event.locationInWindow
+                                    modifierFlags:translationFlags
+                                        timestamp:event.timestamp
+                                     windowNumber:event.windowNumber
+                                          context:nil
+                                       characters:translatedChars ?: @""
+                      charactersIgnoringModifiers:event.charactersIgnoringModifiers ?: @""
+                                        isARepeat:event.isARepeat
+                                          keyCode:event.keyCode];
+        if (synth) translationEvent = synth;
+    }
+
     ghostty_input_key_s key_ev = {};
     key_ev.action          = action;
-    key_ev.mods            = modsFromEvent(event);
-    key_ev.consumed_mods   = (ghostty_input_mods_e)(key_ev.mods &
+    // key_ev.mods must carry the ORIGINAL (untranslated) mods so the Alt bit
+    // survives to the key encoder — that's what triggers the ESC-prefix for
+    // Option+key (e.g. Option+Delete → ESC DEL → backward-kill-word). The
+    // translation mods (transMods) deliberately STRIP Alt for text composition
+    // and must NOT be sent here. See vendor/ghostty/src/apprt/embedded.zig:
+    // "The filtered mods should be used for key translation but should NOT be
+    // sent back via the _key function -- the original mods should be used."
+    key_ev.mods            = rawMods;
+    key_ev.consumed_mods   = (ghostty_input_mods_e)(transMods &
                                 ~(GHOSTTY_MODS_CTRL | GHOSTTY_MODS_SUPER));
     key_ev.keycode         = (uint32_t)event.keyCode; // raw macOS vkey
     key_ev.composing       = false;
@@ -292,6 +354,7 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     key_ev.text            = nullptr;
 
     // Compute unshifted codepoint (codepoint with no modifiers applied).
+    // This is modifier-independent so we always derive it from the original event.
     NSString *bare = [event charactersByApplyingModifiers:0];
     if (bare && bare.length > 0) {
         NSUInteger cp = [bare characterAtIndex:0];
@@ -300,8 +363,11 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
         }
     }
 
-    // Include text only for non-control, non-PUA characters.
-    NSString *textStr = ghosttyTextForEvent(event);
+    // Derive text from the translation event so the composed glyph (e.g. ∂)
+    // is suppressed when option-as-alt is active and the translated characters
+    // are used instead (e.g. the bare delete character for Option+Delete).
+    NSString *textStr = ghosttyTextForEvent(translationEvent);
+
     if (textStr) {
         const char *cstr = [textStr UTF8String];
         if (cstr) {
@@ -316,11 +382,11 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     }
 
     // Run the AppKit input manager so IME / dead keys / NSTextInputClient fire.
-    // We set inKeyDown = YES so that insertText:replacementRange: knows the text
-    // is already handled via ghostty_surface_key (.text field) and should not
-    // double-send via ghostty_surface_text.
+    // Pass translationEvent (not event) so IME sees the translated modifiers —
+    // matches the Swift reference which calls interpretKeyEvents with translationEvent.
+    // inKeyDown = YES prevents insertText:replacementRange: from double-sending.
     self.inKeyDown = YES;
-    [self interpretKeyEvents:@[event]];
+    [self interpretKeyEvents:@[translationEvent]];
     self.inKeyDown = NO;
 }
 
