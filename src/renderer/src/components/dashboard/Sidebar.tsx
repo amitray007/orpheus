@@ -255,8 +255,9 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     placement: 'right-start',
     middleware: [offset(8), flip(), shift({ padding: 8 })]
   })
+  // Don't show the hover card for the ACTIVE workspace's row: its terminal is live and a DOM overlay over it races with terminal keyboard focus. Inactive rows' terminals are hidden, so hovering them is race-free.
   const hover = useHover(context, {
-    enabled: hasDetail && !renaming,
+    enabled: hasDetail && !renaming && !active,
     delay: { open: 120, close: 80 }
   })
   const dismiss = useDismiss(context)
