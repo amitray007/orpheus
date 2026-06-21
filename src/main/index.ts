@@ -498,12 +498,13 @@ function createWindow(): void {
     }
   }
 
-  // Transparent web layer is a macOS-only requirement: it lets the ghostty
-  // NSView (parented as a sibling of contentView in addon.mm) z-order above
-  // the WebContents in the fast path, and below the WebContents in overlay
-  // mode (DOM popovers visible). On Linux/Windows we don't load libghostty
-  // and transparent windows have well-documented perf/rendering quirks, so
-  // keep the original opaque backing there.
+  // Transparent web layer so the ghostty NSView (parented as the bottom
+  // sibling of contentView in packages/ghostty-native/addon.mm) shows
+  // through wherever the renderer paints with alpha. Without transparent:
+  // true the NSWindow forces an opaque backing and webContents alpha is
+  // discarded — the terminal would be invisible behind a solid surface.
+  // On Linux/Windows we don't load libghostty and transparent windows have
+  // well-documented perf/rendering quirks, so keep the original opaque there.
   const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
@@ -1248,7 +1249,6 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
-  setOverlay: (workspaceId: string, on: boolean) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (
@@ -1426,19 +1426,6 @@ ipcMain.handle(
   ): void => {
     const addon = loadTerminalAddon()
     addon.resize(workspaceId, rect, scaleFactor)
-  }
-)
-
-// Move the workspace's ghostty NSView between the FAST PATH (top sibling,
-// opaque, no compositor blend) and the OVERLAY PATH (bottom sibling so DOM
-// popovers stack above the terminal pixels). The renderer's
-// useTerminalOverlay hook refcounts open overlays and only flips when the
-// count transitions across zero, so this IPC fires rarely and is cheap.
-ipcMain.handle(
-  'terminal:setOverlay',
-  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
-    const addon = loadTerminalAddon()
-    addon.setOverlay(workspaceId, on)
   }
 )
 

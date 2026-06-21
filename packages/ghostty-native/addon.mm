@@ -109,18 +109,31 @@
     return YES;
 }
 
-- (BOOL)isOpaque {
-    // libghostty installs an IOSurfaceLayer that fully paints the view's
-    // frame. Returning YES lets AppKit's display machinery skip drawing
-    // anything below us in the region we occupy — meaningful win when we
-    // sit on top of the WebContents (the default fast path) because the
-    // OS compositor can cull the alpha-blend pass for this rect entirely.
-    return YES;
-}
-
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
+
+// Chromium-sanctioned hit-test bypass. RenderWidgetHostViewCocoa's
+// -shouldIgnoreMouseEvent: walks up the AppKit superview chain at the click
+// location looking for any view that responds to -nonWebContentView. When it
+// finds one (us), it forwards the event to the standard responder chain
+// instead of routing into Blink. Result: mouse events in the terminal region
+// land on our keyDown:/mouseDown:/... handlers even though the WebContents
+// NSView is z-ordered above us. No method swizzling required.
+//
+// Source: content/app_shim_remote_cocoa/render_widget_host_view_cocoa.mm
+// (the same hook AppKit sheets and Chromium autofill popovers rely on).
+- (BOOL)nonWebContentView {
+    return YES;
+}
+
+// NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
+// AppKit picks the WebContents as the drag destination for file URLs
+// (it registers for HTML5 file drag at the Chromium layer). The
+// drag-forwarding swizzles in the #if 0 block below would fix this but
+// are disabled pending on-device verification. If file-drop-to-terminal
+// is broken, enable those swizzles (omitting the hitTest swizzle since
+// nonWebContentView handles mouse routing).
 
 // ---------------------------------------------------------------------------
 // Modifier flag → Ghostty mods bitmask
@@ -2134,13 +2147,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
-    // Dynamic z-order keeps ghostty on top by default, so AppKit's natural
-    // hit-test + drag-destination resolution routes terminal-region events
-    // straight to us. While overlay mode is active (ghostty moved to the
-    // back so DOM popovers stack above), we *want* the WebContents to keep
-    // those events so the popover/backdrop can respond. No swizzles needed
-    // in either state.
-
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
         Napi::TypeError::New(env, "arg 1 must be object {workspaceId,rect,scaleFactor,cwd?}").ThrowAsJavaScriptException();
@@ -2217,15 +2223,14 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            // DEFAULT FAST PATH: insert ghostty at the TOP of the sibling
-            // stack. Opaque NSView on top of WebContents means the OS
-            // compositor culls alpha blending in the terminal region — same
-            // perf as the pre-z-order-inversion architecture. When a DOM
-            // overlay needs to render above the terminal, JS calls
-            // terminal:setOverlay(true) which moves us below WebContents
-            // for the duration of the overlay; setOverlay(false) snaps us
-            // back here.
-            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
+            // Insert at the BOTTOM of the sibling stack so the WebContents
+            // (and Electron's content_view_ for user widgets) z-order above
+            // us. The transparent web layer composites over ghostty's pixels
+            // wherever the DOM has a transparent background; DOM popovers /
+            // overlays then naturally stack above the terminal via normal
+            // CSS z-index. AppKit treats relativeTo:nil + NSWindowBelow as
+            // "insert at subview index 0."
+            [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
 
             // Wake the renderer: the ghostty_surface_set_occlusion parameter is
             // `visible` (NOT `occluded`). Setting it true marks the surface
@@ -2276,10 +2281,11 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    // Default to the top of the sibling z-order — see the matching comment
-    // in the re-attach branch above. setOverlay(true) moves us below the
-    // WebContents on demand when a DOM overlay needs to paint on top.
-    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+    // Bottom-of-stack insert — see the matching addSubview:positioned: comment
+    // in the re-attach branch above for the rationale. Keeps the WebContents
+    // NSView (and Electron's content_view_ sibling) z-ordered above us so DOM
+    // overlays / popovers can sit on top of the terminal.
+    [contentView addSubview:termView positioned:NSWindowBelow relativeTo:nil];
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
@@ -2680,44 +2686,6 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// NAPI: setOverlay(workspaceId, on)
-//
-// Toggle a workspace's terminal NSView between the FAST PATH (top sibling of
-// the BrowserWindow's contentView — opaque, no alpha-blend overhead) and the
-// OVERLAY PATH (bottom sibling — DOM elements stack above the terminal pixels
-// because the WebContents draws with alpha on top of us).
-//
-// JS owns the policy: the renderer's useTerminalOverlay() hook refcounts how
-// many React popovers / modals / drawers want to paint above the terminal,
-// and calls setOverlay(true) on 0→1 and setOverlay(false) on 1→0 so the
-// blend cost is only paid while overlays are actually on screen.
-//
-// Idempotent: re-asserting the same mode is a cheap reorder (AppKit just
-// moves the view within the superview's subview array).
-static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
-    bool on = info[1].As<Napi::Boolean>().Value();
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) return env.Undefined();
-    GhosttySurfaceEntry& entry = it->second;
-    if (!entry.isAttached || !entry.view) return env.Undefined();
-    NSView* superview = entry.view.superview;
-    if (!superview) return env.Undefined();
-    // Reorder happens immediately on the main thread (NAPI handlers run on
-    // it) so the very next display refresh reflects the new z-order.
-    NSWindowOrderingMode mode = on ? NSWindowBelow : NSWindowAbove;
-    [superview addSubview:entry.view positioned:mode relativeTo:nil];
-    NSLog(@"[ghostty-native] setOverlay workspaceId=%s on=%d (z=%s)",
-          workspaceId.c_str(), on ? 1 : 0, on ? "below" : "above");
-    return env.Undefined();
-}
-
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -2985,7 +2953,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));

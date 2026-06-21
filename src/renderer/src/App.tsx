@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
-import { OverlayModeProvider } from './lib/OverlayModeProvider'
 import type { DoctorResult } from '@shared/types'
 
 // Optimistic initial state: assume claude is installed so the Dashboard
@@ -46,11 +45,7 @@ function App(): React.JSX.Element {
   // optimistic window — so claude-installed users never see a flash.
   const showMissingModal = doctorResolved && !doctor.claudeInstalled
 
-  return (
-    <OverlayModeProvider>
-      <AppShell doctor={doctor} runDoctor={runDoctor} showMissingModal={showMissingModal} />
-    </OverlayModeProvider>
-  )
+  return <AppShell doctor={doctor} runDoctor={runDoctor} showMissingModal={showMissingModal} />
 }
 
 interface AppShellProps {

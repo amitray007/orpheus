@@ -5,7 +5,6 @@ import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@s
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
-import { useSetActiveOverlayWorkspace } from '@/lib/overlayMode'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 
 interface WorkspaceViewProps {
@@ -61,14 +60,6 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
-
-  // Tell the overlay-mode provider which workspace's NSView to flip when a
-  // popover / modal / drawer mounts useTerminalOverlay(). With LRU keep-alive,
-  // multiple WorkspaceViews are mounted simultaneously as siblings — only the
-  // active one should register so overlays target the correct surface. Passing
-  // null for inactive views clears registration without clobbering the active
-  // workspace's registration (setActiveWorkspace early-returns on identity match).
-  useSetActiveOverlayWorkspace(active ? workspace.id : null)
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
@@ -429,13 +420,12 @@ export function WorkspaceView({
       <div className="flex h-full min-h-0">
         {/* Terminal column: terminal host + footer strip */}
         <div className="flex-1 min-w-0 flex flex-col">
-          {/* Terminal area — the native ghostty NSView is parented above the DOM (NSWindowAbove)
-              and declares isOpaque=YES, so it composites in front of web content. bg-surface-base
-              here fills the brief gap during workspace switches where the surface has been
-              re-attached but hasn't drawn its first frame yet, preventing desktop bleed-through.
-              The ghostty surface covers this background entirely once it renders.
-              ResizeObserver on this div fires when the footer height changes the container. */}
-          <div ref={containerRef} className="flex-1 min-w-0 relative bg-surface-base" />
+          {/* Terminal area — the libghostty NSView is parented as the BOTTOM sibling of
+              the BrowserWindow contentView (NSWindowBelow), so the web layer composites
+              OVER it. This div MUST stay background-less (transparent) so the terminal
+              shows through; an opaque bg here would hide the terminal entirely.
+              ResizeObserver fires when the footer height changes the container. */}
+          <div ref={containerRef} className="flex-1 min-w-0 relative" />
 
           <WorkspaceFooter
             workspaceId={workspace.id}

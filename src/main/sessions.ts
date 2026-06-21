@@ -56,7 +56,8 @@ function rowToRecord(row: SessionRow): SessionRecord {
     messageCount: row.message_count,
     jsonlSizeBytes: row.jsonl_size_bytes,
     lastMessagePreview: row.last_message_preview,
-    lastUserMessagePreview: row.last_user_message_preview
+    lastUserMessagePreview: row.last_user_message_preview,
+    jsonlMtime: row.jsonl_mtime
   }
 }
 

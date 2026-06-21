@@ -121,6 +121,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           notifyAlways: false,
           notifyMaxAttentionRepeats: 5,
           inProgressWatchdogSec: 120,
+          staleAfterMinutes: 60,
           theme: 'midnight',
           accentColor: null,
           uiFontScale: 'default',

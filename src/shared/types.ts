@@ -154,6 +154,8 @@ export type AppUiState = {
   notifyMaxAttentionRepeats: number
   // In-progress watchdog (v31) — seconds without a heartbeat hook before auto-demoting from in_progress. 0 disables.
   inProgressWatchdogSec: number
+  // (v54) Minutes of no agent activity before the sidebar marks a workspace stale.
+  staleAfterMinutes: number
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
@@ -623,6 +625,8 @@ export type SessionRecord = {
   lastMessagePreview?: string | null
   // Populated by refreshSessionMetadata (v35)
   lastUserMessagePreview?: string | null
+  // Populated by refreshSessionMetadata (v50)
+  jsonlMtime?: number | null
 }
 
 export type SessionsPagedRequest = {

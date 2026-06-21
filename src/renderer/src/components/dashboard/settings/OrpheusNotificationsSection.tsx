@@ -128,6 +128,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               placeholder="120"
             />
           </SettingRow>
+          <SettingRow
+            label="Workspace stale threshold (minutes)"
+            description="When a workspace's agent has had no new activity for this many minutes, the sidebar marks it stale (a clock glyph and dimmed text). Helps surface forgotten or long-idle workspaces."
+          >
+            <NumberInput
+              value={uiState.staleAfterMinutes ?? 60}
+              onChange={(v) => patch({ staleAfterMinutes: Math.max(1, v ?? 60) })}
+              placeholder="60"
+            />
+          </SettingRow>
         </div>
       </section>
 

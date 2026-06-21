@@ -35,6 +35,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@floating-ui/react": "^0.27.19",
     "@phosphor-icons/react": "^2.1.10",
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",

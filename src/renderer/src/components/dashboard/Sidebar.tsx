@@ -9,27 +9,56 @@ import {
   Stack,
   Archive,
   Gear,
-  GitFork
+  GitFork,
+  Clock
 } from '@phosphor-icons/react'
+import {
+  useFloating,
+  offset,
+  flip,
+  shift,
+  useHover,
+  useFocus,
+  useDismiss,
+  useRole,
+  useInteractions,
+  safePolygon,
+  FloatingPortal
+} from '@floating-ui/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
 import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
-import { PrChip } from '../github/PrChip'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { WorkspaceHoverCard } from './WorkspaceHoverCard'
 
 // ---------------------------------------------------------------------------
 // Module-level stable empty maps (avoid new Map() on every render as fallback)
 // ---------------------------------------------------------------------------
 
 const EMPTY_TITLE_MAP = new Map<string, string>()
+const EMPTY_MTIME_MAP = new Map<string, number>()
+
+function formatRelativeTime(epochMs: number | null, now: number): string {
+  if (epochMs === null) return ''
+  const ageMs = now - epochMs
+  const sec = Math.floor(ageMs / 1000)
+  if (sec < 60) return 'now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day}d`
+  return `${Math.floor(day / 7)}w`
+}
 
 // ---------------------------------------------------------------------------
 // Nav primitives
@@ -103,6 +132,12 @@ interface WorkspaceRowProps {
   sessionTitleBySessionId: Map<string, string>
   /** Map from claudeSessionId → last user message preview (fetched once per project). */
   sessionUserPreviewBySessionId: Map<string, string>
+  /** Map from claudeSessionId → jsonlMtime (epoch ms) for all sessions in this project. */
+  sessionMtimeBySessionId: Map<string, number>
+  /** Stale threshold in minutes (from AppUiState). */
+  staleAfterMinutes: number
+  /** Current time in epoch ms, updated once per minute at sidebar root. */
+  nowMs: number
   onSelect: () => void
   renaming: boolean
   onBeginRename: () => void
@@ -117,6 +152,9 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   active,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
+  sessionMtimeBySessionId,
+  staleAfterMinutes,
+  nowMs,
   onSelect,
   renaming,
   onBeginRename,
@@ -195,121 +233,175 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     setRenameValue(workspace.name) // reset so a future rename starts clean
   }
 
-  return (
-    <div
-      className={[
-        'relative flex items-center rounded-r-md transition-colors duration-150 group',
-        // 2px left bar on active rows for unambiguous selection.
-        // Workspaces use white (text-primary); projects use the yellow accent.
-        active
-          ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
-      ].join(' ')}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onContextMenu={handleContextMenu}
-    >
-      <button
-        onClick={onSelect}
-        className="flex items-center gap-2 pl-8 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
-        title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
-        aria-label={workspace.name}
-      >
-        {/* Left chrome: optional PR state icon (rearranged prefix per design),
-            then the activity / stack glyph. PR icon only renders when a PR
-            exists, slight horizontal jiggle on state change is acceptable
-            because openings/closings are infrequent. */}
-        {pr && <PrChip pr={pr} variant="icon" clickable={false} />}
-        <span className="flex-shrink-0">
-          {activity && activity !== 'archived' ? (
-            <ActivityIndicator detail={activity} />
-          ) : (
-            <Stack
-              size={12}
-              weight={active ? 'fill' : 'regular'}
-              className={[
-                'transition-colors duration-150',
-                active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
-              ].join(' ')}
-            />
-          )}
-        </span>
+  // Freshness display — derived from session jsonl mtime (real agent activity)
+  const lastActivityAt = workspace.claudeSessionId
+    ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
+    : null
+  const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
+  const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
+  const isStale = ageMs !== null && ageMs >= staleAfterMinutes * 60_000
+  const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
 
-        {workspace.forkedFromSessionId && (
-          <GitFork
-            size={10}
-            weight="duotone"
-            className="text-text-muted flex-shrink-0"
-            aria-label="forked workspace"
+  const hasDetail = gitStatus !== null || pr != null
+
+  // Floating-ui hover card
+  const [cardOpen, setCardOpen] = useState(false)
+  const { refs, floatingStyles, context } = useFloating({
+    open: cardOpen,
+    onOpenChange: setCardOpen,
+    placement: 'right-start',
+    middleware: [offset(8), flip(), shift({ padding: 8 })]
+  })
+  const hover = useHover(context, {
+    enabled: hasDetail && !renaming,
+    delay: { open: 120, close: 80 },
+    handleClose: safePolygon()
+  })
+  const focus = useFocus(context, { enabled: hasDetail && !renaming })
+  const dismiss = useDismiss(context)
+  const role = useRole(context, { role: 'tooltip' })
+  const { getReferenceProps, getFloatingProps } = useInteractions([hover, focus, dismiss, role])
+
+  return (
+    <>
+      <div
+        ref={refs.setReference}
+        className={[
+          'relative flex rounded-r-md transition-colors duration-150 group',
+          isVeryOld ? 'opacity-60' : '',
+          // 2px left bar on active rows for unambiguous selection.
+          // Workspaces use white (text-primary); projects use the yellow accent.
+          active
+            ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
+            : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
+        ].join(' ')}
+        // eslint-disable-next-line react-hooks/refs -- floating-ui callback refs via getReferenceProps, not .current access
+        {...getReferenceProps({
+          onMouseEnter: () => setHovered(true),
+          onMouseLeave: () => setHovered(false),
+          onContextMenu: handleContextMenu
+        })}
+      >
+        <button
+          onClick={onSelect}
+          className={[
+            'flex flex-col pl-8 pr-2 flex-1 text-left min-w-0',
+            'h-8 justify-center',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md'
+          ].join(' ')}
+          title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
+          aria-label={workspace.name}
+        >
+          {/* Line 1: status icon · title · fork badge · time/archive */}
+          <span className="flex items-center gap-1.5 min-w-0">
+            {/* Status icon slot */}
+            <span className="flex-shrink-0">
+              {activity && activity !== 'archived' ? (
+                <ActivityIndicator detail={activity} />
+              ) : (
+                <Stack
+                  size={13}
+                  weight={active ? 'fill' : 'regular'}
+                  className={[
+                    'transition-colors duration-150',
+                    active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
+                  ].join(' ')}
+                />
+              )}
+            </span>
+
+            {/* Title area */}
+            <span className="flex items-center gap-1 min-w-0 flex-1">
+              {renaming ? (
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRenameCommit()
+                    if (e.key === 'Escape') onCancelRename()
+                  }}
+                  onBlur={handleRenameCommit}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+                />
+              ) : (
+                <span
+                  className={[
+                    'text-xs truncate min-w-0 flex-1 leading-snug',
+                    dn.muted ? 'text-text-muted italic' : ''
+                  ].join(' ')}
+                  title={dn.text}
+                >
+                  {dn.text}
+                </span>
+              )}
+              {/* Fork badge — after title */}
+              {!renaming && workspace.forkedFromSessionId && (
+                <GitFork
+                  size={10}
+                  weight="duotone"
+                  className="text-text-muted flex-shrink-0"
+                  aria-label="forked workspace"
+                />
+              )}
+            </span>
+
+            {/* Trailing: time + stale clock (hidden when hovered — archive button takes the slot) */}
+            {!renaming && !hovered && relativeTime && (
+              <span className="flex items-center gap-0.5 flex-shrink-0">
+                <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
+                {isStale && <Clock size={10} className="text-text-muted flex-shrink-0" />}
+              </span>
+            )}
+          </span>
+        </button>
+
+        {/* Archive affordance — visible on hover. 32x32 hit target. */}
+        {!renaming && hovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onArchive()
+            }}
+            className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            aria-label="Archive workspace"
+          >
+            <Archive size={13} />
+          </button>
+        )}
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            items={wsMenuItems}
+            onClose={() => setMenu(null)}
+            boundsRef={sidebarBoundsRef ?? undefined}
           />
         )}
-
-        {/* Right: single-line name + optional git chip.
-            Preview lives on the Workspaces kanban view (and in this row's
-            title tooltip); the sidebar stays compact navigation. */}
-        <span className="flex items-center gap-1 min-w-0 flex-1">
-          {renaming ? (
-            <input
-              autoFocus
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameCommit()
-                if (e.key === 'Escape') onCancelRename()
-              }}
-              onBlur={handleRenameCommit}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
-            />
-          ) : (
-            <span
-              className={[
-                'text-xs truncate min-w-0 flex-1 leading-snug',
-                dn.muted ? 'text-text-muted italic' : ''
-              ].join(' ')}
+      </div>
+      {cardOpen && hasDetail && (
+        <FloatingPortal>
+          <div
+            // eslint-disable-next-line react-hooks/refs -- callback ref from @floating-ui/react, not .current access
+            ref={refs.setFloating}
+            style={floatingStyles}
+            {...getFloatingProps()}
+            className="z-50"
+          >
+            <WorkspaceHoverCard
               title={dn.text}
-            >
-              {dn.text}
-            </span>
-          )}
-          {/* Git diff chip */}
-          {!renaming && gitStatus && (gitStatus.insertions > 0 || gitStatus.deletions > 0) && (
-            <span className="text-xs font-mono flex items-center gap-1 flex-shrink-0">
-              {gitStatus.insertions > 0 && (
-                <span className="text-emerald-400">+{gitStatus.insertions}</span>
-              )}
-              {gitStatus.deletions > 0 && (
-                <span className="text-red-400">−{gitStatus.deletions}</span>
-              )}
-            </span>
-          )}
-        </span>
-      </button>
-
-      {/* Archive affordance — visible on hover. 32x32 hit target. */}
-      {!renaming && hovered && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onArchive()
-          }}
-          className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          aria-label="Archive workspace"
-        >
-          <Archive size={13} />
-        </button>
+              activity={activity}
+              relativeTime={relativeTime}
+              gitStatus={gitStatus}
+              pr={pr}
+              cwd={workspace.cwd}
+            />
+          </div>
+        </FloatingPortal>
       )}
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={wsMenuItems}
-          onClose={() => setMenu(null)}
-          boundsRef={sidebarBoundsRef ?? undefined}
-        />
-      )}
-    </div>
+    </>
   )
 })
 
@@ -432,6 +524,12 @@ interface ProjectRowProps {
   sessionTitleBySessionId: Map<string, string>
   /** Map from claudeSessionId → last user message preview for all sessions in this project. */
   sessionUserPreviewBySessionId: Map<string, string>
+  /** Map from claudeSessionId → jsonlMtime (epoch ms) for all sessions in this project. */
+  sessionMtimeBySessionId: Map<string, number>
+  /** Stale threshold in minutes (from AppUiState). */
+  staleAfterMinutes: number
+  /** Current time in epoch ms, updated once per minute at sidebar root. */
+  nowMs: number
   onSelect: () => void
   onToggleExpand: () => void
   onSelectWorkspace: (workspaceId: string) => void
@@ -478,6 +576,9 @@ const ProjectRow = memo(function ProjectRow({
   selectedWorkspaceId,
   sessionTitleBySessionId,
   sessionUserPreviewBySessionId,
+  sessionMtimeBySessionId,
+  staleAfterMinutes,
+  nowMs,
   onSelect,
   onToggleExpand,
   onSelectWorkspace,
@@ -677,6 +778,9 @@ const ProjectRow = memo(function ProjectRow({
                   }
                   sessionTitleBySessionId={sessionTitleBySessionId}
                   sessionUserPreviewBySessionId={sessionUserPreviewBySessionId}
+                  sessionMtimeBySessionId={sessionMtimeBySessionId}
+                  staleAfterMinutes={staleAfterMinutes}
+                  nowMs={nowMs}
                   onSelect={() => onSelectWorkspace(ws.id)}
                   renaming={renamingWorkspaceId === ws.id}
                   onBeginRename={() => onBeginRenameWorkspace(ws.id)}
@@ -801,6 +905,14 @@ export function Sidebar({
   const [sessionUserPreviewsByProject, setSessionUserPreviewsByProject] = useState<
     Map<string, Map<string, string>>
   >(new Map())
+  // Map from projectId → (Map from claudeSessionId → jsonlMtime epoch ms).
+  const [sessionMtimesByProject, setSessionMtimesByProject] = useState<
+    Map<string, Map<string, number>>
+  >(new Map())
+  // Stale threshold from AppUiState (default matches original hardcoded 60 min)
+  const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
+  // Coarse clock — tick once per minute so all rows refresh together
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string>>(new Set())
   const sidebarRef = useRef<HTMLElement>(null)
 
@@ -815,9 +927,11 @@ export function Sidebar({
         .then((sessions: SessionRecord[]) => {
           const titleMap = new Map<string, string>()
           const userPreviewMap = new Map<string, string>()
+          const mtimeMap = new Map<string, number>()
           for (const s of sessions) {
             if (s.title) titleMap.set(s.id, s.title)
             if (s.lastUserMessagePreview) userPreviewMap.set(s.id, s.lastUserMessagePreview)
+            if (s.jsonlMtime != null) mtimeMap.set(s.id, s.jsonlMtime)
           }
           setSessionTitlesByProject((prev) => {
             const next = new Map(prev)
@@ -829,10 +943,28 @@ export function Sidebar({
             next.set(projectId, userPreviewMap)
             return next
           })
+          setSessionMtimesByProject((prev) => {
+            const next = new Map(prev)
+            next.set(projectId, mtimeMap)
+            return next
+          })
         })
         .catch((err) => console.error('[sidebar] sessions load failed for', projectId, err))
     }
   }, [projects])
+
+  // Subscribe to staleAfterMinutes from AppUiState
+  useEffect(() => {
+    void window.api.uiState.get().then((s) => setStaleAfterMinutes(s.staleAfterMinutes))
+    const unsub = window.api.uiState.onChanged((s) => setStaleAfterMinutes(s.staleAfterMinutes))
+    return unsub
+  }, [])
+
+  // Tick nowMs once per minute so freshness labels refresh without per-row timers
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   function handleBeginRename(id: string): void {
     setRenamingProjectId(id)
@@ -1073,6 +1205,11 @@ export function Sidebar({
                           sessionUserPreviewBySessionId={
                             sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
                           }
+                          sessionMtimeBySessionId={
+                            sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP
+                          }
+                          staleAfterMinutes={staleAfterMinutes}
+                          nowMs={nowMs}
                           onSelect={() => onSelectProject(p.id)}
                           onToggleExpand={() => onToggleProjectExpand(p.id)}
                           onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}

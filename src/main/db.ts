@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 53
+const CURRENT_VERSION = 54
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -2100,6 +2100,15 @@ function migrate(db: Database.Database): void {
       /* column may already exist on fresh install */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(53)
+  }
+
+  if (currentVersion < 54) {
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN stale_after_minutes INTEGER NOT NULL DEFAULT 60')
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(54)
   }
 }
 

@@ -74,7 +74,6 @@ declare global {
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
-        setOverlay: (workspaceId: string, on: boolean) => Promise<void>
         sendInput: (workspaceId: string, text: string) => Promise<ActionResult>
         sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]) => Promise<ActionResult>
         submit: (workspaceId: string) => Promise<ActionResult>

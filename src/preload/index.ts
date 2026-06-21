@@ -82,8 +82,6 @@ const api = {
       ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
     destroy: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:destroy', { workspaceId }),
-    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
-      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
       ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
