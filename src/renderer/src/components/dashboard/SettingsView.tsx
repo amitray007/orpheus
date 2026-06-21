@@ -19,7 +19,8 @@ import {
   Robot,
   Bell,
   Pulse,
-  Lightning
+  Lightning,
+  Terminal
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -45,6 +46,7 @@ import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
+import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -64,6 +66,7 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-updates'
@@ -102,6 +105,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Sidebar',
         icon: SidebarSimple,
         Component: OrpheusSidebarSection
+      },
+      {
+        id: 'orpheus-terminal',
+        label: 'Terminal',
+        icon: Terminal,
+        Component: OrpheusTerminalSection
       },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {
