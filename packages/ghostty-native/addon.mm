@@ -2149,6 +2149,29 @@ static CGColorRef orpheusGapFillColor() {
     return color;
 }
 
+// Persistent opaque app-dark backstop pinned to the bottom of the contentView.
+// Any transparent region (the workspace "hole" before the terminal NSView is
+// attached, or during a workspace switch) reveals this instead of the desktop
+// behind the transparent window. Created once; never removed. Terminal NSViews
+// mount ABOVE it; WebContents stays above both (it was already above terminals
+// when terminals were at the bottom — moving the backstop below them preserves
+// that invariant). Plain NSView has no backgroundColor property, so we must
+// make it layer-backed and set layer.backgroundColor.
+static NSView* ensureBackstopView(NSView* contentView) {
+    static dispatch_once_t once;
+    static __strong NSView* backstop = nil;  // retained for process lifetime (ARC)
+    dispatch_once(&once, ^{
+        backstop = [[NSView alloc] initWithFrame:contentView.bounds];
+        backstop.wantsLayer = YES;
+        backstop.layer.backgroundColor = orpheusGapFillColor();
+        backstop.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        // Insert at the very bottom (index 0). NSWindowBelow relativeTo:nil
+        // is AppKit's canonical way to request "insert at subview index 0."
+        [contentView addSubview:backstop positioned:NSWindowBelow relativeTo:nil];
+    });
+    return backstop;
+}
+
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -2167,6 +2190,11 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
+
+    // Install the persistent app-dark backstop once. Any transparent window
+    // region (workspace hole, cold-start gap, switch gap) shows app-dark
+    // instead of the macOS desktop. Terminals mount above it (see below).
+    NSView* backstop = ensureBackstopView(contentView);
 
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
@@ -2244,14 +2272,11 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            // Insert at the BOTTOM of the sibling stack so the WebContents
-            // (and Electron's content_view_ for user widgets) z-order above
-            // us. The transparent web layer composites over ghostty's pixels
-            // wherever the DOM has a transparent background; DOM popovers /
-            // overlays then naturally stack above the terminal via normal
-            // CSS z-index. AppKit treats relativeTo:nil + NSWindowBelow as
-            // "insert at subview index 0."
-            [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
+            // Position the terminal ABOVE the persistent backstop so the backstop
+            // remains the bottom-most sibling. WebContents stays above us — it was
+            // already above terminals when they were at the bottom; moving the
+            // backstop below terminals preserves that invariant.
+            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
             // Gap-fill: paint the pre-first-frame gap app-dark so a workspace
             // switch shows the background color instead of the desktop.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2305,11 +2330,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    // Bottom-of-stack insert — see the matching addSubview:positioned: comment
-    // in the re-attach branch above for the rationale. Keeps the WebContents
-    // NSView (and Electron's content_view_ sibling) z-ordered above us so DOM
-    // overlays / popovers can sit on top of the terminal.
-    [contentView addSubview:termView positioned:NSWindowBelow relativeTo:nil];
+    // Same z-order rationale as the re-attach branch above.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:backstop];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
