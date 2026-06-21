@@ -36,7 +36,7 @@ export function WorkspaceHoverCard({
     activity && activity !== 'archived' ? (ACTIVITY_LABEL[activity] ?? activity) : null
 
   return (
-    <div className="w-64 bg-surface-overlay border border-white/10 rounded-lg shadow-lg p-3 text-xs space-y-2 z-50">
+    <div className="w-64 bg-surface-overlay border border-white/10 rounded-lg shadow-lg p-3 text-xs space-y-2 z-50 pointer-events-auto">
       <div className="text-text-primary font-medium truncate" title={title}>
         {title}
       </div>

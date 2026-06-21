@@ -18,11 +18,9 @@ import {
   flip,
   shift,
   useHover,
-  useFocus,
   useDismiss,
   useRole,
   useInteractions,
-  safePolygon,
   FloatingPortal
 } from '@floating-ui/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
@@ -254,13 +252,11 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   })
   const hover = useHover(context, {
     enabled: hasDetail && !renaming,
-    delay: { open: 120, close: 80 },
-    handleClose: safePolygon()
+    delay: { open: 120, close: 80 }
   })
-  const focus = useFocus(context, { enabled: hasDetail && !renaming })
   const dismiss = useDismiss(context)
   const role = useRole(context, { role: 'tooltip' })
-  const { getReferenceProps, getFloatingProps } = useInteractions([hover, focus, dismiss, role])
+  const { getReferenceProps, getFloatingProps } = useInteractions([hover, dismiss, role])
 
   return (
     <>
@@ -388,7 +384,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             ref={refs.setFloating}
             style={floatingStyles}
             {...getFloatingProps()}
-            className="z-50"
+            className="z-50 pointer-events-none"
           >
             <WorkspaceHoverCard
               title={dn.text}
