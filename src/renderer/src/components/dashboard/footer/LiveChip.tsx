@@ -17,7 +17,7 @@ function formatTokens(n: number): string {
     const v = n / 1_000
     return parseFloat(v.toPrecision(3)) + 'k'
   }
-  return String(Math.round(n))
+  return parseFloat((n / 1_000).toPrecision(3)) + 'k'
 }
 
 function formatUsd(n: number): string {
