@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Canonical list of Claude Code env vars + settings keys + CLI flags, with whether Orpheus exposes each one. Updated by .claude/agents/audit-claude-env-vars.md.",
     "source": "https://code.claude.com/docs/en/env-vars.md",
-    "lastUpdated": "2026-05-13",
+    "lastUpdated": "2026-06-21",
     "schemaVersion": 24
   },
   "envVars": {
@@ -26,6 +26,10 @@
       "AWS_BEARER_TOKEN_BEDROCK": {
         "wired": true,
         "via": "claudeAuth.ts (bedrock provider, optional)"
+      },
+      "ANTHROPIC_WORKSPACE_ID": {
+        "wired": false,
+        "note": "Workload identity federation — org-managed credential, not user-configured"
       }
     },
     "endpoint": {
@@ -56,6 +60,13 @@
       "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": { "wired": false },
       "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": { "wired": false },
       "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES": { "wired": false },
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": {
+        "wired": false,
+        "note": "Custom model defaults override — use Custom env vars editor"
+      },
+      "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": { "wired": false },
+      "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION": { "wired": false },
+      "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES": { "wired": false },
       "ANTHROPIC_SMALL_FAST_MODEL": { "wired": false, "note": "Deprecated" },
       "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION": {
         "wired": false,
@@ -71,6 +82,14 @@
       "ANTHROPIC_CUSTOM_HEADERS": { "wired": false, "note": "Use Custom env vars editor" },
       "CLAUDE_CODE_EXTRA_BODY": { "wired": true, "via": "Developer → Advanced (extraBodyJson)" },
       "API_TIMEOUT_MS": { "wired": true, "via": "Developer → Network" },
+      "API_FORCE_IDLE_TIMEOUT": {
+        "wired": false,
+        "note": "Override 5-min idle streaming timeout — niche developer tuning, use Custom env vars editor"
+      },
+      "CLAUDE_CODE_CONNECT_TIMEOUT_MS": {
+        "wired": false,
+        "note": "Connect/TLS/header phase timeout (default 60000ms) — use Custom env vars editor"
+      },
       "CLAUDE_CODE_MAX_RETRIES": { "wired": true, "via": "Developer → Network" }
     },
     "bedrock": {
@@ -109,6 +128,42 @@
       "CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP": {
         "wired": true,
         "via": "General → Model capabilities (v24)"
+      },
+      "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": {
+        "wired": true,
+        "via": "General → Model behavior (v52)"
+      },
+      "CLAUDE_CODE_DISABLE_WORKFLOWS": {
+        "wired": true,
+        "via": "General → Model behavior (v52)"
+      },
+      "CLAUDE_CODE_DISABLE_ARTIFACT": {
+        "wired": true,
+        "via": "Tools → Concurrency & integrations (v52)"
+      },
+      "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": {
+        "wired": true,
+        "via": "Tools → Concurrency & integrations (v52)"
+      },
+      "CLAUDE_CODE_ENABLE_AUTO_MODE": {
+        "wired": false,
+        "note": "Bedrock/Vertex/Foundry only — enable auto mode on those providers"
+      },
+      "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": {
+        "wired": true,
+        "via": "General → Model behavior (v52)"
+      },
+      "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": {
+        "wired": false,
+        "note": "Send effort param even with unrecognized models — niche; use Custom env vars editor"
+      },
+      "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE": {
+        "wired": false,
+        "note": "Auto-set in nested claude processes; not user-configured"
+      },
+      "CLAUDE_CODE_CHILD_SESSION": {
+        "wired": false,
+        "note": "Auto-set to 1 in nested subprocesses — not user-managed"
       }
     },
     "bash": {
@@ -143,7 +198,14 @@
         "via": "General (auto-memory toggle, inverted)"
       },
       "CLAUDE_CODE_DISABLE_CLAUDE_MDS": { "wired": true, "via": "Memory & Context" },
-      "CLAUDE_CODE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": { "wired": false }
+      "CLAUDE_CODE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": {
+        "wired": false,
+        "note": "TYPO IN SNAPSHOT KEY — docs name is CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD (no double CODE_). Snapshot entry is misnamed."
+      },
+      "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": {
+        "wired": true,
+        "via": "Memory & Context → Memory files (v52)"
+      }
     },
     "display": {
       "CLAUDE_CODE_NO_FLICKER": { "wired": true, "via": "Display → Rendering (v24)" },
@@ -154,10 +216,29 @@
       "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_SCROLL_SPEED": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_HIDE_CWD": { "wired": true, "via": "Display" },
-      "CLAUDE_CODE_CODE_ACCESSIBILITY": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_CODE_ACCESSIBILITY": {
+        "wired": false,
+        "note": "Obsolete snapshot key with typo (extra CODE_). Code now emits CLAUDE_CODE_ACCESSIBILITY instead. This key is retained for historical reference only."
+      },
       "CLAUDE_CODE_ATTRIBUTION_HEADER": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_FORCE_SYNC_OUTPUT": { "wired": true, "via": "Display → Rendering (v24)" },
-      "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": { "wired": true, "via": "Display → Rendering (v24)" }
+      "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT": {
+        "wired": false,
+        "note": "Repaint entire screen on every frame — niche rendering debug; use Custom env vars editor"
+      },
+      "CLAUDE_CODE_ACCESSIBILITY": {
+        "wired": true,
+        "via": "Display → Rendering (v52, fixed name from CLAUDE_CODE_CODE_ACCESSIBILITY)"
+      },
+      "CLAUDE_AX_SCREEN_READER": {
+        "wired": true,
+        "via": "Display → Accessibility (v52)"
+      },
+      "CLAUDE_CODE_ARTIFACT_AUTO_OPEN": {
+        "wired": false,
+        "note": "Auto-open browser for new artifacts — only relevant when Artifact tool enabled"
+      }
     },
     "background": {
       "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": {
@@ -221,6 +302,27 @@
       "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS": { "wired": false, "note": "OTEL pipeline" },
       "CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS": { "wired": false, "note": "OTEL pipeline" },
       "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": { "wired": false, "note": "OTEL pipeline" }
+    },
+    "debug": {
+      "CLAUDE_CODE_DEBUG_LOGS_DIR": {
+        "wired": false,
+        "note": "Override debug log file path — niche; use Custom env vars editor"
+      },
+      "CLAUDE_CODE_DEBUG_LOG_LEVEL": {
+        "wired": "indirect",
+        "via": "Emitted by claudeSettings.ts when debugLogging=true and logLevel is non-default",
+        "note": "Not directly user-set but composed from debugLogging + logLevel fields"
+      }
+    },
+    "sdk": {
+      "CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS": {
+        "wired": false,
+        "note": "Disable built-in subagent types — SDK/advanced use; use Custom env vars editor"
+      },
+      "CLAUDE_CLIENT_PRESENCE_FILE": {
+        "wired": false,
+        "note": "Path to file indicating screen lock status — system integration; use Custom env vars editor"
+      }
     },
     "mcp": {
       "CLAUDE_CODE_MCP_ALLOWLIST_ENV": { "wired": false },

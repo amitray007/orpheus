@@ -330,7 +330,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     settingId: 'code-accessibility',
     label: 'Code accessibility',
     description: "Enable accessibility enhancements for code blocks in Claude's output.",
-    mapsTo: ['CLAUDE_CODE_CODE_ACCESSIBILITY'],
+    mapsTo: ['CLAUDE_CODE_ACCESSIBILITY'],
     keywords: ['a11y', 'accessibility', 'code blocks', 'screen reader']
   },
   {
@@ -749,7 +749,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     settingId: 'bash-maintains-project-cwd',
     label: 'Bash maintains project cwd',
     description: 'Each Bash command resets its working directory to the project root.',
-    mapsTo: ['CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR'],
+    mapsTo: ['CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR'],
     keywords: ['working directory', 'cwd', 'bash cwd', 'project root', 'directory reset']
   },
   {
@@ -1131,7 +1131,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Auto background tasks',
     description:
       'Allow Claude to automatically schedule background tasks without explicit user approval.',
-    mapsTo: ['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'],
+    mapsTo: ['CLAUDE_AUTO_BACKGROUND_TASKS'],
     keywords: ['auto schedule', 'automatic tasks', 'background schedule']
   },
   {

@@ -171,6 +171,17 @@ export function ClaudeDisplaySection(): React.JSX.Element {
               onChange={(v) => patch({ reduceMotion: v })}
             />
           </SettingRow>
+          <SettingRow
+            label="Screen reader mode"
+            description="Render flat text output without decorative borders or animations, optimised for screen readers (CLAUDE_AX_SCREEN_READER=1)."
+            mapsTo="CLAUDE_AX_SCREEN_READER"
+          >
+            <Toggle
+              ariaLabel="Screen reader mode"
+              value={settings.screenReader}
+              onChange={(v) => patch({ screenReader: v })}
+            />
+          </SettingRow>
         </div>
       </section>
 
@@ -246,8 +257,8 @@ export function ClaudeDisplaySection(): React.JSX.Element {
           </SettingRow>
           <SettingRow
             label="Code accessibility"
-            description="Enable accessibility enhancements for code blocks in Claude's output (CLAUDE_CODE_CODE_ACCESSIBILITY=1)."
-            mapsTo="CLAUDE_CODE_CODE_ACCESSIBILITY"
+            description="Keep the native terminal cursor visible inside Claude's output (CLAUDE_CODE_ACCESSIBILITY=1)."
+            mapsTo="CLAUDE_CODE_ACCESSIBILITY"
           >
             <Toggle
               ariaLabel="Code accessibility"

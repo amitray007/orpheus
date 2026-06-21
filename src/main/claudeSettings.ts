@@ -142,6 +142,14 @@ type ClaudeSettingsRow = {
   exit_after_stop_delay: number | null
   disable_feedback_command: number
   disable_feedback_survey: number
+  // Env-var controls (v52) — new feature toggles
+  disable_bundled_skills: number
+  disable_workflows: number
+  enable_away_summary: number
+  disable_artifact: number
+  disable_advisor_tool: number
+  screen_reader: number
+  additional_dirs_claude_md: number
   updated_at: number
 }
 
@@ -275,6 +283,14 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     exitAfterStopDelay: row.exit_after_stop_delay ?? null,
     disableFeedbackCommand: row.disable_feedback_command === 1,
     disableFeedbackSurvey: row.disable_feedback_survey === 1,
+    // Env-var controls (v52) — new feature toggles
+    disableBundledSkills: row.disable_bundled_skills === 1,
+    disableWorkflows: row.disable_workflows === 1,
+    enableAwaySummary: row.enable_away_summary === 1,
+    disableArtifact: row.disable_artifact === 1,
+    disableAdvisorTool: row.disable_advisor_tool === 1,
+    screenReader: row.screen_reader === 1,
+    additionalDirsClaudeMd: row.additional_dirs_claude_md === 1,
     updatedAt: row.updated_at
   }
 }
@@ -348,7 +364,15 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   'enableTasks',
   'disableCron',
   'disableFeedbackCommand',
-  'disableFeedbackSurvey'
+  'disableFeedbackSurvey',
+  // Env-var controls (v52)
+  'disableBundledSkills',
+  'disableWorkflows',
+  'enableAwaySummary',
+  'disableArtifact',
+  'disableAdvisorTool',
+  'screenReader',
+  'additionalDirsClaudeMd'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
@@ -891,7 +915,7 @@ export function composeClaudeLaunch(
   if (s.disableClaudeMds) env['CLAUDE_CODE_DISABLE_CLAUDE_MDS'] = '1'
 
   // Env-var controls (v23) — Tools
-  if (s.bashMaintainCwd) env['CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR'] = '1'
+  if (s.bashMaintainCwd) env['CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR'] = '1'
   if (s.perforceMode) env['CLAUDE_CODE_PERFORCE_MODE'] = '1'
   if (s.globHidden) env['CLAUDE_CODE_GLOB_HIDDEN'] = '1'
   if (s.globNoIgnore) env['CLAUDE_CODE_GLOB_NO_IGNORE'] = '1'
@@ -921,7 +945,7 @@ export function composeClaudeLaunch(
   if (s.disableMouse) env['CLAUDE_CODE_DISABLE_MOUSE'] = '1'
   if (s.disableTerminalTitle) env['CLAUDE_CODE_DISABLE_TERMINAL_TITLE'] = '1'
   if (s.scrollSpeed !== null) env['CLAUDE_CODE_SCROLL_SPEED'] = String(s.scrollSpeed)
-  if (s.codeAccessibility) env['CLAUDE_CODE_CODE_ACCESSIBILITY'] = '1'
+  if (s.codeAccessibility) env['CLAUDE_CODE_ACCESSIBILITY'] = '1'
   if (s.omitAttributionHeader) env['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '1'
   if (s.forceSyncOutput) env['CLAUDE_CODE_FORCE_SYNC_OUTPUT'] = '1'
   if (s.enablePromptSuggestion) env['CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION'] = '1'
@@ -950,7 +974,7 @@ export function composeClaudeLaunch(
   if (s.enableGatewayModelDiscovery) env['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'] = '1'
 
   // Env-var controls (v24) — Developer / Privacy & background tasks
-  if (s.autoBackgroundTasks) env['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'] = '1'
+  if (s.autoBackgroundTasks) env['CLAUDE_AUTO_BACKGROUND_TASKS'] = '1'
   if (s.asyncAgentStallTimeoutMs !== null)
     env['CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS'] = String(s.asyncAgentStallTimeoutMs)
   if (s.enableTasks) env['CLAUDE_CODE_ENABLE_TASKS'] = '1'
@@ -959,6 +983,23 @@ export function composeClaudeLaunch(
     env['CLAUDE_CODE_EXIT_AFTER_STOP_DELAY'] = String(s.exitAfterStopDelay)
   if (s.disableFeedbackCommand) env['DISABLE_FEEDBACK_COMMAND'] = '1'
   if (s.disableFeedbackSurvey) env['CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY'] = '1'
+
+  // Env-var controls (v52) — General / Model behavior
+  if (s.disableBundledSkills) env['CLAUDE_CODE_DISABLE_BUNDLED_SKILLS'] = '1'
+  if (s.disableWorkflows) env['CLAUDE_CODE_DISABLE_WORKFLOWS'] = '1'
+
+  // Env-var controls (v52) — General
+  if (s.enableAwaySummary) env['CLAUDE_CODE_ENABLE_AWAY_SUMMARY'] = '1'
+
+  // Env-var controls (v52) — Tools
+  if (s.disableArtifact) env['CLAUDE_CODE_DISABLE_ARTIFACT'] = '1'
+  if (s.disableAdvisorTool) env['CLAUDE_CODE_DISABLE_ADVISOR_TOOL'] = '1'
+
+  // Env-var controls (v52) — Display
+  if (s.screenReader) env['CLAUDE_AX_SCREEN_READER'] = '1'
+
+  // Env-var controls (v52) — Memory & Context
+  if (s.additionalDirsClaudeMd) env['CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'] = '1'
 
   // Custom env vars — merged last; user's keys win on conflict
   for (const [k, v] of Object.entries(s.customEnvVars)) {
@@ -1093,7 +1134,15 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     disableCron: 'disable_cron',
     exitAfterStopDelay: 'exit_after_stop_delay',
     disableFeedbackCommand: 'disable_feedback_command',
-    disableFeedbackSurvey: 'disable_feedback_survey'
+    disableFeedbackSurvey: 'disable_feedback_survey',
+    // Env-var controls (v52)
+    disableBundledSkills: 'disable_bundled_skills',
+    disableWorkflows: 'disable_workflows',
+    enableAwaySummary: 'enable_away_summary',
+    disableArtifact: 'disable_artifact',
+    disableAdvisorTool: 'disable_advisor_tool',
+    screenReader: 'screen_reader',
+    additionalDirsClaudeMd: 'additional_dirs_claude_md'
   }
 
   const setClauses: string[] = []

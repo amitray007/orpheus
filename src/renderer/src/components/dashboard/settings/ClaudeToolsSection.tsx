@@ -738,6 +738,28 @@ export function ClaudeToolsSection(): React.JSX.Element {
               onChange={(v) => patch({ browserIntegration: v })}
             />
           </SettingRow>
+          <SettingRow
+            label="Disable Artifact tool"
+            description="Prevent Claude from using the Artifact tool for publishing private web pages (CLAUDE_CODE_DISABLE_ARTIFACT=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_ARTIFACT"
+          >
+            <Toggle
+              ariaLabel="Disable Artifact tool"
+              value={settings.disableArtifact}
+              onChange={(v) => patch({ disableArtifact: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable advisor tool"
+            description="Prevent Claude from using the server-side advisor tool (CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_ADVISOR_TOOL"
+          >
+            <Toggle
+              ariaLabel="Disable advisor tool"
+              value={settings.disableAdvisorTool}
+              onChange={(v) => patch({ disableAdvisorTool: v })}
+            />
+          </SettingRow>
         </div>
       </section>
 
@@ -747,8 +769,8 @@ export function ClaudeToolsSection(): React.JSX.Element {
         <div className="bg-surface-raised border border-border-default rounded-lg px-5">
           <SettingRow
             label="Bash maintains project cwd"
-            description="Each Bash command resets its working directory to the project root (CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1)."
-            mapsTo="CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR"
+            description="Each Bash command resets its working directory to the project root (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1)."
+            mapsTo="CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"
           >
             <Toggle
               ariaLabel="Bash maintains project cwd"

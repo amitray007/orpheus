@@ -349,6 +349,23 @@ export type ClaudeGlobalSettings = {
   disableFeedbackCommand: boolean
   disableFeedbackSurvey: boolean
 
+  // Env-var controls (v52) — General / Model behavior
+  disableBundledSkills: boolean
+  disableWorkflows: boolean
+
+  // Env-var controls (v52) — General
+  enableAwaySummary: boolean
+
+  // Env-var controls (v52) — Tools
+  disableArtifact: boolean
+  disableAdvisorTool: boolean
+
+  // Env-var controls (v52) — Display
+  screenReader: boolean
+
+  // Env-var controls (v52) — Memory & Context
+  additionalDirsClaudeMd: boolean
+
   updatedAt: number
 }
 

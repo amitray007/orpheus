@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 51
+const CURRENT_VERSION = 52
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -192,6 +192,14 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     exit_after_stop_delay INTEGER,
     disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1)),
     disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1)),
+    -- Env-var controls (v52) — new feature toggles
+    disable_bundled_skills INTEGER NOT NULL DEFAULT 0 CHECK (disable_bundled_skills IN (0, 1)),
+    disable_workflows INTEGER NOT NULL DEFAULT 0 CHECK (disable_workflows IN (0, 1)),
+    enable_away_summary INTEGER NOT NULL DEFAULT 0 CHECK (enable_away_summary IN (0, 1)),
+    disable_artifact INTEGER NOT NULL DEFAULT 0 CHECK (disable_artifact IN (0, 1)),
+    disable_advisor_tool INTEGER NOT NULL DEFAULT 0 CHECK (disable_advisor_tool IN (0, 1)),
+    screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1)),
+    additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -2022,6 +2030,65 @@ function migrate(db: Database.Database): void {
       /* already exists on a fresh install that ran the updated SCHEMA_SQL */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(51)
+  }
+
+  // Version 52: new feature-toggle env-var controls
+  if (currentVersion < 52) {
+    // General → Model behavior
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_bundled_skills INTEGER NOT NULL DEFAULT 0 CHECK (disable_bundled_skills IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_workflows INTEGER NOT NULL DEFAULT 0 CHECK (disable_workflows IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // General
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_away_summary INTEGER NOT NULL DEFAULT 0 CHECK (enable_away_summary IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Tools
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_artifact INTEGER NOT NULL DEFAULT 0 CHECK (disable_artifact IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_advisor_tool INTEGER NOT NULL DEFAULT 0 CHECK (disable_advisor_tool IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Display
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Memory & Context
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(52)
   }
 }
 

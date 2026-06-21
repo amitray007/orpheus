@@ -209,6 +209,39 @@ export function ClaudeGeneralSection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
+            label="Disable bundled skills"
+            description="Prevent Claude from loading bundled skills and workflows (CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1). User, project, and plugin skills are not affected."
+            mapsTo="CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"
+          >
+            <Toggle
+              ariaLabel="Disable bundled skills"
+              value={settings.disableBundledSkills}
+              onChange={(v) => patch({ disableBundledSkills: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Disable workflows"
+            description="Prevent Claude from loading dynamic workflow commands (CLAUDE_CODE_DISABLE_WORKFLOWS=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_WORKFLOWS"
+          >
+            <Toggle
+              ariaLabel="Disable workflows"
+              value={settings.disableWorkflows}
+              onChange={(v) => patch({ disableWorkflows: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Enable away summary"
+            description="Show a one-line session recap when returning after being away (CLAUDE_CODE_ENABLE_AWAY_SUMMARY=1)."
+            mapsTo="CLAUDE_CODE_ENABLE_AWAY_SUMMARY"
+          >
+            <Toggle
+              ariaLabel="Enable away summary"
+              value={settings.enableAwaySummary}
+              onChange={(v) => patch({ enableAwaySummary: v })}
+            />
+          </SettingRow>
+          <SettingRow
             label="Max turns per session"
             description="Hard cap on the number of agentic turns per session (CLAUDE_CODE_MAX_TURNS). Leave empty to use claude's default."
             mapsTo="CLAUDE_CODE_MAX_TURNS"
