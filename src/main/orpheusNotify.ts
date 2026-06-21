@@ -56,6 +56,13 @@ type DetailState = {
   // (AskUserQuestion, ExitPlanMode). The string is the tool_name from
   // the PreToolUse payload so PostToolUse can unblock the matching tool.
   blockingTool: string | null
+  // Counts Task tool dispatches whose SubagentStop hasn't arrived yet.
+  // Stop fires per main-transcript turn and does NOT mean subagents are done;
+  // we defer the awaiting_input transition until subagentDepth reaches 0.
+  subagentDepth: number
+  // True when a Stop was received while subagentDepth > 0. The pending
+  // awaiting_input dispatch fires once the last SubagentStop arrives.
+  pendingStop: boolean
 }
 
 // Tools that block claude until the user answers them. Treated as a
@@ -140,7 +147,13 @@ const watchdogs = new Map<string, NodeJS.Timeout>()
 function getDetailState(workspaceId: string): DetailState {
   let s = detailMap.get(workspaceId)
   if (!s) {
-    s = { toolStack: 0, compacting: false, blockingTool: null }
+    s = {
+      toolStack: 0,
+      compacting: false,
+      blockingTool: null,
+      subagentDepth: 0,
+      pendingStop: false
+    }
     detailMap.set(workspaceId, s)
   }
   return s
@@ -203,6 +216,13 @@ function armWatchdog(workspaceId: string): void {
     if (activityMap.get(workspaceId) === 'in_progress') {
       console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
       dispatch(workspaceId, 'awaiting_input')
+      // Lost-SubagentStop recovery: clear any deferred-subagent state so the
+      // next turn starts clean rather than inheriting a stale pendingStop.
+      const s = detailMap.get(workspaceId)
+      if (s) {
+        s.subagentDepth = 0
+        s.pendingStop = false
+      }
     }
   }, seconds * 1000)
   watchdogs.set(workspaceId, t)
@@ -269,6 +289,8 @@ function handleHookEvent(
         dispatch(workspaceId, 'attention')
         return
       }
+      // 'Agent' is the current subagent-dispatch tool_name; 'Task' is the legacy alias.
+      if (tn === 'Agent' || tn === 'Task') ds.subagentDepth++
       ds.toolStack++
       heartbeat(workspaceId)
       broadcastDetailIfChanged(workspaceId)
@@ -292,14 +314,43 @@ function handleHookEvent(
       broadcastDetailIfChanged(workspaceId)
       return
     case 'subagent-stop':
+      ds.subagentDepth = Math.max(0, ds.subagentDepth - 1)
       heartbeat(workspaceId)
+      if (ds.subagentDepth === 0 && ds.pendingStop) {
+        ds.pendingStop = false
+        // The last subagent finished and a Stop was deferred. But if a subagent
+        // raised a permission prompt while we waited, the workspace is now in
+        // 'attention'/blocking — don't clobber that live prompt with a green
+        // 'ready' dot. Let PostToolUse/Notification clear attention first.
+        if (activityMap.get(workspaceId) !== 'attention' && !ds.blockingTool) {
+          dispatch(workspaceId, 'awaiting_input')
+        }
+      }
       return
-    case 'user-prompt':
     case 'stop':
-    case 'session-end':
+      // Reset per-turn state but not subagentDepth: subagents may still be
+      // running. Stop fires per main-transcript turn and does NOT mean all
+      // subagents have finished.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
+      if (ds.subagentDepth > 0) {
+        // Subagents still in flight — defer the awaiting_input transition.
+        // The 120s watchdog is the safety net if a final SubagentStop is lost.
+        ds.pendingStop = true
+        heartbeat(workspaceId)
+        return
+      }
+      ds.pendingStop = false
+      break
+    case 'user-prompt':
+    case 'session-end':
+      // Fresh turn or ended session — any stale subagent count is bogus.
+      ds.toolStack = 0
+      ds.compacting = false
+      ds.blockingTool = null
+      ds.subagentDepth = 0
+      ds.pendingStop = false
       break
     case 'notification':
       ds.compacting = false
