@@ -239,12 +239,20 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 }
 
 // ---------------------------------------------------------------------------
-// performKeyEquivalent: — intercept Cmd+C / Cmd+V / Cmd+X (and the upper-case
-// versions when Shift is held) BEFORE Electron's default Edit menu binds them.
-// Without this, the macOS app-menu Copy/Paste/Cut accelerators eat the event
-// and the terminal never gets a chance to handle it (so libghostty's
-// super+c/v/x bindings, which invoke read_clipboard_cb / write_clipboard_cb,
-// never trigger). Returning YES tells AppKit we consumed the event.
+// performKeyEquivalent: — intercept specific key combos before the macOS app
+// menu or OS consumes them.
+//
+// Handled cases:
+//   • Cmd+C / Cmd+V / Cmd+X (+ Shift variants) — clipboard triad; forwarded
+//     to keyDown: before the Edit menu binds them.
+//   • Control+Return — pass through verbatim; macOS would otherwise trigger
+//     the default context menu action. Ref: SurfaceView_AppKit.swift ~1280-1287.
+//   • Control+/ — remap to Control+_ to avoid the macOS system beep.
+//     Ref: SurfaceView_AppKit.swift ~1289-1297.
+//
+// Synthetic events (timestamp == 0) are silently ignored in the default path
+// to avoid double-encoding synthetic keys (e.g. the "escape" AppKit generates
+// for Cmd+Period → cancel:). Ref: SurfaceView_AppKit.swift ~1300-1310.
 // ---------------------------------------------------------------------------
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     if (!self.surface) return NO;
@@ -252,16 +260,57 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     if (!win || [win firstResponder] != self) return NO;
 
     NSEventModifierFlags mods = event.modifierFlags;
-    if (!(mods & NSEventModifierFlagCommand)) return NO;
+    NSString* charsIgn = event.charactersIgnoringModifiers;
+    if (charsIgn.length != 1) return NO;
+    unichar c = [charsIgn characterAtIndex:0];
 
-    NSString* chars = event.charactersIgnoringModifiers;
-    if (chars.length != 1) return NO;
-    unichar c = [chars characterAtIndex:0];
-    // Only intercept the clipboard triad; leave Cmd+Q/W/A/Z/etc. for the OS.
-    if (c == 'c' || c == 'C' || c == 'v' || c == 'V' || c == 'x' || c == 'X') {
+    // --- Control+Return: pass through so macOS menu doesn't swallow it ---
+    if (c == '\r' && (mods & NSEventModifierFlagControl)) {
+        // Build a synthetic key event with characters = "\r" (same as the
+        // reference) so that ghostty's key encoder receives the correct text.
+        // We reuse the event directly — it already carries \r as the keycode.
         [self keyDown:event];
         return YES;
     }
+
+    // --- Control+/ → remap to Control+_ (avoids macOS system beep) ---
+    if (c == '/' &&
+        (mods & NSEventModifierFlagControl) &&
+        !(mods & (NSEventModifierFlagShift | NSEventModifierFlagCommand | NSEventModifierFlagOption))) {
+
+        // Synthesise an event identical to the original but with characters = "_".
+        // This matches what the Swift reference does (SurfaceView_AppKit.swift ~1297-1351).
+        NSEvent* remapped = [NSEvent keyEventWithType:event.type
+                                             location:event.locationInWindow
+                                        modifierFlags:event.modifierFlags
+                                            timestamp:event.timestamp
+                                         windowNumber:event.windowNumber
+                                              context:nil
+                                           characters:@"_"
+                          charactersIgnoringModifiers:@"_"
+                                            isARepeat:event.isARepeat
+                                              keyCode:event.keyCode];
+        if (remapped) {
+            [self keyDown:remapped];
+        } else {
+            [self keyDown:event];
+        }
+        return YES;
+    }
+
+    // --- Cmd+C / Cmd+V / Cmd+X (clipboard triad) ---
+    if (mods & NSEventModifierFlagCommand) {
+        if (c == 'c' || c == 'C' || c == 'v' || c == 'V' || c == 'x' || c == 'X') {
+            [self keyDown:event];
+            return YES;
+        }
+    }
+
+    // --- Synthetic event filter (zero timestamp) ---
+    // AppKit synthesises events with timestamp == 0 (e.g. after cancel:).
+    // Skip them to avoid double-encoding. Ref: SurfaceView_AppKit.swift ~1300-1310.
+    if (event.timestamp == 0) return NO;
+
     return NO;
 }
 
@@ -397,13 +446,85 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 - (void)keyUp:(NSEvent *)event {
     if (!self.surface) return;
 
+    // Mirror keyDown: mods-translation so press/release modifier state is consistent
+    // (fixes key-tracking confusion with macos-option-as-alt enabled).
+    // Ref: SurfaceView_AppKit.swift ghosttyKeyEvent().
+    ghostty_input_mods_e rawMods   = modsFromEvent(event);
+    ghostty_input_mods_e transMods = ghostty_surface_key_translation_mods(self.surface, rawMods);
+
     ghostty_input_key_s key_ev = {};
     key_ev.action        = GHOSTTY_ACTION_RELEASE;
-    key_ev.mods          = modsFromEvent(event);
-    key_ev.consumed_mods = (ghostty_input_mods_e)0;
+    key_ev.mods          = rawMods;
+    key_ev.consumed_mods = (ghostty_input_mods_e)(transMods & ~(GHOSTTY_MODS_CTRL | GHOSTTY_MODS_SUPER));
     key_ev.keycode       = (uint32_t)event.keyCode;
     key_ev.composing     = false;
     key_ev.text          = nullptr;
+    key_ev.unshifted_codepoint = 0;
+
+    ghostty_surface_key(self.surface, key_ev);
+}
+
+// ---------------------------------------------------------------------------
+// flagsChanged: — forward modifier-only press/release to libghostty.
+// Without this, TUI apps that track bare modifier state (vim, emacs etc.)
+// never see Shift/Ctrl/Opt/Cmd/Caps pressed or released alone.
+// Ref: SurfaceView_AppKit.swift flagsChanged(with:) ~1355-1400.
+// ---------------------------------------------------------------------------
+- (void)flagsChanged:(NSEvent *)event {
+    if (!self.surface) return;
+
+    // Determine which modifier key changed based on keyCode.
+    // Key codes (standard US layout, hardware-independent):
+    //   0x39 = CapsLock, 0x38 = L-Shift, 0x3C = R-Shift,
+    //   0x3B = L-Ctrl,   0x3E = R-Ctrl,   0x3A = L-Option, 0x3D = R-Option,
+    //   0x37 = L-Cmd,    0x36 = R-Cmd
+    uint32_t mod;
+    switch (event.keyCode) {
+        case 0x39: mod = GHOSTTY_MODS_CAPS;  break;
+        case 0x38: /* fall through */
+        case 0x3C: mod = GHOSTTY_MODS_SHIFT; break;
+        case 0x3B: /* fall through */
+        case 0x3E: mod = GHOSTTY_MODS_CTRL;  break;
+        case 0x3A: /* fall through */
+        case 0x3D: mod = GHOSTTY_MODS_ALT;   break;
+        case 0x37: /* fall through */
+        case 0x36: mod = GHOSTTY_MODS_SUPER; break;
+        default:   return; // Unknown modifier key — ignore.
+    }
+
+    // Compute the current mods bitmask from the event's modifierFlags.
+    ghostty_input_mods_e mods = modsFromEvent(event);
+
+    // Determine press vs release:
+    // If the relevant bit is set in the current mods, the key was pressed.
+    // For right-side keys, additionally verify the correct side's raw bit
+    // is set — if not, the opposite side is still held and this is a release.
+    // Ref: SurfaceView_AppKit.swift flagsChanged ~1374-1397.
+    ghostty_input_action_e action = GHOSTTY_ACTION_RELEASE;
+    if ((uint32_t)mods & mod) {
+        // The modifier family is active. Check right-side keys to ensure
+        // the correct physical key (not the opposite side) caused the event.
+        bool sidePressed = true;
+        NSUInteger rawFlags = (NSUInteger)event.modifierFlags;
+        switch (event.keyCode) {
+            case 0x3C: sidePressed = (rawFlags & NX_DEVICERSHIFTKEYMASK) != 0; break;
+            case 0x3E: sidePressed = (rawFlags & NX_DEVICERCTLKEYMASK)   != 0; break;
+            case 0x3D: sidePressed = (rawFlags & NX_DEVICERALTKEYMASK)   != 0; break;
+            case 0x36: sidePressed = (rawFlags & NX_DEVICERCMDKEYMASK)   != 0; break;
+            default:   sidePressed = true; break;
+        }
+        if (sidePressed) {
+            action = GHOSTTY_ACTION_PRESS;
+        }
+    }
+
+    ghostty_input_key_s key_ev = {};
+    key_ev.action          = action;
+    key_ev.mods            = mods;
+    key_ev.consumed_mods   = (ghostty_input_mods_e)0;
+    key_ev.keycode         = (uint32_t)event.keyCode;
+    key_ev.composing       = false;
+    key_ev.text            = nullptr;
     key_ev.unshifted_codepoint = 0;
 
     ghostty_surface_key(self.surface, key_ev);
@@ -609,6 +730,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     if (!self.surface) return;
+    // Guard: skip text injection if there is no current AppKit event — this can
+    // happen via scripting or other non-event paths. Ref: SurfaceView_AppKit.swift ~1960.
+    if (!NSApp.currentEvent) return;
 
     // If we are inside keyDown:, ghostty_surface_key already forwarded the text
     // via the .text field on the key event struct.  Sending it again via
