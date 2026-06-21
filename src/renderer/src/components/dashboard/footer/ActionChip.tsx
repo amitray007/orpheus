@@ -22,6 +22,8 @@ interface ActionChipProps {
   workspaceName?: string
   /** Called after a successful workspace.fork with the new workspace ID. */
   onForkSuccess?: (newWorkspaceId: string) => void
+  /** Whether this chip's visibleWhen condition is satisfied for the current activity state. When false the chip renders disabled. */
+  enabled?: boolean
 }
 
 /**
@@ -42,7 +44,8 @@ export function ActionChip({
   sessionId = null,
   cwd = '',
   workspaceName = '',
-  onForkSuccess
+  onForkSuccess,
+  enabled = true
 }: ActionChipProps): React.JSX.Element {
   const [inFlight, setInFlight] = useState(false)
   const [tooltip, setTooltip] = useState<string | null>(null)
@@ -111,6 +114,8 @@ export function ActionChip({
   }, [isTerminalAction, workspaceId])
 
   const disabled = isTerminalAction && !canInject
+  const notApplicable = enabled === false
+  const isDisabled = disabled || notApplicable
 
   const showTooltip = useCallback((msg: string) => {
     setTooltip(msg)
@@ -213,9 +218,9 @@ export function ActionChip({
   const handleClick = useCallback(async (): Promise<void> => {
     if (inFlight) return
 
-    if (disabled) {
+    if (isDisabled) {
       playSound('error')
-      showTooltip('Claude is busy')
+      showTooltip(disabled ? 'Claude is busy' : 'Not available right now')
       return
     }
 
@@ -232,7 +237,7 @@ export function ActionChip({
     }
 
     await invokeAction()
-  }, [inFlight, disabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
+  }, [inFlight, isDisabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
 
   return (
     <div className="relative flex-shrink-0">
@@ -242,14 +247,14 @@ export function ActionChip({
           handleClick().catch((e) => console.error('[ActionChip] click handler failed', e))
         }}
         disabled={inFlight}
-        title={disabled ? 'Claude is busy' : label}
+        title={isDisabled ? (disabled ? 'Claude is busy' : 'Not available right now') : label}
         aria-label={label}
         className={[
           'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs',
           'transition-colors duration-150',
           'border border-transparent',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-          disabled
+          isDisabled
             ? 'cursor-not-allowed text-text-muted bg-surface-overlay/40'
             : showPrompt
               ? 'text-text-primary bg-surface-overlay border border-border-default/60'

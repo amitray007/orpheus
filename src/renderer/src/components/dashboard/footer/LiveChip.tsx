@@ -98,6 +98,8 @@ interface LiveChipProps {
   params: Record<string, unknown>
   workspaceId: string
   kind: ActionKind
+  /** Whether this chip's visibleWhen condition is satisfied for the current activity state. When false the chip renders dimmed. */
+  enabled?: boolean
 }
 
 /**
@@ -110,7 +112,8 @@ export function LiveChip({
   icon,
   params,
   workspaceId,
-  kind
+  kind,
+  enabled = true
 }: LiveChipProps): React.JSX.Element {
   const cacheKey = `${actionId}:${workspaceId}`
   const [value, setValue] = useState<unknown>(() => chipValueCache.get(cacheKey) ?? null)
@@ -120,6 +123,7 @@ export function LiveChip({
 
   useEffect(() => {
     if (!workspaceId) return
+    if (!enabled) return
 
     const key = `${actionId}:${workspaceId}`
 
@@ -174,14 +178,14 @@ export function LiveChip({
       cancelled = true
       clearInterval(id)
     }
-  }, [actionId, workspaceId, kind, params])
+  }, [actionId, workspaceId, kind, params, enabled])
 
   const displayText = formatValue(actionId, value)
   const dotColor = isStatus ? getStatusDotColor(value) : null
 
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted select-none"
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted select-none${enabled ? '' : ' opacity-40'}`}
       title={`${label}${displayText ? `: ${displayText}` : ''}`}
     >
       {/* Colored status dot OR icon */}
