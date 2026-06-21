@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 52
+const CURRENT_VERSION = 53
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -200,6 +200,7 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     disable_advisor_tool INTEGER NOT NULL DEFAULT 0 CHECK (disable_advisor_tool IN (0, 1)),
     screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1)),
     additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1)),
+    ghostty_config_json TEXT NOT NULL DEFAULT '{}',
     updated_at INTEGER NOT NULL
   );
 `
@@ -2089,6 +2090,16 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(52)
+  }
+  if (currentVersion < 53) {
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN ghostty_config_json TEXT NOT NULL DEFAULT '{}'"
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(53)
   }
 }
 

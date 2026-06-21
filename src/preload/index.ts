@@ -45,7 +45,8 @@ import type {
   TerminalSendKeyDescriptor,
   FooterActionDescriptor,
   FooterActionDraft,
-  FooterActionScope
+  FooterActionScope,
+  GhosttyUserConfig
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -270,6 +271,11 @@ const api = {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
       ipcRenderer.invoke('claudeSettings:update', patch)
+  },
+  ghosttySettings: {
+    get: (): Promise<GhosttyUserConfig> => ipcRenderer.invoke('ghosttySettings:get'),
+    update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
+      ipcRenderer.invoke('ghosttySettings:update', patch)
   },
   claudeAuth: {
     get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),

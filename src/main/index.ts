@@ -148,10 +148,16 @@ import type {
   McpServerDraft,
   ClaudeSlashCommandDraft,
   ClaudeSubagentDraft,
-  ContextMenuNativeItem
+  ContextMenuNativeItem,
+  GhosttyUserConfig
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 import * as terminalActions from './actions/terminal'
+import {
+  writeGhosttyConfigFile,
+  getGhosttyUserConfig,
+  updateGhosttyUserConfig
+} from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
 import {
   bootActions,
@@ -919,6 +925,25 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 })
 
 // ---------------------------------------------------------------------------
+// Ghostty Settings IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ghosttySettings:get', () => getGhosttyUserConfig())
+
+ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
+  const result = updateGhosttyUserConfig(patch)
+  writeGhosttyConfigFile()
+  // TODO: add "restart to apply" signal for keys that require restart
+  try {
+    const addon = loadTerminalAddon()
+    addon.reloadGhosttyConfig()
+  } catch (err) {
+    console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
+  }
+  return result
+})
+
+// ---------------------------------------------------------------------------
 // MCP IPC
 // ---------------------------------------------------------------------------
 
@@ -1246,6 +1271,7 @@ type GhosttyNativeAddon = {
     workspaceId: string,
     keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
   ) => boolean
+  reloadGhosttyConfig: () => boolean
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1323,6 +1349,7 @@ ipcMain.handle(
     // key is omitted and the script falls back to sourcing ~/.zshrc.
     const cachedUserPath = getCachedShellPath()
 
+    const ghosttyConfigPath = writeGhosttyConfigFile()
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
       ...authEnv, // auth env wins on conflict
@@ -1331,7 +1358,8 @@ ipcMain.handle(
       ORPHEUS_WORKSPACE_ID: workspaceId,
       ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
       ORPHEUS_NOTIFY: shimPath(),
-      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {})
+      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
+      ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
     }
 
     console.log(

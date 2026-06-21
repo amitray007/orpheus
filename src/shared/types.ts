@@ -225,6 +225,19 @@ export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
   (o) => o.value === o.family
 )
 
+// ---------------------------------------------------------------------------
+// Ghostty user config (v53)
+// ---------------------------------------------------------------------------
+
+export type GhosttyKeybind = { trigger: string; action: string }
+
+export type GhosttyUserConfig = {
+  // Flat key→value map using ghostty config keys; only NON-default keys stored.
+  // Values are raw ghostty config values (unquoted). Booleans as true/false.
+  settings: Record<string, string | number | boolean>
+  keybinds: GhosttyKeybind[]
+}
+
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
   permissionMode: ClaudePermissionMode

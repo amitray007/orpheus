@@ -43,7 +43,8 @@ import type {
   TerminalSendKeyDescriptor,
   FooterActionDescriptor,
   FooterActionDraft,
-  FooterActionScope
+  FooterActionScope,
+  GhosttyUserConfig
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -168,6 +169,10 @@ declare global {
       claudeSettings: {
         get: () => Promise<ClaudeGlobalSettings>
         update: (patch: ClaudeGlobalSettingsPatch) => Promise<ClaudeGlobalSettings>
+      }
+      ghosttySettings: {
+        get: () => Promise<GhosttyUserConfig>
+        update: (patch: Partial<GhosttyUserConfig>) => Promise<GhosttyUserConfig>
       }
       claudeAuth: {
         get: () => Promise<ClaudeAuthState>
