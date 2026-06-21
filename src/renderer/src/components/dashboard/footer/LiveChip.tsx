@@ -3,6 +3,30 @@ import type React from 'react'
 import type { ActionKind, WorkspaceActivityDetail } from '@shared/types'
 import { IconByName } from './iconMap'
 
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const v = n / 1_000_000
+    // 3 sig figs, trim trailing zeros
+    return parseFloat(v.toPrecision(3)) + 'M'
+  }
+  if (n >= 1_000) {
+    const v = n / 1_000
+    return parseFloat(v.toPrecision(3)) + 'k'
+  }
+  return String(Math.round(n))
+}
+
+function formatUsd(n: number): string {
+  if (n === 0) return '$0'
+  if (n > 0 && n < 0.01) return '< $0.01'
+  if (n >= 1) return '$' + n.toFixed(2)
+  return '$' + parseFloat(n.toPrecision(3)).toString()
+}
+
 // Dot color by workspace activity status
 function getStatusDotColor(value: unknown): string {
   if (typeof value !== 'string') return 'bg-text-muted/40'
@@ -29,31 +53,23 @@ function getStatusDotColor(value: unknown): string {
 function formatValue(actionId: string, value: unknown): string | null {
   if (value === null || value === undefined) return null
 
-  // session.getUsage — render "Context 78k / 200k"
+  // session.getUsage — render occupancy from the most-recent turn only (e.g. "78.2k")
   if (actionId === 'session.getUsage' && typeof value === 'object' && value !== null) {
     const v = value as Record<string, unknown>
-    if (typeof v.inputTokens === 'number' && typeof v.contextBudget === 'number') {
-      const used =
-        (v.inputTokens as number) +
-        ((v.cacheReadTokens as number) ?? 0) +
-        ((v.cacheCreationTokens as number) ?? 0)
-      const budget = v.contextBudget as number
-      const fmt = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
-      return `${fmt(used)} / ${fmt(budget)}`
+    if (typeof v.lastTurnContextTokens === 'number') {
+      return formatTokens(v.lastTurnContextTokens as number)
     }
+    // Fallback for stale cached values without the new field
     if (typeof v.usedPct === 'number') {
       return `${Math.round(v.usedPct as number)}%`
     }
   }
 
-  // session.getCost — render "$ 0.0042" or "< $0.01"
+  // session.getCost — render cost with 3 sig figs (e.g. "$0.0042" or "< $0.01")
   if (actionId === 'session.getCost' && typeof value === 'object' && value !== null) {
     const v = value as Record<string, unknown>
     if (typeof v.usd === 'number') {
-      const usd = v.usd as number
-      if (usd < 0.01) return '< $0.01'
-      if (usd < 1) return `$${usd.toFixed(4)}`
-      return `$${usd.toFixed(2)}`
+      return formatUsd(v.usd as number)
     }
   }
 

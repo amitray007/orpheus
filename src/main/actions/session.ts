@@ -148,6 +148,10 @@ type AccumulatorState = {
   cacheReadTokens: number
   cacheCreationTokens: number
 
+  /** Point-in-time context occupancy from the MOST RECENT assistant turn only.
+   *  Overwritten each turn (not accumulated). Used for the context chip. */
+  lastTurnContextTokens: number
+
   // Per-model token tallies for deferred cost computation
   tokensByModel: Map<string, ModelTokens>
 
@@ -178,6 +182,7 @@ function newAccumulator(): AccumulatorState {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    lastTurnContextTokens: 0,
     tokensByModel: new Map(),
     lastUserText: null,
     lastUserAt: null,
@@ -200,6 +205,7 @@ function resetAccumulator(acc: AccumulatorState): void {
   acc.outputTokens = 0
   acc.cacheReadTokens = 0
   acc.cacheCreationTokens = 0
+  acc.lastTurnContextTokens = 0
   acc.tokensByModel.clear()
   acc.lastUserText = null
   acc.lastUserAt = null
@@ -261,6 +267,10 @@ function processLine(acc: AccumulatorState, rawLine: string): void {
       acc.outputTokens += out
       acc.cacheReadTokens += cacheRead
       acc.cacheCreationTokens += cacheCreate
+
+      // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
+      // Used for the footer context chip — reflects only the current turn's window.
+      acc.lastTurnContextTokens = inp + cacheRead + cacheCreate
 
       // Accumulate per-model token tallies for deferred cost computation
       const lineModelKey = lineModel ?? acc.model ?? ''
@@ -409,6 +419,7 @@ function accumulatorToSession(acc: AccumulatorState): ParsedSession {
       outputTokens: acc.outputTokens,
       cacheReadTokens: acc.cacheReadTokens,
       cacheCreationTokens: acc.cacheCreationTokens,
+      lastTurnContextTokens: acc.lastTurnContextTokens,
       contextBudget: 0, // filled in by getUsage — needs workspace context
       usedPct: 0
     },
@@ -488,6 +499,7 @@ function emptyUsage(): SessionUsage {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    lastTurnContextTokens: 0,
     contextBudget: getEffectiveContextBudget(),
     usedPct: 0
   }
@@ -525,11 +537,12 @@ export async function handleGetUsage(
     return { ok: true, value: { ...emptyUsage(), contextBudget } }
   }
 
-  const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = parsed.usage
+  const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, lastTurnContextTokens } =
+    parsed.usage
+  // Use the most-recent turn's context occupancy (not cumulative) so the chip
+  // reflects the current window size, not a monotonically-growing sum.
   const usedPct =
-    contextBudget > 0
-      ? ((inputTokens + cacheReadTokens + cacheCreationTokens) / contextBudget) * 100
-      : 0
+    contextBudget > 0 ? Math.min((lastTurnContextTokens / contextBudget) * 100, 100) : 0
 
   return {
     ok: true,
@@ -538,6 +551,7 @@ export async function handleGetUsage(
       outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
+      lastTurnContextTokens,
       contextBudget,
       usedPct: Math.min(usedPct, 100)
     }

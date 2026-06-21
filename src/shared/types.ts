@@ -710,9 +710,13 @@ export type SessionUsage = {
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  /** Point-in-time context-window occupancy from the most recent assistant turn only.
+   *  = input_tokens + cache_read_input_tokens + cache_creation_input_tokens for that turn.
+   *  Used for the context chip in the footer. Do NOT use for cost (cost uses cumulative fields). */
+  lastTurnContextTokens: number
   /** Effective maxContextTokens from global settings (or default 200k) */
   contextBudget: number
-  /** (inputTokens + cacheReadTokens + cacheCreationTokens) / contextBudget * 100, capped at 100 */
+  /** lastTurnContextTokens / contextBudget * 100, capped at 100 */
   usedPct: number
 }
 
