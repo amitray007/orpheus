@@ -82,6 +82,7 @@ declare global {
         onCanInjectChanged: (
           cb: (e: { workspaceId: string; canInject: boolean }) => void
         ) => () => void
+        focus: (workspaceId: string) => Promise<void>
       }
       config: {
         openFolder: () => Promise<string | null>

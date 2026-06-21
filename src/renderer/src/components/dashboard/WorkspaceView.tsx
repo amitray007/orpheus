@@ -165,6 +165,16 @@ export function WorkspaceView({
           'created=',
           result.created
         )
+        // Re-assert terminal focus AFTER the native mount path's dispatch_async
+        // makeFirstResponder runs. A DOM overlay (e.g. an open sidebar hover card)
+        // can win the focus race at mount time, leaving the terminal unable to
+        // receive keystrokes until a click or workspace switch. Defer to a macrotask
+        // so this runs after the native focus-grab, and guard on active so we never
+        // focus a hidden/inactive surface.
+        setTimeout(() => {
+          if (!activeRef.current || !mountedRef.current) return
+          void window.api.terminal.focus(workspaceId).catch(() => {})
+        }, 0)
       } catch (err) {
         console.error('[WorkspaceView] mount failed:', err)
       }
@@ -385,6 +395,13 @@ export function WorkspaceView({
           )
           // Re-attach resize listeners now that the surface is live.
           effectStateRef.current?.attachResizeListeners()
+          // Re-assert terminal focus AFTER the native dispatch_async makeFirstResponder
+          // (see first-create path) — wins the focus race against an open DOM overlay
+          // so keyboard input lands in the terminal on re-activate.
+          setTimeout(() => {
+            if (!activeRef.current || !mountedRef.current) return
+            void window.api.terminal.focus(workspaceId).catch(() => {})
+          }, 0)
         })
         .catch((e) => console.error('[WorkspaceView] re-mount failed:', e))
     })

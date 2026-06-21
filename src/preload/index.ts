@@ -101,7 +101,9 @@ const api = {
       ): void => cb(e)
       ipcRenderer.on('terminal:canInjectChanged', listener)
       return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
-    }
+    },
+    focus: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:focus', { workspaceId })
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')

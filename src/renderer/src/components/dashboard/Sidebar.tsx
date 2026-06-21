@@ -246,7 +246,12 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [cardOpen, setCardOpen] = useState(false)
   const { refs, floatingStyles, context } = useFloating({
     open: cardOpen,
-    onOpenChange: setCardOpen,
+    onOpenChange: (open) => {
+      setCardOpen(open)
+      if (!open) {
+        void window.api.terminal.focus(workspace.id).catch(() => {})
+      }
+    },
     placement: 'right-start',
     middleware: [offset(8), flip(), shift({ padding: 8 })]
   })

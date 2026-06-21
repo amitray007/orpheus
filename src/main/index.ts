@@ -1414,6 +1414,11 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   addon.hide(workspaceId)
 })
 
+ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.focus(workspaceId)
+})
+
 ipcMain.handle(
   'terminal:resize',
   (

@@ -586,6 +586,9 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
     if (!self.surface) return;
+    // A DOM overlay (e.g. sidebar hover card) may have stolen first-responder;
+    // re-establish libghostty focus so keyboard input reaches the terminal.
+    ghostty_surface_set_focus(self.surface, true);
 
     GhosttyMousePos pos = ghosttyPosForEvent(event, self);
     ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
