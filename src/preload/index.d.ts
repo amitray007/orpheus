@@ -44,7 +44,8 @@ import type {
   FooterActionDescriptor,
   FooterActionDraft,
   FooterActionScope,
-  GhosttyUserConfig
+  GhosttyUserConfig,
+  DiagEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -329,6 +330,9 @@ declare global {
           orderedIds: string[]
         ) => Promise<void>
         resetDefaults: () => Promise<void>
+      }
+      diag: {
+        event: (evt: DiagEvent) => void
       }
     }
   }

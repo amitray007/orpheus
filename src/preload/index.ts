@@ -46,7 +46,8 @@ import type {
   FooterActionDescriptor,
   FooterActionDraft,
   FooterActionScope,
-  GhosttyUserConfig
+  GhosttyUserConfig,
+  DiagEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -543,6 +544,15 @@ const api = {
     ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
 
     resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
+  },
+  diag: {
+    event: (evt: DiagEvent): void => {
+      try {
+        ipcRenderer.send('diag:event', evt)
+      } catch {
+        /* never throw */
+      }
+    }
   }
 }
 
