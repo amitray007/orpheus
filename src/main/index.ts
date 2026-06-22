@@ -1,6 +1,15 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
 import { monitorEventLoopDelay } from 'perf_hooks'
-import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  screen,
+  globalShortcut,
+  powerMonitor
+} from 'electron'
 
 // Set app name before anything reads app.getPath('userData'). Electron derives
 // userData from app.name, which defaults to package.json "name" ("orpheus") for
@@ -495,6 +504,17 @@ app.on('before-quit', () => {
   isQuitting = true
 })
 
+function kickActiveTerminal(): void {
+  try {
+    const state = getAppUiState()
+    if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
+    console.log('[lifecycle] terminal kick (wake)')
+    loadTerminalAddon().focus(state.lastWorkspaceId)
+  } catch (err) {
+    console.error('[lifecycle] terminal kick failed:', err)
+  }
+}
+
 function createWindow(): void {
   // ---------------------------------------------------------------------------
   // Restore saved window geometry
@@ -659,15 +679,7 @@ function createWindow(): void {
     // Invalidate the checkClaude cache so the next doctor:check picks up any
     // claude install/update that happened while the window was in the background.
     cachedClaudeCheck = null
-
-    try {
-      const state = getAppUiState()
-      if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
-      const addon = loadTerminalAddon()
-      addon.focus(state.lastWorkspaceId)
-    } catch (err) {
-      console.error('[focus] auto-focus terminal failed:', err)
-    }
+    kickActiveTerminal()
   })
 
   mainWindow.on('enter-full-screen', () => {
@@ -1793,6 +1805,14 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Kick the active terminal on system wake events so the CVDisplayLink
+  // restarts after display sleep / screen lock / user-switch.
+  powerMonitor.on('resume', kickActiveTerminal)
+  powerMonitor.on('unlock-screen', kickActiveTerminal)
+  if (process.platform === 'darwin') {
+    powerMonitor.on('user-did-become-active', kickActiveTerminal)
+  }
+
   // Apply OS-level settings after the window exists (hotkey callback needs it)
   try {
     const state = getAppUiState()
@@ -1863,6 +1883,7 @@ app.whenReady().then(() => {
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else kickActiveTerminal()
   })
 })
 

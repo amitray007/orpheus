@@ -2201,12 +2201,14 @@ static bool ensureApp() {
     // Prevent App Nap: a backgrounded Orpheus would otherwise have its main-thread
     // NSTimers (incl. the 10Hz terminal safety timer) coalesced/suspended, which
     // stalls terminal rendering until foreground. Hold a user-initiated activity
-    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt.
+    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt even
+    // in background; NSActivityIdleSystemSleepDisabled ensures the 10Hz safety timer
+    // survives display sleep.
     // ARC: __strong static keeps the object alive without manual retain.
     static __strong id<NSObject> s_appNapActivity = nil;
     if (!s_appNapActivity) {
         s_appNapActivity = [[NSProcessInfo processInfo]
-            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleSystemSleepDisabled)
                               reason:@"Active terminal rendering"];
     }
 
@@ -2857,21 +2859,24 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     if (it == g_surfaces.end()) return env.Undefined();
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
-    // Re-assert ghostty's focus + visibility so the internal display link
-    // restarts. The window 'focus' handler calls this on foreground-regain;
-    // makeFirstResponder alone does NOT re-open ghostty's visible+focused gate,
-    // which is why a long-backgrounded terminal stayed frozen until a full
-    // re-mount. set_focus first (opens the gate), then set_occlusion(true)
-    // (marks visible → restarts the link), then one synchronous draw.
+    // Force a real state TRANSITION so ghostty restarts the stopped display
+    // link. Re-asserting true is deduped away (Surface.zig:3265, Thread.zig:355/381)
+    // when the flags are already true (which they are after display-sleep/idle,
+    // since no down-signal fired). Toggle false→true to make the change "stick".
     if (entry.surface) {
+        ghostty_surface_set_occlusion(entry.surface, false);
+        ghostty_surface_set_focus(entry.surface, false);
         ghostty_surface_set_focus(entry.surface, true);
         ghostty_surface_set_occlusion(entry.surface, true);
         ghostty_surface_draw(entry.surface);
     }
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // SYNCHRONOUS makeFirstResponder (was dispatch_async, which opened an input
+    // race where a keystroke right after wake routed to WebContents instead of
+    // the terminal). NAPI handlers run on the main thread, so this is safe.
+    {
         NSWindow* win = [entry.view window];
         if (win) [win makeFirstResponder:entry.view];
-    });
+    }
     return env.Undefined();
 }
 
