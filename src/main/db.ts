@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 57
+const CURRENT_VERSION = 58
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -2181,6 +2181,16 @@ function migrate(db: Database.Database): void {
       /* column may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(57)
+  }
+
+  if (currentVersion < 58) {
+    // Version 58: persist last terminal title so closed workspaces keep their name
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(58)
   }
 }
 

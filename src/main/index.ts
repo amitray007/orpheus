@@ -423,6 +423,9 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
 
 function performClose(id: string): WorkspaceRecord | undefined {
   const ws = getWorkspace(id)
+  // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
+  // so the closed workspace keeps its name in the sidebar.
+  const lastTitle = workspaceTitles.get(id) ?? null
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
@@ -431,7 +434,7 @@ function performClose(id: string): WorkspaceRecord | undefined {
     }
   }
   teardownWorkspaceResources(id, ws?.cwd ?? null)
-  return closeWorkspace(id)
+  return closeWorkspace(id, lastTitle)
 }
 
 function recomputeDirty(): void {

@@ -98,6 +98,8 @@ export type WorkspaceRecord = {
   claudeSessionId: string | null
   /** Set when this workspace was forked from another session (v43). */
   forkedFromSessionId: string | null
+  /** Last terminal title seen before the workspace was closed (v58). */
+  lastTitle: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context

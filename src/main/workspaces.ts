@@ -57,7 +57,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
-    forkedFromSessionId: row.forked_from_session_id ?? null
+    forkedFromSessionId: row.forked_from_session_id ?? null,
+    lastTitle: row.last_title ?? null
   }
 }
 
@@ -268,11 +269,13 @@ export function archiveWorkspace(id: string): void {
   }
 }
 
-export function closeWorkspace(id: string): WorkspaceRecord | undefined {
+export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {
   const db = getDb()
   const row = db
-    .prepare('UPDATE workspaces SET closed_at = ? WHERE id = ? RETURNING *')
-    .get(Date.now(), id) as WorkspaceRow | undefined
+    .prepare(
+      'UPDATE workspaces SET closed_at = ?, last_title = COALESCE(?, last_title) WHERE id = ? RETURNING *'
+    )
+    .get(Date.now(), lastTitle, id) as WorkspaceRow | undefined
   if (!row) return undefined
   const record = rowToWorkspaceRecord(row)
   broadcastWorkspaceChanged(record)

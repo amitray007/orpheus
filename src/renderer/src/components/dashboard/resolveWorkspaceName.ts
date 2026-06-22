@@ -19,6 +19,7 @@ export function resolveWorkspaceName(args: {
   if (!workspace.nameIsAuto) return { text: workspace.name, muted: false }
   if (terminalTitle) return { text: terminalTitle, muted: false }
   if (sessionTitle) return { text: sessionTitle, muted: false }
+  if (workspace.lastTitle) return { text: workspace.lastTitle, muted: false }
 
   return { text: 'New workspace', muted: true }
 }
