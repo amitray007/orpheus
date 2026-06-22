@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 55
+const CURRENT_VERSION = 56
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -345,6 +345,11 @@ const UI_STATE_SCHEMA_SQL = `
     mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
     -- Workspace footer visibility (v45)
     show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1)),
+    -- Diagnostics capture toggles (v56)
+    diag_error INTEGER NOT NULL DEFAULT 1,
+    diag_lifecycle INTEGER NOT NULL DEFAULT 0,
+    diag_perf INTEGER NOT NULL DEFAULT 0,
+    diag_anomaly INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
 `
@@ -2143,6 +2148,22 @@ function migrate(db: Database.Database): void {
       /* ignore — table may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(55)
+  }
+
+  if (currentVersion < 56) {
+    for (const [col, def] of [
+      ['diag_error', '1'],
+      ['diag_lifecycle', '0'],
+      ['diag_perf', '0'],
+      ['diag_anomaly', '0']
+    ] as const) {
+      try {
+        db.exec(`ALTER TABLE app_ui_state ADD COLUMN ${col} INTEGER NOT NULL DEFAULT ${def}`)
+      } catch {
+        /* column may already exist */
+      }
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(56)
   }
 }
 

@@ -70,6 +70,11 @@ type AppUiStateRow = {
   mute_status_notifications: number | null
   // Workspace footer visibility (v45)
   show_workspace_footer: number | null
+  // Diagnostics capture toggles (v56)
+  diag_error: number | null
+  diag_lifecycle: number | null
+  diag_perf: number | null
+  diag_anomaly: number | null
   updated_at: number
 }
 
@@ -133,6 +138,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
+    // Diagnostics capture toggles (v56)
+    diagError: row.diag_error == null ? true : row.diag_error === 1,
+    diagLifecycle: row.diag_lifecycle === 1,
+    diagPerf: row.diag_perf === 1,
+    diagAnomaly: row.diag_anomaly === 1,
     updatedAt: row.updated_at
   }
 }
@@ -306,7 +316,12 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     statusPollIntervalSec: 'status_poll_interval_sec',
     muteStatusNotifications: 'mute_status_notifications',
     // Workspace footer visibility (v45)
-    showWorkspaceFooter: 'show_workspace_footer'
+    showWorkspaceFooter: 'show_workspace_footer',
+    // Diagnostics capture toggles (v56)
+    diagError: 'diag_error',
+    diagLifecycle: 'diag_lifecycle',
+    diagPerf: 'diag_perf',
+    diagAnomaly: 'diag_anomaly'
   }
 
   const setClauses: string[] = []

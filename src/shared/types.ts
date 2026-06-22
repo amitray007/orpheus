@@ -156,6 +156,11 @@ export type AppUiState = {
   inProgressWatchdogSec: number
   // (v54) Minutes of no agent activity before the sidebar marks a workspace stale.
   staleAfterMinutes: number
+  // (v56) Diagnostics capture toggles. Errors on by default; rest opt-in.
+  diagError: boolean
+  diagLifecycle: boolean
+  diagPerf: boolean
+  diagAnomaly: boolean
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
