@@ -329,7 +329,17 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
     // --- Cmd+C / Cmd+V / Cmd+X (clipboard triad) ---
     if (mods & NSEventModifierFlagCommand) {
-        if (c == 'c' || c == 'C' || c == 'v' || c == 'V' || c == 'x' || c == 'X') {
+        if (c == 'v' || c == 'V') {
+            // Image on the clipboard? Write a temp PNG and inject its path
+            // so claude receives it as an image attachment. Falls through to
+            // normal text paste when the clipboard holds text or a file URL.
+            if ([self tryPasteClipboardImage]) {
+                return YES;
+            }
+            [self keyDown:event];
+            return YES;
+        }
+        if (c == 'c' || c == 'C' || c == 'x' || c == 'X') {
             [self keyDown:event];
             return YES;
         }
@@ -850,6 +860,59 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 
 - (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
     (void)sender;
+    return YES;
+}
+
+// Returns YES if the general pasteboard held an image that we wrote to a temp
+// PNG and injected as a quoted path; NO if there was no pasteable image (caller
+// should fall through to normal text paste).
+- (BOOL)tryPasteClipboardImage {
+    if (!self.surface) return NO;
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+
+    // Check for image data FIRST. macOS screenshots (and clipboard managers
+    // like Raycast) carry BOTH a public.tiff image flavor AND a public.file-url
+    // flavor, so a file-URL-first guard would wrongly skip a real image. We only
+    // treat the clipboard as a plain file/text paste when there is NO usable
+    // image flavor present.
+    NSArray<NSString*>* types = pb.types;
+    BOOL hasImageData = [types containsObject:NSPasteboardTypePNG]
+                     || [types containsObject:NSPasteboardTypeTIFF];
+    if (!hasImageData) return NO;
+
+    // Read PNG bytes directly, or normalise TIFF→PNG.
+    NSData* pngData = nil;
+    if ([types containsObject:NSPasteboardTypePNG]) {
+        pngData = [pb dataForType:NSPasteboardTypePNG];
+    }
+    if (!pngData) {
+        NSData* tiff = [pb dataForType:NSPasteboardTypeTIFF];
+        if (tiff) {
+            NSBitmapImageRep* rep = [NSBitmapImageRep imageRepWithData:tiff];
+            pngData = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        }
+    }
+    if (!pngData || pngData.length == 0) return NO;
+
+    // Write to a temp file: <NSTemporaryDirectory()>/orpheus-paste-<ms>.png
+    NSString* dir = NSTemporaryDirectory();
+    NSString* name = [NSString stringWithFormat:@"orpheus-paste-%.0f.png",
+                      [[NSDate date] timeIntervalSince1970] * 1000.0];
+    NSString* path = [dir stringByAppendingPathComponent:name];
+    if (![pngData writeToFile:path atomically:YES]) return NO;
+
+    // Quote the path (mirror performDragOperation: quoting logic).
+    NSString* out = path;
+    NSCharacterSet* needsQuote = [NSCharacterSet characterSetWithCharactersInString:
+                                  @" \t\"'$`\\(){}[]&|;<>*?#"];
+    if ([path rangeOfCharacterFromSet:needsQuote].location != NSNotFound) {
+        NSString* escaped = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\"'\"'"];
+        out = [NSString stringWithFormat:@"'%@'", escaped];
+    }
+    const char* utf8 = [out UTF8String];
+    if (!utf8) return NO;
+    ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
+    NSLog(@"[ghostty-native] pasted clipboard image -> %@", path);
     return YES;
 }
 
