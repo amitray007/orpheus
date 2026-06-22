@@ -133,10 +133,20 @@ struct GhosttySurfaceEntry {
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
+    bool desiredVisible{false};  // true when this workspace should be shown+focused
 };
 
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// The workspace that should currently be visible+focused. At most one at a time
+// (single-BrowserWindow invariant — Orpheus runs one window).
+static std::string g_visibleWorkspaceId;
+
+// Forward declarations for reconcileSurface / setVisibleWorkspace so
+// handleOcclusionChange: (inside @implementation) can call them.
+static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
+static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake);
 
 @implementation OrpheusGhosttyView
 
@@ -1011,15 +1021,21 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     BOOL occluded = !(self.window.occlusionState & NSWindowOcclusionStateVisible);
 
     if (!occluded) {
-        // Window came to foreground: re-assert focus + occlusion + draw
+        // Window came to foreground: re-assert focus via reconciler.
         if (self.surface) {
-            ghostty_surface_set_focus(self.surface, true);
-            ghostty_surface_set_occlusion(self.surface, true);
-            ghostty_surface_draw(self.surface);
             std::string wsId = [self.workspaceId UTF8String];
-            auto it = g_surfaces.find(wsId);
-            if (it != g_surfaces.end()) { it->second.liveTick++; }
-            orpheusPushLiveness(wsId, false);
+            if (wsId == g_visibleWorkspaceId) {
+                auto wit = g_surfaces.find(wsId);
+                if (wit != g_surfaces.end()) {
+                    wit->second.liveTick++;
+                    orpheusPushLiveness(wsId, false);
+                    wit->second.desiredVisible = true;
+                    // reconcileSurface with nil contentView is safe here because
+                    // the surface is already attached (isAttached=YES); the nil
+                    // contentView path is only taken for re-attach (isAttached=NO).
+                    reconcileSurface(wsId, nil, true);
+                }
+            }
         }
     } else {
         // Window went to background: mark occluded (stops render link)
@@ -2453,6 +2469,139 @@ static NSView* ensureBackstopView(NSView* contentView) {
     return backstop;
 }
 
+// ---------------------------------------------------------------------------
+// reconcileSurface — the single writer of focus+occlusion for a surface.
+//
+// Reads entry.desiredVisible and reconciles the actual ghostty gate to match.
+// All four NAPI functions (Mount/Hide/Focus/Destroy) route through here for
+// any gate-state change, eliminating multiple scattered writers.
+//
+// forceWake controls the already-attached desiredVisible=true path only:
+//   true  → FORCE-TOGGLE (false→true cycle). Required after display-sleep or
+//            idle because ghostty's dedup ignores a plain set_focus(true) when
+//            the flag is already true (Surface.zig:3265). Use for genuine wake/
+//            recovery/foreground-return.
+//   false → DIRECT SET only (focus true + occlusion true + draw). Safe for
+//            idempotent re-shows of an already-visible surface; avoids the
+//            false→true down-signal that can drop a rendered frame (flicker).
+//
+// The !isAttached re-attach path ALWAYS force-toggles unconditionally (a hidden
+// surface is definitely gate-stopped); forceWake does not affect it.
+//
+// NOTE: ensureBackstopView() must have been called before this for a show path.
+// contentView is only needed for a desiredVisible=true + !isAttached transition.
+// Pass nil if the caller guarantees the surface is already attached.
+// ---------------------------------------------------------------------------
+static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake) {
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return;
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.surface || !entry.view) return;
+
+    if (entry.desiredVisible) {
+        if (!entry.isAttached) {
+            // Surface was hidden — re-attach it above the backstop.
+            if (contentView) {
+                NSView* backstop = ensureBackstopView(contentView);
+                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
+            }
+            // Gap-fill: paint pre-first-frame gap app-dark.
+            entry.view.layer.backgroundColor = orpheusGapFillColor();
+
+            // FORCE-TOGGLE: surface was gate-stopped (hidden). false→true cycle
+            // makes the change "stick" through ghostty's dedup logic.
+            ghostty_surface_set_occlusion(entry.surface, false);
+            ghostty_surface_set_focus(entry.surface, false);
+            ghostty_surface_set_focus(entry.surface, true);
+            ghostty_surface_set_occlusion(entry.surface, true);
+            ghostty_surface_draw(entry.surface);
+
+            entry.isAttached = YES;
+
+            // SYNCHRONOUS makeFirstResponder (async opens an input race where a
+            // keystroke right after mount routes to WebContents instead of terminal).
+            // NAPI runs on main thread ✓.
+            {
+                NSWindow* win = [entry.view window];
+                if (win) [win makeFirstResponder:entry.view];
+            }
+
+        } else {
+            // Already attached. Behavior depends on forceWake:
+            //   true  → FORCE-TOGGLE: false→true cycle restarts a gate-stopped
+            //            display link (display-sleep / foreground-return / kick).
+            //   false → DIRECT SET: no down-signal, no flicker. Safe for
+            //            idempotent re-shows where the surface is already painting.
+            if (forceWake) {
+                ghostty_surface_set_occlusion(entry.surface, false);
+                ghostty_surface_set_focus(entry.surface, false);
+                ghostty_surface_set_focus(entry.surface, true);
+                ghostty_surface_set_occlusion(entry.surface, true);
+            } else {
+                ghostty_surface_set_focus(entry.surface, true);
+                ghostty_surface_set_occlusion(entry.surface, true);
+            }
+            ghostty_surface_draw(entry.surface);
+
+            // Sync makeFirstResponder for focus re-assertion.
+            {
+                NSWindow* win = [entry.view window];
+                if (win) [win makeFirstResponder:entry.view];
+            }
+        }
+
+    } else {
+        // desiredVisible = false — hide the surface.
+        if (entry.isAttached) {
+            // Gate closed: stop the display link.
+            ghostty_surface_set_focus(entry.surface, false);
+            ghostty_surface_set_occlusion(entry.surface, false);
+            [entry.view removeFromSuperview];
+            entry.isAttached = NO;
+        }
+        // Already hidden — no-op.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// setVisibleWorkspace — mutual-exclusion entry point for the one-visible
+// invariant. Marks the new workspace as desiredVisible=true and the previous
+// one as desiredVisible=false, then reconciles new FIRST (paint first frame)
+// then reconciles old (removeFromSuperview). Show-new-before-hide-old preserves
+// the backstop fix: no frame where neither surface is painted over the backstop.
+//
+// contentView and forceWake are forwarded to reconcileSurface for the new
+// surface. forceWake=true triggers the force-toggle (wake/recovery); false uses
+// the direct-set path (no flicker for routine nav). The hide reconcile always
+// passes forceWake=false (desiredVisible=false path ignores it).
+// ---------------------------------------------------------------------------
+static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake) {
+    std::string prevId = g_visibleWorkspaceId;
+
+    // Mark new surface as desired visible.
+    {
+        auto it = g_surfaces.find(workspaceId);
+        if (it != g_surfaces.end()) {
+            it->second.desiredVisible = true;
+        }
+    }
+
+    // Update the tracker.
+    g_visibleWorkspaceId = workspaceId;
+
+    // Show new surface FIRST (paint before removing old).
+    reconcileSurface(workspaceId, contentView, forceWake);
+
+    // Then hide the previous surface (if different).
+    if (!prevId.empty() && prevId != workspaceId) {
+        auto it = g_surfaces.find(prevId);
+        if (it != g_surfaces.end()) {
+            it->second.desiredVisible = false;
+        }
+        reconcileSurface(prevId, nil, false);
+    }
+}
+
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -2545,6 +2694,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             uint32_t physH = (uint32_t)(rh * scaleFactor);
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+            setVisibleWorkspace(workspaceId, contentView, false);
         } else {
             // Re-attach: add back to superview, wake renderer.
             NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
@@ -2554,26 +2704,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            // Position the terminal ABOVE the persistent backstop so the backstop
-            // remains the bottom-most sibling. WebContents stays above us — it was
-            // already above terminals when they were at the bottom; moving the
-            // backstop below terminals preserves that invariant.
-            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
-            // Gap-fill: paint the pre-first-frame gap app-dark so a workspace
-            // switch shows the background color instead of the desktop.
-            entry.view.layer.backgroundColor = orpheusGapFillColor();
-
-            // Wake the renderer: the ghostty_surface_set_occlusion parameter is
-            // `visible` (NOT `occluded`). Setting it true marks the surface
-            // visible → ghostty's setVisible(true) restarts the internal
-            // CVDisplayLink (generic.zig:setVisible). The link only starts when
-            // BOTH visible AND focused are true (generic.zig:1059), so we set
-            // focus first to open that gate. makeFirstResponder may be async;
-            // setting focus here synchronously ensures the gate is open before
-            // the display link tries to start. The 10Hz safety timer covers any
-            // residual window between these calls and the first tick.
-            ghostty_surface_set_focus(entry.surface, true);
-            ghostty_surface_set_occlusion(entry.surface, true);  // visible=true → restarts display link
 
             // Update size only if dimensions actually changed while hidden.
             // ghostty_surface_set_size reflows the buffer and snaps the viewport
@@ -2592,22 +2722,17 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
                 ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
             }
 
-            // One synchronous draw so the first frame paints immediately,
-            // before the display link fires its first tick. Runs on main ✓.
-            ghostty_surface_draw(entry.surface);
+            entry.lastRect = CGRectMake(rx, ry, rw, rh);
+            entry.lastScale = scaleFactor;
             entry.liveTick++;
             orpheusPushLiveness(workspaceId, false);
 
-            // Re-grab first responder.
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if ([entry.view window]) {
-                    [[entry.view window] makeFirstResponder:entry.view];
-                }
-            });
-
-            entry.lastRect = CGRectMake(rx, ry, rw, rh);
-            entry.lastScale = scaleFactor;
-            entry.isAttached = YES;
+            // setVisibleWorkspace handles: addSubview above backstop, gap-fill,
+            // force-toggle (via !isAttached path), draw, isAttached=YES,
+            // synchronous makeFirstResponder, and hiding the previous surface.
+            // forceWake=false: the !isAttached branch force-toggles unconditionally;
+            // forceWake only governs the already-attached branch.
+            setVisibleWorkspace(workspaceId, contentView, false);
         }
 
         Napi::Object result = Napi::Object::New(env);
@@ -2753,43 +2878,36 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
     termView.surface = surface;
 
-    // Make the terminal first responder so the user can type immediately.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if ([termView window]) {
-            [[termView window] makeFirstResponder:termView];
-        }
-    });
-
     // Set initial size (physical pixels).
     uint32_t physW = (uint32_t)(rw * scaleFactor);
     uint32_t physH = (uint32_t)(rh * scaleFactor);
     ghostty_surface_set_size(surface, physW, physH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
 
-    // Ghostty defaults visible=true for new surfaces, so the display link
-    // should start as soon as focus is set. Set focus explicitly here for
-    // parity with the re-attach path and to satisfy the visible+focused gate
-    // (generic.zig:1059) before the first draw. Then issue a synchronous
-    // one-shot draw so the first frame paints before the display link ticks.
-    // Runs on main ✓.
-    ghostty_surface_set_focus(surface, true);
-    ghostty_surface_draw(surface);
-
     // Store entry — view is retained by the map (ARC __strong).
     // ghostty's own internal CVDisplayLink (created in generic.zig:loopEnter)
     // drives all rendering autonomously on a private renderer thread; we do
     // not need a host-side display link.
     GhosttySurfaceEntry entry;
-    entry.surface    = surface;
-    entry.view       = termView;
-    entry.isAttached = YES;
-    entry.lastRect   = CGRectMake(rx, ry, rw, rh);
-    entry.lastScale  = scaleFactor;
+    entry.surface       = surface;
+    entry.view          = termView;
+    entry.isAttached    = YES;
+    entry.desiredVisible = true;
+    entry.lastRect      = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale     = scaleFactor;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
+    g_visibleWorkspaceId = workspaceId;
     // Bump per-entry liveTick AFTER entry is stored so g_surfaces lookup works
     g_surfaces[workspaceId].liveTick++;
     orpheusPushLiveness(workspaceId, false);
+
+    // reconcileSurface handles: direct-set gate (focus+occlusion), draw,
+    // and synchronous makeFirstResponder (replaces the old dispatch_async).
+    // isAttached=YES above, so reconcile takes the "already attached" path.
+    // forceWake=false: brand-new surface, not gate-stopped; if it later freezes
+    // the watchdog or Focus() will kick it with forceWake=true.
+    reconcileSurface(workspaceId, contentView, false);
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
@@ -2831,17 +2949,13 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
 
     NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
 
-    // Tell Ghostty the surface is no longer visible — parameter is `visible`
-    // (NOT `occluded`), so visible=false stops the internal display link
-    // (generic.zig:setVisible). Clear focus first so both visible and focused
-    // gates are false; this prevents the link from accidentally restarting.
-    ghostty_surface_set_focus(entry.surface, false);
-    ghostty_surface_set_occlusion(entry.surface, false);  // visible=false → stops display link
-
-    // Remove from view hierarchy — view is retained in the map, not freed.
-    [entry.view removeFromSuperview];
-
-    entry.isAttached = NO;
+    entry.desiredVisible = false;
+    if (g_visibleWorkspaceId == workspaceId) {
+        g_visibleWorkspaceId.clear();
+    }
+    // reconcileSurface handles: set_focus(false), set_occlusion(false),
+    // removeFromSuperview, isAttached=NO.
+    reconcileSurface(workspaceId, nil, false);
     return env.Undefined();
 }
 
@@ -3046,26 +3160,19 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     if (it == g_surfaces.end()) return env.Undefined();
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
-    // Force a real state TRANSITION so ghostty restarts the stopped display
-    // link. Re-asserting true is deduped away (Surface.zig:3265, Thread.zig:355/381)
-    // when the flags are already true (which they are after display-sleep/idle,
-    // since no down-signal fired). Toggle false→true to make the change "stick".
+
+    NSLog(@"[ghostty-native] focus workspaceId=%s", workspaceId.c_str());
+
     if (entry.surface) {
-        ghostty_surface_set_occlusion(entry.surface, false);
-        ghostty_surface_set_focus(entry.surface, false);
-        ghostty_surface_set_focus(entry.surface, true);
-        ghostty_surface_set_occlusion(entry.surface, true);
-        ghostty_surface_draw(entry.surface);
         entry.liveTick++;
         orpheusPushLiveness(workspaceId, false);
     }
-    // SYNCHRONOUS makeFirstResponder (was dispatch_async, which opened an input
-    // race where a keystroke right after wake routed to WebContents instead of
-    // the terminal). NAPI handlers run on the main thread, so this is safe.
-    {
-        NSWindow* win = [entry.view window];
-        if (win) [win makeFirstResponder:entry.view];
-    }
+    // setVisibleWorkspace→reconcileSurface handles: force-toggle gate
+    // (false→true cycle for display-sleep wakeup), draw, and synchronous
+    // makeFirstResponder. Also hides the previous visible workspace if different.
+    // forceWake=true: Focus() is the explicit kick/wake-from-sleep primitive —
+    // it must force-toggle to unstick a gate-stopped surface.
+    setVisibleWorkspace(workspaceId, [entry.view superview], true);
     return env.Undefined();
 }
 
@@ -3091,6 +3198,9 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // lookup (e.g. hide() racing with archive) sees no entry.
     GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
+    if (g_visibleWorkspaceId == workspaceId) {
+        g_visibleWorkspaceId.clear();
+    }
     if (doomed.surface) {
         g_surfaceToWorkspaceId.erase(doomed.surface);
     }
