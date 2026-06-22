@@ -2469,11 +2469,22 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             ghostty_surface_set_focus(entry.surface, true);
             ghostty_surface_set_occlusion(entry.surface, true);  // visible=true → restarts display link
 
-            // Update size in case the window was resized while hidden.
+            // Update size only if dimensions actually changed while hidden.
+            // ghostty_surface_set_size reflows the buffer and snaps the viewport
+            // to the bottom, which would discard the user's scrollback position
+            // on a plain switch-and-back where nothing actually changed.
+            // The surface persists across hide/mount, so when size and scale are
+            // identical we skip the resize and ghostty keeps the prior scroll position.
             uint32_t physW = (uint32_t)(rw * scaleFactor);
             uint32_t physH = (uint32_t)(rh * scaleFactor);
-            ghostty_surface_set_size(entry.surface, physW, physH);
-            ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+            const bool sizeChanged =
+                entry.lastRect.size.width != rw ||
+                entry.lastRect.size.height != rh ||
+                entry.lastScale != scaleFactor;
+            if (sizeChanged) {
+                ghostty_surface_set_size(entry.surface, physW, physH);
+                ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+            }
 
             // One synchronous draw so the first frame paints immediately,
             // before the display link fires its first tick. Runs on main ✓.
