@@ -819,3 +819,35 @@ export type FooterActionDraft = Omit<
   /** When omitted on create, the backend assigns max(position)+1 for the scope. */
   position?: number
 }
+
+export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly'
+export type DiagLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+export type DiagProcess = 'main' | 'renderer' | 'native'
+
+// One diagnostic event. `event` should be a value from DIAG_EVENTS (string-typed
+// here to avoid a cross-import; callers use the const).
+export type DiagEvent = {
+  ts: number
+  process: DiagProcess
+  category: DiagCategory
+  level: DiagLevel
+  event: string
+  workspaceId?: string | null
+  sessionId?: string | null
+  durationMs?: number | null
+  message?: string
+  data?: Record<string, unknown> | null
+}
+
+// Stored row shape returned by queries (adds id + seq).
+export type DiagRow = DiagEvent & { id: number; seq: number }
+
+export type DiagQuery = {
+  sinceMs?: number
+  untilMs?: number
+  categories?: DiagCategory[]
+  levels?: DiagLevel[]
+  event?: string
+  workspaceId?: string
+  limit?: number
+}
