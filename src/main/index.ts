@@ -184,7 +184,13 @@ import {
 } from './footerActions'
 import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 import { refreshFromModelsDev } from './pricing'
-import { startDiagnostics, stopDiagnostics, logDiagMain, ingestDiagEvent } from './diagnostics'
+import {
+  startDiagnostics,
+  stopDiagnostics,
+  logDiagMain,
+  ingestDiagEvent,
+  setDiagCategoryFlags
+} from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1113,16 @@ ipcMain.on('diag:event', (_e, evt) => {
 
 ipcMain.handle('uiState:get', () => getAppUiState())
 
+function syncDiagFlags(): void {
+  const s = getAppUiState()
+  setDiagCategoryFlags({
+    error: s.diagError,
+    lifecycle: s.diagLifecycle,
+    perf: s.diagPerf,
+    anomaly: s.diagAnomaly
+  })
+}
+
 ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
@@ -1114,6 +1130,7 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+  syncDiagFlags()
   // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
   // can react without polling.
   const win = getMainWindow()
@@ -1688,6 +1705,7 @@ app.whenReady().then(() => {
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
   startDiagnostics()
+  syncDiagFlags()
 
   // Boot Quick Actions registry — registers all action descriptors so they're
   // available before any IPC can invoke them.

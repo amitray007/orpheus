@@ -14,9 +14,19 @@ let seqCounter = 0
 let timer: ReturnType<typeof setInterval> | null = null
 let insertStmt: Database.Statement | null = null
 
-// Phase 1: only 'error' is enabled. Phase 2 swaps this for a uiState read.
+let categoryFlags = { error: true, lifecycle: false, perf: false, anomaly: false }
+
+export function setDiagCategoryFlags(flags: {
+  error: boolean
+  lifecycle: boolean
+  perf: boolean
+  anomaly: boolean
+}): void {
+  categoryFlags = flags
+}
+
 export function isCategoryEnabled(c: DiagCategory): boolean {
-  return c === 'error'
+  return categoryFlags[c] === true
 }
 
 function pushRing(evt: DiagEvent): void {
