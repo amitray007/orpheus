@@ -5,6 +5,7 @@ import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
+import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
@@ -235,6 +236,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       } else {
         deleteTitle(e.workspaceId)
       }
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.api.workspaces.onActiveWorkspaceChanged(({ workspaceId }) => {
+      setAuthoritativeActiveWorkspace(workspaceId)
     })
   }, [])
 

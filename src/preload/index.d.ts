@@ -179,6 +179,7 @@ declare global {
         ) => Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }>
         reopen: (id: string) => Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }>
         onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void) => () => void
+        onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>

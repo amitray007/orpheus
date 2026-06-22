@@ -1220,6 +1220,10 @@ ipcMain.on(
   'workspace:setCurrentlyViewed',
   (_e, { workspaceId }: { workspaceId: string | null }) => {
     setCurrentlyViewedWorkspace(workspaceId)
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('terminal:activeWorkspaceChanged', { workspaceId })
+    }
   }
 )
 

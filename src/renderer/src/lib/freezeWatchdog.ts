@@ -17,6 +17,7 @@ const SETTLE_MS = 1500
 
 let activeWs: string | null = null
 let requestRemountCb: (() => void) | null = null
+let authoritativeActiveWs: string | null = null
 
 let lastInputTick = 0
 let lastLiveTick = 0
@@ -47,6 +48,10 @@ export function setActiveWatchdogWorkspace(
 
 export function getActiveWatchdogWorkspace(): string | null {
   return activeWs
+}
+
+export function setAuthoritativeActiveWorkspace(workspaceId: string | null): void {
+  authoritativeActiveWs = workspaceId
 }
 
 function disarm(): void {
@@ -85,8 +90,9 @@ function onLiveness(d: {
 
   // Don't arm during the post-activation settle window (surface re-attaching).
   const settled = performance.now() >= settleUntilMs
+  const targetValid = authoritativeActiveWs === null || activeWs === authoritativeActiveWs
 
-  if (inputAdvanced && settled && activeWs && !armed && !recovering) {
+  if (inputAdvanced && settled && activeWs && !armed && !recovering && targetValid) {
     armed = true
     armSnapshotLive = d.liveTick
     armedAtMs = performance.now()
@@ -99,6 +105,8 @@ function checkFreeze(): void {
   armed = false
   armTimer = null
   if (!activeWs) return
+  const targetValid = authoritativeActiveWs === null || activeWs === authoritativeActiveWs
+  if (!targetValid) return
   if (lastLiveTick > armSnapshotLive) return // pipeline responded -> healthy
   void recover(activeWs)
 }

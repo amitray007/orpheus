@@ -297,6 +297,12 @@ const api = {
       const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void => cb(e)
       ipcRenderer.on('workspaces:changed', listener)
       return () => ipcRenderer.removeListener('workspaces:changed', listener)
+    },
+    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, payload: { workspaceId: string | null }): void =>
+        cb(payload)
+      ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
     }
   },
   pins: {
