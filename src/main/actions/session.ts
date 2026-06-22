@@ -270,7 +270,9 @@ function processLine(acc: AccumulatorState, rawLine: string): void {
 
       // Point-in-time context occupancy: OVERWRITE each turn (not cumulative).
       // Used for the footer context chip — reflects only the current turn's window.
-      acc.lastTurnContextTokens = inp + cacheRead + cacheCreate
+      // Includes output: matches claude's /context, where the turn's response is
+      // resident in the window (the next turn's input+cache absorbs it).
+      acc.lastTurnContextTokens = inp + cacheRead + cacheCreate + out
 
       // Accumulate per-model token tallies for deferred cost computation
       const lineModelKey = lineModel ?? acc.model ?? ''
