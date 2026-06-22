@@ -104,6 +104,15 @@
 static Napi::ThreadSafeFunction g_occlusionTSFN;
 static bool g_occlusionTSFNActive = false;
 
+// Liveness-tick globals — declared before the class so keyDown:, mouseDown:,
+// and handleOcclusionChange: can reference them.
+static std::atomic<uint64_t> g_inputTick{0};
+static std::atomic<uint64_t> g_liveTick{0};
+static bool g_livenessTSFNActive = false;
+static std::atomic<uint64_t> g_lastLivenessPushMs{0};
+// orpheusPushLiveness defined after @end (needs g_livenessTSFN which is post-class)
+static void orpheusPushLiveness(bool occluded);
+
 @implementation OrpheusGhosttyView
 
 - (BOOL)isFlipped {
@@ -340,6 +349,8 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 // ---------------------------------------------------------------------------
 
 - (void)keyDown:(NSEvent *)event {
+    g_inputTick.fetch_add(1, std::memory_order_relaxed);
+    orpheusPushLiveness(self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
     if (!self.surface) {
         [self interpretKeyEvents:@[event]];
         return;
@@ -591,6 +602,8 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
+    g_inputTick.fetch_add(1, std::memory_order_relaxed);
+    orpheusPushLiveness(self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
     if (!self.surface) return;
     // A DOM overlay (e.g. sidebar hover card) may have stolen first-responder;
     // re-establish libghostty focus so keyboard input reaches the terminal.
@@ -897,6 +910,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
             ghostty_surface_set_focus(self.surface, true);
             ghostty_surface_set_occlusion(self.surface, true);
             ghostty_surface_draw(self.surface);
+            g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
         }
     } else {
         // Window went to background: mark occluded (stops render link)
@@ -1593,11 +1607,30 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
 static Napi::ThreadSafeFunction g_titleTSFN;
 static bool g_titleTSFNActive = false;
+static Napi::ThreadSafeFunction g_livenessTSFN;
 
 // Diagnostic: when set, every action_cb invocation forwards its tag value
 // (integer) to JS. Used to debug the title flow.
 static Napi::ThreadSafeFunction g_actionTraceTSFN;
 static bool g_actionTraceTSFNActive = false;
+
+// Push {inputTick, liveTick, occluded} to JS, throttled to ~4Hz. The renderer
+// watchdog needs only coarse liveness. Call from MAIN-THREAD sites only.
+static void orpheusPushLiveness(bool occluded) {
+    if (!g_livenessTSFNActive) return;
+    uint64_t nowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+    uint64_t last = g_lastLivenessPushMs.load(std::memory_order_relaxed);
+    if (nowMs - last < 250) return;
+    g_lastLivenessPushMs.store(nowMs, std::memory_order_relaxed);
+    uint64_t inT = g_inputTick.load(std::memory_order_relaxed);
+    uint64_t liveT = g_liveTick.load(std::memory_order_relaxed);
+    g_livenessTSFN.BlockingCall(
+        [inT, liveT, occluded](Napi::Env env, Napi::Function cb) {
+            cb.Call({ Napi::Number::New(env, (double)inT),
+                      Napi::Number::New(env, (double)liveT),
+                      Napi::Boolean::New(env, occluded) });
+        });
+}
 
 static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -1659,6 +1692,24 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
         1
     );
     g_actionTraceTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetLivenessCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setLivenessCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_livenessTSFNActive) { g_livenessTSFN.Release(); g_livenessTSFNActive = false; }
+    g_livenessTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "OrpheusLivenessTSFN",
+        0,
+        1
+    );
+    g_livenessTSFNActive = true;
     return env.Undefined();
 }
 
@@ -1766,6 +1817,7 @@ static void wakeup_cb(void* /*userdata*/) {
     // Called from Ghostty's IO thread — do not call ghostty_* here.
     // Set the damage flag so the main-thread safety timer can issue a draw;
     // then marshal to the JS main thread to call ghostty_app_tick().
+    g_liveTick.fetch_add(1, std::memory_order_relaxed);
     g_damageFlag.store(1, std::memory_order_release);
     if (g_tickAsyncInited.load(std::memory_order_acquire)) {
         uv_async_send(&g_tickAsync);
@@ -2193,6 +2245,7 @@ static bool ensureApp() {
             GhosttySurfaceEntry& e = kv.second;
             if (e.isAttached && e.surface) {
                 ghostty_surface_draw(e.surface);
+                g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
             }
         }
     }];
@@ -2413,6 +2466,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // One synchronous draw so the first frame paints immediately,
             // before the display link fires its first tick. Runs on main ✓.
             ghostty_surface_draw(entry.surface);
+            g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
 
             // Re-grab first responder.
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -2590,6 +2644,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Runs on main ✓.
     ghostty_surface_set_focus(surface, true);
     ghostty_surface_draw(surface);
+    g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
 
     // Store entry — view is retained by the map (ARC __strong).
     // ghostty's own internal CVDisplayLink (created in generic.zig:loopEnter)
@@ -2869,6 +2924,7 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
         ghostty_surface_set_focus(entry.surface, true);
         ghostty_surface_set_occlusion(entry.surface, true);
         ghostty_surface_draw(entry.surface);
+        g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
     }
     // SYNCHRONOUS makeFirstResponder (was dispatch_async, which opened an input
     // race where a keystroke right after wake routed to WebContents instead of
@@ -3130,6 +3186,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setLivenessCallback",       Napi::Function::New(env, SetLivenessCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
