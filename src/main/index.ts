@@ -335,6 +335,12 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
     }
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
   })
+  addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
+    getMainWindow()?.webContents.send('terminal:sleepStateChanged', {
+      workspaceId,
+      sleeping: occluded
+    })
+  })
   // Diagnostic: forward every action_cb tag to the renderer for visibility
   // via DevTools console. Gated on ORPHEUS_DEBUG_ACTION_TRACE=1 because this
   // fires at 60-120 Hz (every RENDER action) and is heavy in production.
@@ -1302,6 +1308,7 @@ type GhosttyNativeAddon = {
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
+  setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (
     workspaceId: string,

@@ -6,6 +6,8 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useTerminalSleeping } from '@/lib/sleepStore'
+import { Moon } from '@phosphor-icons/react'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -60,6 +62,10 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
+
+  // Sleep state — true when the macOS window is occluded/backgrounded and the
+  // native terminal render loop is paused.
+  const sleeping = useTerminalSleeping(workspace.id)
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
@@ -442,7 +448,19 @@ export function WorkspaceView({
               OVER it. This div MUST stay background-less (transparent) so the terminal
               shows through; an opaque bg here would hide the terminal entirely.
               ResizeObserver fires when the footer height changes the container. */}
-          <div ref={containerRef} className="flex-1 min-w-0 relative" />
+          <div ref={containerRef} className="flex-1 min-w-0 relative">
+            {active && sleeping && (
+              <button
+                type="button"
+                onClick={() => void window.api.terminal.focus(workspace.id)}
+                title="Click to wake the terminal"
+                className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-surface-overlay/90 border border-border-default rounded-md px-2 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
+              >
+                <Moon size={12} weight="fill" />
+                Asleep
+              </button>
+            )}
+          </div>
 
           <WorkspaceFooter
             workspaceId={workspace.id}

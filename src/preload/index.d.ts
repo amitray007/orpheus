@@ -84,6 +84,9 @@ declare global {
           cb: (e: { workspaceId: string; canInject: boolean }) => void
         ) => () => void
         focus: (workspaceId: string) => Promise<void>
+        onSleepStateChanged: (
+          cb: (data: { workspaceId: string; sleeping: boolean }) => void
+        ) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>

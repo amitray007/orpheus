@@ -104,7 +104,15 @@ const api = {
       return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
     },
     focus: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:focus', { workspaceId })
+      ipcRenderer.invoke('terminal:focus', { workspaceId }),
+    onSleepStateChanged: (
+      cb: (data: { workspaceId: string; sleeping: boolean }) => void
+    ): (() => void) => {
+      const listener = (_e: unknown, data: { workspaceId: string; sleeping: boolean }): void =>
+        cb(data)
+      ipcRenderer.on('terminal:sleepStateChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:sleepStateChanged', listener)
+    }
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
