@@ -82,6 +82,20 @@ try {
   process.exit(1)
 }
 
+// Clean message if the diagnostics table doesn't exist yet (app hasn't run the
+// v55 migration on this data dir). Avoids a raw SQLiteError stack trace.
+{
+  const t = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='diagnostics_events'")
+    .get()
+  if (!t) {
+    console.error(
+      '[diag] no diagnostics_events table yet — launch the app once (it runs the migration), then retry.'
+    )
+    process.exit(0)
+  }
+}
+
 function buildWhere(): { sql: string; params: Record<string, unknown> } {
   const where: string[] = []
   const params: Record<string, unknown> = {}
@@ -93,27 +107,27 @@ function buildWhere(): { sql: string; params: Record<string, unknown> } {
   }
   if (lo != null) {
     where.push('ts >= $lo')
-    params.lo = lo
+    params['$lo'] = lo
   }
   if (hi != null) {
     where.push('ts <= $hi')
-    params.hi = hi
+    params['$hi'] = hi
   }
   if (event) {
     where.push('event = $event')
-    params.event = event
+    params['$event'] = event
   }
   if (workspaceId) {
     where.push('workspace_id = $ws')
-    params.ws = workspaceId
+    params['$ws'] = workspaceId
   }
   if (categories?.length) {
     where.push(`category IN (${categories.map((_, i) => `$c${i}`).join(',')})`)
-    categories.forEach((c, i) => (params[`c${i}`] = c))
+    categories.forEach((c, i) => (params[`$c${i}`] = c))
   }
   if (levels?.length) {
     where.push(`level IN (${levels.map((_, i) => `$l${i}`).join(',')})`)
-    levels.forEach((l, i) => (params[`l${i}`] = l))
+    levels.forEach((l, i) => (params[`$l${i}`] = l))
   }
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', params }
 }
@@ -156,7 +170,7 @@ if (tail) {
   const tick = (): void => {
     const rows = db
       .query(`${SELECT} ${sql ? sql + ' AND' : 'WHERE'} id > $lastId ORDER BY id ASC LIMIT 500`)
-      .all({ ...params, lastId }) as Array<Record<string, unknown>>
+      .all({ ...params, $lastId: lastId }) as Array<Record<string, unknown>>
     if (rows.length) {
       lastId = Number(rows[rows.length - 1].id)
       console.log(table(rows))
@@ -167,6 +181,6 @@ if (tail) {
   const { sql, params } = buildWhere()
   const rows = db
     .query(`${SELECT} ${sql} ORDER BY ts ASC, seq ASC LIMIT $limit`)
-    .all({ ...params, limit }) as Array<Record<string, unknown>>
+    .all({ ...params, $limit: limit }) as Array<Record<string, unknown>>
   console.log(asJson ? JSON.stringify(rows, null, 2) : table(rows))
 }
