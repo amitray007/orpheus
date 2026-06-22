@@ -110,6 +110,7 @@ static std::atomic<uint64_t> g_inputTick{0};
 static std::atomic<uint64_t> g_liveTick{0};
 static bool g_livenessTSFNActive = false;
 static std::atomic<uint64_t> g_lastLivenessPushMs{0};
+static std::atomic<uint64_t> g_lastTitlePushMs{0};
 // orpheusPushLiveness defined after @end (needs g_livenessTSFN which is post-class)
 static void orpheusPushLiveness(bool occluded);
 
@@ -922,8 +923,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     // Fire callback to JS
     std::string wsId = [self.workspaceId UTF8String];
     bool isOccluded = (bool)occluded;
-    g_occlusionTSFN.BlockingCall(
-        new std::pair<std::string, bool>(wsId, isOccluded),
+    auto* occData = new std::pair<std::string, bool>(wsId, isOccluded);
+    napi_status occSt = g_occlusionTSFN.NonBlockingCall(
+        occData,
         [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, bool>* data) {
             jsCb.Call({
                 Napi::String::New(env, data->first),
@@ -932,6 +934,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
             delete data;
         }
     );
+    if (occSt != napi_ok) { delete occData; }
 }
 
 - (void)dealloc {
@@ -1312,7 +1315,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
     if (!g_loadingActionTSFNActive) return;
     std::string wsIdCpp = wsId.UTF8String;
-    g_loadingActionTSFN.BlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
+    g_loadingActionTSFN.NonBlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
         cb.Call({ Napi::String::New(env, wsIdCpp) });
     });
 }
@@ -1624,7 +1627,7 @@ static void orpheusPushLiveness(bool occluded) {
     g_lastLivenessPushMs.store(nowMs, std::memory_order_relaxed);
     uint64_t inT = g_inputTick.load(std::memory_order_relaxed);
     uint64_t liveT = g_liveTick.load(std::memory_order_relaxed);
-    g_livenessTSFN.BlockingCall(
+    g_livenessTSFN.NonBlockingCall(
         [inT, liveT, occluded](Napi::Env env, Napi::Function cb) {
             cb.Call({ Napi::Number::New(env, (double)inT),
                       Napi::Number::New(env, (double)liveT),
@@ -1646,7 +1649,7 @@ static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-title-callback",
-        0,   // unlimited queue
+        64,  // bounded queue
         1    // single thread
     );
     g_titleTSFNActive = true;
@@ -1667,7 +1670,7 @@ static Napi::Value SetOcclusionCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-occlusion-callback",
-        0,   // unlimited queue
+        64,  // bounded queue
         1    // single thread
     );
     g_occlusionTSFNActive = true;
@@ -1688,7 +1691,7 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-action-trace-callback",
-        0,
+        64,
         1
     );
     g_actionTraceTSFNActive = true;
@@ -1706,7 +1709,7 @@ static Napi::Value SetLivenessCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "OrpheusLivenessTSFN",
-        0,
+        64,
         1
     );
     g_livenessTSFNActive = true;
@@ -1727,7 +1730,7 @@ static Napi::Value SetLoadingActionCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-loading-action-callback",
-        0,
+        64,
         1
     );
     g_loadingActionTSFNActive = true;
@@ -1880,13 +1883,15 @@ static bool action_cb(ghostty_app_t /*app*/,
         }
         int tagInt = (int)action.tag;
         std::string tagStr = std::string(tagName) + "(" + std::to_string(tagInt) + ")";
-        g_actionTraceTSFN.BlockingCall(
-            new std::string(tagStr),
+        auto* traceData = new std::string(tagStr);
+        napi_status traceSt = g_actionTraceTSFN.NonBlockingCall(
+            traceData,
             [](Napi::Env env, Napi::Function jsCb, std::string* data) {
                 jsCb.Call({ Napi::String::New(env, *data) });
                 delete data;
             }
         );
+        if (traceSt != napi_ok) { delete traceData; }
     }
 
     if (action.tag == GHOSTTY_ACTION_SET_TITLE ||
@@ -1911,16 +1916,23 @@ static bool action_cb(ghostty_app_t /*app*/,
             }
             if (!workspaceId.empty()) {
                 std::string title = rawTitle ? rawTitle : "";
-                g_titleTSFN.BlockingCall(
-                    new std::pair<std::string, std::string>(workspaceId, title),
-                    [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
-                        jsCb.Call({
-                            Napi::String::New(env, data->first),
-                            Napi::String::New(env, data->second)
-                        });
-                        delete data;
-                    }
-                );
+                uint64_t titleNowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+                uint64_t lastTitle = g_lastTitlePushMs.load(std::memory_order_relaxed);
+                if (titleNowMs - lastTitle >= 200) {
+                    g_lastTitlePushMs.store(titleNowMs, std::memory_order_relaxed);
+                    auto* titleData = new std::pair<std::string, std::string>(workspaceId, title);
+                    napi_status titleSt = g_titleTSFN.NonBlockingCall(
+                        titleData,
+                        [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
+                            jsCb.Call({
+                                Napi::String::New(env, data->first),
+                                Napi::String::New(env, data->second)
+                            });
+                            delete data;
+                        }
+                    );
+                    if (titleSt != napi_ok) { delete titleData; }
+                }
             }
         }
     }

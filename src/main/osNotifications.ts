@@ -41,6 +41,10 @@ export function setCurrentlyViewedWorkspace(workspaceId: string | null): void {
   if (workspaceId) cancelAttentionRetry(workspaceId)
 }
 
+export function getCurrentlyViewedWorkspace(): string | null {
+  return currentlyViewedWorkspaceId
+}
+
 function resolveWorkspaceLabel(workspaceId: string): string {
   const ws = getWorkspace(workspaceId)
   if (!ws) return workspaceId

@@ -117,6 +117,7 @@ import {
 import type { Theme } from '../shared/types'
 import {
   setCurrentlyViewedWorkspace,
+  getCurrentlyViewedWorkspace,
   fireTestNotification,
   cancelAttentionRetry
 } from './osNotifications'
@@ -512,10 +513,14 @@ app.on('before-quit', () => {
 
 function kickActiveTerminal(): void {
   try {
-    const state = getAppUiState()
-    if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
+    // Use the in-memory currently-viewed workspace (no SQLite dependency, so
+    // this works even if the main thread / DB is mid-stall). Reclaim focus
+    // unconditionally on app return — the addon.focus force-cycles the surface
+    // so it wakes even when the terminal was frozen / input was stuck.
+    const ws = getCurrentlyViewedWorkspace()
+    if (!ws) return
     console.log('[lifecycle] terminal kick (wake)')
-    loadTerminalAddon().focus(state.lastWorkspaceId)
+    loadTerminalAddon().focus(ws)
   } catch (err) {
     console.error('[lifecycle] terminal kick failed:', err)
   }
