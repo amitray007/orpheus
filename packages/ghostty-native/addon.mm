@@ -33,6 +33,7 @@
 #include <string>
 #include <map>
 #include <atomic>
+#include <cinttypes>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -134,6 +135,7 @@ struct GhosttySurfaceEntry {
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
+    uint64_t generation{0}; // bumped on each create; deferred free compares against this
 };
 
 // workspaceId → entry
@@ -1337,6 +1339,21 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
 // Maintained in sync with g_surfaces to give O(log n) lookup in action_cb
 // instead of the O(n) linear scan over g_surfaces.
 static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
+
+// Per-workspaceId freeing registry.
+//
+// g_freeingGeneration[workspaceId] = gen means a deferred ghostty_surface_free
+// for that workspace was scheduled with generation `gen` and has not yet
+// completed. A new Mount (create) bumps g_currentGeneration and proceeds
+// immediately; when the old block finally runs it finds gen < current and
+// knows it must only free its own captured handle (heap->surface) — which
+// it already does, since Destroy moved the old entry OUT of g_surfaces before
+// scheduling the block. The generation makes the isolation explicit and
+// detectable in logs.
+//
+// All access is main-thread-only (same as g_surfaces), so no locks needed.
+static std::map<std::string, uint64_t> g_freeingGeneration; // workspaceId -> gen at schedule time
+static std::map<std::string, uint64_t> g_currentGeneration; // workspaceId -> latest generation
 
 // Forward-declare the loading action TSFN so OrpheusLoadingActionTarget can
 // reference it before the full TSFN block further down the file.
@@ -2749,6 +2766,22 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
+    // Generation guard: bump the current generation for this workspaceId so any
+    // pending deferred free (from a prior Destroy) knows a new surface supersedes
+    // its old handle. The pending free will still run and free its own captured
+    // OLD surface handle (heap->surface) — it only skips clearing the freeing
+    // marker if a newer generation is present. No blocking wait: create proceeds
+    // immediately. If a free was pending, log it so dogfooding can detect the race.
+    uint64_t createGen = ++g_currentGeneration[workspaceId];
+    {
+        auto fit = g_freeingGeneration.find(workspaceId);
+        if (fit != g_freeingGeneration.end()) {
+            NSLog(@"[ghostty-native] mount workspaceId=%s: create gen=%" PRIu64
+                  " while free gen=%" PRIu64 " is still pending (old surface isolated; proceeding)",
+                  workspaceId.c_str(), createGen, fit->second);
+        }
+    }
+
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     // Same z-order rationale as the re-attach branch above.
@@ -2895,6 +2928,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.desiredVisible = true;
     entry.lastRect      = CGRectMake(rx, ry, rw, rh);
     entry.lastScale     = scaleFactor;
+    entry.generation    = createGen;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
     g_visibleWorkspaceId = workspaceId;
@@ -3218,16 +3252,43 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // contract, but it doesn't have to be synchronous with this NAPI call.
     // We allocate a heap copy of doomed so the block owns it cleanly
     // (avoids ObjC++ __block + std::move ARC interaction uncertainty).
+    //
+    // Generation guard: record which generation this free corresponds to.
+    // If a Mount for the same workspaceId arrives before this block runs,
+    // it bumps g_currentGeneration and proceeds to create a new surface.
+    // The block compares its captured `gen` against g_currentGeneration on
+    // completion: if they differ, a newer surface was already created — we
+    // still free our OWN captured old handle (heap->surface), but skip
+    // clearing the freeing marker because a newer one may be in flight.
+    //
+    // The deferred free is ALREADY isolated from any new surface: Destroy
+    // moved the old entry OUT of g_surfaces before this block was scheduled,
+    // so the block only touches heap (its own private copy) and never reads
+    // or writes g_surfaces[workspaceId]. The generation registry makes this
+    // isolation explicit and makes concurrent create-during-free detectable.
+    uint64_t gen = ++g_currentGeneration[workspaceId];
+    g_freeingGeneration[workspaceId] = gen;
+    std::string capturedWsId = workspaceId; // capture by value for the block
     GhosttySurfaceEntry* heap = new GhosttySurfaceEntry(std::move(doomed));
     dispatch_async(dispatch_get_main_queue(), ^{
         if (heap->surface) {
             // Slow: blocks main thread here, but AFTER the IPC call has returned.
+            // Always free the old captured handle — this is the correct surface
+            // to free regardless of whether a newer surface was created.
             ghostty_surface_free(heap->surface);
             heap->surface = nullptr;
         }
         heap->view = nil; // ARC release; removeFromSuperview already ran
         delete heap;
-        NSLog(@"[ghostty-native] destroy workspaceId=<deferred>: surface freed");
+        // Clear the freeing marker ONLY if it still points at our generation.
+        // If g_currentGeneration advanced past gen, a newer create already
+        // superseded us — leave the marker for the newer block to clear.
+        auto fit = g_freeingGeneration.find(capturedWsId);
+        if (fit != g_freeingGeneration.end() && fit->second == gen) {
+            g_freeingGeneration.erase(fit);
+        }
+        NSLog(@"[ghostty-native] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
+              capturedWsId.c_str(), gen);
     });
 
     return env.Undefined();
