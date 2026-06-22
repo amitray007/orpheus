@@ -193,7 +193,15 @@ export function WorkspaceTitleBar({
 
   const { refs, floatingStyles, context } = useFloating({
     open: detailsOpen,
-    onOpenChange: setDetailsOpen,
+    onOpenChange: (open: boolean) => {
+      setDetailsOpen(open)
+      // Restore terminal keyboard focus when the popover closes, otherwise the
+      // surface stays visible-but-unfocused and ghostty's render loop stalls
+      // until the next freeze-watchdog kick.
+      if (!open) {
+        void window.api.terminal.focus(workspace.id).catch(() => {})
+      }
+    },
     placement: 'bottom-end',
     middleware: [offset(6), flip(), shift({ padding: 8 })]
   })

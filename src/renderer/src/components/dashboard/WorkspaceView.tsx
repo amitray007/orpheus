@@ -93,6 +93,22 @@ export function WorkspaceView({
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
+  // Re-assert terminal keyboard focus whenever the settings drawer closes.
+  // The drawer open/close path changes layout (flex resize) but does NOT
+  // restore ghostty focus, leaving the render loop stalled until the watchdog.
+  // Guard: skip when drawer was never open (initial null) by using a ref that
+  // tracks whether drawer has ever been non-null.
+  const drawerWasOpenRef = useRef(false)
+  useEffect(() => {
+    if (drawer !== null) {
+      drawerWasOpenRef.current = true
+      return
+    }
+    if (!drawerWasOpenRef.current) return
+    if (!active) return
+    void window.api.terminal.focus(workspace.id).catch(() => {})
+  }, [drawer, active, workspace.id])
+
   const requestRemount = useCallback(() => {
     const el = containerRef.current
     if (!el) return

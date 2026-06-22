@@ -366,6 +366,10 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
         [self interpretKeyEvents:@[event]];
         return;
     }
+    // Re-assert ghostty focus on every keystroke so a focus-steal from a DOM
+    // overlay doesn't stall the render loop — ghostty deduplicates set_focus(true)
+    // when already focused so this is a cheap no-op in the normal case.
+    ghostty_surface_set_focus(self.surface, true);
 
     ghostty_input_action_e action = event.isARepeat
         ? GHOSTTY_ACTION_REPEAT
