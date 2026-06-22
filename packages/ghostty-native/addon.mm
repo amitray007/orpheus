@@ -96,7 +96,13 @@
 // can distinguish IME-committed text (outside keyDown:) from plain ASCII input
 // that ghostty_surface_key already handled via the .text field.
 @property (nonatomic, assign) BOOL inKeyDown;
+@property (nonatomic, copy) NSString* workspaceId;
 @end
+
+// Declared here (before @implementation OrpheusGhosttyView) so handleOcclusionChange:
+// can reference them. Mirrored from the title TSFN pattern further below.
+static Napi::ThreadSafeFunction g_occlusionTSFN;
+static bool g_occlusionTSFNActive = false;
 
 @implementation OrpheusGhosttyView
 
@@ -865,6 +871,59 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     return YES;
 }
 
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    // Remove old observer first (handles move-to-nil + window swap cases)
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSWindowDidChangeOcclusionStateNotification
+                                                  object:nil];
+    if (self.window) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleOcclusionChange:)
+                                                     name:NSWindowDidChangeOcclusionStateNotification
+                                                   object:self.window];
+    }
+}
+
+- (void)handleOcclusionChange:(NSNotification*)note {
+    if (!g_occlusionTSFNActive) return;
+    if (!self.workspaceId) return;
+
+    BOOL occluded = !(self.window.occlusionState & NSWindowOcclusionStateVisible);
+
+    if (!occluded) {
+        // Window came to foreground: re-assert focus + occlusion + draw
+        if (self.surface) {
+            ghostty_surface_set_focus(self.surface, true);
+            ghostty_surface_set_occlusion(self.surface, true);
+            ghostty_surface_draw(self.surface);
+        }
+    } else {
+        // Window went to background: mark occluded (stops render link)
+        if (self.surface) {
+            ghostty_surface_set_occlusion(self.surface, false);
+        }
+    }
+
+    // Fire callback to JS
+    std::string wsId = [self.workspaceId UTF8String];
+    bool isOccluded = (bool)occluded;
+    g_occlusionTSFN.BlockingCall(
+        new std::pair<std::string, bool>(wsId, isOccluded),
+        [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, bool>* data) {
+            jsCb.Call({
+                Napi::String::New(env, data->first),
+                Napi::Boolean::New(env, data->second)
+            });
+            delete data;
+        }
+    );
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
 @end
 
 // ---------------------------------------------------------------------------
@@ -1558,6 +1617,27 @@ static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
         1    // single thread
     );
     g_titleTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetOcclusionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setOcclusionCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_occlusionTSFNActive) {
+        g_occlusionTSFN.Release();
+        g_occlusionTSFNActive = false;
+    }
+    g_occlusionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-occlusion-callback",
+        0,   // unlimited queue
+        1    // single thread
+    );
+    g_occlusionTSFNActive = true;
     return env.Undefined();
 }
 
@@ -2296,6 +2376,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // Re-attach: add back to superview, wake renderer.
             NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
                   workspaceId.c_str());
+            entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
@@ -2358,6 +2439,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
+    termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     // Same z-order rationale as the re-attach branch above.
     [contentView addSubview:termView positioned:NSWindowAbove relativeTo:backstop];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
@@ -3041,6 +3123,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
