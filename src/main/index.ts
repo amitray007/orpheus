@@ -359,9 +359,16 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   // Liveness ticks (global) for the renderer freeze watchdog: inputTick bumps on
   // native key/mouse input, liveTick bumps on every draw/IO wakeup. Throttled
   // native-side. The watchdog applies them to the active workspace.
-  addon.setLivenessCallback((inputTick: number, liveTick: number, occluded: boolean) => {
-    getMainWindow()?.webContents.send('terminal:liveness', { inputTick, liveTick, occluded })
-  })
+  addon.setLivenessCallback(
+    (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => {
+      getMainWindow()?.webContents.send('terminal:liveness', {
+        workspaceId,
+        inputTick,
+        liveTick,
+        occluded
+      })
+    }
+  )
   // Diagnostic: forward every action_cb tag to the renderer for visibility
   // via DevTools console. Gated on ORPHEUS_DEBUG_ACTION_TRACE=1 because this
   // fires at 60-120 Hz (every RENDER action) and is heavy in production.
@@ -1370,7 +1377,7 @@ type GhosttyNativeAddon = {
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
   setLivenessCallback: (
-    cb: (inputTick: number, liveTick: number, occluded: boolean) => void
+    cb: (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => void
   ) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (

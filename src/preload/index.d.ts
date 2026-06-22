@@ -88,7 +88,12 @@ declare global {
           cb: (data: { workspaceId: string; sleeping: boolean }) => void
         ) => () => void
         onLiveness: (
-          cb: (data: { inputTick: number; liveTick: number; occluded: boolean }) => void
+          cb: (data: {
+            workspaceId: string
+            inputTick: number
+            liveTick: number
+            occluded: boolean
+          }) => void
         ) => () => void
       }
       config: {

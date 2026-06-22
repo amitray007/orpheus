@@ -114,11 +114,16 @@ const api = {
       return () => ipcRenderer.removeListener('terminal:sleepStateChanged', listener)
     },
     onLiveness: (
-      cb: (data: { inputTick: number; liveTick: number; occluded: boolean }) => void
+      cb: (data: {
+        workspaceId: string
+        inputTick: number
+        liveTick: number
+        occluded: boolean
+      }) => void
     ): (() => void) => {
       const listener = (
         _e: unknown,
-        data: { inputTick: number; liveTick: number; occluded: boolean }
+        data: { workspaceId: string; inputTick: number; liveTick: number; occluded: boolean }
       ): void => cb(data)
       ipcRenderer.on('terminal:liveness', listener)
       return () => ipcRenderer.removeListener('terminal:liveness', listener)

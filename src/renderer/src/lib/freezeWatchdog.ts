@@ -57,7 +57,16 @@ function disarm(): void {
   }
 }
 
-function onLiveness(d: { inputTick: number; liveTick: number; occluded: boolean }): void {
+function onLiveness(d: {
+  workspaceId: string
+  inputTick: number
+  liveTick: number
+  occluded: boolean
+}): void {
+  // Only process liveness for the currently active workspace.
+  // Background surfaces drawing must not mask a frozen foreground surface.
+  if (activeWs !== null && d.workspaceId !== activeWs) return
+
   lastOccluded = d.occluded
 
   // First push after (re)activation: seed the baselines, never arm. This makes

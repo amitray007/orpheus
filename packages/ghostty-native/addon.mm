@@ -112,7 +112,31 @@ static bool g_livenessTSFNActive = false;
 static std::atomic<uint64_t> g_lastLivenessPushMs{0};
 static std::atomic<uint64_t> g_lastTitlePushMs{0};
 // orpheusPushLiveness defined after @end (needs g_livenessTSFN which is post-class)
-static void orpheusPushLiveness(bool occluded);
+static void orpheusPushLiveness(const std::string& workspaceId, bool occluded);
+
+// ---------------------------------------------------------------------------
+// GhosttySurfaceEntry + g_surfaces
+// ---------------------------------------------------------------------------
+// Declared here (before @implementation OrpheusGhosttyView) so keyDown:,
+// mouseDown:, and handleOcclusionChange: can read/bump the per-workspace
+// liveness ticks stored on each entry.
+
+// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusLoadingOverlayView;
+
+struct GhosttySurfaceEntry {
+    ghostty_surface_t surface;
+    OrpheusGhosttyView* __strong view;
+    BOOL isAttached;              // YES = view is in contentView superview
+    CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
+    CGFloat lastScale;
+    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
+    uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
+    uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
+};
+
+// workspaceId → entry
+static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
 @implementation OrpheusGhosttyView
 
@@ -361,7 +385,14 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
 - (void)keyDown:(NSEvent *)event {
     g_inputTick.fetch_add(1, std::memory_order_relaxed);
-    orpheusPushLiveness(self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    if (self.workspaceId) {
+        std::string wsId = [self.workspaceId UTF8String];
+        auto it = g_surfaces.find(wsId);
+        if (it != g_surfaces.end()) {
+            it->second.inputTick++;
+        }
+        orpheusPushLiveness(wsId, self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    }
     if (!self.surface) {
         [self interpretKeyEvents:@[event]];
         return;
@@ -618,7 +649,14 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
     g_inputTick.fetch_add(1, std::memory_order_relaxed);
-    orpheusPushLiveness(self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    if (self.workspaceId) {
+        std::string wsId = [self.workspaceId UTF8String];
+        auto it = g_surfaces.find(wsId);
+        if (it != g_surfaces.end()) {
+            it->second.inputTick++;
+        }
+        orpheusPushLiveness(wsId, self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    }
     if (!self.surface) return;
     // A DOM overlay (e.g. sidebar hover card) may have stolen first-responder;
     // re-establish libghostty focus so keyboard input reaches the terminal.
@@ -978,7 +1016,10 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
             ghostty_surface_set_focus(self.surface, true);
             ghostty_surface_set_occlusion(self.surface, true);
             ghostty_surface_draw(self.surface);
-            g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
+            std::string wsId = [self.workspaceId UTF8String];
+            auto it = g_surfaces.find(wsId);
+            if (it != g_surfaces.end()) { it->second.liveTick++; }
+            orpheusPushLiveness(wsId, false);
         }
     } else {
         // Window went to background: mark occluded (stops render link)
@@ -1010,24 +1051,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 
 @end
 
-// ---------------------------------------------------------------------------
-// GhosttySurfaceEntry + g_surfaces
-// ---------------------------------------------------------------------------
-
-// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
-@class OrpheusLoadingOverlayView;
-
-struct GhosttySurfaceEntry {
-    ghostty_surface_t surface;
-    OrpheusGhosttyView* __strong view;
-    BOOL isAttached;              // YES = view is in contentView superview
-    CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
-    CGFloat lastScale;
-    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
-};
-
-// workspaceId → entry
-static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+// GhosttySurfaceEntry + g_surfaces are declared above @implementation
+// OrpheusGhosttyView (search "GhosttySurfaceEntry + g_surfaces") so the view's
+// input/occlusion handlers can bump the per-workspace liveness ticks.
 
 #if 0
 // ---------------------------------------------------------------------------
@@ -1684,22 +1710,34 @@ static Napi::ThreadSafeFunction g_livenessTSFN;
 static Napi::ThreadSafeFunction g_actionTraceTSFN;
 static bool g_actionTraceTSFNActive = false;
 
-// Push {inputTick, liveTick, occluded} to JS, throttled to ~4Hz. The renderer
-// watchdog needs only coarse liveness. Call from MAIN-THREAD sites only.
-static void orpheusPushLiveness(bool occluded) {
+// Push {workspaceId, inputTick, liveTick, occluded} to JS, throttled to ~4Hz.
+// The renderer watchdog needs only coarse liveness. Call from MAIN-THREAD sites only.
+static void orpheusPushLiveness(const std::string& workspaceId, bool occluded) {
     if (!g_livenessTSFNActive) return;
     uint64_t nowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
     uint64_t last = g_lastLivenessPushMs.load(std::memory_order_relaxed);
     if (nowMs - last < 250) return;
     g_lastLivenessPushMs.store(nowMs, std::memory_order_relaxed);
-    uint64_t inT = g_inputTick.load(std::memory_order_relaxed);
-    uint64_t liveT = g_liveTick.load(std::memory_order_relaxed);
-    g_livenessTSFN.NonBlockingCall(
-        [inT, liveT, occluded](Napi::Env env, Napi::Function cb) {
-            cb.Call({ Napi::Number::New(env, (double)inT),
-                      Napi::Number::New(env, (double)liveT),
-                      Napi::Boolean::New(env, occluded) });
+    // Read per-entry ticks
+    auto it = g_surfaces.find(workspaceId);
+    uint64_t inT = 0, liveT = 0;
+    if (it != g_surfaces.end()) {
+        inT   = it->second.inputTick;
+        liveT = it->second.liveTick;
+    }
+    auto* data = new std::tuple<std::string, uint64_t, uint64_t, bool>(workspaceId, inT, liveT, occluded);
+    napi_status st = g_livenessTSFN.NonBlockingCall(
+        data,
+        [](Napi::Env env, Napi::Function cb, std::tuple<std::string, uint64_t, uint64_t, bool>* d) {
+            cb.Call({
+                Napi::String::New(env, std::get<0>(*d)),
+                Napi::Number::New(env, (double)std::get<1>(*d)),
+                Napi::Number::New(env, (double)std::get<2>(*d)),
+                Napi::Boolean::New(env, std::get<3>(*d))
+            });
+            delete d;
         });
+    if (st != napi_ok) { delete data; }
 }
 
 static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
@@ -2324,7 +2362,8 @@ static bool ensureApp() {
             GhosttySurfaceEntry& e = kv.second;
             if (e.isAttached && e.surface) {
                 ghostty_surface_draw(e.surface);
-                g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
+                kv.second.liveTick++;
+                orpheusPushLiveness(kv.first, false);
             }
         }
     }];
@@ -2556,7 +2595,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             // One synchronous draw so the first frame paints immediately,
             // before the display link fires its first tick. Runs on main ✓.
             ghostty_surface_draw(entry.surface);
-            g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
+            entry.liveTick++;
+            orpheusPushLiveness(workspaceId, false);
 
             // Re-grab first responder.
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -2734,7 +2774,6 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Runs on main ✓.
     ghostty_surface_set_focus(surface, true);
     ghostty_surface_draw(surface);
-    g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
 
     // Store entry — view is retained by the map (ARC __strong).
     // ghostty's own internal CVDisplayLink (created in generic.zig:loopEnter)
@@ -2748,6 +2787,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.lastScale  = scaleFactor;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
+    // Bump per-entry liveTick AFTER entry is stored so g_surfaces lookup works
+    g_surfaces[workspaceId].liveTick++;
+    orpheusPushLiveness(workspaceId, false);
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
@@ -3014,7 +3056,8 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
         ghostty_surface_set_focus(entry.surface, true);
         ghostty_surface_set_occlusion(entry.surface, true);
         ghostty_surface_draw(entry.surface);
-        g_liveTick.fetch_add(1, std::memory_order_relaxed); orpheusPushLiveness(false);
+        entry.liveTick++;
+        orpheusPushLiveness(workspaceId, false);
     }
     // SYNCHRONOUS makeFirstResponder (was dispatch_async, which opened an input
     // race where a keystroke right after wake routed to WebContents instead of
