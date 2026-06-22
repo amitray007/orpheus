@@ -57,7 +57,10 @@ export function setGitStatus(workspaceId: string, status: GitStatus | null): voi
     prev.branch === status.branch &&
     prev.insertions === status.insertions &&
     prev.deletions === status.deletions &&
-    prev.hasChanges === status.hasChanges
+    prev.hasChanges === status.hasChanges &&
+    prev.newFiles === status.newFiles &&
+    prev.modifiedFiles === status.modifiedFiles &&
+    prev.deletedFiles === status.deletedFiles
   )
     return
   store.set(workspaceId, status)

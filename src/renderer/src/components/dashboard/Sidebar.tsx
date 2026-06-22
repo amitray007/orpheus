@@ -9,8 +9,7 @@ import {
   Stack,
   Archive,
   Gear,
-  GitFork,
-  Clock
+  GitFork
 } from '@phosphor-icons/react'
 import {
   useFloating,
@@ -149,9 +148,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   workspace,
   active,
   sessionTitleBySessionId,
-  sessionUserPreviewBySessionId,
   sessionMtimeBySessionId,
-  staleAfterMinutes,
   nowMs,
   onSelect,
   renaming,
@@ -177,10 +174,6 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const dn = resolveWorkspaceName({ workspace, terminalTitle, sessionTitle })
   const displayName = dn.text
-
-  const lastUserMsgPreview = workspace.claudeSessionId
-    ? (sessionUserPreviewBySessionId.get(workspace.claudeSessionId) ?? null)
-    : null
 
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
@@ -237,7 +230,6 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     : null
   const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
   const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
-  const isStale = ageMs !== null && ageMs >= staleAfterMinutes * 60_000
   const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000
 
   const hasDetail = gitStatus !== null || pr != null
@@ -307,22 +299,21 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         <button
           onClick={onSelect}
           className={[
-            'flex flex-col pl-8 pr-2 flex-1 text-left min-w-0',
+            'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
             'h-8 justify-center',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md'
           ].join(' ')}
-          title={lastUserMsgPreview ? `${lastUserMsgPreview}\n\n${workspace.cwd}` : workspace.cwd}
           aria-label={workspace.name}
         >
           {/* Line 1: status icon · title · fork badge · time/archive */}
           <span className="flex items-center gap-1.5 min-w-0">
             {/* Status icon slot */}
-            <span className="flex-shrink-0">
+            <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
               {activity && activity !== 'archived' ? (
                 <ActivityIndicator detail={activity} />
               ) : (
                 <Stack
-                  size={13}
+                  size={12}
                   weight={active ? 'fill' : 'regular'}
                   className={[
                     'transition-colors duration-150',
@@ -351,10 +342,9 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               ) : (
                 <span
                   className={[
-                    'text-xs truncate min-w-0 flex-1 leading-snug',
+                    'text-xs truncate min-w-0 flex-1 leading-none',
                     dn.muted ? 'text-text-muted italic' : ''
                   ].join(' ')}
-                  title={dn.text}
                 >
                   {dn.text}
                 </span>
@@ -369,25 +359,22 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
                 />
               )}
             </span>
-
-            {/* Trailing: time + stale clock (hidden when hovered — archive button takes the slot) */}
-            {!renaming && !hovered && relativeTime && (
-              <span className="flex items-center gap-0.5 flex-shrink-0">
-                <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
-                {isStale && <Clock size={10} className="text-text-muted flex-shrink-0" />}
-              </span>
-            )}
           </span>
         </button>
 
-        {/* Archive affordance — visible on hover. 32x32 hit target. */}
+        {/* Trailing slot: time and archive share the same absolute position at the right edge */}
+        {!renaming && relativeTime && !hovered && (
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 pr-1 pointer-events-none">
+            <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
+          </span>
+        )}
         {!renaming && hovered && (
           <button
             onClick={(e) => {
               e.stopPropagation()
               onArchive()
             }}
-            className="flex-shrink-0 w-8 h-8 flex items-center justify-center mr-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
             aria-label="Archive workspace"
           >
             <Archive size={13} />

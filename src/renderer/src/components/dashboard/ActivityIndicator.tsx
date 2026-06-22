@@ -81,21 +81,21 @@ export function ActivityIndicator({
   // Animated states stay text-rendered — the frames are unicode sequences.
   if (detail === 'thinking') {
     return (
-      <span className={`${cls} text-accent text-xs font-mono`}>
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
         {BRAILLE_FRAMES[brailleFrame % BRAILLE_FRAMES.length]}
       </span>
     )
   }
   if (detail === 'tool') {
     return (
-      <span className={`${cls} text-accent text-xs font-mono`}>
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
         {TOOL_FRAMES[toolFrame % TOOL_FRAMES.length]}
       </span>
     )
   }
   if (detail === 'compacting') {
     return (
-      <span className={`${cls} text-accent text-xs font-mono`}>
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
         {COMPACT_FRAMES[compactFrame % COMPACT_FRAMES.length]}
       </span>
     )
@@ -103,7 +103,7 @@ export function ActivityIndicator({
   if (detail === 'asking') {
     return (
       <span
-        className={`${cls} text-amber-400 text-xs font-mono font-bold${animated ? ' animate-pulse' : ''}`}
+        className={`${cls} text-amber-400 text-[11px] font-mono font-bold${animated ? ' animate-pulse' : ''}`}
       >
         ?
       </span>

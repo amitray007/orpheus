@@ -28,6 +28,12 @@ export type GitStatus = {
   deletions: number
   hasChanges: boolean
   branch: string | null
+  /** Count of untracked (new) files */
+  newFiles: number
+  /** Count of tracked files with modifications (working tree vs HEAD) */
+  modifiedFiles: number
+  /** Count of deleted files (working tree vs HEAD) */
+  deletedFiles: number
 }
 
 export type GitBranchInfo = {

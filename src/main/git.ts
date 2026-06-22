@@ -16,6 +16,12 @@ export type GitStatus = {
   hasChanges: boolean
   /** Current branch name, e.g. "main" or "feature/x" — or null if detached HEAD */
   branch: string | null
+  /** Count of untracked (new) files */
+  newFiles: number
+  /** Count of tracked files with modifications (working tree vs HEAD) */
+  modifiedFiles: number
+  /** Count of deleted files (working tree vs HEAD) */
+  deletedFiles: number
 }
 
 /**
@@ -39,17 +45,15 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
     return null
   }
 
-  // Run branch, diff, and untracked queries in parallel.
-  const [branchResult, diffResult, untrackedResult] = await Promise.all([
+  // Run branch, diff, and porcelain queries in parallel.
+  const [branchResult, diffResult, porcelainResult] = await Promise.all([
     execFile('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
       timeout: 1500
     }).catch(() => null),
     execFile('git', ['-C', cwd, 'diff', '--shortstat', 'HEAD'], {
       timeout: 2000
     }).catch(() => null),
-    execFile('git', ['-C', cwd, 'ls-files', '--others', '--exclude-standard'], {
-      timeout: 1500
-    }).catch(() => null)
+    execFile('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 2000 }).catch(() => null)
   ])
 
   let branch: string | null = null
@@ -70,13 +74,26 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
     if (delMatch) deletions = parseInt(delMatch[1], 10)
   }
 
-  let untrackedCount = 0
-  if (untrackedResult) {
-    untrackedCount = untrackedResult.stdout.split('\n').filter((line) => line.length > 0).length
+  let newFiles = 0
+  let modifiedFiles = 0
+  let deletedFiles = 0
+  if (porcelainResult) {
+    for (const line of porcelainResult.stdout.split('\n')) {
+      if (line.length < 2) continue
+      const xy = line.slice(0, 2)
+      if (xy === '??' || xy[0] === 'A' || xy[1] === 'A') {
+        newFiles++
+      } else if (xy.includes('D')) {
+        deletedFiles++
+      } else if (xy.includes('M')) {
+        modifiedFiles++
+      }
+    }
   }
 
-  const hasChanges = insertions > 0 || deletions > 0 || untrackedCount > 0
-  return { insertions, deletions, hasChanges, branch }
+  const hasChanges =
+    insertions > 0 || deletions > 0 || newFiles > 0 || modifiedFiles > 0 || deletedFiles > 0
+  return { insertions, deletions, hasChanges, branch, newFiles, modifiedFiles, deletedFiles }
 }
 
 export type GitBranchInfo = {
