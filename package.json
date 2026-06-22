@@ -26,6 +26,7 @@
     "build:linux": "electron-vite build && electron-builder --linux",
     "fetch:libghostty": "bash scripts/fetch-libghostty.sh",
     "bump:libghostty": "bun scripts/bump-libghostty.mjs",
+    "diag": "bun scripts/diag.ts",
     "release": "node scripts/release.mjs",
     "prepare": "husky"
   },
