@@ -35,6 +35,7 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useOverlayOpen } from '@/lib/overlayFocus'
 import { WorkspaceHoverCard } from './WorkspaceHoverCard'
 
 // ---------------------------------------------------------------------------
@@ -250,13 +251,12 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // enable flag and the render gate so they can never disagree.
   const cardAllowed = hasDetail && !renaming && !active
 
+  useOverlayOpen(cardOpen)
+
   const { refs, floatingStyles, context } = useFloating({
     open: cardOpen,
     onOpenChange: (open) => {
       setCardOpen(open)
-      if (!open) {
-        void window.api.terminal.focus(workspace.id).catch(() => {})
-      }
     },
     placement: 'right-start',
     middleware: [offset(8), flip(), shift({ padding: 8 })]
@@ -270,10 +270,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     if (cardOpen && !cardAllowed) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: close card when it becomes disallowed (active/renaming/no-detail); floating-ui `enabled:false` only prevents new opens, not closing an already-open card
       setCardOpen(false)
-      // The card was over this workspace's terminal; reassert terminal focus.
-      void window.api.terminal.focus(workspace.id).catch(() => {})
     }
-  }, [cardOpen, cardAllowed, workspace.id])
+  }, [cardOpen, cardAllowed])
 
   // Don't show the hover card for the ACTIVE workspace's row: its terminal is live and a DOM overlay over it races with terminal keyboard focus. Inactive rows' terminals are hidden, so hovering them is race-free.
   const hover = useHover(context, {

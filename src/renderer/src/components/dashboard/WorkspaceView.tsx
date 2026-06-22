@@ -8,6 +8,7 @@ import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
+import { useOverlayOpen } from '@/lib/overlayFocus'
 import { Moon } from '@phosphor-icons/react'
 
 interface WorkspaceViewProps {
@@ -93,21 +94,7 @@ export function WorkspaceView({
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
-  // Re-assert terminal keyboard focus whenever the settings drawer closes.
-  // The drawer open/close path changes layout (flex resize) but does NOT
-  // restore ghostty focus, leaving the render loop stalled until the watchdog.
-  // Guard: skip when drawer was never open (initial null) by using a ref that
-  // tracks whether drawer has ever been non-null.
-  const drawerWasOpenRef = useRef(false)
-  useEffect(() => {
-    if (drawer !== null) {
-      drawerWasOpenRef.current = true
-      return
-    }
-    if (!drawerWasOpenRef.current) return
-    if (!active) return
-    void window.api.terminal.focus(workspace.id).catch(() => {})
-  }, [drawer, active, workspace.id])
+  useOverlayOpen(drawer !== null)
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current

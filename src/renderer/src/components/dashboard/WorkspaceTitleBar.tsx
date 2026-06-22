@@ -17,6 +17,7 @@ import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { WorkspaceDetailsPopover } from './WorkspaceDetailsPopover'
+import { useOverlayOpen } from '@/lib/overlayFocus'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -191,16 +192,12 @@ export function WorkspaceTitleBar({
 
   const [detailsOpen, setDetailsOpen] = useState(false)
 
+  useOverlayOpen(detailsOpen)
+
   const { refs, floatingStyles, context } = useFloating({
     open: detailsOpen,
     onOpenChange: (open: boolean) => {
       setDetailsOpen(open)
-      // Restore terminal keyboard focus when the popover closes, otherwise the
-      // surface stays visible-but-unfocused and ghostty's render loop stalls
-      // until the next freeze-watchdog kick.
-      if (!open) {
-        void window.api.terminal.focus(workspace.id).catch(() => {})
-      }
     },
     placement: 'bottom-end',
     middleware: [offset(6), flip(), shift({ padding: 8 })]

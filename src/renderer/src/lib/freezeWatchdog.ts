@@ -45,6 +45,10 @@ export function setActiveWatchdogWorkspace(
   disarm()
 }
 
+export function getActiveWatchdogWorkspace(): string | null {
+  return activeWs
+}
+
 function disarm(): void {
   armed = false
   if (armTimer) {
