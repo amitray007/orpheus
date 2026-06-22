@@ -31,6 +31,7 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
 import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
@@ -160,6 +161,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 }: WorkspaceRowProps): React.JSX.Element {
   // Subscribe to this workspace's key only — no re-render on other workspaces
   const activity = useWorkspaceActivity(workspace.id)
+  const liveActivityAt = useWorkspaceActivityTime(workspace.id)
   const terminalTitle = useWorkspaceTitle(workspace.id)
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
@@ -224,10 +226,16 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     setRenameValue(workspace.name) // reset so a future rename starts clean
   }
 
-  // Freshness display — derived from session jsonl mtime (real agent activity)
-  const lastActivityAt = workspace.claudeSessionId
+  // Freshness display — live activity time wins; jsonl mtime is the fallback for
+  // workspaces with no activity since launch. Take the max so a freshly loaded
+  // mtime never overrides a more-recent live bump.
+  const mtimeActivityAt = workspace.claudeSessionId
     ? (sessionMtimeBySessionId.get(workspace.claudeSessionId) ?? null)
     : null
+  const lastActivityAt =
+    liveActivityAt !== null && mtimeActivityAt !== null
+      ? Math.max(liveActivityAt, mtimeActivityAt)
+      : (liveActivityAt ?? mtimeActivityAt)
   const relativeTime = formatRelativeTime(lastActivityAt, nowMs)
   const ageMs = lastActivityAt !== null ? nowMs - lastActivityAt : null
   const isVeryOld = ageMs !== null && ageMs >= 24 * 60 * 60_000

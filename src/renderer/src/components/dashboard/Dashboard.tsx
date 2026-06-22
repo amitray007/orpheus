@@ -5,6 +5,7 @@ import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
+import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
@@ -205,6 +206,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           }
         }
         setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
+        const now = Date.now()
+        for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
       })
     }
 
@@ -216,6 +219,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
       }
       setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
+      bumpActivityTime(e.workspaceId, Date.now())
     })
   }, [])
 
@@ -349,6 +353,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
       // Clear any stale entries for the deleted workspace from all stores.
       deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
@@ -880,6 +885,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       // Optimistically drop any cached data for the workspace from all stores —
       // once the backend deletes the row there's nothing for these to track.
       deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
@@ -951,6 +957,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // Drop cached data for all removed workspaces from all stores.
     for (const ws of projectWorkspaces) {
       deleteActivity(ws.id)
+      deleteActivityTime(ws.id)
       deleteTitle(ws.id)
       deleteGitStatus(ws.id)
       deletePr(ws.id)
