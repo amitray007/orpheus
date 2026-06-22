@@ -68,6 +68,10 @@ export function WorkspaceView({
   // Sleep state — true when the macOS window is occluded/backgrounded and the
   // native terminal render loop is paused.
   const sleeping = useTerminalSleeping(workspace.id)
+  const isClosed = workspace.closedAt !== null
+  const isClosedRef = useRef(isClosed)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation
+  isClosedRef.current = isClosed
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
@@ -123,6 +127,15 @@ export function WorkspaceView({
     setActiveWatchdogWorkspace(workspace.id, requestRemount)
     return () => setActiveWatchdogWorkspace(null, null)
   }, [active, workspace.id, requestRemount])
+
+  useEffect(() => {
+    if (isClosed) {
+      // Backend destroyed the surface (workspace:close frees native resources).
+      // Mark it gone so the mount-effect cleanup won't fire a stale terminal.hide
+      // on a destroyed surface, which would race the reopen mount and stick the terminal.
+      surfaceCreatedRef.current = false
+    }
+  }, [isClosed])
 
   // ---------------------------------------------------------------------------
   // Mount / resize / active-toggle lifecycle
@@ -292,7 +305,7 @@ export function WorkspaceView({
     let mountTimerId: ReturnType<typeof setTimeout> | null = null
     let mountRafId: number | null = null
 
-    if (active) {
+    if (active && !isClosedRef.current) {
       // 75ms debounce before mounting — rapid navigation (e.g. clicking through
       // the sidebar quickly) will cancel the pending mount and only the final
       // destination surface actually mounts. The cleanup function cancels the
@@ -332,7 +345,7 @@ export function WorkspaceView({
       // hide() keeps the surface alive in the addon's map so that navigating
       // back re-attaches the same shell session. Destroy is fired only from
       // Dashboard on archive/project-remove, or from handleRestart above.
-      if (surfaceCreatedRef.current) {
+      if (surfaceCreatedRef.current && !isClosedRef.current) {
         console.log('[WorkspaceView] hiding surface on unmount workspaceId=', workspaceId)
         window.api.terminal
           .hide(workspaceId)
@@ -393,6 +406,7 @@ export function WorkspaceView({
     // in StrictMode double-mount teardown where both effects re-run in sequence.
     // Effect 1 will handle the initial mount via its 75ms debounce.
     if (!effectStateRef.current) return
+    if (isClosed) return
 
     let rafId: number | null = null
     rafId = requestAnimationFrame(() => {
@@ -452,7 +466,7 @@ export function WorkspaceView({
     }
     // workspace.cwd is stable for a given workspace record.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active])
+  }, [active, isClosed])
 
   return (
     <>
@@ -491,6 +505,13 @@ export function WorkspaceView({
                 <Moon size={12} weight="fill" />
                 Asleep
               </button>
+            )}
+            {active && isClosed && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-surface-overlay/90">
+                <p className="text-sm text-text-secondary">
+                  This workspace is closed to free resources. Select it again to reopen.
+                </p>
+              </div>
             )}
           </div>
 

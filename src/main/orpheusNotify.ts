@@ -79,11 +79,13 @@ const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 // Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
 let cachedWatchdogSec: number | null = null
 let cachedStaleMinutes: number | null = null
+let cachedAutoCloseMinutes: number | null = null
 
 /** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
 export function invalidateWatchdogCache(): void {
   cachedWatchdogSec = null
   cachedStaleMinutes = null
+  cachedAutoCloseMinutes = null
 }
 const listeners = new Set<
   (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
@@ -146,8 +148,11 @@ export function onActivityBatch(cb: (updates: ActivityUpdate[]) => void): () => 
 // Used by loadingOverlay to dismiss its mount-time overlay reliably even when
 // the workspace was previously in 'awaiting_input' (re-mount of a known session).
 const sessionStartListeners = new Set<(workspaceId: string) => void>()
+let autoCloseHandler: ((workspaceId: string) => void) | null = null
+
 const watchdogs = new Map<string, NodeJS.Timeout>()
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
+const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
   let s = detailMap.get(workspaceId)
@@ -212,6 +217,13 @@ function clearIdleWatchdog(workspaceId: string): void {
   if (!t) return
   clearTimeout(t)
   idleWatchdogs.delete(workspaceId)
+}
+
+function clearAutoCloseWatchdog(workspaceId: string): void {
+  const t = autoCloseWatchdogs.get(workspaceId)
+  if (!t) return
+  clearTimeout(t)
+  autoCloseWatchdogs.delete(workspaceId)
 }
 
 function armWatchdog(workspaceId: string): void {
@@ -281,6 +293,33 @@ function armIdleWatchdog(workspaceId: string): void {
   idleWatchdogs.set(workspaceId, t)
 }
 
+function armAutoCloseWatchdog(workspaceId: string): void {
+  clearAutoCloseWatchdog(workspaceId)
+  if (cachedAutoCloseMinutes === null) {
+    cachedAutoCloseMinutes = getAppUiState().autoCloseAfterMinutes ?? 120
+  }
+  const minutes = cachedAutoCloseMinutes
+  if (minutes <= 0) return
+  const t = setTimeout(
+    () => {
+      autoCloseWatchdogs.delete(workspaceId)
+      const status = activityMap.get(workspaceId)
+      if (status === 'idle' || status === 'awaiting_input') {
+        console.log(
+          '[orpheusNotify] auto-close watchdog — closing',
+          workspaceId,
+          'after',
+          minutes,
+          'min'
+        )
+        autoCloseHandler?.(workspaceId)
+      }
+    },
+    minutes * 60 * 1000
+  )
+  autoCloseWatchdogs.set(workspaceId, t)
+}
+
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
@@ -310,6 +349,12 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     armIdleWatchdog(workspaceId)
   } else {
     clearIdleWatchdog(workspaceId)
+  }
+  // Auto-close workspace after autoCloseAfterMinutes of sitting idle.
+  if (status === 'idle') {
+    armAutoCloseWatchdog(workspaceId)
+  } else {
+    clearAutoCloseWatchdog(workspaceId)
   }
 
   broadcastDetailIfChanged(workspaceId)
@@ -458,16 +503,23 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
 export function clearWorkspaceActivity(workspaceId: string): void {
   clearWatchdog(workspaceId)
   clearIdleWatchdog(workspaceId)
+  clearAutoCloseWatchdog(workspaceId)
   // Force a fresh 'idle' broadcast even if the current cached value is also
   // archived → avoid dispatch's early-return when prev === status.
   activityMap.delete(workspaceId)
   detailMap.delete(workspaceId)
   lastBroadcastDetail.delete(workspaceId)
   dispatch(workspaceId, 'idle')
+  // dispatch('idle') re-arms the auto-close watchdog — defuse it for teardown.
+  clearAutoCloseWatchdog(workspaceId)
 }
 
 export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
   return activityMap.get(workspaceId) ?? 'idle'
+}
+
+export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
+  autoCloseHandler = fn
 }
 
 export function onActivityChange(

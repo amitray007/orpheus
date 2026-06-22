@@ -123,6 +123,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           notifyMaxAttentionRepeats: 5,
           inProgressWatchdogSec: 120,
           staleAfterMinutes: 60,
+          autoCloseAfterMinutes: 120,
           diagError: true,
           diagLifecycle: false,
           diagPerf: false,
@@ -363,6 +364,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  useEffect(() => {
+    return window.api.workspaces.onChanged(({ workspace }) => {
+      setWorkspacesByProject((prev) => {
+        const list = prev[workspace.projectId]
+        if (!list) return prev
+        return {
+          ...prev,
+          [workspace.projectId]: list.map((w) => (w.id === workspace.id ? workspace : w))
+        }
+      })
+    })
+  }, [])
+
   // ---------------------------------------------------------------------------
   // Core callbacks — declared before effects so effects can reference them
   // without forward-declaration lint errors.
@@ -418,21 +432,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       if (!workspacesByProjectRef.current[projectId]) {
         fetchWorkspacesForProject(projectId)
       }
-      // workspaces.open and uiState.update are independent DB writes — issue them
-      // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
-      Promise.all([
-        window.api.workspaces.open(workspaceId).then((updated) => {
-          setWorkspacesByProject((prev) => ({
-            ...prev,
-            [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
-          }))
-        }),
-        window.api.uiState.update({
-          lastViewKind: 'workspace',
-          lastProjectId: projectId,
-          lastWorkspaceId: workspaceId
-        })
-      ]).catch(console.error)
+      void (async (): Promise<void> => {
+        // If the workspace is closed, reopen it before mounting the terminal.
+        const ws = workspacesByProjectRef.current[projectId]?.find((w) => w.id === workspaceId)
+        if (ws && ws.closedAt !== null) {
+          await window.api.workspaces.reopen(workspaceId).catch(console.error)
+        }
+        // workspaces.open and uiState.update are independent DB writes — issue them
+        // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
+        await Promise.all([
+          window.api.workspaces.open(workspaceId).then((updated) => {
+            setWorkspacesByProject((prev) => ({
+              ...prev,
+              [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
+            }))
+          }),
+          window.api.uiState.update({
+            lastViewKind: 'workspace',
+            lastProjectId: projectId,
+            lastWorkspaceId: workspaceId
+          })
+        ]).catch(console.error)
+      })()
     },
     [fetchWorkspacesForProject]
   )
@@ -912,6 +933,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [fetchWorkspacesForProject, refreshPins]
   )
 
+  const handleCloseWorkspace = useCallback((workspaceId: string): void => {
+    void window.api.workspaces.close(workspaceId).catch(console.error)
+  }, [])
+
   const handleRenameProject = useCallback(
     async (id: string, newName: string): Promise<void> => {
       // Optimistic update
@@ -1084,6 +1109,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onAddWorkspace={handleAddWorkspace}
           onRenameWorkspace={handleRenameWorkspace}
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+          onCloseWorkspace={handleCloseWorkspace}
           onTogglePinWorkspace={handleToggleWorkspacePin}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}

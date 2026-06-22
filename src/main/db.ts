@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 56
+const CURRENT_VERSION = 57
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -60,6 +60,7 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
+    closed_at INTEGER,
     status TEXT NOT NULL DEFAULT 'idle'
       CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
@@ -350,6 +351,7 @@ const UI_STATE_SCHEMA_SQL = `
     diag_lifecycle INTEGER NOT NULL DEFAULT 0,
     diag_perf INTEGER NOT NULL DEFAULT 0,
     diag_anomaly INTEGER NOT NULL DEFAULT 0,
+    auto_close_after_minutes INTEGER,
     updated_at INTEGER NOT NULL
   );
 `
@@ -2164,6 +2166,21 @@ function migrate(db: Database.Database): void {
       }
     }
     db.prepare('UPDATE schema_version SET version = ?').run(56)
+  }
+
+  if (currentVersion < 57) {
+    // Version 57: add workspaces.closed_at (close = free resources, keep workspace)
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN closed_at INTEGER')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN auto_close_after_minutes INTEGER')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(57)
   }
 }
 

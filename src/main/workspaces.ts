@@ -17,6 +17,7 @@ type WorkspaceRow = {
   created_at: number
   last_opened_at: number | null
   archived_at: number | null
+  closed_at: number | null
   status: WorkspaceStatus
   sort_order: number | null
   claude_session_id: string | null
@@ -52,6 +53,7 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
+    closedAt: row.closed_at,
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
@@ -108,6 +110,14 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('workspaces:created', { workspace })
+    }
+  }
+}
+
+function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:changed', { workspace })
     }
   }
 }
@@ -256,6 +266,28 @@ export function archiveWorkspace(id: string): void {
   if (ws) {
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
+}
+
+export function closeWorkspace(id: string): WorkspaceRecord | undefined {
+  const db = getDb()
+  const row = db
+    .prepare('UPDATE workspaces SET closed_at = ? WHERE id = ? RETURNING *')
+    .get(Date.now(), id) as WorkspaceRow | undefined
+  if (!row) return undefined
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
+}
+
+export function reopenWorkspace(id: string): WorkspaceRecord | undefined {
+  const db = getDb()
+  const row = db
+    .prepare('UPDATE workspaces SET closed_at = NULL WHERE id = ? RETURNING *')
+    .get(id) as WorkspaceRow | undefined
+  if (!row) return undefined
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
 }
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {

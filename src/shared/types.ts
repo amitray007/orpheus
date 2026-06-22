@@ -92,6 +92,7 @@ export type WorkspaceRecord = {
   createdAt: number
   lastOpenedAt: number | null
   archivedAt: number | null
+  closedAt: number | null
   sortOrder: number | null
   status: WorkspaceStatus
   claudeSessionId: string | null
@@ -162,6 +163,8 @@ export type AppUiState = {
   inProgressWatchdogSec: number
   // (v54) Minutes of no agent activity before the sidebar marks a workspace stale.
   staleAfterMinutes: number
+  // (v57) Minutes of idle before auto-closing the workspace. 0 disables.
+  autoCloseAfterMinutes: number
   // (v56) Diagnostics capture toggles. Errors on by default; rest opt-in.
   diagError: boolean
   diagLifecycle: boolean

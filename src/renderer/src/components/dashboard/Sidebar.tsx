@@ -2,6 +2,7 @@ import type React from 'react'
 import { useState, useEffect, useRef, memo } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
+  Circle,
   Kanban,
   Plus,
   CaretDown,
@@ -143,6 +144,7 @@ interface WorkspaceRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onArchive: () => void
+  onClose: () => void
   onTogglePin: () => void
 }
 
@@ -158,10 +160,13 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   onFinishRename,
   onCancelRename,
   onArchive,
+  onClose,
   onTogglePin
 }: WorkspaceRowProps): React.JSX.Element {
   // Subscribe to this workspace's key only — no re-render on other workspaces
   const activity = useWorkspaceActivity(workspace.id)
+  const isBusy = activity === 'thinking' || activity === 'tool' || activity === 'compacting'
+  const isClosed = workspace.closedAt !== null
   const liveActivityAt = useWorkspaceActivityTime(workspace.id)
   const terminalTitle = useWorkspaceTitle(workspace.id)
   const gitStatus = useGitStatus(workspace.id)
@@ -196,12 +201,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
           { label: 'Rename', action: 'rename' },
           { divider: true },
+          ...(!isClosed && !isBusy ? [{ label: 'Close', action: 'close' }] : []),
           { label: 'Archive', action: 'archive' }
         ])
         .then((action) => {
           if (!action) return
           if (action === 'togglePin') onTogglePin()
           else if (action === 'rename') onBeginRename()
+          else if (action === 'close') onClose()
           else if (action === 'archive') onArchive()
         })
       return
@@ -214,6 +221,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePin },
     { label: 'Rename', onClick: onBeginRename },
     { label: '', divider: true, onClick: () => {} },
+    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: onClose }] : []),
     { label: 'Archive', onClick: onArchive }
   ]
 
@@ -288,7 +296,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         ref={refs.setReference}
         className={[
           'relative flex rounded-r-md transition-colors duration-150 group',
-          isVeryOld ? 'opacity-60' : '',
+          isVeryOld && !isClosed ? 'opacity-60' : '',
+          isClosed ? 'opacity-50' : '',
           // 2px left bar on active rows for unambiguous selection.
           // Workspaces use white (text-primary); projects use the yellow accent.
           active
@@ -314,8 +323,13 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           {/* Line 1: status icon · title · fork badge · time/archive */}
           <span className="flex items-center gap-1.5 min-w-0">
             {/* Status icon slot */}
-            <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-              {activity && activity !== 'archived' ? (
+            <span
+              className="flex items-center justify-center w-3 h-3 flex-shrink-0"
+              title={isClosed ? 'Closed — click to reopen' : undefined}
+            >
+              {isClosed ? (
+                <Circle size={11} weight="regular" className="text-text-muted opacity-60" />
+              ) : activity && activity !== 'archived' ? (
                 <ActivityIndicator detail={activity} />
               ) : (
                 <Stack
@@ -561,6 +575,7 @@ interface ProjectRowProps {
   onFinishRenameWorkspace: (workspaceId: string, newName: string) => void
   onCancelRenameWorkspace: () => void
   onArchiveWorkspace: (workspaceId: string) => void
+  onCloseWorkspace: (workspaceId: string) => void
   onTogglePinWorkspace: (workspaceId: string) => void
   wsDragId: string | null
   wsDropTargetId: string | null
@@ -610,6 +625,7 @@ const ProjectRow = memo(function ProjectRow({
   onFinishRenameWorkspace,
   onCancelRenameWorkspace,
   onArchiveWorkspace,
+  onCloseWorkspace,
   onTogglePinWorkspace,
   wsDragId,
   wsDropTargetId,
@@ -802,6 +818,7 @@ const ProjectRow = memo(function ProjectRow({
                   onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
                   onCancelRename={onCancelRenameWorkspace}
                   onArchive={() => onArchiveWorkspace(ws.id)}
+                  onClose={() => onCloseWorkspace(ws.id)}
                   onTogglePin={() => onTogglePinWorkspace(ws.id)}
                 />
                 {showLineBelow && <DropIndicator position="bottom" />}
@@ -865,6 +882,7 @@ interface SidebarProps {
     newName: string
   ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
@@ -896,6 +914,7 @@ export function Sidebar({
   onAddWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
+  onCloseWorkspace,
   onTogglePinWorkspace,
   onReorderProjects,
   onReorderWorkspaces,
@@ -1243,6 +1262,7 @@ export function Sidebar({
                           }
                           onCancelRenameWorkspace={handleCancelRenameWorkspace}
                           onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                          onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
                           onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
                           wsDragId={wsDragId}
                           wsDropTargetId={wsDropTargetId}

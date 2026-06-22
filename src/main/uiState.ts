@@ -48,6 +48,8 @@ type AppUiStateRow = {
   in_progress_watchdog_sec: number
   // Stale threshold (v54)
   stale_after_minutes: number | null
+  // Auto-close threshold (v57)
+  auto_close_after_minutes: number | null
   // App picker preferences (v32)
   preferred_editor_app: string | null
   preferred_terminal_app: string | null
@@ -116,6 +118,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     inProgressWatchdogSec: row.in_progress_watchdog_sec ?? 120,
     staleAfterMinutes: row.stale_after_minutes ?? 60,
+    autoCloseAfterMinutes: row.auto_close_after_minutes ?? 120,
     // App picker preferences (v32) — undefined when column absent (old DB pre-migration)
     preferredEditorApp: row.preferred_editor_app ?? null,
     preferredTerminalApp: row.preferred_terminal_app ?? null,
@@ -295,6 +298,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     inProgressWatchdogSec: 'in_progress_watchdog_sec',
     // Stale threshold (v54)
     staleAfterMinutes: 'stale_after_minutes',
+    // Auto-close threshold (v57)
+    autoCloseAfterMinutes: 'auto_close_after_minutes',
     // App picker preferences (v32)
     preferredEditorApp: 'preferred_editor_app',
     preferredTerminalApp: 'preferred_terminal_app',

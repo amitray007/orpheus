@@ -281,6 +281,17 @@ const api = {
       ): void => cb(e)
       ipcRenderer.on('workspaces:archived', listener)
       return () => ipcRenderer.removeListener('workspaces:archived', listener)
+    },
+    close: (
+      id: string
+    ): Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }> =>
+      ipcRenderer.invoke('workspace:close', { id }),
+    reopen: (id: string): Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }> =>
+      ipcRenderer.invoke('workspace:reopen', { id }),
+    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void => cb(e)
+      ipcRenderer.on('workspaces:changed', listener)
+      return () => ipcRenderer.removeListener('workspaces:changed', listener)
     }
   },
   pins: {

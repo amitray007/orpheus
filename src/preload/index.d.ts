@@ -169,6 +169,11 @@ declare global {
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
         onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void
         onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void) => () => void
+        close: (
+          id: string
+        ) => Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }>
+        reopen: (id: string) => Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }>
+        onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>

@@ -138,6 +138,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               placeholder="60"
             />
           </SettingRow>
+          <SettingRow
+            label="Auto-close idle workspaces after (minutes)"
+            description="Closing frees a workspace's resources (terminal + claude process) while keeping it in your list; click it to reopen and resume. Set to 0 to disable."
+          >
+            <NumberInput
+              value={uiState.autoCloseAfterMinutes ?? 120}
+              onChange={(v) => patch({ autoCloseAfterMinutes: Math.max(0, v ?? 120) })}
+              placeholder="120"
+            />
+          </SettingRow>
         </div>
       </section>
 

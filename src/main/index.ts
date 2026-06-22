@@ -62,6 +62,8 @@ import {
   getWorkspace,
   setWorkspacePinned,
   archiveWorkspace,
+  closeWorkspace,
+  reopenWorkspace,
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
@@ -107,7 +109,9 @@ import {
   onSessionStart,
   heartbeatFromTitle,
   clearWorkspaceActivity,
-  invalidateWatchdogCache
+  invalidateWatchdogCache,
+  getWorkspaceActivity,
+  setAutoCloseHandler
 } from './orpheusNotify'
 import {
   configureLoadingOverlay,
@@ -159,7 +163,8 @@ import type {
   ClaudeSlashCommandDraft,
   ClaudeSubagentDraft,
   ContextMenuNativeItem,
-  GhosttyUserConfig
+  GhosttyUserConfig,
+  WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 import * as terminalActions from './actions/terminal'
@@ -414,6 +419,19 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
   }
   if (cwd) stopGitWatch(workspaceId, cwd)
+}
+
+function performClose(id: string): WorkspaceRecord | undefined {
+  const ws = getWorkspace(id)
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  return closeWorkspace(id)
 }
 
 function recomputeDirty(): void {
@@ -916,6 +934,20 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
   teardownWorkspaceResources(id, ws?.cwd ?? null)
 })
 
+ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
+  const status = getWorkspaceActivity(id)
+  if (status === 'in_progress') {
+    return { ok: false as const, reason: 'busy' as const }
+  }
+  const workspace = performClose(id)
+  return { ok: true as const, workspace: workspace ?? null }
+})
+
+ipcMain.handle('workspace:reopen', (_e, { id }: { id: string }) => {
+  const workspace = reopenWorkspace(id)
+  return { ok: true as const, workspace: workspace ?? null }
+})
+
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
@@ -1162,6 +1194,7 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
+  if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
   syncDiagFlags()
   // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
@@ -1885,6 +1918,10 @@ app.whenReady().then(() => {
     } catch (err) {
       console.error('[orpheusNotify] failed to install managed hooks:', err)
     }
+
+    setAutoCloseHandler((workspaceId) => {
+      performClose(workspaceId)
+    })
 
     // Pre-load the native terminal addon during idle time so the first
     // terminal:mount call doesn't pay the dlopen stall (50–300ms).
