@@ -87,6 +87,9 @@ declare global {
         onSleepStateChanged: (
           cb: (data: { workspaceId: string; sleeping: boolean }) => void
         ) => () => void
+        onLiveness: (
+          cb: (data: { inputTick: number; liveTick: number; occluded: boolean }) => void
+        ) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>
