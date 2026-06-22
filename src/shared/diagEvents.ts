@@ -25,6 +25,7 @@ export const DIAG_EVENTS = {
   PERF_SLOW_OP: 'perf.slow_op',
   // anomaly (Phase 2 — reserved)
   TERMINAL_INPUT_STUCK: 'terminal.input_stuck',
+  TERMINAL_AUTO_RECOVERED: 'terminal.auto_recovered',
   TERMINAL_FOCUS_RECLAIMED: 'terminal.focus_reclaimed',
   ACTIVITY_WATCHDOG_FIRED: 'activity.watchdog_fired',
   OVERLAY_RETRY: 'overlay.retry',
