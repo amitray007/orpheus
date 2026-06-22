@@ -7,6 +7,7 @@ import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
+import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
 import { Moon } from '@phosphor-icons/react'
 
 interface WorkspaceViewProps {
@@ -91,6 +92,34 @@ export function WorkspaceView({
   }
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
+
+  const requestRemount = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const scaleFactor = window.devicePixelRatio ?? 1
+    const termRect = {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height)
+    }
+    // Re-attach recovery (the automated "switch view and back"): hide then mount.
+    // Keeps the claude process alive (unlike handleRestart which destroys).
+    void window.api.terminal
+      .hide(workspace.id)
+      .then(() => window.api.terminal.mount(workspace.id, termRect, scaleFactor, workspace.cwd))
+      .catch(() => {})
+  }, [workspace.id, workspace.cwd])
+
+  useEffect(() => {
+    if (!active) {
+      setActiveWatchdogWorkspace(null, null)
+      return
+    }
+    setActiveWatchdogWorkspace(workspace.id, requestRemount)
+    return () => setActiveWatchdogWorkspace(null, null)
+  }, [active, workspace.id, requestRemount])
 
   // ---------------------------------------------------------------------------
   // Mount / resize / active-toggle lifecycle
