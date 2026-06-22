@@ -7,6 +7,8 @@ import { setWorkspaceStatus } from './workspaces'
 import { notifyForTransition } from './osNotifications'
 import { getAppUiState } from './uiState'
 import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -215,6 +217,13 @@ function armWatchdog(workspaceId: string): void {
     watchdogs.delete(workspaceId)
     if (activityMap.get(workspaceId) === 'in_progress') {
       console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
+        workspaceId,
+        data: { afterSeconds: seconds }
+      })
       dispatch(workspaceId, 'awaiting_input')
       // Lost-SubagentStop recovery: clear any deferred-subagent state so the
       // next turn starts clean rather than inheriting a stale pendingStop.
@@ -232,6 +241,14 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
   activityMap.set(workspaceId, status)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'debug',
+    event: DIAG_EVENTS.HOOK_ACTIVITY,
+    workspaceId,
+    message: status,
+    data: { prev }
+  })
   try {
     setWorkspaceStatus(workspaceId, status)
   } catch (err) {
