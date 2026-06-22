@@ -78,10 +78,12 @@ const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
 // Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
 let cachedWatchdogSec: number | null = null
+let cachedStaleMinutes: number | null = null
 
 /** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
 export function invalidateWatchdogCache(): void {
   cachedWatchdogSec = null
+  cachedStaleMinutes = null
 }
 const listeners = new Set<
   (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
@@ -145,6 +147,7 @@ export function onActivityBatch(cb: (updates: ActivityUpdate[]) => void): () => 
 // the workspace was previously in 'awaiting_input' (re-mount of a known session).
 const sessionStartListeners = new Set<(workspaceId: string) => void>()
 const watchdogs = new Map<string, NodeJS.Timeout>()
+const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
   let s = detailMap.get(workspaceId)
@@ -204,6 +207,13 @@ function clearWatchdog(workspaceId: string): void {
   watchdogs.delete(workspaceId)
 }
 
+function clearIdleWatchdog(workspaceId: string): void {
+  const t = idleWatchdogs.get(workspaceId)
+  if (!t) return
+  clearTimeout(t)
+  idleWatchdogs.delete(workspaceId)
+}
+
 function armWatchdog(workspaceId: string): void {
   clearWatchdog(workspaceId)
   if (cachedWatchdogSec === null) {
@@ -237,6 +247,40 @@ function armWatchdog(workspaceId: string): void {
   watchdogs.set(workspaceId, t)
 }
 
+function armIdleWatchdog(workspaceId: string): void {
+  clearIdleWatchdog(workspaceId)
+  if (cachedStaleMinutes === null) {
+    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? 60
+  }
+  const minutes = cachedStaleMinutes
+  if (minutes <= 0) return
+  const t = setTimeout(
+    () => {
+      idleWatchdogs.delete(workspaceId)
+      if (activityMap.get(workspaceId) === 'awaiting_input') {
+        console.log(
+          '[orpheusNotify] idle watchdog — ready→idle',
+          workspaceId,
+          'after',
+          minutes,
+          'min'
+        )
+        logDiagMain({
+          category: 'lifecycle',
+          level: 'debug',
+          event: DIAG_EVENTS.HOOK_ACTIVITY,
+          workspaceId,
+          message: 'ready→idle (stale)',
+          data: { afterMinutes: minutes }
+        })
+        dispatch(workspaceId, 'idle')
+      }
+    },
+    minutes * 60 * 1000
+  )
+  idleWatchdogs.set(workspaceId, t)
+}
+
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
@@ -260,6 +304,12 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     armWatchdog(workspaceId)
   } else {
     clearWatchdog(workspaceId)
+  }
+  // Auto-demote ready→idle after staleAfterMinutes of sitting in awaiting_input.
+  if (status === 'awaiting_input') {
+    armIdleWatchdog(workspaceId)
+  } else {
+    clearIdleWatchdog(workspaceId)
   }
 
   broadcastDetailIfChanged(workspaceId)
@@ -407,6 +457,7 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
  */
 export function clearWorkspaceActivity(workspaceId: string): void {
   clearWatchdog(workspaceId)
+  clearIdleWatchdog(workspaceId)
   // Force a fresh 'idle' broadcast even if the current cached value is also
   // archived → avoid dispatch's early-return when prev === status.
   activityMap.delete(workspaceId)
