@@ -2118,6 +2118,18 @@ static bool ensureApp() {
     }];
     [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
 
+    // Prevent App Nap: a backgrounded Orpheus would otherwise have its main-thread
+    // NSTimers (incl. the 10Hz terminal safety timer) coalesced/suspended, which
+    // stalls terminal rendering until foreground. Hold a user-initiated activity
+    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt.
+    // ARC: __strong static keeps the object alive without manual retain.
+    static __strong id<NSObject> s_appNapActivity = nil;
+    if (!s_appNapActivity) {
+        s_appNapActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+                              reason:@"Active terminal rendering"];
+    }
+
     return true;
 }
 
@@ -2763,6 +2775,17 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     if (it == g_surfaces.end()) return env.Undefined();
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
+    // Re-assert ghostty's focus + visibility so the internal display link
+    // restarts. The window 'focus' handler calls this on foreground-regain;
+    // makeFirstResponder alone does NOT re-open ghostty's visible+focused gate,
+    // which is why a long-backgrounded terminal stayed frozen until a full
+    // re-mount. set_focus first (opens the gate), then set_occlusion(true)
+    // (marks visible → restarts the link), then one synchronous draw.
+    if (entry.surface) {
+        ghostty_surface_set_focus(entry.surface, true);
+        ghostty_surface_set_occlusion(entry.surface, true);
+        ghostty_surface_draw(entry.surface);
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow* win = [entry.view window];
         if (win) [win makeFirstResponder:entry.view];

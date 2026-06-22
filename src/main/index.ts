@@ -552,7 +552,10 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // Keep the renderer's timers/rAF running when backgrounded so terminal
+      // title/activity updates and event drain don't stall during long idle.
+      backgroundThrottling: false
     }
   })
 
