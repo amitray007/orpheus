@@ -2149,6 +2149,22 @@ static CGColorRef orpheusGapFillColor() {
     return color;
 }
 
+// Decorative-only backstop: a full-bounds opaque dark fill pinned at the bottom
+// of the contentView so transparent window regions never reveal the desktop.
+// It MUST be invisible to hit-testing: Chromium's -shouldIgnoreMouseEvent: hit-
+// tests the cursor point and walks the resulting view for -nonWebContentView to
+// route terminal input. A plain NSView would answer hitTest: with itself and,
+// lacking -nonWebContentView, cause terminal-region events to be misrouted into
+// the web layer (freezing the terminal). Returning nil keeps it out of all
+// event routing — it only ever draws.
+@interface OrpheusBackstopView : NSView
+@end
+@implementation OrpheusBackstopView
+- (NSView*)hitTest:(NSPoint)point { return nil; }
+- (BOOL)acceptsFirstResponder { return NO; }
+- (BOOL)wantsLayer { return YES; }
+@end
+
 // Persistent opaque app-dark backstop pinned to the bottom of the contentView.
 // Any transparent region (the workspace "hole" before the terminal NSView is
 // attached, or during a workspace switch) reveals this instead of the desktop
@@ -2161,7 +2177,7 @@ static NSView* ensureBackstopView(NSView* contentView) {
     static dispatch_once_t once;
     static __strong NSView* backstop = nil;  // retained for process lifetime (ARC)
     dispatch_once(&once, ^{
-        backstop = [[NSView alloc] initWithFrame:contentView.bounds];
+        backstop = [[OrpheusBackstopView alloc] initWithFrame:contentView.bounds];
         backstop.wantsLayer = YES;
         backstop.layer.backgroundColor = orpheusGapFillColor();
         backstop.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
