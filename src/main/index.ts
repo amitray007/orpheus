@@ -184,6 +184,8 @@ import {
 } from './footerActions'
 import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 import { refreshFromModelsDev } from './pricing'
+import { startDiagnostics, stopDiagnostics, logDiagMain, ingestDiagEvent } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -447,6 +449,28 @@ function applyGlobalHotkey(hotkey: string): boolean {
     return false
   }
 }
+
+// Diagnostics: record uncaught errors / rejections. Logging only — does NOT
+// alter Electron's default crash handling; logDiagMain never throws.
+process.on('uncaughtException', (err) => {
+  logDiagMain({
+    category: 'error',
+    level: 'fatal',
+    event: DIAG_EVENTS.ERROR_UNCAUGHT,
+    message: err?.message ?? String(err),
+    data: { stack: err?.stack ?? null, name: err?.name ?? null }
+  })
+})
+process.on('unhandledRejection', (reason) => {
+  const e = reason as { message?: string; stack?: string; name?: string }
+  logDiagMain({
+    category: 'error',
+    level: 'error',
+    event: DIAG_EVENTS.ERROR_UNHANDLED_REJECTION,
+    message: e?.message ?? String(reason),
+    data: { stack: e?.stack ?? null, name: e?.name ?? null }
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Window
@@ -1070,6 +1094,14 @@ ipcMain.handle(
 )
 
 // ---------------------------------------------------------------------------
+// Diagnostics IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.on('diag:event', (_e, evt) => {
+  ingestDiagEvent(evt)
+})
+
+// ---------------------------------------------------------------------------
 // UI State IPC
 // ---------------------------------------------------------------------------
 
@@ -1655,6 +1687,7 @@ app.whenReady().then(() => {
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+  startDiagnostics()
 
   // Boot Quick Actions registry — registers all action descriptors so they're
   // available before any IPC can invoke them.
@@ -1778,6 +1811,7 @@ app.on('will-quit', () => {
   stopStatusPoller()
   stopAutoCheckLoop()
   stopAllGitWatches()
+  stopDiagnostics()
 })
 
 app.on('window-all-closed', () => {
