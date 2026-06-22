@@ -762,7 +762,7 @@ const ProjectRow = memo(function ProjectRow({
       {expanded && workspaces.length === 0 && (
         <button
           onClick={onAddWorkspace}
-          className="flex items-center gap-2 pl-8 pr-2 py-2 mt-0.5 text-left text-xs text-text-muted hover:text-text-primary hover:bg-surface-overlay rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           aria-label="Add workspace"
         >
           <Plus size={12} />
