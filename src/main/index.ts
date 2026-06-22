@@ -1419,12 +1419,27 @@ ipcMain.handle(
       Object.keys(surfaceEnv).join(',')
     )
 
+    const _mountStart = Date.now()
     const result = addon.mount(handle, {
       workspaceId,
       rect,
       scaleFactor,
       cwd,
       env: surfaceEnv
+    })
+    logDiagMain({
+      category: 'lifecycle',
+      level: 'info',
+      event: DIAG_EVENTS.TERMINAL_MOUNT,
+      workspaceId,
+      data: { created: result?.created ?? null }
+    })
+    logDiagMain({
+      category: 'perf',
+      level: 'info',
+      event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
+      workspaceId,
+      durationMs: Date.now() - _mountStart
     })
 
     // Show the loading overlay only when a new surface was actually created —
@@ -1461,11 +1476,23 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   // outlive its parent surface in the contentView.
   hideLoadingOverlay(workspaceId)
   addon.hide(workspaceId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_HIDE,
+    workspaceId
+  })
 })
 
 ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
   addon.focus(workspaceId)
+  logDiagMain({
+    category: 'anomaly',
+    level: 'warn',
+    event: DIAG_EVENTS.TERMINAL_FOCUS_RECLAIMED,
+    workspaceId
+  })
 })
 
 ipcMain.handle(
@@ -1513,6 +1540,12 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_DESTROY,
+    workspaceId
+  })
 })
 
 // ---------------------------------------------------------------------------
