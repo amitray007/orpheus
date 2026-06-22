@@ -1,26 +1,8 @@
 import type React from 'react'
 import { Circle, CircleDashed, Diamond } from '@phosphor-icons/react'
 import type { WorkspaceActivityDetail } from '@shared/types'
-import { BRAILLE_FRAMES } from '@/lib/braille'
+import { BRAILLE_FRAMES, BRAILLE_WALK_FRAMES, BRAILLE_FILL_FRAMES } from '@/lib/braille'
 import { useSharedFrame } from '@/lib/sharedTicker'
-
-const TOOL_FRAMES = ['◐', '◓', '◑', '◒'] as const
-const COMPACT_FRAMES = [
-  '▁',
-  '▂',
-  '▃',
-  '▄',
-  '▅',
-  '▆',
-  '▇',
-  '█',
-  '▇',
-  '▆',
-  '▅',
-  '▄',
-  '▃',
-  '▂'
-] as const
 
 interface ActivityIndicatorProps {
   detail: WorkspaceActivityDetail | undefined
@@ -46,8 +28,8 @@ export function ActivityIndicator({
   // animated=false forces active=false for every ticker so static headers never
   // create a subscription (the 80ms interval stops when subscriber count hits 0).
   const brailleFrame = useSharedFrame(80, animated && detail === 'thinking')
-  const toolFrame = useSharedFrame(200, animated && detail === 'tool')
-  const compactFrame = useSharedFrame(100, animated && detail === 'compacting')
+  const toolFrame = useSharedFrame(120, animated && detail === 'tool')
+  const compactFrame = useSharedFrame(110, animated && detail === 'compacting')
 
   if (!detail || detail === 'archived') return null
 
@@ -89,14 +71,14 @@ export function ActivityIndicator({
   if (detail === 'tool') {
     return (
       <span className={`${cls} text-accent text-[11px] font-mono`}>
-        {TOOL_FRAMES[toolFrame % TOOL_FRAMES.length]}
+        {BRAILLE_WALK_FRAMES[toolFrame % BRAILLE_WALK_FRAMES.length]}
       </span>
     )
   }
   if (detail === 'compacting') {
     return (
       <span className={`${cls} text-accent text-[11px] font-mono`}>
-        {COMPACT_FRAMES[compactFrame % COMPACT_FRAMES.length]}
+        {BRAILLE_FILL_FRAMES[compactFrame % BRAILLE_FILL_FRAMES.length]}
       </span>
     )
   }
