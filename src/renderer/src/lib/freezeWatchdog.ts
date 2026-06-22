@@ -10,6 +10,10 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 // category inside logDiag itself.
 
 const CHECK_MS = 600
+// After (re)activating a workspace the surface is still mounting/re-attaching, so
+// liveTick legitimately lags briefly. Don't arm during this settle window or we
+// false-positive on the first real input that lands mid-mount.
+const SETTLE_MS = 1500
 
 let activeWs: string | null = null
 let requestRemountCb: (() => void) | null = null
@@ -17,6 +21,12 @@ let requestRemountCb: (() => void) | null = null
 let lastInputTick = 0
 let lastLiveTick = 0
 let lastOccluded = false
+// On activation we must SEED lastInputTick/lastLiveTick from the next push
+// without treating pre-existing (accumulated) counter values as a fresh
+// interaction — otherwise the first push reads inputTick>0 vs the initial 0 and
+// arms a check that never reflected a real keystroke.
+let needsReseed = true
+let settleUntilMs = 0
 
 let armed = false
 let armSnapshotLive = 0
@@ -30,6 +40,8 @@ export function setActiveWatchdogWorkspace(
 ): void {
   activeWs = workspaceId
   requestRemountCb = requestRemount
+  needsReseed = true
+  settleUntilMs = performance.now() + SETTLE_MS
   disarm()
 }
 
@@ -43,11 +55,25 @@ function disarm(): void {
 
 function onLiveness(d: { inputTick: number; liveTick: number; occluded: boolean }): void {
   lastOccluded = d.occluded
+
+  // First push after (re)activation: seed the baselines, never arm. This makes
+  // "inputAdvanced" mean "input since we started watching THIS activation", not
+  // "input since the counters were zero".
+  if (needsReseed) {
+    needsReseed = false
+    lastInputTick = d.inputTick
+    lastLiveTick = d.liveTick
+    return
+  }
+
   const inputAdvanced = d.inputTick > lastInputTick
   lastInputTick = d.inputTick
   lastLiveTick = d.liveTick
 
-  if (inputAdvanced && activeWs && !armed && !recovering) {
+  // Don't arm during the post-activation settle window (surface re-attaching).
+  const settled = performance.now() >= settleUntilMs
+
+  if (inputAdvanced && settled && activeWs && !armed && !recovering) {
     armed = true
     armSnapshotLive = d.liveTick
     armedAtMs = performance.now()
