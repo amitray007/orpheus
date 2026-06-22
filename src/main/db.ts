@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 54
+const CURRENT_VERSION = 55
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -221,6 +221,30 @@ const ACTION_AUDIT_LOG_SCHEMA_SQL = `
     ON action_audit_log(workspace_id, created_at DESC);
 `
 
+// diagnostics_events — local event log (errors/lifecycle/perf/anomaly). Bounded
+// ring buffer pruned by age (7d) and row cap (50k) at launch. Single writer:
+// src/main/diagnostics.ts. Fresh-install CREATE; defensive CREATE in v55 below.
+const DIAGNOSTICS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS diagnostics_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,
+    process      TEXT NOT NULL,
+    category     TEXT NOT NULL,
+    level        TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    workspace_id TEXT,
+    session_id   TEXT,
+    duration_ms  INTEGER,
+    message      TEXT,
+    data         TEXT,
+    seq          INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_diag_ts       ON diagnostics_events(ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_cat_ts   ON diagnostics_events(category, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_ws_ts    ON diagnostics_events(workspace_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_event_ts ON diagnostics_events(event, ts);
+`
+
 // Footer actions — phase 3a. Three-scope additive list.
 // Fresh-install CREATE IF NOT EXISTS. Defensive try/catch CREATE below (v44).
 // v49 adds prompts_json TEXT (nullable) to all three tables.
@@ -381,6 +405,7 @@ function migrate(db: Database.Database): void {
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
   db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
+  db.exec(DIAGNOSTICS_SCHEMA_SQL)
   db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
 
   if (!row) {
@@ -2109,6 +2134,15 @@ function migrate(db: Database.Database): void {
       /* ignore */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(54)
+  }
+
+  if (currentVersion < 55) {
+    try {
+      db.exec(DIAGNOSTICS_SCHEMA_SQL)
+    } catch {
+      /* ignore — table may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(55)
   }
 }
 
