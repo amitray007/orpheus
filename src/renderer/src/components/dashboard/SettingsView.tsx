@@ -47,6 +47,7 @@ import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
 import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
+import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -73,6 +74,7 @@ export type SectionId =
   | 'orpheus-status'
   | 'orpheus-footer'
   | 'orpheus-developer'
+  | 'orpheus-diagnostics'
   | 'orpheus-about'
 
 interface SectionDef {
@@ -142,6 +144,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Developer',
         icon: Code,
         Component: OrpheusDeveloperSection
+      },
+      {
+        id: 'orpheus-diagnostics',
+        label: 'Diagnostics',
+        icon: Pulse,
+        Component: OrpheusDiagnosticsSection
       },
       { id: 'orpheus-about', label: 'About Orpheus', icon: Info, Component: OrpheusAboutSection }
     ]
