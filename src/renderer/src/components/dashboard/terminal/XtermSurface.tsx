@@ -93,9 +93,9 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
 }
 
 export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): React.JSX.Element {
-  // containerRef: outer div that owns layout + horizontal padding.
-  // xtermRef: inner div that xterm mounts into — FitAddon measures this element,
-  // so it sees only the content box (inside the padding) and computes cols/rows correctly.
+  // containerRef: outer div that owns layout dimensions (full width/height).
+  // xtermRef: inner div that xterm mounts into. Padding is applied directly to
+  // term.element (.xterm) after open() so FitAddon accounts for it correctly.
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
@@ -186,17 +186,20 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       const fontSize = await applyGhosttyAppearance(term)
       if (disposed) return
 
-      // Horizontal padding: approximate ghostty's default window-padding-x (2 cells).
-      // Cell width ≈ 0.6em for monospace fonts; 2 cells ≈ fontSize * 0.6 * 2.
-      // Applied to the OUTER container so FitAddon (which measures the inner xterm div
-      // passed to term.open) sees only the content-box width and computes cols/rows
-      // from the padded area. Mouse hit-testing is unaffected — xterm's canvas fills
-      // the inner div completely; only the surrounding gutter is padded.
-      const hPad = Math.round(fontSize * 0.6 * 2)
-      outer.style.paddingLeft = `${hPad}px`
-      outer.style.paddingRight = `${hPad}px`
-
       term.open(el)
+
+      // Apply padding to term.element so FitAddon accounts for it correctly.
+      // FitAddon reads padding off terminal.element via getComputedStyle, then subtracts
+      // it from the measured parentElement dimensions → canvas fills the remaining content box.
+      const hPad = Math.round(fontSize * 0.6)
+      const vPad = 6
+      if (term.element) {
+        term.element.style.paddingLeft = `${hPad}px`
+        term.element.style.paddingRight = `${hPad}px`
+        term.element.style.paddingTop = `${vPad}px`
+        term.element.style.paddingBottom = `${vPad}px`
+        term.element.style.boxSizing = 'border-box'
+      }
 
       // WebGL addon must be loaded after open() so the canvas is attached.
       webgl = new WebglAddon()
@@ -224,7 +227,12 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         webgl = null
       }
 
-      doFit()
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => {
+          doFit()
+          resolve()
+        })
+      )
 
       // Clamp dims — PTY must never receive 0×0.
       const cols = Math.max(1, term.cols)
@@ -566,8 +574,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
   return (
     <div ref={containerRef} className="w-full h-full relative">
-      {/* Inner div: xterm mounts here. Its width = outer width minus horizontal padding,
-          so FitAddon computes cols from the content box, not the gutters. */}
+      {/* Inner div: xterm mounts here. term.element padding is set after open() so FitAddon subtracts it. */}
       <div ref={xtermRef} className="w-full h-full" />
       {loading && !spawnError && !exited && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface-base">
