@@ -39,6 +39,17 @@ async function applyGhosttyAppearance(term: Terminal): Promise<void> {
     term.options.fontFamily = fontFamily
     term.options.fontSize = fontSize
 
+    // Cursor style — ghostty 'block'|'underline'|'bar' map 1:1 to xterm.
+    const cursorStyleRaw = settings['cursor-style']
+    if (cursorStyleRaw === 'block' || cursorStyleRaw === 'underline' || cursorStyleRaw === 'bar') {
+      term.options.cursorStyle = cursorStyleRaw
+    }
+    // Cursor blink — ghostty cursor-style-blink (boolean or string 'true'/'false').
+    const blinkRaw = settings['cursor-style-blink']
+    if (blinkRaw !== undefined && blinkRaw !== null) {
+      term.options.cursorBlink = blinkRaw === true || blinkRaw === 'true'
+    }
+
     const themeName = typeof settings['theme'] === 'string' ? settings['theme'] : null
     let theme: ITheme | null = null
 
@@ -215,6 +226,17 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       setSpawnError(String(err))
     })
 
+    // Mouse-hide-while-typing: hide cursor on keydown, restore on mousemove.
+    // Mirrors ghostty's mouse-hide-while-typing = true. No per-frame work.
+    const onKeyDown = (): void => {
+      if (el) el.style.cursor = 'none'
+    }
+    const onMouseMove = (): void => {
+      if (el) el.style.cursor = ''
+    }
+    el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('mousemove', onMouseMove)
+
     return () => {
       disposed = true
       doFitRef.current = null
@@ -234,6 +256,9 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         void window.api.xterm.ack(workspaceId, pendingAck)
         pendingAck = 0
       }
+
+      el.removeEventListener('keydown', onKeyDown)
+      el.removeEventListener('mousemove', onMouseMove)
 
       // Dispose WebGL addon before Terminal to avoid GPU resource leaks.
       webgl?.dispose()

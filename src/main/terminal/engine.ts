@@ -46,13 +46,11 @@ export interface TerminalEngine {
   /** Returns 'none' | 'live' | 'dead'. */
   getPhase(workspaceId: string): 'none' | 'live' | 'dead'
   /**
-   * Set the data callback. Called when the PTY produces output.
-   * Seam for U3: U3 will replace or wrap this to add batching + ACK flow control.
+   * Set the data callback. Called when the PTY produces output (after batching).
    */
   setDataHandler(handler: (workspaceId: string, data: string) => void): void
   /**
    * Set the exit callback. Called when a PTY process exits.
-   * Seam for U9: U9 wires this to terminal:exit IPC + overlay.
    */
   setExitHandler(handler: (workspaceId: string, exitCode: number, signal?: number) => void): void
   /** ACK chars from renderer. Decrements unacked; resumes PTY if below Low watermark. */
@@ -61,4 +59,5 @@ export interface TerminalEngine {
   resetFlow(workspaceId: string): void
 }
 
+/** Alias used by XtermEngine.getPhase() return annotation; not exported to callers outside this package. */
 export type PhaseKind = 'none' | 'live' | 'dead'

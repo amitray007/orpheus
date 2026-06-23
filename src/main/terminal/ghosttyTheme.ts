@@ -3,6 +3,11 @@
 //   - Scrollback: capped at 5,000 lines vs ghostty's 2,000,000 (JS-heap constraint).
 //   - selection-foreground may not render in all xterm versions (field accepted but ignored).
 //   - GPU text shaping / Kitty graphics not supported.
+//   - window-padding-x: ghostty default is 2 cells (~16px) on each side; xterm fills
+//     the container to its edges. Adding CSS padding to the container would shrink
+//     the usable terminal columns — left as a gap to avoid breaking FitAddon metrics.
+//   - Closed gaps: mouse-hide-while-typing (implemented via DOM keydown/mousemove);
+//     cursor-style and cursor-style-blink (forwarded from ghostty settings to xterm options).
 
 import type { GhosttyParsedTheme } from '../../shared/types'
 
