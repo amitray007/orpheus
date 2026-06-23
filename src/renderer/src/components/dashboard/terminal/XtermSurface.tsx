@@ -4,6 +4,7 @@ import type React from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { setSleeping } from '@/lib/sleepStore'
 
 interface XtermSurfaceProps {
   workspaceId: string
@@ -17,6 +18,9 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   const containerRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
+  // Stable ref to doFit so the active-toggle and recover effects can call it
+  // without being in the mount effect's closure.
+  const doFitRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -58,6 +62,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         return
       fit.fit()
     }
+    doFitRef.current = doFit
 
     const scheduleResize = (): void => {
       if (resizeDebounceId !== null) clearTimeout(resizeDebounceId)
@@ -150,6 +155,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
     return () => {
       disposed = true
+      doFitRef.current = null
 
       if (resizeDebounceId !== null) {
         clearTimeout(resizeDebounceId)
@@ -179,21 +185,39 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, cwd])
 
+  // Sleep wiring: active=false → sleeping=true, active=true → sleeping=false.
+  // Visibility is known in JS so we write sleepStore directly (no IPC round-trip).
+  useEffect(() => {
+    setSleeping(workspaceId, !active)
+    return () => {
+      // On unmount treat as sleeping so consumers don't show a stale awake state.
+      setSleeping(workspaceId, true)
+    }
+  }, [workspaceId, active])
+
   // Re-fit when active transitions to true (workspace navigated back to).
+  // Bug fix: call doFit directly via ref instead of dispatching window 'resize' —
+  // the ResizeObserver only observes the container, not the window, so the synthetic
+  // window resize event was never picked up.
   useEffect(() => {
     if (!active) return
     const el = containerRef.current
     if (!el || el.clientWidth === 0 || el.clientHeight === 0) return
-    // Trigger a fit via a ResizeObserver notification — defer to next frame so
-    // layout has settled after the CSS display change.
     requestAnimationFrame(() => {
-      const container = containerRef.current
-      if (!container || container.clientWidth === 0 || container.clientHeight === 0) return
-      // FitAddon is wired inside the mount effect; schedule a resize event
-      // by dispatching a synthetic resize on the window so the debouncer fires.
-      window.dispatchEvent(new Event('resize'))
+      doFitRef.current?.()
     })
   }, [active])
+
+  // xterm-specific recovery: on flow stall, reset the ACK window and re-fit.
+  useEffect(() => {
+    return window.api.xterm.onRecover(({ workspaceId: wid }) => {
+      if (wid !== workspaceId) return
+      void window.api.xterm.resetFlow(workspaceId)
+      requestAnimationFrame(() => {
+        doFitRef.current?.()
+      })
+    })
+  }, [workspaceId])
 
   return (
     <div ref={containerRef} className="w-full h-full relative">

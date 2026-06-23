@@ -37,18 +37,26 @@ function subscribe(workspaceId: string, fn: () => void): () => void {
 }
 
 // ---------------------------------------------------------------------------
+// Public write API — used by the xterm engine (visibility known in JS)
+// ---------------------------------------------------------------------------
+
+export function setSleeping(workspaceId: string, sleeping: boolean): void {
+  if (store.get(workspaceId) === sleeping) return
+  if (sleeping) {
+    store.set(workspaceId, true)
+  } else {
+    store.delete(workspaceId)
+  }
+  notify(workspaceId)
+}
+
+// ---------------------------------------------------------------------------
 // IPC subscription — wire up once at module load time
 // ---------------------------------------------------------------------------
 
 if (typeof window !== 'undefined' && window.api?.terminal?.onSleepStateChanged) {
   window.api.terminal.onSleepStateChanged(({ workspaceId, sleeping }) => {
-    if (store.get(workspaceId) === sleeping) return
-    if (sleeping) {
-      store.set(workspaceId, true)
-    } else {
-      store.delete(workspaceId)
-    }
-    notify(workspaceId)
+    setSleeping(workspaceId, sleeping)
   })
 }
 

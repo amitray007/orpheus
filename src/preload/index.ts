@@ -627,6 +627,11 @@ const api = {
     },
     title: (workspaceId: string, title: string): void => {
       ipcRenderer.send('terminal:xterm-title', workspaceId, title)
+    },
+    onRecover: (cb: (e: { workspaceId: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void => cb(e)
+      ipcRenderer.on('terminal:xterm-recover', listener)
+      return () => ipcRenderer.removeListener('terminal:xterm-recover', listener)
     }
   },
   diag: {

@@ -19,6 +19,7 @@ const BATCH_TIMER_MS = 5
 const FLOW_HIGH_WATERMARK = 100_000
 const FLOW_LOW_WATERMARK = 5_000
 const STALL_TIMEOUT_MS = 10_000
+const LIVENESS_INTERVAL_MS = 5_000
 
 type PtyEntry = {
   pty: import('@lydell/node-pty').IPty
@@ -33,6 +34,8 @@ type PtyEntry = {
   // stall watchdog
   stallTimer: NodeJS.Timeout | null
   stallFired: boolean
+  // liveness (U8)
+  lastDataTs: number
 }
 
 export class XtermEngine implements TerminalEngine {
@@ -40,6 +43,8 @@ export class XtermEngine implements TerminalEngine {
   private dataHandler: ((workspaceId: string, data: string) => void) | null = null
   private exitHandler: ((workspaceId: string, exitCode: number, signal?: number) => void) | null =
     null
+  private recoverHandler: ((workspaceId: string) => void) | null = null
+  private livenessInterval: NodeJS.Timeout | null = null
 
   spawn(params: {
     workspaceId: string
@@ -90,6 +95,7 @@ export class XtermEngine implements TerminalEngine {
       pty.onData((data) => {
         const e = this.map.get(params.workspaceId)
         if (!e) return
+        e.lastDataTs = Date.now()
         e.batchBuf += data
         if (e.batchBuf.length >= BATCH_SIZE_LIMIT) {
           this.flush(params.workspaceId)
@@ -115,8 +121,10 @@ export class XtermEngine implements TerminalEngine {
         ackedChars: 0,
         paused: false,
         stallTimer: null,
-        stallFired: false
+        stallFired: false,
+        lastDataTs: Date.now()
       })
+      this.ensureLivenessInterval()
 
       console.log(
         '[xterm] spawn workspaceId=%s cwd=%s envKeys=%s',
@@ -143,6 +151,9 @@ export class XtermEngine implements TerminalEngine {
       entry.stallTimer = null
     }
     this.map.delete(workspaceId) // DELETE FIRST before killing
+    if (this.map.size === 0) {
+      this.stopLivenessInterval()
+    }
     try {
       entry.pty.kill('SIGHUP')
     } catch {
@@ -208,7 +219,7 @@ export class XtermEngine implements TerminalEngine {
       if (!e.paused) return
       const currentUnacked = e.sentChars - e.ackedChars
       if (currentUnacked >= unackedAtStart) {
-        // no progress
+        // no progress — fire recovery
         e.stallFired = true
         logDiagMain({
           category: 'anomaly',
@@ -218,8 +229,42 @@ export class XtermEngine implements TerminalEngine {
           message: `xterm flow stall: unacked=${currentUnacked} for >10s`,
           data: { unacked: currentUnacked, sentChars: e.sentChars, ackedChars: e.ackedChars }
         })
+        this.recoverHandler?.(workspaceId)
       }
     }, STALL_TIMEOUT_MS)
+  }
+
+  private ensureLivenessInterval(): void {
+    if (this.livenessInterval) return
+    this.livenessInterval = setInterval(() => {
+      const now = Date.now()
+      for (const [workspaceId, e] of this.map) {
+        if (e.phase !== 'live') continue
+        // Only flag stalls that the flow watchdog hasn't already caught:
+        // stallFired means it already triggered recovery via startStallWatchdog.
+        // The liveness interval is a belt-and-suspenders check for the case where
+        // the PTY is paused and data stopped but stallFired was never set.
+        if (e.paused && !e.stallFired && now - e.lastDataTs > STALL_TIMEOUT_MS) {
+          e.stallFired = true
+          logDiagMain({
+            category: 'anomaly',
+            level: 'warn',
+            event: 'terminal.xterm_flow_stall',
+            workspaceId,
+            message: `xterm liveness stall: paused with no data for >${STALL_TIMEOUT_MS}ms`,
+            data: { lastDataTs: e.lastDataTs, sentChars: e.sentChars, ackedChars: e.ackedChars }
+          })
+          this.recoverHandler?.(workspaceId)
+        }
+      }
+    }, LIVENESS_INTERVAL_MS)
+  }
+
+  private stopLivenessInterval(): void {
+    if (this.livenessInterval) {
+      clearInterval(this.livenessInterval)
+      this.livenessInterval = null
+    }
   }
 
   ackChars(workspaceId: string, count: number): void {
@@ -266,5 +311,9 @@ export class XtermEngine implements TerminalEngine {
 
   setExitHandler(handler: (workspaceId: string, exitCode: number, signal?: number) => void): void {
     this.exitHandler = handler
+  }
+
+  setRecoverHandler(handler: (workspaceId: string) => void): void {
+    this.recoverHandler = handler
   }
 }

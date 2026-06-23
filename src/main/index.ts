@@ -231,6 +231,9 @@ function getXtermEngine(): XtermEngine {
       terminalActions.clearXtermSessionReady(workspaceId)
       getMainWindow()?.webContents.send('terminal:xterm-exit', { workspaceId, exitCode, signal })
     })
+    xtermEngine.setRecoverHandler((workspaceId) => {
+      getMainWindow()?.webContents.send('terminal:xterm-recover', { workspaceId })
+    })
     terminalActions.setXtermEngineRef(xtermEngine)
   }
   return xtermEngine

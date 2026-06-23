@@ -370,6 +370,7 @@ declare global {
           cb: (e: { workspaceId: string; exitCode: number; signal?: number }) => void
         ) => () => void
         title: (workspaceId: string, title: string) => void
+        onRecover: (cb: (e: { workspaceId: string }) => void) => () => void
       }
       diag: {
         event: (evt: DiagEvent) => void
