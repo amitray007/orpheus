@@ -3200,6 +3200,77 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// File-scope: the z-reorder half of setOverlay is INERT until the opaque-on-top
+// compositing model is enabled (Task 8 sets this true). Until then the surface
+// stays bottom-parked under the transparent web layer (the 2adc15d model), and
+// setOverlay only performs the focus handoff — which is correct in both models
+// and avoids a visible z-flicker in the intermediate commits (Tasks 3-7).
+static bool g_overlayCompositingEnabled = false;   // flipped on in Task 8
+static bool g_overlayOpen = false;                 // used by Task 6 (show/mount gating)
+
+// NAPI: setOverlay(workspaceId, on)
+// OWN writer of the z-order + overlay-focus axis (peer to reconcileSurface, which
+// owns the gate axis). on=true: (when compositing enabled) surface goes BELOW the
+// web layer, and resigns first-responder to the WebContents view so DOM overlays
+// receive keys. on=false: surface returns ABOVE, reclaims first-responder, repaints.
+// Must NOT route through reconcileSurface: its attached branch ends with
+// set_focus(true)+makeFirstResponder, which would fight the handoff.
+static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    bool on = info[1].As<Napi::Boolean>().Value();
+    g_overlayOpen = on;                              // visible to the show/mount path
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return env.Undefined();          // no surface → no-op
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached || !entry.view) return env.Undefined();
+    NSView* superview = entry.view.superview;
+    if (!superview) return env.Undefined();
+    NSWindow* win = [entry.view window];
+
+    if (on) {
+        // Z-reorder ONLY once opaque-on-top is live (Task 8). Pre-Task-8 the surface
+        // is already bottom-parked under the transparent web layer, so a reorder would
+        // be a visible flicker for no benefit — skip it; do the focus handoff only.
+        if (g_overlayCompositingEnabled) {
+            [superview addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
+        }
+        ghostty_surface_set_focus(entry.surface, false);
+        NSView* webView = nil;
+        for (NSView* sub in superview.subviews) {
+            if (sub == entry.view) continue;
+            // skip other ghostty surfaces (they respond YES to nonWebContentView)
+            if ([sub respondsToSelector:@selector(nonWebContentView)]) continue;
+            NSString* cls = NSStringFromClass([sub class]);
+            if ([cls containsString:@"WebContents"] || [cls containsString:@"RenderWidgetHostView"]) {
+                webView = sub;
+                break;
+            }
+        }
+        if (win) {
+            if (webView) [win makeFirstResponder:webView];
+            else [win makeFirstResponder:nil];   // fallback; Chromium reclaims on next click
+        }
+        NSLog(@"[ghostty-native] setOverlay ws=%s on=1 z=%d webView=%d",
+              workspaceId.c_str(), g_overlayCompositingEnabled, webView != nil);
+    } else {
+        if (g_overlayCompositingEnabled) {
+            // Surface back on top, reclaim focus, repaint immediately.
+            [superview addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
+        }
+        ghostty_surface_set_focus(entry.surface, true);
+        if (win) [win makeFirstResponder:entry.view];
+        ghostty_surface_draw(entry.surface);
+        NSLog(@"[ghostty-native] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
+    }
+    return env.Undefined();
+}
+
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -3539,6 +3610,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
+    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));

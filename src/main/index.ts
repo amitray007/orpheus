@@ -1384,6 +1384,7 @@ type GhosttyNativeAddon = {
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
+  setOverlay(workspaceId: string, on: boolean): void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
   setLivenessCallback: (
@@ -1585,6 +1586,14 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
     workspaceId
   })
 })
+
+ipcMain.handle(
+  'terminal:setOverlay',
+  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+    const addon = loadTerminalAddon()
+    addon.setOverlay(workspaceId, on)
+  }
+)
 
 ipcMain.handle(
   'terminal:getSurfacePhase',

@@ -84,6 +84,7 @@ declare global {
           cb: (e: { workspaceId: string; canInject: boolean }) => void
         ) => () => void
         focus: (workspaceId: string) => Promise<void>
+        setOverlay: (workspaceId: string, on: boolean) => Promise<void>
         getSurfacePhase: (
           workspaceId: string
         ) => Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'>
