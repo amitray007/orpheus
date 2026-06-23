@@ -15,6 +15,22 @@ interface XtermSurfaceProps {
   workspaceId: string
   cwd: string
   active: boolean
+  /** Called when the internal focus function becomes available (on mount) or is released (on unmount). */
+  registerFocus?: (fn: (() => void) | null) => void
+}
+
+function isEditableTarget(): boolean {
+  const el = document.activeElement
+  if (!el) return false
+  if (el instanceof HTMLTextAreaElement && el.classList.contains('xterm-helper-textarea'))
+    return false
+  if (el instanceof HTMLInputElement) {
+    const type = (el.type || 'text').toLowerCase()
+    return ['text', 'search', 'email', 'url', 'password', 'number', 'tel', ''].includes(type)
+  }
+  if (el instanceof HTMLTextAreaElement) return true
+  if ((el as HTMLElement).contentEditable === 'true') return true
+  return false
 }
 
 const ACK_STRIDE = 5000
@@ -161,7 +177,12 @@ async function applyGhosttyAppearance(
   return resolvedFontSize
 }
 
-export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): React.JSX.Element {
+export function XtermSurface({
+  workspaceId,
+  cwd,
+  active,
+  registerFocus
+}: XtermSurfaceProps): React.JSX.Element {
   // containerRef: outer div that owns layout dimensions (full width/height).
   // xtermRef: inner div that xterm mounts into. Padding is applied directly to
   // term.element (.xterm) after open() so FitAddon accounts for it correctly.
@@ -175,6 +196,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   // Stable ref to doFit so the active-toggle and recover effects can call it
   // without being in the mount effect's closure.
   const doFitRef = useRef<(() => void) | null>(null)
+  // Stable ref to focus function; set in mount effect and shared via registerFocus prop.
+  const focusTermRef = useRef<(() => void) | null>(null)
 
   const handleRestart = (): void => {
     setLoading(true)
@@ -235,6 +258,12 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       fit.fit()
     }
     doFitRef.current = doFit
+
+    const focusFn = (): void => {
+      if (!disposed) term.focus()
+    }
+    focusTermRef.current = focusFn
+    registerFocus?.(focusFn)
 
     const scheduleResize = (): void => {
       if (resizeDebounceId !== null) clearTimeout(resizeDebounceId)
@@ -472,6 +501,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       if (result.created) {
         // Fresh spawn: wire the live session immediately.
         wireLiveSession()
+        if (active && !disposed) term.focus()
         // Hide loader when SessionStart hook fires — canonical "claude is ready" signal.
         unsubSessionReady = window.api.xterm.onSessionReady(({ workspaceId: wid }) => {
           if (wid !== workspaceId || disposed) return
@@ -496,6 +526,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         }
         setLoading(false)
         wireLiveSession()
+        if (active && !disposed) term.focus()
         // Nudge PTY to redraw by syncing current cols/rows.
         doFit()
         void window.api.xterm.resize(workspaceId, Math.max(1, term.cols), Math.max(1, term.rows))
@@ -632,6 +663,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     return () => {
       disposed = true
       doFitRef.current = null
+      focusTermRef.current = null
+      registerFocus?.(null)
 
       if (resizeDebounceId !== null) {
         clearTimeout(resizeDebounceId)
@@ -694,6 +727,20 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     requestAnimationFrame(() => {
       doFitRef.current?.()
     })
+  }, [active])
+
+  // Sticky focus: refocus terminal when active flips to true.
+  useEffect(() => {
+    if (active) requestAnimationFrame(() => focusTermRef.current?.())
+  }, [active])
+
+  // Sticky focus: refocus terminal when the app/window regains OS focus.
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      if (active && !isEditableTarget()) focusTermRef.current?.()
+    }
+    window.addEventListener('focus', onWindowFocus)
+    return () => window.removeEventListener('focus', onWindowFocus)
   }, [active])
 
   // xterm-specific recovery: on flow stall, reset the ACK window and re-fit.

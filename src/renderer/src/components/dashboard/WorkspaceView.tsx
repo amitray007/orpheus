@@ -12,6 +12,20 @@ import { Moon } from '@phosphor-icons/react'
 import { useOverlayOpenState } from '@/lib/overlayFocus'
 import { XtermSurface } from './terminal/XtermSurface'
 
+function isEditableTarget(): boolean {
+  const el = document.activeElement
+  if (!el) return false
+  if (el instanceof HTMLTextAreaElement && el.classList.contains('xterm-helper-textarea'))
+    return false
+  if (el instanceof HTMLInputElement) {
+    const type = (el.type || 'text').toLowerCase()
+    return ['text', 'search', 'email', 'url', 'password', 'number', 'tel', ''].includes(type)
+  }
+  if (el instanceof HTMLTextAreaElement) return true
+  if ((el as HTMLElement).contentEditable === 'true') return true
+  return false
+}
+
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
   /** Whether this workspace is currently the active (visible) one.
@@ -41,6 +55,8 @@ export function WorkspaceView({
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayOpen = useOverlayOpenState()
+  // Stores the xterm focus function registered by XtermSurface via registerFocus prop.
+  const xtermFocusFnRef = useRef<(() => void) | null>(null)
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
   // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
@@ -124,6 +140,43 @@ export function WorkspaceView({
   }
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
+
+  const workspaceId = workspace.id
+  const refocusTerminal = useCallback((): void => {
+    if (!active) return
+    if (isEditableTarget()) return
+    if (USE_XTERM) {
+      xtermFocusFnRef.current?.()
+    } else {
+      void window.api.terminal.focus(workspaceId).catch(() => {})
+    }
+  }, [active, USE_XTERM, workspaceId])
+
+  // Sticky focus: window regains OS focus (Cmd-Tab back to Orpheus).
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      if (!USE_XTERM) refocusTerminal()
+      // xterm path is handled inside XtermSurface's own window focus listener.
+    }
+    window.addEventListener('focus', onWindowFocus)
+    return () => window.removeEventListener('focus', onWindowFocus)
+  }, [USE_XTERM, refocusTerminal])
+
+  // Sticky focus: any click on app chrome outside the terminal container refocuses.
+  // rAF-deferred so the clicked element receives its own focus/click first.
+  useEffect(() => {
+    const onMouseUp = (e: MouseEvent): void => {
+      // Skip if the click was inside the terminal container (don't interfere with selection).
+      if (containerRef.current?.contains(e.target as Node)) return
+      requestAnimationFrame(() => {
+        if (!USE_XTERM) refocusTerminal()
+        // xterm path: check editable first, then focus via stored fn.
+        if (USE_XTERM && active && !isEditableTarget()) xtermFocusFnRef.current?.()
+      })
+    }
+    document.addEventListener('mouseup', onMouseUp)
+    return () => document.removeEventListener('mouseup', onMouseUp)
+  }, [USE_XTERM, active, refocusTerminal])
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -577,7 +630,14 @@ export function WorkspaceView({
             className={`flex-1 min-w-0 relative ${overlayOpen || USE_XTERM ? 'bg-surface-base' : ''}`}
           >
             {USE_XTERM && (
-              <XtermSurface workspaceId={workspace.id} cwd={workspace.cwd} active={active} />
+              <XtermSurface
+                workspaceId={workspace.id}
+                cwd={workspace.cwd}
+                active={active}
+                registerFocus={(fn) => {
+                  xtermFocusFnRef.current = fn
+                }}
+              />
             )}
             {active && sleeping && !USE_XTERM && (
               <button
