@@ -378,6 +378,7 @@ declare global {
           mime: string
         ) => Promise<{ path: string } | { error: string }>
         quotePaths: (paths: string[]) => Promise<{ text: string }>
+        getPathForFile: (file: File) => string
       }
       diag: {
         event: (evt: DiagEvent) => void

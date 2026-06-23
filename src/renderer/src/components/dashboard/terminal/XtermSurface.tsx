@@ -396,6 +396,57 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       }
       // If neither image nor text, do nothing — let default handling proceed.
     }
+    // U5 — File / image drag-drop.
+    // Mirrors addon.mm performDragOperation (~997-1027): resolve real paths via
+    // webUtils.getPathForFile, quote via xterm:quotePaths, paste into terminal.
+    const onDragOver = (e: DragEvent): void => {
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    const onDrop = (e: DragEvent): void => {
+      // preventDefault synchronously before any awaits — required for drop to work.
+      e.preventDefault()
+      if (disposed) return
+      const files = e.dataTransfer?.files
+      if (!files || files.length === 0) return
+      void (async () => {
+        try {
+          const realPaths: string[] = []
+          const imageFiles: File[] = []
+          for (let i = 0; i < files.length; i++) {
+            const file = files[i]
+            const p = window.api.xterm.getPathForFile(file)
+            if (p) {
+              realPaths.push(p)
+            } else if (file.type.startsWith('image/')) {
+              imageFiles.push(file)
+            }
+          }
+          // Paste quoted real paths.
+          if (realPaths.length > 0) {
+            const { text } = await window.api.xterm.quotePaths(realPaths)
+            if (!disposed && text) term.paste(text)
+          }
+          // Fallback: path-less images → write to tmp and paste the resulting path.
+          for (const file of imageFiles) {
+            const buf = await file.arrayBuffer()
+            const bytes = new Uint8Array(buf)
+            const result = await window.api.xterm.writeImageAttachment(bytes, file.type)
+            if (disposed) return
+            if ('error' in result) {
+              console.warn('[xterm] drop image writeImageAttachment failed:', result.error)
+              continue
+            }
+            // result.path is already POSIX-quoted (U2 guarantees this).
+            term.paste(result.path)
+          }
+        } catch (err) {
+          console.warn('[xterm] drop handler error:', err)
+        }
+      })()
+    }
+    el.addEventListener('dragover', onDragOver)
+    el.addEventListener('drop', onDrop)
     el.addEventListener('keydown', onKeyDown)
     el.addEventListener('mousemove', onMouseMove)
     el.addEventListener('paste', onPaste)
@@ -420,6 +471,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         pendingAck = 0
       }
 
+      el.removeEventListener('dragover', onDragOver)
+      el.removeEventListener('drop', onDrop)
       el.removeEventListener('keydown', onKeyDown)
       el.removeEventListener('mousemove', onMouseMove)
       el.removeEventListener('paste', onPaste)

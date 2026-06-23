@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
@@ -644,7 +644,8 @@ const api = {
     ): Promise<{ path: string } | { error: string }> =>
       ipcRenderer.invoke('xterm:writeImageAttachment', { data, mime }),
     quotePaths: (paths: string[]): Promise<{ text: string }> =>
-      ipcRenderer.invoke('xterm:quotePaths', { paths })
+      ipcRenderer.invoke('xterm:quotePaths', { paths }),
+    getPathForFile: (file: File): string => webUtils.getPathForFile(file)
   },
   diag: {
     event: (evt: DiagEvent): void => {
