@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 58
+const CURRENT_VERSION = 59
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -352,6 +352,9 @@ const UI_STATE_SCHEMA_SQL = `
     diag_perf INTEGER NOT NULL DEFAULT 0,
     diag_anomaly INTEGER NOT NULL DEFAULT 0,
     auto_close_after_minutes INTEGER,
+    -- Notification enrichment (v59)
+    notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
+    notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
 `
@@ -2191,6 +2194,22 @@ function migrate(db: Database.Database): void {
       /* column may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(58)
+  }
+
+  if (currentVersion < 59) {
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_rich_summary BOOLEAN NOT NULL DEFAULT 1')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(59)
   }
 }
 

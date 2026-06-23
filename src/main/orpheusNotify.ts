@@ -65,6 +65,12 @@ type DetailState = {
   // True when a Stop was received while subagentDepth > 0. The pending
   // awaiting_input dispatch fires once the last SubagentStop arrives.
   pendingStop: boolean
+  // Wall-clock ms when the current user-prompt turn started. 0 = no turn active.
+  turnStartedAt: number
+  // Cumulative subagents dispatched in THIS turn (Agent/Task PreToolUse).
+  // Reset on next user-prompt; intentionally NOT reset on Stop so the count
+  // is still readable when the deferred awaiting_input banner fires.
+  subagentsDispatched: number
 }
 
 // Tools that block claude until the user answers them. Treated as a
@@ -162,7 +168,9 @@ function getDetailState(workspaceId: string): DetailState {
       compacting: false,
       blockingTool: null,
       subagentDepth: 0,
-      pendingStop: false
+      pendingStop: false,
+      turnStartedAt: 0,
+      subagentsDispatched: 0
     }
     detailMap.set(workspaceId, s)
   }
@@ -171,6 +179,14 @@ function getDetailState(workspaceId: string): DetailState {
 
 export function getBlockingTool(workspaceId: string): string | null {
   return detailMap.get(workspaceId)?.blockingTool ?? null
+}
+
+export function getTurnSummary(
+  workspaceId: string
+): { elapsedMs: number; subagents: number } | null {
+  const s = detailMap.get(workspaceId)
+  if (!s || !s.turnStartedAt) return null
+  return { elapsedMs: Date.now() - s.turnStartedAt, subagents: s.subagentsDispatched }
 }
 
 export function computeDetail(
@@ -402,7 +418,10 @@ function handleHookEvent(
         return
       }
       // 'Agent' is the current subagent-dispatch tool_name; 'Task' is the legacy alias.
-      if (tn === 'Agent' || tn === 'Task') ds.subagentDepth++
+      if (tn === 'Agent' || tn === 'Task') {
+        ds.subagentDepth++
+        ds.subagentsDispatched++
+      }
       ds.toolStack++
       heartbeat(workspaceId)
       broadcastDetailIfChanged(workspaceId)
@@ -456,13 +475,24 @@ function handleHookEvent(
       ds.pendingStop = false
       break
     case 'user-prompt':
-    case 'session-end':
-      // Fresh turn or ended session — any stale subagent count is bogus.
+      // Fresh turn — record start time and reset per-turn state.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
       ds.subagentDepth = 0
       ds.pendingStop = false
+      ds.turnStartedAt = Date.now()
+      ds.subagentsDispatched = 0
+      break
+    case 'session-end':
+      // Session ended — clear all per-turn state.
+      ds.toolStack = 0
+      ds.compacting = false
+      ds.blockingTool = null
+      ds.subagentDepth = 0
+      ds.pendingStop = false
+      ds.turnStartedAt = 0
+      ds.subagentsDispatched = 0
       break
     case 'notification':
       ds.compacting = false

@@ -2,7 +2,7 @@ import { Notification, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
 import { getWorkspace } from './workspaces'
 import { getDb } from './db'
-import { getBlockingTool } from './orpheusNotify'
+import { getBlockingTool, getTurnSummary } from './orpheusNotify'
 import type { WorkspaceStatus } from '../shared/types'
 
 function attentionCopy(workspaceId: string): { title: string; body: string } {
@@ -14,6 +14,14 @@ function attentionCopy(workspaceId: string): { title: string; body: string } {
     return { title: 'Claude has a plan', body: 'Waiting for your review before continuing' }
   }
   return { title: 'Claude needs you', body: 'Waiting on a permission decision' }
+}
+
+function formatElapsed(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
 let currentlyViewedWorkspaceId: string | null = null
@@ -138,11 +146,25 @@ export function notifyForTransition(
 
   if (nextStatus === 'awaiting_input' && prevStatus === 'in_progress' && state.notifyStop) {
     if (shouldSuppress(workspaceId)) return
+    // Suppress when Orpheus is focused regardless of which workspace is viewed.
+    // Turn summary is still valid here — it's reset on the NEXT user-prompt, not on Stop.
+    const win = BrowserWindow.getAllWindows()[0]
+    if (state.notifySuppressWhenFocused && win && win.isFocused()) return
     const label = resolveWorkspaceLabel(workspaceId)
+    let body = 'Ready for your next message'
+    if (state.notifyRichSummary) {
+      const summary = getTurnSummary(workspaceId)
+      if (summary) {
+        body = `Finished in ${formatElapsed(summary.elapsedMs)}`
+        if (summary.subagents > 0) {
+          body += ` · ${summary.subagents} subagent${summary.subagents === 1 ? '' : 's'}`
+        }
+      }
+    }
     const notif = new Notification({
       title: 'Claude finished',
       subtitle: label,
-      body: 'Ready for your next message',
+      body,
       silent: true
     })
     notif.on('click', () => focusAndNavigate(workspaceId))

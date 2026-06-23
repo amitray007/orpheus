@@ -42,6 +42,9 @@ type AppUiStateRow = {
   notify_attention: number
   notify_stop: number
   notify_always: number
+  // Notification enrichment (v59)
+  notify_rich_summary: number
+  notify_suppress_when_focused: number
   // Persistent attention reminders (v30)
   notify_max_attention_repeats: number
   // In-progress watchdog (v31) — auto-demote to awaiting_input if no heartbeat in N seconds. 0 disables.
@@ -115,6 +118,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifyAttention: (row.notify_attention ?? 1) === 1,
     notifyStop: (row.notify_stop ?? 1) === 1,
     notifyAlways: (row.notify_always ?? 0) === 1,
+    notifyRichSummary: (row.notify_rich_summary ?? 1) === 1,
+    notifySuppressWhenFocused: (row.notify_suppress_when_focused ?? 0) === 1,
     notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     inProgressWatchdogSec: row.in_progress_watchdog_sec ?? 120,
     staleAfterMinutes: row.stale_after_minutes ?? 60,
@@ -292,6 +297,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     notifyAttention: 'notify_attention',
     notifyStop: 'notify_stop',
     notifyAlways: 'notify_always',
+    notifyRichSummary: 'notify_rich_summary',
+    notifySuppressWhenFocused: 'notify_suppress_when_focused',
     // Persistent attention reminders (v30)
     notifyMaxAttentionRepeats: 'notify_max_attention_repeats',
     // In-progress watchdog (v31)

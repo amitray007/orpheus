@@ -121,6 +121,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           notifyAttention: true,
           notifyStop: true,
           notifyAlways: false,
+          notifyRichSummary: true,
+          notifySuppressWhenFocused: false,
           notifyMaxAttentionRepeats: 5,
           inProgressWatchdogSec: 120,
           staleAfterMinutes: 60,
