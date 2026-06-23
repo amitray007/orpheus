@@ -5,6 +5,7 @@ import { app } from 'electron'
 import { composeClaudeLaunch } from '../claudeSettings'
 import { getClaudeAuthEnv } from '../claudeAuth'
 import { getWorkspace } from '../workspaces'
+import { logDiagMain } from '../diagnostics'
 import type { TerminalEngine, PhaseKind } from './engine'
 
 const _require = createRequire(import.meta.url)
@@ -13,9 +14,25 @@ const nodePty = _require('@lydell/node-pty') as typeof import('@lydell/node-pty'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
+const BATCH_SIZE_LIMIT = 16 * 1024 // 16 KB
+const BATCH_TIMER_MS = 5
+const FLOW_HIGH_WATERMARK = 100_000
+const FLOW_LOW_WATERMARK = 5_000
+const STALL_TIMEOUT_MS = 10_000
+
 type PtyEntry = {
   pty: import('@lydell/node-pty').IPty
   phase: 'live' | 'dead'
+  // batching
+  batchBuf: string
+  batchTimer: NodeJS.Timeout | null
+  // flow control
+  sentChars: number
+  ackedChars: number
+  paused: boolean
+  // stall watchdog
+  stallTimer: NodeJS.Timeout | null
+  stallFired: boolean
 }
 
 export class XtermEngine implements TerminalEngine {
@@ -71,8 +88,13 @@ export class XtermEngine implements TerminalEngine {
       })
 
       pty.onData((data) => {
-        if (this.map.has(params.workspaceId)) {
-          this.dataHandler?.(params.workspaceId, data)
+        const e = this.map.get(params.workspaceId)
+        if (!e) return
+        e.batchBuf += data
+        if (e.batchBuf.length >= BATCH_SIZE_LIMIT) {
+          this.flush(params.workspaceId)
+        } else if (!e.batchTimer) {
+          e.batchTimer = setTimeout(() => this.flush(params.workspaceId), BATCH_TIMER_MS)
         }
       })
 
@@ -84,7 +106,17 @@ export class XtermEngine implements TerminalEngine {
         this.exitHandler?.(params.workspaceId, exitCode, signal)
       })
 
-      this.map.set(params.workspaceId, { pty, phase: 'live' })
+      this.map.set(params.workspaceId, {
+        pty,
+        phase: 'live',
+        batchBuf: '',
+        batchTimer: null,
+        sentChars: 0,
+        ackedChars: 0,
+        paused: false,
+        stallTimer: null,
+        stallFired: false
+      })
 
       console.log(
         '[xterm] spawn workspaceId=%s cwd=%s envKeys=%s',
@@ -102,6 +134,14 @@ export class XtermEngine implements TerminalEngine {
   destroy(workspaceId: string): void {
     const entry = this.map.get(workspaceId)
     if (!entry) return
+    if (entry.batchTimer) {
+      clearTimeout(entry.batchTimer)
+      entry.batchTimer = null
+    }
+    if (entry.stallTimer) {
+      clearTimeout(entry.stallTimer)
+      entry.stallTimer = null
+    }
     this.map.delete(workspaceId) // DELETE FIRST before killing
     try {
       entry.pty.kill('SIGHUP')
@@ -135,6 +175,89 @@ export class XtermEngine implements TerminalEngine {
     const entry = this.map.get(workspaceId)
     if (!entry) return 'none'
     return entry.phase
+  }
+
+  private flush(workspaceId: string): void {
+    const entry = this.map.get(workspaceId)
+    if (!entry || !entry.batchBuf) return
+    if (entry.batchTimer) {
+      clearTimeout(entry.batchTimer)
+      entry.batchTimer = null
+    }
+    const data = entry.batchBuf
+    entry.batchBuf = ''
+    entry.sentChars += data.length
+    this.dataHandler?.(workspaceId, data)
+    // flow control
+    const unacked = entry.sentChars - entry.ackedChars
+    if (!entry.paused && unacked > FLOW_HIGH_WATERMARK) {
+      entry.pty.pause()
+      entry.paused = true
+      this.startStallWatchdog(workspaceId)
+    }
+  }
+
+  private startStallWatchdog(workspaceId: string): void {
+    const entry = this.map.get(workspaceId)
+    if (!entry || entry.stallTimer || entry.stallFired) return
+    const unackedAtStart = entry.sentChars - entry.ackedChars
+    entry.stallTimer = setTimeout(() => {
+      const e = this.map.get(workspaceId)
+      if (!e) return
+      e.stallTimer = null
+      if (!e.paused) return
+      const currentUnacked = e.sentChars - e.ackedChars
+      if (currentUnacked >= unackedAtStart) {
+        // no progress
+        e.stallFired = true
+        logDiagMain({
+          category: 'anomaly',
+          level: 'warn',
+          event: 'terminal.xterm_flow_stall',
+          workspaceId,
+          message: `xterm flow stall: unacked=${currentUnacked} for >10s`,
+          data: { unacked: currentUnacked, sentChars: e.sentChars, ackedChars: e.ackedChars }
+        })
+      }
+    }, STALL_TIMEOUT_MS)
+  }
+
+  ackChars(workspaceId: string, count: number): void {
+    const entry = this.map.get(workspaceId)
+    if (!entry) return
+    entry.ackedChars += count
+    if (entry.stallTimer) {
+      clearTimeout(entry.stallTimer)
+      entry.stallTimer = null
+      entry.stallFired = false
+    }
+    if (entry.paused) {
+      const unacked = entry.sentChars - entry.ackedChars
+      if (unacked <= FLOW_LOW_WATERMARK) {
+        entry.pty.resume()
+        entry.paused = false
+      } else {
+        // still paused — restart stall watchdog from new baseline
+        this.startStallWatchdog(workspaceId)
+      }
+    }
+  }
+
+  resetFlow(workspaceId: string): void {
+    const entry = this.map.get(workspaceId)
+    if (!entry) return
+    if (entry.stallTimer) {
+      clearTimeout(entry.stallTimer)
+      entry.stallTimer = null
+    }
+    entry.stallFired = false
+    const wasPaused = entry.paused
+    entry.sentChars = 0
+    entry.ackedChars = 0
+    entry.paused = false
+    if (wasPaused) {
+      entry.pty.resume()
+    }
   }
 
   setDataHandler(handler: (workspaceId: string, data: string) => void): void {

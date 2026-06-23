@@ -1758,6 +1758,20 @@ ipcMain.handle(
   }
 )
 
+ipcMain.handle(
+  'terminal:xterm-ack',
+  (_e, { workspaceId, count }: { workspaceId: string; count: number }): void => {
+    getXtermEngine().ackChars(workspaceId, count)
+  }
+)
+
+ipcMain.handle(
+  'terminal:xterm-reset-flow',
+  (_e, { workspaceId }: { workspaceId: string }): void => {
+    getXtermEngine().resetFlow(workspaceId)
+  }
+)
+
 // ---------------------------------------------------------------------------
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------

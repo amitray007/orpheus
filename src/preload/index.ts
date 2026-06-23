@@ -589,6 +589,43 @@ const api = {
 
     resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
   },
+  xterm: {
+    spawn: (
+      workspaceId: string,
+      cwd: string,
+      cols?: number,
+      rows?: number
+    ): Promise<{ created: boolean; error?: string }> =>
+      ipcRenderer.invoke('terminal:xterm-spawn', { workspaceId, cwd, cols, rows }),
+    write: (workspaceId: string, data: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:xterm-write', { workspaceId, data }),
+    resize: (workspaceId: string, cols: number, rows: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:xterm-resize', { workspaceId, cols, rows }),
+    destroy: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:xterm-destroy', { workspaceId }),
+    phase: (workspaceId: string): Promise<'none' | 'live' | 'dead'> =>
+      ipcRenderer.invoke('terminal:xterm-phase', { workspaceId }),
+    ack: (workspaceId: string, count: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:xterm-ack', { workspaceId, count }),
+    resetFlow: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:xterm-reset-flow', { workspaceId }),
+    onData: (cb: (e: { workspaceId: string; data: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string; data: string }): void =>
+        cb(e)
+      ipcRenderer.on('terminal:xterm-data', listener)
+      return () => ipcRenderer.removeListener('terminal:xterm-data', listener)
+    },
+    onExit: (
+      cb: (e: { workspaceId: string; exitCode: number; signal?: number }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; exitCode: number; signal?: number }
+      ): void => cb(e)
+      ipcRenderer.on('terminal:xterm-exit', listener)
+      return () => ipcRenderer.removeListener('terminal:xterm-exit', listener)
+    }
+  },
   diag: {
     event: (evt: DiagEvent): void => {
       try {

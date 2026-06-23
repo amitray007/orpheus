@@ -28,6 +28,10 @@ export interface TerminalEngine {
    * Seam for U9: U9 wires this to terminal:exit IPC + overlay.
    */
   setExitHandler(handler: (workspaceId: string, exitCode: number, signal?: number) => void): void
+  /** ACK chars from renderer. Decrements unacked; resumes PTY if below Low watermark. */
+  ackChars(workspaceId: string, count: number): void
+  /** Reset flow control state for a workspace (call on mount/re-mount). */
+  resetFlow(workspaceId: string): void
 }
 
 export type PhaseKind = 'none' | 'live' | 'dead'

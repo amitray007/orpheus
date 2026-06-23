@@ -29,7 +29,8 @@ export const DIAG_EVENTS = {
   TERMINAL_FOCUS_RECLAIMED: 'terminal.focus_reclaimed',
   ACTIVITY_WATCHDOG_FIRED: 'activity.watchdog_fired',
   OVERLAY_RETRY: 'overlay.retry',
-  OVERLAY_FALLBACK: 'overlay.fallback'
+  OVERLAY_FALLBACK: 'overlay.fallback',
+  XTERM_FLOW_STALL: 'terminal.xterm_flow_stall'
 } as const
 
 export type DiagEventKey = (typeof DIAG_EVENTS)[keyof typeof DIAG_EVENTS]
