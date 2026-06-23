@@ -322,24 +322,21 @@ export function XtermSurface({
         })
       }
 
-      // Apply padding to term.element so FitAddon accounts for it correctly.
-      // FitAddon reads padding off terminal.element via getComputedStyle, then subtracts
-      // it from the measured parentElement dimensions → canvas fills the remaining content box.
-      // P2 — window-padding-x: if set and valid positive number, scale hPad by that cell count;
-      // otherwise fall back to the existing 1-cell default (fontSize * 0.6).
+      // Padding on term.element so FitAddon accounts for it correctly (it reads
+      // terminal.element padding via getComputedStyle and subtracts it from the
+      // measured parentElement → canvas fills the remaining content box).
+      // Default is ZERO so the terminal sits flush to the app pane edges (touches
+      // all corners). window-padding-x is still honored: if the user explicitly
+      // sets it (cell count), apply that many cells of horizontal padding.
       const windowPaddingX = settings['window-padding-x']
-      let hPad: number
+      let hPad = 0
       if (windowPaddingX !== undefined && windowPaddingX !== null) {
         const paddingXNum = Number(windowPaddingX)
         if (!isNaN(paddingXNum) && paddingXNum > 0) {
           hPad = Math.round(fontSize * 0.6 * paddingXNum)
-        } else {
-          hPad = Math.round(fontSize * 0.6)
         }
-      } else {
-        hPad = Math.round(fontSize * 0.6)
       }
-      const vPad = 6
+      const vPad = 0
       if (term.element) {
         term.element.style.paddingLeft = `${hPad}px`
         term.element.style.paddingRight = `${hPad}px`
