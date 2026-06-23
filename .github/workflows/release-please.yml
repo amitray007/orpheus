@@ -161,18 +161,25 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           TAP_TAG="orpheus-${{ needs.release-please.outputs.tag_name }}"
-          # Create the tap release if missing (the cask URL points here), then
-          # ALWAYS upload --clobber so the published asset is exactly the dmg we
-          # built and hashed — cask SHA can never desync from the asset.
+          DMG="${{ steps.sha.outputs.dmg }}"
+          # The homebrew-tap repo has IMMUTABLE releases enabled: assets must be
+          # attached AT CREATION (a separate `gh release upload` 422s, and the
+          # release can't be clobbered). So if a release for this tag already
+          # exists (e.g. a retried run), delete it + its tag first, then create
+          # fresh with the dmg attached in one shot.
+          if gh release view "$TAP_TAG" --repo amitray007/homebrew-tap >/dev/null 2>&1; then
+            echo "[release] $TAP_TAG already exists (immutable) — deleting to recreate with asset"
+            gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes --cleanup-tag || \
+              gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes
+            # --cleanup-tag may not exist on older gh; fall back to explicit tag delete
+            gh api -X DELETE "repos/amitray007/homebrew-tap/git/refs/tags/$TAP_TAG" 2>/dev/null || true
+          fi
+          # Create the release WITH the dmg attached in one step (immutable-safe).
           gh release create "$TAP_TAG" \
+            "$DMG" \
             --repo amitray007/homebrew-tap \
             --title "Orpheus ${{ needs.release-please.outputs.tag_name }}" \
-            --notes "Orpheus ${{ needs.release-please.outputs.tag_name }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ needs.release-please.outputs.tag_name }}" \
-            2>/dev/null || echo "[release] tap release $TAP_TAG already exists — will clobber asset"
-          gh release upload "$TAP_TAG" \
-            "${{ steps.sha.outputs.dmg }}" \
-            --repo amitray007/homebrew-tap \
-            --clobber
+            --notes "Orpheus ${{ needs.release-please.outputs.tag_name }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ needs.release-please.outputs.tag_name }}"
 
       - name: Render and push cask + scoped tag
         run: |

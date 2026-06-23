@@ -113,18 +113,23 @@ jobs:
         run: |
           # The DMG is hosted as a release on the public homebrew-tap repo so
           # Homebrew can download it without auth (orpheus source repo stays private).
-          # --clobber is unconditional so the published asset is ALWAYS the dmg
-          # built and hashed in this run — guaranteeing the asset matches the cask SHA.
+          # The homebrew-tap repo has IMMUTABLE releases enabled: assets must be
+          # attached AT CREATION (a separate `gh release upload` 422s, and the
+          # release can't be clobbered). So delete any existing release + tag
+          # first, then create fresh with the dmg attached in one shot.
           TAP_TAG="orpheus-${{ steps.tag.outputs.tag }}"
+          DMG="${{ steps.sha.outputs.dmg }}"
+          if gh release view "$TAP_TAG" --repo amitray007/homebrew-tap >/dev/null 2>&1; then
+            echo "[release] $TAP_TAG already exists (immutable) — deleting to recreate with asset"
+            gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes --cleanup-tag || \
+              gh release delete "$TAP_TAG" --repo amitray007/homebrew-tap --yes
+            gh api -X DELETE "repos/amitray007/homebrew-tap/git/refs/tags/$TAP_TAG" 2>/dev/null || true
+          fi
           gh release create "$TAP_TAG" \
+            "$DMG" \
             --repo amitray007/homebrew-tap \
             --title "Orpheus ${{ steps.tag.outputs.tag }}" \
-            --notes "Orpheus ${{ steps.tag.outputs.tag }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ steps.tag.outputs.tag }}" \
-            2>/dev/null || echo "[release] tap release $TAP_TAG already exists — will clobber asset"
-          gh release upload "$TAP_TAG" \
-            "${{ steps.sha.outputs.dmg }}" \
-            --repo amitray007/homebrew-tap \
-            --clobber
+            --notes "Orpheus ${{ steps.tag.outputs.tag }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ steps.tag.outputs.tag }}"
 
       - name: Render and push cask
         run: |
