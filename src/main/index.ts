@@ -2149,6 +2149,7 @@ app.whenReady().then(() => {
             workspaceId,
             canInject: terminalActions.canInject(workspaceId)
           })
+          win.webContents.send('terminal:xterm-session-ready', { workspaceId })
         }
       })
     } catch (err) {

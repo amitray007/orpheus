@@ -167,7 +167,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       resizeDebounceId = setTimeout(doFit, 60)
     }
 
-    let firstDataSeen = false
+    let unsubSessionReady: (() => void) | null = null
+    let fallbackTimeoutId: ReturnType<typeof setTimeout> | null = null
 
     const openAndSpawn = async (): Promise<void> => {
       await document.fonts.ready
@@ -316,10 +317,6 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         // Data loop: main → renderer.
         unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
           if (wid !== workspaceId || disposed) return
-          if (!firstDataSeen) {
-            firstDataSeen = true
-            if (!disposed) setLoading(false)
-          }
           // Bytes end-to-end: PTY emits Buffer, IPC sends Uint8Array, xterm.write accepts it.
           // ACK unit is BYTES (byteLength) on both sides — must match the engine's byte counters.
           term.write(data, () => onWriteCommitted(data.byteLength))
@@ -358,6 +355,20 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       if (result.created) {
         // Fresh spawn: wire the live session immediately.
         wireLiveSession()
+        // Hide loader when SessionStart hook fires — canonical "claude is ready" signal.
+        unsubSessionReady = window.api.xterm.onSessionReady(({ workspaceId: wid }) => {
+          if (wid !== workspaceId || disposed) return
+          if (fallbackTimeoutId !== null) {
+            clearTimeout(fallbackTimeoutId)
+            fallbackTimeoutId = null
+          }
+          setLoading(false)
+        })
+        // 10s fallback: if SessionStart never fires (hook system broken), clear the loader.
+        fallbackTimeoutId = setTimeout(() => {
+          fallbackTimeoutId = null
+          if (!disposed) setLoading(false)
+        }, 10000)
       } else if (result.reattached) {
         // Reattach: PTY was already live (navigated away and back).
         // Replay the rolling output tail so the screen isn't blank, then wire.
@@ -507,11 +518,16 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         clearTimeout(resizeDebounceId)
         resizeDebounceId = null
       }
+      if (fallbackTimeoutId !== null) {
+        clearTimeout(fallbackTimeoutId)
+        fallbackTimeoutId = null
+      }
       resizeObserver?.disconnect()
       resizeObserver = null
 
       unsubData?.()
       unsubExit?.()
+      unsubSessionReady?.()
 
       // Flush any remaining ack before teardown.
       if (pendingAck > 0) {

@@ -374,6 +374,7 @@ declare global {
         ) => () => void
         title: (workspaceId: string, title: string) => void
         onRecover: (cb: (e: { workspaceId: string }) => void) => () => void
+        onSessionReady: (cb: (e: { workspaceId: string }) => void) => () => void
         writeImageAttachment: (
           data: Uint8Array,
           mime: string

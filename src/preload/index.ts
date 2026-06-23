@@ -640,6 +640,11 @@ const api = {
       ipcRenderer.on('terminal:xterm-recover', listener)
       return () => ipcRenderer.removeListener('terminal:xterm-recover', listener)
     },
+    onSessionReady: (cb: (e: { workspaceId: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void => cb(e)
+      ipcRenderer.on('terminal:xterm-session-ready', listener)
+      return () => ipcRenderer.removeListener('terminal:xterm-session-ready', listener)
+    },
     writeImageAttachment: (
       data: Uint8Array,
       mime: string
