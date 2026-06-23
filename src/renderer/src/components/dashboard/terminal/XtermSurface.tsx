@@ -18,9 +18,19 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   const containerRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
+  // Bumping attemptKey tears down and rebuilds the terminal effect — used by Restart.
+  const [attemptKey, setAttemptKey] = useState(0)
   // Stable ref to doFit so the active-toggle and recover effects can call it
   // without being in the mount effect's closure.
   const doFitRef = useRef<(() => void) | null>(null)
+
+  const handleRestart = (): void => {
+    setExited(null)
+    setSpawnError(null)
+    // destroy is idempotent — clears dead PTY before we respawn on next mount.
+    void window.api.xterm.destroy(workspaceId)
+    setAttemptKey((k) => k + 1)
+  }
 
   useEffect(() => {
     const el = containerRef.current
@@ -182,8 +192,9 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       // The PTY stays alive so navigating back can reattach. U8 refines teardown.
     }
     // active deliberately excluded — active changes drive fit below, not teardown.
+    // attemptKey is included so bumping it (Restart) rebuilds the terminal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, cwd])
+  }, [workspaceId, cwd, attemptKey])
 
   // Sleep wiring: active=false → sleeping=true, active=true → sleeping=false.
   // Visibility is known in JS so we write sleepStore directly (no IPC round-trip).
@@ -222,18 +233,30 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   return (
     <div ref={containerRef} className="w-full h-full relative">
       {spawnError !== null && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface-base">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-surface-base">
           <p className="text-sm text-text-secondary px-4 text-center">
             Terminal failed to start: {spawnError}
           </p>
+          <button
+            onClick={handleRestart}
+            className="px-3 py-1.5 text-xs rounded border border-border-base text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
+          >
+            Restart
+          </button>
         </div>
       )}
       {exited !== null && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface-base/80">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-surface-base/80">
           <p className="text-sm text-text-secondary">
             Process exited (code {exited.code})
             {exited.signal != null ? `, signal ${exited.signal}` : ''}
           </p>
+          <button
+            onClick={handleRestart}
+            className="px-3 py-1.5 text-xs rounded border border-border-base text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
+          >
+            Restart
+          </button>
         </div>
       )}
     </div>

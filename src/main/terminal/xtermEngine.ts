@@ -305,6 +305,35 @@ export class XtermEngine implements TerminalEngine {
     }
   }
 
+  killAll(): void {
+    this.stopLivenessInterval()
+    for (const [workspaceId, entry] of this.map) {
+      try {
+        if (entry.batchTimer) clearTimeout(entry.batchTimer)
+        if (entry.stallTimer) clearTimeout(entry.stallTimer)
+        entry.pty.kill('SIGHUP')
+      } catch {
+        // ignore — process may already be dead
+      }
+      console.log('[xterm] killAll: killed workspaceId=%s', workspaceId)
+    }
+    this.map.clear()
+  }
+
+  getLivePids(): number[] {
+    const pids: number[] = []
+    for (const entry of this.map.values()) {
+      if (entry.phase === 'live') {
+        try {
+          pids.push(entry.pty.pid)
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return pids
+  }
+
   setDataHandler(handler: (workspaceId: string, data: string) => void): void {
     this.dataHandler = handler
   }

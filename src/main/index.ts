@@ -564,6 +564,35 @@ process.on('unhandledRejection', (reason) => {
 let isQuitting = false
 app.on('before-quit', () => {
   isQuitting = true
+  // SIGHUP all live node-pty children so claude sessions are not orphaned.
+  // This is additive — ghostty/app teardown (will-quit handler) is untouched.
+  if (xtermEngine) {
+    try {
+      xtermEngine.killAll()
+    } catch {
+      // never throw from quit handler
+    }
+  }
+})
+
+// Last-resort synchronous SIGKILL backstop — fires after before-quit/will-quit async
+// cleanup may not have completed. Collects PIDs before the map is cleared so the
+// backstop can still kill any survivors. Must be synchronous and must swallow errors.
+process.on('exit', () => {
+  if (!xtermEngine) return
+  let pids: number[] = []
+  try {
+    pids = xtermEngine.getLivePids()
+  } catch {
+    // ignore
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // process already dead — ignore
+    }
+  }
 })
 
 function kickActiveTerminal(): void {
