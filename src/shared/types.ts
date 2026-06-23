@@ -254,6 +254,33 @@ export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
 
 export type GhosttyKeybind = { trigger: string; action: string }
 
+// xterm ITheme-shaped object produced by parsing a ghostty theme file.
+// All fields are optional — only keys present in the theme file are set.
+export type GhosttyParsedTheme = {
+  foreground?: string
+  background?: string
+  cursor?: string
+  cursorAccent?: string
+  selectionBackground?: string
+  selectionForeground?: string
+  black?: string
+  red?: string
+  green?: string
+  yellow?: string
+  blue?: string
+  magenta?: string
+  cyan?: string
+  white?: string
+  brightBlack?: string
+  brightRed?: string
+  brightGreen?: string
+  brightYellow?: string
+  brightBlue?: string
+  brightMagenta?: string
+  brightCyan?: string
+  brightWhite?: string
+}
+
 export type GhosttyUserConfig = {
   // Flat key→value map using ghostty config keys; only NON-default keys stored.
   // Values are raw ghostty config values (unquoted). Booleans as true/false.

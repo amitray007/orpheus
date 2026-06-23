@@ -47,6 +47,7 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
+  GhosttyParsedTheme,
   DiagEvent
 } from '../shared/types'
 
@@ -320,7 +321,9 @@ const api = {
   ghosttySettings: {
     get: (): Promise<GhosttyUserConfig> => ipcRenderer.invoke('ghosttySettings:get'),
     update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
-      ipcRenderer.invoke('ghosttySettings:update', patch)
+      ipcRenderer.invoke('ghosttySettings:update', patch),
+    getTheme: (name: string): Promise<GhosttyParsedTheme | null> =>
+      ipcRenderer.invoke('ghosttySettings:getTheme', name)
   },
   claudeAuth: {
     get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),

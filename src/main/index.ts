@@ -17,7 +17,8 @@ import {
 //   prod → ~/Library/Application Support/Orpheus/
 //   dev  → ~/Library/Application Support/Orpheus Dev/
 app.setName(APP_NAME)
-import { join } from 'path'
+import { join, basename } from 'path'
+import { readFile } from 'node:fs/promises'
 import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -168,6 +169,7 @@ import type {
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 import { XtermEngine } from './terminal/xtermEngine'
+import { parseGhosttyTheme } from './terminal/ghosttyTheme'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
@@ -1103,6 +1105,22 @@ ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>)
     console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
   }
   return result
+})
+
+ipcMain.handle('ghosttySettings:getTheme', async (_e, name: unknown) => {
+  try {
+    if (typeof name !== 'string' || !name) return null
+    // Guard path traversal: accept only the basename, reject if it differs or looks hidden.
+    const safe = basename(name)
+    if (safe !== name || safe === '' || safe.startsWith('.')) return null
+    const themesDir = app.isPackaged
+      ? join(process.resourcesPath, 'ghostty', 'themes')
+      : join(__dirname, '../../resources/ghostty/ghostty/themes')
+    const text = await readFile(join(themesDir, safe), 'utf8')
+    return parseGhosttyTheme(text)
+  } catch {
+    return null
+  }
 })
 
 // ---------------------------------------------------------------------------

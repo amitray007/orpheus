@@ -2,6 +2,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { setSleeping } from '@/lib/sleepStore'
@@ -13,6 +14,53 @@ interface XtermSurfaceProps {
 }
 
 const ACK_STRIDE = 5000
+
+// Ghostty default font: "JetBrains Mono" (vendor/ghostty/src/config/Config.zig).
+// Fall back to common monospace stacks if not installed.
+const GHOSTTY_DEFAULT_FONT = 'JetBrains Mono, SF Mono, Menlo, Courier New, monospace'
+const GHOSTTY_DEFAULT_FONT_SIZE = 13
+
+// Fetch the ghostty user config, resolve the selected theme, and apply font +
+// theme to the terminal. Called before term.open() so font metrics are correct.
+// ghosttySettings.onChanged does not exist in the current preload — live switch
+// is not wired; changes take effect on next mount (workspace restart).
+async function applyGhosttyAppearance(term: Terminal): Promise<void> {
+  try {
+    const config = await window.api.ghosttySettings.get()
+    const { settings } = config
+
+    const fontFamily =
+      typeof settings['font-family'] === 'string' && settings['font-family']
+        ? settings['font-family']
+        : GHOSTTY_DEFAULT_FONT
+    const fontSize =
+      typeof settings['font-size'] === 'number' ? settings['font-size'] : GHOSTTY_DEFAULT_FONT_SIZE
+
+    term.options.fontFamily = fontFamily
+    term.options.fontSize = fontSize
+
+    const themeName = typeof settings['theme'] === 'string' ? settings['theme'] : null
+    let theme: ITheme | null = null
+
+    if (themeName) {
+      theme = (await window.api.ghosttySettings.getTheme(themeName)) as ITheme | null
+    }
+
+    if (theme) {
+      // Individual background/foreground overrides in settings win over the theme file.
+      if (typeof settings['background'] === 'string' && settings['background']) {
+        theme = { ...theme, background: settings['background'] }
+      }
+      if (typeof settings['foreground'] === 'string' && settings['foreground']) {
+        theme = { ...theme, foreground: settings['foreground'] }
+      }
+      // Whole-object assignment preserves all theme fields atomically.
+      term.options.theme = theme
+    }
+  } catch {
+    // Non-fatal: if ghostty config is unavailable, xterm uses its defaults.
+  }
+}
 
 export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -90,6 +138,10 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         // Defer to a resize event; ResizeObserver will re-trigger when visible.
         return
       }
+
+      // Apply ghostty font + theme before open() so font metrics are correct.
+      await applyGhosttyAppearance(term)
+      if (disposed) return
 
       term.open(el)
 

@@ -45,6 +45,7 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
+  GhosttyParsedTheme,
   DiagEvent
 } from '../shared/types'
 
@@ -195,6 +196,7 @@ declare global {
       ghosttySettings: {
         get: () => Promise<GhosttyUserConfig>
         update: (patch: Partial<GhosttyUserConfig>) => Promise<GhosttyUserConfig>
+        getTheme: (name: string) => Promise<GhosttyParsedTheme | null>
       }
       claudeAuth: {
         get: () => Promise<ClaudeAuthState>
