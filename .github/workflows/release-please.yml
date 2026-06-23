@@ -16,11 +16,12 @@ name: Release Please
 #
 # Coexistence with the existing release.yml:
 #
-#   release.yml owns the manual / explicit path (workflow_dispatch and
-#   pushes containing `[release]` in the commit message). This workflow
-#   handles everything else by opening a Release PR. The `if:` below skips
-#   commits with `[release]` markers so the two never fight over the same
-#   commit.
+#   release.yml is MANUAL-ONLY (workflow_dispatch break-glass). This workflow
+#   is the sole automatic release path. It builds the .dmg, uploads it to
+#   BOTH the source repo release (provenance) AND the homebrew-tap release
+#   (where the cask URL points), then renders and pushes the cask. The
+#   `if:` below skips commits with `[release]` markers so the two never
+#   fight over the same commit.
 #
 # Required secrets:
 #
@@ -154,6 +155,24 @@ jobs:
           repository: amitray007/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+
+      - name: Publish dmg to homebrew-tap release
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAP_TAG="orpheus-${{ needs.release-please.outputs.tag_name }}"
+          # Create the tap release if missing (the cask URL points here), then
+          # ALWAYS upload --clobber so the published asset is exactly the dmg we
+          # built and hashed — cask SHA can never desync from the asset.
+          gh release create "$TAP_TAG" \
+            --repo amitray007/homebrew-tap \
+            --title "Orpheus ${{ needs.release-please.outputs.tag_name }}" \
+            --notes "Orpheus ${{ needs.release-please.outputs.tag_name }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ needs.release-please.outputs.tag_name }}" \
+            2>/dev/null || echo "[release] tap release $TAP_TAG already exists — will clobber asset"
+          gh release upload "$TAP_TAG" \
+            "${{ steps.sha.outputs.dmg }}" \
+            --repo amitray007/homebrew-tap \
+            --clobber
 
       - name: Render and push cask + scoped tag
         run: |

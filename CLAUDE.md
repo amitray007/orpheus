@@ -140,6 +140,61 @@ Ships exclusively via **private Homebrew tap** (`amitray007/homebrew-tap` cask, 
 
 Ad-hoc codesigning is re-applied to the whole bundle in `scripts/install-mac.mjs` because electron-builder leaves inner frameworks with mismatched Team IDs and macOS 15+ refuses to load them. **Do not store secrets in macOS Keychain** until proper Developer ID signing exists — ad-hoc re-sign reshuffles ACLs on every build. Plaintext SQLite columns are intentional (`auth_api_key`, `auth_token`, etc.).
 
+#### Release pipeline architecture (read before touching ANY release workflow)
+
+There are **two** GitHub Actions release workflows plus a local script. They are
+easy to confuse and have burned releases — here is the ground truth.
+
+- **`.github/workflows/release-please.yml` — THE automatic release path (single owner).**
+  Triggers on `push: main`. Opens/updates a Release PR (version + CHANGELOG from
+  conventional commits). When that Release PR is merged it creates the git tag +
+  GitHub release on `amitray007/orpheus`, then its `build-and-attach` job (runs
+  only when `release_created == true`) builds the `.dmg`, and **publishes the dmg
+  to a RELEASE on `amitray007/homebrew-tap`** + renders/pushes the cask. This is
+  the only workflow that should run on a normal release.
+- **`.github/workflows/release.yml` — MANUAL break-glass only (`workflow_dispatch`).**
+  Must NOT auto-trigger. (It historically ran on `push: main`, which double-fired
+  alongside release-please.yml — that's what corrupted releases. Do not re-add a
+  push/tag trigger.)
+- **`scripts/release.mjs` (`bun run release`)** — local one-off, rarely used.
+
+**THE LOAD-BEARING INVARIANT — where the dmg lives must match the cask URL.**
+The cask (`scripts/orpheus-cask.template.rb`) hard-codes the download URL to a
+release on the **homebrew-tap** repo:
+`https://github.com/amitray007/homebrew-tap/releases/download/orpheus-v#{version}/orpheus-#{version}.dmg`.
+So the publishing job MUST `gh release create orpheus-v<tag> --repo amitray007/homebrew-tap`
+
+- `gh release upload ... --repo amitray007/homebrew-tap --clobber`. Uploading the
+  dmg only to the _source_ `amitray007/orpheus` release leaves the cask pointing at a
+  non-existent tap release → `brew` 404. The cask `sha256` and the uploaded dmg are
+  rendered/uploaded in the **same job from the same build**, so they always match;
+  `--clobber` is unconditional so the asset can never be a stale one from a prior run.
+
+**Failure modes already hit (do not repeat):**
+
+1. _Double-run / SHA mismatch_ — two workflows (or two main-push triggers) each
+   build a **non-deterministic** dmg (ad-hoc signed, `notarize: false` → different
+   bytes every build). The tap ends with run A's dmg but run B's cask SHA →
+   `brew upgrade` fails the SHA-256 check. Fix: ONE owner builds + publishes
+   atomically.
+2. _Split-brain dmg location_ — release-please.yml uploaded the dmg to the source
+   release while the cask pointed at the tap release → 404. Fix: publish to the
+   tap release (above).
+3. _Stale local tap on the update check_ — `brew outdated --fetch` does NOT pull
+   new cask definitions from the tap git repo; the in-app check must
+   `git -C <tap> pull --ff-only` first (`src/main/updates.ts`).
+4. _Version drift staging↔main_ — release-please bumps `package.json` on `main`;
+   that bump is never merged back to `staging`, so the next `staging→main` PR would
+   REVERT the version. Always `git merge origin/main` into staging before opening
+   the release PR (verify `package.json` is NOT in the staging→main diff).
+5. _Bot-created tags don't trigger workflows_ — GitHub suppresses workflow triggers
+   from `GITHUB_TOKEN`-created refs (anti-recursion). So `push: tags: v*` will NOT
+   fire when release-please creates the tag. Don't rely on a tag trigger for the
+   auto path; release-please.yml's own `build-and-attach` job is the trigger.
+
+Releases `v0.3.0` and `v0.3.1` are abandoned (broken cask SHA / 404 respectively);
+the first clean release after these fixes is `v0.3.2`.
+
 ## Conventions specific to this repo
 
 - **Bun is the package manager.** `bun.lock` is committed; `package.json#packageManager` is not pinned but the husky hook uses `bunx`.

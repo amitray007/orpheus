@@ -1,10 +1,16 @@
 name: Release
 
-# Triggered automatically when release-please pushes a vX.Y.Z tag to main.
-# Tags are created exactly once per release (unlike main pushes, which fire on
-# both the staging merge AND the release-please bump PR merge — the double-run
-# race that corrupted v0.3.0). Tag-based triggering eliminates that race.
-# Also runnable manually (workflow_dispatch) for one-off builds.
+# MANUAL-ONLY break-glass release tool.
+#
+# release-please.yml is the automatic release path — it opens/merges Release
+# PRs, creates the tag + GitHub release, builds the .dmg, and publishes it
+# to the homebrew-tap release (where the cask URL points). Do not add push:
+# triggers here; that would cause double-runs and SHA mismatches (the 0.3.0
+# bug).
+#
+# Use this workflow only when you need to rebuild + republish a specific tag
+# without going through the release-please PR flow (e.g. infrastructure fix
+# that doesn't change source, repairing a botched tap release, etc.).
 #
 # What this does NOT do (release-please already handled it):
 #   - bump package.json version
@@ -22,13 +28,10 @@ name: Release
 #                        amitray007/homebrew-tap
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build (e.g. v0.3.1)'
+        description: 'Existing tag to build (e.g. v0.3.2)'
         required: true
         type: string
 
