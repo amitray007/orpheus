@@ -59,7 +59,7 @@ export function WorkspaceView({
   // which tears down the old surface and boots a fresh one with new settings.
   const [remountKey, setRemountKey] = useState(0)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
-  const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
+  const [drawer, setDrawer] = useState<null | 'status' | 'overrides' | 'details'>(null)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -554,6 +554,7 @@ export function WorkspaceView({
             onSetDrawer={setDrawer}
             pr={pr}
             allWorkspaces={allWorkspaces}
+            terminalEngine={terminalEngine}
           />,
           titleBarHost
         )}
@@ -615,6 +616,8 @@ export function WorkspaceView({
               workspace={workspace}
               activity={activity}
               detail={detail}
+              drawer={drawer}
+              pr={pr ?? null}
               onClose={handleCloseDrawer}
               onRestart={() => {
                 handleRestart().catch((e) => console.error('[WorkspaceView] restart failed:', e))

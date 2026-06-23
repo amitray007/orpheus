@@ -174,11 +174,12 @@ function ModelContextChip({
 
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
-  drawer: null | 'status' | 'overrides'
-  onSetDrawer: (drawer: null | 'status' | 'overrides') => void
+  drawer: null | 'status' | 'overrides' | 'details'
+  onSetDrawer: (drawer: null | 'status' | 'overrides' | 'details') => void
   pr?: GhPullRequest | null
   /** All workspaces — used to resolve the parent workspace name for forked-from chip. */
   allWorkspaces?: WorkspaceRecord[]
+  terminalEngine: 'ghostty' | 'xterm'
 }
 
 export function WorkspaceTitleBar({
@@ -186,7 +187,8 @@ export function WorkspaceTitleBar({
   drawer,
   onSetDrawer,
   pr,
-  allWorkspaces
+  allWorkspaces,
+  terminalEngine
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
 
@@ -206,6 +208,8 @@ export function WorkspaceTitleBar({
   const dismiss = useDismiss(context)
   const role = useRole(context, { role: 'dialog' })
   const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss, role])
+
+  const isGhostty = terminalEngine === 'ghostty'
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -268,24 +272,44 @@ export function WorkspaceTitleBar({
       <ModelContextChip workspaceId={workspace.id} claudeSessionId={workspace.claudeSessionId} />
 
       <div className="ml-auto flex items-center gap-1">
-        <button
-          ref={refs.setReference}
-          onMouseDown={(e) => e.stopPropagation()}
-          title="Details"
-          aria-label="Details"
-          {...getReferenceProps()}
-          className={[
-            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
-            'transition-colors duration-150',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            detailsOpen
-              ? 'bg-surface-overlay text-text-primary'
-              : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-          ].join(' ')}
-        >
-          <Info size={14} />
-          <span>Details</span>
-        </button>
+        {isGhostty ? (
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => onSetDrawer(drawer === 'details' ? null : 'details')}
+            title="Details"
+            aria-label="Details"
+            className={[
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              drawer === 'details'
+                ? 'bg-surface-overlay text-text-primary'
+                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            ].join(' ')}
+          >
+            <Info size={14} />
+            <span>Details</span>
+          </button>
+        ) : (
+          <button
+            ref={refs.setReference}
+            onMouseDown={(e) => e.stopPropagation()}
+            title="Details"
+            aria-label="Details"
+            {...getReferenceProps()}
+            className={[
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              detailsOpen
+                ? 'bg-surface-overlay text-text-primary'
+                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            ].join(' ')}
+          >
+            <Info size={14} />
+            <span>Details</span>
+          </button>
+        )}
         <button
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
@@ -305,7 +329,7 @@ export function WorkspaceTitleBar({
         </button>
       </div>
 
-      {detailsOpen && (
+      {!isGhostty && detailsOpen && (
         <FloatingPortal>
           <div
             // eslint-disable-next-line react-hooks/refs -- callback ref from @floating-ui/react, not .current access

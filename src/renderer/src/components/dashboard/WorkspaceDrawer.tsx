@@ -3,10 +3,12 @@ import type React from 'react'
 import { X, ArrowCounterClockwise } from '@phosphor-icons/react'
 import { Select } from './settings/primitives'
 import { ActivityIndicator } from './ActivityIndicator'
+import { WorkspaceDetailsPopover } from './WorkspaceDetailsPopover'
 import { WorkspaceOverridesSkeleton } from '../Skeleton'
 import {
   CLAUDE_MODEL_OPTIONS,
   CLAUDE_MODEL_ALIAS_START_INDEX,
+  type GhPullRequest,
   type WorkspaceRecord,
   type WorkspaceStatus,
   type WorkspaceActivityDetail,
@@ -332,6 +334,8 @@ export interface WorkspaceDrawerProps {
   workspace: WorkspaceRecord
   activity: WorkspaceStatus
   detail: WorkspaceActivityDetail | undefined
+  drawer: null | 'status' | 'overrides' | 'details'
+  pr: GhPullRequest | null
   onClose: () => void
   onRestart: () => void
 }
@@ -340,6 +344,8 @@ export function WorkspaceDrawer({
   workspace,
   activity,
   detail,
+  drawer,
+  pr,
   onClose,
   onRestart
 }: WorkspaceDrawerProps): React.JSX.Element {
@@ -360,7 +366,9 @@ export function WorkspaceDrawer({
     <div className="flex flex-col h-full w-full">
       {/* Drawer header — just the close button */}
       <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
-        <span className="text-sm font-medium text-text-muted px-1.5">Workspace Settings</span>
+        <span className="text-sm font-medium text-text-muted px-1.5">
+          {drawer === 'details' ? 'Details' : 'Workspace Settings'}
+        </span>
         <button
           onClick={onClose}
           className="ml-auto w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
@@ -372,8 +380,19 @@ export function WorkspaceDrawer({
 
       {/* Drawer body — single scrollable column */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        <ActivitySection activity={activity} detail={detail} />
-        <OverridesSection workspaceId={workspace.id} isDirty={isDirty} onRestart={onRestart} />
+        {drawer === 'details' ? (
+          <WorkspaceDetailsPopover
+            workspace={workspace}
+            pr={pr}
+            onClose={onClose}
+            inDrawer={true}
+          />
+        ) : (
+          <>
+            <ActivitySection activity={activity} detail={detail} />
+            <OverridesSection workspaceId={workspace.id} isDirty={isDirty} onRestart={onRestart} />
+          </>
+        )}
       </div>
     </div>
   )

@@ -38,13 +38,15 @@ interface WorkspaceDetailsPopoverProps {
   workspace: WorkspaceRecord
   pr: GhPullRequest | null
   onClose: () => void
+  inDrawer?: boolean
 }
 
 export function WorkspaceDetailsPopover({
   workspace,
   pr,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop reserved for callers that need programmatic close; floating-ui dismiss handles close internally
-  onClose: _onClose
+  onClose: _onClose,
+  inDrawer = false
 }: WorkspaceDetailsPopoverProps): React.JSX.Element {
   // ── Model & context ──────────────────────────────────────────────────────
   const cacheKey = `${workspace.id}:${workspace.claudeSessionId ?? ''}`
@@ -129,7 +131,13 @@ export function WorkspaceDetailsPopover({
   const hasModelCtx = modelCtx !== null
 
   return (
-    <div className="w-72 bg-surface-overlay border border-white/10 rounded-lg shadow-lg text-xs z-50 pointer-events-auto overflow-hidden pb-2">
+    <div
+      className={
+        inDrawer
+          ? 'w-full text-xs pointer-events-auto pb-2'
+          : 'w-72 bg-surface-overlay border border-white/10 rounded-lg shadow-lg text-xs z-50 pointer-events-auto overflow-hidden pb-2'
+      }
+    >
       {/* ── PR section ── */}
       {hasPr && (
         <>
