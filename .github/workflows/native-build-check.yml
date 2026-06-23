@@ -1,0 +1,47 @@
+name: Native build (libghostty pin)
+
+# The main CI (ci.yml) deliberately skips the native build — it uses
+# --ignore-scripts so typecheck/lint don't depend on the rotating third-party
+# libghostty "storage.*" releases. But the ONE change that genuinely needs a
+# native build check is a libghostty pin bump (scripts/fetch-libghostty.sh):
+# the rolling Ghostty C API can drift between releases, so a bump can break the
+# native addon's compile even though typecheck/lint pass.
+#
+# This workflow runs ONLY when the pin file changes (paths filter), so unrelated
+# PRs never pay the cost or risk the 404 of a rotated-out tag. A bump PR by
+# definition points at a fresh, existing release, so the SHA-verified fetch
+# succeeds. This automates the manual "verify it builds" step the bump PR asks
+# for. (Runtime behavior — no freeze/render regression — still needs a human
+# dogfood; there is no test harness for that yet.)
+on:
+  pull_request:
+    paths:
+      - 'scripts/fetch-libghostty.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-build:
+    name: build:native against the pinned libghostty
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (runs postinstall — fetches the pinned libghostty)
+        # No --ignore-scripts here (unlike ci.yml): the postinstall both fetches
+        # the SHA-verified GhosttyKit.xcframework named by the (possibly bumped)
+        # pin AND installs electron, whose ABI build:native targets.
+        run: bun install --frozen-lockfile
+
+      - name: Build native addon (the API-drift check)
+        # Compiles packages/ghostty-native/addon.mm against the pinned libghostty
+        # headers + libghostty.a. Fails the PR if the rolling C API drifted in a
+        # way that breaks the addon — the exact gap that was previously manual.
+        run: bun run build:native
