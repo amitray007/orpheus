@@ -263,6 +263,39 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
           return false
         }
 
+        // Cmd+C: copy selection if text is selected; otherwise fall through (do NOT map to SIGINT — Ctrl+C handles that).
+        // Mirrors the ghostty clipboard triad (performKeyEquivalent: ~390-406).
+        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+          if (term.hasSelection()) {
+            void navigator.clipboard.writeText(term.getSelection())
+            return false
+          }
+          return true
+        }
+
+        // Cmd+V: paste text from clipboard via term.paste() so bracketed-paste mode is respected.
+        // Image paste (U4) owns the DOM paste event — this handles the text-only path.
+        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+          navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (text) term.paste(text)
+            })
+            .catch(() => {
+              // Clipboard permission denied or no text — no-op; U4 paste event is the image fallback.
+            })
+          return false
+        }
+
+        // Cmd+X: treat as copy (terminals don't cut); mirrors ghostty triad behavior.
+        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'x' || e.key === 'X')) {
+          if (term.hasSelection()) {
+            void navigator.clipboard.writeText(term.getSelection())
+            return false
+          }
+          return true
+        }
+
         // All other keys (plain typing, arrows, Ctrl+C, Cmd+C/V, Tab, Escape,
         // etc.) pass through to xterm's default handler unchanged.
         return true
