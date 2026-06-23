@@ -68,22 +68,26 @@ export function WorkspaceView({
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
 
-  // Terminal engine — read from persisted app_ui_state; defaults to 'ghostty' until loaded.
+  // Terminal engine — read from persisted app_ui_state. The terminal lifecycle must
+  // NOT start until this resolves: starting on the 'ghostty' default and flipping later
+  // races the mount effects (which can't un-mount the wrong engine cleanly), so a
+  // workspace would mount ghostty before the persisted 'xterm' value loaded. engineLoaded
+  // gates every terminal effect + the surface render so the engine is known up front.
   const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('ghostty')
-  const useXtermRef = useRef(false)
+  const [engineLoaded, setEngineLoaded] = useState(false)
   useEffect(() => {
     window.api.uiState
       .get()
       .then((s) => {
-        const eng = s.terminalEngine ?? 'ghostty'
-        setTerminalEngine(eng)
-        useXtermRef.current = eng === 'xterm'
+        setTerminalEngine(s.terminalEngine ?? 'ghostty')
+        setEngineLoaded(true)
       })
-      .catch(() => {})
+      .catch(() => {
+        // On failure, fall back to ghostty so the terminal still mounts.
+        setEngineLoaded(true)
+      })
     return window.api.uiState.onChanged((s) => {
-      const eng = s.terminalEngine ?? 'ghostty'
-      setTerminalEngine(eng)
-      useXtermRef.current = eng === 'xterm'
+      setTerminalEngine(s.terminalEngine ?? 'ghostty')
     })
   }, [])
   const USE_XTERM = terminalEngine === 'xterm'
@@ -183,6 +187,9 @@ export function WorkspaceView({
   } | null>(null)
 
   useEffect(() => {
+    // Wait until the persisted engine setting has loaded — otherwise this can mount
+    // ghostty on the default before the real value (possibly 'xterm') resolves.
+    if (!engineLoaded) return
     // When the xterm gate is on, the ghostty terminal lifecycle is skipped entirely.
     // XtermSurface manages its own mount/data/resize lifecycle.
     if (USE_XTERM) return
@@ -385,9 +392,10 @@ export function WorkspaceView({
     }
     // remountKey is intentionally included: bumping it re-runs this effect
     // to remount the surface with fresh launch params after a restart.
+    // engineLoaded is included so the ghostty lifecycle starts once the engine is known.
     // active is intentionally excluded: active-toggle lifecycle is in the next effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remountKey])
+  }, [remountKey, engineLoaded])
 
   // ---------------------------------------------------------------------------
   // Active-toggle effect — drives terminal:hide / terminal:mount on switches.
@@ -403,6 +411,8 @@ export function WorkspaceView({
   // ---------------------------------------------------------------------------
   const isFirstActiveRenderRef = useRef(true)
   useEffect(() => {
+    // Wait until the persisted engine setting has loaded (see Effect 1).
+    if (!engineLoaded) return
     // When the xterm gate is on, ghostty active-toggle lifecycle is skipped.
     if (USE_XTERM) return
 
@@ -527,8 +537,9 @@ export function WorkspaceView({
       }
     }
     // workspace.cwd is stable for a given workspace record.
+    // engineLoaded is included so the active-toggle lifecycle starts once the engine is known.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, isClosed])
+  }, [active, isClosed, engineLoaded])
 
   return (
     <>
