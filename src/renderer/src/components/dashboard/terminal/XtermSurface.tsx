@@ -228,6 +228,46 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       // Reset flow control so a stale paused state from a prior session is cleared.
       void window.api.xterm.resetFlow(workspaceId)
 
+      // Keyboard editing fidelity: intercept specific combos BEFORE xterm's default
+      // handler. Return false after writing bytes ourselves to prevent double-input.
+      // Mirrors performKeyEquivalent: / keyDown: mods-translation in addon.mm.
+      term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
+        // Only intercept keydown — let keyup pass through untouched.
+        if (e.type !== 'keydown') return true
+
+        // Option(Alt)+Backspace → ESC DEL (backward-kill-word).
+        // macOptionIsMeta is set but we assert this explicitly for reliability.
+        if (e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'Backspace') {
+          void window.api.xterm.write(workspaceId, '\x1b\x7f')
+          return false
+        }
+
+        // Cmd(Meta)+Backspace → Ctrl-U (\x15, kill line to start).
+        // Matches what claude/readline expects for line-clear.
+        if (e.metaKey && !e.altKey && !e.ctrlKey && e.key === 'Backspace') {
+          void window.api.xterm.write(workspaceId, '\x15')
+          return false
+        }
+
+        // Ctrl+/ → emit Ctrl+_ (\x1f) to avoid the macOS system beep.
+        // Mirrors performKeyEquivalent: remap in addon.mm ~365-388.
+        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === '/') {
+          void window.api.xterm.write(workspaceId, '\x1f')
+          return false
+        }
+
+        // Ctrl+Enter → pass through as \r so the browser doesn't swallow it.
+        // Mirrors the Control+Return passthrough in addon.mm ~356-363.
+        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Enter') {
+          void window.api.xterm.write(workspaceId, '\r')
+          return false
+        }
+
+        // All other keys (plain typing, arrows, Ctrl+C, Cmd+C/V, Tab, Escape,
+        // etc.) pass through to xterm's default handler unchanged.
+        return true
+      })
+
       // Data loop: main → renderer.
       unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
         if (wid !== workspaceId || disposed) return
