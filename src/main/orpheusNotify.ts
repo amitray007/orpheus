@@ -7,6 +7,8 @@ import { setWorkspaceStatus } from './workspaces'
 import { notifyForTransition } from './osNotifications'
 import { getAppUiState } from './uiState'
 import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -56,6 +58,19 @@ type DetailState = {
   // (AskUserQuestion, ExitPlanMode). The string is the tool_name from
   // the PreToolUse payload so PostToolUse can unblock the matching tool.
   blockingTool: string | null
+  // Counts Task tool dispatches whose SubagentStop hasn't arrived yet.
+  // Stop fires per main-transcript turn and does NOT mean subagents are done;
+  // we defer the awaiting_input transition until subagentDepth reaches 0.
+  subagentDepth: number
+  // True when a Stop was received while subagentDepth > 0. The pending
+  // awaiting_input dispatch fires once the last SubagentStop arrives.
+  pendingStop: boolean
+  // Wall-clock ms when the current user-prompt turn started. 0 = no turn active.
+  turnStartedAt: number
+  // Cumulative subagents dispatched in THIS turn (Agent/Task PreToolUse).
+  // Reset on next user-prompt; intentionally NOT reset on Stop so the count
+  // is still readable when the deferred awaiting_input banner fires.
+  subagentsDispatched: number
 }
 
 // Tools that block claude until the user answers them. Treated as a
@@ -69,24 +84,94 @@ const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
 // Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
 let cachedWatchdogSec: number | null = null
+let cachedStaleMinutes: number | null = null
+let cachedAutoCloseMinutes: number | null = null
 
 /** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
 export function invalidateWatchdogCache(): void {
   cachedWatchdogSec = null
+  cachedStaleMinutes = null
+  cachedAutoCloseMinutes = null
 }
 const listeners = new Set<
   (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
 >()
+
+// ---------------------------------------------------------------------------
+// Batch coalescing for activity broadcasts
+//
+// Instead of firing listeners immediately on every hook event (which can be
+// N×F times/sec with N busy terminals), we stage the latest state per
+// workspace in a pending Map and schedule a single flush ~16ms later.
+// The flush emits the whole batch to `batchListeners` via onActivityBatch,
+// and also fans out to the legacy per-event `listeners` for backwards compat.
+// ---------------------------------------------------------------------------
+
+type ActivityUpdate = {
+  workspaceId: string
+  status: WorkspaceStatus
+  detail: WorkspaceActivityDetail
+}
+
+const pendingBatch = new Map<string, ActivityUpdate>()
+let flushScheduled = false
+
+const batchListeners = new Set<(updates: ActivityUpdate[]) => void>()
+
+function scheduleBatchFlush(): void {
+  if (flushScheduled) return
+  flushScheduled = true
+  setTimeout(() => {
+    flushScheduled = false
+    if (pendingBatch.size === 0) return
+    const updates = Array.from(pendingBatch.values())
+    pendingBatch.clear()
+    for (const cb of batchListeners) {
+      try {
+        cb(updates)
+      } catch {
+        /* ignore */
+      }
+    }
+    // Fan out to legacy per-event listeners for backwards compat.
+    for (const update of updates) {
+      for (const cb of listeners) {
+        try {
+          cb(update.workspaceId, update.status, update.detail)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }, 16)
+}
+
+export function onActivityBatch(cb: (updates: ActivityUpdate[]) => void): () => void {
+  batchListeners.add(cb)
+  return () => batchListeners.delete(cb)
+}
 // Fires only on the SessionStart hook, regardless of prior activity status.
 // Used by loadingOverlay to dismiss its mount-time overlay reliably even when
 // the workspace was previously in 'awaiting_input' (re-mount of a known session).
 const sessionStartListeners = new Set<(workspaceId: string) => void>()
+let autoCloseHandler: ((workspaceId: string) => void) | null = null
+
 const watchdogs = new Map<string, NodeJS.Timeout>()
+const idleWatchdogs = new Map<string, NodeJS.Timeout>()
+const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
 
 function getDetailState(workspaceId: string): DetailState {
   let s = detailMap.get(workspaceId)
   if (!s) {
-    s = { toolStack: 0, compacting: false, blockingTool: null }
+    s = {
+      toolStack: 0,
+      compacting: false,
+      blockingTool: null,
+      subagentDepth: 0,
+      pendingStop: false,
+      turnStartedAt: 0,
+      subagentsDispatched: 0
+    }
     detailMap.set(workspaceId, s)
   }
   return s
@@ -94,6 +179,14 @@ function getDetailState(workspaceId: string): DetailState {
 
 export function getBlockingTool(workspaceId: string): string | null {
   return detailMap.get(workspaceId)?.blockingTool ?? null
+}
+
+export function getTurnSummary(
+  workspaceId: string
+): { elapsedMs: number; subagents: number } | null {
+  const s = detailMap.get(workspaceId)
+  if (!s || !s.turnStartedAt) return null
+  return { elapsedMs: Date.now() - s.turnStartedAt, subagents: s.subagentsDispatched }
 }
 
 export function computeDetail(
@@ -121,13 +214,11 @@ function broadcastDetailIfChanged(workspaceId: string): void {
   const last = lastBroadcastDetail.get(workspaceId)
   if (last === detail) return
   lastBroadcastDetail.set(workspaceId, detail)
-  for (const cb of listeners) {
-    try {
-      cb(workspaceId, status, detail)
-    } catch {
-      /* ignore */
-    }
-  }
+  // Stage into the pending batch rather than firing listeners synchronously.
+  // scheduleBatchFlush will emit to batchListeners (and fan out to legacy
+  // listeners) in a single ~16ms coalesced flush.
+  pendingBatch.set(workspaceId, { workspaceId, status, detail })
+  scheduleBatchFlush()
 }
 
 function clearWatchdog(workspaceId: string): void {
@@ -135,6 +226,20 @@ function clearWatchdog(workspaceId: string): void {
   if (!t) return
   clearTimeout(t)
   watchdogs.delete(workspaceId)
+}
+
+function clearIdleWatchdog(workspaceId: string): void {
+  const t = idleWatchdogs.get(workspaceId)
+  if (!t) return
+  clearTimeout(t)
+  idleWatchdogs.delete(workspaceId)
+}
+
+function clearAutoCloseWatchdog(workspaceId: string): void {
+  const t = autoCloseWatchdogs.get(workspaceId)
+  if (!t) return
+  clearTimeout(t)
+  autoCloseWatchdogs.delete(workspaceId)
 }
 
 function armWatchdog(workspaceId: string): void {
@@ -150,16 +255,99 @@ function armWatchdog(workspaceId: string): void {
     watchdogs.delete(workspaceId)
     if (activityMap.get(workspaceId) === 'in_progress') {
       console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
+        workspaceId,
+        data: { afterSeconds: seconds }
+      })
       dispatch(workspaceId, 'awaiting_input')
+      // Lost-SubagentStop recovery: clear any deferred-subagent state so the
+      // next turn starts clean rather than inheriting a stale pendingStop.
+      const s = detailMap.get(workspaceId)
+      if (s) {
+        s.subagentDepth = 0
+        s.pendingStop = false
+      }
     }
   }, seconds * 1000)
   watchdogs.set(workspaceId, t)
+}
+
+function armIdleWatchdog(workspaceId: string): void {
+  clearIdleWatchdog(workspaceId)
+  if (cachedStaleMinutes === null) {
+    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? 60
+  }
+  const minutes = cachedStaleMinutes
+  if (minutes <= 0) return
+  const t = setTimeout(
+    () => {
+      idleWatchdogs.delete(workspaceId)
+      if (activityMap.get(workspaceId) === 'awaiting_input') {
+        console.log(
+          '[orpheusNotify] idle watchdog — ready→idle',
+          workspaceId,
+          'after',
+          minutes,
+          'min'
+        )
+        logDiagMain({
+          category: 'lifecycle',
+          level: 'debug',
+          event: DIAG_EVENTS.HOOK_ACTIVITY,
+          workspaceId,
+          message: 'ready→idle (stale)',
+          data: { afterMinutes: minutes }
+        })
+        dispatch(workspaceId, 'idle')
+      }
+    },
+    minutes * 60 * 1000
+  )
+  idleWatchdogs.set(workspaceId, t)
+}
+
+function armAutoCloseWatchdog(workspaceId: string): void {
+  clearAutoCloseWatchdog(workspaceId)
+  if (cachedAutoCloseMinutes === null) {
+    cachedAutoCloseMinutes = getAppUiState().autoCloseAfterMinutes ?? 120
+  }
+  const minutes = cachedAutoCloseMinutes
+  if (minutes <= 0) return
+  const t = setTimeout(
+    () => {
+      autoCloseWatchdogs.delete(workspaceId)
+      const status = activityMap.get(workspaceId)
+      if (status === 'idle' || status === 'awaiting_input') {
+        console.log(
+          '[orpheusNotify] auto-close watchdog — closing',
+          workspaceId,
+          'after',
+          minutes,
+          'min'
+        )
+        autoCloseHandler?.(workspaceId)
+      }
+    },
+    minutes * 60 * 1000
+  )
+  autoCloseWatchdogs.set(workspaceId, t)
 }
 
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
   activityMap.set(workspaceId, status)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'debug',
+    event: DIAG_EVENTS.HOOK_ACTIVITY,
+    workspaceId,
+    message: status,
+    data: { prev }
+  })
   try {
     setWorkspaceStatus(workspaceId, status)
   } catch (err) {
@@ -171,6 +359,18 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     armWatchdog(workspaceId)
   } else {
     clearWatchdog(workspaceId)
+  }
+  // Auto-demote ready→idle after staleAfterMinutes of sitting in awaiting_input.
+  if (status === 'awaiting_input') {
+    armIdleWatchdog(workspaceId)
+  } else {
+    clearIdleWatchdog(workspaceId)
+  }
+  // Auto-close workspace after autoCloseAfterMinutes of sitting idle.
+  if (status === 'idle') {
+    armAutoCloseWatchdog(workspaceId)
+  } else {
+    clearAutoCloseWatchdog(workspaceId)
   }
 
   broadcastDetailIfChanged(workspaceId)
@@ -217,6 +417,11 @@ function handleHookEvent(
         dispatch(workspaceId, 'attention')
         return
       }
+      // 'Agent' is the current subagent-dispatch tool_name; 'Task' is the legacy alias.
+      if (tn === 'Agent' || tn === 'Task') {
+        ds.subagentDepth++
+        ds.subagentsDispatched++
+      }
       ds.toolStack++
       heartbeat(workspaceId)
       broadcastDetailIfChanged(workspaceId)
@@ -240,14 +445,54 @@ function handleHookEvent(
       broadcastDetailIfChanged(workspaceId)
       return
     case 'subagent-stop':
+      ds.subagentDepth = Math.max(0, ds.subagentDepth - 1)
       heartbeat(workspaceId)
+      if (ds.subagentDepth === 0 && ds.pendingStop) {
+        ds.pendingStop = false
+        // The last subagent finished and a Stop was deferred. But if a subagent
+        // raised a permission prompt while we waited, the workspace is now in
+        // 'attention'/blocking — don't clobber that live prompt with a green
+        // 'ready' dot. Let PostToolUse/Notification clear attention first.
+        if (activityMap.get(workspaceId) !== 'attention' && !ds.blockingTool) {
+          dispatch(workspaceId, 'awaiting_input')
+        }
+      }
       return
-    case 'user-prompt':
     case 'stop':
-    case 'session-end':
+      // Reset per-turn state but not subagentDepth: subagents may still be
+      // running. Stop fires per main-transcript turn and does NOT mean all
+      // subagents have finished.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
+      if (ds.subagentDepth > 0) {
+        // Subagents still in flight — defer the awaiting_input transition.
+        // The 120s watchdog is the safety net if a final SubagentStop is lost.
+        ds.pendingStop = true
+        heartbeat(workspaceId)
+        return
+      }
+      ds.pendingStop = false
+      break
+    case 'user-prompt':
+      // Fresh turn — record start time and reset per-turn state.
+      ds.toolStack = 0
+      ds.compacting = false
+      ds.blockingTool = null
+      ds.subagentDepth = 0
+      ds.pendingStop = false
+      ds.turnStartedAt = Date.now()
+      ds.subagentsDispatched = 0
+      break
+    case 'session-end':
+      // Session ended — clear all per-turn state.
+      ds.toolStack = 0
+      ds.compacting = false
+      ds.blockingTool = null
+      ds.subagentDepth = 0
+      ds.pendingStop = false
+      ds.turnStartedAt = 0
+      ds.subagentsDispatched = 0
       break
     case 'notification':
       ds.compacting = false
@@ -287,16 +532,24 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
  */
 export function clearWorkspaceActivity(workspaceId: string): void {
   clearWatchdog(workspaceId)
+  clearIdleWatchdog(workspaceId)
+  clearAutoCloseWatchdog(workspaceId)
   // Force a fresh 'idle' broadcast even if the current cached value is also
   // archived → avoid dispatch's early-return when prev === status.
   activityMap.delete(workspaceId)
   detailMap.delete(workspaceId)
   lastBroadcastDetail.delete(workspaceId)
   dispatch(workspaceId, 'idle')
+  // dispatch('idle') re-arms the auto-close watchdog — defuse it for teardown.
+  clearAutoCloseWatchdog(workspaceId)
 }
 
 export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
   return activityMap.get(workspaceId) ?? 'idle'
+}
+
+export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
+  autoCloseHandler = fn
 }
 
 export function onActivityChange(

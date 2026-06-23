@@ -555,8 +555,8 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           </SettingRow>
           <SettingRow
             label="Auto background tasks"
-            description="Allow Claude to automatically schedule background tasks without explicit user approval (CLAUDE_CODE_AUTO_BACKGROUND_TASKS=1)."
-            mapsTo="CLAUDE_CODE_AUTO_BACKGROUND_TASKS"
+            description="Allow Claude to automatically schedule background tasks without explicit user approval (CLAUDE_AUTO_BACKGROUND_TASKS=1)."
+            mapsTo="CLAUDE_AUTO_BACKGROUND_TASKS"
           >
             <Toggle
               ariaLabel="Auto background tasks"

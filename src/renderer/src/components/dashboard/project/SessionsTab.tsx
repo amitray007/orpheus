@@ -146,6 +146,14 @@ export function SessionsTab({
   // search/filter controls only in the former case.
   const [hasAnySessions, setHasAnySessions] = useState<boolean | null>(null)
 
+  // When the default date window (e.g. "Last 3 days") hides every session but
+  // the project actually has older ones, we auto-widen to "All time" once so
+  // the list isn't silently empty. We store the project id we widened for (not
+  // a bare boolean) so switching projects re-arms the one-shot automatically
+  // without a reset effect, and a manual date change clears it (set to null).
+  const [autoWidenedFor, setAutoWidenedFor] = useState<string | null>(null)
+  const autoWidened = autoWidenedFor === projectId
+
   // Debounce search input
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
@@ -205,6 +213,24 @@ export function SessionsTab({
       .listForProjectPaged(req)
       .then((res) => {
         if (reqId !== reqIdRef.current) return
+        // Auto-widen guard: a date window other than "all" returned nothing,
+        // yet the project has sessions (hasAnySessions). The user is almost
+        // certainly staring at an empty list for a project whose work is just
+        // older than the default window — widen to "All time" once. We only do
+        // this when no search/page narrowing is in play, so an intentional
+        // empty search result is respected.
+        if (
+          res.total === 0 &&
+          dateRange !== 'all' &&
+          !debouncedSearch &&
+          page === 1 &&
+          hasAnySessions === true &&
+          !autoWidened
+        ) {
+          setAutoWidenedFor(projectId)
+          setDateRange('all')
+          return
+        }
         setRows(res.rows)
         setTotal(res.total)
         setLoading(false)
@@ -225,6 +251,8 @@ export function SessionsTab({
     sortDir,
     page,
     metadataVersion,
+    hasAnySessions,
+    autoWidened,
     onSessionCountChange
   ])
 
@@ -237,6 +265,9 @@ export function SessionsTab({
   function changeDateRange(v: DateRange): void {
     setDateRange(v)
     setPage(1)
+    // User took control of the window — don't auto-widen again, and clear the
+    // hint if they re-narrow.
+    setAutoWidenedFor(null)
   }
   function changeSort(by: SortBy, dir: 'asc' | 'desc'): void {
     setSortBy(by)
@@ -416,31 +447,37 @@ export function SessionsTab({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Filter bar — hidden when the project has no sessions at all */}
-      {!noSessionsAtAll && (
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 min-w-0">
-            <MagnifyingGlass
-              size={12}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-            />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => changeSearch(e.target.value)}
-              placeholder="Search prompts"
-              className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-            />
-          </div>
-          <div className="w-44 flex-shrink-0">
-            <Select<DateRange>
-              ariaLabel="Date range"
-              options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
-              value={dateRange}
-              onChange={changeDateRange}
-            />
-          </div>
+      {/* Filter bar — always shown, even when the project has no sessions */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 min-w-0">
+          <MagnifyingGlass
+            size={12}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => changeSearch(e.target.value)}
+            placeholder="Search prompts"
+            className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+          />
         </div>
+        <div className="w-44 flex-shrink-0">
+          <Select<DateRange>
+            ariaLabel="Date range"
+            options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
+            value={dateRange}
+            onChange={changeDateRange}
+          />
+        </div>
+      </div>
+
+      {/* Auto-widen hint: shown when the default date window hid everything and
+          we fell back to "All time" so the list isn't mysteriously empty. */}
+      {autoWidened && dateRange === 'all' && !debouncedSearch && (
+        <p className="text-xs text-text-muted -mt-1">
+          No sessions in the recent window — showing all sessions.
+        </p>
       )}
 
       <DataTable<SessionRecord>

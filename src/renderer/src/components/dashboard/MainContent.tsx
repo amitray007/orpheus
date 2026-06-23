@@ -1,16 +1,27 @@
+import { lazy, Suspense, useState } from 'react'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
-import { SettingsView } from './SettingsView'
 import { WorkspaceView } from './WorkspaceView'
 import { Eyebrow } from './settings/primitives'
-import type {
-  GhPullRequest,
-  GitStatus,
-  ProjectRecord,
-  SessionRecord,
-  WorkspaceActivityDetail,
-  WorkspaceRecord
-} from '@shared/types'
+
+const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
+import { getActivitySnapshot } from '@/lib/activityStore'
+import { getPrSnapshot } from '@/lib/prStore'
+import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+
+// ---------------------------------------------------------------------------
+// LRU keep-alive list — up to N workspace IDs remain mounted simultaneously.
+// The front of the list is the active workspace; older entries stay mounted
+// (but hidden) so switching back is instant (no effect teardown/rebuild).
+// ---------------------------------------------------------------------------
+
+const LRU_MAX = 3
+
+function lruPush(list: string[], id: string): string[] {
+  // Move id to front; drop duplicates; evict beyond LRU_MAX.
+  const filtered = list.filter((x) => x !== id)
+  return [id, ...filtered].slice(0, LRU_MAX)
+}
 
 // ---------------------------------------------------------------------------
 // Fallback placeholder (used for error states only)
@@ -57,15 +68,11 @@ interface MainContentProps {
   ) => void | Promise<void>
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
-  workspaceActivities?: Record<string, WorkspaceActivityDetail>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void | Promise<void>
   // Workspaces view props
   projects?: ProjectRecord[]
   allWorkspaces?: WorkspaceRecord[]
   allSessions?: SessionRecord[]
-  gitStatusByWorkspaceId?: Record<string, GitStatus | null>
-  prByWorkspaceId?: Record<string, GhPullRequest | null>
-  titleByWorkspaceId?: Record<string, string>
   // Privacy (v37)
   fetchGithubAvatars?: boolean
 }
@@ -81,18 +88,58 @@ export function MainContent({
   onRenameWorkspace,
   onArchiveWorkspace,
   onToggleWorkspacePin,
-  workspaceActivities,
   onResumedInWorkspace,
   projects,
   allWorkspaces,
   allSessions,
-  gitStatusByWorkspaceId,
-  prByWorkspaceId,
-  titleByWorkspaceId,
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
+  // Combined state: LRU list of kept workspace IDs + a snapshot of each record.
+  // Stored together so a single setState keeps them atomic.
+  const [keptState, setKeptState] = useState<{
+    ids: string[]
+    records: Map<string, WorkspaceRecord>
+  }>(() => {
+    const records = new Map<string, WorkspaceRecord>()
+    const ids: string[] = []
+    if (view.kind === 'workspace' && workspace) {
+      records.set(workspace.id, workspace)
+      ids.push(workspace.id)
+    }
+    return { ids, records }
+  })
+
+  // Derive the current LRU state within this render.
+  // When the active workspace changes we compute the next keptState immediately
+  // (same render cycle) so WorkspaceView for the new workspace is mounted with
+  // `active=true` on the very first render that shows it — no blank-screen frame.
+  // React supports calling setState during render for this "derived state" pattern:
+  // it bails out and re-renders synchronously with the new state if needed.
+  let renderKeptState = keptState
+  if (view.kind === 'workspace' && workspace) {
+    const wsId = workspace.id
+    if (keptState.ids[0] !== wsId || keptState.records.get(wsId) !== workspace) {
+      const nextRecords = new Map(keptState.records)
+      nextRecords.set(wsId, workspace)
+      const nextIds = keptState.ids[0] === wsId ? keptState.ids : lruPush(keptState.ids, wsId)
+      // Drop evicted ids from the record snapshot.
+      for (const id of keptState.ids) {
+        if (!nextIds.includes(id)) nextRecords.delete(id)
+      }
+      renderKeptState = { ids: nextIds, records: nextRecords }
+      // Schedule the state update so React commits the new keptState.
+      // This runs during the render phase which React allows for derived-state
+      // updates (equivalent to getDerivedStateFromProps in class components).
+      setKeptState(renderKeptState)
+    }
+  }
+
   if (view.kind === 'settings') {
-    return <SettingsView />
+    return (
+      <Suspense fallback={null}>
+        <SettingsView />
+      </Suspense>
+    )
   }
 
   if (view.kind === 'sessions') {
@@ -103,11 +150,7 @@ export function MainContent({
         onNavigateToWorkspace={onSelectWorkspace}
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}
-        workspaceActivities={workspaceActivities ?? {}}
-        titleByWorkspaceId={titleByWorkspaceId ?? {}}
         sessions={allSessions ?? []}
-        gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-        prByWorkspaceId={prByWorkspaceId}
       />
     )
   }
@@ -120,22 +163,34 @@ export function MainContent({
         </div>
       )
     }
-    // key forces React to unmount the old WorkspaceView and mount a fresh
-    // one when the workspace changes — without this the useEffect with []
-    // deps doesn't re-run and terminal:hide/mount never fires.
-    // Seed initialDetail from the live activity map so re-mount after
-    // navigation keeps the right glyph (tool / compacting / asking) instead
-    // of falling back to the coarser status-derived value until the next
-    // hook event lands.
+
+    const activeId = workspace.id
+
+    // Render ALL kept WorkspaceViews simultaneously. Only the active one is
+    // visible; the others have display:none so they don't occupy layout space
+    // and don't report a bogus 0×0 rect to the native resize path.
+    // WorkspaceView drives terminal:hide / terminal:mount via the active prop
+    // and suppresses its title-bar portal when inactive.
     return (
-      <WorkspaceView
-        key={workspace.id}
-        workspace={workspace}
-        initialDetail={workspaceActivities?.[workspace.id]}
-        pr={prByWorkspaceId?.[workspace.id] ?? null}
-        onSelectWorkspace={onSelectWorkspace}
-        allWorkspaces={allWorkspaces}
-      />
+      <>
+        {renderKeptState.ids.map((id) => {
+          const ws = renderKeptState.records.get(id)
+          if (!ws) return null
+          const isActive = id === activeId
+          return (
+            <div key={id} style={isActive ? { display: 'contents' } : { display: 'none' }}>
+              <WorkspaceView
+                workspace={ws}
+                active={isActive}
+                initialDetail={getActivitySnapshot().get(id)}
+                pr={getPrSnapshot().get(id) ?? null}
+                onSelectWorkspace={onSelectWorkspace}
+                allWorkspaces={allWorkspaces}
+              />
+            </div>
+          )
+        })}
+      </>
     )
   }
 
@@ -152,7 +207,6 @@ export function MainContent({
     <ProjectView
       project={project}
       workspaces={workspacesForProject}
-      workspaceActivities={workspaceActivities}
       onRequestRemove={() => onRequestRemoveProject(project)}
       onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, project.id)}
       onAddWorkspace={onAddWorkspace}

@@ -37,6 +37,8 @@ type SessionRow = {
   last_message_preview: string | null
   // v35
   last_user_message_preview: string | null
+  // v50
+  jsonl_mtime: number | null
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
@@ -54,7 +56,8 @@ function rowToRecord(row: SessionRow): SessionRecord {
     messageCount: row.message_count,
     jsonlSizeBytes: row.jsonl_size_bytes,
     lastMessagePreview: row.last_message_preview,
-    lastUserMessagePreview: row.last_user_message_preview
+    lastUserMessagePreview: row.last_user_message_preview,
+    jsonlMtime: row.jsonl_mtime
   }
 }
 
@@ -272,61 +275,62 @@ function extractFileSize(jsonlPath: string): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// Last-message preview extraction (v34)
+// Preview constants (v34 / v35)
 // ---------------------------------------------------------------------------
 
 const MAX_PREVIEW_LENGTH = 100
 
-/**
- * Reads the last chunk of the JSONL, finds the most recent assistant message,
- * and returns a cleaned preview string (≤100 chars). Falls back to the most
- * recent user message if no assistant content is found.
- */
-function extractLastMessagePreview(jsonlPath: string): string | null {
-  try {
-    const stat = fs.statSync(jsonlPath)
-    const fileSize = stat.size
-    const readSize = Math.min(fileSize, MAX_BYTES)
-    const offset = fileSize - readSize
+// ---------------------------------------------------------------------------
+// Single-pass extraction helpers
+//
+// Instead of opening the fd 5 separate times per JSONL file, we do at most
+// 2 reads: one head read (~200KB from offset 0) for title/model/messageCount,
+// and one tail read (~200KB from the end) for lastMessageRole/previews.
+// The stat call is shared between the two reads.
+// ---------------------------------------------------------------------------
 
-    const fd = fs.openSync(jsonlPath, 'r')
-    const buf = Buffer.allocUnsafe(readSize)
+type HeadExtracted = {
+  title: string | null
+  model: string | null
+  messageCount: number
+}
+
+type TailExtracted = {
+  lastMessageRole: string | null
+  lastMessagePreview: string | null
+  lastUserMessagePreview: string | null
+}
+
+function extractFromHead(text: string): HeadExtracted {
+  const lines = text.split('\n')
+  let title: string | null = null
+  let model: string | null = null
+  let messageCount = 0
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let parsed: Record<string, unknown>
     try {
-      fs.readSync(fd, buf, 0, readSize, offset)
-    } finally {
-      fs.closeSync(fd)
+      parsed = JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
     }
 
-    const text = buf.toString('utf-8')
-    const lines = text.split('\n').reverse()
+    const type = parsed['type']
+    if (type !== 'user' && type !== 'assistant') continue
+    messageCount++
 
-    let fallbackUserText: string | null = null
+    const message = parsed['message']
+    if (typeof message !== 'object' || message === null) continue
 
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (typeof parsed !== 'object' || parsed === null) continue
-      const p = parsed as Record<string, unknown>
-      const type = p['type']
-      if (type !== 'assistant' && type !== 'user') continue
-
-      const message = p['message']
-      if (typeof message !== 'object' || message === null) continue
+    // Extract title from first user message
+    if (title === null && type === 'user') {
       const content = (message as Record<string, unknown>)['content']
-
       let raw: string | null = null
-
       if (typeof content === 'string') {
         raw = content
       } else if (Array.isArray(content)) {
-        const parts: string[] = []
         for (const part of content) {
           if (
             typeof part === 'object' &&
@@ -334,147 +338,144 @@ function extractLastMessagePreview(jsonlPath: string): string | null {
             (part as Record<string, unknown>)['type'] === 'text'
           ) {
             const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string' && t.trim()) parts.push(t)
+            if (typeof t === 'string') {
+              raw = t
+              break
+            }
           }
         }
-        if (parts.length > 0) raw = parts.join(' ')
       }
+      if (raw) {
+        const trimmedRaw = raw.trim()
+        title =
+          trimmedRaw.length > MAX_TITLE_LENGTH
+            ? trimmedRaw.slice(0, MAX_TITLE_LENGTH) + '…'
+            : trimmedRaw
+      }
+    }
 
-      if (!raw) continue
+    // Extract model from first assistant message
+    if (model === null && type === 'assistant') {
+      const m = (message as Record<string, unknown>)['model']
+      if (typeof m === 'string' && m.length > 0) model = m
+    }
+  }
 
-      // Strip markdown noise: code fences, inline backticks, headers, bold/italic stars
-      const cleaned = raw
-        .replace(/```[\s\S]*?```/g, '') // fenced code blocks
-        .replace(/`[^`]*`/g, '') // inline code
-        .replace(/^#{1,6}\s+/gm, '') // ATX headers
-        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1') // bold/italic
-        .replace(/_([^_]+)_/g, '$1') // underline italic
-        .replace(/\s+/g, ' ') // collapse whitespace
-        .trim()
+  return { title, model, messageCount }
+}
 
-      if (!cleaned) continue
+function extractFromTail(text: string): TailExtracted {
+  const lines = text.split('\n').reverse()
+  let lastMessageRole: string | null = null
+  let lastMessagePreview: string | null = null
+  let fallbackUserText: string | null = null
+  let lastUserMessagePreview: string | null = null
 
-      const preview =
-        cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
+    }
 
+    const type = parsed['type']
+    if (type !== 'user' && type !== 'assistant') continue
+
+    const message = parsed['message']
+    if (typeof message !== 'object' || message === null) continue
+
+    // Extract last_message_role from first qualifying line (reversed = last in file)
+    if (lastMessageRole === null) {
+      const role = (message as Record<string, unknown>)['role']
+      if (typeof role === 'string') lastMessageRole = role
+    }
+
+    const content = (message as Record<string, unknown>)['content']
+    let raw: string | null = null
+    if (typeof content === 'string') {
+      raw = content
+    } else if (Array.isArray(content)) {
+      const parts: string[] = []
+      for (const part of content) {
+        if (
+          typeof part === 'object' &&
+          part !== null &&
+          (part as Record<string, unknown>)['type'] === 'text'
+        ) {
+          const t = (part as Record<string, unknown>)['text']
+          if (typeof t === 'string' && t.trim()) parts.push(t)
+        }
+      }
+      if (parts.length > 0) raw = parts.join(' ')
+    }
+
+    if (!raw) continue
+
+    const cleaned = raw
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`[^`]*`/g, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!cleaned) continue
+
+    const preview =
+      cleaned.length > MAX_PREVIEW_LENGTH ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…' : cleaned
+
+    // last_message_preview: prefer assistant, fall back to user
+    if (lastMessagePreview === null) {
       if (type === 'assistant') {
-        return preview
-      }
-
-      // Save user message as fallback but keep scanning for an assistant message
-      if (fallbackUserText === null) {
+        lastMessagePreview = preview
+      } else if (fallbackUserText === null) {
         fallbackUserText = preview
       }
     }
 
-    return fallbackUserText
-  } catch {
-    return null
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Last user-message preview extraction (v35)
-// ---------------------------------------------------------------------------
-
-/**
- * Reads the last chunk of the JSONL, walks backward, and returns the most
- * recent *user* message as a cleaned preview (≤100 chars). Returns null if
- * no user message is found.
- */
-function extractLastUserMessagePreview(jsonlPath: string): string | null {
-  try {
-    const stat = fs.statSync(jsonlPath)
-    const fileSize = stat.size
-    const readSize = Math.min(fileSize, MAX_BYTES)
-    const offset = fileSize - readSize
-
-    const fd = fs.openSync(jsonlPath, 'r')
-    const buf = Buffer.allocUnsafe(readSize)
-    try {
-      fs.readSync(fd, buf, 0, readSize, offset)
-    } finally {
-      fs.closeSync(fd)
+    // last_user_message_preview: first user line seen (reversed = last in file)
+    if (lastUserMessagePreview === null && type === 'user') {
+      lastUserMessagePreview = preview
     }
 
-    const text = buf.toString('utf-8')
-    const lines = text.split('\n').reverse()
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-
-      if (typeof parsed !== 'object' || parsed === null) continue
-      const p = parsed as Record<string, unknown>
-      if (p['type'] !== 'user') continue
-
-      const message = p['message']
-      if (typeof message !== 'object' || message === null) continue
-      const content = (message as Record<string, unknown>)['content']
-
-      let raw: string | null = null
-
-      if (typeof content === 'string') {
-        raw = content
-      } else if (Array.isArray(content)) {
-        const parts: string[] = []
-        for (const part of content) {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            (part as Record<string, unknown>)['type'] === 'text'
-          ) {
-            const t = (part as Record<string, unknown>)['text']
-            if (typeof t === 'string' && t.trim()) parts.push(t)
-          }
-        }
-        if (parts.length > 0) raw = parts.join(' ')
-      }
-
-      if (!raw) continue
-
-      const cleaned = raw
-        .replace(/```[\s\S]*?```/g, '')
-        .replace(/`[^`]*`/g, '')
-        .replace(/^#{1,6}\s+/gm, '')
-        .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
-        .replace(/_([^_]+)_/g, '$1')
-        .replace(/\s+/g, ' ')
-        .trim()
-
-      if (!cleaned) continue
-
-      return cleaned.length > MAX_PREVIEW_LENGTH
-        ? cleaned.slice(0, MAX_PREVIEW_LENGTH) + '…'
-        : cleaned
-    }
-  } catch {
-    // ignore
+    // Stop once we have everything we need (all three fields populated).
+    if (lastMessagePreview !== null && lastUserMessagePreview !== null && lastMessageRole !== null)
+      break
   }
-  return null
+
+  if (lastMessagePreview === null) lastMessagePreview = fallbackUserText
+
+  return { lastMessageRole, lastMessagePreview, lastUserMessagePreview }
 }
 
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
+// Yield to the event loop so a long scan doesn't monopolize the main thread.
+// Called between files (or small batches) inside async loops.
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 /**
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
- * not yet in the sessions table. Returns the list of inserted session IDs.
+ * not yet in the sessions table.
+ *
+ * Extraction is gated: we only open the file when the INSERT actually inserts
+ * a new row (better-sqlite3 `.changes > 0`). Already-imported rows skip all
+ * fd opens, paying only a readdirSync + stat per file. At most 2 reads per
+ * file (head ~200KB + tail ~200KB) instead of 5 separate fd opens.
+ *
+ * Yields to the event loop every file so IPC/clicks interleave during large
+ * project scans. The max contiguous main-thread block is bounded to O(1 file).
  */
-function upsertSessionFilesForProject(projectId: string, dir: string): void {
+async function upsertSessionFilesForProject(projectId: string, dir: string): Promise<void> {
   const db = getDb()
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO sessions
-       (id, project_id, jsonl_path, title, status, created_at, updated_at, model, last_message_role, message_count, jsonl_size_bytes, last_message_preview, last_user_message_preview)
-     VALUES (?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
 
   let entries: fs.Dirent[]
   try {
@@ -483,46 +484,164 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
     return
   }
 
-  for (const entry of entries) {
+  // Snapshot the set of already-known session IDs so we can decide during the
+  // read loop whether each file is new (needs extraction) — without writing
+  // anything to the DB yet. This lets us keep yields in the READ phase only
+  // and commit all inserts+updates in one synchronous transaction at the end.
+  const knownIds = new Set<string>(
+    (
+      db.prepare('SELECT id FROM sessions WHERE project_id = ?').all(projectId) as { id: string }[]
+    ).map((r) => r.id)
+  )
+
+  // Collected pending writes — populated during the (async) read phase.
+  type PendingInsert = {
+    sessionId: string
+    jsonlPath: string
+    mtime: number
+    createdAt: number
+  }
+  type PendingUpdate = {
+    sessionId: string
+    title: string | null
+    model: string | null
+    lastMessageRole: string | null
+    messageCount: number | null
+    fileSize: number
+    lastMessagePreview: string | null
+    lastUserMessagePreview: string | null
+    mtime: number
+  }
+  const pendingInserts: PendingInsert[] = []
+  const pendingUpdates: PendingUpdate[] = []
+
+  for (let _i = 0; _i < entries.length; _i++) {
+    const entry = entries[_i]
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+
+    // Yield every 10 files so IPC and clicks interleave during large scans
+    // without paying scheduling overhead on every file.
+    if (_i % 10 === 0) await yieldToEventLoop()
 
     const sessionId = entry.name.replace(/\.jsonl$/, '')
     const jsonlPath = nodePath.join(dir, entry.name)
 
-    let mtime: number
+    let stat: fs.Stats
     try {
-      mtime = Math.floor(fs.statSync(jsonlPath).mtimeMs)
+      stat = fs.statSync(jsonlPath)
     } catch {
-      mtime = Date.now()
+      continue
+    }
+    const mtime = Math.floor(stat.mtimeMs)
+    const fileSize = stat.size
+
+    if (knownIds.has(sessionId)) {
+      // Row already existed — skip extraction entirely.
+      continue
     }
 
-    const title = extractTitle(jsonlPath)
-    const model = extractModel(jsonlPath)
-    const lastMessageRole = extractLastMessageRole(jsonlPath)
-    const messageCount = extractMessageCount(jsonlPath)
-    const jsonlSizeBytes = extractFileSize(jsonlPath)
-    const lastMessagePreview = extractLastMessagePreview(jsonlPath)
-    const lastUserMessagePreview = extractLastUserMessagePreview(jsonlPath)
+    // New file not yet in DB — queue an insert.
+    // Pass null for jsonl_mtime at INSERT time; only the updateMeta path writes
+    // the real mtime. If extraction throws, null mtime ensures the mtime guard
+    // treats this row as "needs extraction" on the next scan.
+    pendingInserts.push({ sessionId, jsonlPath, mtime, createdAt: mtime })
 
+    // Run extraction (at most 2 reads).
     try {
-      insert.run(
+      const readSize = Math.min(fileSize, MAX_BYTES)
+
+      // Head read: title, model, messageCount
+      const headBuf = Buffer.allocUnsafe(readSize)
+      let headText: string
+      {
+        const fd = fs.openSync(jsonlPath, 'r')
+        try {
+          const bytesRead = fs.readSync(fd, headBuf, 0, readSize, 0)
+          headText = headBuf.slice(0, bytesRead).toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+      const { title, model, messageCount } = extractFromHead(headText)
+
+      // Tail read: lastMessageRole, previews (skip if file fits in head read)
+      let tailText: string
+      if (fileSize <= MAX_BYTES) {
+        tailText = headText
+      } else {
+        const tailOffset = fileSize - readSize
+        const tailBuf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(jsonlPath, 'r')
+        try {
+          fs.readSync(fd, tailBuf, 0, readSize, tailOffset)
+          tailText = tailBuf.toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+      const { lastMessageRole, lastMessagePreview, lastUserMessagePreview } =
+        extractFromTail(tailText)
+
+      pendingUpdates.push({
         sessionId,
-        projectId,
-        jsonlPath,
         title,
-        mtime,
-        mtime,
         model,
         lastMessageRole,
         messageCount,
-        jsonlSizeBytes,
+        fileSize,
         lastMessagePreview,
-        lastUserMessagePreview
-      )
+        lastUserMessagePreview,
+        mtime
+      })
     } catch {
-      // Ignore individual row failures (e.g. malformed UUID)
+      // Extraction failure is non-fatal — row stays with NULL metadata
     }
   }
+
+  if (pendingInserts.length === 0) return
+
+  // Commit all inserts and updates in one synchronous transaction — one fsync
+  // instead of N. No await inside the transaction (better-sqlite3 requirement).
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO sessions
+       (id, project_id, jsonl_path, status, created_at, updated_at, jsonl_mtime)
+     VALUES (?, ?, ?, 'in_review', ?, ?, ?)`
+  )
+  const updateMetaStmt = db.prepare(
+    `UPDATE sessions
+     SET title = ?, model = ?, last_message_role = ?,
+         message_count = ?, jsonl_size_bytes = ?,
+         last_message_preview = ?, last_user_message_preview = ?,
+         jsonl_mtime = ?
+     WHERE id = ?`
+  )
+
+  db.transaction(() => {
+    for (const ins of pendingInserts) {
+      try {
+        insertStmt.run(ins.sessionId, projectId, ins.jsonlPath, ins.createdAt, ins.createdAt, null)
+      } catch {
+        // Ignore individual row failures (e.g. malformed UUID)
+      }
+    }
+    for (const upd of pendingUpdates) {
+      try {
+        updateMetaStmt.run(
+          upd.title,
+          upd.model,
+          upd.lastMessageRole,
+          upd.messageCount,
+          upd.fileSize,
+          upd.lastMessagePreview,
+          upd.lastUserMessagePreview,
+          upd.mtime,
+          upd.sessionId
+        )
+      } catch {
+        // Ignore individual row failures
+      }
+    }
+  })()
 }
 
 /**
@@ -530,13 +649,13 @@ function upsertSessionFilesForProject(projectId: string, dir: string): void {
  * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
  * Wrapped in a transaction by the caller (addProject).
  */
-export function importSessionsForProject(project: ProjectRecord): SessionRecord[] {
+export async function importSessionsForProject(project: ProjectRecord): Promise<SessionRecord[]> {
   if (!project.claudeEncodedName) return []
 
   const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
   if (!fs.existsSync(dir)) return []
 
-  upsertSessionFilesForProject(project.id, dir)
+  await upsertSessionFilesForProject(project.id, dir)
 
   return listSessionsForProject(project.id)
 }
@@ -545,8 +664,34 @@ export function importSessionsForProject(project: ProjectRecord): SessionRecord[
  * For all sessions in a project where title / model / last_message_role is NULL,
  * re-runs the extractors and fills in the missing values.
  * Also scans for new .jsonl files not yet in the sessions table and inserts them.
+ *
+ * mtime guard: for non-archived sessions we skip re-extraction when the JSONL
+ * file's mtime matches the stored jsonl_mtime — this avoids N×stat+read calls
+ * on every project-tab open when sessions haven't changed.
+ *
+ * Yielding: file reads are interleaved with setImmediate yields so the event
+ * loop can service IPC/clicks between files. The max contiguous main-thread
+ * block is bounded to O(1 file) instead of O(N files).
  */
-export function refreshSessionMetadata(projectId: string): void {
+// Per-projectId in-flight dedup: if a refresh is already running for a given
+// project (e.g. user reopens a tab while the first scan is still yielding),
+// the second caller piggybacks on the first promise instead of starting a
+// parallel scan that would double I/O and bypass the mtime guard.
+const refreshInFlight = new Map<string, Promise<void>>()
+
+export async function refreshSessionMetadata(projectId: string): Promise<void> {
+  const existing = refreshInFlight.get(projectId)
+  if (existing) return existing
+  const work = _refreshSessionMetadata(projectId)
+  refreshInFlight.set(projectId, work)
+  try {
+    return await work
+  } finally {
+    refreshInFlight.delete(projectId)
+  }
+}
+
+async function _refreshSessionMetadata(projectId: string): Promise<void> {
   const db = getDb()
 
   // Pull the claudeEncodedName for this project so we can scan for new files.
@@ -557,11 +702,12 @@ export function refreshSessionMetadata(projectId: string): void {
   if (projectRow?.claude_encoded_name) {
     const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
     if (fs.existsSync(dir)) {
-      upsertSessionFilesForProject(projectId, dir)
+      await upsertSessionFilesForProject(projectId, dir)
     }
   }
 
-  // Backfill any NULL metadata columns (title, model, role, counts).
+  // Backfill any NULL metadata columns (title, model, role, counts) for rows
+  // that were inserted before the single-pass extractor was wired.
   type NullMetaRow = { id: string; jsonl_path: string }
   const nullRows = db
     .prepare(
@@ -582,55 +728,126 @@ export function refreshSessionMetadata(projectId: string): void {
      WHERE id = ?`
   )
 
-  // Wrap all UPDATEs in a single transaction — one fsync instead of N.
-  const runMetadataUpdates = db.transaction((rows: NullMetaRow[]) => {
-    for (const row of rows) {
-      const title = extractTitle(row.jsonl_path)
-      const model = extractModel(row.jsonl_path)
-      const lastMessageRole = extractLastMessageRole(row.jsonl_path)
-      const messageCount = extractMessageCount(row.jsonl_path)
-      const jsonlSizeBytes = extractFileSize(row.jsonl_path)
+  // Run extractions with per-file yields, then commit all UPDATEs in one
+  // transaction. better-sqlite3 transactions are synchronous, so we can't
+  // await inside them — instead we collect results first, then write in bulk.
+  type NullMetaResult = {
+    id: string
+    title: string | null
+    model: string | null
+    lastMessageRole: string | null
+    messageCount: number | null
+    jsonlSizeBytes: number | null
+  }
+  const nullMetaResults: NullMetaResult[] = []
+  for (let i = 0; i < nullRows.length; i++) {
+    const row = nullRows[i]
+    // Yield every 10 iterations so IPC/clicks can interleave without
+    // paying pure scheduling overhead on every file.
+    if (i % 10 === 0) await yieldToEventLoop()
+    nullMetaResults.push({
+      id: row.id,
+      title: extractTitle(row.jsonl_path),
+      model: extractModel(row.jsonl_path),
+      lastMessageRole: extractLastMessageRole(row.jsonl_path),
+      messageCount: extractMessageCount(row.jsonl_path),
+      jsonlSizeBytes: extractFileSize(row.jsonl_path)
+    })
+  }
+
+  // Commit all null-meta backfill rows in one transaction — one fsync.
+  db.transaction((results: NullMetaResult[]) => {
+    for (const r of results) {
       try {
-        updateStmt.run(title, model, lastMessageRole, messageCount, jsonlSizeBytes, row.id)
+        updateStmt.run(r.title, r.model, r.lastMessageRole, r.messageCount, r.jsonlSizeBytes, r.id)
       } catch {
         // Ignore individual row failures
       }
     }
-  })
-  runMetadataUpdates(nullRows)
+  })(nullMetaResults)
 
-  // Always re-extract last_message_preview and last_user_message_preview for
-  // non-archived sessions so the snippets stay fresh as sessions accumulate more messages.
-  type ActiveRow = { id: string; jsonl_path: string }
+  // Re-extract last_message_preview and last_user_message_preview for non-archived
+  // sessions, but only when the JSONL file has changed since the last extraction
+  // (mtime guard). This avoids re-reading every file on every project-tab open.
+  type ActiveRow = { id: string; jsonl_path: string; jsonl_mtime: number | null }
   const activeRows = db
     .prepare(
-      `SELECT id, jsonl_path FROM sessions
+      `SELECT id, jsonl_path, jsonl_mtime FROM sessions
        WHERE project_id = ? AND status != 'archived'`
     )
     .all(projectId) as ActiveRow[]
 
-  const previewStmt = db.prepare(`UPDATE sessions SET last_message_preview = ? WHERE id = ?`)
-  const userPreviewStmt = db.prepare(
-    `UPDATE sessions SET last_user_message_preview = ? WHERE id = ?`
+  const previewUpdateStmt = db.prepare(
+    `UPDATE sessions
+     SET last_message_preview = ?, last_user_message_preview = ?, jsonl_mtime = ?
+     WHERE id = ?`
   )
 
-  const runPreviewUpdates = db.transaction((rows: ActiveRow[]) => {
-    for (const row of rows) {
-      const preview = extractLastMessagePreview(row.jsonl_path)
-      try {
-        previewStmt.run(preview, row.id)
-      } catch {
-        // Ignore individual row failures
-      }
-      const userPreview = extractLastUserMessagePreview(row.jsonl_path)
-      try {
-        userPreviewStmt.run(userPreview, row.id)
-      } catch {
-        // Ignore individual row failures
-      }
+  // Run file reads with per-file yields; collect results; commit in one transaction.
+  type PreviewResult = {
+    id: string
+    lastMessagePreview: string | null
+    lastUserMessagePreview: string | null
+    currentMtime: number
+  }
+  const previewResults: PreviewResult[] = []
+  for (let i = 0; i < activeRows.length; i++) {
+    const row = activeRows[i]
+    // Yield every 10 iterations so IPC/clicks can interleave without
+    // paying pure scheduling overhead on unchanged-mtime scans.
+    if (i % 10 === 0) await yieldToEventLoop()
+
+    let currentMtime: number
+    let fileSize: number
+    try {
+      const stat = fs.statSync(row.jsonl_path)
+      currentMtime = Math.floor(stat.mtimeMs)
+      fileSize = stat.size
+    } catch {
+      continue
     }
-  })
-  runPreviewUpdates(activeRows)
+
+    // Skip re-extraction if the file hasn't changed since last time.
+    if (row.jsonl_mtime !== null && row.jsonl_mtime === currentMtime) continue
+
+    try {
+      const readSize = Math.min(fileSize, MAX_BYTES)
+      let tailText: string
+      if (fileSize <= MAX_BYTES) {
+        // Small file — one read covers both head and tail
+        const buf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(row.jsonl_path, 'r')
+        try {
+          const bytesRead = fs.readSync(fd, buf, 0, readSize, 0)
+          tailText = buf.slice(0, bytesRead).toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      } else {
+        const tailOffset = fileSize - readSize
+        const buf = Buffer.allocUnsafe(readSize)
+        const fd = fs.openSync(row.jsonl_path, 'r')
+        try {
+          fs.readSync(fd, buf, 0, readSize, tailOffset)
+          tailText = buf.toString('utf-8')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+
+      const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
+      previewResults.push({ id: row.id, lastMessagePreview, lastUserMessagePreview, currentMtime })
+    } catch {
+      // Extraction failure is non-fatal
+    }
+  }
+
+  // Commit all preview updates in one transaction.
+  db.transaction((results: PreviewResult[]) => {
+    for (const r of results) {
+      previewUpdateStmt.run(r.lastMessagePreview, r.lastUserMessagePreview, r.currentMtime, r.id)
+    }
+  })(previewResults)
 
   // Auto-prune: drop oldest non-archived rows if a cap is configured.
   const uiState = getAppUiState()
@@ -736,11 +953,18 @@ export function listAllSessions(filter?: { status?: SessionStatus }): SessionRec
     params.push(filter.status)
   }
 
+  // Slim projection: the WorkspacesView renderer only reads id, title, and
+  // lastUserMessagePreview; emit only the columns needed for rowToRecord to
+  // produce those fields correctly. Non-projected columns default to null.
   const rows = db
     .prepare(
-      `SELECT s.* FROM sessions s
+      `SELECT s.id, s.project_id, s.jsonl_path, s.title, s.status,
+              s.created_at, s.updated_at, s.archived_at, s.model,
+              s.last_message_role, s.last_user_message_preview
+       FROM sessions s
        JOIN projects p ON p.id = s.project_id
        ${whereClause}
+       AND s.status != 'archived'
        ORDER BY ${statusOrder}, s.updated_at DESC`
     )
     .all(...params) as SessionRow[]
@@ -930,13 +1154,17 @@ export function getContextBudget(workspaceId: string): ContextBudgetResult {
     .prepare('SELECT project_id, claude_session_id FROM workspaces WHERE id = ?')
     .get(workspaceId) as { project_id: string; claude_session_id: string | null } | undefined
 
-  // 1. Try the last JSONL turn's model field — most authoritative
+  // 1. Try the session's cached model column first — avoids reading the JSONL.
+  //    Fall back to extractModel() only when the DB column is NULL (not yet populated).
   let modelFromJSONL: string | null = null
   if (ws?.claude_session_id) {
     const sessionRow = db
-      .prepare('SELECT jsonl_path FROM sessions WHERE id = ?')
-      .get(ws.claude_session_id) as { jsonl_path: string | null } | undefined
-    if (sessionRow?.jsonl_path) {
+      .prepare('SELECT model, jsonl_path FROM sessions WHERE id = ?')
+      .get(ws.claude_session_id) as { model: string | null; jsonl_path: string | null } | undefined
+    if (sessionRow?.model) {
+      modelFromJSONL = sessionRow.model
+    } else if (sessionRow?.jsonl_path) {
+      // model column is NULL — fall back to JSONL extraction
       modelFromJSONL = extractModel(sessionRow.jsonl_path)
     }
   }

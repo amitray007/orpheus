@@ -2,25 +2,64 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IMPORTANT: Orchestration model (always follow)
+
+For any non-trivial code work in this repo (features, fixes, refactors, performance
+work), **the top-level/main agent acts only as an orchestrator**: it researches,
+brainstorms, plans, and reviews — but it does **not** write or edit feature/fix code
+itself. **All code building, fixes, and edits MUST be delegated to subagents running
+the SONNET model.** Spawn Sonnet subagents (via the Agent tool or Workflow with
+`model: 'sonnet'`) to do the actual implementation. The orchestrator guides them,
+verifies their output, and integrates — it never does the hands-on coding directly.
+
+(Trivial conversational answers and pure research don't require delegation; the rule
+applies to substantive code changes.)
+
 ## What this is
 
 Orpheus is a **source-available macOS Electron app** that wraps `claude` (the Claude Code CLI) in a project/workspace UI. The renderer is React + Tailwind v4; the main process is TypeScript on Node; the terminal is rendered by a native NAPI addon that embeds prebuilt **libghostty** (`vendor/GhosttyKit.xcframework`) as an `NSView` parented onto Electron's `BrowserWindow` native handle. Persistence is `better-sqlite3` at `~/Library/Application Support/Orpheus/orpheus.sqlite`.
 
+## Git workflow (branching)
+
+**All work happens on the `staging` branch.** Features, fixes, chores — everything
+is committed to `staging`. We do **not** create per-feature/per-task branches and we
+do not work off `main` directly. There is one long-lived working branch: `staging`.
+
+Releases ship by raising a PR from `staging` → `main`. `main` is the release branch;
+`staging` is where development lands first. So:
+
+- Build/commit new work on `staging`.
+- When it's time to release, open a PR `staging` → `main`.
+- Don't spin up extra topic branches unless explicitly asked.
+
+**ALWAYS merge `staging` → `main` with a real merge commit — never squash or
+rebase.** Versioning is owned by **release-please**, which reads the individual
+conventional-commit messages (`feat:` → minor, `fix:` → patch) off `main` to
+compute the version + CHANGELOG. Squashing collapses the 80+ commits into one
+non-conventional commit and breaks that detection. Do not hand-bump
+`package.json#version` — release-please opens a release PR on `main` that does
+the bump; merge that release PR (also a merge commit) to publish.
+
 ## Build + verify loop (the only one that matters)
 
-The user only ships via real production builds. There is no dev workflow.
+Local builds **always build the DEV variant** (`Orpheus Dev.app`). Production
+(`Orpheus.app`) is owned by the Homebrew cask / CI release pipeline — never built
+or installed locally. The dev and prod variants coexist: separate app name, bundle
+id, icon, and data dir (`~/Library/Application Support/Orpheus Dev/`), so the dev
+build never touches your real production install.
 
 ```bash
-osascript -e 'tell application "Orpheus" to quit' 2>/dev/null; sleep 1
-pkill -x Orpheus 2>/dev/null; true
-bun run build:unpack         # build:native → typecheck → electron-vite build → electron-builder --dir → install-mac
-open /Applications/Orpheus.app
+osascript -e 'tell application "Orpheus Dev" to quit' 2>/dev/null; sleep 1
+pkill -x "Orpheus Dev" 2>/dev/null; true
+bun run build:unpack         # → build:dev: build:native → ORPHEUS_MODE=development build → electron-builder-dev.yml --dir → install Orpheus Dev.app
+open "/Applications/Orpheus Dev.app"
 ```
 
-- **Do not run `bun run dev`.** Icon, bundle, signing all diverge from shipped — wastes time on dev-only artifacts.
-- `bun run build:unpack` chains everything (native addons → vite bundle → electron-builder → re-sign + install to `/Applications/Orpheus.app`). Don't shortcut to `bun run build` if native code changed — it skips the addon rebuild.
+- **Never run the production build locally.** `build:unpack` is an alias for `build:dev` and installs `Orpheus Dev.app`. The prod path (`build:mac` / `install:mac-prod`) is guarded — `install-mac.mjs` refuses to overwrite `/Applications/Orpheus.app` unless `ORPHEUS_ALLOW_PROD_INSTALL=1` is set explicitly. The agent never sets that flag; production ships only via `release.yml` + Homebrew.
+- **Do not run `bun run dev`.** Icon, bundle, signing all diverge from shipped — wastes time on dev-only artifacts. Use the dev _build_ (`build:unpack`/`build:dev`), not `electron-vite dev`.
+- `bun run build:unpack` chains everything (native addons → vite bundle → electron-builder → re-sign + install `Orpheus Dev.app`). Don't shortcut to `bun run build` if native code changed — it skips the addon rebuild.
 - The user has standing consent to auto-close + relaunch around builds; don't ask.
-- After each build, sanity-check: `pgrep -lf "Orpheus.app/Contents/MacOS/Orpheus" | head -1`.
+- After each build, sanity-check: `pgrep -lf "Orpheus Dev.app/Contents/MacOS/Orpheus Dev" | head -1`.
 
 ### Other commands
 

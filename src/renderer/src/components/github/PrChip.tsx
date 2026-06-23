@@ -102,12 +102,15 @@ export function PrChip({ pr, variant = 'chip', clickable = true }: PrChipProps):
         <StateIcon state={pr.state} size={11} />
       </span>
     ) : (
-      <span className="inline-flex items-center gap-1 text-sm font-mono" title={tooltip}>
+      <span
+        className="inline-flex items-center gap-1 text-xs font-mono px-1.5 py-0.5 rounded bg-surface-overlay/50 border border-border-default/40"
+        title={tooltip}
+      >
         <span className={`inline-flex items-center ${stateColor}`}>
-          <StateIcon state={pr.state} size={11} />
+          <StateIcon state={pr.state} size={12} />
         </span>
         <span className={`${stateColor}`}>#{pr.number}</span>
-        <CheckIcon checks={pr.checks} size={10} />
+        <CheckIcon checks={pr.checks} size={11} />
       </span>
     )
 

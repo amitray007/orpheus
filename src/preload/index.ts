@@ -45,7 +45,9 @@ import type {
   TerminalSendKeyDescriptor,
   FooterActionDescriptor,
   FooterActionDraft,
-  FooterActionScope
+  FooterActionScope,
+  GhosttyUserConfig,
+  DiagEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -81,8 +83,6 @@ const api = {
       ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
     destroy: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:destroy', { workspaceId }),
-    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
-      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
       ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
@@ -92,7 +92,44 @@ const api = {
     clearInput: (workspaceId: string): Promise<ActionResult> =>
       ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
     canInject: (workspaceId: string): Promise<boolean> =>
-      ipcRenderer.invoke('terminal:canInject', { workspaceId })
+      ipcRenderer.invoke('terminal:canInject', { workspaceId }),
+    onCanInjectChanged: (
+      cb: (e: { workspaceId: string; canInject: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; canInject: boolean }
+      ): void => cb(e)
+      ipcRenderer.on('terminal:canInjectChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
+    },
+    focus: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:focus', { workspaceId }),
+    getSurfacePhase: (workspaceId: string): Promise<string> =>
+      ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
+    onSleepStateChanged: (
+      cb: (data: { workspaceId: string; sleeping: boolean }) => void
+    ): (() => void) => {
+      const listener = (_e: unknown, data: { workspaceId: string; sleeping: boolean }): void =>
+        cb(data)
+      ipcRenderer.on('terminal:sleepStateChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:sleepStateChanged', listener)
+    },
+    onLiveness: (
+      cb: (data: {
+        workspaceId: string
+        inputTick: number
+        liveTick: number
+        occluded: boolean
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _e: unknown,
+        data: { workspaceId: string; inputTick: number; liveTick: number; occluded: boolean }
+      ): void => cb(data)
+      ipcRenderer.on('terminal:liveness', listener)
+      return () => ipcRenderer.removeListener('terminal:liveness', listener)
+    }
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
@@ -209,6 +246,26 @@ const api = {
       ipcRenderer.on('workspace:activityChanged', listener)
       return () => ipcRenderer.removeListener('workspace:activityChanged', listener)
     },
+    onActivityBatch: (
+      cb: (
+        updates: Array<{
+          workspaceId: string
+          status: WorkspaceStatus
+          detail: WorkspaceActivityDetail
+        }>
+      ) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        updates: Array<{
+          workspaceId: string
+          status: WorkspaceStatus
+          detail: WorkspaceActivityDetail
+        }>
+      ): void => cb(updates)
+      ipcRenderer.on('workspace:activityBatch', listener)
+      return () => ipcRenderer.removeListener('workspace:activityBatch', listener)
+    },
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
@@ -231,6 +288,23 @@ const api = {
       ): void => cb(e)
       ipcRenderer.on('workspaces:archived', listener)
       return () => ipcRenderer.removeListener('workspaces:archived', listener)
+    },
+    close: (
+      id: string
+    ): Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }> =>
+      ipcRenderer.invoke('workspace:close', { id }),
+    reopen: (id: string): Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }> =>
+      ipcRenderer.invoke('workspace:reopen', { id }),
+    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void => cb(e)
+      ipcRenderer.on('workspaces:changed', listener)
+      return () => ipcRenderer.removeListener('workspaces:changed', listener)
+    },
+    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, payload: { workspaceId: string | null }): void =>
+        cb(payload)
+      ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
+      return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
     }
   },
   pins: {
@@ -240,6 +314,11 @@ const api = {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
       ipcRenderer.invoke('claudeSettings:update', patch)
+  },
+  ghosttySettings: {
+    get: (): Promise<GhosttyUserConfig> => ipcRenderer.invoke('ghosttySettings:get'),
+    update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
+      ipcRenderer.invoke('ghosttySettings:update', patch)
   },
   claudeAuth: {
     get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),
@@ -294,11 +373,31 @@ const api = {
     count: (
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts })
+    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts }),
+    onStatusChanged: (
+      cb: (e: { workspaceId: string; status: GitStatus }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; status: GitStatus }
+      ): void => cb(e)
+      ipcRenderer.on('git:statusChanged', listener)
+      return () => ipcRenderer.removeListener('git:statusChanged', listener)
+    }
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
-      ipcRenderer.invoke('github:prForBranch', { cwd, branch })
+      ipcRenderer.invoke('github:prForBranch', { cwd, branch }),
+    onPrChanged: (
+      cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; pr: GhPullRequest | null }
+      ): void => cb(e)
+      ipcRenderer.on('github:prChanged', listener)
+      return () => ipcRenderer.removeListener('github:prChanged', listener)
+    }
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>
@@ -487,6 +586,15 @@ const api = {
     ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
 
     resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
+  },
+  diag: {
+    event: (evt: DiagEvent): void => {
+      try {
+        ipcRenderer.send('diag:event', evt)
+      } catch {
+        /* never throw */
+      }
+    }
   }
 }
 

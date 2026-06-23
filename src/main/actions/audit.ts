@@ -92,14 +92,16 @@ export function recordAudit(entry: Omit<ActionAuditEntry, 'id'>): void {
     entry.createdAt
   )
 
-  // Prune oldest beyond 500 per workspace — ring-buffer semantics
+  // Prune oldest beyond 500 per workspace — ring-buffer semantics.
+  // ORDER BY created_at DESC is covered by idx_action_audit_workspace_created
+  // (workspace_id, created_at DESC); id DESC would force a temp B-tree sort.
   db.prepare(
     `DELETE FROM action_audit_log
      WHERE workspace_id = ?
        AND id NOT IN (
          SELECT id FROM action_audit_log
          WHERE workspace_id = ?
-         ORDER BY id DESC
+         ORDER BY created_at DESC
          LIMIT 500
        )`
   ).run(entry.workspaceId, entry.workspaceId)
@@ -107,11 +109,12 @@ export function recordAudit(entry: Omit<ActionAuditEntry, 'id'>): void {
 
 export function getAuditHistory(workspaceId: string, limit: number = 50): ActionAuditEntry[] {
   const db = getDb()
+  // ORDER BY created_at DESC uses the (workspace_id, created_at DESC) covering index.
   const rows = db
     .prepare(
       `SELECT * FROM action_audit_log
        WHERE workspace_id = ?
-       ORDER BY id DESC
+       ORDER BY created_at DESC
        LIMIT ?`
     )
     .all(workspaceId, limit) as AuditRow[]

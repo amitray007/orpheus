@@ -12,25 +12,28 @@
 // Persistence model:
 //   Each workspace owns exactly one GhosttySurfaceEntry keyed by workspace.id.
 //   mount()   — creates on first call; re-attaches on subsequent calls.
-//   hide()    — removeFromSuperview + occlusion + stop CVDisplayLink; keeps entry alive.
+//   hide()    — removeFromSuperview + occlusion; keeps entry alive.
 //   destroy() — full teardown; removes from map.
 //   Orpheus quit → process exit GCs everything naturally.
 //
 // Threading model:
 //   • NAPI handlers run on the main thread — all ghostty_* calls here are safe.
-//   • CVDisplayLink fires its callback on a private thread.  The callback
-//     dispatches ghostty_surface_draw back to the main queue so Metal/AppKit
-//     keep running on the same thread that created the surface.
+//   • ghostty's Metal renderer owns its own internal CVDisplayLink (created in
+//     renderer/generic.zig:loopEnter) that fires on a private renderer thread,
+//     notifying renderer.Thread's draw_now async → drawFrame(true).  This drives
+//     all continuous rendering autonomously at vsync.  We do NOT need a second
+//     host-side CVDisplayLink.  ghostty_surface_draw is called only for one-shot
+//     events where an immediate sync draw is required (mount, resize).
 
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
-#import <CoreVideo/CoreVideo.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <string>
 #include <map>
 #include <atomic>
+#include <cinttypes>
 #include <unistd.h>
 
 // GhosttyKit C API
@@ -94,7 +97,58 @@
 // can distinguish IME-committed text (outside keyDown:) from plain ASCII input
 // that ghostty_surface_key already handled via the .text field.
 @property (nonatomic, assign) BOOL inKeyDown;
+@property (nonatomic, copy) NSString* workspaceId;
 @end
+
+// Declared here (before @implementation OrpheusGhosttyView) so handleOcclusionChange:
+// can reference them. Mirrored from the title TSFN pattern further below.
+static Napi::ThreadSafeFunction g_occlusionTSFN;
+static bool g_occlusionTSFNActive = false;
+
+// Liveness-tick globals — declared before the class so keyDown:, mouseDown:,
+// and handleOcclusionChange: can reference them.
+static std::atomic<uint64_t> g_inputTick{0};
+static std::atomic<uint64_t> g_liveTick{0};
+static bool g_livenessTSFNActive = false;
+static std::atomic<uint64_t> g_lastLivenessPushMs{0};
+static std::atomic<uint64_t> g_lastTitlePushMs{0};
+// orpheusPushLiveness defined after @end (needs g_livenessTSFN which is post-class)
+static void orpheusPushLiveness(const std::string& workspaceId, bool occluded);
+
+// ---------------------------------------------------------------------------
+// GhosttySurfaceEntry + g_surfaces
+// ---------------------------------------------------------------------------
+// Declared here (before @implementation OrpheusGhosttyView) so keyDown:,
+// mouseDown:, and handleOcclusionChange: can read/bump the per-workspace
+// liveness ticks stored on each entry.
+
+// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusLoadingOverlayView;
+
+struct GhosttySurfaceEntry {
+    ghostty_surface_t surface;
+    OrpheusGhosttyView* __strong view;
+    BOOL isAttached;              // YES = view is in contentView superview
+    CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
+    CGFloat lastScale;
+    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
+    uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
+    uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
+    bool desiredVisible{false};  // true when this workspace should be shown+focused
+    uint64_t generation{0}; // bumped on each create; deferred free compares against this
+};
+
+// workspaceId → entry
+static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+
+// The workspace that should currently be visible+focused. At most one at a time
+// (single-BrowserWindow invariant — Orpheus runs one window).
+static std::string g_visibleWorkspaceId;
+
+// Forward declarations for reconcileSurface / setVisibleWorkspace so
+// handleOcclusionChange: (inside @implementation) can call them.
+static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
+static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake);
 
 @implementation OrpheusGhosttyView
 
@@ -107,18 +161,31 @@
     return YES;
 }
 
-- (BOOL)isOpaque {
-    // libghostty installs an IOSurfaceLayer that fully paints the view's
-    // frame. Returning YES lets AppKit's display machinery skip drawing
-    // anything below us in the region we occupy — meaningful win when we
-    // sit on top of the WebContents (the default fast path) because the
-    // OS compositor can cull the alpha-blend pass for this rect entirely.
-    return YES;
-}
-
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
+
+// Chromium-sanctioned hit-test bypass. RenderWidgetHostViewCocoa's
+// -shouldIgnoreMouseEvent: walks up the AppKit superview chain at the click
+// location looking for any view that responds to -nonWebContentView. When it
+// finds one (us), it forwards the event to the standard responder chain
+// instead of routing into Blink. Result: mouse events in the terminal region
+// land on our keyDown:/mouseDown:/... handlers even though the WebContents
+// NSView is z-ordered above us. No method swizzling required.
+//
+// Source: content/app_shim_remote_cocoa/render_widget_host_view_cocoa.mm
+// (the same hook AppKit sheets and Chromium autofill popovers rely on).
+- (BOOL)nonWebContentView {
+    return YES;
+}
+
+// NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
+// AppKit picks the WebContents as the drag destination for file URLs
+// (it registers for HTML5 file drag at the Chromium layer). The
+// drag-forwarding swizzles in the #if 0 block below would fix this but
+// are disabled pending on-device verification. If file-drop-to-terminal
+// is broken, enable those swizzles (omitting the hitTest swizzle since
+// nonWebContentView handles mouse routing).
 
 // ---------------------------------------------------------------------------
 // Modifier flag → Ghostty mods bitmask
@@ -229,7 +296,7 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
     if (chars.length == 1) {
         unichar c = [chars characterAtIndex:0];
-        if (c < 0x20) return nil;               // control char
+        if (c < 0x20 || c == 0x7f) return nil;  // C0 control char or DEL (0x7f) — libghostty encodes these from the keycode
         if (c >= 0xF700 && c <= 0xF8FF) return nil; // PUA (function keys etc.)
     }
 
@@ -237,12 +304,20 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 }
 
 // ---------------------------------------------------------------------------
-// performKeyEquivalent: — intercept Cmd+C / Cmd+V / Cmd+X (and the upper-case
-// versions when Shift is held) BEFORE Electron's default Edit menu binds them.
-// Without this, the macOS app-menu Copy/Paste/Cut accelerators eat the event
-// and the terminal never gets a chance to handle it (so libghostty's
-// super+c/v/x bindings, which invoke read_clipboard_cb / write_clipboard_cb,
-// never trigger). Returning YES tells AppKit we consumed the event.
+// performKeyEquivalent: — intercept specific key combos before the macOS app
+// menu or OS consumes them.
+//
+// Handled cases:
+//   • Cmd+C / Cmd+V / Cmd+X (+ Shift variants) — clipboard triad; forwarded
+//     to keyDown: before the Edit menu binds them.
+//   • Control+Return — pass through verbatim; macOS would otherwise trigger
+//     the default context menu action. Ref: SurfaceView_AppKit.swift ~1280-1287.
+//   • Control+/ — remap to Control+_ to avoid the macOS system beep.
+//     Ref: SurfaceView_AppKit.swift ~1289-1297.
+//
+// Synthetic events (timestamp == 0) are silently ignored in the default path
+// to avoid double-encoding synthetic keys (e.g. the "escape" AppKit generates
+// for Cmd+Period → cancel:). Ref: SurfaceView_AppKit.swift ~1300-1310.
 // ---------------------------------------------------------------------------
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     if (!self.surface) return NO;
@@ -250,16 +325,67 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     if (!win || [win firstResponder] != self) return NO;
 
     NSEventModifierFlags mods = event.modifierFlags;
-    if (!(mods & NSEventModifierFlagCommand)) return NO;
+    NSString* charsIgn = event.charactersIgnoringModifiers;
+    if (charsIgn.length != 1) return NO;
+    unichar c = [charsIgn characterAtIndex:0];
 
-    NSString* chars = event.charactersIgnoringModifiers;
-    if (chars.length != 1) return NO;
-    unichar c = [chars characterAtIndex:0];
-    // Only intercept the clipboard triad; leave Cmd+Q/W/A/Z/etc. for the OS.
-    if (c == 'c' || c == 'C' || c == 'v' || c == 'V' || c == 'x' || c == 'X') {
+    // --- Control+Return: pass through so macOS menu doesn't swallow it ---
+    if (c == '\r' && (mods & NSEventModifierFlagControl)) {
+        // Build a synthetic key event with characters = "\r" (same as the
+        // reference) so that ghostty's key encoder receives the correct text.
+        // We reuse the event directly — it already carries \r as the keycode.
         [self keyDown:event];
         return YES;
     }
+
+    // --- Control+/ → remap to Control+_ (avoids macOS system beep) ---
+    if (c == '/' &&
+        (mods & NSEventModifierFlagControl) &&
+        !(mods & (NSEventModifierFlagShift | NSEventModifierFlagCommand | NSEventModifierFlagOption))) {
+
+        // Synthesise an event identical to the original but with characters = "_".
+        // This matches what the Swift reference does (SurfaceView_AppKit.swift ~1297-1351).
+        NSEvent* remapped = [NSEvent keyEventWithType:event.type
+                                             location:event.locationInWindow
+                                        modifierFlags:event.modifierFlags
+                                            timestamp:event.timestamp
+                                         windowNumber:event.windowNumber
+                                              context:nil
+                                           characters:@"_"
+                          charactersIgnoringModifiers:@"_"
+                                            isARepeat:event.isARepeat
+                                              keyCode:event.keyCode];
+        if (remapped) {
+            [self keyDown:remapped];
+        } else {
+            [self keyDown:event];
+        }
+        return YES;
+    }
+
+    // --- Cmd+C / Cmd+V / Cmd+X (clipboard triad) ---
+    if (mods & NSEventModifierFlagCommand) {
+        if (c == 'v' || c == 'V') {
+            // Image on the clipboard? Write a temp PNG and inject its path
+            // so claude receives it as an image attachment. Falls through to
+            // normal text paste when the clipboard holds text or a file URL.
+            if ([self tryPasteClipboardImage]) {
+                return YES;
+            }
+            [self keyDown:event];
+            return YES;
+        }
+        if (c == 'c' || c == 'C' || c == 'x' || c == 'X') {
+            [self keyDown:event];
+            return YES;
+        }
+    }
+
+    // --- Synthetic event filter (zero timestamp) ---
+    // AppKit synthesises events with timestamp == 0 (e.g. after cancel:).
+    // Skip them to avoid double-encoding. Ref: SurfaceView_AppKit.swift ~1300-1310.
+    if (event.timestamp == 0) return NO;
+
     return NO;
 }
 
@@ -270,19 +396,94 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 // ---------------------------------------------------------------------------
 
 - (void)keyDown:(NSEvent *)event {
+    g_inputTick.fetch_add(1, std::memory_order_relaxed);
+    if (self.workspaceId) {
+        std::string wsId = [self.workspaceId UTF8String];
+        auto it = g_surfaces.find(wsId);
+        if (it != g_surfaces.end()) {
+            it->second.inputTick++;
+        }
+        orpheusPushLiveness(wsId, self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    }
     if (!self.surface) {
         [self interpretKeyEvents:@[event]];
         return;
     }
+    // Re-assert ghostty focus on every keystroke so a focus-steal from a DOM
+    // overlay doesn't stall the render loop — ghostty deduplicates set_focus(true)
+    // when already focused so this is a cheap no-op in the normal case.
+    ghostty_surface_set_focus(self.surface, true);
 
     ghostty_input_action_e action = event.isARepeat
         ? GHOSTTY_ACTION_REPEAT
         : GHOSTTY_ACTION_PRESS;
 
+    // Translate modifiers through ghostty's macos-option-as-alt logic.
+    // ghostty_surface_key_translation_mods maps raw AppKit mods to the
+    // mods ghostty wants to see — e.g. when option-as-alt is active,
+    // NSEventModifierFlagOption is remapped to Alt so that Option+Delete
+    // emits ESC DEL (backward-kill-word) instead of the composed glyph ∂.
+    // This mirrors the pattern in Ghostty's SurfaceView_AppKit.swift keyDown:.
+    ghostty_input_mods_e rawMods   = modsFromEvent(event);
+    ghostty_input_mods_e transMods = ghostty_surface_key_translation_mods(self.surface, rawMods);
+
+    // Build translated NSEventModifierFlags: start from the original event flags
+    // (preserves "hidden" bits used by dead-key / IME machinery) then force only
+    // the 4 standard modifier flags on/off to match what transMods says.
+    NSEventModifierFlags translationFlags = event.modifierFlags;
+    // Shift
+    if (transMods & GHOSTTY_MODS_SHIFT)
+        translationFlags |=  NSEventModifierFlagShift;
+    else
+        translationFlags &= ~NSEventModifierFlagShift;
+    // Control
+    if (transMods & GHOSTTY_MODS_CTRL)
+        translationFlags |=  NSEventModifierFlagControl;
+    else
+        translationFlags &= ~NSEventModifierFlagControl;
+    // Option / Alt
+    if (transMods & GHOSTTY_MODS_ALT)
+        translationFlags |=  NSEventModifierFlagOption;
+    else
+        translationFlags &= ~NSEventModifierFlagOption;
+    // Command / Super
+    if (transMods & GHOSTTY_MODS_SUPER)
+        translationFlags |=  NSEventModifierFlagCommand;
+    else
+        translationFlags &= ~NSEventModifierFlagCommand;
+
+    // Build the translation event.  If the flags are unchanged we reuse the
+    // original event object — important for IME correctness (object identity
+    // is used by some input methods).  Otherwise synthesise a new NSEvent with
+    // translated flags and recomputed characters so the text field reflects the
+    // translated modifiers (e.g. ESC DEL instead of ∂ for Option+Delete).
+    NSEvent *translationEvent = event;
+    if (translationFlags != event.modifierFlags) {
+        NSString *translatedChars = [event charactersByApplyingModifiers:translationFlags];
+        NSEvent *synth = [NSEvent keyEventWithType:event.type
+                                         location:event.locationInWindow
+                                    modifierFlags:translationFlags
+                                        timestamp:event.timestamp
+                                     windowNumber:event.windowNumber
+                                          context:nil
+                                       characters:translatedChars ?: @""
+                      charactersIgnoringModifiers:event.charactersIgnoringModifiers ?: @""
+                                        isARepeat:event.isARepeat
+                                          keyCode:event.keyCode];
+        if (synth) translationEvent = synth;
+    }
+
     ghostty_input_key_s key_ev = {};
     key_ev.action          = action;
-    key_ev.mods            = modsFromEvent(event);
-    key_ev.consumed_mods   = (ghostty_input_mods_e)(key_ev.mods &
+    // key_ev.mods must carry the ORIGINAL (untranslated) mods so the Alt bit
+    // survives to the key encoder — that's what triggers the ESC-prefix for
+    // Option+key (e.g. Option+Delete → ESC DEL → backward-kill-word). The
+    // translation mods (transMods) deliberately STRIP Alt for text composition
+    // and must NOT be sent here. See vendor/ghostty/src/apprt/embedded.zig:
+    // "The filtered mods should be used for key translation but should NOT be
+    // sent back via the _key function -- the original mods should be used."
+    key_ev.mods            = rawMods;
+    key_ev.consumed_mods   = (ghostty_input_mods_e)(transMods &
                                 ~(GHOSTTY_MODS_CTRL | GHOSTTY_MODS_SUPER));
     key_ev.keycode         = (uint32_t)event.keyCode; // raw macOS vkey
     key_ev.composing       = false;
@@ -290,6 +491,7 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     key_ev.text            = nullptr;
 
     // Compute unshifted codepoint (codepoint with no modifiers applied).
+    // This is modifier-independent so we always derive it from the original event.
     NSString *bare = [event charactersByApplyingModifiers:0];
     if (bare && bare.length > 0) {
         NSUInteger cp = [bare characterAtIndex:0];
@@ -298,8 +500,11 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
         }
     }
 
-    // Include text only for non-control, non-PUA characters.
-    NSString *textStr = ghosttyTextForEvent(event);
+    // Derive text from the translation event so the composed glyph (e.g. ∂)
+    // is suppressed when option-as-alt is active and the translated characters
+    // are used instead (e.g. the bare delete character for Option+Delete).
+    NSString *textStr = ghosttyTextForEvent(translationEvent);
+
     if (textStr) {
         const char *cstr = [textStr UTF8String];
         if (cstr) {
@@ -314,11 +519,11 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
     }
 
     // Run the AppKit input manager so IME / dead keys / NSTextInputClient fire.
-    // We set inKeyDown = YES so that insertText:replacementRange: knows the text
-    // is already handled via ghostty_surface_key (.text field) and should not
-    // double-send via ghostty_surface_text.
+    // Pass translationEvent (not event) so IME sees the translated modifiers —
+    // matches the Swift reference which calls interpretKeyEvents with translationEvent.
+    // inKeyDown = YES prevents insertText:replacementRange: from double-sending.
     self.inKeyDown = YES;
-    [self interpretKeyEvents:@[event]];
+    [self interpretKeyEvents:@[translationEvent]];
     self.inKeyDown = NO;
 }
 
@@ -329,13 +534,85 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 - (void)keyUp:(NSEvent *)event {
     if (!self.surface) return;
 
+    // Mirror keyDown: mods-translation so press/release modifier state is consistent
+    // (fixes key-tracking confusion with macos-option-as-alt enabled).
+    // Ref: SurfaceView_AppKit.swift ghosttyKeyEvent().
+    ghostty_input_mods_e rawMods   = modsFromEvent(event);
+    ghostty_input_mods_e transMods = ghostty_surface_key_translation_mods(self.surface, rawMods);
+
     ghostty_input_key_s key_ev = {};
     key_ev.action        = GHOSTTY_ACTION_RELEASE;
-    key_ev.mods          = modsFromEvent(event);
-    key_ev.consumed_mods = (ghostty_input_mods_e)0;
+    key_ev.mods          = rawMods;
+    key_ev.consumed_mods = (ghostty_input_mods_e)(transMods & ~(GHOSTTY_MODS_CTRL | GHOSTTY_MODS_SUPER));
     key_ev.keycode       = (uint32_t)event.keyCode;
     key_ev.composing     = false;
     key_ev.text          = nullptr;
+    key_ev.unshifted_codepoint = 0;
+
+    ghostty_surface_key(self.surface, key_ev);
+}
+
+// ---------------------------------------------------------------------------
+// flagsChanged: — forward modifier-only press/release to libghostty.
+// Without this, TUI apps that track bare modifier state (vim, emacs etc.)
+// never see Shift/Ctrl/Opt/Cmd/Caps pressed or released alone.
+// Ref: SurfaceView_AppKit.swift flagsChanged(with:) ~1355-1400.
+// ---------------------------------------------------------------------------
+- (void)flagsChanged:(NSEvent *)event {
+    if (!self.surface) return;
+
+    // Determine which modifier key changed based on keyCode.
+    // Key codes (standard US layout, hardware-independent):
+    //   0x39 = CapsLock, 0x38 = L-Shift, 0x3C = R-Shift,
+    //   0x3B = L-Ctrl,   0x3E = R-Ctrl,   0x3A = L-Option, 0x3D = R-Option,
+    //   0x37 = L-Cmd,    0x36 = R-Cmd
+    uint32_t mod;
+    switch (event.keyCode) {
+        case 0x39: mod = GHOSTTY_MODS_CAPS;  break;
+        case 0x38: /* fall through */
+        case 0x3C: mod = GHOSTTY_MODS_SHIFT; break;
+        case 0x3B: /* fall through */
+        case 0x3E: mod = GHOSTTY_MODS_CTRL;  break;
+        case 0x3A: /* fall through */
+        case 0x3D: mod = GHOSTTY_MODS_ALT;   break;
+        case 0x37: /* fall through */
+        case 0x36: mod = GHOSTTY_MODS_SUPER; break;
+        default:   return; // Unknown modifier key — ignore.
+    }
+
+    // Compute the current mods bitmask from the event's modifierFlags.
+    ghostty_input_mods_e mods = modsFromEvent(event);
+
+    // Determine press vs release:
+    // If the relevant bit is set in the current mods, the key was pressed.
+    // For right-side keys, additionally verify the correct side's raw bit
+    // is set — if not, the opposite side is still held and this is a release.
+    // Ref: SurfaceView_AppKit.swift flagsChanged ~1374-1397.
+    ghostty_input_action_e action = GHOSTTY_ACTION_RELEASE;
+    if ((uint32_t)mods & mod) {
+        // The modifier family is active. Check right-side keys to ensure
+        // the correct physical key (not the opposite side) caused the event.
+        bool sidePressed = true;
+        NSUInteger rawFlags = (NSUInteger)event.modifierFlags;
+        switch (event.keyCode) {
+            case 0x3C: sidePressed = (rawFlags & NX_DEVICERSHIFTKEYMASK) != 0; break;
+            case 0x3E: sidePressed = (rawFlags & NX_DEVICERCTLKEYMASK)   != 0; break;
+            case 0x3D: sidePressed = (rawFlags & NX_DEVICERALTKEYMASK)   != 0; break;
+            case 0x36: sidePressed = (rawFlags & NX_DEVICERCMDKEYMASK)   != 0; break;
+            default:   sidePressed = true; break;
+        }
+        if (sidePressed) {
+            action = GHOSTTY_ACTION_PRESS;
+        }
+    }
+
+    ghostty_input_key_s key_ev = {};
+    key_ev.action          = action;
+    key_ev.mods            = mods;
+    key_ev.consumed_mods   = (ghostty_input_mods_e)0;
+    key_ev.keycode         = (uint32_t)event.keyCode;
+    key_ev.composing       = false;
+    key_ev.text            = nullptr;
     key_ev.unshifted_codepoint = 0;
 
     ghostty_surface_key(self.surface, key_ev);
@@ -383,7 +660,19 @@ static NSString *ghosttyTextForEvent(NSEvent *event) {
 
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
+    g_inputTick.fetch_add(1, std::memory_order_relaxed);
+    if (self.workspaceId) {
+        std::string wsId = [self.workspaceId UTF8String];
+        auto it = g_surfaces.find(wsId);
+        if (it != g_surfaces.end()) {
+            it->second.inputTick++;
+        }
+        orpheusPushLiveness(wsId, self.window ? (([self.window occlusionState] & NSWindowOcclusionStateVisible) == 0) : false);
+    }
     if (!self.surface) return;
+    // A DOM overlay (e.g. sidebar hover card) may have stolen first-responder;
+    // re-establish libghostty focus so keyboard input reaches the terminal.
+    ghostty_surface_set_focus(self.surface, true);
 
     GhosttyMousePos pos = ghosttyPosForEvent(event, self);
     ghostty_surface_mouse_pos(self.surface, pos.x, pos.y, modsFromEvent(event));
@@ -541,6 +830,9 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     if (!self.surface) return;
+    // Guard: skip text injection if there is no current AppKit event — this can
+    // happen via scripting or other non-event paths. Ref: SurfaceView_AppKit.swift ~1960.
+    if (!NSApp.currentEvent) return;
 
     // If we are inside keyDown:, ghostty_surface_key already forwarded the text
     // via the .text field on the key event struct.  Sending it again via
@@ -625,6 +917,59 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     return YES;
 }
 
+// Returns YES if the general pasteboard held an image that we wrote to a temp
+// PNG and injected as a quoted path; NO if there was no pasteable image (caller
+// should fall through to normal text paste).
+- (BOOL)tryPasteClipboardImage {
+    if (!self.surface) return NO;
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+
+    // Check for image data FIRST. macOS screenshots (and clipboard managers
+    // like Raycast) carry BOTH a public.tiff image flavor AND a public.file-url
+    // flavor, so a file-URL-first guard would wrongly skip a real image. We only
+    // treat the clipboard as a plain file/text paste when there is NO usable
+    // image flavor present.
+    NSArray<NSString*>* types = pb.types;
+    BOOL hasImageData = [types containsObject:NSPasteboardTypePNG]
+                     || [types containsObject:NSPasteboardTypeTIFF];
+    if (!hasImageData) return NO;
+
+    // Read PNG bytes directly, or normalise TIFF→PNG.
+    NSData* pngData = nil;
+    if ([types containsObject:NSPasteboardTypePNG]) {
+        pngData = [pb dataForType:NSPasteboardTypePNG];
+    }
+    if (!pngData) {
+        NSData* tiff = [pb dataForType:NSPasteboardTypeTIFF];
+        if (tiff) {
+            NSBitmapImageRep* rep = [NSBitmapImageRep imageRepWithData:tiff];
+            pngData = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        }
+    }
+    if (!pngData || pngData.length == 0) return NO;
+
+    // Write to a temp file: <NSTemporaryDirectory()>/orpheus-paste-<ms>.png
+    NSString* dir = NSTemporaryDirectory();
+    NSString* name = [NSString stringWithFormat:@"orpheus-paste-%.0f.png",
+                      [[NSDate date] timeIntervalSince1970] * 1000.0];
+    NSString* path = [dir stringByAppendingPathComponent:name];
+    if (![pngData writeToFile:path atomically:YES]) return NO;
+
+    // Quote the path (mirror performDragOperation: quoting logic).
+    NSString* out = path;
+    NSCharacterSet* needsQuote = [NSCharacterSet characterSetWithCharactersInString:
+                                  @" \t\"'$`\\(){}[]&|;<>*?#"];
+    if ([path rangeOfCharacterFromSet:needsQuote].location != NSNotFound) {
+        NSString* escaped = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\"'\"'"];
+        out = [NSString stringWithFormat:@"'%@'", escaped];
+    }
+    const char* utf8 = [out UTF8String];
+    if (!utf8) return NO;
+    ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
+    NSLog(@"[ghostty-native] pasted clipboard image -> %@", path);
+    return YES;
+}
+
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
     if (!self.surface) return NO;
     NSPasteboard* pb = sender.draggingPasteboard;
@@ -657,27 +1002,76 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     return YES;
 }
 
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    // Remove old observer first (handles move-to-nil + window swap cases)
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSWindowDidChangeOcclusionStateNotification
+                                                  object:nil];
+    if (self.window) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleOcclusionChange:)
+                                                     name:NSWindowDidChangeOcclusionStateNotification
+                                                   object:self.window];
+    }
+}
+
+- (void)handleOcclusionChange:(NSNotification*)note {
+    if (!g_occlusionTSFNActive) return;
+    if (!self.workspaceId) return;
+
+    BOOL occluded = !(self.window.occlusionState & NSWindowOcclusionStateVisible);
+
+    if (!occluded) {
+        // Window came to foreground: re-assert focus via reconciler.
+        if (self.surface) {
+            std::string wsId = [self.workspaceId UTF8String];
+            if (wsId == g_visibleWorkspaceId) {
+                auto wit = g_surfaces.find(wsId);
+                if (wit != g_surfaces.end()) {
+                    wit->second.liveTick++;
+                    orpheusPushLiveness(wsId, false);
+                    wit->second.desiredVisible = true;
+                    // reconcileSurface with nil contentView is safe here because
+                    // the surface is already attached (isAttached=YES); the nil
+                    // contentView path is only taken for re-attach (isAttached=NO).
+                    reconcileSurface(wsId, nil, true);
+                }
+            }
+        }
+    } else {
+        // Window went to background: mark occluded (stops render link)
+        if (self.surface) {
+            ghostty_surface_set_occlusion(self.surface, false);
+        }
+    }
+
+    // Fire callback to JS
+    std::string wsId = [self.workspaceId UTF8String];
+    bool isOccluded = (bool)occluded;
+    auto* occData = new std::pair<std::string, bool>(wsId, isOccluded);
+    napi_status occSt = g_occlusionTSFN.NonBlockingCall(
+        occData,
+        [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, bool>* data) {
+            jsCb.Call({
+                Napi::String::New(env, data->first),
+                Napi::Boolean::New(env, data->second)
+            });
+            delete data;
+        }
+    );
+    if (occSt != napi_ok) { delete occData; }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
 @end
 
-// ---------------------------------------------------------------------------
-// GhosttySurfaceEntry + g_surfaces
-// ---------------------------------------------------------------------------
-
-// Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
-@class OrpheusLoadingOverlayView;
-
-struct GhosttySurfaceEntry {
-    ghostty_surface_t surface;
-    OrpheusGhosttyView* __strong view;
-    CVDisplayLinkRef displayLink;
-    BOOL isAttached;              // YES = view is in contentView superview, displayLink running
-    CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
-    CGFloat lastScale;
-    OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
-};
-
-// workspaceId → entry
-static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
+// GhosttySurfaceEntry + g_surfaces are declared above @implementation
+// OrpheusGhosttyView (search "GhosttySurfaceEntry + g_surfaces") so the view's
+// input/occlusion handlers can bump the per-workspace liveness ticks.
 
 #if 0
 // ---------------------------------------------------------------------------
@@ -946,6 +1340,21 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
 // instead of the O(n) linear scan over g_surfaces.
 static std::map<ghostty_surface_t, std::string> g_surfaceToWorkspaceId;
 
+// Per-workspaceId freeing registry.
+//
+// g_freeingGeneration[workspaceId] = gen means a deferred ghostty_surface_free
+// for that workspace was scheduled with generation `gen` and has not yet
+// completed. A new Mount (create) bumps g_currentGeneration and proceeds
+// immediately; when the old block finally runs it finds gen < current and
+// knows it must only free its own captured handle (heap->surface) — which
+// it already does, since Destroy moved the old entry OUT of g_surfaces before
+// scheduling the block. The generation makes the isolation explicit and
+// detectable in logs.
+//
+// All access is main-thread-only (same as g_surfaces), so no locks needed.
+static std::map<std::string, uint64_t> g_freeingGeneration; // workspaceId -> gen at schedule time
+static std::map<std::string, uint64_t> g_currentGeneration; // workspaceId -> latest generation
+
 // Forward-declare the loading action TSFN so OrpheusLoadingActionTarget can
 // reference it before the full TSFN block further down the file.
 static Napi::ThreadSafeFunction g_loadingActionTSFN;
@@ -1032,7 +1441,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
     if (!g_loadingActionTSFNActive) return;
     std::string wsIdCpp = wsId.UTF8String;
-    g_loadingActionTSFN.BlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
+    g_loadingActionTSFN.NonBlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
         cb.Call({ Napi::String::New(env, wsIdCpp) });
     });
 }
@@ -1327,11 +1736,42 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 
 static Napi::ThreadSafeFunction g_titleTSFN;
 static bool g_titleTSFNActive = false;
+static Napi::ThreadSafeFunction g_livenessTSFN;
 
 // Diagnostic: when set, every action_cb invocation forwards its tag value
 // (integer) to JS. Used to debug the title flow.
 static Napi::ThreadSafeFunction g_actionTraceTSFN;
 static bool g_actionTraceTSFNActive = false;
+
+// Push {workspaceId, inputTick, liveTick, occluded} to JS, throttled to ~4Hz.
+// The renderer watchdog needs only coarse liveness. Call from MAIN-THREAD sites only.
+static void orpheusPushLiveness(const std::string& workspaceId, bool occluded) {
+    if (!g_livenessTSFNActive) return;
+    uint64_t nowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+    uint64_t last = g_lastLivenessPushMs.load(std::memory_order_relaxed);
+    if (nowMs - last < 250) return;
+    g_lastLivenessPushMs.store(nowMs, std::memory_order_relaxed);
+    // Read per-entry ticks
+    auto it = g_surfaces.find(workspaceId);
+    uint64_t inT = 0, liveT = 0;
+    if (it != g_surfaces.end()) {
+        inT   = it->second.inputTick;
+        liveT = it->second.liveTick;
+    }
+    auto* data = new std::tuple<std::string, uint64_t, uint64_t, bool>(workspaceId, inT, liveT, occluded);
+    napi_status st = g_livenessTSFN.NonBlockingCall(
+        data,
+        [](Napi::Env env, Napi::Function cb, std::tuple<std::string, uint64_t, uint64_t, bool>* d) {
+            cb.Call({
+                Napi::String::New(env, std::get<0>(*d)),
+                Napi::Number::New(env, (double)std::get<1>(*d)),
+                Napi::Number::New(env, (double)std::get<2>(*d)),
+                Napi::Boolean::New(env, std::get<3>(*d))
+            });
+            delete d;
+        });
+    if (st != napi_ok) { delete data; }
+}
 
 static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -1347,10 +1787,31 @@ static Napi::Value SetTitleCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-title-callback",
-        0,   // unlimited queue
+        64,  // bounded queue
         1    // single thread
     );
     g_titleTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetOcclusionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setOcclusionCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_occlusionTSFNActive) {
+        g_occlusionTSFN.Release();
+        g_occlusionTSFNActive = false;
+    }
+    g_occlusionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-occlusion-callback",
+        64,  // bounded queue
+        1    // single thread
+    );
+    g_occlusionTSFNActive = true;
     return env.Undefined();
 }
 
@@ -1368,10 +1829,28 @@ static Napi::Value SetActionTraceCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-action-trace-callback",
-        0,
+        64,
         1
     );
     g_actionTraceTSFNActive = true;
+    return env.Undefined();
+}
+
+static Napi::Value SetLivenessCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setLivenessCallback requires a function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (g_livenessTSFNActive) { g_livenessTSFN.Release(); g_livenessTSFNActive = false; }
+    g_livenessTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "OrpheusLivenessTSFN",
+        64,
+        1
+    );
+    g_livenessTSFNActive = true;
     return env.Undefined();
 }
 
@@ -1389,7 +1868,7 @@ static Napi::Value SetLoadingActionCallback(const Napi::CallbackInfo& info) {
         env,
         info[0].As<Napi::Function>(),
         "ghostty-loading-action-callback",
-        0,
+        64,
         1
     );
     g_loadingActionTSFNActive = true;
@@ -1461,6 +1940,14 @@ static std::atomic<bool> g_inited;
 static uv_async_t g_tickAsync;
 static std::atomic<bool> g_tickAsyncInited{false};
 
+// Safety-net damage flag. Set (from wakeup_cb on Ghostty's IO thread) whenever
+// Ghostty has IO activity that should produce a frame. Drained by a 10Hz
+// NSTimer on the main thread that issues one ghostty_surface_draw per attached
+// surface when the flag is set. Guarantees any damage presents within 100ms
+// even if the internal display link misses it (e.g. right after a re-attach).
+// At true idle the flag stays 0 → zero GPU work.
+static std::atomic<uint32_t> g_damageFlag{0};
+
 static void tick_async_cb(uv_async_t* /*handle*/) {
     if (g_inited.load(std::memory_order_acquire) && g_app) {
         ghostty_app_tick(g_app);
@@ -1469,7 +1956,10 @@ static void tick_async_cb(uv_async_t* /*handle*/) {
 
 static void wakeup_cb(void* /*userdata*/) {
     // Called from Ghostty's IO thread — do not call ghostty_* here.
-    // Marshal to the JS main thread, which will call ghostty_app_tick().
+    // Set the damage flag so the main-thread safety timer can issue a draw;
+    // then marshal to the JS main thread to call ghostty_app_tick().
+    g_liveTick.fetch_add(1, std::memory_order_relaxed);
+    g_damageFlag.store(1, std::memory_order_release);
     if (g_tickAsyncInited.load(std::memory_order_acquire)) {
         uv_async_send(&g_tickAsync);
     }
@@ -1531,13 +2021,15 @@ static bool action_cb(ghostty_app_t /*app*/,
         }
         int tagInt = (int)action.tag;
         std::string tagStr = std::string(tagName) + "(" + std::to_string(tagInt) + ")";
-        g_actionTraceTSFN.BlockingCall(
-            new std::string(tagStr),
+        auto* traceData = new std::string(tagStr);
+        napi_status traceSt = g_actionTraceTSFN.NonBlockingCall(
+            traceData,
             [](Napi::Env env, Napi::Function jsCb, std::string* data) {
                 jsCb.Call({ Napi::String::New(env, *data) });
                 delete data;
             }
         );
+        if (traceSt != napi_ok) { delete traceData; }
     }
 
     if (action.tag == GHOSTTY_ACTION_SET_TITLE ||
@@ -1562,19 +2054,39 @@ static bool action_cb(ghostty_app_t /*app*/,
             }
             if (!workspaceId.empty()) {
                 std::string title = rawTitle ? rawTitle : "";
-                g_titleTSFN.BlockingCall(
-                    new std::pair<std::string, std::string>(workspaceId, title),
-                    [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
-                        jsCb.Call({
-                            Napi::String::New(env, data->first),
-                            Napi::String::New(env, data->second)
-                        });
-                        delete data;
-                    }
-                );
+                uint64_t titleNowMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+                uint64_t lastTitle = g_lastTitlePushMs.load(std::memory_order_relaxed);
+                if (titleNowMs - lastTitle >= 200) {
+                    g_lastTitlePushMs.store(titleNowMs, std::memory_order_relaxed);
+                    auto* titleData = new std::pair<std::string, std::string>(workspaceId, title);
+                    napi_status titleSt = g_titleTSFN.NonBlockingCall(
+                        titleData,
+                        [](Napi::Env env, Napi::Function jsCb, std::pair<std::string, std::string>* data) {
+                            jsCb.Call({
+                                Napi::String::New(env, data->first),
+                                Napi::String::New(env, data->second)
+                            });
+                            delete data;
+                        }
+                    );
+                    if (titleSt != napi_ok) { delete titleData; }
+                }
             }
         }
     }
+
+    // Note: GHOSTTY_ACTION_RENDER is NOT handled here.
+    //
+    // For the embedded apprt (Orpheus), must_draw_from_app_thread is false
+    // (it's only true for apprt/gtk/App.zig).  Ghostty's renderer.Thread.drawFrame
+    // therefore calls self.renderer.drawFrame(false) directly on its own renderer
+    // thread rather than pushing a redraw_surface action.  Because hasVsync()
+    // returns true (ghostty's own internal CVDisplayLink is running in
+    // generic.zig:loopEnter), drawFrame(false) also returns immediately when
+    // called from the normal render timer path — the display link drives all
+    // continuous rendering autonomously.  GHOSTTY_ACTION_RENDER is never emitted
+    // for this build.  All rendering is handled by ghostty's own display link
+    // without any host involvement.
 
     return false;
 }
@@ -1743,6 +2255,71 @@ static void close_surface_cb(void* /*userdata*/, bool process_alive) {
 // ---------------------------------------------------------------------------
 
 static ghostty_config_t g_config = nullptr;
+static const char* g_resDir = nullptr;  // set once in ensureApp, used by reloadGhosttyConfig
+
+// ---------------------------------------------------------------------------
+// Build, load, and finalise a ghostty config using the standard Orpheus
+// load order:  default files → bundled overrides → user config → recursive
+// files → finalise.  resDir may be NULL (GHOSTTY_RESOURCES_DIR not set).
+// Returns a finalised ghostty_config_t; caller owns it (ghostty_config_free).
+// ---------------------------------------------------------------------------
+
+static ghostty_config_t buildGhosttyConfig(const char* resDir) {
+    ghostty_config_t cfg = ghostty_config_new();
+    if (!cfg) {
+        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
+        return nullptr;
+    }
+
+    NSLog(@"[ghostty-native] loading user config (default files)");
+    ghostty_config_load_default_files(cfg);
+
+    // Bundled Orpheus overrides — applied after the user's ~/.config/ghostty
+    // so these values win over the user's own Ghostty.app preferences.
+    if (resDir) {
+        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
+            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            ghostty_config_load_file(cfg, [overridePath UTF8String]);
+        } else {
+            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+        }
+    }
+
+    // User-editable Ghostty config — layered after bundled Orpheus overrides so
+    // user settings win. ORPHEUS_GHOSTTY_CONFIG is set by the main process and
+    // points to a runtime-generated file. When unset, this is a no-op.
+    const char* userCfgPath = getenv("ORPHEUS_GHOSTTY_CONFIG");
+    if (userCfgPath && userCfgPath[0] != '\0') {
+        NSString* userCfgNS = [NSString stringWithUTF8String:userCfgPath];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:userCfgNS]) {
+            NSLog(@"[ghostty-native] applying user Ghostty config: %@", userCfgNS);
+            ghostty_config_load_file(cfg, userCfgPath);
+        } else {
+            NSLog(@"[ghostty-native] ORPHEUS_GHOSTTY_CONFIG set but file not found: %@", userCfgNS);
+        }
+    }
+
+    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
+    ghostty_config_load_recursive_files(cfg);
+
+    ghostty_config_finalize(cfg);
+
+    // Log any config diagnostics so theme/parse errors are visible in Console.app.
+    uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
+    if (diagCount > 0) {
+        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
+        for (uint32_t i = 0; i < diagCount; i++) {
+            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
+            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
+                  diag.message ? diag.message : "(null)");
+        }
+    } else {
+        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
+    }
+
+    return cfg;
+}
 
 // ---------------------------------------------------------------------------
 // Coordinate helpers
@@ -1756,27 +2333,6 @@ static NSRect cssRectToAppKit(double x, double y, double w, double h,
     // AppKit Y origin is at the bottom; CSS Y is at the top.
     double appKitY = parentHeight - y - h;
     return NSMakeRect(x, appKitY, w, h);
-}
-
-// ---------------------------------------------------------------------------
-// CVDisplayLink callback — fires on a private thread
-// ---------------------------------------------------------------------------
-
-static CVReturn displayLinkCallback(CVDisplayLinkRef /*displayLink*/,
-                                    const CVTimeStamp* /*inNow*/,
-                                    const CVTimeStamp* /*inOutputTime*/,
-                                    CVOptionFlags /*flagsIn*/,
-                                    CVOptionFlags* /*flagsOut*/,
-                                    void* displayLinkContext) {
-    // displayLinkContext is the ghostty_surface_t pointer.
-    ghostty_surface_t surface = reinterpret_cast<ghostty_surface_t>(displayLinkContext);
-
-    // Dispatch draw to the AppKit main thread.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        ghostty_surface_draw(surface);
-    });
-
-    return kCVReturnSuccess;
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,6 +2350,7 @@ static bool ensureApp() {
     } else {
         NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
     }
+    g_resDir = resDir;  // stash for config reloads
 
     int rc = ghostty_init(0, nullptr);
     if (rc != GHOSTTY_SUCCESS) {
@@ -1801,55 +2358,8 @@ static bool ensureApp() {
         return false;
     }
 
-    g_config = ghostty_config_new();
-    if (!g_config) {
-        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
-        return false;
-    }
-
-    // Match the upstream Ghostty.app config-load sequence (Ghostty.Config.swift):
-    //   1. ghostty_config_load_default_files  — discovers ~/.config/ghostty/config
-    //      and ~/Library/Application Support/com.mitchellh.ghostty/config
-    //   2. ghostty_config_load_recursive_files — resolves any `theme = ...` or
-    //      `config-file = ...` directives found in the loaded files
-    //   3. ghostty_config_finalize             — fills in defaults
-    //
-    // We intentionally skip ghostty_config_load_cli_args (not meaningful here).
-    // The user's preferences from their installed Ghostty.app (font, theme,
-    // palette, keybinds, etc.) now flow into this surface automatically.
-    NSLog(@"[ghostty-native] loading user config (default files)");
-    ghostty_config_load_default_files(g_config);
-
-    // Orpheus overrides — applied after the user's config so these values win.
-    // Currently: window-padding-y = 0 to flush the terminal against the
-    // Orpheus footer + title bar (chrome already provides the spacing).
-    if (resDir) {
-        NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
-            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
-            ghostty_config_load_file(g_config, [overridePath UTF8String]);
-        } else {
-            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
-        }
-    }
-
-    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
-    ghostty_config_load_recursive_files(g_config);
-
-    ghostty_config_finalize(g_config);
-
-    // Log any config diagnostics so theme/parse errors are visible in Console.app.
-    uint32_t diagCount = ghostty_config_diagnostics_count(g_config);
-    if (diagCount > 0) {
-        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
-        for (uint32_t i = 0; i < diagCount; i++) {
-            ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(g_config, i);
-            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
-                  diag.message ? diag.message : "(null)");
-        }
-    } else {
-        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
-    }
+    g_config = buildGhosttyConfig(resDir);
+    if (!g_config) return false;
 
     ghostty_runtime_config_s rt = {};
     rt.userdata = nullptr;
@@ -1869,6 +2379,43 @@ static bool ensureApp() {
 
     g_inited.store(true, std::memory_order_release);
     NSLog(@"[ghostty-native] ghostty app ready");
+
+    // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
+    // Ghostty has IO activity), issue one synchronous draw per attached surface
+    // on the main thread. This guarantees any missed frame from the internal
+    // display link presents within 100ms. At idle g_damageFlag==0 → no GPU
+    // work. Added to NSRunLoopCommonModes so it fires during scroll/tracking.
+    // g_surfaces is only mutated on the main thread; the timer fires on main
+    // (same thread), so iteration is safe without additional locking.
+    NSTimer* safetyTimer = [NSTimer timerWithTimeInterval:0.1
+                                                  repeats:YES
+                                                    block:^(NSTimer* /*t*/) {
+        if (!g_damageFlag.exchange(0, std::memory_order_acq_rel)) return;
+        for (auto& kv : g_surfaces) {
+            GhosttySurfaceEntry& e = kv.second;
+            if (e.isAttached && e.surface) {
+                ghostty_surface_draw(e.surface);
+                kv.second.liveTick++;
+                orpheusPushLiveness(kv.first, false);
+            }
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:safetyTimer forMode:NSRunLoopCommonModes];
+
+    // Prevent App Nap: a backgrounded Orpheus would otherwise have its main-thread
+    // NSTimers (incl. the 10Hz terminal safety timer) coalesced/suspended, which
+    // stalls terminal rendering until foreground. Hold a user-initiated activity
+    // for the process lifetime. NSActivityLatencyCritical keeps timers prompt even
+    // in background; NSActivityIdleSystemSleepDisabled ensures the 10Hz safety timer
+    // survives display sleep.
+    // ARC: __strong static keeps the object alive without manual retain.
+    static __strong id<NSObject> s_appNapActivity = nil;
+    if (!s_appNapActivity) {
+        s_appNapActivity = [[NSProcessInfo processInfo]
+            beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleSystemSleepDisabled)
+                              reason:@"Active terminal rendering"];
+    }
+
     return true;
 }
 
@@ -1881,6 +2428,215 @@ static bool ensureApp() {
 //   • isAttached == YES → defensive resize + log warning (should not happen).
 // If no entry exists → create surface from scratch.
 // ---------------------------------------------------------------------------
+
+// Returns the CGColor used to fill the terminal view's layer background before
+// ghostty's GPU layer renders its first frame. Midnight theme surface-base
+// (#0b0b0c) hardcoded as gap-fill fallback. A sub-second flash; threading the
+// active theme into native is not worth it.
+static CGColorRef orpheusGapFillColor() {
+    static CGColorRef color = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        color = CGColorRetain(
+            [NSColor colorWithSRGBRed:0x0b/255.0
+                                green:0x0b/255.0
+                                 blue:0x0c/255.0
+                                alpha:1.0].CGColor
+        );
+    });
+    return color;
+}
+
+// Decorative-only backstop: a full-bounds opaque dark fill pinned at the bottom
+// of the contentView so transparent window regions never reveal the desktop.
+// It MUST be invisible to hit-testing: Chromium's -shouldIgnoreMouseEvent: hit-
+// tests the cursor point and walks the resulting view for -nonWebContentView to
+// route terminal input. A plain NSView would answer hitTest: with itself and,
+// lacking -nonWebContentView, cause terminal-region events to be misrouted into
+// the web layer (freezing the terminal). Returning nil keeps it out of all
+// event routing — it only ever draws.
+@interface OrpheusBackstopView : NSView
+@end
+@implementation OrpheusBackstopView
+- (NSView*)hitTest:(NSPoint)point { return nil; }
+- (BOOL)acceptsFirstResponder { return NO; }
+- (BOOL)wantsLayer { return YES; }
+@end
+
+// Persistent opaque app-dark backstop pinned to the bottom of the contentView.
+// Any transparent region (the workspace "hole" before the terminal NSView is
+// attached, or during a workspace switch) reveals this instead of the desktop
+// behind the transparent window. Created once; never removed. Terminal NSViews
+// mount ABOVE it; WebContents stays above both (it was already above terminals
+// when terminals were at the bottom — moving the backstop below them preserves
+// that invariant). Plain NSView has no backgroundColor property, so we must
+// make it layer-backed and set layer.backgroundColor.
+static NSView* ensureBackstopView(NSView* contentView) {
+    static dispatch_once_t once;
+    static __strong NSView* backstop = nil;  // retained for process lifetime (ARC)
+    dispatch_once(&once, ^{
+        backstop = [[OrpheusBackstopView alloc] initWithFrame:contentView.bounds];
+        backstop.wantsLayer = YES;
+        backstop.layer.backgroundColor = orpheusGapFillColor();
+        backstop.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        // Insert at the very bottom (index 0). NSWindowBelow relativeTo:nil
+        // is AppKit's canonical way to request "insert at subview index 0."
+        [contentView addSubview:backstop positioned:NSWindowBelow relativeTo:nil];
+    });
+    return backstop;
+}
+
+// ---------------------------------------------------------------------------
+// reconcileSurface — the single writer of focus+occlusion for a surface.
+//
+// Reads entry.desiredVisible and reconciles the actual ghostty gate to match.
+// All four NAPI functions (Mount/Hide/Focus/Destroy) route through here for
+// any gate-state change, eliminating multiple scattered writers.
+//
+// forceWake controls the already-attached desiredVisible=true path only:
+//   true  → FORCE-TOGGLE (false→true cycle). Required after display-sleep or
+//            idle because ghostty's dedup ignores a plain set_focus(true) when
+//            the flag is already true (Surface.zig:3265). Use for genuine wake/
+//            recovery/foreground-return.
+//   false → DIRECT SET only (focus true + occlusion true + draw). Safe for
+//            idempotent re-shows of an already-visible surface; avoids the
+//            false→true down-signal that can drop a rendered frame (flicker).
+//
+// The !isAttached re-attach path ALWAYS force-toggles unconditionally (a hidden
+// surface is definitely gate-stopped); forceWake does not affect it.
+//
+// NOTE: ensureBackstopView() must have been called before this for a show path.
+// contentView is only needed for a desiredVisible=true + !isAttached transition.
+// Pass nil if the caller guarantees the surface is already attached.
+// ---------------------------------------------------------------------------
+static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake) {
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return;
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.surface || !entry.view) return;
+
+    if (entry.desiredVisible) {
+        if (!entry.isAttached) {
+            // Surface was hidden — re-attach it above the backstop.
+            if (contentView) {
+                NSView* backstop = ensureBackstopView(contentView);
+                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
+            }
+            // Gap-fill: paint pre-first-frame gap app-dark.
+            entry.view.layer.backgroundColor = orpheusGapFillColor();
+
+            // FORCE-TOGGLE: surface was gate-stopped (hidden). false→true cycle
+            // makes the change "stick" through ghostty's dedup logic.
+            ghostty_surface_set_occlusion(entry.surface, false);
+            ghostty_surface_set_focus(entry.surface, false);
+            ghostty_surface_set_focus(entry.surface, true);
+            ghostty_surface_set_occlusion(entry.surface, true);
+            ghostty_surface_draw(entry.surface);
+
+            entry.isAttached = YES;
+
+            // SYNCHRONOUS makeFirstResponder (async opens an input race where a
+            // keystroke right after mount routes to WebContents instead of terminal).
+            // NAPI runs on main thread ✓.
+            {
+                NSWindow* win = [entry.view window];
+                if (win) [win makeFirstResponder:entry.view];
+            }
+
+        } else {
+            // Already attached. Behavior depends on forceWake:
+            //   true  → FORCE-TOGGLE: false→true cycle restarts a gate-stopped
+            //            display link (display-sleep / foreground-return / kick).
+            //   false → DIRECT SET: no down-signal, no flicker. Safe for
+            //            idempotent re-shows where the surface is already painting.
+            if (forceWake) {
+                ghostty_surface_set_occlusion(entry.surface, false);
+                ghostty_surface_set_focus(entry.surface, false);
+                ghostty_surface_set_focus(entry.surface, true);
+                ghostty_surface_set_occlusion(entry.surface, true);
+            } else {
+                ghostty_surface_set_focus(entry.surface, true);
+                ghostty_surface_set_occlusion(entry.surface, true);
+            }
+            ghostty_surface_draw(entry.surface);
+
+            // Sync makeFirstResponder for focus re-assertion.
+            {
+                NSWindow* win = [entry.view window];
+                if (win) [win makeFirstResponder:entry.view];
+            }
+        }
+
+    } else {
+        // desiredVisible = false — hide the surface.
+        if (entry.isAttached) {
+            // Gate closed: stop the display link.
+            ghostty_surface_set_focus(entry.surface, false);
+            ghostty_surface_set_occlusion(entry.surface, false);
+            [entry.view removeFromSuperview];
+            entry.isAttached = NO;
+        }
+        // Already hidden — no-op.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// setVisibleWorkspace — mutual-exclusion entry point for the one-visible
+// invariant. Marks the new workspace as desiredVisible=true and the previous
+// one as desiredVisible=false, then reconciles new FIRST (paint first frame)
+// then reconciles old (removeFromSuperview). Show-new-before-hide-old preserves
+// the backstop fix: no frame where neither surface is painted over the backstop.
+//
+// contentView and forceWake are forwarded to reconcileSurface for the new
+// surface. forceWake=true triggers the force-toggle (wake/recovery); false uses
+// the direct-set path (no flicker for routine nav). The hide reconcile always
+// passes forceWake=false (desiredVisible=false path ignores it).
+// ---------------------------------------------------------------------------
+static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake) {
+    std::string prevId = g_visibleWorkspaceId;
+
+    // Mark new surface as desired visible.
+    {
+        auto it = g_surfaces.find(workspaceId);
+        if (it != g_surfaces.end()) {
+            it->second.desiredVisible = true;
+        }
+    }
+
+    // Update the tracker.
+    g_visibleWorkspaceId = workspaceId;
+
+    // Show new surface FIRST (paint before removing old).
+    reconcileSurface(workspaceId, contentView, forceWake);
+
+    // Then hide the previous surface (if different).
+    if (!prevId.empty() && prevId != workspaceId) {
+        auto it = g_surfaces.find(prevId);
+        if (it != g_surfaces.end()) {
+            it->second.desiredVisible = false;
+        }
+        reconcileSurface(prevId, nil, false);
+    }
+}
+
+static Napi::Value InstallBackstop(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBuffer()) {
+        Napi::TypeError::New(env, "installBackstop requires a window handle buffer").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Buffer<uint8_t> handleBuf = info[0].As<Napi::Buffer<uint8_t>>();
+    void* rawHandle = nullptr;
+    size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
+    memcpy(&rawHandle, handleBuf.Data(), copyLen);
+    NSView* contentView = (__bridge NSView*)rawHandle;
+    if (!contentView) return env.Undefined();
+    // Install the persistent opaque backstop NOW (idempotent via dispatch_once),
+    // before any terminal mount, so the transparent window never reveals the
+    // desktop on the first workspace navigation.
+    ensureBackstopView(contentView);
+    return env.Undefined();
+}
 
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -1901,12 +2657,10 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
 
-    // Dynamic z-order keeps ghostty on top by default, so AppKit's natural
-    // hit-test + drag-destination resolution routes terminal-region events
-    // straight to us. While overlay mode is active (ghostty moved to the
-    // back so DOM popovers stack above), we *want* the WebContents to keep
-    // those events so the popover/backdrop can respond. No swizzles needed
-    // in either state.
+    // Install the persistent app-dark backstop once. Any transparent window
+    // region (workspace hole, cold-start gap, switch gap) shows app-dark
+    // instead of the macOS desktop. Terminals mount above it (see below).
+    NSView* backstop = ensureBackstopView(contentView);
 
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
@@ -1976,46 +2730,45 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             uint32_t physH = (uint32_t)(rh * scaleFactor);
             ghostty_surface_set_size(entry.surface, physW, physH);
             ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+            setVisibleWorkspace(workspaceId, contentView, false);
         } else {
-            // Re-attach: add back to superview, wake display link.
+            // Re-attach: add back to superview, wake renderer.
             NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
                   workspaceId.c_str());
+            entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
             [entry.view setFrame:newFrame];
-            // DEFAULT FAST PATH: insert ghostty at the TOP of the sibling
-            // stack. Opaque NSView on top of WebContents means the OS
-            // compositor culls alpha blending in the terminal region — same
-            // perf as the pre-z-order-inversion architecture. When a DOM
-            // overlay needs to render above the terminal, JS calls
-            // terminal:setOverlay(true) which moves us below WebContents
-            // for the duration of the overlay; setOverlay(false) snaps us
-            // back here.
-            [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
 
-            // Wake the renderer — surface is no longer occluded.
-            ghostty_surface_set_occlusion(entry.surface, false);
-
-            // Re-start the display link.
-            CVDisplayLinkStart(entry.displayLink);
-
-            // Update size in case the window was resized while hidden.
+            // Update size only if dimensions actually changed while hidden.
+            // ghostty_surface_set_size reflows the buffer and snaps the viewport
+            // to the bottom, which would discard the user's scrollback position
+            // on a plain switch-and-back where nothing actually changed.
+            // The surface persists across hide/mount, so when size and scale are
+            // identical we skip the resize and ghostty keeps the prior scroll position.
             uint32_t physW = (uint32_t)(rw * scaleFactor);
             uint32_t physH = (uint32_t)(rh * scaleFactor);
-            ghostty_surface_set_size(entry.surface, physW, physH);
-            ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
-
-            // Re-grab first responder.
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if ([entry.view window]) {
-                    [[entry.view window] makeFirstResponder:entry.view];
-                }
-            });
+            const bool sizeChanged =
+                entry.lastRect.size.width != rw ||
+                entry.lastRect.size.height != rh ||
+                entry.lastScale != scaleFactor;
+            if (sizeChanged) {
+                ghostty_surface_set_size(entry.surface, physW, physH);
+                ghostty_surface_set_content_scale(entry.surface, scaleFactor, scaleFactor);
+            }
 
             entry.lastRect = CGRectMake(rx, ry, rw, rh);
             entry.lastScale = scaleFactor;
-            entry.isAttached = YES;
+            entry.liveTick++;
+            orpheusPushLiveness(workspaceId, false);
+
+            // setVisibleWorkspace handles: addSubview above backstop, gap-fill,
+            // force-toggle (via !isAttached path), draw, isAttached=YES,
+            // synchronous makeFirstResponder, and hiding the previous surface.
+            // forceWake=false: the !isAttached branch force-toggles unconditionally;
+            // forceWake only governs the already-attached branch.
+            setVisibleWorkspace(workspaceId, contentView, false);
         }
 
         Napi::Object result = Napi::Object::New(env);
@@ -2032,11 +2785,28 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
           workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
+    // Generation guard: bump the current generation for this workspaceId so any
+    // pending deferred free (from a prior Destroy) knows a new surface supersedes
+    // its old handle. The pending free will still run and free its own captured
+    // OLD surface handle (heap->surface) — it only skips clearing the freeing
+    // marker if a newer generation is present. No blocking wait: create proceeds
+    // immediately. If a free was pending, log it so dogfooding can detect the race.
+    uint64_t createGen = ++g_currentGeneration[workspaceId];
+    {
+        auto fit = g_freeingGeneration.find(workspaceId);
+        if (fit != g_freeingGeneration.end()) {
+            NSLog(@"[ghostty-native] mount workspaceId=%s: create gen=%" PRIu64
+                  " while free gen=%" PRIu64 " is still pending (old surface isolated; proceeding)",
+                  workspaceId.c_str(), createGen, fit->second);
+        }
+    }
+
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
-    // Default to the top of the sibling z-order — see the matching comment
-    // in the re-attach branch above. setOverlay(true) moves us below the
-    // WebContents on demand when a DOM overlay needs to paint on top.
-    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+    termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
+    // Same z-order rationale as the re-attach branch above.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:backstop];
+    // Gap-fill: set background so the pre-first-frame gap shows app-dark.
+    termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
     [termView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
 
@@ -2160,37 +2930,37 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // Wire the surface pointer back into the view so keyDown:/keyUp: can forward events.
     termView.surface = surface;
 
-    // Make the terminal first responder so the user can type immediately.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if ([termView window]) {
-            [[termView window] makeFirstResponder:termView];
-        }
-    });
-
     // Set initial size (physical pixels).
     uint32_t physW = (uint32_t)(rw * scaleFactor);
     uint32_t physH = (uint32_t)(rh * scaleFactor);
     ghostty_surface_set_size(surface, physW, physH);
     ghostty_surface_set_content_scale(surface, scaleFactor, scaleFactor);
 
-    // Create CVDisplayLink — one per workspace, lives until destroy().
-    // The display link is stopped/started on hide/mount but never recreated.
-    CVDisplayLinkRef displayLink = nullptr;
-    CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
-    CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback,
-                                   reinterpret_cast<void*>(surface));
-    CVDisplayLinkStart(displayLink);
-
     // Store entry — view is retained by the map (ARC __strong).
+    // ghostty's own internal CVDisplayLink (created in generic.zig:loopEnter)
+    // drives all rendering autonomously on a private renderer thread; we do
+    // not need a host-side display link.
     GhosttySurfaceEntry entry;
-    entry.surface     = surface;
-    entry.view        = termView;
-    entry.displayLink = displayLink;
-    entry.isAttached  = YES;
-    entry.lastRect    = CGRectMake(rx, ry, rw, rh);
-    entry.lastScale   = scaleFactor;
+    entry.surface       = surface;
+    entry.view          = termView;
+    entry.isAttached    = YES;
+    entry.desiredVisible = true;
+    entry.lastRect      = CGRectMake(rx, ry, rw, rh);
+    entry.lastScale     = scaleFactor;
+    entry.generation    = createGen;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
+    g_visibleWorkspaceId = workspaceId;
+    // Bump per-entry liveTick AFTER entry is stored so g_surfaces lookup works
+    g_surfaces[workspaceId].liveTick++;
+    orpheusPushLiveness(workspaceId, false);
+
+    // reconcileSurface handles: direct-set gate (focus+occlusion), draw,
+    // and synchronous makeFirstResponder (replaces the old dispatch_async).
+    // isAttached=YES above, so reconcile takes the "already attached" path.
+    // forceWake=false: brand-new surface, not gate-stopped; if it later freezes
+    // the watchdog or Focus() will kick it with forceWake=true.
+    reconcileSurface(workspaceId, contentView, false);
 
     NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
@@ -2204,7 +2974,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 // ---------------------------------------------------------------------------
 // NAPI: hide(workspaceId) → void
 //
-// Removes the NSView from its superview and stops the display link.
+// Removes the NSView from its superview and signals occlusion to ghostty.
 // The surface + shell process keep running in the background.
 // isAttached is set to NO. View is retained in the map entry.
 // ---------------------------------------------------------------------------
@@ -2232,16 +3002,13 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
 
     NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
 
-    // Tell Ghostty the surface is now occluded — renderer thread sleeps.
-    ghostty_surface_set_occlusion(entry.surface, true);
-
-    // Stop the display link — no more draw dispatches until mount re-attaches.
-    CVDisplayLinkStop(entry.displayLink);
-
-    // Remove from view hierarchy — view is retained in the map, not freed.
-    [entry.view removeFromSuperview];
-
-    entry.isAttached = NO;
+    entry.desiredVisible = false;
+    if (g_visibleWorkspaceId == workspaceId) {
+        g_visibleWorkspaceId.clear();
+    }
+    // reconcileSurface handles: set_focus(false), set_occlusion(false),
+    // removeFromSuperview, isAttached=NO.
+    reconcileSurface(workspaceId, nil, false);
     return env.Undefined();
 }
 
@@ -2433,44 +3200,6 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// NAPI: setOverlay(workspaceId, on)
-//
-// Toggle a workspace's terminal NSView between the FAST PATH (top sibling of
-// the BrowserWindow's contentView — opaque, no alpha-blend overhead) and the
-// OVERLAY PATH (bottom sibling — DOM elements stack above the terminal pixels
-// because the WebContents draws with alpha on top of us).
-//
-// JS owns the policy: the renderer's useTerminalOverlay() hook refcounts how
-// many React popovers / modals / drawers want to paint above the terminal,
-// and calls setOverlay(true) on 0→1 and setOverlay(false) on 1→0 so the
-// blend cost is only paid while overlays are actually on screen.
-//
-// Idempotent: re-asserting the same mode is a cheap reorder (AppKit just
-// moves the view within the superview's subview array).
-static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
-    bool on = info[1].As<Napi::Boolean>().Value();
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) return env.Undefined();
-    GhosttySurfaceEntry& entry = it->second;
-    if (!entry.isAttached || !entry.view) return env.Undefined();
-    NSView* superview = entry.view.superview;
-    if (!superview) return env.Undefined();
-    // Reorder happens immediately on the main thread (NAPI handlers run on
-    // it) so the very next display refresh reflects the new z-order.
-    NSWindowOrderingMode mode = on ? NSWindowBelow : NSWindowAbove;
-    [superview addSubview:entry.view positioned:mode relativeTo:nil];
-    NSLog(@"[ghostty-native] setOverlay workspaceId=%s on=%d (z=%s)",
-          workspaceId.c_str(), on ? 1 : 0, on ? "below" : "above");
-    return env.Undefined();
-}
-
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -2484,10 +3213,19 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     if (it == g_surfaces.end()) return env.Undefined();
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSWindow* win = [entry.view window];
-        if (win) [win makeFirstResponder:entry.view];
-    });
+
+    NSLog(@"[ghostty-native] focus workspaceId=%s", workspaceId.c_str());
+
+    if (entry.surface) {
+        entry.liveTick++;
+        orpheusPushLiveness(workspaceId, false);
+    }
+    // setVisibleWorkspace→reconcileSurface handles: force-toggle gate
+    // (false→true cycle for display-sleep wakeup), draw, and synchronous
+    // makeFirstResponder. Also hides the previous visible workspace if different.
+    // forceWake=true: Focus() is the explicit kick/wake-from-sleep primitive —
+    // it must force-toggle to unstick a gate-stopped surface.
+    setVisibleWorkspace(workspaceId, [entry.view superview], true);
     return env.Undefined();
 }
 
@@ -2513,6 +3251,9 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // lookup (e.g. hide() racing with archive) sees no entry.
     GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
+    if (g_visibleWorkspaceId == workspaceId) {
+        g_visibleWorkspaceId.clear();
+    }
     if (doomed.surface) {
         g_surfaceToWorkspaceId.erase(doomed.surface);
     }
@@ -2525,31 +3266,48 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         [doomed.view removeFromSuperview];
     }
 
-    // Stop the display link so no more draw callbacks fire on the
-    // to-be-freed surface. (Release is deferred to the async block.)
-    if (doomed.displayLink) {
-        CVDisplayLinkStop(doomed.displayLink);
-    }
-
     // ---- Asynchronous, slow — process teardown after the IPC return ----
     // ghostty_surface_free MUST run on the main thread per Ghostty's API
     // contract, but it doesn't have to be synchronous with this NAPI call.
     // We allocate a heap copy of doomed so the block owns it cleanly
     // (avoids ObjC++ __block + std::move ARC interaction uncertainty).
+    //
+    // Generation guard: record which generation this free corresponds to.
+    // If a Mount for the same workspaceId arrives before this block runs,
+    // it bumps g_currentGeneration and proceeds to create a new surface.
+    // The block compares its captured `gen` against g_currentGeneration on
+    // completion: if they differ, a newer surface was already created — we
+    // still free our OWN captured old handle (heap->surface), but skip
+    // clearing the freeing marker because a newer one may be in flight.
+    //
+    // The deferred free is ALREADY isolated from any new surface: Destroy
+    // moved the old entry OUT of g_surfaces before this block was scheduled,
+    // so the block only touches heap (its own private copy) and never reads
+    // or writes g_surfaces[workspaceId]. The generation registry makes this
+    // isolation explicit and makes concurrent create-during-free detectable.
+    uint64_t gen = ++g_currentGeneration[workspaceId];
+    g_freeingGeneration[workspaceId] = gen;
+    std::string capturedWsId = workspaceId; // capture by value for the block
     GhosttySurfaceEntry* heap = new GhosttySurfaceEntry(std::move(doomed));
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (heap->displayLink) {
-            CVDisplayLinkRelease(heap->displayLink);
-            heap->displayLink = nullptr;
-        }
         if (heap->surface) {
             // Slow: blocks main thread here, but AFTER the IPC call has returned.
+            // Always free the old captured handle — this is the correct surface
+            // to free regardless of whether a newer surface was created.
             ghostty_surface_free(heap->surface);
             heap->surface = nullptr;
         }
         heap->view = nil; // ARC release; removeFromSuperview already ran
         delete heap;
-        NSLog(@"[ghostty-native] destroy workspaceId=<deferred>: surface freed");
+        // Clear the freeing marker ONLY if it still points at our generation.
+        // If g_currentGeneration advanced past gen, a newer create already
+        // superseded us — leave the marker for the newer block to clear.
+        auto fit = g_freeingGeneration.find(capturedWsId);
+        if (fit != g_freeingGeneration.end() && fit->second == gen) {
+            g_freeingGeneration.erase(fit);
+        }
+        NSLog(@"[ghostty-native] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
+              capturedWsId.c_str(), gen);
     });
 
     return env.Undefined();
@@ -2686,6 +3444,76 @@ static Napi::Value SendKeys(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// ReloadGhosttyConfig — rebuild config and push to the running app + surfaces.
+// Called from the main process after writing a new user Ghostty config file.
+// ---------------------------------------------------------------------------
+static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (!g_app) {
+        NSLog(@"[ghostty-native] reloadGhosttyConfig: called before init, ignoring");
+        return Napi::Boolean::New(env, false);
+    }
+
+    ghostty_config_t newConfig = buildGhosttyConfig(g_resDir);
+    if (!newConfig) {
+        NSLog(@"[ghostty-native] reloadGhosttyConfig: buildGhosttyConfig failed");
+        return Napi::Boolean::New(env, false);
+    }
+
+    // Push the new config to the app. ghostty_app_update_config takes *const Config —
+    // Ghostty clones the config internally (see embedded.zig performAction .config_change),
+    // so the caller retains ownership and must free the old g_config itself.
+    ghostty_app_update_config(g_app, newConfig);
+
+    // Also push to all live surfaces so already-open terminals pick up the change.
+    for (auto& [id, entry] : g_surfaces) {
+        if (entry.surface) {
+            ghostty_surface_update_config(entry.surface, newConfig);
+        }
+    }
+
+    // Free the old config now that update_config has cloned it, then adopt the new one.
+    ghostty_config_free(g_config);
+    g_config = newConfig;
+
+    NSLog(@"[ghostty-native] config reloaded successfully");
+    return Napi::Boolean::New(env, true);
+}
+
+// ---------------------------------------------------------------------------
+// NAPI: getSurfacePhase(workspaceId) → 'none'|'freeing'|'hidden'|'attached'|'visible'
+//
+// Read-only truth query — returns the reconciler's authoritative surface phase
+// for the given workspaceId. Called only from async IPC contexts in the renderer;
+// never called during synchronous cleanup. O(1) map lookups; main-thread-safe.
+// ---------------------------------------------------------------------------
+
+static Napi::Value GetSurfacePhase(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "getSurfacePhase requires workspaceId string").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    // Pending free takes precedence (the surface is being torn down).
+    if (g_freeingGeneration.find(workspaceId) != g_freeingGeneration.end()) {
+        return Napi::String::New(env, "freeing");
+    }
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        return Napi::String::New(env, "none");      // no surface exists
+    }
+    if (!it->second.isAttached) {
+        return Napi::String::New(env, "hidden");    // surface exists but detached/hidden
+    }
+    if (g_visibleWorkspaceId == workspaceId) {
+        return Napi::String::New(env, "visible");   // attached AND the visible one
+    }
+    return Napi::String::New(env, "attached");      // attached but not the visible one
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -2706,18 +3534,22 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     }
 
     exports.Set("mount",             Napi::Function::New(env, Mount));
+    exports.Set("installBackstop",   Napi::Function::New(env, InstallBackstop));
     exports.Set("hide",              Napi::Function::New(env, Hide));
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
+    exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
+    exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));
+    exports.Set("setLivenessCallback",       Napi::Function::New(env, SetLivenessCallback));
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
+    exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
     return exports;
 }
 

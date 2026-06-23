@@ -76,6 +76,17 @@ export function ClaudeMemorySection(): React.JSX.Element {
               onChange={(v) => patch({ disableGitInstructions: v })}
             />
           </SettingRow>
+          <SettingRow
+            label="Load CLAUDE.md from additional directories"
+            description="Instruct Claude to search for and load CLAUDE.md memory files from directories beyond the project root (CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1)."
+            mapsTo="CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"
+          >
+            <Toggle
+              ariaLabel="Load CLAUDE.md from additional directories"
+              value={settings.additionalDirsClaudeMd}
+              onChange={(v) => patch({ additionalDirsClaudeMd: v })}
+            />
+          </SettingRow>
         </div>
       </section>
 

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 49
+const CURRENT_VERSION = 59
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -34,12 +34,15 @@ const SCHEMA_SQL = `
     updated_at INTEGER NOT NULL,
     archived_at INTEGER,
     model TEXT,
-    last_message_role TEXT
+    last_message_role TEXT,
+    jsonl_mtime INTEGER
   );
 
   CREATE INDEX IF NOT EXISTS sessions_project_id_idx ON sessions(project_id);
   CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
   CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions(updated_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_project_active
+    ON sessions(project_id, updated_at ASC) WHERE status != 'archived';
 `
 
 // CHECK kept in sync with WorkspaceStatus (shared/types.ts). When this drifted
@@ -57,6 +60,7 @@ const WORKSPACES_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER,
     archived_at INTEGER,
+    closed_at INTEGER,
     status TEXT NOT NULL DEFAULT 'idle'
       CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
     name_is_auto INTEGER NOT NULL DEFAULT 1,
@@ -189,6 +193,15 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     exit_after_stop_delay INTEGER,
     disable_feedback_command INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_command IN (0, 1)),
     disable_feedback_survey INTEGER NOT NULL DEFAULT 0 CHECK (disable_feedback_survey IN (0, 1)),
+    -- Env-var controls (v52) — new feature toggles
+    disable_bundled_skills INTEGER NOT NULL DEFAULT 0 CHECK (disable_bundled_skills IN (0, 1)),
+    disable_workflows INTEGER NOT NULL DEFAULT 0 CHECK (disable_workflows IN (0, 1)),
+    enable_away_summary INTEGER NOT NULL DEFAULT 0 CHECK (enable_away_summary IN (0, 1)),
+    disable_artifact INTEGER NOT NULL DEFAULT 0 CHECK (disable_artifact IN (0, 1)),
+    disable_advisor_tool INTEGER NOT NULL DEFAULT 0 CHECK (disable_advisor_tool IN (0, 1)),
+    screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1)),
+    additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1)),
+    ghostty_config_json TEXT NOT NULL DEFAULT '{}',
     updated_at INTEGER NOT NULL
   );
 `
@@ -207,6 +220,30 @@ const ACTION_AUDIT_LOG_SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_action_audit_workspace_created
     ON action_audit_log(workspace_id, created_at DESC);
+`
+
+// diagnostics_events — local event log (errors/lifecycle/perf/anomaly). Bounded
+// ring buffer pruned by age (7d) and row cap (50k) at launch. Single writer:
+// src/main/diagnostics.ts. Fresh-install CREATE; defensive CREATE in v55 below.
+const DIAGNOSTICS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS diagnostics_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,
+    process      TEXT NOT NULL,
+    category     TEXT NOT NULL,
+    level        TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    workspace_id TEXT,
+    session_id   TEXT,
+    duration_ms  INTEGER,
+    message      TEXT,
+    data         TEXT,
+    seq          INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_diag_ts       ON diagnostics_events(ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_cat_ts   ON diagnostics_events(category, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_ws_ts    ON diagnostics_events(workspace_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_event_ts ON diagnostics_events(event, ts);
 `
 
 // Footer actions — phase 3a. Three-scope additive list.
@@ -309,6 +346,15 @@ const UI_STATE_SCHEMA_SQL = `
     mute_status_notifications INTEGER NOT NULL DEFAULT 0 CHECK (mute_status_notifications IN (0, 1)),
     -- Workspace footer visibility (v45)
     show_workspace_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_workspace_footer IN (0, 1)),
+    -- Diagnostics capture toggles (v56)
+    diag_error INTEGER NOT NULL DEFAULT 1,
+    diag_lifecycle INTEGER NOT NULL DEFAULT 0,
+    diag_perf INTEGER NOT NULL DEFAULT 0,
+    diag_anomaly INTEGER NOT NULL DEFAULT 0,
+    auto_close_after_minutes INTEGER,
+    -- Notification enrichment (v59)
+    notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
+    notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
 `
@@ -369,6 +415,7 @@ function migrate(db: Database.Database): void {
   db.exec(CLAUDE_WORKSPACE_SETTINGS_SCHEMA_SQL)
   db.exec(UI_STATE_SCHEMA_SQL)
   db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
+  db.exec(DIAGNOSTICS_SCHEMA_SQL)
   db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
 
   if (!row) {
@@ -1994,6 +2041,175 @@ function migrate(db: Database.Database): void {
     }
 
     db.prepare('UPDATE schema_version SET version = ?').run(49)
+  }
+
+  // Version 50: jsonl_mtime on sessions — stores the last-seen file mtime so
+  // refreshSessionMetadata can skip re-extraction when the JSONL hasn't changed.
+  if (currentVersion < 50) {
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN jsonl_mtime INTEGER')
+    } catch {
+      /* already exists on fresh install (column declared in CREATE TABLE) */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(50)
+  }
+
+  // Version 51: partial index for active (non-archived) sessions.
+  // Covers listSessionsForProject and the active-rows scan in refreshSessionMetadata.
+  if (currentVersion < 51) {
+    try {
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_sessions_project_active
+         ON sessions(project_id, updated_at ASC) WHERE status != 'archived'`
+      )
+    } catch {
+      /* already exists on a fresh install that ran the updated SCHEMA_SQL */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(51)
+  }
+
+  // Version 52: new feature-toggle env-var controls
+  if (currentVersion < 52) {
+    // General → Model behavior
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_bundled_skills INTEGER NOT NULL DEFAULT 0 CHECK (disable_bundled_skills IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_workflows INTEGER NOT NULL DEFAULT 0 CHECK (disable_workflows IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // General
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN enable_away_summary INTEGER NOT NULL DEFAULT 0 CHECK (enable_away_summary IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Tools
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_artifact INTEGER NOT NULL DEFAULT 0 CHECK (disable_artifact IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_advisor_tool INTEGER NOT NULL DEFAULT 0 CHECK (disable_advisor_tool IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Display
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    // Memory & Context
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1))'
+      )
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(52)
+  }
+  if (currentVersion < 53) {
+    try {
+      db.exec(
+        "ALTER TABLE claude_global_settings ADD COLUMN ghostty_config_json TEXT NOT NULL DEFAULT '{}'"
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(53)
+  }
+
+  if (currentVersion < 54) {
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN stale_after_minutes INTEGER NOT NULL DEFAULT 60')
+    } catch {
+      /* ignore */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(54)
+  }
+
+  if (currentVersion < 55) {
+    try {
+      db.exec(DIAGNOSTICS_SCHEMA_SQL)
+    } catch {
+      /* ignore — table may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(55)
+  }
+
+  if (currentVersion < 56) {
+    for (const [col, def] of [
+      ['diag_error', '1'],
+      ['diag_lifecycle', '0'],
+      ['diag_perf', '0'],
+      ['diag_anomaly', '0']
+    ] as const) {
+      try {
+        db.exec(`ALTER TABLE app_ui_state ADD COLUMN ${col} INTEGER NOT NULL DEFAULT ${def}`)
+      } catch {
+        /* column may already exist */
+      }
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(56)
+  }
+
+  if (currentVersion < 57) {
+    // Version 57: add workspaces.closed_at (close = free resources, keep workspace)
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN closed_at INTEGER')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN auto_close_after_minutes INTEGER')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(57)
+  }
+
+  if (currentVersion < 58) {
+    // Version 58: persist last terminal title so closed workspaces keep their name
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN last_title TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(58)
+  }
+
+  if (currentVersion < 59) {
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN notify_rich_summary BOOLEAN NOT NULL DEFAULT 1')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(59)
   }
 }
 

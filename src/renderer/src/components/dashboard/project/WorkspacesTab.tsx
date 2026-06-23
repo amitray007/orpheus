@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
   DotsThree,
@@ -8,7 +8,7 @@ import {
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
-import type { GitStatus, WorkspaceActivityDetail, WorkspaceRecord } from '@shared/types'
+import type { GitStatus, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -16,6 +16,8 @@ import { Eyebrow, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
+import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -74,7 +76,6 @@ interface WorkspacesTabProps {
   /** Project filesystem path — used by the embedded Recent commits + Sessions panels. */
   projectPath: string
   workspaces: WorkspaceRecord[] | null
-  workspaceActivities: Record<string, WorkspaceActivityDetail>
   onSelectWorkspace: (workspaceId: string) => void
   onRenameWorkspace: (
     workspaceId: string,
@@ -87,11 +88,84 @@ interface WorkspacesTabProps {
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
 }
 
+// ---------------------------------------------------------------------------
+// WorkspaceNameCell — isolated sub-component so useWorkspaceActivity is called
+// as a proper hook (not inside a DataTable render callback). Re-renders only
+// when this workspace's activity key changes.
+// ---------------------------------------------------------------------------
+
+interface WorkspaceNameCellProps {
+  ws: WorkspaceRecord
+  renamingId: string | null
+  renameValue: string
+  sessionStats: Record<
+    string,
+    { messageCount: number | null; jsonlSizeBytes: number | null; title: string | null }
+  >
+  setRenameValue: (v: string) => void
+  commitRename: (ws: WorkspaceRecord) => void
+  setRenamingId: (id: string | null) => void
+}
+
+const WorkspaceNameCell = memo(function WorkspaceNameCell({
+  ws,
+  renamingId,
+  renameValue,
+  sessionStats,
+  setRenameValue,
+  commitRename,
+  setRenamingId
+}: WorkspaceNameCellProps): React.JSX.Element {
+  // Subscribe to this workspace's key only — re-renders only when this key changes.
+  const activity = useWorkspaceActivity(ws.id)
+  const terminalTitle = useWorkspaceTitle(ws.id)
+  const isPinned = ws.pinnedAt !== null
+  const dn = resolveWorkspaceName({
+    workspace: ws,
+    terminalTitle,
+    sessionTitle: ws.claudeSessionId ? (sessionStats[ws.claudeSessionId]?.title ?? null) : null
+  })
+  return (
+    <span className="flex items-center gap-2 min-w-0">
+      <span className="flex items-center justify-center w-3 flex-shrink-0">
+        {activity && activity !== 'archived' ? (
+          <ActivityIndicator detail={activity} />
+        ) : (
+          <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
+        )}
+      </span>
+      {renamingId === ws.id ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename(ws)
+            if (e.key === 'Escape') setRenamingId(null)
+          }}
+          onBlur={() => commitRename(ws)}
+          onClick={(e) => e.stopPropagation()}
+          className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
+        />
+      ) : (
+        <span
+          className={['truncate', dn.muted ? 'text-text-muted italic' : ''].join(' ')}
+          title={dn.text}
+        >
+          {dn.text}
+        </span>
+      )}
+      {isPinned && !renamingId && (
+        <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
+      )}
+    </span>
+  )
+})
+
 export function WorkspacesTab({
   projectId,
   projectPath,
   workspaces,
-  workspaceActivities,
   onSelectWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
@@ -122,7 +196,6 @@ export function WorkspacesTab({
   const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
   const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
-  const [titleByWs, setTitleByWs] = useState<Record<string, string | null>>({})
   const [sessionStats, setSessionStats] = useState<
     Record<
       string,
@@ -162,33 +235,9 @@ export function WorkspacesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active.map((w) => w.id).join('|')])
 
-  // Subscribe to terminal title for every workspace in the list — the Name
-  // column shows the latest OSC title when one's available.
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of all) {
-      if (titleByWs[ws.id] !== undefined) continue
-      window.api.workspaces
-        .getTitle(ws.id)
-        .then((t) => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: t ?? null }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setTitleByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    const unsub = window.api.workspaces.onTitleChanged((e) => {
-      if (cancelled) return
-      setTitleByWs((prev) => ({ ...prev, [e.workspaceId]: e.title || null }))
-    })
-    return () => {
-      cancelled = true
-      unsub()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all.map((w) => w.id).join('|')])
+  // Terminal titles are now served by the global titleStore (seeded from Dashboard's
+  // hoisted onTitleChanged subscription). WorkspaceNameCell calls useWorkspaceTitle
+  // directly, so no per-row subscription is needed here.
 
   // Refresh session metadata then load it for the Messages column lookup.
   useEffect(() => {
@@ -279,10 +328,14 @@ export function WorkspacesTab({
 
     if (debouncedSearch) {
       const q = debouncedSearch // already lowercased
+      // Read titles from the module-level titleStore snapshot at filter time.
+      // This is not reactive — search re-runs when debouncedSearch changes,
+      // which is the right trigger. Live title updates will apply on next search.
+      const titleSnapshot = getTitleSnapshot()
       out = out.filter((ws) => {
         const dn = resolveWorkspaceName({
           workspace: ws,
-          terminalTitle: titleByWs[ws.id] ?? null,
+          terminalTitle: titleSnapshot.get(ws.id) ?? null,
           sessionTitle: ws.claudeSessionId
             ? (sessionStats[ws.claudeSessionId]?.title ?? null)
             : null
@@ -293,7 +346,7 @@ export function WorkspacesTab({
     }
 
     return out
-  }, [active, activityFilter, debouncedSearch, titleByWs, sessionStats])
+  }, [active, activityFilter, debouncedSearch, sessionStats])
 
   const activeSorted = useMemo(() => {
     const copy = [...filtered]
@@ -320,52 +373,17 @@ export function WorkspacesTab({
       {
         key: 'name',
         label: 'Workspace',
-        render: (ws) => {
-          const activity = workspaceActivities[ws.id]
-          const isPinned = ws.pinnedAt !== null
-          const dn = resolveWorkspaceName({
-            workspace: ws,
-            terminalTitle: titleByWs[ws.id] ?? null,
-            sessionTitle: ws.claudeSessionId
-              ? (sessionStats[ws.claudeSessionId]?.title ?? null)
-              : null
-          })
-          return (
-            <span className="flex items-center gap-2 min-w-0">
-              <span className="flex items-center justify-center w-3 flex-shrink-0">
-                {activity && activity !== 'archived' ? (
-                  <ActivityIndicator detail={activity} />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
-                )}
-              </span>
-              {renamingId === ws.id ? (
-                <input
-                  autoFocus
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(ws)
-                    if (e.key === 'Escape') setRenamingId(null)
-                  }}
-                  onBlur={() => commitRename(ws)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="text-sm bg-surface-overlay border border-accent/40 rounded px-1.5 py-0.5 outline-none text-text-primary min-w-0 flex-1"
-                />
-              ) : (
-                <span
-                  className={['truncate', dn.muted ? 'text-text-muted italic' : ''].join(' ')}
-                  title={dn.text}
-                >
-                  {dn.text}
-                </span>
-              )}
-              {isPinned && !renamingId && (
-                <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
-              )}
-            </span>
-          )
-        }
+        render: (ws) => (
+          <WorkspaceNameCell
+            ws={ws}
+            renamingId={renamingId}
+            renameValue={renameValue}
+            sessionStats={sessionStats}
+            setRenameValue={setRenameValue}
+            commitRename={commitRename}
+            setRenamingId={setRenamingId}
+          />
+        )
       },
       {
         key: 'branch',
@@ -433,12 +451,17 @@ export function WorkspacesTab({
         )
       }
     ],
-    [gitByWs, titleByWs, workspaceActivities, renamingId, renameValue, sessionStats]
+    [gitByWs, renamingId, renameValue, sessionStats]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.
   // Used to distinguish "no workspaces at all" from "filtered to zero".
   const hasWorkspaces = active.length > 0
+
+  // The activity filter narrowed everything away even though workspaces exist —
+  // surface a one-click "Show all" so the list isn't a confusing empty state
+  // (mirrors the SessionsTab auto-widen hint).
+  const filteredToEmpty = hasWorkspaces && filtered.length === 0 && activityFilter !== 'all'
 
   return (
     <div className="flex flex-col gap-4">
@@ -491,6 +514,20 @@ export function WorkspacesTab({
               !hasWorkspaces ? (
                 <p className="text-sm text-text-muted text-center">
                   No workspaces yet. Use + New workspace to start one.
+                </p>
+              ) : filteredToEmpty ? (
+                <p className="text-sm text-text-muted text-center">
+                  No workspaces match this filter.{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivityFilter('all')
+                      setActivePage(1)
+                    }}
+                    className="text-accent hover:underline cursor-pointer"
+                  >
+                    Show all
+                  </button>
                 </p>
               ) : (
                 <p className="text-sm text-text-muted text-center">No matching workspaces.</p>

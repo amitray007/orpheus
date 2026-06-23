@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, memo } from 'react'
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
 import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
+import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
+import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
+import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
+import { setTitle, deleteTitle } from '@/lib/titleStore'
+import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
+import { setPr, deletePr } from '@/lib/prStore'
+import { clearFooterActionsCache } from './footer/useFooterActions'
+import { clearContextBudgetCache } from './WorkspaceTitleBar'
 import type {
   AppUiState,
   PinnedItem,
@@ -11,8 +19,7 @@ import type {
   SessionRecord,
   WorkspaceRecord,
   GitStatus,
-  GhPullRequest,
-  WorkspaceActivityDetail
+  GhPullRequest
 } from '@shared/types'
 
 const Sidebar = memo(SidebarBase)
@@ -43,30 +50,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Which project rows are expanded in the sidebar
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(new Set())
 
-  // Activity detail keyed by workspaceId — driven by claude hook events via IPC
-  const [workspaceActivities, setWorkspaceActivities] = useState<
-    Record<string, WorkspaceActivityDetail>
-  >({})
-
-  // Git status per workspace id
-  const [gitStatusByWorkspaceId, setGitStatusByWorkspaceId] = useState<
-    Record<string, GitStatus | null>
-  >({})
-
-  // GitHub PR per workspace id — null means "no PR for this branch" so the
-  // map distinguishes "not yet fetched" (undefined) from "fetched, none found"
-  // (null). Rides the same 30s cadence as the git-status poll below.
-  const [prByWorkspaceId, setPrByWorkspaceId] = useState<Record<string, GhPullRequest | null>>({})
-
   // Sessions list — fetched at Dashboard level so WorkspacesView can look up
   // session metadata (model, msg count, preview) via workspace.claudeSessionId
   const [allSessions, setAllSessions] = useState<SessionRecord[]>([])
 
   // Pinned workspaces — fetched on mount and after any pin/unpin toggle
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
-
-  // Terminal titles keyed by workspaceId — single hoisted subscription (fix: prevent N listeners)
-  const [titleByWorkspaceId, setTitleByWorkspaceId] = useState<Record<string, string>>({})
 
   // View routing
   const [view, setView] = useState<View>({ kind: 'sessions' })
@@ -77,8 +66,28 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // read the current value without becoming stale (avoid re-subscribing each render).
   const selectedWorkspaceIdRef = useRef<string | null>(null)
   const selectedProjectIdRef = useRef<string | null>(null)
-  selectedWorkspaceIdRef.current = selectedWorkspaceId
-  selectedProjectIdRef.current = selectedProjectId
+  const workspacesByProjectRef = useRef<Record<string, WorkspaceRecord[]>>({})
+  const projectsRef = useRef<ProjectRecord[]>([])
+  // Stable callback ref — lets the zero-dep onNavigateTo effect always call
+  // the latest handleSelectWorkspace without re-subscribing on every render.
+  const handleSelectWorkspaceRef = useRef<(workspaceId: string, projectId: string) => void>(
+    () => {}
+  )
+  // Keep refs in sync with state synchronously after every commit so event
+  // handlers with [] deps can read the current value without becoming stale.
+  // useLayoutEffect (rather than render-time assignment) satisfies the
+  // react-hooks/refs lint rule while preserving the same-tick-as-commit semantics.
+  useLayoutEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId
+    selectedProjectIdRef.current = selectedProjectId
+    workspacesByProjectRef.current = workspacesByProject
+    projectsRef.current = projects
+  })
+
+  // Tracks workspace ids for which we've already issued an imperative git fetch
+  // so a stale-closure read of gitStatusByWorkspaceId can't trigger duplicate
+  // IPC calls when the effect re-runs because workspacesPollKey changed.
+  const hasFetchedRef = useRef<Set<string>>(new Set())
 
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
@@ -112,8 +121,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           notifyAttention: true,
           notifyStop: true,
           notifyAlways: false,
+          notifyRichSummary: true,
+          notifySuppressWhenFocused: false,
           notifyMaxAttentionRepeats: 5,
           inProgressWatchdogSec: 120,
+          staleAfterMinutes: 60,
+          autoCloseAfterMinutes: 120,
+          diagError: true,
+          diagLifecycle: false,
+          diagPerf: false,
+          diagAnomaly: false,
           theme: 'midnight',
           accentColor: null,
           uiFontScale: 'default',
@@ -165,34 +182,68 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // NOTE: depends on main-layer onActivityBatch — wired via frozen contract:
+  // channel `workspace:activityBatch`, payload Array<{workspaceId,status,detail}>,
+  // preload window.api.workspaces.onActivityBatch.
+  // Falls back to onActivityChanged if the batched API isn't available yet.
   useEffect(() => {
-    return window.api.workspaces.onActivityChanged((e) => {
-      setWorkspaceActivities((prev) => {
-        const prevDetail = prev[e.workspaceId]
-        const next = { ...prev, [e.workspaceId]: e.detail }
-        // Play only on TRANSITION into a new state
-        if (prevDetail !== e.detail) {
-          if (e.detail === 'ready') playSound('ding')
-          else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+    const api = window.api.workspaces as typeof window.api.workspaces & {
+      onActivityBatch?: (
+        cb: (
+          batch: Array<{
+            workspaceId: string
+            status: import('@shared/types').WorkspaceStatus
+            detail: import('@shared/types').WorkspaceActivityDetail
+          }>
+        ) => void
+      ) => () => void
+    }
+
+    if (typeof api.onActivityBatch === 'function') {
+      return api.onActivityBatch((batch) => {
+        // Sound effects: play on first status transition per batch
+        for (const { workspaceId, detail } of batch) {
+          const prevDetail = getActivitySnapshot().get(workspaceId)
+          if (prevDetail !== detail) {
+            if (detail === 'ready') playSound('ding')
+            else if (detail === 'attention' || detail === 'asking') playSound('notification')
+          }
         }
-        return next
+        setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
+        const now = Date.now()
+        for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
       })
+    }
+
+    // Fallback: legacy per-event channel (used until main-layer lands onActivityBatch)
+    return window.api.workspaces.onActivityChanged((e) => {
+      const prevDetail = getActivitySnapshot().get(e.workspaceId)
+      if (prevDetail !== e.detail) {
+        if (e.detail === 'ready') playSound('ding')
+        else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+      }
+      setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
+      bumpActivityTime(e.workspaceId, Date.now())
     })
   }, [])
 
-  // Single hoisted title subscription — replaces per-workspace listeners in WorkspaceCard / PinnedRow / WorkspaceSubRow.
+  // Single hoisted title subscription — writes to titleStore instead of local state.
   // Main emits { title: null } on terminal:destroy to clear stale titles, so a
   // null payload deletes the key (not just skips) — otherwise destroyed
   // workspaces would keep showing the last-seen title.
   useEffect(() => {
     return window.api.workspaces.onTitleChanged((e) => {
-      setTitleByWorkspaceId((prev) => {
-        if (e.title) return { ...prev, [e.workspaceId]: e.title }
-        if (!(e.workspaceId in prev)) return prev
-        const next = { ...prev }
-        delete next[e.workspaceId]
-        return next
-      })
+      if (e.title) {
+        setTitle(e.workspaceId, e.title)
+      } else {
+        deleteTitle(e.workspaceId)
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.api.workspaces.onActiveWorkspaceChanged(({ workspaceId }) => {
+      setAuthoritativeActiveWorkspace(workspaceId)
     })
   }, [])
 
@@ -310,34 +361,191 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           return prev // no change — already updated above
         })
       }
-      // Clear any stale activity entry for the deleted workspace.
-      setWorkspaceActivities((prev) => {
-        if (prev[workspaceId] === undefined) return prev
-        const next = { ...prev }
-        delete next[workspaceId]
-        return next
-      })
+      // Clear any stale entries for the deleted workspace from all stores.
+      deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
+      deleteTitle(workspaceId)
+      deleteGitStatus(workspaceId)
+      deletePr(workspaceId)
+      hasFetchedRef.current.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
     })
   }, [])
 
   useEffect(() => {
-    return window.api.workspaces.onNavigateTo((workspaceId) => {
-      const allWorkspaces = Object.values(workspacesByProject).flat()
-      const ws = allWorkspaces.find((w) => w.id === workspaceId)
-      if (ws) {
-        handleSelectWorkspace(ws.id, ws.projectId)
-      } else {
-        for (const [projectId, wsList] of Object.entries(workspacesByProject)) {
-          const found = wsList.find((w) => w.id === workspaceId)
-          if (found) {
-            handleSelectWorkspace(found.id, projectId)
-            return
+    return window.api.workspaces.onChanged(({ workspace }) => {
+      setWorkspacesByProject((prev) => {
+        const list = prev[workspace.projectId]
+        if (!list) return prev
+        return {
+          ...prev,
+          [workspace.projectId]: list.map((w) => (w.id === workspace.id ? workspace : w))
+        }
+      })
+    })
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Core callbacks — declared before effects so effects can reference them
+  // without forward-declaration lint errors.
+  // ---------------------------------------------------------------------------
+
+  // refreshPins is declared first so all handlers below can reference it in deps.
+  const refreshPins = useCallback((): void => {
+    window.api.pins.listAll().then(setPinnedItems).catch(console.error)
+  }, [])
+
+  // Stores all workspaces (active + archived) per project. Callers filter by
+  // archivedAt at render time. One source of truth — keeps ProjectView in
+  // sync when the sidebar mutates workspace state.
+  const fetchWorkspacesForProject = useCallback(async (projectId: string): Promise<void> => {
+    try {
+      const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
+      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
+    } catch (err) {
+      console.error('[dashboard] failed to load workspaces for', projectId, err)
+      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
+    }
+  }, [])
+
+  // Stable sidebar toggle handler — uses functional setState to avoid capturing
+  // sidebarCollapsed in closure (keeps this stable with empty deps).
+  const handleToggleSidebarCollapsed = useCallback((): void => {
+    // Uses functional form to avoid capturing sidebarCollapsed in closure
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      playSound(next ? 'drawer-close' : 'drawer-open')
+      window.api.uiState.update({ sidebarCollapsed: next }).catch(console.error)
+      return next
+    })
+  }, [])
+
+  const handleSelectWorkspace = useCallback(
+    (workspaceId: string, projectId: string): void => {
+      setSelectedProjectId(projectId)
+      setSelectedWorkspaceId(workspaceId)
+      setView({ kind: 'workspace', workspaceId, projectId })
+      // Keep the project expanded so the workspace stays visible.
+      // Also persist the expanded state to DB so it survives a relaunch.
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        if (!next.has(projectId)) {
+          next.add(projectId)
+          window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
+        }
+        return next
+      })
+      // Ensure workspaces are loaded for this project — reads ref to avoid
+      // capturing workspacesByProject in closure (would create new fn each render).
+      if (!workspacesByProjectRef.current[projectId]) {
+        fetchWorkspacesForProject(projectId)
+      }
+      void (async (): Promise<void> => {
+        // If the workspace is closed, reopen it before mounting the terminal.
+        const ws = workspacesByProjectRef.current[projectId]?.find((w) => w.id === workspaceId)
+        if (ws && ws.closedAt !== null) {
+          await window.api.workspaces.reopen(workspaceId).catch(console.error)
+        }
+        // workspaces.open and uiState.update are independent DB writes — issue them
+        // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
+        await Promise.all([
+          window.api.workspaces.open(workspaceId).then((updated) => {
+            setWorkspacesByProject((prev) => ({
+              ...prev,
+              [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
+            }))
+          }),
+          window.api.uiState.update({
+            lastViewKind: 'workspace',
+            lastProjectId: projectId,
+            lastWorkspaceId: workspaceId
+          })
+        ]).catch(console.error)
+      })()
+    },
+    [fetchWorkspacesForProject]
+  )
+  // Sync the handleSelectWorkspace ref after the callback is defined — placed
+  // here (after declaration) so the linter can confirm no forward-reference
+  // ambiguity. Same no-dep pattern as the other ref syncs above.
+  useLayoutEffect(() => {
+    handleSelectWorkspaceRef.current = handleSelectWorkspace
+  })
+
+  const handleToggleProjectExpand = useCallback(
+    (id: string): void => {
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) {
+          next.delete(id)
+        } else {
+          next.add(id)
+          // Lazy-load workspaces if not yet fetched — reads ref to avoid
+          // stale closure over workspacesByProject.
+          if (!workspacesByProjectRef.current[id]) {
+            fetchWorkspacesForProject(id)
           }
+        }
+        const nowExpanded = next.has(id)
+        window.api.projects.setExpandedInSidebar(id, nowExpanded).catch(console.error)
+        // Keep local projects state in sync so any subsequent setProjects() call
+        // (e.g. from handleRenameProject revert) doesn't clobber the expandedInSidebar field.
+        setProjects((arr) =>
+          arr.map((p) => (p.id === id ? { ...p, expandedInSidebar: nowExpanded } : p))
+        )
+        return next
+      })
+    },
+    [fetchWorkspacesForProject]
+  )
+
+  const handleSelectProject = useCallback(
+    (id: string): void => {
+      setSelectedProjectId(id)
+      setSelectedWorkspaceId(null)
+      setView({ kind: 'project', projectId: id })
+      if (!workspacesByProjectRef.current[id]) {
+        fetchWorkspacesForProject(id)
+      }
+      window.api.projects.open(id).catch(console.error)
+      window.api.uiState
+        .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
+        .catch(console.error)
+    },
+    [fetchWorkspacesForProject]
+  )
+
+  const handleSelectNav = useCallback((nav: 'sessions'): void => {
+    setView({ kind: nav })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    window.api.uiState
+      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Effects that use the above callbacks — must come after
+  // ---------------------------------------------------------------------------
+
+  // onNavigateTo: uses refs so the effect never re-subscribes on state/callback
+  // changes — avoids dropped events mid-churn and stops the N re-subscription
+  // pattern on every workspace list mutation. handleSelectWorkspaceRef keeps
+  // the callback current without requiring it in the dep array; the ref is
+  // updated by the no-dep useLayoutEffect placed after handleSelectWorkspace.
+  useEffect(() => {
+    return window.api.workspaces.onNavigateTo((workspaceId) => {
+      const byProject = workspacesByProjectRef.current
+      for (const [projectId, wsList] of Object.entries(byProject)) {
+        const found = wsList.find((w) => w.id === workspaceId)
+        if (found) {
+          handleSelectWorkspaceRef.current(found.id, projectId)
+          return
         }
       }
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspacesByProject])
+  }, [])
 
   useEffect(() => {
     window.api.projects
@@ -352,13 +560,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       })
   }, [])
 
-  function refreshPins(): void {
-    window.api.pins.listAll().then(setPinnedItems).catch(console.error)
-  }
-
-  useEffect(() => {
-    refreshPins()
-  }, [])
+  // refreshPins is defined below as useCallback — called on mount via a separate effect
 
   // Stable key — only changes when workspace ids/cwds actually change, not on every object re-creation
   const workspacesPollKey = useMemo(
@@ -371,79 +573,102 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [workspacesByProject]
   )
 
-  // Poll git status for all non-archived workspaces every 30s.
-  // 300ms debounce prevents burst spawns when workspacesByProject updates rapidly.
-  // Self-scheduling setTimeout chain (not setInterval) so a slow refresh
-  // can't overlap with the next tick — gh can take seconds on flaky networks,
-  // and concurrent IPC calls produced out-of-order state patches before.
+  // Subscribe to git status and PR push updates emitted by main's fs.watch watcher.
+  // NOTE: depends on arch-main channels:
+  //   git:statusChanged  → { workspaceId: string; status: GitStatus }
+  //   github:prChanged   → { workspaceId: string; pr: GhPullRequest | null }
+  // Preload methods: window.api.git.onStatusChanged / window.api.github.onPrChanged
+  // each returning an unsubscribe fn.
+  //
+  // Renderer-local ambient types until the preload types are reconciled.
+  type GitApiWithPush = typeof window.api.git & {
+    onStatusChanged?: (cb: (e: { workspaceId: string; status: GitStatus }) => void) => () => void
+  }
+  type GithubApiWithPush = typeof window.api.github & {
+    onPrChanged?: (cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void) => () => void
+  }
+
+  useEffect(() => {
+    const gitApi = window.api.git as GitApiWithPush
+    const githubApi = window.api.github as GithubApiWithPush
+
+    const unsubGit =
+      typeof gitApi.onStatusChanged === 'function'
+        ? gitApi.onStatusChanged((e) => {
+            setGitStatus(e.workspaceId, e.status)
+          })
+        : undefined
+
+    const unsubPr =
+      typeof githubApi.onPrChanged === 'function'
+        ? githubApi.onPrChanged((e) => {
+            setPr(e.workspaceId, e.pr)
+          })
+        : undefined
+
+    return () => {
+      unsubGit?.()
+      unsubPr?.()
+    }
+  }, [])
+
+  // Belt-and-suspenders: concurrent imperative fetch for workspaces visible at
+  // mount / when new workspace ids appear, in case the push subscription
+  // attaches after main has already emitted the initial statusChanged events.
+  // Also seeds initial titles for newly seen workspaces.
+  // Subsequent updates come via the push channels above and onTitleChanged.
   useEffect(() => {
     const workspaces = Object.values(workspacesByProject)
       .flat()
       .filter((w) => w.archivedAt === null)
     if (workspaces.length === 0) return
-
     let cancelled = false
-    let nextTickId: ReturnType<typeof setTimeout> | null = null
 
-    async function refresh(): Promise<void> {
-      const gitResults: Record<string, GitStatus | null> = {}
-      const prResults: Record<string, GhPullRequest | null> = {}
-      // Sequential to avoid spawning N git processes at once
-      for (const ws of workspaces) {
-        if (cancelled) return
-        try {
-          const status = await window.api.git.status(ws.cwd)
-          gitResults[ws.id] = status
-          // Branch came back — ask gh for the PR. The IPC layer caches with a
-          // 2-min TTL so the 30s loop doesn't actually re-shell on every tick.
+    // Only fetch for workspaces we haven't already fetched — use a ref-based
+    // set so we don't read stale state from the closure, which would trigger
+    // duplicate IPC calls when workspacesPollKey re-runs.
+    // NOTE: we do NOT pre-mark ids as fetched here — we mark them only on
+    // success so a cancelled mid-flight fetch retries on re-mount.
+    const missing = workspaces.filter((w) => !hasFetchedRef.current.has(w.id))
+
+    // Git + PR: concurrent per-workspace using Promise.allSettled
+    if (missing.length > 0) {
+      Promise.allSettled(
+        missing.map(async (ws) => {
+          let status: GitStatus | null = null
+          try {
+            status = await window.api.git.status(ws.cwd)
+            if (!cancelled) {
+              // Mark as fetched only after a successful response so a
+              // cancelled mid-flight fetch retries on re-mount.
+              hasFetchedRef.current.add(ws.id)
+              setGitStatus(ws.id, status)
+            }
+          } catch (err) {
+            console.error('[dashboard] git status failed for', ws.id, err)
+            if (!cancelled) {
+              hasFetchedRef.current.add(ws.id)
+              setGitStatus(ws.id, null)
+            }
+          }
           if (status?.branch) {
             try {
-              prResults[ws.id] = await window.api.github.prForBranch(ws.cwd, status.branch)
+              const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
+              if (!cancelled) setPr(ws.id, pr)
             } catch (err) {
               console.error('[dashboard] gh pr lookup failed for', ws.id, err)
-              prResults[ws.id] = null
+              if (!cancelled) setPr(ws.id, null)
             }
           } else {
-            prResults[ws.id] = null
+            if (!cancelled) setPr(ws.id, null)
           }
-        } catch (err) {
-          console.error('[dashboard] git status failed for', ws.id, err)
-          gitResults[ws.id] = null
-          prResults[ws.id] = null
-        }
-      }
-      if (!cancelled) {
-        setGitStatusByWorkspaceId((prev) => ({ ...prev, ...gitResults }))
-        setPrByWorkspaceId((prev) => ({ ...prev, ...prResults }))
-      }
+        })
+      ).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
     }
 
-    function schedule(delay: number): void {
-      nextTickId = setTimeout(async () => {
-        nextTickId = null
-        if (cancelled) return
-        await refresh()
-        if (!cancelled) schedule(30000)
-      }, delay)
-    }
-
-    schedule(300) // initial debounce, then every 30s after each completes
-
-    return () => {
-      cancelled = true
-      if (nextTickId !== null) clearTimeout(nextTickId)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspacesPollKey])
-
-  // Batch-fetch initial titles for newly seen workspaces so the hoisted title map is seeded.
-  // Runs when new workspace ids appear; subsequent updates come via the onTitleChanged subscription.
-  useEffect(() => {
-    const allWs = Object.values(workspacesByProject).flat()
-    if (allWs.length === 0) return
-    let cancelled = false
+    // Titles: seed from getTitle for all workspaces in this poll key
     Promise.all(
-      allWs.map((ws) =>
+      workspaces.map((ws) =>
         window.api.workspaces
           .getTitle(ws.id)
           .then((title) => ({ id: ws.id, title }))
@@ -451,14 +676,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       )
     ).then((results) => {
       if (cancelled) return
-      const patch: Record<string, string> = {}
       for (const r of results) {
-        if (r && r.title) patch[r.id] = r.title
-      }
-      if (Object.keys(patch).length > 0) {
-        setTitleByWorkspaceId((prev) => ({ ...prev, ...patch }))
+        if (r && r.title) setTitle(r.id, r.title)
       }
     })
+
     return () => {
       cancelled = true
     }
@@ -510,71 +732,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Stores all workspaces (active + archived) per project. Callers filter by
-  // archivedAt at render time. One source of truth — keeps ProjectView in
-  // sync when the sidebar mutates workspace state.
-  async function fetchWorkspacesForProject(projectId: string): Promise<void> {
-    try {
-      const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
-      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
-    } catch (err) {
-      console.error('[dashboard] failed to load workspaces for', projectId, err)
-      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
-    }
-  }
-
-  function setSidebarCollapsedAndPersist(collapsed: boolean): void {
-    setSidebarCollapsed(collapsed)
-    playSound(collapsed ? 'drawer-close' : 'drawer-open')
-    window.api.uiState.update({ sidebarCollapsed: collapsed }).catch(console.error)
-  }
-
-  function handleToggleProjectExpand(id: string): void {
-    setExpandedProjectIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-        // Lazy-load workspaces if not yet fetched
-        if (!workspacesByProject[id]) {
-          fetchWorkspacesForProject(id)
-        }
-      }
-      const nowExpanded = next.has(id)
-      window.api.projects.setExpandedInSidebar(id, nowExpanded).catch(console.error)
-      // Keep local projects state in sync so any subsequent setProjects() call
-      // (e.g. from handleRenameProject revert) doesn't clobber the expandedInSidebar field.
-      setProjects((arr) =>
-        arr.map((p) => (p.id === id ? { ...p, expandedInSidebar: nowExpanded } : p))
-      )
-      return next
-    })
-  }
-
-  function handleSelectProject(id: string): void {
-    setSelectedProjectId(id)
-    setSelectedWorkspaceId(null)
-    setView({ kind: 'project', projectId: id })
-    if (!workspacesByProject[id]) {
-      fetchWorkspacesForProject(id)
-    }
-    window.api.projects.open(id).catch(console.error)
-    window.api.uiState
-      .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
-      .catch(console.error)
-  }
-
-  function handleSelectNav(nav: 'sessions'): void {
-    setView({ kind: nav })
-    setSelectedProjectId(null)
-    setSelectedWorkspaceId(null)
-    window.api.uiState
-      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
-  }
-
-  function handleSelectSettings(): void {
+  const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
@@ -582,9 +740,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     window.api.uiState
       .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
       .catch(console.error)
-  }
+  }, [])
 
-  async function handleAddProject(): Promise<void> {
+  const handleAddProject = useCallback(async (): Promise<void> => {
     setAddingProject(true)
     try {
       const result = await window.api.projects.pickAndAdd()
@@ -626,260 +784,277 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     } finally {
       setAddingProject(false)
     }
-  }
+  }, [handleSelectWorkspace])
 
-  async function handleResumedInWorkspace(workspace: WorkspaceRecord): Promise<void> {
-    // sessions:resumeInNewWorkspace already created the row; refresh + navigate.
-    await fetchWorkspacesForProject(workspace.projectId)
-    setExpandedProjectIds((prev) => {
-      const next = new Set(prev)
-      if (!next.has(workspace.projectId)) {
-        next.add(workspace.projectId)
-        window.api.projects.setExpandedInSidebar(workspace.projectId, true).catch(console.error)
-      }
-      return next
-    })
-    handleSelectWorkspace(workspace.id, workspace.projectId)
-  }
+  const handleResumedInWorkspace = useCallback(
+    async (workspace: WorkspaceRecord): Promise<void> => {
+      // sessions:resumeInNewWorkspace already created the row; refresh + navigate.
+      await fetchWorkspacesForProject(workspace.projectId)
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        if (!next.has(workspace.projectId)) {
+          next.add(workspace.projectId)
+          window.api.projects.setExpandedInSidebar(workspace.projectId, true).catch(console.error)
+        }
+        return next
+      })
+      handleSelectWorkspace(workspace.id, workspace.projectId)
+    },
+    [fetchWorkspacesForProject, handleSelectWorkspace]
+  )
 
-  function handleSelectWorkspace(workspaceId: string, projectId: string): void {
-    setSelectedProjectId(projectId)
-    setSelectedWorkspaceId(workspaceId)
-    setView({ kind: 'workspace', workspaceId, projectId })
-    // Keep the project expanded so the workspace stays visible.
-    // Also persist the expanded state to DB so it survives a relaunch.
-    setExpandedProjectIds((prev) => {
-      const next = new Set(prev)
-      if (!next.has(projectId)) {
-        next.add(projectId)
-        window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
-      }
-      return next
-    })
-    // Ensure workspaces are loaded for this project
-    if (!workspacesByProject[projectId]) {
-      fetchWorkspacesForProject(projectId)
-    }
-    // workspaces.open updates last_opened_at server-side; merge the returned
-    // record back into local cache so the project view shows fresh activity.
-    window.api.workspaces
-      .open(workspaceId)
-      .then((updated) => {
+  const handleToggleWorkspacePin = useCallback(
+    async (workspaceId: string, projectId: string): Promise<void> => {
+      // Read synchronously from ref — setState updaters are not guaranteed to
+      // run synchronously in React 18+ createRoot, so reading state via a
+      // functional updater callback is unreliable here.
+      const ws = workspacesByProjectRef.current[projectId]?.find((w) => w.id === workspaceId)
+      // pinnedAt === null means currently unpinned → we want to pin it (pass true)
+      // pinnedAt !== null means currently pinned → we want to unpin it (pass false)
+      const pinned = ws?.pinnedAt === null
+      try {
+        const updated = await window.api.workspaces.setPinned(workspaceId, pinned)
         setWorkspacesByProject((prev) => ({
           ...prev,
           [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
         }))
-      })
-      .catch(console.error)
-    window.api.uiState
-      .update({ lastViewKind: 'workspace', lastProjectId: projectId, lastWorkspaceId: workspaceId })
-      .catch(console.error)
-  }
+        refreshPins()
+      } catch (err) {
+        console.error('[dashboard] workspace setPinned failed', err)
+      }
+    },
+    [refreshPins]
+  )
 
-  async function handleToggleWorkspacePin(workspaceId: string, projectId: string): Promise<void> {
-    const workspaces = workspacesByProject[projectId] ?? []
-    const ws = workspaces.find((w) => w.id === workspaceId)
-    if (!ws) return
-    const pinned = ws.pinnedAt === null
-    try {
-      const updated = await window.api.workspaces.setPinned(workspaceId, pinned)
+  const handleAddWorkspace = useCallback(
+    async (projectId: string): Promise<void> => {
+      // Read synchronously from refs — setState updaters are not guaranteed to
+      // run synchronously in React 18+ createRoot, so reading state via a
+      // functional updater callback is unreliable here.
+      const project = projectsRef.current.find((p) => p.id === projectId)
+      const projectPath = project?.path ?? null
+      if (!projectPath) return
+
+      const existing = workspacesByProjectRef.current[projectId] ?? []
+      const usedNumbers = new Set(
+        existing
+          .map((w) => /^Workspace\s+(\d+)$/.exec(w.name)?.[1])
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => parseInt(s, 10))
+      )
+      let n = 1
+      while (usedNumbers.has(n)) n++
+      const defaultName = `Workspace ${n}`
+
+      const finalPath = projectPath
+      try {
+        const newWs = await window.api.workspaces.create({
+          projectId,
+          name: defaultName,
+          cwd: finalPath
+        })
+        playSound('pop')
+        // Append the newly-created workspace directly to local state instead of
+        // re-fetching the full list — the create IPC already returned everything
+        // we need. Eliminates a redundant DB roundtrip before the user can see
+        // the new row in the sidebar.
+        setWorkspacesByProject((prev) => {
+          const current = prev[projectId] ?? []
+          // De-dupe defensively in case a parallel fetch raced.
+          if (current.some((w) => w.id === newWs.id)) return prev
+          return { ...prev, [projectId]: [newWs, ...current] }
+        })
+        // Expand the project row so the new workspace is visible.
+        // Persist the expanded state so it survives a relaunch.
+        setExpandedProjectIds((prev) => {
+          const next = new Set(prev)
+          if (!next.has(projectId)) {
+            next.add(projectId)
+            window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
+          }
+          return next
+        })
+        // Navigate to the new workspace — fires immediately, mount kicks off in parallel.
+        handleSelectWorkspace(newWs.id, projectId)
+      } catch (err) {
+        console.error('[dashboard] add workspace failed', err)
+      }
+    },
+    [handleSelectWorkspace]
+  )
+
+  const handleRenameWorkspace = useCallback(
+    async (workspaceId: string, projectId: string, newName: string): Promise<void> => {
+      const trimmed = newName.trim()
+      if (!trimmed) return
+      // Optimistic update
       setWorkspacesByProject((prev) => ({
         ...prev,
-        [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
+        [projectId]: (prev[projectId] ?? []).map((w) =>
+          w.id === workspaceId ? { ...w, name: trimmed, nameIsAuto: false } : w
+        )
       }))
-      refreshPins()
-    } catch (err) {
-      console.error('[dashboard] workspace setPinned failed', err)
-    }
-  }
-
-  async function handleAddWorkspace(projectId: string): Promise<void> {
-    const project = projects.find((p) => p.id === projectId)
-    if (!project) return
-    // Generate a sequential default name like "Workspace 3" so each new
-    // workspace is identifiable in the list without forcing the user to rename.
-    const existing = workspacesByProject[projectId] ?? []
-    const usedNumbers = new Set(
-      existing
-        .map((w) => /^Workspace\s+(\d+)$/.exec(w.name)?.[1])
-        .filter((s): s is string => typeof s === 'string')
-        .map((s) => parseInt(s, 10))
-    )
-    let n = 1
-    while (usedNumbers.has(n)) n++
-    const defaultName = `Workspace ${n}`
-    try {
-      const newWs = await window.api.workspaces.create({
-        projectId,
-        name: defaultName,
-        cwd: project.path
-      })
-      playSound('pop')
-      // Append the newly-created workspace directly to local state instead of
-      // re-fetching the full list — the create IPC already returned everything
-      // we need. Eliminates a redundant DB roundtrip before the user can see
-      // the new row in the sidebar.
-      setWorkspacesByProject((prev) => {
-        const current = prev[projectId] ?? []
-        // De-dupe defensively in case a parallel fetch raced.
-        if (current.some((w) => w.id === newWs.id)) return prev
-        return { ...prev, [projectId]: [newWs, ...current] }
-      })
-      // Expand the project row so the new workspace is visible.
-      // Persist the expanded state so it survives a relaunch.
-      setExpandedProjectIds((prev) => {
-        const next = new Set(prev)
-        if (!next.has(projectId)) {
-          next.add(projectId)
-          window.api.projects.setExpandedInSidebar(projectId, true).catch(console.error)
-        }
-        return next
-      })
-      // Navigate to the new workspace — fires immediately, mount kicks off in parallel.
-      handleSelectWorkspace(newWs.id, projectId)
-    } catch (err) {
-      console.error('[dashboard] add workspace failed', err)
-    }
-  }
-
-  async function handleRenameWorkspace(
-    workspaceId: string,
-    projectId: string,
-    newName: string
-  ): Promise<void> {
-    const trimmed = newName.trim()
-    if (!trimmed) return
-    // Optimistic update
-    setWorkspacesByProject((prev) => ({
-      ...prev,
-      [projectId]: (prev[projectId] ?? []).map((w) =>
-        w.id === workspaceId ? { ...w, name: trimmed, nameIsAuto: false } : w
-      )
-    }))
-    try {
-      await window.api.workspaces.rename(workspaceId, trimmed)
-      refreshPins()
-    } catch (err) {
-      console.error('[dashboard] workspace rename failed', err)
-      await fetchWorkspacesForProject(projectId)
-    }
-  }
-
-  async function handleArchiveWorkspaceFromSidebar(
-    workspaceId: string,
-    projectId: string
-  ): Promise<void> {
-    // Destroy the terminal surface before archiving so the shell process is cleaned up.
-    // Don't block on failure — the DB archive can proceed regardless.
-    window.api.terminal
-      .destroy(workspaceId)
-      .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
-    // Optimistically drop any cached activity for the workspace — once the
-    // backend deletes the row there's nothing for the dot to track.
-    setWorkspaceActivities((prev) => {
-      if (prev[workspaceId] === undefined) return prev
-      const next = { ...prev }
-      delete next[workspaceId]
-      return next
-    })
-    try {
-      // "Archive" is a hard delete now (v34+). The DB row is gone after this.
-      await window.api.workspaces.archive(workspaceId)
-      playSound('archive')
-      await fetchWorkspacesForProject(projectId)
-      // If we were viewing the workspace that just got deleted, route back to
-      // the project view — WorkspaceView can't render a row that no longer exists.
-      if (selectedWorkspaceId === workspaceId) {
-        setSelectedWorkspaceId(null)
-        setView({ kind: 'project', projectId })
+      try {
+        await window.api.workspaces.rename(workspaceId, trimmed)
+        refreshPins()
+      } catch (err) {
+        console.error('[dashboard] workspace rename failed', err)
+        await fetchWorkspacesForProject(projectId)
       }
-      refreshPins()
-    } catch (err) {
-      console.error('[dashboard] workspace archive failed', err)
-    }
-  }
+    },
+    [fetchWorkspacesForProject, refreshPins]
+  )
 
-  async function handleRenameProject(id: string, newName: string): Promise<void> {
-    // Optimistic update
-    setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, name: newName } : p)))
-    try {
-      await window.api.projects.rename(id, newName)
-      // Refresh pins in case the project appears in the pinned section
-      refreshPins()
-    } catch (err) {
-      console.error('[dashboard] project rename failed', err)
-      // Revert by re-fetching
-      window.api.projects.list().then(setProjects).catch(console.error)
-    }
-  }
+  const handleArchiveWorkspaceFromSidebar = useCallback(
+    async (workspaceId: string, projectId: string): Promise<void> => {
+      // Destroy the terminal surface before archiving so the shell process is cleaned up.
+      // Don't block on failure — the DB archive can proceed regardless.
+      window.api.terminal
+        .destroy(workspaceId)
+        .catch((e) => console.error('[dashboard] terminal.destroy before archive failed:', e))
+      // Optimistically drop any cached data for the workspace from all stores —
+      // once the backend deletes the row there's nothing for these to track.
+      deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
+      deleteTitle(workspaceId)
+      deleteGitStatus(workspaceId)
+      deletePr(workspaceId)
+      hasFetchedRef.current.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
+      try {
+        // "Archive" is a hard delete now (v34+). The DB row is gone after this.
+        await window.api.workspaces.archive(workspaceId)
+        playSound('archive')
+        await fetchWorkspacesForProject(projectId)
+        // If we were viewing the workspace that just got deleted, route back to
+        // the project view — WorkspaceView can't render a row that no longer exists.
+        // Read via ref to avoid capturing selectedWorkspaceId in closure.
+        if (selectedWorkspaceIdRef.current === workspaceId) {
+          setSelectedWorkspaceId(null)
+          setView({ kind: 'project', projectId })
+        }
+        refreshPins()
+      } catch (err) {
+        console.error('[dashboard] workspace archive failed', err)
+      }
+    },
+    [fetchWorkspacesForProject, refreshPins]
+  )
 
-  function handleRequestRemoveProject(project: ProjectRecord): void {
+  const handleCloseWorkspace = useCallback((workspaceId: string): void => {
+    void window.api.workspaces.close(workspaceId).catch(console.error)
+  }, [])
+
+  const handleRenameProject = useCallback(
+    async (id: string, newName: string): Promise<void> => {
+      // Optimistic update
+      setProjects((arr) => arr.map((p) => (p.id === id ? { ...p, name: newName } : p)))
+      try {
+        await window.api.projects.rename(id, newName)
+        // Refresh pins in case the project appears in the pinned section
+        refreshPins()
+      } catch (err) {
+        console.error('[dashboard] project rename failed', err)
+        // Revert by re-fetching
+        window.api.projects.list().then(setProjects).catch(console.error)
+      }
+    },
+    [refreshPins]
+  )
+
+  const handleRequestRemoveProject = useCallback((project: ProjectRecord): void => {
     setRemoveConfirmTarget(project)
-  }
+  }, [])
 
-  async function handleConfirmRemove(): Promise<void> {
+  const handleConfirmRemove = useCallback(async (): Promise<void> => {
     if (!removeConfirmTarget) return
     const target = removeConfirmTarget
     // Destroy all terminal surfaces for this project's workspaces before the
     // DB cascade-delete removes the workspace rows.
-    const projectWorkspaces = workspacesByProject[target.id] ?? []
+    // Serialised with a microtask yield between each destroy so AppKit can drain
+    // main-queue work (ghostty_surface_free stalls ~200ms-2s per surface) without
+    // blocking the event loop for the full N-surface burst.
+    const projectWorkspaces = workspacesByProjectRef.current[target.id] ?? []
     for (const ws of projectWorkspaces) {
-      window.api.terminal
+      await window.api.terminal
         .destroy(ws.id)
         .catch((e) =>
           console.error('[dashboard] terminal.destroy before project remove failed:', ws.id, e)
         )
+      // Yield to the event loop between each destroy so AppKit can drain between frees.
+      await new Promise<void>((r) => setTimeout(r, 0))
     }
     await window.api.projects.remove(target.id)
     playSound('delete')
     setRemoveConfirmTarget(null)
+    // Drop cached data for all removed workspaces from all stores.
+    for (const ws of projectWorkspaces) {
+      deleteActivity(ws.id)
+      deleteActivityTime(ws.id)
+      deleteTitle(ws.id)
+      deleteGitStatus(ws.id)
+      deletePr(ws.id)
+      hasFetchedRef.current.delete(ws.id)
+      clearFooterActionsCache(ws.id)
+      clearContextBudgetCache(ws.id)
+    }
     setProjects((arr) => arr.filter((p) => p.id !== target.id))
     setExpandedProjectIds((prev) => {
       const next = new Set(prev)
       next.delete(target.id)
       return next
     })
-    if (selectedProjectId === target.id) {
+    // Read selectedProjectId via ref to avoid capturing it in closure
+    if (selectedProjectIdRef.current === target.id) {
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
       setView({ kind: 'sessions' })
     }
     refreshPins()
-  }
+  }, [removeConfirmTarget, refreshPins])
 
-  function handleCancelRemove(): void {
+  const handleCancelRemove = useCallback((): void => {
     setRemoveConfirmTarget(null)
-  }
+  }, [])
 
-  function handleReorderProjects(orderedIds: string[]): void {
-    // Optimistic reorder — update local state immediately
-    const byId = new Map(projects.map((p) => [p.id, p]))
-    const reordered = orderedIds.map((id) => byId.get(id)).filter((p): p is ProjectRecord => !!p)
-    setProjects(reordered)
+  const handleReorderProjects = useCallback((orderedIds: string[]): void => {
+    // Optimistic reorder — update local state immediately using functional updater
+    setProjects((arr) => {
+      const byId = new Map(arr.map((p) => [p.id, p]))
+      return orderedIds.map((id) => byId.get(id)).filter((p): p is ProjectRecord => !!p)
+    })
     window.api.projects.reorder(orderedIds).catch((err) => {
       console.error('[dashboard] reorder failed; refetching', err)
       window.api.projects.list().then(setProjects).catch(console.error)
     })
-  }
+  }, [])
 
-  function handleReorderWorkspaces(projectId: string, orderedIds: string[]): void {
-    // Optimistic: reorder the local workspacesByProject[projectId] immediately
-    setWorkspacesByProject((prev) => {
-      const list = prev[projectId] ?? []
-      const byId = new Map(list.map((w) => [w.id, w]))
-      const reordered = orderedIds
-        .map((id) => byId.get(id))
-        .filter((w): w is WorkspaceRecord => !!w)
-      // Append any workspaces missing from orderedIds (e.g. archived ones not in the visible group)
-      const seen = new Set(orderedIds)
-      const tail = list.filter((w) => !seen.has(w.id))
-      return { ...prev, [projectId]: [...reordered, ...tail] }
-    })
-    window.api.workspaces.reorder(projectId, orderedIds).catch((err) => {
-      console.error('[dashboard] workspace reorder failed; refetching', err)
-      fetchWorkspacesForProject(projectId).catch(console.error)
-    })
-  }
+  const handleReorderWorkspaces = useCallback(
+    (projectId: string, orderedIds: string[]): void => {
+      // Optimistic: reorder the local workspacesByProject[projectId] immediately
+      setWorkspacesByProject((prev) => {
+        const list = prev[projectId] ?? []
+        const byId = new Map(list.map((w) => [w.id, w]))
+        const reordered = orderedIds
+          .map((id) => byId.get(id))
+          .filter((w): w is WorkspaceRecord => !!w)
+        // Append any workspaces missing from orderedIds (e.g. archived ones not in the visible group)
+        const seen = new Set(orderedIds)
+        const tail = list.filter((w) => !seen.has(w.id))
+        return { ...prev, [projectId]: [...reordered, ...tail] }
+      })
+      window.api.workspaces.reorder(projectId, orderedIds).catch((err) => {
+        console.error('[dashboard] workspace reorder failed; refetching', err)
+        fetchWorkspacesForProject(projectId).catch(console.error)
+      })
+    },
+    [fetchWorkspacesForProject]
+  )
+
+  useEffect(() => {
+    refreshPins()
+  }, [refreshPins])
 
   const allWorkspaces = useMemo(
     () => Object.values(workspacesByProject).flat(),
@@ -911,7 +1086,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   return (
     <div className="flex flex-col h-screen">
       <TopBar
-        onToggleCollapsed={() => setSidebarCollapsedAndPersist(!sidebarCollapsed)}
+        onToggleCollapsed={handleToggleSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
         sidebarWidth={uiState?.sidebarWidth ?? 256}
       />
@@ -927,10 +1102,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           currentViewKind={view.kind}
           expandedProjectIds={expandedProjectIds}
           workspacesByProject={workspacesByProject}
-          workspaceActivities={workspaceActivities}
-          gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-          prByWorkspaceId={prByWorkspaceId}
-          titleByWorkspaceId={titleByWorkspaceId}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
           sidebarWidth={uiState?.sidebarWidth ?? 256}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
@@ -947,6 +1118,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onAddWorkspace={handleAddWorkspace}
           onRenameWorkspace={handleRenameWorkspace}
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+          onCloseWorkspace={handleCloseWorkspace}
           onTogglePinWorkspace={handleToggleWorkspacePin}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}
@@ -983,14 +1155,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             onRenameWorkspace={handleRenameWorkspace}
             onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
             onToggleWorkspacePin={handleToggleWorkspacePin}
-            workspaceActivities={workspaceActivities}
             onResumedInWorkspace={handleResumedInWorkspace}
             projects={projects}
             allWorkspaces={allWorkspaces}
             allSessions={allSessions}
-            gitStatusByWorkspaceId={gitStatusByWorkspaceId}
-            prByWorkspaceId={prByWorkspaceId}
-            titleByWorkspaceId={titleByWorkspaceId}
             fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           />
         </main>

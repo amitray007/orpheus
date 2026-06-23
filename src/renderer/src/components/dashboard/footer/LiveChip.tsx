@@ -3,6 +3,30 @@ import type React from 'react'
 import type { ActionKind, WorkspaceActivityDetail } from '@shared/types'
 import { IconByName } from './iconMap'
 
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const v = n / 1_000_000
+    // 3 sig figs, trim trailing zeros
+    return parseFloat(v.toPrecision(3)) + 'M'
+  }
+  if (n >= 1_000) {
+    const v = n / 1_000
+    return parseFloat(v.toPrecision(3)) + 'k'
+  }
+  return parseFloat((n / 1_000).toPrecision(3)) + 'k'
+}
+
+function formatUsd(n: number): string {
+  if (n === 0) return '$0'
+  if (n > 0 && n < 0.01) return '< $0.01'
+  if (n >= 1) return '$' + n.toFixed(2)
+  return '$' + parseFloat(n.toPrecision(3)).toString()
+}
+
 // Dot color by workspace activity status
 function getStatusDotColor(value: unknown): string {
   if (typeof value !== 'string') return 'bg-text-muted/40'
@@ -29,31 +53,23 @@ function getStatusDotColor(value: unknown): string {
 function formatValue(actionId: string, value: unknown): string | null {
   if (value === null || value === undefined) return null
 
-  // session.getUsage — render "Context 78k / 200k"
+  // session.getUsage — render occupancy from the most-recent turn only (e.g. "78.2k")
   if (actionId === 'session.getUsage' && typeof value === 'object' && value !== null) {
     const v = value as Record<string, unknown>
-    if (typeof v.inputTokens === 'number' && typeof v.contextBudget === 'number') {
-      const used =
-        (v.inputTokens as number) +
-        ((v.cacheReadTokens as number) ?? 0) +
-        ((v.cacheCreationTokens as number) ?? 0)
-      const budget = v.contextBudget as number
-      const fmt = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
-      return `${fmt(used)} / ${fmt(budget)}`
+    if (typeof v.lastTurnContextTokens === 'number') {
+      return formatTokens(v.lastTurnContextTokens as number)
     }
+    // Fallback for stale cached values without the new field
     if (typeof v.usedPct === 'number') {
       return `${Math.round(v.usedPct as number)}%`
     }
   }
 
-  // session.getCost — render "$ 0.0042" or "< $0.01"
+  // session.getCost — render cost with 3 sig figs (e.g. "$0.0042" or "< $0.01")
   if (actionId === 'session.getCost' && typeof value === 'object' && value !== null) {
     const v = value as Record<string, unknown>
     if (typeof v.usd === 'number') {
-      const usd = v.usd as number
-      if (usd < 0.01) return '< $0.01'
-      if (usd < 1) return `$${usd.toFixed(4)}`
-      return `$${usd.toFixed(2)}`
+      return formatUsd(v.usd as number)
     }
   }
 
@@ -68,6 +84,13 @@ function formatValue(actionId: string, value: unknown): string | null {
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Module-level value cache — keyed by `${actionId}:${workspaceId}`.
+// On workspace switch-back the chip immediately renders the stale value
+// (no null → value flash) while the subscription / poll catches up.
+// ---------------------------------------------------------------------------
+const chipValueCache = new Map<string, unknown>()
+
 interface LiveChipProps {
   actionId: string
   label: string
@@ -75,6 +98,8 @@ interface LiveChipProps {
   params: Record<string, unknown>
   workspaceId: string
   kind: ActionKind
+  /** Whether this chip's visibleWhen condition is satisfied for the current activity state. When false the chip renders dimmed. */
+  enabled?: boolean
 }
 
 /**
@@ -87,15 +112,26 @@ export function LiveChip({
   icon,
   params,
   workspaceId,
-  kind
+  kind,
+  enabled = true
 }: LiveChipProps): React.JSX.Element {
-  const [value, setValue] = useState<unknown>(null)
+  const cacheKey = `${actionId}:${workspaceId}`
+  const [value, setValue] = useState<unknown>(() => chipValueCache.get(cacheKey) ?? null)
   const disposeRef = useRef<(() => void) | null>(null)
 
   const isStatus = actionId === 'workspace.getActivityStatus'
 
   useEffect(() => {
     if (!workspaceId) return
+    if (!enabled) return
+
+    const key = `${actionId}:${workspaceId}`
+
+    // Helper that writes through to both component state and the module cache.
+    const updateValue = (v: unknown): void => {
+      chipValueCache.set(key, v)
+      setValue(v)
+    }
 
     // Subscribe for explicit subscription kind OR any session.* action.
     // session.* actions are backed by fs.watch on the JSONL (200ms debounce)
@@ -108,14 +144,14 @@ export function LiveChip({
       window.api.actions
         .invoke({ id: actionId, params, workspaceId }, 'footer-live')
         .then((result) => {
-          if (result.ok) setValue(result.value ?? null)
+          if (result.ok) updateValue(result.value ?? null)
         })
         .catch(() => {
           /* silently skip on error */
         })
 
       const handle = window.api.actions.subscribe(actionId, params, workspaceId, (v) => {
-        setValue(v)
+        updateValue(v)
       })
       disposeRef.current = handle.dispose
       return () => {
@@ -130,7 +166,7 @@ export function LiveChip({
       window.api.actions
         .invoke({ id: actionId, params, workspaceId }, 'footer-live')
         .then((result) => {
-          if (!cancelled && result.ok) setValue(result.value ?? null)
+          if (!cancelled && result.ok) updateValue(result.value ?? null)
         })
         .catch(() => {
           /* silently skip on error */
@@ -142,14 +178,14 @@ export function LiveChip({
       cancelled = true
       clearInterval(id)
     }
-  }, [actionId, workspaceId, kind, params])
+  }, [actionId, workspaceId, kind, params, enabled])
 
   const displayText = formatValue(actionId, value)
   const dotColor = isStatus ? getStatusDotColor(value) : null
 
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted select-none"
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted select-none${enabled ? '' : ' opacity-40'}`}
       title={`${label}${displayText ? `: ${displayText}` : ''}`}
     >
       {/* Colored status dot OR icon */}

@@ -1,5 +1,15 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
-import { app, shell, BrowserWindow, ipcMain, dialog, screen, globalShortcut } from 'electron'
+import { monitorEventLoopDelay } from 'perf_hooks'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  screen,
+  globalShortcut,
+  powerMonitor
+} from 'electron'
 
 // Set app name before anything reads app.getPath('userData'). Electron derives
 // userData from app.name, which defaults to package.json "name" ("orpheus") for
@@ -12,11 +22,17 @@ import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as nodePath from 'node:path'
-import type { DoctorResult, ExistingProject, GitStatus } from '../shared/types'
-import { getGitStatus, listBranches, listCommits, countCommits } from './git'
+import { promisify } from 'node:util'
+import type { DoctorResult, GitStatus } from '../shared/types'
+import {
+  getGitStatus,
+  listBranches,
+  listCommits,
+  countCommits,
+  startGitWatch,
+  stopGitWatch,
+  stopAllGitWatches
+} from './git'
 import { getPrForBranch } from './github'
 import { getDb } from './db'
 import {
@@ -46,6 +62,8 @@ import {
   getWorkspace,
   setWorkspacePinned,
   archiveWorkspace,
+  closeWorkspace,
+  reopenWorkspace,
   renameWorkspace,
   reorderWorkspaces,
   listAllPinned,
@@ -61,7 +79,8 @@ import {
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
 import {
   getClaudeWorkspaceSettings,
-  updateClaudeWorkspaceSettings
+  updateClaudeWorkspaceSettings,
+  invalidateClaudeWorkspaceSettingsCache
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import {
@@ -86,11 +105,13 @@ import {
   startNotifyServer,
   ensureManagedHooks,
   shimPath,
-  onActivityChange,
+  onActivityBatch,
   onSessionStart,
   heartbeatFromTitle,
   clearWorkspaceActivity,
-  invalidateWatchdogCache
+  invalidateWatchdogCache,
+  getWorkspaceActivity,
+  setAutoCloseHandler
 } from './orpheusNotify'
 import {
   configureLoadingOverlay,
@@ -98,8 +119,19 @@ import {
   hide as hideLoadingOverlay
 } from './loadingOverlay'
 import type { Theme } from '../shared/types'
-import { setCurrentlyViewedWorkspace, fireTestNotification } from './osNotifications'
-import { checkForUpdates, installUpdate, relaunchApp, startAutoCheckLoop } from './updates'
+import {
+  setCurrentlyViewedWorkspace,
+  getCurrentlyViewedWorkspace,
+  fireTestNotification,
+  cancelAttentionRetry
+} from './osNotifications'
+import {
+  checkForUpdates,
+  installUpdate,
+  relaunchApp,
+  startAutoCheckLoop,
+  stopAutoCheckLoop
+} from './updates'
 import {
   getStatusSnapshot,
   startStatusPoller,
@@ -115,7 +147,8 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath
+  getUserShellPath,
+  getCachedShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -129,10 +162,17 @@ import type {
   McpServerDraft,
   ClaudeSlashCommandDraft,
   ClaudeSubagentDraft,
-  ContextMenuNativeItem
+  ContextMenuNativeItem,
+  GhosttyUserConfig,
+  WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
 import * as terminalActions from './actions/terminal'
+import {
+  writeGhosttyConfigFile,
+  getGhosttyUserConfig,
+  updateGhosttyUserConfig
+} from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
 import {
   bootActions,
@@ -144,6 +184,7 @@ import {
   stopSubscription,
   registerWebContentsCleanup
 } from './actions/index'
+import { evictAccumulator } from './actions/session'
 import {
   listGlobal as listGlobalFooterActions,
   listForProject as listProjectFooterActions,
@@ -158,6 +199,14 @@ import {
 } from './footerActions'
 import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 import { refreshFromModelsDev } from './pricing'
+import {
+  startDiagnostics,
+  stopDiagnostics,
+  logDiagMain,
+  ingestDiagEvent,
+  setDiagCategoryFlags
+} from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -301,6 +350,25 @@ function ensureTitleCallback(addon: GhosttyNativeAddon): void {
     }
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
   })
+  addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
+    getMainWindow()?.webContents.send('terminal:sleepStateChanged', {
+      workspaceId,
+      sleeping: occluded
+    })
+  })
+  // Liveness ticks (global) for the renderer freeze watchdog: inputTick bumps on
+  // native key/mouse input, liveTick bumps on every draw/IO wakeup. Throttled
+  // native-side. The watchdog applies them to the active workspace.
+  addon.setLivenessCallback(
+    (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => {
+      getMainWindow()?.webContents.send('terminal:liveness', {
+        workspaceId,
+        inputTick,
+        liveTick,
+        occluded
+      })
+    }
+  )
   // Diagnostic: forward every action_cb tag to the renderer for visibility
   // via DevTools console. Gated on ORPHEUS_DEBUG_ACTION_TRACE=1 because this
   // fires at 60-120 Hz (every RENDER action) and is heavy in production.
@@ -333,6 +401,47 @@ function setDirty(workspaceId: string, dirty: boolean): void {
   if (dirty) dirtyWorkspaces.add(workspaceId)
   else dirtyWorkspaces.delete(workspaceId)
   if (was !== dirty) broadcastDirty(workspaceId, dirty)
+}
+
+// ---------------------------------------------------------------------------
+// Unified per-workspace teardown
+// ---------------------------------------------------------------------------
+
+// Evicts all per-workspace in-memory state for a workspace that has been
+// archived, destroyed, or removed. Idempotent — safe to call multiple times
+// for the same workspaceId. All .delete() calls are already idempotent.
+//
+// NOTE: only call this for provably-dead workspaces (archived / project-removed).
+// Do NOT call on terminal:destroy alone, because destroy is also issued during
+// live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
+function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  hideLoadingOverlay(workspaceId)
+  cancelAttentionRetry(workspaceId)
+  clearWorkspaceActivity(workspaceId)
+  launchSnapshots.delete(workspaceId)
+  if (dirtyWorkspaces.delete(workspaceId)) broadcastDirty(workspaceId, false)
+  evictAccumulator(workspaceId)
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  if (workspaceTitles.delete(workspaceId)) {
+    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+  }
+  if (cwd) stopGitWatch(workspaceId, cwd)
+}
+
+function performClose(id: string): WorkspaceRecord | undefined {
+  const ws = getWorkspace(id)
+  // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
+  // so the closed workspace keeps its name in the sidebar.
+  const lastTitle = workspaceTitles.get(id) ?? null
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  return closeWorkspace(id, lastTitle)
 }
 
 function recomputeDirty(): void {
@@ -397,6 +506,28 @@ function applyGlobalHotkey(hotkey: string): boolean {
   }
 }
 
+// Diagnostics: record uncaught errors / rejections. Logging only — does NOT
+// alter Electron's default crash handling; logDiagMain never throws.
+process.on('uncaughtException', (err) => {
+  logDiagMain({
+    category: 'error',
+    level: 'fatal',
+    event: DIAG_EVENTS.ERROR_UNCAUGHT,
+    message: err?.message ?? String(err),
+    data: { stack: err?.stack ?? null, name: err?.name ?? null }
+  })
+})
+process.on('unhandledRejection', (reason) => {
+  const e = reason as { message?: string; stack?: string; name?: string }
+  logDiagMain({
+    category: 'error',
+    level: 'error',
+    event: DIAG_EVENTS.ERROR_UNHANDLED_REJECTION,
+    message: e?.message ?? String(reason),
+    data: { stack: e?.stack ?? null, name: e?.name ?? null }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
@@ -407,6 +538,21 @@ let isQuitting = false
 app.on('before-quit', () => {
   isQuitting = true
 })
+
+function kickActiveTerminal(): void {
+  try {
+    // Use the in-memory currently-viewed workspace (no SQLite dependency, so
+    // this works even if the main thread / DB is mid-stall). Reclaim focus
+    // unconditionally on app return — the addon.focus force-cycles the surface
+    // so it wakes even when the terminal was frozen / input was stuck.
+    const ws = getCurrentlyViewedWorkspace()
+    if (!ws) return
+    console.log('[lifecycle] terminal kick (wake)')
+    loadTerminalAddon().focus(ws)
+  } catch (err) {
+    console.error('[lifecycle] terminal kick failed:', err)
+  }
+}
 
 function createWindow(): void {
   // ---------------------------------------------------------------------------
@@ -447,12 +593,13 @@ function createWindow(): void {
     }
   }
 
-  // Transparent web layer is a macOS-only requirement: it lets the ghostty
-  // NSView (parented as a sibling of contentView in addon.mm) z-order above
-  // the WebContents in the fast path, and below the WebContents in overlay
-  // mode (DOM popovers visible). On Linux/Windows we don't load libghostty
-  // and transparent windows have well-documented perf/rendering quirks, so
-  // keep the original opaque backing there.
+  // Transparent web layer so the ghostty NSView (parented as the bottom
+  // sibling of contentView in packages/ghostty-native/addon.mm) shows
+  // through wherever the renderer paints with alpha. Without transparent:
+  // true the NSWindow forces an opaque backing and webContents alpha is
+  // discarded — the terminal would be invisible behind a solid surface.
+  // On Linux/Windows we don't load libghostty and transparent windows have
+  // well-documented perf/rendering quirks, so keep the original opaque there.
   const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
@@ -470,7 +617,10 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // Keep the renderer's timers/rAF running when backgrounded so terminal
+      // title/activity updates and event drain don't stall during long idle.
+      backgroundThrottling: false
     }
   })
 
@@ -483,6 +633,9 @@ function createWindow(): void {
   // Register subscription cleanup so actions:subscribe subscriptions are
   // automatically torn down when the window (and its webContents) is destroyed.
   registerWebContentsCleanup(mainWindow.webContents)
+  // Tear down all git watchers when the renderer goes away so we don't hold
+  // destroyed WebContents references until will-quit.
+  mainWindow.webContents.on('destroyed', () => stopAllGitWatches())
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -491,6 +644,11 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    try {
+      loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
+    } catch (err) {
+      console.error('[lifecycle] installBackstop failed:', err)
+    }
     if (isDev) {
       mainWindow.setTitle(app.getName())
     }
@@ -565,15 +723,7 @@ function createWindow(): void {
     // Invalidate the checkClaude cache so the next doctor:check picks up any
     // claude install/update that happened while the window was in the background.
     cachedClaudeCheck = null
-
-    try {
-      const state = getAppUiState()
-      if (state.lastViewKind !== 'workspace' || !state.lastWorkspaceId) return
-      const addon = loadTerminalAddon()
-      addon.focus(state.lastWorkspaceId)
-    } catch (err) {
-      console.error('[focus] auto-focus terminal failed:', err)
-    }
+    kickActiveTerminal()
   })
 
   mainWindow.on('enter-full-screen', () => {
@@ -650,11 +800,16 @@ async function checkClaude(): Promise<{
   const userPath = await getUserShellPath()
   const env = { ...process.env, PATH: userPath || process.env['PATH'] || '' }
 
+  const execFile = promisify(childProcess.execFile)
+
   let claudePath: string
   try {
-    claudePath = childProcess
-      .execSync('which claude', { encoding: 'utf-8', env, timeout: 3000 })
-      .trim()
+    const { stdout } = await execFile('which', ['claude'], {
+      encoding: 'utf-8',
+      env,
+      timeout: 3000
+    })
+    claudePath = stdout.trim()
     if (!claudePath) {
       const result = { installed: false, version: null, path: null }
       cachedClaudeCheck = { result, at: Date.now() }
@@ -668,7 +823,7 @@ async function checkClaude(): Promise<{
 
   let version: string | null = null
   try {
-    const versionOutput = childProcess.execSync('claude --version', {
+    const { stdout: versionOutput } = await execFile('claude', ['--version'], {
       encoding: 'utf-8',
       env,
       timeout: 3000
@@ -681,54 +836,6 @@ async function checkClaude(): Promise<{
   const result = { installed: true, version, path: claudePath }
   cachedClaudeCheck = { result, at: Date.now() }
   return result
-}
-
-function readClaudeProjects(): ExistingProject[] {
-  const projectsDir = nodePath.join(os.homedir(), '.claude', 'projects')
-
-  if (!fs.existsSync(projectsDir)) return []
-
-  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
-  const dirs = entries.filter((e) => e.isDirectory())
-
-  const projects: ExistingProject[] = dirs.map((dir) => {
-    const encodedName = dir.name
-    // TODO: handle paths with literal dashes — naive decode treats every `-` as `/`,
-    // so a path like `/Users/foo/my-cool-repo` (encoded: `-Users-foo-my-cool-repo`)
-    // decodes ambiguously. Acceptable for v0 minimal.
-    const decoded = encodedName.replace(/-/g, '/')
-    const name = nodePath.basename(decoded)
-
-    const dirPath = nodePath.join(projectsDir, encodedName)
-    const jsonlFiles = fs
-      .readdirSync(dirPath)
-      .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => nodePath.join(dirPath, f))
-
-    const sessionCount = jsonlFiles.length
-
-    let lastActivity: number | null = null
-    for (const file of jsonlFiles) {
-      try {
-        const mtime = fs.statSync(file).mtimeMs
-        if (lastActivity === null || mtime > lastActivity) {
-          lastActivity = mtime
-        }
-      } catch {
-        // skip unreadable files
-      }
-    }
-
-    return { encodedName, path: decoded, name, sessionCount, lastActivity }
-  })
-
-  // Sort by lastActivity descending; null sinks to bottom
-  return projects.sort((a, b) => {
-    if (a.lastActivity === null && b.lastActivity === null) return 0
-    if (a.lastActivity === null) return 1
-    if (b.lastActivity === null) return -1
-    return b.lastActivity - a.lastActivity
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -780,7 +887,25 @@ ipcMain.handle('projects:pickAndAdd', async () => {
 
 ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => deleteProject(id))
+ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
+  // Enumerate workspaces before the cascade-delete removes the rows so we can
+  // tear down each one's in-memory state and native surface. The renderer
+  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
+  // self-sufficient even when called directly (double-cleanup is safe — all
+  // teardown operations are idempotent).
+  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
+  for (const ws of workspacesToRemove) {
+    if (terminalAddon) {
+      try {
+        terminalAddon.destroy(ws.id)
+      } catch {
+        // Surface not mounted or already destroyed — ignore.
+      }
+    }
+    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+  }
+  deleteProject(id)
+})
 
 ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
@@ -807,6 +932,8 @@ ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned
 )
 
 ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
+  const ws = getWorkspace(id)
   // Destroy the libghostty surface so the NSView is freed before the DB row
   // disappears. Silently no-ops when the terminal was never mounted.
   if (terminalAddon) {
@@ -817,10 +944,23 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
     }
   }
   archiveWorkspace(id)
-  // Drop any stale runtime activity entries for the deleted workspace so the
-  // sidebar / project view stop trying to render a dot for a row that no
-  // longer exists.
-  clearWorkspaceActivity(id)
+  // Evict all per-workspace in-memory state via the unified teardown so
+  // archived workspaces don't leak into any runtime cache.
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
+})
+
+ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
+  const status = getWorkspaceActivity(id)
+  if (status === 'in_progress') {
+    return { ok: false as const, reason: 'busy' as const }
+  }
+  const workspace = performClose(id)
+  return { ok: true as const, workspace: workspace ?? null }
+})
+
+ipcMain.handle('workspace:reopen', (_e, { id }: { id: string }) => {
+  const workspace = reopenWorkspace(id)
+  return { ok: true as const, workspace: workspace ?? null }
 })
 
 ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
@@ -869,9 +1009,12 @@ ipcMain.handle(
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
-ipcMain.handle('sessions:refreshMetadata', (_e, { projectId }: { projectId: string }) =>
-  refreshSessionMetadata(projectId)
-)
+ipcMain.handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
+  const t0 = process.hrtime.bigint()
+  await refreshSessionMetadata(projectId)
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  if (ms > 50) console.log('[perf] sessions:refreshMetadata %dms', Math.round(ms))
+})
 
 ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
 
@@ -888,6 +1031,25 @@ ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
 ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
   const result = updateClaudeGlobalSettings(patch)
   recomputeDirty()
+  return result
+})
+
+// ---------------------------------------------------------------------------
+// Ghostty Settings IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ghosttySettings:get', () => getGhosttyUserConfig())
+
+ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
+  const result = updateGhosttyUserConfig(patch)
+  writeGhosttyConfigFile()
+  // TODO: add "restart to apply" signal for keys that require restart
+  try {
+    const addon = loadTerminalAddon()
+    addon.reloadGhosttyConfig()
+  } catch (err) {
+    console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
+  }
   return result
 })
 
@@ -1017,10 +1179,28 @@ ipcMain.handle(
 )
 
 // ---------------------------------------------------------------------------
+// Diagnostics IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.on('diag:event', (_e, evt) => {
+  ingestDiagEvent(evt)
+})
+
+// ---------------------------------------------------------------------------
 // UI State IPC
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('uiState:get', () => getAppUiState())
+
+function syncDiagFlags(): void {
+  const s = getAppUiState()
+  setDiagCategoryFlags({
+    error: s.diagError,
+    lifecycle: s.diagLifecycle,
+    perf: s.diagPerf,
+    anomaly: s.diagAnomaly
+  })
+}
 
 ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
@@ -1028,7 +1208,10 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
+  if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
+  if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+  syncDiagFlags()
   // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
   // can react without polling.
   const win = getMainWindow()
@@ -1042,6 +1225,10 @@ ipcMain.on(
   'workspace:setCurrentlyViewed',
   (_e, { workspaceId }: { workspaceId: string | null }) => {
     setCurrentlyViewedWorkspace(workspaceId)
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('terminal:activeWorkspaceChanged', { workspaceId })
+    }
   }
 )
 
@@ -1090,8 +1277,7 @@ ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
   return {
     claudeInstalled: installed,
     claudeVersion: version,
-    claudePath,
-    existingProjects: readClaudeProjects()
+    claudePath
   }
 })
 
@@ -1114,7 +1300,13 @@ ipcMain.handle(
   (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd)
 )
 
-ipcMain.handle('git:branches', (_e, { cwd }: { cwd: string }) => listBranches(cwd))
+ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
+  const t0 = process.hrtime.bigint()
+  const result = await listBranches(cwd)
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  if (ms > 50) console.log('[perf] git:branches %dms', Math.round(ms))
+  return result
+})
 
 ipcMain.handle(
   'git:log',
@@ -1134,8 +1326,16 @@ ipcMain.handle(
 
 ipcMain.handle(
   'git:count',
-  (_e, args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }) =>
-    countCommits(args.cwd, args)
+  async (
+    _e,
+    args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
+  ) => {
+    const t0 = process.hrtime.bigint()
+    const result = await countCommits(args.cwd, args)
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6
+    if (ms > 50) console.log('[perf] git:count %dms', Math.round(ms))
+    return result
+  }
 )
 
 // ---------------------------------------------------------------------------
@@ -1179,12 +1379,16 @@ type GhosttyNativeAddon = {
       env?: Record<string, string>
     }
   ) => { workspaceId: string; created: boolean }
+  installBackstop: (handle: Buffer) => void
   hide: (workspaceId: string) => void
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
-  setOverlay: (workspaceId: string, on: boolean) => void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
+  setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
+  setLivenessCallback: (
+    cb: (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => void
+  ) => void
   setActionTraceCallback: (cb: (tagName: string) => void) => void
   setLoadingOverlay: (
     workspaceId: string,
@@ -1206,6 +1410,8 @@ type GhosttyNativeAddon = {
     workspaceId: string,
     keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
   ) => boolean
+  reloadGhosttyConfig: () => boolean
+  getSurfacePhase: (workspaceId: string) => string
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1275,6 +1481,15 @@ ipcMain.handle(
     // NEVER log authEnv values — they contain plaintext secrets.
     const authEnv = getClaudeAuthEnv()
 
+    // Inject the user's full shell PATH (captured once at app start via a
+    // login+interactive shell spawn). The wrapper script applies it before
+    // launching claude, replacing the expensive upfront .zshrc source that
+    // was the original reason PATH additions were available. If the promise
+    // hasn't settled yet (extremely rare — it fires at whenReady start), the
+    // key is omitted and the script falls back to sourcing ~/.zshrc.
+    const cachedUserPath = getCachedShellPath()
+
+    const ghosttyConfigPath = writeGhosttyConfigFile()
     const surfaceEnv: Record<string, string> = {
       ...launch.env,
       ...authEnv, // auth env wins on conflict
@@ -1282,7 +1497,9 @@ ipcMain.handle(
       ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
       ORPHEUS_WORKSPACE_ID: workspaceId,
       ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
-      ORPHEUS_NOTIFY: shimPath()
+      ORPHEUS_NOTIFY: shimPath(),
+      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
+      ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
     }
 
     console.log(
@@ -1293,12 +1510,27 @@ ipcMain.handle(
       Object.keys(surfaceEnv).join(',')
     )
 
+    const _mountStart = Date.now()
     const result = addon.mount(handle, {
       workspaceId,
       rect,
       scaleFactor,
       cwd,
       env: surfaceEnv
+    })
+    logDiagMain({
+      category: 'lifecycle',
+      level: 'info',
+      event: DIAG_EVENTS.TERMINAL_MOUNT,
+      workspaceId,
+      data: { created: result?.created ?? null }
+    })
+    logDiagMain({
+      category: 'perf',
+      level: 'info',
+      event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
+      workspaceId,
+      durationMs: Date.now() - _mountStart
     })
 
     // Show the loading overlay only when a new surface was actually created —
@@ -1312,6 +1544,19 @@ ipcMain.handle(
     launchSnapshots.set(workspaceId, launch)
     setDirty(workspaceId, false)
 
+    // Push the current canInject state so the renderer chip gets an immediate
+    // value without waiting for the next activity transition.
+    {
+      const injectable = terminalActions.canInject(workspaceId)
+      e.sender.send('terminal:canInjectChanged', { workspaceId, canInject: injectable })
+    }
+
+    // Start (or re-join) the fs.watch watcher for this workspace's git repo so
+    // status is pushed on change instead of polled every 30s.
+    if (cwd) {
+      startGitWatch(workspaceId, cwd, e.sender)
+    }
+
     return result
   }
 )
@@ -1322,7 +1567,35 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   // outlive its parent surface in the contentView.
   hideLoadingOverlay(workspaceId)
   addon.hide(workspaceId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_HIDE,
+    workspaceId
+  })
 })
+
+ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.focus(workspaceId)
+  logDiagMain({
+    category: 'anomaly',
+    level: 'warn',
+    event: DIAG_EVENTS.TERMINAL_FOCUS_RECLAIMED,
+    workspaceId
+  })
+})
+
+ipcMain.handle(
+  'terminal:getSurfacePhase',
+  (_e, { workspaceId }: { workspaceId: string }): string => {
+    try {
+      return loadTerminalAddon().getSurfacePhase(workspaceId)
+    } catch {
+      return 'none'
+    }
+  }
+)
 
 ipcMain.handle(
   'terminal:resize',
@@ -1339,22 +1612,18 @@ ipcMain.handle(
   }
 )
 
-// Move the workspace's ghostty NSView between the FAST PATH (top sibling,
-// opaque, no compositor blend) and the OVERLAY PATH (bottom sibling so DOM
-// popovers stack above the terminal pixels). The renderer's
-// useTerminalOverlay hook refcounts open overlays and only flips when the
-// count transitions across zero, so this IPC fires rarely and is cheap.
-ipcMain.handle(
-  'terminal:setOverlay',
-  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
-    const addon = loadTerminalAddon()
-    addon.setOverlay(workspaceId, on)
-  }
-)
-
 ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
-  // Clean up snapshot and dirty state before destroying the surface
+  // NOTE: terminal:destroy is called in two distinct scenarios:
+  //   1. Workspace death (archive / project-remove) — full teardown happens in
+  //      the archive/remove handlers via teardownWorkspaceResources; this path
+  //      only handles the surface + transient mount state.
+  //   2. Live restart (WorkspaceView.handleRestart) — workspace stays alive;
+  //      activity/accumulator/session state must NOT be evicted here.
+  //
+  // Clean up surface-level mount state that is always safe to evict — it is
+  // re-seeded by the next terminal:mount call in both scenarios.
   hideLoadingOverlay(workspaceId)
+  cancelAttentionRetry(workspaceId)
   launchSnapshots.delete(workspaceId)
   if (dirtyWorkspaces.delete(workspaceId)) {
     broadcastDirty(workspaceId, false)
@@ -1363,8 +1632,22 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   if (workspaceTitles.delete(workspaceId)) {
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
   }
+  // Settings cache is cheap to evict — will be re-read on the next mount.
+  invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  // Tear down the git watcher for this workspace (ref-counted: only closes
+  // underlying fs.watch when the last subscriber for this cwd is removed).
+  const wsForGit = getWorkspace(workspaceId)
+  if (wsForGit?.cwd) {
+    stopGitWatch(workspaceId, wsForGit.cwd)
+  }
   const addon = loadTerminalAddon()
   addon.destroy(workspaceId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_DESTROY,
+    workspaceId
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1530,10 +1813,34 @@ ipcMain.handle(
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
+  // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
+  // This is a no-op after the first call (getUserShellPath caches internally).
+  getUserShellPath().catch(() => {
+    /* swallow — logged inside getUserShellPath */
+  })
+
   electronApp.setAppUserModelId(APP_ID)
+
+  // Event-loop delay monitor — logs p99 and max lag every 10s so we have
+  // data on whether a future utilityProcess migration is worth the cost.
+  // All output is [perf]-tagged for easy grep/removal later.
+  {
+    const eld = monitorEventLoopDelay({ resolution: 10 })
+    eld.enable()
+    setInterval(() => {
+      console.log(
+        '[perf] eventloop p99=%dms max=%dms',
+        Math.round(eld.percentile(99) / 1e6),
+        Math.round(eld.max / 1e6)
+      )
+      eld.reset()
+    }, 10_000).unref()
+  }
 
   // Initialize / migrate the SQLite database early, before any IPC can fire.
   getDb()
+  startDiagnostics()
+  syncDiagFlags()
 
   // Boot Quick Actions registry — registers all action descriptors so they're
   // available before any IPC can invoke them.
@@ -1578,6 +1885,14 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Kick the active terminal on system wake events so the CVDisplayLink
+  // restarts after display sleep / screen lock / user-switch.
+  powerMonitor.on('resume', kickActiveTerminal)
+  powerMonitor.on('unlock-screen', kickActiveTerminal)
+  if (process.platform === 'darwin') {
+    powerMonitor.on('user-did-become-active', kickActiveTerminal)
+  }
+
   // Apply OS-level settings after the window exists (hotkey callback needs it)
   try {
     const state = getAppUiState()
@@ -1595,24 +1910,36 @@ app.whenReady().then(() => {
   // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
   startStatusPoller()
 
-  // Pre-warm the shell PATH resolution so doctor:check doesn't block on first call.
-  getUserShellPath().catch(() => {
-    /* swallow — logged inside getUserShellPath */
-  })
-
   // Defer notify server + hook install until after the first frame — keeps
   // createWindow() hot so the UI appears faster on launch.
   setImmediate(() => {
     // Start the Unix-domain socket server that hook shims post to.
     try {
       notifyServer = startNotifyServer()
-      onActivityChange((workspaceId, status, detail) => {
-        getMainWindow()?.webContents.send('workspace:activityChanged', {
-          workspaceId,
-          status,
-          detail
-        })
+      // Batch channel: sends the entire coalesced flush as one IPC message.
+      // The renderer switches to onActivityBatch; batchListeners fan out to
+      // the legacy per-event listeners as well so onActivityChanged still works.
+      onActivityBatch((updates) => {
+        const win = getMainWindow()
+        if (!win) return
+        win.webContents.send('workspace:activityBatch', updates)
+        // Push canInject state for each workspace that changed activity so the
+        // renderer chips don't need to poll terminal:canInject every second.
+        // Use the authoritative terminalActions.canInject() so 'attention' and
+        // any future status additions are handled identically to the IPC handler.
+        for (const { workspaceId } of updates) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send('terminal:canInjectChanged', {
+              workspaceId,
+              canInject: terminalActions.canInject(workspaceId)
+            })
+          }
+        }
       })
+      // Legacy onActivityChange registration removed — the renderer uses
+      // onActivityBatch as primary. The preload onActivityChanged method and
+      // the renderer's fallback listener are intentionally kept as dead-but-safe
+      // code so older code paths compile without changes.
     } catch (err) {
       console.error('[orpheusNotify] failed to start notify server:', err)
     }
@@ -1623,10 +1950,24 @@ app.whenReady().then(() => {
     } catch (err) {
       console.error('[orpheusNotify] failed to install managed hooks:', err)
     }
+
+    setAutoCloseHandler((workspaceId) => {
+      performClose(workspaceId)
+    })
+
+    // Pre-load the native terminal addon during idle time so the first
+    // terminal:mount call doesn't pay the dlopen stall (50–300ms).
+    // loadTerminalAddon() is idempotent — if already loaded it returns early.
+    try {
+      loadTerminalAddon()
+    } catch {
+      // Failure is non-fatal here; terminal:mount will surface the error when needed.
+    }
   })
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else kickActiveTerminal()
   })
 })
 
@@ -1634,6 +1975,9 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
   stopStatusPoller()
+  stopAutoCheckLoop()
+  stopAllGitWatches()
+  stopDiagnostics()
 })
 
 app.on('window-all-closed', () => {

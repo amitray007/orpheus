@@ -109,6 +109,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
+            label="Detailed finish summary"
+            description="Show how long the turn took and how many subagents ran in the 'Claude finished' notification."
+          >
+            <Toggle
+              value={uiState.notifyRichSummary ?? true}
+              onChange={(v) => patch({ notifyRichSummary: v })}
+              ariaLabel="Show detailed finish summary"
+            />
+          </SettingRow>
+          <SettingRow
             label="Repeat attention reminders"
             description="When Claude is waiting on you, keep re-notifying on an exponential schedule (30s, 1m, 2m, 4m, 8m, then every 8m) until you view that workspace. Set to 0 to disable repeats."
           >
@@ -116,16 +126,6 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               value={uiState.notifyMaxAttentionRepeats ?? 5}
               onChange={(v) => patch({ notifyMaxAttentionRepeats: Math.max(0, v ?? 0) })}
               placeholder="5"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Inactivity watchdog (seconds)"
-            description="When the working spinner has been stuck with no PreToolUse / PostToolUse / PreCompact / SubagentStop heartbeat for this many seconds, demote it to Ready. Catches user-interrupt cases (Ctrl-C, Esc) where Claude never fires Stop. Set to 0 to disable."
-          >
-            <NumberInput
-              value={uiState.inProgressWatchdogSec ?? 120}
-              onChange={(v) => patch({ inProgressWatchdogSec: Math.max(0, v ?? 0) })}
-              placeholder="120"
             />
           </SettingRow>
         </div>
@@ -142,6 +142,16 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               value={uiState.notifyAlways ?? false}
               onChange={(v) => patch({ notifyAlways: v })}
               ariaLabel="Notify even when Orpheus is focused"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Suppress finish notifications when focused"
+            description="When Orpheus has focus, skip 'Claude finished' notifications for all workspaces (not just the one you're viewing). Permission and attention notifications still fire."
+          >
+            <Toggle
+              value={uiState.notifySuppressWhenFocused ?? false}
+              onChange={(v) => patch({ notifySuppressWhenFocused: v })}
+              ariaLabel="Suppress finish notifications when Orpheus is focused"
             />
           </SettingRow>
         </div>

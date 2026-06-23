@@ -42,10 +42,17 @@ type AppUiStateRow = {
   notify_attention: number
   notify_stop: number
   notify_always: number
+  // Notification enrichment (v59)
+  notify_rich_summary: number
+  notify_suppress_when_focused: number
   // Persistent attention reminders (v30)
   notify_max_attention_repeats: number
   // In-progress watchdog (v31) — auto-demote to awaiting_input if no heartbeat in N seconds. 0 disables.
   in_progress_watchdog_sec: number
+  // Stale threshold (v54)
+  stale_after_minutes: number | null
+  // Auto-close threshold (v57)
+  auto_close_after_minutes: number | null
   // App picker preferences (v32)
   preferred_editor_app: string | null
   preferred_terminal_app: string | null
@@ -68,6 +75,11 @@ type AppUiStateRow = {
   mute_status_notifications: number | null
   // Workspace footer visibility (v45)
   show_workspace_footer: number | null
+  // Diagnostics capture toggles (v56)
+  diag_error: number | null
+  diag_lifecycle: number | null
+  diag_perf: number | null
+  diag_anomaly: number | null
   updated_at: number
 }
 
@@ -106,8 +118,12 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifyAttention: (row.notify_attention ?? 1) === 1,
     notifyStop: (row.notify_stop ?? 1) === 1,
     notifyAlways: (row.notify_always ?? 0) === 1,
+    notifyRichSummary: (row.notify_rich_summary ?? 1) === 1,
+    notifySuppressWhenFocused: (row.notify_suppress_when_focused ?? 0) === 1,
     notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     inProgressWatchdogSec: row.in_progress_watchdog_sec ?? 120,
+    staleAfterMinutes: row.stale_after_minutes ?? 60,
+    autoCloseAfterMinutes: row.auto_close_after_minutes ?? 120,
     // App picker preferences (v32) — undefined when column absent (old DB pre-migration)
     preferredEditorApp: row.preferred_editor_app ?? null,
     preferredTerminalApp: row.preferred_terminal_app ?? null,
@@ -130,6 +146,11 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
+    // Diagnostics capture toggles (v56)
+    diagError: row.diag_error == null ? true : row.diag_error === 1,
+    diagLifecycle: row.diag_lifecycle === 1,
+    diagPerf: row.diag_perf === 1,
+    diagAnomaly: row.diag_anomaly === 1,
     updatedAt: row.updated_at
   }
 }
@@ -276,10 +297,16 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     notifyAttention: 'notify_attention',
     notifyStop: 'notify_stop',
     notifyAlways: 'notify_always',
+    notifyRichSummary: 'notify_rich_summary',
+    notifySuppressWhenFocused: 'notify_suppress_when_focused',
     // Persistent attention reminders (v30)
     notifyMaxAttentionRepeats: 'notify_max_attention_repeats',
     // In-progress watchdog (v31)
     inProgressWatchdogSec: 'in_progress_watchdog_sec',
+    // Stale threshold (v54)
+    staleAfterMinutes: 'stale_after_minutes',
+    // Auto-close threshold (v57)
+    autoCloseAfterMinutes: 'auto_close_after_minutes',
     // App picker preferences (v32)
     preferredEditorApp: 'preferred_editor_app',
     preferredTerminalApp: 'preferred_terminal_app',
@@ -301,7 +328,12 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     statusPollIntervalSec: 'status_poll_interval_sec',
     muteStatusNotifications: 'mute_status_notifications',
     // Workspace footer visibility (v45)
-    showWorkspaceFooter: 'show_workspace_footer'
+    showWorkspaceFooter: 'show_workspace_footer',
+    // Diagnostics capture toggles (v56)
+    diagError: 'diag_error',
+    diagLifecycle: 'diag_lifecycle',
+    diagPerf: 'diag_perf',
+    diagAnomaly: 'diag_anomaly'
   }
 
   const setClauses: string[] = []

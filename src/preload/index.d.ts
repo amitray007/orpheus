@@ -43,7 +43,9 @@ import type {
   TerminalSendKeyDescriptor,
   FooterActionDescriptor,
   FooterActionDraft,
-  FooterActionScope
+  FooterActionScope,
+  GhosttyUserConfig,
+  DiagEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -73,12 +75,29 @@ declare global {
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
-        setOverlay: (workspaceId: string, on: boolean) => Promise<void>
         sendInput: (workspaceId: string, text: string) => Promise<ActionResult>
         sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]) => Promise<ActionResult>
         submit: (workspaceId: string) => Promise<ActionResult>
         clearInput: (workspaceId: string) => Promise<ActionResult>
         canInject: (workspaceId: string) => Promise<boolean>
+        onCanInjectChanged: (
+          cb: (e: { workspaceId: string; canInject: boolean }) => void
+        ) => () => void
+        focus: (workspaceId: string) => Promise<void>
+        getSurfacePhase: (
+          workspaceId: string
+        ) => Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'>
+        onSleepStateChanged: (
+          cb: (data: { workspaceId: string; sleeping: boolean }) => void
+        ) => () => void
+        onLiveness: (
+          cb: (data: {
+            workspaceId: string
+            inputTick: number
+            liveTick: number
+            occluded: boolean
+          }) => void
+        ) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>
@@ -145,10 +164,25 @@ declare global {
             detail: WorkspaceActivityDetail
           }) => void
         ) => () => void
+        onActivityBatch: (
+          cb: (
+            updates: Array<{
+              workspaceId: string
+              status: WorkspaceStatus
+              detail: WorkspaceActivityDetail
+            }>
+          ) => void
+        ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
         onNavigateTo: (cb: (workspaceId: string) => void) => () => void
         onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void
         onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void) => () => void
+        close: (
+          id: string
+        ) => Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }>
+        reopen: (id: string) => Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }>
+        onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void) => () => void
+        onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void) => () => void
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
@@ -156,6 +190,10 @@ declare global {
       claudeSettings: {
         get: () => Promise<ClaudeGlobalSettings>
         update: (patch: ClaudeGlobalSettingsPatch) => Promise<ClaudeGlobalSettings>
+      }
+      ghosttySettings: {
+        get: () => Promise<GhosttyUserConfig>
+        update: (patch: Partial<GhosttyUserConfig>) => Promise<GhosttyUserConfig>
       }
       claudeAuth: {
         get: () => Promise<ClaudeAuthState>
@@ -199,9 +237,13 @@ declare global {
           cwd: string,
           opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
         ) => Promise<number>
+        onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void) => () => void
       }
       github: {
         prForBranch: (cwd: string, branch: string) => Promise<GhPullRequest | null>
+        onPrChanged: (
+          cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
+        ) => () => void
       }
       shell: {
         revealInFinder: (path: string) => Promise<void>
@@ -308,6 +350,9 @@ declare global {
           orderedIds: string[]
         ) => Promise<void>
         resetDefaults: () => Promise<void>
+      }
+      diag: {
+        event: (evt: DiagEvent) => void
       }
     }
   }

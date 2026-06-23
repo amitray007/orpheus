@@ -28,6 +28,12 @@ export type GitStatus = {
   deletions: number
   hasChanges: boolean
   branch: string | null
+  /** Count of untracked (new) files */
+  newFiles: number
+  /** Count of tracked files with modifications (working tree vs HEAD) */
+  modifiedFiles: number
+  /** Count of deleted files (working tree vs HEAD) */
+  deletedFiles: number
 }
 
 export type GitBranchInfo = {
@@ -50,19 +56,10 @@ export type GitCommit = {
   deletions: number
 }
 
-export type ExistingProject = {
-  encodedName: string // e.g. "-Users-alice-code-myproject"
-  path: string // decoded absolute path, e.g. "/Users/alice/code/myproject"
-  name: string // basename, e.g. "orpheus"
-  sessionCount: number // number of .jsonl files inside the dir
-  lastActivity: number | null // ms timestamp of most recent .jsonl mtime, or null
-}
-
 export type DoctorResult = {
   claudeInstalled: boolean
   claudeVersion: string | null // e.g. "1.2.3" extracted from `claude --version`
   claudePath: string | null // e.g. "/usr/local/bin/claude"
-  existingProjects: ExistingProject[]
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +92,14 @@ export type WorkspaceRecord = {
   createdAt: number
   lastOpenedAt: number | null
   archivedAt: number | null
+  closedAt: number | null
   sortOrder: number | null
   status: WorkspaceStatus
   claudeSessionId: string | null
   /** Set when this workspace was forked from another session (v43). */
   forkedFromSessionId: string | null
+  /** Last terminal title seen before the workspace was closed (v58). */
+  lastTitle: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context
@@ -159,10 +159,22 @@ export type AppUiState = {
   notifyAttention: boolean
   notifyStop: boolean
   notifyAlways: boolean
+  // Notification enrichment (v59)
+  notifyRichSummary: boolean
+  notifySuppressWhenFocused: boolean
   // Persistent attention reminders (v30) — 0 disables; cap is hardcoded backoff length.
   notifyMaxAttentionRepeats: number
   // In-progress watchdog (v31) — seconds without a heartbeat hook before auto-demoting from in_progress. 0 disables.
   inProgressWatchdogSec: number
+  // (v54) Minutes of no agent activity before the sidebar marks a workspace stale.
+  staleAfterMinutes: number
+  // (v57) Minutes of idle before auto-closing the workspace. 0 disables.
+  autoCloseAfterMinutes: number
+  // (v56) Diagnostics capture toggles. Errors on by default; rest opt-in.
+  diagError: boolean
+  diagLifecycle: boolean
+  diagPerf: boolean
+  diagAnomaly: boolean
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
@@ -233,6 +245,19 @@ export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
 export const CLAUDE_MODEL_ALIAS_START_INDEX = CLAUDE_MODEL_OPTIONS.findIndex(
   (o) => o.value === o.family
 )
+
+// ---------------------------------------------------------------------------
+// Ghostty user config (v53)
+// ---------------------------------------------------------------------------
+
+export type GhosttyKeybind = { trigger: string; action: string }
+
+export type GhosttyUserConfig = {
+  // Flat key→value map using ghostty config keys; only NON-default keys stored.
+  // Values are raw ghostty config values (unquoted). Booleans as true/false.
+  settings: Record<string, string | number | boolean>
+  keybinds: GhosttyKeybind[]
+}
 
 export type ClaudeGlobalSettings = {
   model: string // free-form string (e.g., 'sonnet', 'opus', 'haiku', or a full model ID)
@@ -357,6 +382,23 @@ export type ClaudeGlobalSettings = {
   exitAfterStopDelay: number | null
   disableFeedbackCommand: boolean
   disableFeedbackSurvey: boolean
+
+  // Env-var controls (v52) — General / Model behavior
+  disableBundledSkills: boolean
+  disableWorkflows: boolean
+
+  // Env-var controls (v52) — General
+  enableAwaySummary: boolean
+
+  // Env-var controls (v52) — Tools
+  disableArtifact: boolean
+  disableAdvisorTool: boolean
+
+  // Env-var controls (v52) — Display
+  screenReader: boolean
+
+  // Env-var controls (v52) — Memory & Context
+  additionalDirsClaudeMd: boolean
 
   updatedAt: number
 }
@@ -602,6 +644,8 @@ export type SessionRecord = {
   lastMessagePreview?: string | null
   // Populated by refreshSessionMetadata (v35)
   lastUserMessagePreview?: string | null
+  // Populated by refreshSessionMetadata (v50)
+  jsonlMtime?: number | null
 }
 
 export type SessionsPagedRequest = {
@@ -719,9 +763,13 @@ export type SessionUsage = {
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  /** Point-in-time context-window occupancy from the most recent assistant turn only.
+   *  = input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens for that turn.
+   *  Used for the context chip in the footer. Do NOT use for cost (cost uses cumulative fields). */
+  lastTurnContextTokens: number
   /** Effective maxContextTokens from global settings (or default 200k) */
   contextBudget: number
-  /** (inputTokens + cacheReadTokens + cacheCreationTokens) / contextBudget * 100, capped at 100 */
+  /** lastTurnContextTokens / contextBudget * 100, capped at 100 */
   usedPct: number
 }
 
@@ -789,4 +837,36 @@ export type FooterActionDraft = Omit<
 > & {
   /** When omitted on create, the backend assigns max(position)+1 for the scope. */
   position?: number
+}
+
+export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly'
+export type DiagLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+export type DiagProcess = 'main' | 'renderer' | 'native'
+
+// One diagnostic event. `event` should be a value from DIAG_EVENTS (string-typed
+// here to avoid a cross-import; callers use the const).
+export type DiagEvent = {
+  ts: number
+  process: DiagProcess
+  category: DiagCategory
+  level: DiagLevel
+  event: string
+  workspaceId?: string | null
+  sessionId?: string | null
+  durationMs?: number | null
+  message?: string
+  data?: Record<string, unknown> | null
+}
+
+// Stored row shape returned by queries (adds id + seq).
+export type DiagRow = DiagEvent & { id: number; seq: number }
+
+export type DiagQuery = {
+  sinceMs?: number
+  untilMs?: number
+  categories?: DiagCategory[]
+  levels?: DiagLevel[]
+  event?: string
+  workspaceId?: string
+  limit?: number
 }

@@ -12,8 +12,10 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
+  | 'orpheus-workspaces'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-developer'
@@ -330,7 +332,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     settingId: 'code-accessibility',
     label: 'Code accessibility',
     description: "Enable accessibility enhancements for code blocks in Claude's output.",
-    mapsTo: ['CLAUDE_CODE_CODE_ACCESSIBILITY'],
+    mapsTo: ['CLAUDE_CODE_ACCESSIBILITY'],
     keywords: ['a11y', 'accessibility', 'code blocks', 'screen reader']
   },
   {
@@ -749,7 +751,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     settingId: 'bash-maintains-project-cwd',
     label: 'Bash maintains project cwd',
     description: 'Each Bash command resets its working directory to the project root.',
-    mapsTo: ['CLAUDE_CODE_BASH_MAINTAIN_PROJECT_WORKING_DIR'],
+    mapsTo: ['CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR'],
     keywords: ['working directory', 'cwd', 'bash cwd', 'project root', 'directory reset']
   },
   {
@@ -1131,7 +1133,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     label: 'Auto background tasks',
     description:
       'Allow Claude to automatically schedule background tasks without explicit user approval.',
-    mapsTo: ['CLAUDE_CODE_AUTO_BACKGROUND_TASKS'],
+    mapsTo: ['CLAUDE_AUTO_BACKGROUND_TASKS'],
     keywords: ['auto schedule', 'automatic tasks', 'background schedule']
   },
   {
@@ -1363,6 +1365,100 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
 
   // ---------------------------------------------------------------------------
+  // Orpheus › Terminal
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'font-family',
+    label: 'Font family',
+    description: 'Terminal font. Leave empty to use the system monospace font.',
+    mapsTo: ['font-family'],
+    keywords: ['font', 'typeface', 'monospace', 'terminal font', 'font name']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'font-size',
+    label: 'Font size',
+    description: 'Terminal font size in points.',
+    mapsTo: ['font-size'],
+    keywords: ['font size', 'terminal font size', 'text size', 'pt size']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'theme',
+    label: 'Theme',
+    description: 'Ghostty color theme name. Leave empty for the Ghostty default.',
+    mapsTo: ['theme'],
+    keywords: ['ghostty theme', 'color scheme', 'terminal theme', 'terminal colors']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'cursor-style',
+    label: 'Cursor style',
+    description: 'Shape of the text cursor in the terminal.',
+    mapsTo: ['cursor-style'],
+    keywords: ['cursor', 'cursor shape', 'block cursor', 'bar cursor', 'underline cursor']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'cursor-style-blink',
+    label: 'Cursor blink',
+    description: 'Whether the terminal cursor blinks.',
+    mapsTo: ['cursor-style-blink'],
+    keywords: ['cursor blink', 'blinking cursor', 'cursor animation']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'background',
+    label: 'Background color',
+    description: 'Terminal background color (hex). Leave empty to use the theme default.',
+    mapsTo: ['background'],
+    keywords: ['background', 'bg color', 'terminal background', 'background color', 'hex color']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'foreground',
+    label: 'Foreground color',
+    description: 'Terminal text color (hex). Leave empty to use the theme default.',
+    mapsTo: ['foreground'],
+    keywords: ['foreground', 'text color', 'terminal text', 'fg color', 'hex color']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'copy-on-select',
+    label: 'Copy on select',
+    description: 'Automatically copy selected text to the clipboard.',
+    mapsTo: ['copy-on-select'],
+    keywords: ['copy', 'select', 'copy on select', 'clipboard', 'auto copy']
+  },
+  {
+    sectionId: 'orpheus-terminal',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Terminal',
+    settingId: 'mouse-hide-while-typing',
+    label: 'Hide mouse while typing',
+    description: 'Hide the mouse cursor when typing in the terminal.',
+    mapsTo: ['mouse-hide-while-typing'],
+    keywords: ['mouse hide', 'hide cursor', 'typing', 'mouse cursor', 'hide mouse']
+  },
+
+  // ---------------------------------------------------------------------------
   // Orpheus › Window
   // ---------------------------------------------------------------------------
   {
@@ -1551,10 +1647,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'follow-up'
     ]
   },
+  // ---------------------------------------------------------------------------
+  // Orpheus › Workspaces
+  // ---------------------------------------------------------------------------
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: 'orpheus-workspaces',
     sectionGroup: 'Orpheus',
-    sectionLabel: 'Notifications',
+    sectionLabel: 'Workspaces',
     settingId: 'inactivity-watchdog-seconds',
     label: 'Inactivity watchdog (seconds)',
     description:
@@ -1578,6 +1677,37 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'posttooluse',
       'demote',
       'reset'
+    ]
+  },
+  {
+    sectionId: 'orpheus-workspaces',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Workspaces',
+    settingId: 'workspace-stale-threshold',
+    label: 'Workspace stale threshold (minutes)',
+    description:
+      'When a workspace has had no new activity for this many minutes, the sidebar marks it stale.',
+    mapsTo: [],
+    keywords: ['stale', 'idle', 'forgotten', 'clock glyph', 'dimmed', 'long-idle', 'threshold']
+  },
+  {
+    sectionId: 'orpheus-workspaces',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Workspaces',
+    settingId: 'auto-close-idle-workspaces',
+    label: 'Auto-close idle workspaces after (minutes)',
+    description:
+      "Closing frees a workspace's resources (terminal + claude process) while keeping it in your list; click it to reopen and resume.",
+    mapsTo: [],
+    keywords: [
+      'auto close',
+      'idle',
+      'free resources',
+      'terminal',
+      'reopen',
+      'resume',
+      'teardown',
+      'close workspace'
     ]
   },
 

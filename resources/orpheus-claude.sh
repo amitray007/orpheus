@@ -1,8 +1,20 @@
 #!/bin/zsh -l
 # -l sources .zshenv + .zprofile but NOT .zshrc (zshrc is interactive-only).
-# Most users put PATH additions for claude (npm/bun/brew global bins) in
-# .zshrc, so source it explicitly here.
-[[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null
+#
+# Fast PATH injection: Orpheus captures the user's full shell PATH once at app
+# start (login+interactive shell spawn) and injects it as ORPHEUS_USER_PATH.
+# Applying it here gives claude the correct PATH (where npm/bun/brew global
+# bins live) without sourcing ~/.zshrc upfront — which can cost 100-800ms of
+# plugin/completion init. The interactive `exec zsh -i` tail at the bottom of
+# this script still sources ~/.zshrc, so the user's prompt and aliases are
+# fully available once claude exits.
+#
+# Safety fallback: if ORPHEUS_USER_PATH is empty/unset (capture failed, or
+# this is the rare first mount before the async spawn resolved), OR if claude
+# is not found on the injected PATH, we source ~/.zshrc as a last resort so
+# users whose `claude` is only on the .zshrc PATH are never left stranded.
+[[ -n "${ORPHEUS_USER_PATH:-}" ]] && export PATH="${ORPHEUS_USER_PATH}"
+command -v claude >/dev/null 2>&1 || { [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null; }
 
 # ORPHEUS_CLAUDE_FLAGS — whitespace-separated CLI flags composed by Orpheus
 # from the user's Settings (e.g., "--model opus --permission-mode acceptEdits").

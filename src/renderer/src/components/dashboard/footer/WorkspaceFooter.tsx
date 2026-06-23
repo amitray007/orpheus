@@ -72,12 +72,8 @@ export function WorkspaceFooter({
   // Don't render the bar at all during initial uiState load to avoid flicker
   if (!uiState) return null
 
-  const mutators = items.filter(
-    (it) => it.kind === 'mutator' && isVisible(it.visibleWhen, activityDetail)
-  )
-  const displays = items.filter(
-    (it) => it.kind !== 'mutator' && isVisible(it.visibleWhen, activityDetail)
-  )
+  const mutators = items.filter((it) => it.kind === 'mutator')
+  const displays = items.filter((it) => it.kind !== 'mutator')
 
   const handleForkSuccess = (newWorkspaceId: string): void => {
     if (onSelectWorkspace && projectId) {
@@ -112,6 +108,7 @@ export function WorkspaceFooter({
               cwd={cwd}
               workspaceName={workspaceName}
               onForkSuccess={handleForkSuccess}
+              enabled={isVisible(item.visibleWhen, activityDetail)}
             />
           ))}
       </div>
@@ -133,6 +130,7 @@ export function WorkspaceFooter({
               params={item.params}
               workspaceId={workspaceId}
               kind={item.kind}
+              enabled={isVisible(item.visibleWhen, activityDetail)}
             />
           ))}
       </div>

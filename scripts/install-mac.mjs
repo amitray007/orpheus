@@ -3,8 +3,14 @@
  * Install the built Orpheus .app bundle to /Applications/.
  *
  * Usage:
- *   node scripts/install-mac.mjs           # production  (dist/)
- *   node scripts/install-mac.mjs --dev     # dev         (dist-dev/)
+ *   node scripts/install-mac.mjs --dev     # dev  (dist-dev/ -> /Applications/Orpheus Dev.app)
+ *   ORPHEUS_ALLOW_PROD_INSTALL=1 node scripts/install-mac.mjs   # prod (dist/ -> /Applications/Orpheus.app)
+ *
+ * Local development installs the DEV variant only. The production variant lives
+ * exclusively in /Applications/Orpheus.app and is owned by the Homebrew cask /
+ * CI release pipeline — never by a local build. Installing prod locally would
+ * clobber that managed copy, so it is locked behind ORPHEUS_ALLOW_PROD_INSTALL=1
+ * and must be invoked deliberately. The agent/build loop never sets this flag.
  */
 import { execSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
@@ -17,6 +23,19 @@ if (process.platform !== 'darwin') {
 }
 
 const isDev = process.argv.includes('--dev')
+
+// Guard: prod local-install is opt-in only. Without the flag, refuse rather than
+// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev installs are
+// always allowed — they target the isolated /Applications/Orpheus Dev.app.
+if (!isDev && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
+  console.error(
+    '[install-mac] refusing to install the PRODUCTION bundle locally.\n' +
+      '  Production Orpheus.app is managed by Homebrew / CI — a local build must not clobber it.\n' +
+      '  Use `bun run build:dev` (or `build:unpack`) to build + install Orpheus Dev.app instead.\n' +
+      '  To override deliberately: ORPHEUS_ALLOW_PROD_INSTALL=1 bun run build:mac'
+  )
+  process.exit(1)
+}
 const tag = isDev ? '[install-mac-dev]' : '[install-mac]'
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = resolve(projectRoot, isDev ? 'dist-dev' : 'dist')

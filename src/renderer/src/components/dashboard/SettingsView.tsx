@@ -19,7 +19,9 @@ import {
   Robot,
   Bell,
   Pulse,
-  Lightning
+  Lightning,
+  Terminal,
+  Stack
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -40,11 +42,14 @@ import { OrpheusAppearanceSection } from './settings/OrpheusAppearanceSection'
 import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
 import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
 import { OrpheusNotificationsSection } from './settings/OrpheusNotificationsSection'
+import { OrpheusWorkspacesSection } from './settings/OrpheusWorkspacesSection'
 import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
 import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
 import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
+import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
+import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -64,12 +69,15 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
+  | 'orpheus-workspaces'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-footer'
   | 'orpheus-developer'
+  | 'orpheus-diagnostics'
   | 'orpheus-about'
 
 interface SectionDef {
@@ -103,12 +111,24 @@ const GROUPS: SectionGroup[] = [
         icon: SidebarSimple,
         Component: OrpheusSidebarSection
       },
+      {
+        id: 'orpheus-terminal',
+        label: 'Terminal',
+        icon: Terminal,
+        Component: OrpheusTerminalSection
+      },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {
         id: 'orpheus-notifications',
         label: 'Notifications',
         icon: Bell,
         Component: OrpheusNotificationsSection
+      },
+      {
+        id: 'orpheus-workspaces',
+        label: 'Workspaces',
+        icon: Stack,
+        Component: OrpheusWorkspacesSection
       },
       {
         id: 'orpheus-updates',
@@ -133,6 +153,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Developer',
         icon: Code,
         Component: OrpheusDeveloperSection
+      },
+      {
+        id: 'orpheus-diagnostics',
+        label: 'Diagnostics',
+        icon: Pulse,
+        Component: OrpheusDiagnosticsSection
       },
       { id: 'orpheus-about', label: 'About Orpheus', icon: Info, Component: OrpheusAboutSection }
     ]

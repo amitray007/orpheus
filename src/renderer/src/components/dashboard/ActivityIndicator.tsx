@@ -1,29 +1,16 @@
 import type React from 'react'
 import { Circle, CircleDashed, Diamond } from '@phosphor-icons/react'
 import type { WorkspaceActivityDetail } from '@shared/types'
-import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
-
-const TOOL_FRAMES = ['◐', '◓', '◑', '◒'] as const
-const COMPACT_FRAMES = [
-  '▁',
-  '▂',
-  '▃',
-  '▄',
-  '▅',
-  '▆',
-  '▇',
-  '█',
-  '▇',
-  '▆',
-  '▅',
-  '▄',
-  '▃',
-  '▂'
-] as const
+import { BRAILLE_FRAMES, BRAILLE_WALK_FRAMES, BRAILLE_FILL_FRAMES } from '@/lib/braille'
+import { useSharedFrame } from '@/lib/sharedTicker'
 
 interface ActivityIndicatorProps {
   detail: WorkspaceActivityDetail | undefined
   className?: string
+  /** When false all ticker subscriptions are disabled and a static frame-0
+   *  glyph is rendered. Use for decorative / column-header contexts where the
+   *  animation serves no informational purpose. Defaults to true. */
+  animated?: boolean
 }
 
 // Fixed 12×12 box with flex centering so SVG and text content share an
@@ -33,11 +20,16 @@ const BASE_CLS = 'inline-flex items-center justify-center flex-shrink-0 leading-
 
 export function ActivityIndicator({
   detail,
-  className
+  className,
+  animated = true
 }: ActivityIndicatorProps): React.JSX.Element | null {
-  const braille = useAnimatedFrame(BRAILLE_FRAMES, 80, detail === 'thinking')
-  const tool = useAnimatedFrame(TOOL_FRAMES, 200, detail === 'tool')
-  const compact = useAnimatedFrame(COMPACT_FRAMES, 100, detail === 'compacting')
+  // useSharedFrame shares ONE interval per distinct ms across all mounted indicators.
+  // When active=false no interval is registered and frame stays 0.
+  // animated=false forces active=false for every ticker so static headers never
+  // create a subscription (the 80ms interval stops when subscriber count hits 0).
+  const brailleFrame = useSharedFrame(80, animated && detail === 'thinking')
+  const toolFrame = useSharedFrame(120, animated && detail === 'tool')
+  const compactFrame = useSharedFrame(110, animated && detail === 'compacting')
 
   if (!detail || detail === 'archived') return null
 
@@ -63,24 +55,40 @@ export function ActivityIndicator({
   }
   if (detail === 'attention') {
     return (
-      <span className={`${cls} text-amber-400 animate-pulse`}>
+      <span className={`${cls} text-amber-400${animated ? ' animate-pulse' : ''}`}>
         <Diamond size={11} weight="fill" />
       </span>
     )
   }
   // Animated states stay text-rendered — the frames are unicode sequences.
   if (detail === 'thinking') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{braille}</span>
+    return (
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
+        {BRAILLE_FRAMES[brailleFrame % BRAILLE_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'tool') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{tool}</span>
+    return (
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
+        {BRAILLE_WALK_FRAMES[toolFrame % BRAILLE_WALK_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'compacting') {
-    return <span className={`${cls} text-accent text-xs font-mono`}>{compact}</span>
+    return (
+      <span className={`${cls} text-accent text-[11px] font-mono`}>
+        {BRAILLE_FILL_FRAMES[compactFrame % BRAILLE_FILL_FRAMES.length]}
+      </span>
+    )
   }
   if (detail === 'asking') {
     return (
-      <span className={`${cls} text-amber-400 text-xs font-mono font-bold animate-pulse`}>?</span>
+      <span
+        className={`${cls} text-amber-400 text-[11px] font-mono font-bold${animated ? ' animate-pulse' : ''}`}
+      >
+        ?
+      </span>
     )
   }
   return null

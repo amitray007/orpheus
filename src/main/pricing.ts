@@ -42,6 +42,15 @@ export type ModelPricing = {
 // ---------------------------------------------------------------------------
 
 export const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  // Claude Opus 4.8 — $5/$25, 1M context
+  'claude-opus-4-8': {
+    input: 5,
+    output: 25,
+    cacheRead: 0.5,
+    cacheWrite: 6.25,
+    context: 1_000_000,
+    output_limit: 128_000
+  },
   // Claude Opus 4.7 — $5/$25, 1M context
   'claude-opus-4-7': {
     input: 5,

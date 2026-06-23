@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
+import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -16,6 +17,7 @@ type WorkspaceRow = {
   created_at: number
   last_opened_at: number | null
   archived_at: number | null
+  closed_at: number | null
   status: WorkspaceStatus
   sort_order: number | null
   claude_session_id: string | null
@@ -51,10 +53,12 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
+    closedAt: row.closed_at,
     status: row.status ?? 'idle',
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
-    forkedFromSessionId: row.forked_from_session_id ?? null
+    forkedFromSessionId: row.forked_from_session_id ?? null,
+    lastTitle: row.last_title ?? null
   }
 }
 
@@ -107,6 +111,14 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('workspaces:created', { workspace })
+    }
+  }
+}
+
+function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('workspaces:changed', { workspace })
     }
   }
 }
@@ -247,11 +259,38 @@ export function archiveWorkspace(id: string): void {
     | { id: string; project_id: string }
     | undefined
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+  // Evict the settings cache entry so a stale value can't be served after the
+  // row is gone.
+  invalidateClaudeWorkspaceSettingsCache(id)
   // Broadcast after delete so the renderer can remove the row from state and
   // navigate away if the deleted workspace was currently selected.
   if (ws) {
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
+}
+
+export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {
+  const db = getDb()
+  const row = db
+    .prepare(
+      'UPDATE workspaces SET closed_at = ?, last_title = COALESCE(?, last_title) WHERE id = ? RETURNING *'
+    )
+    .get(Date.now(), lastTitle, id) as WorkspaceRow | undefined
+  if (!row) return undefined
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
+}
+
+export function reopenWorkspace(id: string): WorkspaceRecord | undefined {
+  const db = getDb()
+  const row = db
+    .prepare('UPDATE workspaces SET closed_at = NULL WHERE id = ? RETURNING *')
+    .get(id) as WorkspaceRow | undefined
+  if (!row) return undefined
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
 }
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {

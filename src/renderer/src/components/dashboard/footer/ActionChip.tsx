@@ -22,6 +22,8 @@ interface ActionChipProps {
   workspaceName?: string
   /** Called after a successful workspace.fork with the new workspace ID. */
   onForkSuccess?: (newWorkspaceId: string) => void
+  /** Whether this chip's visibleWhen condition is satisfied for the current activity state. When false the chip renders disabled. */
+  enabled?: boolean
 }
 
 /**
@@ -42,7 +44,8 @@ export function ActionChip({
   sessionId = null,
   cwd = '',
   workspaceName = '',
-  onForkSuccess
+  onForkSuccess,
+  enabled = true
 }: ActionChipProps): React.JSX.Element {
   const [inFlight, setInFlight] = useState(false)
   const [tooltip, setTooltip] = useState<string | null>(null)
@@ -64,30 +67,55 @@ export function ActionChip({
   const [promptValues, setPromptValues] = useState<Record<string, string>>({})
   const promptInputRef = useRef<HTMLInputElement>(null)
 
-  // Poll canInject every 1s for terminal.* actions
+  // Subscribe to canInject push updates for terminal.* actions.
+  // NOTE: depends on arch-main onCanInjectChanged — channel `terminal:canInjectChanged`,
+  // payload { workspaceId: string; canInject: boolean }.
+  // Preload method: window.api.terminal.onCanInjectChanged returning an unsubscribe fn.
   const isTerminalAction = actionId.startsWith('terminal.')
+
+  // Renderer-local ambient type until the preload types are reconciled.
+  type TerminalApiWithPush = typeof window.api.terminal & {
+    onCanInjectChanged?: (
+      cb: (e: { workspaceId: string; canInject: boolean }) => void
+    ) => () => void
+  }
+
   useEffect(() => {
     if (!isTerminalAction) return
-    let cancelled = false
-    const poll = (): void => {
-      window.api.terminal
-        .canInject(workspaceId)
-        .then((ok) => {
-          if (!cancelled) setCanInject(ok)
-        })
-        .catch(() => {
-          if (!cancelled) setCanInject(false)
-        })
+    const terminalApi = window.api.terminal as TerminalApiWithPush
+
+    let alive = true
+
+    // Initial fetch so the chip reflects the current state before any push lands.
+    window.api.terminal
+      .canInject(workspaceId)
+      .then((ok) => {
+        if (alive) setCanInject(ok)
+      })
+      .catch(() => {
+        if (alive) setCanInject(false)
+      })
+
+    if (typeof terminalApi.onCanInjectChanged !== 'function') {
+      // Push channel not yet available — no subscription, initial value is enough.
+      return () => {
+        alive = false
+      }
     }
-    poll()
-    const id = setInterval(poll, 1000)
+
+    // Subscribe to push updates; filter to this chip's workspace.
+    const unsub = terminalApi.onCanInjectChanged((e) => {
+      if (e.workspaceId === workspaceId) setCanInject(e.canInject)
+    })
     return () => {
-      cancelled = true
-      clearInterval(id)
+      alive = false
+      unsub()
     }
   }, [isTerminalAction, workspaceId])
 
   const disabled = isTerminalAction && !canInject
+  const notApplicable = enabled === false
+  const isDisabled = disabled || notApplicable
 
   const showTooltip = useCallback((msg: string) => {
     setTooltip(msg)
@@ -190,9 +218,9 @@ export function ActionChip({
   const handleClick = useCallback(async (): Promise<void> => {
     if (inFlight) return
 
-    if (disabled) {
+    if (isDisabled) {
       playSound('error')
-      showTooltip('Claude is busy')
+      showTooltip(disabled ? 'Claude is busy' : 'Not available right now')
       return
     }
 
@@ -209,7 +237,7 @@ export function ActionChip({
     }
 
     await invokeAction()
-  }, [inFlight, disabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
+  }, [inFlight, isDisabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
 
   return (
     <div className="relative flex-shrink-0">
@@ -219,14 +247,14 @@ export function ActionChip({
           handleClick().catch((e) => console.error('[ActionChip] click handler failed', e))
         }}
         disabled={inFlight}
-        title={disabled ? 'Claude is busy' : label}
+        title={isDisabled ? (disabled ? 'Claude is busy' : 'Not available right now') : label}
         aria-label={label}
         className={[
           'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs',
           'transition-colors duration-150',
           'border border-transparent',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-          disabled
+          isDisabled
             ? 'cursor-not-allowed text-text-muted bg-surface-overlay/40'
             : showPrompt
               ? 'text-text-primary bg-surface-overlay border border-border-default/60'
