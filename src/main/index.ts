@@ -564,11 +564,22 @@ process.on('unhandledRejection', (reason) => {
 // Track when the user explicitly quits (Cmd+Q / app.quit()) so the close
 // handler below can let the window actually close instead of hiding.
 let isQuitting = false
+
+// PIDs of node-pty children, snapshotted at quit time BEFORE killAll() clears the
+// engine map, so the synchronous process.on('exit') backstop still has targets to
+// SIGKILL if SIGHUP didn't fully reap them. (killAll empties the map, so reading the
+// engine in the exit handler would return nothing — capture here instead.)
+let reapPids: number[] = []
 app.on('before-quit', () => {
   isQuitting = true
-  // SIGHUP all live node-pty children so claude sessions are not orphaned.
+  // Snapshot live child PIDs, then SIGHUP them so claude sessions are not orphaned.
   // This is additive — ghostty/app teardown (will-quit handler) is untouched.
   if (xtermEngine) {
+    try {
+      reapPids = xtermEngine.getLivePids()
+    } catch {
+      // never throw from quit handler
+    }
     try {
       xtermEngine.killAll()
     } catch {
@@ -577,22 +588,16 @@ app.on('before-quit', () => {
   }
 })
 
-// Last-resort synchronous SIGKILL backstop — fires after before-quit/will-quit async
-// cleanup may not have completed. Collects PIDs before the map is cleared so the
-// backstop can still kill any survivors. Must be synchronous and must swallow errors.
+// Last-resort synchronous SIGKILL backstop — before-quit's SIGHUP may not have reaped
+// every child before the process exits. Uses the PID snapshot captured in before-quit
+// (killAll already cleared the engine map, so we can't query it here). SIGKILL on an
+// already-dead PID throws ESRCH, which is swallowed. Must be synchronous and never throw.
 process.on('exit', () => {
-  if (!xtermEngine) return
-  let pids: number[] = []
-  try {
-    pids = xtermEngine.getLivePids()
-  } catch {
-    // ignore
-  }
-  for (const pid of pids) {
+  for (const pid of reapPids) {
     try {
       process.kill(pid, 'SIGKILL')
     } catch {
-      // process already dead — ignore
+      // process already dead (ESRCH) — ignore
     }
   }
 })
