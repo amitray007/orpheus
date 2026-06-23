@@ -220,115 +220,134 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       const result = await window.api.xterm.spawn(workspaceId, cwd, cols, rows)
       if (disposed) return
 
-      if (!result.created) {
-        setSpawnError(result.error ?? 'Failed to spawn terminal process')
-        return
+      // Wire all subscriptions and input handlers for a live (fresh or reattached) session.
+      // Called exactly once per mount — fresh Terminal + el means no double-registration risk.
+      const wireLiveSession = (): void => {
+        // Reset flow control so a stale paused state from a prior session is cleared.
+        void window.api.xterm.resetFlow(workspaceId)
+
+        // Keyboard editing fidelity: intercept specific combos BEFORE xterm's default
+        // handler. Return false after writing bytes ourselves to prevent double-input.
+        // Mirrors performKeyEquivalent: / keyDown: mods-translation in addon.mm.
+        term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
+          // Only intercept keydown — let keyup pass through untouched.
+          if (e.type !== 'keydown') return true
+
+          // Option(Alt)+Backspace → ESC DEL (backward-kill-word).
+          // macOptionIsMeta is set but we assert this explicitly for reliability.
+          if (e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'Backspace') {
+            void window.api.xterm.write(workspaceId, '\x1b\x7f')
+            return false
+          }
+
+          // Cmd(Meta)+Backspace → Ctrl-U (\x15, kill line to start).
+          // Matches what claude/readline expects for line-clear.
+          if (e.metaKey && !e.altKey && !e.ctrlKey && e.key === 'Backspace') {
+            void window.api.xterm.write(workspaceId, '\x15')
+            return false
+          }
+
+          // Ctrl+/ → emit Ctrl+_ (\x1f) to avoid the macOS system beep.
+          // Mirrors performKeyEquivalent: remap in addon.mm ~365-388.
+          if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === '/') {
+            void window.api.xterm.write(workspaceId, '\x1f')
+            return false
+          }
+
+          // Ctrl+Enter → pass through as \r so the browser doesn't swallow it.
+          // Mirrors the Control+Return passthrough in addon.mm ~356-363.
+          if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Enter') {
+            void window.api.xterm.write(workspaceId, '\r')
+            return false
+          }
+
+          // Cmd+C: copy selection if text is selected; otherwise fall through (do NOT map to SIGINT — Ctrl+C handles that).
+          // Mirrors the ghostty clipboard triad (performKeyEquivalent: ~390-406).
+          if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+            if (term.hasSelection()) {
+              void navigator.clipboard.writeText(term.getSelection())
+              return false
+            }
+            return true
+          }
+
+          // Cmd+V: return true so the browser fires its native paste DOM event.
+          // The paste listener below (U4) handles both text and image — unifying paste in one place
+          // eliminates the double-paste race that would occur if we also called readText() here.
+          if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+            return true
+          }
+
+          // Cmd+X: treat as copy (terminals don't cut); mirrors ghostty triad behavior.
+          if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'x' || e.key === 'X')) {
+            if (term.hasSelection()) {
+              void navigator.clipboard.writeText(term.getSelection())
+              return false
+            }
+            return true
+          }
+
+          // All other keys (plain typing, arrows, Ctrl+C, Tab, Escape, IME
+          // composition, etc.) pass through to xterm's default handler unchanged.
+          return true
+        })
+
+        // Data loop: main → renderer.
+        unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
+          if (wid !== workspaceId || disposed) return
+          // Bytes end-to-end: PTY emits Buffer, IPC sends Uint8Array, xterm.write accepts it.
+          // ACK unit is BYTES (byteLength) on both sides — must match the engine's byte counters.
+          term.write(data, () => onWriteCommitted(data.byteLength))
+        })
+
+        // Exit subscription.
+        unsubExit = window.api.xterm.onExit(({ workspaceId: wid, exitCode, signal }) => {
+          if (wid !== workspaceId) return
+          setExited({ code: exitCode, signal })
+        })
+
+        // Input loop: renderer → main.
+        term.onData((d) => {
+          void window.api.xterm.write(workspaceId, d)
+        })
+
+        // Resize loop: wire FitAddon → PTY via onResize.
+        term.onResize(({ cols: c, rows: r }) => {
+          const safeCols = Math.max(1, c)
+          const safeRows = Math.max(1, r)
+          void window.api.xterm.resize(workspaceId, safeCols, safeRows)
+        })
+
+        // Title loop: forward raw OSC 0/2 titles to main for spinner-glyph
+        // heartbeat detection and sidebar title updates — mirrors ghostty path.
+        term.onTitleChange((title) => {
+          window.api.xterm.title(workspaceId, title)
+        })
+
+        // ResizeObserver for container size changes.
+        resizeObserver = new ResizeObserver(scheduleResize)
+        resizeObserver.observe(el)
       }
 
-      // Reset flow control so a stale paused state from a prior session is cleared.
-      void window.api.xterm.resetFlow(workspaceId)
-
-      // Keyboard editing fidelity: intercept specific combos BEFORE xterm's default
-      // handler. Return false after writing bytes ourselves to prevent double-input.
-      // Mirrors performKeyEquivalent: / keyDown: mods-translation in addon.mm.
-      term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
-        // Only intercept keydown — let keyup pass through untouched.
-        if (e.type !== 'keydown') return true
-
-        // Option(Alt)+Backspace → ESC DEL (backward-kill-word).
-        // macOptionIsMeta is set but we assert this explicitly for reliability.
-        if (e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'Backspace') {
-          void window.api.xterm.write(workspaceId, '\x1b\x7f')
-          return false
+      if (result.created) {
+        // Fresh spawn: wire the live session immediately.
+        wireLiveSession()
+      } else if (result.reattached) {
+        // Reattach: PTY was already live (navigated away and back).
+        // Replay the rolling output tail so the screen isn't blank, then wire.
+        const reattachResult = await window.api.xterm.reattach(workspaceId)
+        if (disposed) return
+        if (reattachResult.data !== null) {
+          term.write(reattachResult.data)
         }
-
-        // Cmd(Meta)+Backspace → Ctrl-U (\x15, kill line to start).
-        // Matches what claude/readline expects for line-clear.
-        if (e.metaKey && !e.altKey && !e.ctrlKey && e.key === 'Backspace') {
-          void window.api.xterm.write(workspaceId, '\x15')
-          return false
-        }
-
-        // Ctrl+/ → emit Ctrl+_ (\x1f) to avoid the macOS system beep.
-        // Mirrors performKeyEquivalent: remap in addon.mm ~365-388.
-        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === '/') {
-          void window.api.xterm.write(workspaceId, '\x1f')
-          return false
-        }
-
-        // Ctrl+Enter → pass through as \r so the browser doesn't swallow it.
-        // Mirrors the Control+Return passthrough in addon.mm ~356-363.
-        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Enter') {
-          void window.api.xterm.write(workspaceId, '\r')
-          return false
-        }
-
-        // Cmd+C: copy selection if text is selected; otherwise fall through (do NOT map to SIGINT — Ctrl+C handles that).
-        // Mirrors the ghostty clipboard triad (performKeyEquivalent: ~390-406).
-        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
-          if (term.hasSelection()) {
-            void navigator.clipboard.writeText(term.getSelection())
-            return false
-          }
-          return true
-        }
-
-        // Cmd+V: return true so the browser fires its native paste DOM event.
-        // The paste listener below (U4) handles both text and image — unifying paste in one place
-        // eliminates the double-paste race that would occur if we also called readText() here.
-        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
-          return true
-        }
-
-        // Cmd+X: treat as copy (terminals don't cut); mirrors ghostty triad behavior.
-        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'x' || e.key === 'X')) {
-          if (term.hasSelection()) {
-            void navigator.clipboard.writeText(term.getSelection())
-            return false
-          }
-          return true
-        }
-
-        // All other keys (plain typing, arrows, Ctrl+C, Tab, Escape, IME
-        // composition, etc.) pass through to xterm's default handler unchanged.
-        return true
-      })
-
-      // Data loop: main → renderer.
-      unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
-        if (wid !== workspaceId || disposed) return
-        // Bytes end-to-end: PTY emits Buffer, IPC sends Uint8Array, xterm.write accepts it.
-        // ACK unit is BYTES (byteLength) on both sides — must match the engine's byte counters.
-        term.write(data, () => onWriteCommitted(data.byteLength))
-      })
-
-      // Exit subscription.
-      unsubExit = window.api.xterm.onExit(({ workspaceId: wid, exitCode, signal }) => {
-        if (wid !== workspaceId) return
-        setExited({ code: exitCode, signal })
-      })
-
-      // Input loop: renderer → main.
-      term.onData((d) => {
-        void window.api.xterm.write(workspaceId, d)
-      })
-
-      // Resize loop: wire FitAddon → PTY via onResize.
-      term.onResize(({ cols: c, rows: r }) => {
-        const safeCols = Math.max(1, c)
-        const safeRows = Math.max(1, r)
-        void window.api.xterm.resize(workspaceId, safeCols, safeRows)
-      })
-
-      // Title loop: forward raw OSC 0/2 titles to main for spinner-glyph
-      // heartbeat detection and sidebar title updates — mirrors ghostty path.
-      term.onTitleChange((title) => {
-        window.api.xterm.title(workspaceId, title)
-      })
-
-      // ResizeObserver for container size changes.
-      resizeObserver = new ResizeObserver(scheduleResize)
-      resizeObserver.observe(el)
+        wireLiveSession()
+        // Nudge PTY to redraw by syncing current cols/rows.
+        doFit()
+        void window.api.xterm.resize(workspaceId, Math.max(1, term.cols), Math.max(1, term.rows))
+      } else {
+        // Real failure (PTY spawn error, not a reattach).
+        setSpawnError(result.error ?? 'Failed to spawn terminal process')
+      }
     }
 
     openAndSpawn().catch((err) => {

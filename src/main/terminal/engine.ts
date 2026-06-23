@@ -27,7 +27,7 @@
  * added in U2/U3. Full routing unification is deferred to a later unit.
  */
 export interface TerminalEngine {
-  /** Spawn a PTY for the workspace. Idempotent: second call for the same workspaceId is a no-op. Returns {created:true} on first spawn, {created:false, error?} on failure. */
+  /** Spawn a PTY for the workspace. Idempotent: second call for the same live workspaceId returns {created:false, reattached:true}. Returns {created:true} on first spawn, {created:false, error?} on real failure. */
   spawn(params: {
     workspaceId: string
     cwd: string
@@ -36,7 +36,7 @@ export interface TerminalEngine {
     notifySockPath?: string
     notifyShimPath?: string
     userPath?: string
-  }): { created: boolean; error?: string }
+  }): { created: boolean; reattached?: boolean; error?: string }
   /** Write bytes/string to the PTY. No-op if no live PTY for workspaceId. */
   write(workspaceId: string, data: string | Buffer): void
   /** Resize the PTY. No-op if no live PTY. */
@@ -57,6 +57,8 @@ export interface TerminalEngine {
   ackChars(workspaceId: string, count: number): void
   /** Reset flow control state for a workspace (call on mount/re-mount). */
   resetFlow(workspaceId: string): void
+  /** Return the rolling replay buffer for a live workspace (up to 256 KB tail), or null if no live PTY. Does NOT change phase. */
+  reattach(workspaceId: string): Buffer | null
 }
 
 /** Alias used by XtermEngine.getPhase() return annotation; not exported to callers outside this package. */

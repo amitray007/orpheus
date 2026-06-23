@@ -598,7 +598,7 @@ const api = {
       cwd: string,
       cols?: number,
       rows?: number
-    ): Promise<{ created: boolean; error?: string }> =>
+    ): Promise<{ created: boolean; reattached?: boolean; error?: string }> =>
       ipcRenderer.invoke('terminal:xterm-spawn', { workspaceId, cwd, cols, rows }),
     write: (workspaceId: string, data: string): Promise<void> =>
       ipcRenderer.invoke('terminal:xterm-write', { workspaceId, data }),
@@ -612,6 +612,8 @@ const api = {
       ipcRenderer.invoke('terminal:xterm-ack', { workspaceId, count }),
     resetFlow: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:xterm-reset-flow', { workspaceId }),
+    reattach: (workspaceId: string): Promise<{ data: Uint8Array | null }> =>
+      ipcRenderer.invoke('xterm:reattach', { workspaceId }),
     onData: (cb: (e: { workspaceId: string; data: Uint8Array }) => void): (() => void) => {
       const listener = (
         _evt: IpcRendererEvent,

@@ -26,6 +26,7 @@ const FLOW_HIGH_WATERMARK = 100_000
 const FLOW_LOW_WATERMARK = 5_000
 const STALL_TIMEOUT_MS = 10_000
 const LIVENESS_INTERVAL_MS = 5_000
+const REPLAY_LIMIT = 256 * 1024 // 256 KB rolling cap for reattach replay
 
 type PtyEntry = {
   pty: import('@lydell/node-pty').IPty
@@ -42,6 +43,9 @@ type PtyEntry = {
   stallFired: boolean
   // liveness (U8)
   lastDataTs: number
+  // reattach replay buffer (U8)
+  replay: Buffer[]
+  replayBytes: number
 }
 
 export class XtermEngine implements TerminalEngine {
@@ -60,10 +64,10 @@ export class XtermEngine implements TerminalEngine {
     notifySockPath?: string
     notifyShimPath?: string
     userPath?: string
-  }): { created: boolean; error?: string } {
+  }): { created: boolean; reattached?: boolean; error?: string } {
     const existing = this.map.get(params.workspaceId)
     if (existing?.phase === 'live') {
-      return { created: false }
+      return { created: false, reattached: true }
     }
 
     const ws = getWorkspace(params.workspaceId)
@@ -102,7 +106,15 @@ export class XtermEngine implements TerminalEngine {
         const e = this.map.get(params.workspaceId)
         if (!e) return
         e.lastDataTs = Date.now()
-        e.batchBuf.push(data as unknown as Buffer)
+        const chunk = data as unknown as Buffer
+        e.batchBuf.push(chunk)
+        // Replay buffer: rolling 256 KB tail for reattach.
+        e.replay.push(chunk)
+        e.replayBytes += chunk.length
+        while (e.replayBytes > REPLAY_LIMIT && e.replay.length > 0) {
+          const dropped = e.replay.shift()!
+          e.replayBytes -= dropped.length
+        }
         if (e.batchBuf.reduce((s, b) => s + b.length, 0) >= BATCH_SIZE_LIMIT) {
           this.flush(params.workspaceId)
         } else if (!e.batchTimer) {
@@ -128,7 +140,9 @@ export class XtermEngine implements TerminalEngine {
         paused: false,
         stallTimer: null,
         stallFired: false,
-        lastDataTs: Date.now()
+        lastDataTs: Date.now(),
+        replay: [],
+        replayBytes: 0
       })
       this.ensureLivenessInterval()
 
@@ -192,6 +206,12 @@ export class XtermEngine implements TerminalEngine {
     const entry = this.map.get(workspaceId)
     if (!entry) return 'none'
     return entry.phase
+  }
+
+  reattach(workspaceId: string): Buffer | null {
+    const entry = this.map.get(workspaceId)
+    if (!entry || entry.phase !== 'live') return null
+    return entry.replay.length > 0 ? Buffer.concat(entry.replay) : Buffer.alloc(0)
   }
 
   private flush(workspaceId: string): void {

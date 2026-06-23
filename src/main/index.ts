@@ -1799,7 +1799,7 @@ ipcMain.handle(
       cols,
       rows
     }: { workspaceId: string; cwd: string; cols?: number; rows?: number }
-  ): { created: boolean; error?: string } => {
+  ): { created: boolean; reattached?: boolean; error?: string } => {
     return getXtermEngine().spawn({
       workspaceId,
       cwd,
@@ -1849,6 +1849,14 @@ ipcMain.handle(
   'terminal:xterm-reset-flow',
   (_e, { workspaceId }: { workspaceId: string }): void => {
     getXtermEngine().resetFlow(workspaceId)
+  }
+)
+
+ipcMain.handle(
+  'xterm:reattach',
+  (_e, { workspaceId }: { workspaceId: string }): { data: Uint8Array | null } => {
+    const buf = getXtermEngine().reattach(workspaceId)
+    return { data: buf !== null ? new Uint8Array(buf) : null }
   }
 )
 

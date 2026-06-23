@@ -360,13 +360,14 @@ declare global {
           cwd: string,
           cols?: number,
           rows?: number
-        ) => Promise<{ created: boolean; error?: string }>
+        ) => Promise<{ created: boolean; reattached?: boolean; error?: string }>
         write: (workspaceId: string, data: string) => Promise<void>
         resize: (workspaceId: string, cols: number, rows: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
         phase: (workspaceId: string) => Promise<'none' | 'live' | 'dead'>
         ack: (workspaceId: string, count: number) => Promise<void>
         resetFlow: (workspaceId: string) => Promise<void>
+        reattach: (workspaceId: string) => Promise<{ data: Uint8Array | null }>
         onData: (cb: (e: { workspaceId: string; data: Uint8Array }) => void) => () => void
         onExit: (
           cb: (e: { workspaceId: string; exitCode: number; signal?: number }) => void
