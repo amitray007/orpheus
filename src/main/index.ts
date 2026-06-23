@@ -167,6 +167,7 @@ import type {
   WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
+import { XtermEngine } from './terminal/xtermEngine'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
@@ -217,6 +218,21 @@ const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
+
+let xtermEngine: XtermEngine | null = null
+
+function getXtermEngine(): XtermEngine {
+  if (!xtermEngine) {
+    xtermEngine = new XtermEngine()
+    xtermEngine.setDataHandler((workspaceId, data) => {
+      getMainWindow()?.webContents.send('terminal:xterm-data', { workspaceId, data })
+    })
+    xtermEngine.setExitHandler((workspaceId, exitCode, signal) => {
+      getMainWindow()?.webContents.send('terminal:xterm-exit', { workspaceId, exitCode, signal })
+    })
+  }
+  return xtermEngine
+}
 
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
@@ -1689,6 +1705,58 @@ ipcMain.handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: strin
 ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
   return terminalActions.canInject(workspaceId)
 })
+
+// ---------------------------------------------------------------------------
+// xterm engine IPC (U2) — additive, does NOT replace ghostty terminal:mount
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  'terminal:xterm-spawn',
+  (
+    _e,
+    {
+      workspaceId,
+      cwd,
+      cols,
+      rows
+    }: { workspaceId: string; cwd: string; cols?: number; rows?: number }
+  ): { created: boolean; error?: string } => {
+    return getXtermEngine().spawn({
+      workspaceId,
+      cwd,
+      cols,
+      rows,
+      notifySockPath: notifyServer?.sockPath,
+      notifyShimPath: shimPath(),
+      userPath: getCachedShellPath() ?? undefined
+    })
+  }
+)
+
+ipcMain.handle(
+  'terminal:xterm-write',
+  (_e, { workspaceId, data }: { workspaceId: string; data: string }): void => {
+    getXtermEngine().write(workspaceId, data)
+  }
+)
+
+ipcMain.handle(
+  'terminal:xterm-resize',
+  (_e, { workspaceId, cols, rows }: { workspaceId: string; cols: number; rows: number }): void => {
+    getXtermEngine().resize(workspaceId, cols, rows)
+  }
+)
+
+ipcMain.handle('terminal:xterm-destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+  getXtermEngine().destroy(workspaceId)
+})
+
+ipcMain.handle(
+  'terminal:xterm-phase',
+  (_e, { workspaceId }: { workspaceId: string }): 'none' | 'live' | 'dead' => {
+    return getXtermEngine().getPhase(workspaceId)
+  }
+)
 
 // ---------------------------------------------------------------------------
 // Quick Actions — phase 2: registry IPC surface
