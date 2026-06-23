@@ -79,6 +79,11 @@ export function clearXtermSessionReady(workspaceId: string): void {
   xtermSessionReady.delete(workspaceId)
 }
 
+/** Clear all session-ready flags (call on app quit / killAll). */
+export function clearAllXtermSessionReady(): void {
+  xtermSessionReady.clear()
+}
+
 // ---------------------------------------------------------------------------
 // macOS virtual key codes and modifiers.
 // kVK_ANSI_U = 0x20 (Ctrl-U: clear line)

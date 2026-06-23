@@ -5,6 +5,9 @@ import { Terminal } from '@xterm/xterm'
 import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
+import { DIAG_EVENTS } from '@shared/diagEvents'
+import { logDiag } from '@/lib/diag'
 import { setSleeping } from '@/lib/sleepStore'
 
 interface XtermSurfaceProps {
@@ -24,7 +27,9 @@ const GHOSTTY_DEFAULT_FONT_SIZE = 13
 // theme to the terminal. Called before term.open() so font metrics are correct.
 // ghosttySettings.onChanged does not exist in the current preload — live switch
 // is not wired; changes take effect on next mount (workspace restart).
-async function applyGhosttyAppearance(term: Terminal): Promise<void> {
+// Returns the resolved font size so callers can derive pixel-accurate padding.
+async function applyGhosttyAppearance(term: Terminal): Promise<number> {
+  let resolvedFontSize = GHOSTTY_DEFAULT_FONT_SIZE
   try {
     const config = await window.api.ghosttySettings.get()
     const { settings } = config
@@ -35,9 +40,13 @@ async function applyGhosttyAppearance(term: Terminal): Promise<void> {
         : GHOSTTY_DEFAULT_FONT
     const fontSize =
       typeof settings['font-size'] === 'number' ? settings['font-size'] : GHOSTTY_DEFAULT_FONT_SIZE
+    resolvedFontSize = fontSize
 
     term.options.fontFamily = fontFamily
     term.options.fontSize = fontSize
+    // Line height multiplier: 1.2 gives vertical breathing room matching ghostty's
+    // default cell metrics (ghostty renders slightly taller cells than xterm's 'normal').
+    term.options.lineHeight = 1.2
 
     // Cursor style — ghostty 'block'|'underline'|'bar' map 1:1 to xterm.
     const cursorStyleRaw = settings['cursor-style']
@@ -71,10 +80,15 @@ async function applyGhosttyAppearance(term: Terminal): Promise<void> {
   } catch {
     // Non-fatal: if ghostty config is unavailable, xterm uses its defaults.
   }
+  return resolvedFontSize
 }
 
 export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): React.JSX.Element {
+  // containerRef: outer div that owns layout + horizontal padding.
+  // xtermRef: inner div that xterm mounts into — FitAddon measures this element,
+  // so it sees only the content box (inside the padding) and computes cols/rows correctly.
   const containerRef = useRef<HTMLDivElement>(null)
+  const xtermRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
   // Bumping attemptKey tears down and rebuilds the terminal effect — used by Restart.
@@ -92,13 +106,16 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   }
 
   useEffect(() => {
-    const el = containerRef.current
+    const el = xtermRef.current
     if (!el) return
 
     const term = new Terminal({
       macOptionIsMeta: true,
       convertEol: false,
-      scrollback: 5000,
+      // ~20k lines ≈ 29MB/surface @120 cols (xterm cells are light); 4x headroom over
+      // the original 5k for long agentic sessions with heavy tool output. Still a
+      // documented gap vs ghostty's 2,000,000 (native memory) — see ghosttyTheme.ts.
+      scrollback: 20000,
       allowProposedApi: false
     })
 
@@ -113,7 +130,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     let pendingAck = 0
     let disposed = false
 
-    // Accumulate committed char counts and ack in strides of ACK_STRIDE.
+    // Accumulate committed byte counts and ack in strides of ACK_STRIDE.
     const onWriteCommitted = (count: number): void => {
       if (disposed) return
       pendingAck += count
@@ -126,9 +143,10 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
     const doFit = (): void => {
       if (disposed) return
-      const container = containerRef.current
-      if (!container || !active || container.clientWidth === 0 || container.clientHeight === 0)
-        return
+      // Guard on the outer container (has layout dimensions); fit against the inner
+      // xterm element so FitAddon measures the content box inside the padding.
+      const outer = containerRef.current
+      if (!outer || !active || outer.clientWidth === 0 || outer.clientHeight === 0) return
       fit.fit()
     }
     doFitRef.current = doFit
@@ -144,15 +162,26 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       if (disposed) return
 
       // Guard: don't open at zero size — misaligns cell metrics and sends 0×0 to PTY.
-      const container = containerRef.current
-      if (!container || !active || container.clientWidth === 0 || container.clientHeight === 0) {
+      // Check the outer container for layout dimensions (the inner xtermRef inherits them).
+      const outer = containerRef.current
+      if (!outer || !active || outer.clientWidth === 0 || outer.clientHeight === 0) {
         // Defer to a resize event; ResizeObserver will re-trigger when visible.
         return
       }
 
       // Apply ghostty font + theme before open() so font metrics are correct.
-      await applyGhosttyAppearance(term)
+      const fontSize = await applyGhosttyAppearance(term)
       if (disposed) return
+
+      // Horizontal padding: approximate ghostty's default window-padding-x (2 cells).
+      // Cell width ≈ 0.6em for monospace fonts; 2 cells ≈ fontSize * 0.6 * 2.
+      // Applied to the OUTER container so FitAddon (which measures the inner xterm div
+      // passed to term.open) sees only the content-box width and computes cols/rows
+      // from the padded area. Mouse hit-testing is unaffected — xterm's canvas fills
+      // the inner div completely; only the surrounding gutter is padded.
+      const hPad = Math.round(fontSize * 0.6 * 2)
+      outer.style.paddingLeft = `${hPad}px`
+      outer.style.paddingRight = `${hPad}px`
 
       term.open(el)
 
@@ -161,6 +190,19 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       webgl.onContextLoss(() => {
         webgl?.dispose()
         webgl = null
+        // Fallback to Canvas renderer on WebGL context loss.
+        logDiag({
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.XTERM_WEBGL_CONTEXT_LOSS,
+          workspaceId,
+          message: 'WebGL context lost — falling back to Canvas renderer'
+        })
+        try {
+          term.loadAddon(new CanvasAddon())
+        } catch {
+          // Canvas fallback failed — terminal degrades to DOM renderer.
+        }
       })
       try {
         term.loadAddon(webgl)
@@ -189,8 +231,9 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       // Data loop: main → renderer.
       unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
         if (wid !== workspaceId || disposed) return
-        // data arrives as a string from IPC (U3 sends Uint8Array but preload d.ts declares string).
-        term.write(data, () => onWriteCommitted(data.length))
+        // Bytes end-to-end: PTY emits Buffer, IPC sends Uint8Array, xterm.write accepts it.
+        // ACK unit is BYTES (byteLength) on both sides — must match the engine's byte counters.
+        term.write(data, () => onWriteCommitted(data.byteLength))
       })
 
       // Exit subscription.
@@ -309,6 +352,9 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
   return (
     <div ref={containerRef} className="w-full h-full relative">
+      {/* Inner div: xterm mounts here. Its width = outer width minus horizontal padding,
+          so FitAddon computes cols from the content box, not the gutters. */}
+      <div ref={xtermRef} className="w-full h-full" />
       {spawnError !== null && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-surface-base">
           <p className="text-sm text-text-secondary px-4 text-center">

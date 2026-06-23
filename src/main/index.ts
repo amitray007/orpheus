@@ -227,7 +227,10 @@ function getXtermEngine(): XtermEngine {
   if (!xtermEngine) {
     xtermEngine = new XtermEngine()
     xtermEngine.setDataHandler((workspaceId, data) => {
-      getMainWindow()?.webContents.send('terminal:xterm-data', { workspaceId, data })
+      getMainWindow()?.webContents.send('terminal:xterm-data', {
+        workspaceId,
+        data: new Uint8Array(data)
+      })
     })
     xtermEngine.setExitHandler((workspaceId, exitCode, signal) => {
       terminalActions.clearXtermSessionReady(workspaceId)
@@ -582,6 +585,11 @@ app.on('before-quit', () => {
     }
     try {
       xtermEngine.killAll()
+    } catch {
+      // never throw from quit handler
+    }
+    try {
+      terminalActions.clearAllXtermSessionReady()
     } catch {
       // never throw from quit handler
     }

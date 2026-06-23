@@ -14,8 +14,14 @@ const nodePty = _require('@lydell/node-pty') as typeof import('@lydell/node-pty'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-const BATCH_SIZE_LIMIT = 16 * 1024 // 16 KB
-const BATCH_TIMER_MS = 5
+// Batch tuning — measured under a 40MB PTY firehose (yes | head -n 200000):
+//   5ms/16KB  -> 4683 flushes/s (one webContents.send each) — IPC-heavy
+//   16ms/64KB -> 1314 flushes/s — 3.6x fewer IPC sends, ~1 frame (16ms) latency
+// 16ms is imperceptible for interactive use; 64KB does the coalescing under load
+// (the size cap, not the timer, is what fires during a firehose). Chosen for
+// coalescing-over-latency. Revisit only with a new measurement, not a guess.
+const BATCH_SIZE_LIMIT = 64 * 1024 // 64 KB
+const BATCH_TIMER_MS = 16
 const FLOW_HIGH_WATERMARK = 100_000
 const FLOW_LOW_WATERMARK = 5_000
 const STALL_TIMEOUT_MS = 10_000
@@ -25,11 +31,11 @@ type PtyEntry = {
   pty: import('@lydell/node-pty').IPty
   phase: 'live' | 'dead'
   // batching
-  batchBuf: string
+  batchBuf: Buffer[]
   batchTimer: NodeJS.Timeout | null
   // flow control
-  sentChars: number
-  ackedChars: number
+  sentBytes: number
+  ackedBytes: number
   paused: boolean
   // stall watchdog
   stallTimer: NodeJS.Timeout | null
@@ -40,7 +46,7 @@ type PtyEntry = {
 
 export class XtermEngine implements TerminalEngine {
   private map = new Map<string, PtyEntry>()
-  private dataHandler: ((workspaceId: string, data: string) => void) | null = null
+  private dataHandler: ((workspaceId: string, data: Buffer) => void) | null = null
   private exitHandler: ((workspaceId: string, exitCode: number, signal?: number) => void) | null =
     null
   private recoverHandler: ((workspaceId: string) => void) | null = null
@@ -89,15 +95,15 @@ export class XtermEngine implements TerminalEngine {
         rows: params.rows ?? 24,
         cwd: params.cwd,
         env: { ...process.env, ...ptyEnv } as Record<string, string>,
-        encoding: 'utf8'
+        encoding: null
       })
 
       pty.onData((data) => {
         const e = this.map.get(params.workspaceId)
         if (!e) return
         e.lastDataTs = Date.now()
-        e.batchBuf += data
-        if (e.batchBuf.length >= BATCH_SIZE_LIMIT) {
+        e.batchBuf.push(data as unknown as Buffer)
+        if (e.batchBuf.reduce((s, b) => s + b.length, 0) >= BATCH_SIZE_LIMIT) {
           this.flush(params.workspaceId)
         } else if (!e.batchTimer) {
           e.batchTimer = setTimeout(() => this.flush(params.workspaceId), BATCH_TIMER_MS)
@@ -115,10 +121,10 @@ export class XtermEngine implements TerminalEngine {
       this.map.set(params.workspaceId, {
         pty,
         phase: 'live',
-        batchBuf: '',
+        batchBuf: [],
         batchTimer: null,
-        sentChars: 0,
-        ackedChars: 0,
+        sentBytes: 0,
+        ackedBytes: 0,
         paused: false,
         stallTimer: null,
         stallFired: false,
@@ -190,17 +196,17 @@ export class XtermEngine implements TerminalEngine {
 
   private flush(workspaceId: string): void {
     const entry = this.map.get(workspaceId)
-    if (!entry || !entry.batchBuf) return
+    if (!entry || entry.batchBuf.length === 0) return
     if (entry.batchTimer) {
       clearTimeout(entry.batchTimer)
       entry.batchTimer = null
     }
-    const data = entry.batchBuf
-    entry.batchBuf = ''
-    entry.sentChars += data.length
+    const data = Buffer.concat(entry.batchBuf)
+    entry.batchBuf = []
+    entry.sentBytes += data.length
     this.dataHandler?.(workspaceId, data)
     // flow control
-    const unacked = entry.sentChars - entry.ackedChars
+    const unacked = entry.sentBytes - entry.ackedBytes
     if (!entry.paused && unacked > FLOW_HIGH_WATERMARK) {
       entry.pty.pause()
       entry.paused = true
@@ -211,13 +217,13 @@ export class XtermEngine implements TerminalEngine {
   private startStallWatchdog(workspaceId: string): void {
     const entry = this.map.get(workspaceId)
     if (!entry || entry.stallTimer || entry.stallFired) return
-    const unackedAtStart = entry.sentChars - entry.ackedChars
+    const unackedAtStart = entry.sentBytes - entry.ackedBytes
     entry.stallTimer = setTimeout(() => {
       const e = this.map.get(workspaceId)
       if (!e) return
       e.stallTimer = null
       if (!e.paused) return
-      const currentUnacked = e.sentChars - e.ackedChars
+      const currentUnacked = e.sentBytes - e.ackedBytes
       if (currentUnacked >= unackedAtStart) {
         // no progress — fire recovery
         e.stallFired = true
@@ -227,7 +233,7 @@ export class XtermEngine implements TerminalEngine {
           event: 'terminal.xterm_flow_stall',
           workspaceId,
           message: `xterm flow stall: unacked=${currentUnacked} for >10s`,
-          data: { unacked: currentUnacked, sentChars: e.sentChars, ackedChars: e.ackedChars }
+          data: { unacked: currentUnacked, sentBytes: e.sentBytes, ackedBytes: e.ackedBytes }
         })
         this.recoverHandler?.(workspaceId)
       }
@@ -252,7 +258,7 @@ export class XtermEngine implements TerminalEngine {
             event: 'terminal.xterm_flow_stall',
             workspaceId,
             message: `xterm liveness stall: paused with no data for >${STALL_TIMEOUT_MS}ms`,
-            data: { lastDataTs: e.lastDataTs, sentChars: e.sentChars, ackedChars: e.ackedChars }
+            data: { lastDataTs: e.lastDataTs, sentBytes: e.sentBytes, ackedBytes: e.ackedBytes }
           })
           this.recoverHandler?.(workspaceId)
         }
@@ -270,14 +276,14 @@ export class XtermEngine implements TerminalEngine {
   ackChars(workspaceId: string, count: number): void {
     const entry = this.map.get(workspaceId)
     if (!entry) return
-    entry.ackedChars += count
+    entry.ackedBytes += count
     if (entry.stallTimer) {
       clearTimeout(entry.stallTimer)
       entry.stallTimer = null
       entry.stallFired = false
     }
     if (entry.paused) {
-      const unacked = entry.sentChars - entry.ackedChars
+      const unacked = entry.sentBytes - entry.ackedBytes
       if (unacked <= FLOW_LOW_WATERMARK) {
         entry.pty.resume()
         entry.paused = false
@@ -297,8 +303,8 @@ export class XtermEngine implements TerminalEngine {
     }
     entry.stallFired = false
     const wasPaused = entry.paused
-    entry.sentChars = 0
-    entry.ackedChars = 0
+    entry.sentBytes = 0
+    entry.ackedBytes = 0
     entry.paused = false
     if (wasPaused) {
       entry.pty.resume()
@@ -334,7 +340,7 @@ export class XtermEngine implements TerminalEngine {
     return pids
   }
 
-  setDataHandler(handler: (workspaceId: string, data: string) => void): void {
+  setDataHandler(handler: (workspaceId: string, data: Buffer) => void): void {
     this.dataHandler = handler
   }
 

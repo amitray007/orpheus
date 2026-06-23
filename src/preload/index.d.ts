@@ -367,7 +367,7 @@ declare global {
         phase: (workspaceId: string) => Promise<'none' | 'live' | 'dead'>
         ack: (workspaceId: string, count: number) => Promise<void>
         resetFlow: (workspaceId: string) => Promise<void>
-        onData: (cb: (e: { workspaceId: string; data: string }) => void) => () => void
+        onData: (cb: (e: { workspaceId: string; data: Uint8Array }) => void) => () => void
         onExit: (
           cb: (e: { workspaceId: string; exitCode: number; signal?: number }) => void
         ) => () => void

@@ -48,7 +48,7 @@ export interface TerminalEngine {
   /**
    * Set the data callback. Called when the PTY produces output (after batching).
    */
-  setDataHandler(handler: (workspaceId: string, data: string) => void): void
+  setDataHandler(handler: (workspaceId: string, data: Buffer) => void): void
   /**
    * Set the exit callback. Called when a PTY process exits.
    */

@@ -612,9 +612,11 @@ const api = {
       ipcRenderer.invoke('terminal:xterm-ack', { workspaceId, count }),
     resetFlow: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:xterm-reset-flow', { workspaceId }),
-    onData: (cb: (e: { workspaceId: string; data: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string; data: string }): void =>
-        cb(e)
+    onData: (cb: (e: { workspaceId: string; data: Uint8Array }) => void): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; data: Uint8Array }
+      ): void => cb(e)
       ipcRenderer.on('terminal:xterm-data', listener)
       return () => ipcRenderer.removeListener('terminal:xterm-data', listener)
     },

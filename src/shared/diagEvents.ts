@@ -30,7 +30,8 @@ export const DIAG_EVENTS = {
   ACTIVITY_WATCHDOG_FIRED: 'activity.watchdog_fired',
   OVERLAY_RETRY: 'overlay.retry',
   OVERLAY_FALLBACK: 'overlay.fallback',
-  XTERM_FLOW_STALL: 'terminal.xterm_flow_stall'
+  XTERM_FLOW_STALL: 'terminal.xterm_flow_stall',
+  XTERM_WEBGL_CONTEXT_LOSS: 'terminal.xterm_webgl_context_loss'
 } as const
 
 export type DiagEventKey = (typeof DIAG_EVENTS)[keyof typeof DIAG_EVENTS]
