@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { getWorkspaceActivity } from '../orpheusNotify'
+import { getAppUiState } from '../uiState'
 import type { ActionResult, TerminalSendKeyDescriptor } from '../../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,40 @@ type DestroyFn = (workspaceId: string) => void
 type DestroyAddonSlice = { destroy: DestroyFn }
 
 // ---------------------------------------------------------------------------
+// xterm engine reference — injected from index.ts to avoid circular deps.
+// ---------------------------------------------------------------------------
+
+type XtermEngineSlice = {
+  write: (workspaceId: string, data: string) => void
+  getPhase: (workspaceId: string) => 'none' | 'live' | 'dead'
+}
+
+let xtermEngineRef: XtermEngineSlice | null = null
+
+/** Called from index.ts once the xterm engine is created. */
+export function setXtermEngineRef(engine: XtermEngineSlice): void {
+  xtermEngineRef = engine
+}
+
+// ---------------------------------------------------------------------------
+// Per-workspace session-ready tracking (KTD10).
+// Populated by markXtermSessionReady() when SessionStart fires for a workspace
+// running under the xterm engine. Cleared on workspace destroy / PTY exit.
+// ---------------------------------------------------------------------------
+
+const xtermSessionReady = new Set<string>()
+
+/** Signal that the xterm-engine session for this workspace has started. */
+export function markXtermSessionReady(workspaceId: string): void {
+  xtermSessionReady.add(workspaceId)
+}
+
+/** Clear the session-ready flag (call on PTY exit or workspace destroy). */
+export function clearXtermSessionReady(workspaceId: string): void {
+  xtermSessionReady.delete(workspaceId)
+}
+
+// ---------------------------------------------------------------------------
 // macOS virtual key codes and modifiers.
 // kVK_ANSI_U = 0x20 (Ctrl-U: clear line)
 // kVK_ANSI_C = 0x08 (Ctrl-C: cancel / interrupt)
@@ -52,18 +87,74 @@ type DestroyAddonSlice = { destroy: DestroyFn }
 // ---------------------------------------------------------------------------
 const VKEY_U = 0x20
 const VKEY_C = 0x08
+const VKEY_RETURN = 0x24
 
 // ghostty_input_mods_e bit for Control (GHOSTTY_MODS_CTRL = 1 << 1 = 2).
 const MODS_CTRL = 2
+
+// Map from { keycode, mods } to the terminal byte sequence for the xterm engine.
+// Only the keycodes actually used by the existing quick-action functions are mapped.
+function keycodeToBytes(keycode: number, mods: number): string | null {
+  if (keycode === VKEY_RETURN && mods === 0) return '\r'
+  if (keycode === VKEY_U && mods === MODS_CTRL) return '\x15'
+  if (keycode === VKEY_C && mods === MODS_CTRL) return '\x03'
+  return null
+}
+
+const loggedUnknownKeys = new Set<string>()
+
+function xtermSendKeys(
+  workspaceId: string,
+  keys: Array<{ keycode: number; mods?: number; action?: string }>
+): ActionResult {
+  if (!xtermEngineRef) {
+    return { ok: false, code: 'failed', error: 'xterm engine not available' }
+  }
+  for (const k of keys) {
+    const mods = k.mods ?? 0
+    const bytes = keycodeToBytes(k.keycode, mods)
+    if (bytes === null) {
+      const key = `${k.keycode}:${mods}`
+      if (!loggedUnknownKeys.has(key)) {
+        loggedUnknownKeys.add(key)
+        console.warn(
+          '[terminal] xterm: no byte mapping for keycode=0x%s mods=%d',
+          k.keycode.toString(16),
+          mods
+        )
+      }
+      continue
+    }
+    xtermEngineRef.write(workspaceId, bytes)
+  }
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// Engine resolution — reads the global terminalEngine setting.
+// ---------------------------------------------------------------------------
+
+function isXtermEngine(): boolean {
+  return getAppUiState().terminalEngine === 'xterm'
+}
 
 // ---------------------------------------------------------------------------
 // canInject — checks the live workspace activity status.
 // Returns true only for 'idle' and 'awaiting_input'; rejects 'in_progress',
 // 'attention', and 'archived'.
+//
+// For the xterm engine (KTD10): also requires PTY alive AND session-ready.
 // ---------------------------------------------------------------------------
 export function canInject(workspaceId: string): boolean {
   const status = getWorkspaceActivity(workspaceId)
-  return status === 'idle' || status === 'awaiting_input'
+  const activityOk = status === 'idle' || status === 'awaiting_input'
+  if (!activityOk) return false
+  if (isXtermEngine()) {
+    const ptyAlive = xtermEngineRef?.getPhase(workspaceId) === 'live'
+    const sessionReady = xtermSessionReady.has(workspaceId)
+    return ptyAlive && sessionReady
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +167,11 @@ export function sendInput(
 ): ActionResult {
   if (!canInject(workspaceId)) {
     return { ok: false, code: 'busy', error: 'Workspace is busy' }
+  }
+  if (isXtermEngine()) {
+    if (!xtermEngineRef) return { ok: false, code: 'failed', error: 'xterm engine not available' }
+    xtermEngineRef.write(workspaceId, text)
+    return { ok: true }
   }
   try {
     const ok = addon.sendInput(workspaceId, text)
@@ -98,6 +194,9 @@ export function sendKeys(
 ): ActionResult {
   if (!canInject(workspaceId)) {
     return { ok: false, code: 'busy', error: 'Workspace is busy' }
+  }
+  if (isXtermEngine()) {
+    return xtermSendKeys(workspaceId, keys)
   }
   try {
     const ok = addon.sendKeys(workspaceId, keys)
@@ -148,6 +247,14 @@ export function destroyTerminalSurface(addon: DestroyAddonSlice, workspaceId: st
 // even when the workspace is busy (that's precisely when you want to cancel).
 // ---------------------------------------------------------------------------
 export function cancel(addon: TerminalAddonSlice, workspaceId: string): ActionResult {
+  if (isXtermEngine()) {
+    if (!xtermEngineRef) return { ok: false, code: 'failed', error: 'xterm engine not available' }
+    if (xtermEngineRef.getPhase(workspaceId) !== 'live') {
+      return { ok: false, code: 'not_found', error: 'No live xterm PTY for workspace' }
+    }
+    xtermEngineRef.write(workspaceId, '\x03')
+    return { ok: true }
+  }
   try {
     const ok = addon.sendKeys(workspaceId, [{ keycode: VKEY_C, mods: MODS_CTRL, action: 'press' }])
     if (!ok) {

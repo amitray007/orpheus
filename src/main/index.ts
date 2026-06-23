@@ -228,8 +228,10 @@ function getXtermEngine(): XtermEngine {
       getMainWindow()?.webContents.send('terminal:xterm-data', { workspaceId, data })
     })
     xtermEngine.setExitHandler((workspaceId, exitCode, signal) => {
+      terminalActions.clearXtermSessionReady(workspaceId)
       getMainWindow()?.webContents.send('terminal:xterm-exit', { workspaceId, exitCode, signal })
     })
+    terminalActions.setXtermEngineRef(xtermEngine)
   }
   return xtermEngine
 }
@@ -1761,6 +1763,7 @@ ipcMain.handle(
 )
 
 ipcMain.handle('terminal:xterm-destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+  terminalActions.clearXtermSessionReady(workspaceId)
   getXtermEngine().destroy(workspaceId)
 })
 
@@ -2045,6 +2048,19 @@ app.whenReady().then(() => {
       // onActivityBatch as primary. The preload onActivityChanged method and
       // the renderer's fallback listener are intentionally kept as dead-but-safe
       // code so older code paths compile without changes.
+
+      // Mark xterm session ready on SessionStart so canInject permits injection.
+      // Push canInjectChanged so renderer chips update without waiting for activity.
+      onSessionStart((workspaceId: string) => {
+        terminalActions.markXtermSessionReady(workspaceId)
+        const win = getMainWindow()
+        if (win && !win.webContents.isDestroyed()) {
+          win.webContents.send('terminal:canInjectChanged', {
+            workspaceId,
+            canInject: terminalActions.canInject(workspaceId)
+          })
+        }
+      })
     } catch (err) {
       console.error('[orpheusNotify] failed to start notify server:', err)
     }
