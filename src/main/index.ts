@@ -473,6 +473,8 @@ function performClose(id: string): WorkspaceRecord | undefined {
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  xtermEngine?.destroy(id)
+  terminalActions.clearXtermSessionReady(id)
   teardownWorkspaceResources(id, ws?.cwd ?? null)
   return closeWorkspace(id, lastTitle)
 }
@@ -970,6 +972,8 @@ ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
         // Surface not mounted or already destroyed — ignore.
       }
     }
+    xtermEngine?.destroy(ws.id)
+    terminalActions.clearXtermSessionReady(ws.id)
     teardownWorkspaceResources(ws.id, ws.cwd ?? null)
   }
   deleteProject(id)
@@ -1011,6 +1015,8 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  xtermEngine?.destroy(id)
+  terminalActions.clearXtermSessionReady(id)
   archiveWorkspace(id)
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
