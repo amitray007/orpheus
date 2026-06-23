@@ -133,6 +133,12 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         void window.api.xterm.resize(workspaceId, safeCols, safeRows)
       })
 
+      // Title loop: forward raw OSC 0/2 titles to main for spinner-glyph
+      // heartbeat detection and sidebar title updates — mirrors ghostty path.
+      term.onTitleChange((title) => {
+        window.api.xterm.title(workspaceId, title)
+      })
+
       // ResizeObserver for container size changes.
       resizeObserver = new ResizeObserver(scheduleResize)
       resizeObserver.observe(el)

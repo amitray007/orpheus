@@ -624,6 +624,9 @@ const api = {
       ): void => cb(e)
       ipcRenderer.on('terminal:xterm-exit', listener)
       return () => ipcRenderer.removeListener('terminal:xterm-exit', listener)
+    },
+    title: (workspaceId: string, title: string): void => {
+      ipcRenderer.send('terminal:xterm-title', workspaceId, title)
     }
   },
   diag: {

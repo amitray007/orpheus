@@ -327,44 +327,50 @@ function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
   })
 }
 
+// Shared handler for OSC 0/2 title events from both the ghostty native addon
+// and the xterm engine. Both sources call this with the raw title string.
+function handleTerminalTitle(workspaceId: string, title: string): void {
+  // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
+  // and a space. Strip leading non-letter/non-digit characters so the
+  // sidebar shows clean text and so our own loader UI can layer in front.
+  // Stripping also collapses the spinner animation to one stable string
+  // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
+  // dedupe below uses to avoid hammering the DB on every frame.
+
+  // If the raw title leads with a spinner glyph, re-arm the watchdog so
+  // pure-think turns (no tool events) don't falsely expire during extended thinking.
+  const rawFirst = (title ?? '')[0]
+  if (rawFirst && /^[^\p{L}\p{N}\s]/u.test(rawFirst)) {
+    heartbeatFromTitle(workspaceId)
+  }
+
+  const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
+
+  // Skip if nothing changed — guards the per-frame spinner churn.
+  if (workspaceTitles.get(workspaceId) === (cleaned ?? undefined)) return
+  if (!cleaned && !workspaceTitles.has(workspaceId)) return
+
+  console.log('[title] native fired', { workspaceId, raw: title, cleaned })
+  if (cleaned) {
+    workspaceTitles.set(workspaceId, cleaned)
+  } else {
+    workspaceTitles.delete(workspaceId)
+  }
+  // Persist so the next launch can seed from the DB and the sidebar/header
+  // shows the prior title instead of the default workspace name.
+  try {
+    setWorkspaceLastTitle(workspaceId, cleaned)
+  } catch (err) {
+    console.error('[title] failed to persist last_title', err)
+  }
+  getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
+}
+
 function ensureTitleCallback(addon: GhosttyNativeAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
   addon.setTitleCallback((workspaceId: string, title: string) => {
-    // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
-    // and a space. Strip leading non-letter/non-digit characters so the
-    // sidebar shows clean text and so our own loader UI can layer in front.
-    // Stripping also collapses the spinner animation to one stable string
-    // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
-    // dedupe below uses to avoid hammering the DB on every frame.
-
-    // If the raw title leads with a spinner glyph, re-arm the watchdog so
-    // pure-think turns (no tool events) don't falsely expire during extended thinking.
-    const rawFirst = (title ?? '')[0]
-    if (rawFirst && /^[^\p{L}\p{N}\s]/u.test(rawFirst)) {
-      heartbeatFromTitle(workspaceId)
-    }
-
-    const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
-
-    // Skip if nothing changed — guards the per-frame spinner churn.
-    if (workspaceTitles.get(workspaceId) === (cleaned ?? undefined)) return
-    if (!cleaned && !workspaceTitles.has(workspaceId)) return
-
-    console.log('[title] native fired', { workspaceId, raw: title, cleaned })
-    if (cleaned) {
-      workspaceTitles.set(workspaceId, cleaned)
-    } else {
-      workspaceTitles.delete(workspaceId)
-    }
-    // Persist so the next launch can seed from the DB and the sidebar/header
-    // shows the prior title instead of the default workspace name.
-    try {
-      setWorkspaceLastTitle(workspaceId, cleaned)
-    } catch (err) {
-      console.error('[title] failed to persist last_title', err)
-    }
-    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
+    handleTerminalTitle(workspaceId, title)
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
     getMainWindow()?.webContents.send('terminal:sleepStateChanged', {
@@ -1778,6 +1784,10 @@ ipcMain.handle(
     getXtermEngine().resetFlow(workspaceId)
   }
 )
+
+ipcMain.on('terminal:xterm-title', (_e, workspaceId: string, rawTitle: string): void => {
+  handleTerminalTitle(workspaceId, rawTitle)
+})
 
 // ---------------------------------------------------------------------------
 // Quick Actions — phase 2: registry IPC surface

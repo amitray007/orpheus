@@ -369,6 +369,7 @@ declare global {
         onExit: (
           cb: (e: { workspaceId: string; exitCode: number; signal?: number }) => void
         ) => () => void
+        title: (workspaceId: string, title: string) => void
       }
       diag: {
         event: (evt: DiagEvent) => void
