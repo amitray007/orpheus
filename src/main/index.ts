@@ -593,22 +593,17 @@ function createWindow(): void {
     }
   }
 
-  // Transparent web layer so the ghostty NSView (parented as the bottom
-  // sibling of contentView in packages/ghostty-native/addon.mm) shows
-  // through wherever the renderer paints with alpha. Without transparent:
-  // true the NSWindow forces an opaque backing and webContents alpha is
-  // discarded — the terminal would be invisible behind a solid surface.
-  // On Linux/Windows we don't load libghostty and transparent windows have
-  // well-documented perf/rendering quirks, so keep the original opaque there.
-  const isMac = process.platform === 'darwin'
+  // Task 8: window is opaque on all platforms. The terminal NSView is now the
+  // topmost sibling of contentView (NSWindowAbove relativeTo:nil) and has
+  // isOpaque=YES, so it paints itself; the web layer no longer needs to be
+  // transparent. Using an opaque window eliminates the compositor overhead of
+  // alpha-blending the entire window and fixes flicker on macOS 15+.
   const mainWindow = new BrowserWindow({
     ...restoredBounds,
     minWidth: 960,
     minHeight: 600,
     show: false,
-    ...(isMac
-      ? { transparent: true, backgroundColor: '#00000000' }
-      : { backgroundColor: '#0b0b0c' }),
+    backgroundColor: '#0b0b0c',
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
@@ -646,6 +641,7 @@ function createWindow(): void {
     mainWindow.show()
     try {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
+      loadTerminalAddon().setOverlayCompositing(true)
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
     }
@@ -1385,6 +1381,7 @@ type GhosttyNativeAddon = {
   destroy: (workspaceId: string) => void
   focus: (workspaceId: string) => void
   setOverlay(workspaceId: string, on: boolean): void
+  setOverlayCompositing(on: boolean): void
   setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
   setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
   setLivenessCallback: (
