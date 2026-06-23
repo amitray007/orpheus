@@ -9,6 +9,7 @@ import { CanvasAddon } from '@xterm/addon-canvas'
 import { DIAG_EVENTS } from '@shared/diagEvents'
 import { logDiag } from '@/lib/diag'
 import { setSleeping } from '@/lib/sleepStore'
+import { DotmSquare12 } from '@/components/ui/dotm-square-12'
 
 interface XtermSurfaceProps {
   workspaceId: string
@@ -99,6 +100,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   const xtermRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
+  const [loading, setLoading] = useState(true)
   // Bumping attemptKey tears down and rebuilds the terminal effect — used by Restart.
   const [attemptKey, setAttemptKey] = useState(0)
   // Stable ref to doFit so the active-toggle and recover effects can call it
@@ -106,6 +108,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
   const doFitRef = useRef<(() => void) | null>(null)
 
   const handleRestart = (): void => {
+    setLoading(true)
     setExited(null)
     setSpawnError(null)
     // destroy is idempotent — clears dead PTY before we respawn on next mount.
@@ -163,6 +166,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       if (resizeDebounceId !== null) clearTimeout(resizeDebounceId)
       resizeDebounceId = setTimeout(doFit, 60)
     }
+
+    let firstDataSeen = false
 
     const openAndSpawn = async (): Promise<void> => {
       await document.fonts.ready
@@ -303,6 +308,10 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         // Data loop: main → renderer.
         unsubData = window.api.xterm.onData(({ workspaceId: wid, data }) => {
           if (wid !== workspaceId || disposed) return
+          if (!firstDataSeen) {
+            firstDataSeen = true
+            if (!disposed) setLoading(false)
+          }
           // Bytes end-to-end: PTY emits Buffer, IPC sends Uint8Array, xterm.write accepts it.
           // ACK unit is BYTES (byteLength) on both sides — must match the engine's byte counters.
           term.write(data, () => onWriteCommitted(data.byteLength))
@@ -311,6 +320,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         // Exit subscription.
         unsubExit = window.api.xterm.onExit(({ workspaceId: wid, exitCode, signal }) => {
           if (wid !== workspaceId) return
+          setLoading(false)
           setExited({ code: exitCode, signal })
         })
 
@@ -348,17 +358,20 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         if (reattachResult.data !== null) {
           term.write(reattachResult.data)
         }
+        setLoading(false)
         wireLiveSession()
         // Nudge PTY to redraw by syncing current cols/rows.
         doFit()
         void window.api.xterm.resize(workspaceId, Math.max(1, term.cols), Math.max(1, term.rows))
       } else {
         // Real failure (PTY spawn error, not a reattach).
+        setLoading(false)
         setSpawnError(result.error ?? 'Failed to spawn terminal process')
       }
     }
 
     openAndSpawn().catch((err) => {
+      setLoading(false)
       setSpawnError(String(err))
     })
 
@@ -556,6 +569,17 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       {/* Inner div: xterm mounts here. Its width = outer width minus horizontal padding,
           so FitAddon computes cols from the content box, not the gutters. */}
       <div ref={xtermRef} className="w-full h-full" />
+      {loading && !spawnError && !exited && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface-base">
+          <div
+            className="flex flex-col items-center gap-3 rounded-[14px] border border-border-base bg-surface-base px-8 py-6 shadow-lg"
+            style={{ width: 340 }}
+          >
+            <DotmSquare12 size={36} dotSize={5} animated />
+            <p className="text-sm text-text-primary">Starting workspace</p>
+          </div>
+        </div>
+      )}
       {spawnError !== null && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-surface-base">
           <p className="text-sm text-text-secondary px-4 text-center">
