@@ -92,6 +92,26 @@ if (existsSync(target) && isAppRunning()) {
 }
 
 try {
+  // Sign node-pty's pty.node and spawn-helper individually BEFORE the bundle-level
+  // re-sign. `codesign --deep` is documented as unreliable for bare Mach-O
+  // executables (like spawn-helper) that are not inside a recognised nested
+  // bundle — it may silently skip them, leaving them unsigned or with a stale
+  // signature that fails at exec time ("claude won't start"). Pre-signing each
+  // file explicitly is idempotent: --force overwrites any prior signature.
+  const unpacked = `${appBundle}/Contents/Resources/app.asar.unpacked`
+  const ptyNodePath = `${unpacked}/node_modules/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/pty.node`
+  const spawnHelperPath = `${unpacked}/node_modules/@lydell/node-pty-darwin-arm64/prebuilds/darwin-arm64/spawn-helper`
+  if (existsSync(ptyNodePath)) {
+    console.log(`${tag} pre-signing pty.node (ad-hoc)`)
+    execSync(`codesign --force --sign - "${ptyNodePath}"`, { stdio: 'inherit' })
+    execSync(`codesign -vvv --verify "${ptyNodePath}"`, { stdio: 'pipe' })
+  }
+  if (existsSync(spawnHelperPath)) {
+    console.log(`${tag} pre-signing spawn-helper (ad-hoc)`)
+    execSync(`codesign --force --sign - "${spawnHelperPath}"`, { stdio: 'inherit' })
+    execSync(`codesign -vvv --verify "${spawnHelperPath}"`, { stdio: 'inherit' })
+  }
+
   // electron-builder's ad-hoc signing leaves inner frameworks with mismatched
   // Team IDs. macOS 15+ refuses to load them, so we re-sign the whole bundle
   // as one ad-hoc unit to normalise Team IDs across all components.

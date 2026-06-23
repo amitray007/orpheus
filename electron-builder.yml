@@ -14,6 +14,9 @@ asarUnpack:
   # electron-builder extracts anything matching these globs to app.asar.unpacked/
   - resources/**
   - '**/*.node'
+  # spawn-helper is a bare Mach-O sibling of pty.node (no .node extension);
+  # **/*.node won't match it, so we need an explicit glob.
+  - '**/node_modules/@lydell/node-pty-darwin-arm64/prebuilds/**'
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.

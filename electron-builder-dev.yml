@@ -13,6 +13,9 @@ files:
 asarUnpack:
   - resources/**
   - '**/*.node'
+  # spawn-helper is a bare Mach-O sibling of pty.node (no .node extension);
+  # **/*.node won't match it, so we need an explicit glob.
+  - '**/node_modules/@lydell/node-pty-darwin-arm64/prebuilds/**'
 extraResources:
   - from: packages/ghostty-native/build/Release/ghostty_native.node
     to: packages/ghostty-native/ghostty_native.node
