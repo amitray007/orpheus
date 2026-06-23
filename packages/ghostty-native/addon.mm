@@ -145,6 +145,14 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // (single-BrowserWindow invariant — Orpheus runs one window).
 static std::string g_visibleWorkspaceId;
 
+// Overlay state (set by SetOverlay / consumed by reconcileSurface + Mount).
+// g_overlayCompositingEnabled is flipped true in Task 8; until then the z-reorder
+// in setOverlay is inert (only focus handoff runs). g_overlayOpen gates z-insert
+// and makeFirstResponder in show/mount paths so a newly shown surface doesn't pop
+// above an open overlay or steal focus.
+static bool g_overlayCompositingEnabled = false;
+static bool g_overlayOpen = false;
+
 // Forward declarations for reconcileSurface / setVisibleWorkspace so
 // handleOcclusionChange: (inside @implementation) can call them.
 static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
@@ -2532,7 +2540,9 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Surface was hidden — re-attach it above the backstop.
             if (contentView) {
                 NSView* backstop = ensureBackstopView(contentView);
-                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
+                NSWindowOrderingMode mode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
+                NSView* rel = g_overlayOpen ? nil : backstop;
+                [contentView addSubview:entry.view positioned:mode relativeTo:rel];
             }
             // Gap-fill: paint pre-first-frame gap app-dark.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2552,7 +2562,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // NAPI runs on main thread ✓.
             {
                 NSWindow* win = [entry.view window];
-                if (win) [win makeFirstResponder:entry.view];
+                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
             }
 
         } else {
@@ -2575,7 +2585,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Sync makeFirstResponder for focus re-assertion.
             {
                 NSWindow* win = [entry.view window];
-                if (win) [win makeFirstResponder:entry.view];
+                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
             }
         }
 
@@ -2816,7 +2826,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     // Same z-order rationale as the re-attach branch above.
-    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:backstop];
+    NSWindowOrderingMode mountMode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
+    NSView* mountRel = g_overlayOpen ? nil : backstop;
+    [contentView addSubview:termView positioned:mountMode relativeTo:mountRel];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
@@ -3211,14 +3223,6 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
 
     return env.Undefined();
 }
-
-// File-scope: the z-reorder half of setOverlay is INERT until the opaque-on-top
-// compositing model is enabled (Task 8 sets this true). Until then the surface
-// stays bottom-parked under the transparent web layer (the 2adc15d model), and
-// setOverlay only performs the focus handoff — which is correct in both models
-// and avoids a visible z-flicker in the intermediate commits (Tasks 3-7).
-static bool g_overlayCompositingEnabled = false;   // flipped on in Task 8
-static bool g_overlayOpen = false;                 // used by Task 6 (show/mount gating)
 
 // NAPI: setOverlay(workspaceId, on)
 // OWN writer of the z-order + overlay-focus axis (peer to reconcileSurface, which
