@@ -8,7 +8,6 @@ import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
-import { useOverlayOpen } from '@/lib/overlayFocus'
 import { Moon } from '@phosphor-icons/react'
 
 interface WorkspaceViewProps {
@@ -98,8 +97,6 @@ export function WorkspaceView({
   }
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
-
-  useOverlayOpen(drawer !== null)
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current

@@ -10,6 +10,7 @@ import {
   type ClaudeProjectSettingsOverrides
 } from '@shared/types'
 import { Select } from '../settings/primitives'
+import { Overlay } from '@/components/ui/Overlay'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -119,15 +120,6 @@ export function SettingsDrawer({
     }
   }, [open, projectId])
 
-  useEffect(() => {
-    if (!open) return
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
   function patch(update: ClaudeProjectSettingsOverrides): void {
     const next: ClaudeProjectSettingsOverrides = { ...localOverrides }
     for (const [k, v] of Object.entries(update)) {
@@ -186,11 +178,11 @@ export function SettingsDrawer({
   const hasAnyOverride = overrideCount > 0
 
   return (
-    <div
+    <Overlay
+      open
+      interactive
+      onDismiss={onClose}
       className="fixed inset-0 z-40 flex"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Project settings — ${projectName}`}
       // The TopBar above this drawer has WebkitAppRegion: drag, which on
       // macOS captures clicks before they reach React. Explicitly mark the
       // whole drawer overlay as no-drag so the X (and any other interactive
@@ -205,7 +197,12 @@ export function SettingsDrawer({
         onClick={onClose}
         className="flex-1 bg-black/40 cursor-default"
       />
-      <div className="w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col">
+      <div
+        className="w-[420px] max-w-[90vw] h-full bg-surface-base border-l border-border-default shadow-2xl flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Project settings — ${projectName}`}
+      >
         {/* Header — matches WorkspaceDrawer */}
         <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
           <span className="text-sm font-medium text-text-muted px-1.5">Project Settings</span>
@@ -289,6 +286,6 @@ export function SettingsDrawer({
           </section>
         </div>
       </div>
-    </div>
+    </Overlay>
   )
 }
