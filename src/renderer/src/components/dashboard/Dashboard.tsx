@@ -161,18 +161,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       delete root.dataset.accent
     }
     root.dataset.fontScale = uiState.uiFontScale ?? 'default'
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.theme, uiState?.accentColor, uiState?.uiFontScale])
 
   // Bridge the playInteractionSounds uiState flag into the sound module.
   useEffect(() => {
     if (!uiState) return
     setSoundEnabled(uiState.playInteractionSounds ?? true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.playInteractionSounds])
 
   // Bridge the soundPack uiState field into the sound module.
   useEffect(() => {
     if (!uiState) return
     setSoundPack(uiState.soundPack ?? 'core')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.soundPack])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug

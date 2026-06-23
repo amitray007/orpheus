@@ -238,7 +238,16 @@ export function ActionChip({
     }
 
     await invokeAction()
-  }, [inFlight, isDisabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
+  }, [
+    inFlight,
+    isDisabled,
+    disabled,
+    prompts,
+    showPrompt,
+    openPromptPopover,
+    invokeAction,
+    showTooltip
+  ])
 
   return (
     <div className="relative flex-shrink-0">
