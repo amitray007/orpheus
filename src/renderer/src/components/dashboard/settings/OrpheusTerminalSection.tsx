@@ -381,7 +381,11 @@ export function OrpheusTerminalSection(): React.JSX.Element {
     )
   }
 
-  if (!config) {
+  // Wait for BOTH ghostty settings (config) AND uiState before rendering — the
+  // terminal-engine SegmentedControl reads uiState.terminalEngine, so rendering
+  // before uiState loads would briefly show the default ('xterm') instead of the
+  // persisted value (looks like the select "reset" on reopen).
+  if (!config || !uiState) {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
         {header}
@@ -404,7 +408,7 @@ export function OrpheusTerminalSection(): React.JSX.Element {
           >
             <SegmentedControl
               options={ENGINE_OPTIONS}
-              value={uiState?.terminalEngine ?? 'xterm'}
+              value={uiState.terminalEngine}
               onChange={(v) => patchUiState({ terminalEngine: v })}
               ariaLabel="Terminal engine"
             />
