@@ -1411,6 +1411,7 @@ type GhosttyNativeAddon = {
     keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
   ) => boolean
   reloadGhosttyConfig: () => boolean
+  getSurfacePhase: (workspaceId: string) => string
 }
 
 let terminalAddon: GhosttyNativeAddon | null = null
@@ -1584,6 +1585,17 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
     workspaceId
   })
 })
+
+ipcMain.handle(
+  'terminal:getSurfacePhase',
+  (_e, { workspaceId }: { workspaceId: string }): string => {
+    try {
+      return loadTerminalAddon().getSurfacePhase(workspaceId)
+    } catch {
+      return 'none'
+    }
+  }
+)
 
 ipcMain.handle(
   'terminal:resize',

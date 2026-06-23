@@ -3482,6 +3482,38 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// NAPI: getSurfacePhase(workspaceId) → 'none'|'freeing'|'hidden'|'attached'|'visible'
+//
+// Read-only truth query — returns the reconciler's authoritative surface phase
+// for the given workspaceId. Called only from async IPC contexts in the renderer;
+// never called during synchronous cleanup. O(1) map lookups; main-thread-safe.
+// ---------------------------------------------------------------------------
+
+static Napi::Value GetSurfacePhase(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "getSurfacePhase requires workspaceId string").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    // Pending free takes precedence (the surface is being torn down).
+    if (g_freeingGeneration.find(workspaceId) != g_freeingGeneration.end()) {
+        return Napi::String::New(env, "freeing");
+    }
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        return Napi::String::New(env, "none");      // no surface exists
+    }
+    if (!it->second.isAttached) {
+        return Napi::String::New(env, "hidden");    // surface exists but detached/hidden
+    }
+    if (g_visibleWorkspaceId == workspaceId) {
+        return Napi::String::New(env, "visible");   // attached AND the visible one
+    }
+    return Napi::String::New(env, "attached");      // attached but not the visible one
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -3507,6 +3539,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
+    exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
     exports.Set("setActionTraceCallback",   Napi::Function::New(env, SetActionTraceCallback));

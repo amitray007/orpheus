@@ -84,6 +84,9 @@ declare global {
           cb: (e: { workspaceId: string; canInject: boolean }) => void
         ) => () => void
         focus: (workspaceId: string) => Promise<void>
+        getSurfacePhase: (
+          workspaceId: string
+        ) => Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'>
         onSleepStateChanged: (
           cb: (data: { workspaceId: string; sleeping: boolean }) => void
         ) => () => void

@@ -41,10 +41,11 @@ export function WorkspaceView({
   const containerRef = useRef<HTMLDivElement>(null)
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
-  // surfaceCreatedRef — true once terminal:mount has been called at least once
-  // for this workspace ID (i.e. the native surface exists in the addon's map).
-  // When active flips true on an already-created surface we skip the 75ms
-  // debounce and use a single rAF (fast re-activate path).
+  // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
+  // least once for this workspace ID. Used for fast synchronous guards (e.g. the
+  // unmount-cleanup hide path). NOT authoritative for mount decisions — can be
+  // stale if the native surface was freed without going through React cleanup.
+  // The active-toggle mount path consults getSurfacePhase (native truth) instead.
   const surfaceCreatedRef = useRef(false)
   // activeRef — mirrors the `active` prop as a ref so stable callbacks
   // (resize listeners) can read the latest value without re-subscribing.
@@ -345,6 +346,10 @@ export function WorkspaceView({
       // hide() keeps the surface alive in the addon's map so that navigating
       // back re-attaches the same shell session. Destroy is fired only from
       // Dashboard on archive/project-remove, or from handleRestart above.
+      // surfaceCreatedRef is a sync hint here — addon.hide() is idempotent and
+      // no-ops on missing/already-hidden entries, so the check just avoids a
+      // redundant IPC round-trip. getSurfacePhase is NOT used here because this
+      // cleanup runs synchronously (no await in effect teardown).
       if (surfaceCreatedRef.current && !isClosedRef.current) {
         console.log('[WorkspaceView] hiding surface on unmount workspaceId=', workspaceId)
         window.api.terminal
@@ -422,40 +427,70 @@ export function WorkspaceView({
         h: Math.round(rect.height)
       }
 
-      console.log(
-        '[WorkspaceView] re-mounting surface (activated) workspaceId=',
-        workspaceId,
-        termRect
-      )
-      window.api.terminal
-        .mount(workspaceId, termRect, scaleFactor, cwd)
-        .then((result) => {
-          surfaceCreatedRef.current = true
-          // Guard: if the user navigated away while re-mount was resolving, hide
-          // immediately so the surface doesn't draw while inactive.
-          if (!activeRef.current || !mountedRef.current) {
-            window.api.terminal
-              .hide(workspaceId)
-              .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
-            return
-          }
+      // Consult native truth before mounting. surfaceCreatedRef can be stale
+      // (true when the surface was already freed by the reconciler), which would
+      // cause a double-mount. getSurfacePhase is the authoritative source.
+      //
+      // Only 'visible' is safe to skip — the surface is attached AND it is the
+      // native g_visibleWorkspaceId (already shown + focused). Every other phase
+      // falls through to terminal.mount:
+      //   • 'attached' = attached but a DIFFERENT workspace owns visibility.
+      //     mount hits the isAttached==YES branch → setVisibleWorkspace promotes
+      //     THIS surface to visible, runs makeFirstResponder, and hides the prior
+      //     one. Skipping here would leave the wrong surface showing + unfocused.
+      //   • 'none' / 'hidden' / 'freeing' = needs a real (re-)create or re-attach.
+      void window.api.terminal.getSurfacePhase(workspaceId).then((phase) => {
+        if (!activeRef.current || !mountedRef.current) return
+
+        if (phase === 'visible') {
+          // Surface is already live + focused — reconcile surfaceCreatedRef and
+          // attach resize listeners without triggering a redundant mount IPC.
           console.log(
-            '[WorkspaceView] re-mounted workspaceId=',
-            result.workspaceId,
-            'created=',
-            result.created
+            '[WorkspaceView] surface already visible — skipping re-mount workspaceId=',
+            workspaceId
           )
-          // Re-attach resize listeners now that the surface is live.
+          surfaceCreatedRef.current = true
           effectStateRef.current?.attachResizeListeners()
-          // Re-assert terminal focus AFTER the native dispatch_async makeFirstResponder
-          // (see first-create path) — wins the focus race against an open DOM overlay
-          // so keyboard input lands in the terminal on re-activate.
-          setTimeout(() => {
-            if (!activeRef.current || !mountedRef.current) return
-            void window.api.terminal.focus(workspaceId).catch(() => {})
-          }, 0)
-        })
-        .catch((e) => console.error('[WorkspaceView] re-mount failed:', e))
+          return
+        }
+
+        console.log(
+          '[WorkspaceView] re-mounting surface (activated) workspaceId=',
+          workspaceId,
+          termRect,
+          'phase=',
+          phase
+        )
+        window.api.terminal
+          .mount(workspaceId, termRect, scaleFactor, cwd)
+          .then((result) => {
+            surfaceCreatedRef.current = true
+            // Guard: if the user navigated away while re-mount was resolving, hide
+            // immediately so the surface doesn't draw while inactive.
+            if (!activeRef.current || !mountedRef.current) {
+              window.api.terminal
+                .hide(workspaceId)
+                .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
+              return
+            }
+            console.log(
+              '[WorkspaceView] re-mounted workspaceId=',
+              result.workspaceId,
+              'created=',
+              result.created
+            )
+            // Re-attach resize listeners now that the surface is live.
+            effectStateRef.current?.attachResizeListeners()
+            // Re-assert terminal focus AFTER the native dispatch_async makeFirstResponder
+            // (see first-create path) — wins the focus race against an open DOM overlay
+            // so keyboard input lands in the terminal on re-activate.
+            setTimeout(() => {
+              if (!activeRef.current || !mountedRef.current) return
+              void window.api.terminal.focus(workspaceId).catch(() => {})
+            }, 0)
+          })
+          .catch((e) => console.error('[WorkspaceView] re-mount failed:', e))
+      })
     })
 
     return () => {
