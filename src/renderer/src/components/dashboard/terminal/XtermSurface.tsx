@@ -44,9 +44,17 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
 
     term.options.fontFamily = fontFamily
     term.options.fontSize = fontSize
-    // Line height multiplier: 1.2 gives vertical breathing room matching ghostty's
-    // default cell metrics (ghostty renders slightly taller cells than xterm's 'normal').
-    term.options.lineHeight = 1.2
+    // Line height: map ghostty's adjust-cell-height percentage to xterm's lineHeight multiplier.
+    // "35%" → lineHeight = 1 + 35/100 = 1.35. Default 1.2 if not set or not a percentage string.
+    const adjustCellHeight = settings['adjust-cell-height']
+    let lineHeight = 1.2
+    if (typeof adjustCellHeight === 'string' && adjustCellHeight.endsWith('%')) {
+      const pct = parseFloat(adjustCellHeight)
+      if (!isNaN(pct)) {
+        lineHeight = 1 + pct / 100
+      }
+    }
+    term.options.lineHeight = lineHeight
 
     // Cursor style — ghostty 'block'|'underline'|'bar' map 1:1 to xterm.
     const cursorStyleRaw = settings['cursor-style']

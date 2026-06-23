@@ -174,8 +174,8 @@ import { writeImageAttachment, quotePosixPaths } from './terminal/attachments'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
-  getGhosttyUserConfig,
-  updateGhosttyUserConfig
+  updateGhosttyUserConfig,
+  getEffectiveGhosttyConfig
 } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
 import {
@@ -1106,7 +1106,7 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 // Ghostty Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('ghosttySettings:get', () => getGhosttyUserConfig())
+ipcMain.handle('ghosttySettings:get', () => getEffectiveGhosttyConfig())
 
 ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
   const result = updateGhosttyUserConfig(patch)
