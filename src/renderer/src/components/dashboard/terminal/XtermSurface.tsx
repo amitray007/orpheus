@@ -273,18 +273,11 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
           return true
         }
 
-        // Cmd+V: paste text from clipboard via term.paste() so bracketed-paste mode is respected.
-        // Image paste (U4) owns the DOM paste event — this handles the text-only path.
+        // Cmd+V: return true so the browser fires its native paste DOM event.
+        // The paste listener below (U4) handles both text and image — unifying paste in one place
+        // eliminates the double-paste race that would occur if we also called readText() here.
         if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
-          navigator.clipboard
-            .readText()
-            .then((text) => {
-              if (text) term.paste(text)
-            })
-            .catch(() => {
-              // Clipboard permission denied or no text — no-op; U4 paste event is the image fallback.
-            })
-          return false
+          return true
         }
 
         // Cmd+X: treat as copy (terminals don't cut); mirrors ghostty triad behavior.
@@ -350,8 +343,62 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     const onMouseMove = (): void => {
       if (el) el.style.cursor = ''
     }
+    // U4 — Unified paste handler: handles both image and text paste via the DOM paste event.
+    // Cmd+V in the key handler above returns true (passes through to native paste), so this
+    // listener is the single owner of paste — no double-paste race.
+    // Mirror addon.mm tryPasteClipboardImage (~947-995): image flavor wins over text when both present.
+    const onPaste = (e: ClipboardEvent): void => {
+      if (disposed) return
+      const items = e.clipboardData?.items
+      if (!items) return
+
+      // Prefer image flavor — screenshots carry both image and text representations.
+      let imageItem: DataTransferItem | null = null
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          imageItem = item
+          break
+        }
+      }
+
+      if (imageItem !== null) {
+        // Capture mime and file synchronously before any await.
+        const mime = imageItem.type
+        const file = imageItem.getAsFile()
+        // Prevent default synchronously — must be called before any async gap.
+        e.preventDefault()
+        if (!file) return
+        void (async () => {
+          try {
+            const buf = await file.arrayBuffer()
+            const bytes = new Uint8Array(buf)
+            const result = await window.api.xterm.writeImageAttachment(bytes, mime)
+            if (disposed) return
+            if ('error' in result) {
+              console.warn('[xterm] writeImageAttachment failed:', result.error)
+              return
+            }
+            // result.path is already POSIX-quoted (U2 guarantees this).
+            term.paste(result.path)
+          } catch (err) {
+            console.warn('[xterm] image paste error:', err)
+          }
+        })()
+        return
+      }
+
+      // No image — paste text if available.
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (text) {
+        e.preventDefault()
+        term.paste(text)
+      }
+      // If neither image nor text, do nothing — let default handling proceed.
+    }
     el.addEventListener('keydown', onKeyDown)
     el.addEventListener('mousemove', onMouseMove)
+    el.addEventListener('paste', onPaste)
 
     return () => {
       disposed = true
@@ -375,6 +422,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
       el.removeEventListener('keydown', onKeyDown)
       el.removeEventListener('mousemove', onMouseMove)
+      el.removeEventListener('paste', onPaste)
 
       // Dispose WebGL addon before Terminal to avoid GPU resource leaks.
       webgl?.dispose()
