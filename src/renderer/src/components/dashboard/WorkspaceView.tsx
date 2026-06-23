@@ -89,21 +89,21 @@ export function WorkspaceView({
   // races the mount effects (which can't un-mount the wrong engine cleanly), so a
   // workspace would mount ghostty before the persisted 'xterm' value loaded. engineLoaded
   // gates every terminal effect + the surface render so the engine is known up front.
-  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('ghostty')
+  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('xterm')
   const [engineLoaded, setEngineLoaded] = useState(false)
   useEffect(() => {
     window.api.uiState
       .get()
       .then((s) => {
-        setTerminalEngine(s.terminalEngine ?? 'ghostty')
+        setTerminalEngine(s.terminalEngine ?? 'xterm')
         setEngineLoaded(true)
       })
       .catch(() => {
-        // On failure, fall back to ghostty so the terminal still mounts.
+        // On failure, keep the default engine (xterm) so the terminal still mounts.
         setEngineLoaded(true)
       })
     return window.api.uiState.onChanged((s) => {
-      setTerminalEngine(s.terminalEngine ?? 'ghostty')
+      setTerminalEngine(s.terminalEngine ?? 'xterm')
     })
   }, [])
   const USE_XTERM = terminalEngine === 'xterm'

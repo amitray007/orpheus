@@ -404,7 +404,7 @@ export function OrpheusTerminalSection(): React.JSX.Element {
           >
             <SegmentedControl
               options={ENGINE_OPTIONS}
-              value={uiState?.terminalEngine ?? 'ghostty'}
+              value={uiState?.terminalEngine ?? 'xterm'}
               onChange={(v) => patchUiState({ terminalEngine: v })}
               ariaLabel="Terminal engine"
             />

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 60
+const CURRENT_VERSION = 61
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -355,8 +355,8 @@ const UI_STATE_SCHEMA_SQL = `
     -- Notification enrichment (v59)
     notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
     notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0,
-    -- Terminal engine selector (v60)
-    terminal_engine TEXT NOT NULL DEFAULT 'ghostty',
+    -- Terminal engine selector (v60; default flipped to 'xterm' in v61)
+    terminal_engine TEXT NOT NULL DEFAULT 'xterm',
     updated_at INTEGER NOT NULL
   );
 `
@@ -2221,6 +2221,18 @@ function migrate(db: Database.Database): void {
       /* column may already exist on fresh install */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(60)
+  }
+
+  if (currentVersion < 61) {
+    // Default terminal engine flipped to xterm. Migrate existing installs that
+    // still carry the old 'ghostty' default over to 'xterm'. (Anyone who had
+    // explicitly chosen 'xterm' already is unaffected.)
+    try {
+      db.exec("UPDATE app_ui_state SET terminal_engine = 'xterm' WHERE terminal_engine = 'ghostty'")
+    } catch {
+      /* table/column may not exist on a brand-new install — fresh default already xterm */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(61)
   }
 }
 

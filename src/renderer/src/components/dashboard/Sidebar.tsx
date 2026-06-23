@@ -173,13 +173,13 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('ghostty')
+  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('xterm')
   useEffect(() => {
     window.api.uiState
       .get()
-      .then((s) => setTerminalEngine(s.terminalEngine ?? 'ghostty'))
+      .then((s) => setTerminalEngine(s.terminalEngine ?? 'xterm'))
       .catch(() => {})
-    return window.api.uiState.onChanged((s) => setTerminalEngine(s.terminalEngine ?? 'ghostty'))
+    return window.api.uiState.onChanged((s) => setTerminalEngine(s.terminalEngine ?? 'xterm'))
   }, [])
   const sidebarBoundsRef = useSidebarBounds()
 

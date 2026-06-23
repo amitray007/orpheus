@@ -154,7 +154,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagPerf: row.diag_perf === 1,
     diagAnomaly: row.diag_anomaly === 1,
     // Terminal engine selector (v60) — coerce unknown/null values to 'ghostty'
-    terminalEngine: (row.terminal_engine === 'xterm' ? 'xterm' : 'ghostty') as 'ghostty' | 'xterm',
+    terminalEngine: (row.terminal_engine === 'ghostty' ? 'ghostty' : 'xterm') as
+      | 'ghostty'
+      | 'xterm',
     updatedAt: row.updated_at
   }
 }
