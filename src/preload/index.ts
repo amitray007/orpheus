@@ -637,7 +637,14 @@ const api = {
       const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void => cb(e)
       ipcRenderer.on('terminal:xterm-recover', listener)
       return () => ipcRenderer.removeListener('terminal:xterm-recover', listener)
-    }
+    },
+    writeImageAttachment: (
+      data: Uint8Array,
+      mime: string
+    ): Promise<{ path: string } | { error: string }> =>
+      ipcRenderer.invoke('xterm:writeImageAttachment', { data, mime }),
+    quotePaths: (paths: string[]): Promise<{ text: string }> =>
+      ipcRenderer.invoke('xterm:quotePaths', { paths })
   },
   diag: {
     event: (evt: DiagEvent): void => {

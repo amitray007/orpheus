@@ -170,6 +170,7 @@ import type {
 import type { ClaudeLaunch } from './claudeSettings'
 import { XtermEngine } from './terminal/xtermEngine'
 import { parseGhosttyTheme } from './terminal/ghosttyTheme'
+import { writeImageAttachment, quotePosixPaths } from './terminal/attachments'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
@@ -1853,6 +1854,24 @@ ipcMain.handle(
 
 ipcMain.on('terminal:xterm-title', (_e, workspaceId: string, rawTitle: string): void => {
   handleTerminalTitle(workspaceId, rawTitle)
+})
+
+ipcMain.handle(
+  'xterm:writeImageAttachment',
+  async (
+    _e,
+    { data, mime }: { data: Uint8Array; mime: string }
+  ): Promise<{ path: string } | { error: string }> => {
+    try {
+      return await writeImageAttachment(data, mime)
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+)
+
+ipcMain.handle('xterm:quotePaths', (_e, { paths }: { paths: string[] }): { text: string } => {
+  return { text: quotePosixPaths(paths) }
 })
 
 // ---------------------------------------------------------------------------

@@ -373,6 +373,11 @@ declare global {
         ) => () => void
         title: (workspaceId: string, title: string) => void
         onRecover: (cb: (e: { workspaceId: string }) => void) => () => void
+        writeImageAttachment: (
+          data: Uint8Array,
+          mime: string
+        ) => Promise<{ path: string } | { error: string }>
+        quotePaths: (paths: string[]) => Promise<{ text: string }>
       }
       diag: {
         event: (evt: DiagEvent) => void
