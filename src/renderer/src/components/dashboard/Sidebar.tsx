@@ -173,6 +173,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('ghostty')
+  useEffect(() => {
+    window.api.uiState
+      .get()
+      .then((s) => setTerminalEngine(s.terminalEngine ?? 'ghostty'))
+      .catch(() => {})
+    return window.api.uiState.onChanged((s) => setTerminalEngine(s.terminalEngine ?? 'ghostty'))
+  }, [])
   const sidebarBoundsRef = useSidebarBounds()
 
   const sessionTitle = workspace.claudeSessionId
@@ -256,7 +264,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Single source of truth: the card is only allowed when the row is inactive,
   // not being renamed, and has something to show. Used for both the hover
   // enable flag and the render gate so they can never disagree.
-  const cardAllowed = hasDetail && !renaming && !active
+  const cardAllowed = terminalEngine === 'xterm' && hasDetail && !renaming && !active
 
   useOverlayOpen(cardOpen)
 
