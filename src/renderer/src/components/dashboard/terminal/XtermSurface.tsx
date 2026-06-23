@@ -24,17 +24,20 @@ const ACK_STRIDE = 5000
 const GHOSTTY_DEFAULT_FONT = 'JetBrains Mono, SF Mono, Menlo, Courier New, monospace'
 const GHOSTTY_DEFAULT_FONT_SIZE = 13
 
-// Fetch the ghostty user config, resolve the selected theme, and apply font +
-// theme to the terminal. Called before term.open() so font metrics are correct.
+// Apply ghostty font + theme settings to the terminal. Called before term.open()
+// so font metrics (fontFamily, fontSize, lineHeight, letterSpacing, fontWeight) are
+// correct before the canvas is sized. Accepts pre-fetched settings so the caller can
+// batch the single ghosttySettings.get() fetch for other consumers (mouse-hide,
+// copy-on-select, window-padding-x, etc.) without a double round-trip.
 // ghosttySettings.onChanged does not exist in the current preload — live switch
 // is not wired; changes take effect on next mount (workspace restart).
 // Returns the resolved font size so callers can derive pixel-accurate padding.
-async function applyGhosttyAppearance(term: Terminal): Promise<number> {
+async function applyGhosttyAppearance(
+  term: Terminal,
+  settings: Record<string, unknown>
+): Promise<number> {
   let resolvedFontSize = GHOSTTY_DEFAULT_FONT_SIZE
   try {
-    const config = await window.api.ghosttySettings.get()
-    const { settings } = config
-
     const fontFamily =
       typeof settings['font-family'] === 'string' && settings['font-family']
         ? settings['font-family']
@@ -45,6 +48,7 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
 
     term.options.fontFamily = fontFamily
     term.options.fontSize = fontSize
+
     // Line height: map ghostty's adjust-cell-height percentage to xterm's lineHeight multiplier.
     // "35%" → lineHeight = 1 + 35/100 = 1.35. Default 1.2 if not set or not a percentage string.
     const adjustCellHeight = settings['adjust-cell-height']
@@ -57,6 +61,25 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
     }
     term.options.lineHeight = lineHeight
 
+    // P1 — adjust-cell-width: map percentage to letterSpacing px.
+    // cellWidth ≈ fontSize * 0.6; letterSpacing = cellWidth * (pct/100).
+    // Must be set before open() so canvas metrics are calculated correctly.
+    const adjustCellWidth = settings['adjust-cell-width']
+    if (typeof adjustCellWidth === 'string' && adjustCellWidth.endsWith('%')) {
+      const pct = parseFloat(adjustCellWidth)
+      if (!isNaN(pct)) {
+        const cellWidth = fontSize * 0.6
+        term.options.letterSpacing = cellWidth * (pct / 100)
+      }
+    }
+
+    // P1 — font-thicken: bump fontWeight to 500 / bold to 700 for sub-pixel emphasis.
+    const fontThicken = settings['font-thicken']
+    if (fontThicken === true || fontThicken === 'true') {
+      term.options.fontWeight = '500'
+      term.options.fontWeightBold = '700'
+    }
+
     // Cursor style — ghostty 'block'|'underline'|'bar' map 1:1 to xterm.
     const cursorStyleRaw = settings['cursor-style']
     if (cursorStyleRaw === 'block' || cursorStyleRaw === 'underline' || cursorStyleRaw === 'bar') {
@@ -66,6 +89,32 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
     const blinkRaw = settings['cursor-style-blink']
     if (blinkRaw !== undefined && blinkRaw !== null) {
       term.options.cursorBlink = blinkRaw === true || blinkRaw === 'true'
+    }
+
+    // P1 — bold-is-bright: render bold text in bright ANSI colors.
+    const boldIsBright = settings['bold-is-bright']
+    if (boldIsBright !== undefined && boldIsBright !== null) {
+      if (boldIsBright === true || boldIsBright === 'true') {
+        term.options.drawBoldTextInBrightColors = true
+      }
+    }
+
+    // P1 — minimum-contrast: enforce a minimum contrast ratio (>= 1).
+    const minimumContrast = settings['minimum-contrast']
+    if (minimumContrast !== undefined && minimumContrast !== null) {
+      const contrastNum = Number(minimumContrast)
+      if (!isNaN(contrastNum) && contrastNum >= 1) {
+        term.options.minimumContrastRatio = contrastNum
+      }
+    }
+
+    // P2 — scrollback-limit: cap at 50k lines to avoid runaway memory.
+    const scrollbackLimit = settings['scrollback-limit']
+    if (scrollbackLimit !== undefined && scrollbackLimit !== null) {
+      const scrollbackNum = Number(scrollbackLimit)
+      if (!isNaN(scrollbackNum) && scrollbackNum > 0) {
+        term.options.scrollback = Math.min(scrollbackNum, 50000)
+      }
     }
 
     const themeName = typeof settings['theme'] === 'string' ? settings['theme'] : null
@@ -85,6 +134,26 @@ async function applyGhosttyAppearance(term: Terminal): Promise<number> {
       }
       // Whole-object assignment preserves all theme fields atomically.
       term.options.theme = theme
+    }
+
+    // P0 — cursor-color / selection-background / selection-foreground:
+    // merge color overrides on top of whatever theme is already resolved.
+    // Applied regardless of whether a named theme was loaded.
+    let currentTheme: ITheme = term.options.theme ?? {}
+    const cursorColor = settings['cursor-color']
+    if (typeof cursorColor === 'string' && cursorColor) {
+      currentTheme = { ...currentTheme, cursor: cursorColor }
+    }
+    const selBg = settings['selection-background']
+    if (typeof selBg === 'string' && selBg) {
+      currentTheme = { ...currentTheme, selectionBackground: selBg }
+    }
+    const selFg = settings['selection-foreground']
+    if (typeof selFg === 'string' && selFg) {
+      currentTheme = { ...currentTheme, selectionForeground: selFg }
+    }
+    if (Object.keys(currentTheme).length > 0) {
+      term.options.theme = currentTheme
     }
   } catch {
     // Non-fatal: if ghostty config is unavailable, xterm uses its defaults.
@@ -141,6 +210,11 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
     let pendingAck = 0
     let disposed = false
 
+    // P0 — mouse-hide-while-typing: default TRUE (matches ghostty default).
+    // Set asynchronously from settings in openAndSpawn before DOM listeners fire;
+    // onKeyDown / onMouseMove read this let so they pick up the resolved value.
+    let mouseHideWhileTyping = true
+
     // Accumulate committed byte counts and ack in strides of ACK_STRIDE.
     const onWriteCommitted = (count: number): void => {
       if (disposed) return
@@ -183,16 +257,59 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
         return
       }
 
+      // Fetch ghostty settings once for all consumers in this mount:
+      // appearance (applyGhosttyAppearance), mouse-hide-while-typing, copy-on-select,
+      // and window-padding-x. A single fetch avoids redundant IPC round-trips.
+      let settings: Record<string, unknown> = {}
+      try {
+        const config = await window.api.ghosttySettings.get()
+        settings = config.settings as Record<string, unknown>
+      } catch {
+        // Non-fatal: use empty settings, all features fall back to defaults.
+      }
+      if (disposed) return
+
+      // P0 — mouse-hide-while-typing: update the closure let before DOM listeners fire.
+      mouseHideWhileTyping =
+        settings['mouse-hide-while-typing'] !== false &&
+        settings['mouse-hide-while-typing'] !== 'false'
+
+      // P0 — copy-on-select.
+      const copyOnSelect =
+        settings['copy-on-select'] === true || settings['copy-on-select'] === 'true'
+
       // Apply ghostty font + theme before open() so font metrics are correct.
-      const fontSize = await applyGhosttyAppearance(term)
+      const fontSize = await applyGhosttyAppearance(term, settings)
       if (disposed) return
 
       term.open(el)
 
+      // P0 — copy-on-select: wire after open() so term.hasSelection() is available.
+      if (copyOnSelect) {
+        term.onSelectionChange(() => {
+          if (copyOnSelect && term.hasSelection()) {
+            void navigator.clipboard.writeText(term.getSelection())
+          }
+        })
+      }
+
       // Apply padding to term.element so FitAddon accounts for it correctly.
       // FitAddon reads padding off terminal.element via getComputedStyle, then subtracts
       // it from the measured parentElement dimensions → canvas fills the remaining content box.
-      const hPad = Math.round(fontSize * 0.6)
+      // P2 — window-padding-x: if set and valid positive number, scale hPad by that cell count;
+      // otherwise fall back to the existing 1-cell default (fontSize * 0.6).
+      const windowPaddingX = settings['window-padding-x']
+      let hPad: number
+      if (windowPaddingX !== undefined && windowPaddingX !== null) {
+        const paddingXNum = Number(windowPaddingX)
+        if (!isNaN(paddingXNum) && paddingXNum > 0) {
+          hPad = Math.round(fontSize * 0.6 * paddingXNum)
+        } else {
+          hPad = Math.round(fontSize * 0.6)
+        }
+      } else {
+        hPad = Math.round(fontSize * 0.6)
+      }
       const vPad = 6
       if (term.element) {
         term.element.style.paddingLeft = `${hPad}px`
@@ -396,11 +513,13 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
 
     // Mouse-hide-while-typing: hide cursor on keydown, restore on mousemove.
     // Mirrors ghostty's mouse-hide-while-typing = true. No per-frame work.
+    // mouseHideWhileTyping is resolved asynchronously in openAndSpawn and written
+    // to the let above; these handlers close over the let so they read the resolved value.
     const onKeyDown = (): void => {
-      if (el) el.style.cursor = 'none'
+      if (mouseHideWhileTyping && el) el.style.cursor = 'none'
     }
     const onMouseMove = (): void => {
-      if (el) el.style.cursor = ''
+      if (mouseHideWhileTyping && el) el.style.cursor = ''
     }
     // U4 — Unified paste handler: handles both image and text paste via the DOM paste event.
     // Cmd+V in the key handler above returns true (passes through to native paste), so this
@@ -550,7 +669,7 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
       // The PTY stays alive so navigating back can reattach. U8 refines teardown.
     }
     // active deliberately excluded — active changes drive fit below, not teardown.
-    // attemptKey is included so bumping it (Restart) rebuilds the terminal.
+    // attemptKey is included so bumping it (Restart) rebuilds the terminal effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, cwd, attemptKey])
 
