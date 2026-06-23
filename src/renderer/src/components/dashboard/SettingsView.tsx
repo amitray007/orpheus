@@ -20,7 +20,8 @@ import {
   Bell,
   Pulse,
   Lightning,
-  Terminal
+  Terminal,
+  Stack
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -41,6 +42,7 @@ import { OrpheusAppearanceSection } from './settings/OrpheusAppearanceSection'
 import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
 import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
 import { OrpheusNotificationsSection } from './settings/OrpheusNotificationsSection'
+import { OrpheusWorkspacesSection } from './settings/OrpheusWorkspacesSection'
 import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
 import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
 import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
@@ -70,6 +72,7 @@ export type SectionId =
   | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
+  | 'orpheus-workspaces'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-footer'
@@ -120,6 +123,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Notifications',
         icon: Bell,
         Component: OrpheusNotificationsSection
+      },
+      {
+        id: 'orpheus-workspaces',
+        label: 'Workspaces',
+        icon: Stack,
+        Component: OrpheusWorkspacesSection
       },
       {
         id: 'orpheus-updates',

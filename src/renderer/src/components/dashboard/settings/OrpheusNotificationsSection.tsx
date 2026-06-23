@@ -128,36 +128,6 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
               placeholder="5"
             />
           </SettingRow>
-          <SettingRow
-            label="Inactivity watchdog (seconds)"
-            description="When the working spinner has been stuck with no PreToolUse / PostToolUse / PreCompact / SubagentStop heartbeat for this many seconds, demote it to Ready. Catches user-interrupt cases (Ctrl-C, Esc) where Claude never fires Stop. Set to 0 to disable."
-          >
-            <NumberInput
-              value={uiState.inProgressWatchdogSec ?? 120}
-              onChange={(v) => patch({ inProgressWatchdogSec: Math.max(0, v ?? 0) })}
-              placeholder="120"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Workspace stale threshold (minutes)"
-            description="When a workspace's agent has had no new activity for this many minutes, the sidebar marks it stale (a clock glyph and dimmed text). Helps surface forgotten or long-idle workspaces."
-          >
-            <NumberInput
-              value={uiState.staleAfterMinutes ?? 60}
-              onChange={(v) => patch({ staleAfterMinutes: Math.max(1, v ?? 60) })}
-              placeholder="60"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Auto-close idle workspaces after (minutes)"
-            description="Closing frees a workspace's resources (terminal + claude process) while keeping it in your list; click it to reopen and resume. Set to 0 to disable."
-          >
-            <NumberInput
-              value={uiState.autoCloseAfterMinutes ?? 120}
-              onChange={(v) => patch({ autoCloseAfterMinutes: Math.max(0, v ?? 120) })}
-              placeholder="120"
-            />
-          </SettingRow>
         </div>
       </section>
 

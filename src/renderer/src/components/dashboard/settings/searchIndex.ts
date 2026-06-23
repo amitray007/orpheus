@@ -15,6 +15,7 @@ export type SectionId =
   | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
+  | 'orpheus-workspaces'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-developer'
@@ -1646,10 +1647,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'follow-up'
     ]
   },
+  // ---------------------------------------------------------------------------
+  // Orpheus › Workspaces
+  // ---------------------------------------------------------------------------
   {
-    sectionId: 'orpheus-notifications',
+    sectionId: 'orpheus-workspaces',
     sectionGroup: 'Orpheus',
-    sectionLabel: 'Notifications',
+    sectionLabel: 'Workspaces',
     settingId: 'inactivity-watchdog-seconds',
     label: 'Inactivity watchdog (seconds)',
     description:
@@ -1673,6 +1677,37 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'posttooluse',
       'demote',
       'reset'
+    ]
+  },
+  {
+    sectionId: 'orpheus-workspaces',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Workspaces',
+    settingId: 'workspace-stale-threshold',
+    label: 'Workspace stale threshold (minutes)',
+    description:
+      'When a workspace has had no new activity for this many minutes, the sidebar marks it stale.',
+    mapsTo: [],
+    keywords: ['stale', 'idle', 'forgotten', 'clock glyph', 'dimmed', 'long-idle', 'threshold']
+  },
+  {
+    sectionId: 'orpheus-workspaces',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Workspaces',
+    settingId: 'auto-close-idle-workspaces',
+    label: 'Auto-close idle workspaces after (minutes)',
+    description:
+      "Closing frees a workspace's resources (terminal + claude process) while keeping it in your list; click it to reopen and resume.",
+    mapsTo: [],
+    keywords: [
+      'auto close',
+      'idle',
+      'free resources',
+      'terminal',
+      'reopen',
+      'resume',
+      'teardown',
+      'close workspace'
     ]
   },
 
