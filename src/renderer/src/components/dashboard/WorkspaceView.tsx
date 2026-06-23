@@ -10,6 +10,13 @@ import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
 import { Moon } from '@phosphor-icons/react'
 import { useOverlayOpenState } from '@/lib/overlayFocus'
+import { XtermSurface } from './terminal/XtermSurface'
+
+// TEMP gate — U5 replaces with app_ui_state terminal_engine selector.
+// Flip to xterm: localStorage.setItem('orpheus_xterm', '1') then reload.
+// Flip back: localStorage.removeItem('orpheus_xterm') then reload.
+const USE_XTERM =
+  typeof localStorage !== 'undefined' && localStorage.getItem('orpheus_xterm') === '1'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -162,6 +169,10 @@ export function WorkspaceView({
   } | null>(null)
 
   useEffect(() => {
+    // When the xterm gate is on, the ghostty terminal lifecycle is skipped entirely.
+    // XtermSurface manages its own mount/data/resize lifecycle.
+    if (USE_XTERM) return
+
     const el = containerRef.current
     if (!el) return
     // StrictMode double-mount guard
@@ -378,6 +389,9 @@ export function WorkspaceView({
   // ---------------------------------------------------------------------------
   const isFirstActiveRenderRef = useRef(true)
   useEffect(() => {
+    // When the xterm gate is on, ghostty active-toggle lifecycle is skipped.
+    if (USE_XTERM) return
+
     // Skip the first render — Effect 1 owns the first-create path.
     if (isFirstActiveRenderRef.current) {
       isFirstActiveRenderRef.current = false
@@ -528,12 +542,18 @@ export function WorkspaceView({
               This div is transparent at rest so the opaque terminal paints
               itself through. When an overlay is open the terminal swaps below
               WebContents, so we fill bg-surface-base here to avoid a gap.
-              ResizeObserver fires when the footer height changes the container. */}
+              ResizeObserver fires when the footer height changes the container.
+              When USE_XTERM is on, XtermSurface is rendered inside the container
+              and the ghostty IPC lifecycle (terminal.mount/hide/resize/destroy)
+              does not run for this workspace. */}
           <div
             ref={containerRef}
-            className={`flex-1 min-w-0 relative ${overlayOpen ? 'bg-surface-base' : ''}`}
+            className={`flex-1 min-w-0 relative ${overlayOpen || USE_XTERM ? 'bg-surface-base' : ''}`}
           >
-            {active && sleeping && (
+            {USE_XTERM && (
+              <XtermSurface workspaceId={workspace.id} cwd={workspace.cwd} active={active} />
+            )}
+            {active && sleeping && !USE_XTERM && (
               <button
                 type="button"
                 onClick={() => void window.api.terminal.focus(workspace.id)}
