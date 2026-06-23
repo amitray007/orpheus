@@ -32,6 +32,14 @@ Releases ship by raising a PR from `staging` → `main`. `main` is the release b
 - When it's time to release, open a PR `staging` → `main`.
 - Don't spin up extra topic branches unless explicitly asked.
 
+**ALWAYS merge `staging` → `main` with a real merge commit — never squash or
+rebase.** Versioning is owned by **release-please**, which reads the individual
+conventional-commit messages (`feat:` → minor, `fix:` → patch) off `main` to
+compute the version + CHANGELOG. Squashing collapses the 80+ commits into one
+non-conventional commit and breaks that detection. Do not hand-bump
+`package.json#version` — release-please opens a release PR on `main` that does
+the bump; merge that release PR (also a merge commit) to publish.
+
 ## Build + verify loop (the only one that matters)
 
 Local builds **always build the DEV variant** (`Orpheus Dev.app`). Production
