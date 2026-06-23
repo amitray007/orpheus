@@ -12,12 +12,6 @@ import { Moon } from '@phosphor-icons/react'
 import { useOverlayOpenState } from '@/lib/overlayFocus'
 import { XtermSurface } from './terminal/XtermSurface'
 
-// TEMP gate — U5 replaces with app_ui_state terminal_engine selector.
-// Flip to xterm: localStorage.setItem('orpheus_xterm', '1') then reload.
-// Flip back: localStorage.removeItem('orpheus_xterm') then reload.
-const USE_XTERM =
-  typeof localStorage !== 'undefined' && localStorage.getItem('orpheus_xterm') === '1'
-
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
   /** Whether this workspace is currently the active (visible) one.
@@ -73,6 +67,26 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time DOM query at mount; DOM not available until after render
     setTitleBarHost(document.getElementById('topbar-workspace-slot'))
   }, [])
+
+  // Terminal engine — read from persisted app_ui_state; defaults to 'ghostty' until loaded.
+  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('ghostty')
+  const useXtermRef = useRef(false)
+  useEffect(() => {
+    window.api.uiState
+      .get()
+      .then((s) => {
+        const eng = s.terminalEngine ?? 'ghostty'
+        setTerminalEngine(eng)
+        useXtermRef.current = eng === 'xterm'
+      })
+      .catch(() => {})
+    return window.api.uiState.onChanged((s) => {
+      const eng = s.terminalEngine ?? 'ghostty'
+      setTerminalEngine(eng)
+      useXtermRef.current = eng === 'xterm'
+    })
+  }, [])
+  const USE_XTERM = terminalEngine === 'xterm'
 
   // Sleep state — true when the macOS window is occluded/backgrounded and the
   // native terminal render loop is paused.

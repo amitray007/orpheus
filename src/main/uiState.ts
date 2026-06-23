@@ -80,6 +80,8 @@ type AppUiStateRow = {
   diag_lifecycle: number | null
   diag_perf: number | null
   diag_anomaly: number | null
+  // Terminal engine selector (v60)
+  terminal_engine: string | null
   updated_at: number
 }
 
@@ -151,6 +153,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagLifecycle: row.diag_lifecycle === 1,
     diagPerf: row.diag_perf === 1,
     diagAnomaly: row.diag_anomaly === 1,
+    // Terminal engine selector (v60) — coerce unknown/null values to 'ghostty'
+    terminalEngine: (row.terminal_engine === 'xterm' ? 'xterm' : 'ghostty') as 'ghostty' | 'xterm',
     updatedAt: row.updated_at
   }
 }
@@ -239,6 +243,11 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
     if (typeof patch.showWorkspaceFooter !== 'boolean') {
       throw new Error('uiState: showWorkspaceFooter must be a boolean')
+    }
+  }
+  if ('terminalEngine' in patch && patch.terminalEngine !== undefined) {
+    if (patch.terminalEngine !== 'ghostty' && patch.terminalEngine !== 'xterm') {
+      throw new Error("uiState: terminalEngine must be 'ghostty' or 'xterm'")
     }
   }
 }
@@ -333,7 +342,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',
     diagPerf: 'diag_perf',
-    diagAnomaly: 'diag_anomaly'
+    diagAnomaly: 'diag_anomaly',
+    // Terminal engine selector (v60)
+    terminalEngine: 'terminal_engine'
   }
 
   const setClauses: string[] = []

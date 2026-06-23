@@ -197,6 +197,8 @@ export type AppUiState = {
   muteStatusNotifications: boolean
   // Workspace footer visibility (v45)
   showWorkspaceFooter: boolean
+  // Terminal engine selector (v60)
+  terminalEngine: 'ghostty' | 'xterm'
   updatedAt: number
 }
 

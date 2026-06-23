@@ -143,6 +143,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           statusPollIntervalSec: 1800,
           muteStatusNotifications: false,
           showWorkspaceFooter: true,
+          terminalEngine: 'ghostty',
           updatedAt: 0
         })
       })

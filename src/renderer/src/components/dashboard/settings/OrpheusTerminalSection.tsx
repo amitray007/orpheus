@@ -1,8 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import type { GhosttyKeybind, GhosttyUserConfig } from '@shared/types'
-import { SettingRow, Toggle, Select, NumberInput, SectionTitle, Eyebrow } from './primitives'
+import type { AppUiState, GhosttyKeybind, GhosttyUserConfig } from '@shared/types'
+import {
+  SettingRow,
+  Toggle,
+  Select,
+  NumberInput,
+  SectionTitle,
+  Eyebrow,
+  SegmentedControl
+} from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
+
+// ---------------------------------------------------------------------------
+// Terminal engine options
+// ---------------------------------------------------------------------------
+
+const ENGINE_OPTIONS = [
+  { value: 'ghostty' as const, label: 'Ghostty' },
+  { value: 'xterm' as const, label: 'xterm.js' }
+]
 
 // ---------------------------------------------------------------------------
 // TextInput — local inline text field for ghostty string settings
@@ -221,6 +238,7 @@ function validateKeybind(kb: GhosttyKeybind): string | null {
 export function OrpheusTerminalSection(): React.JSX.Element {
   const [config, setConfig] = useState<GhosttyUserConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [uiState, setUiState] = useState<AppUiState | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -237,6 +255,37 @@ export function OrpheusTerminalSection(): React.JSX.Element {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.uiState
+      .get()
+      .then((s) => {
+        if (!cancelled) setUiState(s)
+      })
+      .catch((err) => {
+        console.error('[settings] failed to load uiState', err)
+      })
+    const unsub = window.api.uiState.onChanged((s) => {
+      if (!cancelled) setUiState(s)
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [])
+
+  function patchUiState(p: Partial<AppUiState>): void {
+    if (!uiState) return
+    setUiState({ ...uiState, ...p })
+    window.api.uiState.update(p).catch((err) => {
+      console.error('[settings] uiState update failed; refetching', err)
+      window.api.uiState
+        .get()
+        .then((s) => setUiState(s))
+        .catch(console.error)
+    })
+  }
 
   function patchSettings(partial: Record<string, string | number | boolean>): void {
     if (!config) return
@@ -344,6 +393,24 @@ export function OrpheusTerminalSection(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       {header}
+
+      {/* Engine */}
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Engine</Eyebrow>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Terminal engine"
+            description="Ghostty uses the native libghostty renderer. xterm.js uses a pure-JS renderer with node-pty. Engine change takes effect after restarting the workspace."
+          >
+            <SegmentedControl
+              options={ENGINE_OPTIONS}
+              value={uiState?.terminalEngine ?? 'ghostty'}
+              onChange={(v) => patchUiState({ terminalEngine: v })}
+              ariaLabel="Terminal engine"
+            />
+          </SettingRow>
+        </div>
+      </section>
 
       {/* Font */}
       <section className="flex flex-col">

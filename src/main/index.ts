@@ -1223,6 +1223,13 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
+  // Engine switch takes effect at next mount — mark live workspaces dirty so
+  // the "Restart to apply" chip appears. No hot-swap of live sessions.
+  if (patch.terminalEngine !== undefined) {
+    for (const workspaceId of launchSnapshots.keys()) {
+      setDirty(workspaceId, true)
+    }
+  }
   syncDiagFlags()
   // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
   // can react without polling.

@@ -1,4 +1,31 @@
-/** Minimal engine interface for U2. U5 expands this into the full engine abstraction. */
+/**
+ * TerminalEngine — abstraction seam between the ghostty and xterm engines.
+ *
+ * Full method set used by the renderer / IPC layer:
+ *   spawn       — start a PTY (xterm) or validate/noop (ghostty delegates to addon.mount)
+ *   write       — send bytes to the PTY / terminal
+ *   resize      — resize the PTY / terminal
+ *   destroy     — kill PTY and evict all state (called for restart-or-archive)
+ *   getPhase    — 'none' | 'live' | 'dead' — PTY-liveness query (xterm analog of getSurfacePhase)
+ *   setDataHandler  — called when the PTY produces output
+ *   setExitHandler  — called when a PTY process exits
+ *   ackChars    — flow-control ACK from renderer (xterm); no-op for ghostty
+ *   resetFlow   — reset ACK window on (re)mount (xterm); no-op for ghostty
+ *
+ * Engine-specific notes:
+ *   - `focus`: renderer DOM concern for the xterm engine (term.focus() in XtermSurface);
+ *     ghostty routes focus via the native IPC handler. Neither engine exposes it here.
+ *   - `setOverlay` / `setOverlayCompositing`: ghostty-only compositing toggles; the xterm
+ *     engine treats these as no-ops so the renderer / main calls don't error.
+ *   - `getSurfacePhase` (ghostty IPC): maps to `getPhase` here for the xterm engine.
+ *
+ * Routing: the renderer selects which surface to mount based on app_ui_state.terminal_engine.
+ * Engine-switch takes effect at next mount — live workspaces show "Restart to apply"
+ * (see uiState:update handler in index.ts). The ghostty IPC handlers (terminal:mount,
+ * terminal:hide, terminal:resize, terminal:destroy, etc.) remain routed directly to the
+ * ghostty addon for the ghostty engine path; xterm handlers are separate IPC channels
+ * added in U2/U3. Full routing unification is deferred to a later unit.
+ */
 export interface TerminalEngine {
   /** Spawn a PTY for the workspace. Idempotent: second call for the same workspaceId is a no-op. Returns {created:true} on first spawn, {created:false, error?} on failure. */
   spawn(params: {
