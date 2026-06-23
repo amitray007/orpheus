@@ -179,6 +179,18 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
     return YES;
 }
 
+- (void)viewDidChangeBackingProperties {
+    [super viewDidChangeBackingProperties];
+    NSWindow* win = [self window];
+    if (!win) return;
+    CGFloat scale = win.backingScaleFactor;
+    if (self.surface) {
+        ghostty_surface_set_content_scale(self.surface, scale, scale);
+        ghostty_surface_draw(self.surface);
+    }
+    NSLog(@"[ghostty-native] viewDidChangeBackingProperties scale=%.2f", scale);
+}
+
 // NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
 // AppKit picks the WebContents as the drag destination for file URLs
 // (it registers for HTML5 file drag at the Chromium layer). The
