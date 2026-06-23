@@ -12,6 +12,7 @@ import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './WorkspaceTitleBar'
+import { useOverlayOpenState } from '@/lib/overlayFocus'
 import type {
   AppUiState,
   PinnedItem,
@@ -31,6 +32,7 @@ interface DashboardProps {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop forwarded from App.tsx but not yet used in this component
 export function Dashboard(_: DashboardProps): React.JSX.Element {
+  const overlayOpen = useOverlayOpenState()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state hydration
@@ -159,18 +161,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       delete root.dataset.accent
     }
     root.dataset.fontScale = uiState.uiFontScale ?? 'default'
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.theme, uiState?.accentColor, uiState?.uiFontScale])
 
   // Bridge the playInteractionSounds uiState flag into the sound module.
   useEffect(() => {
     if (!uiState) return
     setSoundEnabled(uiState.playInteractionSounds ?? true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.playInteractionSounds])
 
   // Bridge the soundPack uiState field into the sound module.
   useEffect(() => {
     if (!uiState) return
     setSoundPack(uiState.soundPack ?? 'core')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- field-level deps are intentional; depending on the whole uiState object would re-run this effect on unrelated uiState changes
   }, [uiState?.soundPack])
 
   // Diagnostic: log every native action_cb tag to the console so we can debug
@@ -1127,13 +1132,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
         <main
           className={
-            // body is transparent so the ghostty NSView shows through in
-            // workspace view. Every OTHER view needs to paint surface-base
-            // explicitly or it would bleed through to a hidden NSView /
-            // empty window backing. Workspace view leaves <main> bg-less so
-            // WorkspaceView's terminal placeholder div cuts a clean hole.
+            // Workspace view: transparent at rest so the opaque terminal NSView
+            // (topmost sibling, isOpaque=YES) paints through. bg-surface-base
+            // when an overlay is open (terminal swapped below WebContents) to
+            // avoid a transparent gap. Every other view always paints surface-base.
             view.kind === 'workspace'
-              ? 'flex-1 overflow-hidden min-h-0'
+              ? `flex-1 overflow-hidden min-h-0${overlayOpen ? ' bg-surface-base' : ''}`
               : view.kind === 'settings'
                 ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
                 : view.kind === 'sessions'

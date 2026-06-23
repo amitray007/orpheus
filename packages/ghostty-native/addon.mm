@@ -145,6 +145,14 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // (single-BrowserWindow invariant — Orpheus runs one window).
 static std::string g_visibleWorkspaceId;
 
+// Overlay state (set by SetOverlay / consumed by reconcileSurface + Mount).
+// g_overlayCompositingEnabled is flipped true at startup (Task 8) via setOverlayCompositing();
+// until then the z-reorder in setOverlay is inert (only focus handoff runs). g_overlayOpen
+// gates z-insert and makeFirstResponder in show/mount paths so a newly shown surface doesn't
+// pop above an open overlay or steal focus.
+static bool g_overlayCompositingEnabled = false;
+static bool g_overlayOpen = false;
+
 // Forward declarations for reconcileSurface / setVisibleWorkspace so
 // handleOcclusionChange: (inside @implementation) can call them.
 static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
@@ -177,6 +185,22 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
 // (the same hook AppKit sheets and Chromium autofill popovers rely on).
 - (BOOL)nonWebContentView {
     return YES;
+}
+
+- (BOOL)isOpaque {
+    return YES;
+}
+
+- (void)viewDidChangeBackingProperties {
+    [super viewDidChangeBackingProperties];
+    NSWindow* win = [self window];
+    if (!win) return;
+    CGFloat scale = win.backingScaleFactor;
+    if (self.surface) {
+        ghostty_surface_set_content_scale(self.surface, scale, scale);
+        ghostty_surface_draw(self.surface);
+    }
+    NSLog(@"[ghostty-native] viewDidChangeBackingProperties scale=%.2f", scale);
 }
 
 // NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
@@ -2517,10 +2541,12 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 
     if (entry.desiredVisible) {
         if (!entry.isAttached) {
-            // Surface was hidden — re-attach it above the backstop.
+            // Surface was hidden — re-attach topmost (or below overlay).
+            // ensureBackstopView installs the bleed-guard at index 0 as a side effect.
             if (contentView) {
-                NSView* backstop = ensureBackstopView(contentView);
-                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:backstop];
+                (void)ensureBackstopView(contentView);
+                NSWindowOrderingMode mode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
+                [contentView addSubview:entry.view positioned:mode relativeTo:nil];
             }
             // Gap-fill: paint pre-first-frame gap app-dark.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2540,7 +2566,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // NAPI runs on main thread ✓.
             {
                 NSWindow* win = [entry.view window];
-                if (win) [win makeFirstResponder:entry.view];
+                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
             }
 
         } else {
@@ -2563,7 +2589,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Sync makeFirstResponder for focus re-assertion.
             {
                 NSWindow* win = [entry.view window];
-                if (win) [win makeFirstResponder:entry.view];
+                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
             }
         }
 
@@ -2659,8 +2685,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     // Install the persistent app-dark backstop once. Any transparent window
     // region (workspace hole, cold-start gap, switch gap) shows app-dark
-    // instead of the macOS desktop. Terminals mount above it (see below).
-    NSView* backstop = ensureBackstopView(contentView);
+    // instead of the macOS desktop. Terminal mounts topmost (relativeTo:nil)
+    // so backstop stays at index 0 as the bleed-guard only.
+    (void)ensureBackstopView(contentView);
 
     // Arg 1 — options { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? }
     if (!info[1].IsObject()) {
@@ -2804,7 +2831,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     // Same z-order rationale as the re-attach branch above.
-    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:backstop];
+    NSWindowOrderingMode mountMode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
+    [contentView addSubview:termView positioned:mountMode relativeTo:nil];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
@@ -3200,6 +3228,82 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// NAPI: setOverlay(workspaceId, on)
+// OWN writer of the z-order + overlay-focus axis (peer to reconcileSurface, which
+// owns the gate axis). on=true: (when compositing enabled) surface goes BELOW the
+// web layer, and resigns first-responder to the WebContents view so DOM overlays
+// receive keys. on=false: surface returns ABOVE, reclaims first-responder, repaints.
+// Must NOT route through reconcileSurface: its attached branch ends with
+// set_focus(true)+makeFirstResponder, which would fight the handoff.
+static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    bool on = info[1].As<Napi::Boolean>().Value();
+    g_overlayOpen = on;                              // visible to the show/mount path
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) return env.Undefined();          // no surface → no-op
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.isAttached || !entry.view) return env.Undefined();
+    NSView* superview = entry.view.superview;
+    if (!superview) return env.Undefined();
+    NSWindow* win = [entry.view window];
+
+    if (on) {
+        // Z-reorder ONLY once opaque-on-top is live (Task 8). Pre-Task-8 the surface
+        // is already bottom-parked under the transparent web layer, so a reorder would
+        // be a visible flicker for no benefit — skip it; do the focus handoff only.
+        if (g_overlayCompositingEnabled) {
+            [superview addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
+        }
+        ghostty_surface_set_focus(entry.surface, false);
+        NSView* webView = nil;
+        for (NSView* sub in superview.subviews) {
+            if (sub == entry.view) continue;
+            // skip other ghostty surfaces (they respond YES to nonWebContentView)
+            if ([sub respondsToSelector:@selector(nonWebContentView)]) continue;
+            NSString* cls = NSStringFromClass([sub class]);
+            if ([cls containsString:@"WebContents"] || [cls containsString:@"RenderWidgetHostView"]) {
+                webView = sub;
+                break;
+            }
+        }
+        if (win) {
+            if (webView) [win makeFirstResponder:webView];
+            else [win makeFirstResponder:nil];   // fallback; Chromium reclaims on next click
+        }
+        NSLog(@"[ghostty-native] setOverlay ws=%s on=1 z=%d webView=%d",
+              workspaceId.c_str(), g_overlayCompositingEnabled, webView != nil);
+    } else {
+        if (g_overlayCompositingEnabled) {
+            // Surface back on top, reclaim focus, repaint immediately.
+            [superview addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
+        }
+        ghostty_surface_set_focus(entry.surface, true);
+        if (win) [win makeFirstResponder:entry.view];
+        ghostty_surface_draw(entry.surface);
+        NSLog(@"[ghostty-native] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
+    }
+    return env.Undefined();
+}
+
+// NAPI: setOverlayCompositing(on) — Task 8. Flips g_overlayCompositingEnabled.
+// Called once at startup (ready-to-show) to activate z-reorder in setOverlay.
+static Napi::Value SetOverlayCompositing(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlayCompositing requires boolean").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    g_overlayCompositingEnabled = info[0].As<Napi::Boolean>().Value();
+    NSLog(@"[ghostty-native] setOverlayCompositing enabled=%d", g_overlayCompositingEnabled);
+    return env.Undefined();
+}
+
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -3539,6 +3643,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
+    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
+    exports.Set("setOverlayCompositing", Napi::Function::New(env, SetOverlayCompositing));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));

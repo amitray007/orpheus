@@ -2,6 +2,7 @@ import type React from 'react'
 import { useEffect, useState } from 'react'
 import { Button } from './Button'
 import { playSound } from '../lib/sound'
+import { Overlay } from '@/components/ui/Overlay'
 
 export interface ConfirmModalProps {
   title: string
@@ -29,17 +30,10 @@ export function ConfirmModal({
     playSound('modal-open')
   }, [])
 
-  // Close on Escape
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        playSound('modal-close')
-        onCancel()
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onCancel])
+  function handleDismiss(): void {
+    playSound('modal-close')
+    onCancel()
+  }
 
   async function handleConfirm(): Promise<void> {
     if (loading) return
@@ -55,20 +49,14 @@ export function ConfirmModal({
     }
   }
 
-  function handleBackdropMouseDown(): void {
-    playSound('modal-close')
-    onCancel()
-  }
-
   return (
-    <div
+    <Overlay
+      open
+      interactive
+      onDismiss={handleDismiss}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onMouseDown={handleBackdropMouseDown}
     >
-      <div
-        className="relative max-w-md w-full mx-4 bg-surface-overlay border border-border-default rounded-lg p-6 flex flex-col gap-4 pointer-events-auto"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+      <div className="relative max-w-md w-full mx-4 bg-surface-overlay border border-border-default rounded-lg p-6 flex flex-col gap-4 pointer-events-auto">
         <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
 
         <div className="text-sm text-text-secondary">{body}</div>
@@ -93,6 +81,6 @@ export function ConfirmModal({
           </button>
         </div>
       </div>
-    </div>
+    </Overlay>
   )
 }

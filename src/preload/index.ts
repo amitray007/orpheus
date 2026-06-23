@@ -105,6 +105,8 @@ const api = {
     },
     focus: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:focus', { workspaceId }),
+    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
+      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
     getSurfacePhase: (workspaceId: string): Promise<string> =>
       ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
     onSleepStateChanged: (

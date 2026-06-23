@@ -1,5 +1,7 @@
+import type React from 'react'
 import { useState } from 'react'
 import { Button } from './Button'
+import { Overlay } from '@/components/ui/Overlay'
 
 interface ClaudeMissingModalProps {
   onRecheck: () => Promise<void>
@@ -29,7 +31,11 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <Overlay
+      open
+      interactive
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+    >
       {/* Modal card — pointer-events-auto so clicks land here, not behind */}
       <div className="relative max-w-md w-full mx-4 bg-surface-overlay border border-border-default rounded-lg p-6 flex flex-col gap-4 pointer-events-auto">
         {/* Headline row: icon + title */}
@@ -67,6 +73,6 @@ export function ClaudeMissingModal({ onRecheck }: ClaudeMissingModalProps): Reac
         {/* Escape-hatch hint */}
         <p className="text-xs text-text-muted">Press ⌘Q to quit Orpheus.</p>
       </div>
-    </div>
+    </Overlay>
   )
 }

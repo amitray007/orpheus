@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import type React from 'react'
+import { Overlay } from '@/components/ui/Overlay'
 import {
   SidebarSimple,
   ArrowSquareOut,
@@ -199,7 +199,6 @@ function StatusPopover({
   onClose
 }: StatusPopoverProps): React.JSX.Element {
   const headerBraille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot.isFetching)
-  const popoverRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{
     left: number
     top: number
@@ -235,30 +234,6 @@ function StatusPopover({
     return () => window.removeEventListener('resize', reposition)
   }, [triggerRef, sidebarWidth])
 
-  // Close on outside mousedown
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent): void {
-      const t = e.target as Node
-      if (popoverRef.current?.contains(t)) return
-      if (triggerRef.current?.contains(t)) return
-      onClose()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [onClose, triggerRef])
-
-  // Close on Escape
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        onClose()
-        triggerRef.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onClose, triggerRef])
-
   function handleOpenPage(): void {
     window.api.status.openPage().catch(console.error)
     onClose()
@@ -272,9 +247,12 @@ function StatusPopover({
   const hasData = snapshot.fetchedAt !== null && visibleComponents.length > 0
   const initialLoading = snapshot.isFetching && !hasData
 
-  return createPortal(
-    <div
-      ref={popoverRef}
+  return (
+    <Overlay
+      open
+      interactive
+      onDismiss={onClose}
+      portal
       style={{
         position: 'fixed',
         left: pos?.left ?? 4,
@@ -408,8 +386,7 @@ function StatusPopover({
           </div>
         </>
       )}
-    </div>,
-    document.body
+    </Overlay>
   )
 }
 

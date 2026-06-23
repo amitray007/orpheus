@@ -5,6 +5,7 @@ import { playSound } from '../../../lib/sound'
 import { expandPlaceholders } from '../../../lib/footerPlaceholders'
 import { DotmFooterLoader } from '../../ui/dotm-footer-loader'
 import { IconByName } from './iconMap'
+import { Overlay } from '@/components/ui/Overlay'
 
 interface ActionChipProps {
   actionId: string
@@ -237,7 +238,16 @@ export function ActionChip({
     }
 
     await invokeAction()
-  }, [inFlight, isDisabled, prompts, showPrompt, openPromptPopover, invokeAction, showTooltip])
+  }, [
+    inFlight,
+    isDisabled,
+    disabled,
+    prompts,
+    showPrompt,
+    openPromptPopover,
+    invokeAction,
+    showTooltip
+  ])
 
   return (
     <div className="relative flex-shrink-0">
@@ -278,74 +288,63 @@ export function ActionChip({
       </button>
 
       {/* Prompt popover — appears above the chip when the action needs user input */}
-      {showPrompt && prompts && prompts.length > 0 && (
-        <>
-          {/* Click-outside overlay */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setShowPrompt(false)}
-            aria-hidden="true"
-          />
-          <div
-            className="absolute bottom-full left-0 mb-1.5 z-50 w-52 bg-surface-overlay border border-border-default rounded-lg shadow-lg p-2 flex flex-col gap-2"
-            role="dialog"
-            aria-label={`${label} — enter value`}
-          >
-            {prompts.map((p, idx) => (
-              <div key={p.key} className="flex flex-col gap-0.5">
-                <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                  {p.label}
-                </span>
-                <input
-                  ref={idx === 0 ? promptInputRef : null}
-                  type="text"
-                  value={promptValues[p.key] ?? ''}
-                  placeholder={p.placeholder ?? ''}
-                  onChange={(e) =>
-                    setPromptValues((prev) => ({ ...prev, [p.key]: e.target.value }))
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      handlePromptSubmit()
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setShowPrompt(false)
-                    }
-                  }}
-                  className="w-full px-2 py-1 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                />
-              </div>
-            ))}
-            <div className="flex justify-end gap-1.5 pt-0.5">
-              <button
-                type="button"
-                onClick={() => setShowPrompt(false)}
-                className="text-xs text-text-muted hover:text-text-primary px-2 py-0.5 rounded hover:bg-surface-raised transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handlePromptSubmit}
-                className="text-xs font-medium text-white bg-accent hover:bg-accent/90 px-2 py-0.5 rounded transition-colors cursor-pointer"
-              >
-                Apply
-              </button>
-            </div>
+      <Overlay
+        open={showPrompt && !!prompts && prompts.length > 0}
+        interactive
+        onDismiss={() => setShowPrompt(false)}
+        portal={false}
+        className="absolute bottom-full left-0 mb-1.5 z-50 w-52 bg-surface-overlay border border-border-default rounded-lg shadow-lg p-2 flex flex-col gap-2"
+      >
+        {prompts?.map((p, idx) => (
+          <div key={p.key} className="flex flex-col gap-0.5">
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              {p.label}
+            </span>
+            <input
+              ref={idx === 0 ? promptInputRef : null}
+              type="text"
+              value={promptValues[p.key] ?? ''}
+              placeholder={p.placeholder ?? ''}
+              onChange={(e) => setPromptValues((prev) => ({ ...prev, [p.key]: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handlePromptSubmit()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setShowPrompt(false)
+                }
+              }}
+              className="w-full px-2 py-1 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            />
           </div>
-        </>
-      )}
+        ))}
+        <div className="flex justify-end gap-1.5 pt-0.5">
+          <button
+            type="button"
+            onClick={() => setShowPrompt(false)}
+            className="text-xs text-text-muted hover:text-text-primary px-2 py-0.5 rounded hover:bg-surface-raised transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handlePromptSubmit}
+            className="text-xs font-medium text-white bg-accent hover:bg-accent/90 px-2 py-0.5 rounded transition-colors cursor-pointer"
+          >
+            Apply
+          </button>
+        </div>
+      </Overlay>
 
       {/* Tooltip */}
-      {tooltip && !showPrompt && (
-        <div
-          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-xs text-text-primary bg-surface-overlay border border-border-default shadow-md whitespace-nowrap z-50 pointer-events-none"
-          role="tooltip"
-        >
-          {tooltip}
-        </div>
-      )}
+      <Overlay
+        open={!!tooltip && !showPrompt}
+        portal={false}
+        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-xs text-text-primary bg-surface-overlay border border-border-default shadow-md whitespace-nowrap z-50 pointer-events-none"
+      >
+        {tooltip}
+      </Overlay>
     </div>
   )
 }

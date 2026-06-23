@@ -1,5 +1,6 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Overlay } from '@/components/ui/Overlay'
 
 export interface ContextMenuItem {
   label: string
@@ -49,60 +50,45 @@ export function ContextMenu({
     setPos({ x: nx, y: ny })
   }, [x, y, boundsRef])
 
-  // Close on Escape
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  // Close on mousedown outside
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent): void {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [onClose])
-
   return (
-    <div
-      ref={menuRef}
-      style={{ left: pos.x, top: pos.y }}
-      className="fixed z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 min-w-[180px]"
+    <Overlay
+      open
+      interactive
+      onDismiss={onClose}
+      portal
+      style={{ position: 'fixed', left: pos.x, top: pos.y }}
+      className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 min-w-[180px]"
     >
-      {items.map((item, i) => {
-        if (item.divider) {
-          return <div key={i} className="my-1 border-t border-border-default" />
-        }
+      <div ref={menuRef}>
+        {items.map((item, i) => {
+          if (item.divider) {
+            return <div key={i} className="my-1 border-t border-border-default" />
+          }
 
-        return (
-          <button
-            key={i}
-            disabled={item.disabled}
-            className={[
-              'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100',
-              item.disabled
-                ? 'opacity-40 cursor-not-allowed text-text-secondary'
-                : item.destructive
-                  ? 'text-red-400 hover:bg-red-500/10 hover:text-red-300 cursor-pointer'
-                  : 'text-text-primary hover:bg-surface-raised cursor-pointer'
-            ].join(' ')}
-            onClick={() => {
-              if (item.disabled) return
-              item.onClick()
-              onClose()
-            }}
-          >
-            {item.icon && <span className="flex-shrink-0 flex items-center">{item.icon}</span>}
-            {item.label}
-          </button>
-        )
-      })}
-    </div>
+          return (
+            <button
+              key={i}
+              disabled={item.disabled}
+              className={[
+                'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100',
+                item.disabled
+                  ? 'opacity-40 cursor-not-allowed text-text-secondary'
+                  : item.destructive
+                    ? 'text-red-400 hover:bg-red-500/10 hover:text-red-300 cursor-pointer'
+                    : 'text-text-primary hover:bg-surface-raised cursor-pointer'
+              ].join(' ')}
+              onClick={() => {
+                if (item.disabled) return
+                item.onClick()
+                onClose()
+              }}
+            >
+              {item.icon && <span className="flex-shrink-0 flex items-center">{item.icon}</span>}
+              {item.label}
+            </button>
+          )
+        })}
+      </div>
+    </Overlay>
   )
 }

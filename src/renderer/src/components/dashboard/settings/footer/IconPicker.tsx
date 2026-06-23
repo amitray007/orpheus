@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
+import { Overlay } from '@/components/ui/Overlay'
 import { CaretDown, MagnifyingGlass } from '@phosphor-icons/react'
 import { IconByName } from '../../footer/iconMap'
 
@@ -68,7 +68,6 @@ interface IconPickerProps {
  */
 export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Element {
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const popoverRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -122,32 +121,6 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
     setTimeout(() => searchRef.current?.focus(), 30)
   }, [open])
 
-  // Close on outside mousedown
-  useEffect(() => {
-    if (!open) return
-    function onMouseDown(e: MouseEvent): void {
-      const t = e.target as Node
-      if (popoverRef.current?.contains(t)) return
-      if (triggerRef.current?.contains(t)) return
-      closePicker()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [open])
-
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        closePicker()
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [open])
-
   return (
     <div className="relative inline-flex w-full">
       <button
@@ -186,63 +159,63 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
         />
       </button>
 
-      {open &&
-        pos &&
-        createPortal(
-          <div
-            ref={popoverRef}
-            style={{
-              position: 'fixed',
-              left: pos.left,
-              top: pos.above ? undefined : pos.top,
-              bottom: pos.above ? window.innerHeight - pos.top : undefined,
-              width: pos.width,
-              maxHeight: pos.maxHeight
-            }}
-            className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg flex flex-col overflow-hidden"
-          >
-            {/* Search */}
-            <div className="flex items-center gap-1.5 px-2.5 py-2 border-b border-border-default/60">
-              <MagnifyingGlass size={11} className="text-text-muted flex-shrink-0" />
-              <input
-                ref={searchRef}
-                type="text"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter icons…"
-                className="flex-1 bg-transparent text-xs text-text-primary placeholder-text-muted outline-none"
-              />
-            </div>
+      {open && pos && (
+        <Overlay
+          open
+          interactive
+          onDismiss={closePicker}
+          portal
+          style={{
+            position: 'fixed',
+            left: pos.left,
+            top: pos.above ? undefined : pos.top,
+            bottom: pos.above ? window.innerHeight - pos.top : undefined,
+            width: pos.width,
+            maxHeight: pos.maxHeight
+          }}
+          className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg flex flex-col overflow-hidden"
+        >
+          {/* Search */}
+          <div className="flex items-center gap-1.5 px-2.5 py-2 border-b border-border-default/60">
+            <MagnifyingGlass size={11} className="text-text-muted flex-shrink-0" />
+            <input
+              ref={searchRef}
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter icons…"
+              className="flex-1 bg-transparent text-xs text-text-primary placeholder-text-muted outline-none"
+            />
+          </div>
 
-            {/* Icon grid */}
-            <div className="overflow-y-auto p-2">
-              {filtered.length === 0 ? (
-                <p className="text-sm text-text-muted text-center py-4">No icons match</p>
-              ) : (
-                <div className="grid grid-cols-8 gap-0.5">
-                  {filtered.map((name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      title={name}
-                      onClick={() => pick(name)}
-                      className={[
-                        'flex items-center justify-center w-8 h-8 rounded transition-colors duration-100 cursor-pointer',
-                        'hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-                        value === name
-                          ? 'bg-accent/15 text-accent'
-                          : 'text-text-secondary hover:text-text-primary'
-                      ].join(' ')}
-                    >
-                      <IconByName name={name} size={14} />
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>,
-          document.body
-        )}
+          {/* Icon grid */}
+          <div className="overflow-y-auto p-2">
+            {filtered.length === 0 ? (
+              <p className="text-sm text-text-muted text-center py-4">No icons match</p>
+            ) : (
+              <div className="grid grid-cols-8 gap-0.5">
+                {filtered.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    title={name}
+                    onClick={() => pick(name)}
+                    className={[
+                      'flex items-center justify-center w-8 h-8 rounded transition-colors duration-100 cursor-pointer',
+                      'hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+                      value === name
+                        ? 'bg-accent/15 text-accent'
+                        : 'text-text-secondary hover:text-text-primary'
+                    ].join(' ')}
+                  >
+                    <IconByName name={name} size={14} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </Overlay>
+      )}
     </div>
   )
 }

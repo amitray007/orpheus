@@ -8,8 +8,8 @@ import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
-import { useOverlayOpen } from '@/lib/overlayFocus'
 import { Moon } from '@phosphor-icons/react'
+import { useOverlayOpenState } from '@/lib/overlayFocus'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -39,6 +39,7 @@ export function WorkspaceView({
   allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const overlayOpen = useOverlayOpenState()
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
   // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
@@ -98,8 +99,6 @@ export function WorkspaceView({
   }
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
-
-  useOverlayOpen(drawer !== null)
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -524,12 +523,16 @@ export function WorkspaceView({
       <div className="flex h-full min-h-0">
         {/* Terminal column: terminal host + footer strip */}
         <div className="flex-1 min-w-0 flex flex-col">
-          {/* Terminal area — the libghostty NSView is parented as the BOTTOM sibling of
-              the BrowserWindow contentView (NSWindowBelow), so the web layer composites
-              OVER it. This div MUST stay background-less (transparent) so the terminal
-              shows through; an opaque bg here would hide the terminal entirely.
+          {/* Terminal area — the libghostty NSView is the TOPMOST sibling of
+              contentView at rest (NSWindowAbove relativeTo:nil, isOpaque=YES).
+              This div is transparent at rest so the opaque terminal paints
+              itself through. When an overlay is open the terminal swaps below
+              WebContents, so we fill bg-surface-base here to avoid a gap.
               ResizeObserver fires when the footer height changes the container. */}
-          <div ref={containerRef} className="flex-1 min-w-0 relative">
+          <div
+            ref={containerRef}
+            className={`flex-1 min-w-0 relative ${overlayOpen ? 'bg-surface-base' : ''}`}
+          >
             {active && sleeping && (
               <button
                 type="button"
