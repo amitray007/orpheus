@@ -2619,6 +2619,25 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
     }
 }
 
+static Napi::Value InstallBackstop(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBuffer()) {
+        Napi::TypeError::New(env, "installBackstop requires a window handle buffer").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Buffer<uint8_t> handleBuf = info[0].As<Napi::Buffer<uint8_t>>();
+    void* rawHandle = nullptr;
+    size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
+    memcpy(&rawHandle, handleBuf.Data(), copyLen);
+    NSView* contentView = (__bridge NSView*)rawHandle;
+    if (!contentView) return env.Undefined();
+    // Install the persistent opaque backstop NOW (idempotent via dispatch_once),
+    // before any terminal mount, so the transparent window never reveals the
+    // desktop on the first workspace navigation.
+    ensureBackstopView(contentView);
+    return env.Undefined();
+}
+
 static Napi::Value Mount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -3483,6 +3502,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     }
 
     exports.Set("mount",             Napi::Function::New(env, Mount));
+    exports.Set("installBackstop",   Napi::Function::New(env, InstallBackstop));
     exports.Set("hide",              Napi::Function::New(env, Hide));
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));

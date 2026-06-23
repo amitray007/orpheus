@@ -644,6 +644,11 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    try {
+      loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
+    } catch (err) {
+      console.error('[lifecycle] installBackstop failed:', err)
+    }
     if (isDev) {
       mainWindow.setTitle(app.getName())
     }
@@ -1374,6 +1379,7 @@ type GhosttyNativeAddon = {
       env?: Record<string, string>
     }
   ) => { workspaceId: string; created: boolean }
+  installBackstop: (handle: Buffer) => void
   hide: (workspaceId: string) => void
   resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
   destroy: (workspaceId: string) => void
