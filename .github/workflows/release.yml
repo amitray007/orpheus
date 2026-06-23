@@ -1,8 +1,9 @@
 name: Release
 
-# Triggered automatically when release-please merges its bump PR to main.
-# release-please commits are "chore(release): orpheus vX.Y.Z" — we extract
-# the version from package.json and build from the tagged commit.
+# Triggered automatically when release-please pushes a vX.Y.Z tag to main.
+# Tags are created exactly once per release (unlike main pushes, which fire on
+# both the staging merge AND the release-please bump PR merge — the double-run
+# race that corrupted v0.3.0). Tag-based triggering eliminates that race.
 # Also runnable manually (workflow_dispatch) for one-off builds.
 #
 # What this does NOT do (release-please already handled it):
@@ -22,11 +23,12 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build (e.g. v0.2.0)'
+        description: 'Existing tag to build (e.g. v0.3.1)'
         required: true
         type: string
 
@@ -50,53 +52,39 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
           else
-            # Proceed on release-please commits. Two forms land on main:
-            #   1. Direct:  "chore(release): orpheus vX.Y.Z"  (squash/rebase merge)
-            #   2. Merge:   "Merge pull request #N from .../release-please--branches--main..."
-            # Both are safe signals — no other PRs come from the release-please branch prefix.
-            COMMIT_MSG=$(git log -1 --pretty=%s)
-            COMMIT_BRANCH="${{ github.event.head_commit.message }}"
-            PR_BRANCH=$(git log -1 --pretty=%b | grep -o 'release-please--branches--main' || true)
-            if ! echo "$COMMIT_MSG" | grep -qE '^chore\(release\):' && \
-               ! echo "$COMMIT_MSG" | grep -qE 'release-please--branches--main'; then
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              echo "[release] skipping: not a release-please commit ($COMMIT_MSG)"
-              exit 0
-            fi
-            VERSION=$(node -p "require('./package.json').version")
-            TAG="v${VERSION}"
+            # push: tags trigger — github.ref_name is the tag (e.g. v0.3.1)
+            TAG="${{ github.ref_name }}"
           fi
           VERSION="${TAG#v}"
-          echo "skip=false"       >> "$GITHUB_OUTPUT"
+          # Sanity gate: package.json version must match the tag we're building.
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$PKG" != "$VERSION" ]; then
+            echo "::error::package.json version ($PKG) does not match tag ($VERSION)"
+            exit 1
+          fi
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "[release] tag=$TAG version=$VERSION"
 
       - uses: oven-sh/setup-bun@v2
-        if: steps.tag.outputs.skip != 'true'
         with:
           bun-version: latest
 
       - name: Install dependencies
-        if: steps.tag.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
       - name: Typecheck (gate)
-        if: steps.tag.outputs.skip != 'true'
         run: bun run typecheck
 
       - name: Build native + renderer
-        if: steps.tag.outputs.skip != 'true'
         run: |
           bun run build:native
           bun run build
 
       - name: Build .dmg
-        if: steps.tag.outputs.skip != 'true'
         run: bunx electron-builder --mac --publish never
 
       - name: Compute sha256
-        if: steps.tag.outputs.skip != 'true'
         id: sha
         run: |
           DMG="dist/orpheus-${{ steps.tag.outputs.version }}.dmg"
@@ -110,7 +98,6 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
-        if: steps.tag.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: amitray007/homebrew-tap
@@ -118,25 +105,25 @@ jobs:
           path: homebrew-tap
 
       - name: Create release on homebrew-tap and upload .dmg
-        if: steps.tag.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           # The DMG is hosted as a release on the public homebrew-tap repo so
           # Homebrew can download it without auth (orpheus source repo stays private).
+          # --clobber is unconditional so the published asset is ALWAYS the dmg
+          # built and hashed in this run — guaranteeing the asset matches the cask SHA.
           TAP_TAG="orpheus-${{ steps.tag.outputs.tag }}"
           gh release create "$TAP_TAG" \
-            "${{ steps.sha.outputs.dmg }}" \
             --repo amitray007/homebrew-tap \
             --title "Orpheus ${{ steps.tag.outputs.tag }}" \
             --notes "Orpheus ${{ steps.tag.outputs.tag }} binary release. Source: https://github.com/amitray007/orpheus/releases/tag/${{ steps.tag.outputs.tag }}" \
-            || gh release upload "$TAP_TAG" \
-                 "${{ steps.sha.outputs.dmg }}" \
-                 --repo amitray007/homebrew-tap \
-                 --clobber
+            2>/dev/null || echo "[release] tap release $TAP_TAG already exists — will clobber asset"
+          gh release upload "$TAP_TAG" \
+            "${{ steps.sha.outputs.dmg }}" \
+            --repo amitray007/homebrew-tap \
+            --clobber
 
       - name: Render and push cask
-        if: steps.tag.outputs.skip != 'true'
         run: |
           mkdir -p homebrew-tap/Casks
           sed -e "s/{{VERSION}}/${{ steps.tag.outputs.version }}/g" \
