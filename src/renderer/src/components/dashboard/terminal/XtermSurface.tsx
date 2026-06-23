@@ -47,11 +47,13 @@ const GHOSTTY_DEFAULT_FONT_SIZE = 13
 // copy-on-select, window-padding-x, etc.) without a double round-trip.
 // ghosttySettings.onChanged does not exist in the current preload — live switch
 // is not wired; changes take effect on next mount (workspace restart).
-// Returns the resolved font size so callers can derive pixel-accurate padding.
+// Returns the resolved font size (for padding) and the resolved terminal
+// background color (so the host container can paint the sub-cell remainder strip
+// the same color → no visible gap at the bottom where FitAddon floors rows).
 async function applyGhosttyAppearance(
   term: Terminal,
   settings: Record<string, unknown>
-): Promise<number> {
+): Promise<{ fontSize: number; background: string | null }> {
   let resolvedFontSize = GHOSTTY_DEFAULT_FONT_SIZE
   try {
     const fontFamily =
@@ -174,7 +176,9 @@ async function applyGhosttyAppearance(
   } catch {
     // Non-fatal: if ghostty config is unavailable, xterm uses its defaults.
   }
-  return resolvedFontSize
+  const background =
+    typeof term.options.theme?.background === 'string' ? term.options.theme.background : null
+  return { fontSize: resolvedFontSize, background }
 }
 
 export function XtermSurface({
@@ -191,6 +195,9 @@ export function XtermSurface({
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
   const [loading, setLoading] = useState(true)
+  // Resolved terminal background — painted on the host container so the floored-row
+  // remainder at the bottom matches the terminal color (no visible gap).
+  const [bgColor, setBgColor] = useState<string | null>(null)
   // Bumping attemptKey tears down and rebuilds the terminal effect — used by Restart.
   const [attemptKey, setAttemptKey] = useState(0)
   // Stable ref to doFit so the active-toggle and recover effects can call it
@@ -308,8 +315,12 @@ export function XtermSurface({
         settings['copy-on-select'] === true || settings['copy-on-select'] === 'true'
 
       // Apply ghostty font + theme before open() so font metrics are correct.
-      const fontSize = await applyGhosttyAppearance(term, settings)
+      const { fontSize, background } = await applyGhosttyAppearance(term, settings)
       if (disposed) return
+      // Paint the host container with the terminal's own background so the sub-cell
+      // remainder strip (FitAddon floors rows, leaving < 1 cell at the bottom) is
+      // the same color as the terminal — no visible gap at the bottom edge.
+      if (background) setBgColor(background)
 
       term.open(el)
 
@@ -752,7 +763,11 @@ export function XtermSurface({
   }, [workspaceId])
 
   return (
-    <div ref={containerRef} className="w-full h-full relative">
+    <div
+      ref={containerRef}
+      className="w-full h-full relative"
+      style={bgColor ? { backgroundColor: bgColor } : undefined}
+    >
       {/* Inner div: xterm mounts here. term.element padding is set after open() so FitAddon subtracts it. */}
       <div ref={xtermRef} className="w-full h-full" />
       {loading && !spawnError && !exited && (
