@@ -18,7 +18,6 @@ import {
   flip,
   shift,
   useHover,
-  useDismiss,
   useRole,
   useInteractions,
   FloatingPortal
@@ -286,9 +285,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     enabled: cardAllowed,
     delay: { open: 120, close: 80 }
   })
-  const dismiss = useDismiss(context)
   const role = useRole(context, { role: 'tooltip' })
-  const { getReferenceProps, getFloatingProps } = useInteractions([hover, dismiss, role])
+  const { getReferenceProps, getFloatingProps } = useInteractions([hover, role])
 
   return (
     <>

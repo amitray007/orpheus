@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import type React from 'react'
+import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
 import { playSound } from '../../../lib/sound'
@@ -199,22 +199,6 @@ export function Select<T extends string>({
     })
   }, [open, options.length])
 
-  // Close on outside mousedown.
-  // Route through closeMenu() so focus returns to the trigger when the user
-  // clicks onto a non-focusable surface (otherwise the listbox unmounts with
-  // focus on it and keyboard nav lands on document.body).
-  useEffect(() => {
-    if (!open) return
-    function onMouseDown(e: MouseEvent): void {
-      const t = e.target as Node
-      if (popoverRef.current?.contains(t)) return
-      if (triggerRef.current?.contains(t)) return
-      closeMenu()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [open])
-
   // Reposition on scroll / resize so the popover tracks layout shifts.
   useEffect(() => {
     if (!open) return
@@ -328,9 +312,22 @@ export function Select<T extends string>({
           ].join(' ')}
         />
       </button>
-      {open &&
-        pos &&
-        createPortal(
+      {open && pos && (
+        <Overlay
+          open
+          interactive
+          onDismiss={closeMenu}
+          portal
+          style={{
+            position: 'fixed',
+            left: pos.left,
+            top: pos.above ? undefined : pos.top,
+            bottom: pos.above ? window.innerHeight - pos.top : undefined,
+            width: pos.width,
+            maxHeight: pos.maxHeight
+          }}
+          className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
+        >
           <div
             ref={popoverRef}
             role="listbox"
@@ -338,15 +335,6 @@ export function Select<T extends string>({
             tabIndex={-1}
             autoFocus
             onKeyDown={onPopoverKeyDown}
-            style={{
-              position: 'fixed',
-              left: pos.left,
-              top: pos.above ? undefined : pos.top,
-              bottom: pos.above ? window.innerHeight - pos.top : undefined,
-              width: pos.width,
-              maxHeight: pos.maxHeight
-            }}
-            className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
           >
             {options.map((opt) => {
               // Separator — render as non-interactive section divider
@@ -388,9 +376,9 @@ export function Select<T extends string>({
                 </button>
               )
             })}
-          </div>,
-          document.body
-        )}
+          </div>
+        </Overlay>
+      )}
     </div>
   )
 }

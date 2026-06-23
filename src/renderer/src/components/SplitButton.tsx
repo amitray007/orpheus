@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type React from 'react'
+import { Overlay } from '@/components/ui/Overlay'
 import { CaretDown, Check } from '@phosphor-icons/react'
 
 // ---------------------------------------------------------------------------
@@ -46,28 +47,9 @@ export function SplitButton<T extends string>({
   popoverHeader
 }: SplitButtonProps<T>): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    function onMouseDown(e: MouseEvent): void {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
-    }
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
 
   return (
-    <div ref={rootRef} className="relative inline-flex">
+    <div className="relative inline-flex">
       <button
         type="button"
         onClick={onClick}
@@ -105,11 +87,14 @@ export function SplitButton<T extends string>({
         <CaretDown size={10} weight="bold" />
       </button>
 
-      {open && options.length > 0 && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
-        >
+      <Overlay
+        open={open && options.length > 0}
+        interactive
+        onDismiss={() => setOpen(false)}
+        portal={false}
+        className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
+      >
+        <div role="menu">
           {popoverHeader && (
             <div className="px-3 py-1.5 text-xs uppercase tracking-wider text-text-muted border-b border-border-default/60">
               {popoverHeader}
@@ -147,7 +132,7 @@ export function SplitButton<T extends string>({
             )
           })}
         </div>
-      )}
+      </Overlay>
     </div>
   )
 }
