@@ -153,7 +153,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagLifecycle: row.diag_lifecycle === 1,
     diagPerf: row.diag_perf === 1,
     diagAnomaly: row.diag_anomaly === 1,
-    // Terminal engine selector (v60) — coerce unknown/null values to 'ghostty'
+    // Terminal engine selector (v60) — default flipped to xterm in v61;
+    // coerce unknown/null values to 'xterm', only explicit 'ghostty' stays ghostty.
     terminalEngine: (row.terminal_engine === 'ghostty' ? 'ghostty' : 'xterm') as
       | 'ghostty'
       | 'xterm',

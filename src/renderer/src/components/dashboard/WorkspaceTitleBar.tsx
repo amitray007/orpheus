@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- file exports both component and cache-eviction utility by design */
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Cpu, Info } from '@phosphor-icons/react'
+import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Info } from '@phosphor-icons/react'
 import {
   useFloating,
   useClick,
@@ -14,7 +14,7 @@ import {
   shift
 } from '@floating-ui/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
-import type { GhPullRequest, WorkspaceRecord, SessionUsage } from '@shared/types'
+import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { WorkspaceDetailsPopover } from './WorkspaceDetailsPopover'
 import { useOverlayOpen } from '@/lib/overlayFocus'
@@ -94,82 +94,6 @@ export function clearContextBudgetCache(workspaceId: string): void {
   for (const key of contextBudgetCache.keys()) {
     if (key.startsWith(prefix)) contextBudgetCache.delete(key)
   }
-}
-
-interface ModelContextChipProps {
-  workspaceId: string
-  /** claudeSessionId — used as part of the cache key so the chip
-   *  re-fetches when the session changes (workspace restarts, forks, etc.). */
-  claudeSessionId: string | null
-}
-
-function ModelContextChip({
-  workspaceId,
-  claudeSessionId
-}: ModelContextChipProps): React.JSX.Element | null {
-  const cacheKey = `${workspaceId}:${claudeSessionId ?? ''}`
-  const cached = contextBudgetCache.get(cacheKey) ?? null
-  const [info, setInfo] = useState<ContextBudgetInfo | null>(cached)
-  const [usage, setUsage] = useState<SessionUsage | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const key = `${workspaceId}:${claudeSessionId ?? ''}`
-
-    // Serve cache immediately; still revalidate so the chip stays fresh after
-    // a session's first message (context budget updates as tokens are used).
-    const stale = contextBudgetCache.get(key)
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: seed chip from cache on workspace/session change before async result arrives
-    if (stale) setInfo(stale)
-
-    window.api.sessions
-      .getContextBudget(workspaceId)
-      .then((result) => {
-        if (!cancelled && result) {
-          // Skip caching for pre-session workspaces (claudeSessionId === null)
-          // so a stale model chip isn't shown after a global model change.
-          if (claudeSessionId !== null) {
-            contextBudgetCache.set(key, result)
-          }
-          setInfo(result)
-        }
-      })
-      .catch(() => {})
-
-    window.api.actions
-      .invoke({ id: 'session.getUsage', params: {}, workspaceId }, 'workspace-context')
-      .then((result) => {
-        if (!cancelled && result.ok && result.value != null) {
-          setUsage(result.value as SessionUsage)
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId, claudeSessionId])
-
-  if (!info) return null
-
-  const ctxPart = usage
-    ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(info.contextBudget)}`
-    : shortTokens(info.contextBudget)
-  const label = `${modelLabel(info.modelId)} · ${ctxPart}`
-
-  return (
-    <span
-      className="inline-flex items-center gap-1 text-xs text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
-      title={
-        usage
-          ? `Context: ${usage.lastTurnContextTokens.toLocaleString()} / ${info.contextBudget.toLocaleString()} tokens (${Math.round(usage.usedPct)}%)`
-          : `Model: ${info.modelId} · Context: ${info.contextBudget.toLocaleString()} tokens`
-      }
-    >
-      <Cpu size={10} className="flex-shrink-0 opacity-60" />
-      <span>{label}</span>
-    </span>
-  )
 }
 
 interface WorkspaceTitleBarProps {
@@ -268,8 +192,7 @@ export function WorkspaceTitleBar({
         </span>
       )}
 
-      {/* Model + context chip — read-only, fetched from main via IPC */}
-      <ModelContextChip workspaceId={workspace.id} claudeSessionId={workspace.claudeSessionId} />
+      {/* Model + context are shown in the footer quick-action (LiveChip) — not duplicated here. */}
 
       <div className="ml-auto flex items-center gap-1">
         {isGhostty ? (
