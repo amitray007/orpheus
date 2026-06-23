@@ -289,8 +289,8 @@ export function XtermSurface({ workspaceId, cwd, active }: XtermSurfaceProps): R
           return true
         }
 
-        // All other keys (plain typing, arrows, Ctrl+C, Cmd+C/V, Tab, Escape,
-        // etc.) pass through to xterm's default handler unchanged.
+        // All other keys (plain typing, arrows, Ctrl+C, Tab, Escape, IME
+        // composition, etc.) pass through to xterm's default handler unchanged.
         return true
       })
 

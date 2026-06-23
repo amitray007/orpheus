@@ -8,6 +8,11 @@
 //    FitAddon measures the content box — columns stay correct.)
 //   - Closed gaps: mouse-hide-while-typing (implemented via DOM keydown/mousemove);
 //     cursor-style and cursor-style-blink (forwarded from ghostty settings to xterm options).
+//   - Input parity (Plan 002): keyboard editing (Option/Cmd+Delete, Ctrl+/, Ctrl+Return),
+//     clipboard triad (Cmd+C/V/X), clipboard-image paste and file/image drag-drop are all
+//     implemented as DOM equivalents in XtermSurface.tsx (attachCustomKeyEventHandler + paste/
+//     drop listeners) routing through src/main/terminal/attachments.ts. Mouse click/select/
+//     scroll/hover is xterm.js-native. IME/CJK composition uses xterm's native path.
 
 import type { GhosttyParsedTheme } from '../../shared/types'
 
