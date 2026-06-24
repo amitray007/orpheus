@@ -185,8 +185,8 @@ export function WorkspaceTitleBar({
   allWorkspaces
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-  const [detailsOpen, setDetailsOpen] = useState(false)
   const detailsButtonRef = useRef<HTMLButtonElement>(null)
+  const detailsHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
@@ -202,11 +202,17 @@ export function WorkspaceTitleBar({
     })
   }, [workspace.id])
 
-  // ── Details popover — open / close + async data fetching ─────────────────
+  // ── Details popover — hover open/close + async data fetching ────────────────
+
+  function clearDetailsHoverTimer(): void {
+    if (detailsHoverTimerRef.current !== null) {
+      clearTimeout(detailsHoverTimerRef.current)
+      detailsHoverTimerRef.current = null
+    }
+  }
 
   function openDetailsPopover(): void {
     if (!detailsButtonRef.current) return
-    setDetailsOpen(true)
 
     // Build initial data with whatever is synchronously available.
     const initialData: DetailsPopoverData = {
@@ -279,36 +285,29 @@ export function WorkspaceTitleBar({
       })
   }
 
-  function closeDetailsPopover(): void {
-    setDetailsOpen(false)
-    hideNativePopover(workspace.id)
+  function handleDetailsMouseEnter(): void {
+    clearDetailsHoverTimer()
+    detailsHoverTimerRef.current = setTimeout(() => {
+      detailsHoverTimerRef.current = null
+      openDetailsPopover()
+    }, 120)
   }
 
-  // Close on workspace change
+  function handleDetailsMouseLeave(): void {
+    clearDetailsHoverTimer()
+    detailsHoverTimerRef.current = setTimeout(() => {
+      detailsHoverTimerRef.current = null
+      hideNativePopover(workspace.id)
+    }, 80)
+  }
+
+  // Hide and cancel timers on workspace change or unmount
   useEffect(() => {
     return () => {
+      clearDetailsHoverTimer()
       hideNativePopover(workspace.id)
     }
   }, [workspace.id])
-
-  // Outside-click / Escape dismissal
-  useEffect(() => {
-    if (!detailsOpen) return
-    function handleClickOutside(e: MouseEvent): void {
-      if (detailsButtonRef.current && detailsButtonRef.current.contains(e.target as Node)) return
-      closeDetailsPopover()
-    }
-    function handleKeyDown(e: KeyboardEvent): void {
-      if (e.key === 'Escape') closeDetailsPopover()
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailsOpen])
 
   // Resolve parent name for the "forked from" chip
   const forkedFromSessionId = workspace.forkedFromSessionId ?? null
@@ -363,22 +362,15 @@ export function WorkspaceTitleBar({
         <button
           ref={detailsButtonRef}
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => {
-            if (detailsOpen) {
-              closeDetailsPopover()
-            } else {
-              openDetailsPopover()
-            }
-          }}
+          onMouseEnter={handleDetailsMouseEnter}
+          onMouseLeave={handleDetailsMouseLeave}
           title="Details"
           aria-label="Details"
           className={[
             'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
             'transition-colors duration-150',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            detailsOpen
-              ? 'bg-surface-overlay text-text-primary'
-              : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
           ].join(' ')}
         >
           <Info size={14} />

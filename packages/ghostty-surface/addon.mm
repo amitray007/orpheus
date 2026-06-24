@@ -135,7 +135,7 @@ struct GhosttySurfaceEntry {
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
-    OrpheusPopoverView* __strong popoverView;           // nil when no popover is shown
+    // popoverView moved to global g_activePopover (one popover at a time, any workspace)
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
@@ -1384,6 +1384,19 @@ static bool g_loadingActionTSFNActive = false;
 // tapped (e.g. the PR chip). Registered via setPopoverActionCallback.
 static Napi::ThreadSafeFunction g_popoverActionTSFN;
 static bool g_popoverActionTSFNActive = false;
+
+// ---------------------------------------------------------------------------
+// Global popover state — decoupled from per-workspace surface entries so hover
+// cards can be shown for inactive workspaces that have no mounted surface.
+// Only one popover is visible at a time (hover OR details), so a single global
+// is sufficient.
+// ---------------------------------------------------------------------------
+static OrpheusPopoverView* __strong g_activePopover = nil;
+static std::string g_activePopoverWorkspaceId;
+
+// contentView cached when installBackstop runs (always before any popover
+// request — installBackstop is called once at ready-to-show).
+static NSView* __strong g_popoverHostContentView = nil;
 
 // ---------------------------------------------------------------------------
 // Loading overlay theme — colors pushed from main process (resolved from the
@@ -2698,6 +2711,9 @@ static Napi::Value InstallBackstop(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
     if (!contentView) return env.Undefined();
+    // Cache contentView for ShowPopover — popovers must work even when no
+    // surface entry exists (e.g. hover cards for inactive workspaces).
+    g_popoverHostContentView = contentView;
     // Install the persistent opaque backstop NOW (idempotent via dispatch_once),
     // before any terminal mount, so the transparent window never reveals the
     // desktop on the first workspace navigation.
@@ -3955,14 +3971,14 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 // ---------------------------------------------------------------------------
 // addSectionHeader — Geist-Medium 10px uppercase, textMuted.
 // Returns the y position after the header (next row starts here).
-// Padding: left/right kCardPadH, top 9px, bottom 4px.
+// Padding: left/right kCardPadH, top 11px, bottom 6px.
 // ---------------------------------------------------------------------------
 - (CGFloat)addSectionHeader:(NSString*)title atY:(CGFloat)y {
     NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
         [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
 
-    const CGFloat topPad    = 9.0;
-    const CGFloat bottomPad = 4.0;
+    const CGFloat topPad    = 11.0;
+    const CGFloat bottomPad = 6.0;
     const CGFloat lineH     = 14.0; // ~10px font × 1.4 line-height
 
     NSTextField* header = makeLabel([title uppercaseString],
@@ -4078,7 +4094,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
     const CGFloat vPad   = 2.0;
     const CGFloat iconSz = fontSize;
-    const CGFloat rowH   = fontSize + 2.0 * vPad + 2.0;
+    const CGFloat rowH   = fontSize + 2.0 * vPad;  // matches other 15px rows (no extra +2)
 
     // SF Symbol stand-in for Phosphor Files → "doc.on.doc"
     NSImage* icon = sfSymbol(@"doc.on.doc", iconSz, mutedColor);
@@ -4493,11 +4509,11 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     // ---- Section 1: PR (if present) ----
     if (pr) {
         y = [self addSectionHeader:@"Pull Request" atY:y];
-        // Row: chip with padding L/R 11px, bottom 6px.
+        // Row: chip with padding L/R 11px, bottom 8px.
         y = [self addPRChip:pr atY:y];
-        y += 6.0; // bottom padding
-        // Divider with margin-top 4px.
-        y += 4.0;
+        y += 8.0; // bottom padding
+        // Divider with margin-top 5px.
+        y += 5.0;
         [self addSubview:makeDivider(y, self.cardWidth)];
         y += kSepHeight;
     }
@@ -4521,8 +4537,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     }
     // Use addLabelValueRow but override value appearance.
     {
-        const CGFloat vPad   = 2.0;
-        const CGFloat rowH   = 15.0;
+        const CGFloat vPad   = 3.0;
+        const CGFloat rowH   = 18.0;
         const CGFloat labelW = 56.0;
         const CGFloat gap    = 7.0;
         NSTextField* lbl = makeLabel(@"Model", geistFont(@"Geist-Regular", 11.0), mutedColor);
@@ -4534,7 +4550,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
         [self addSubview:val];
         y += rowH;
     }
-    y += 2.0; // 2px gap between rows
+    y += 6.0; // 6px gap between rows (breathing room)
 
     // Context row
     {
@@ -4551,7 +4567,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
             ctxVal   = @"—";
             ctxColor = mutedColor;
         }
-        const CGFloat vPad = 2.0; const CGFloat rowH = 15.0;
+        const CGFloat vPad = 3.0; const CGFloat rowH = 18.0;
         const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
         NSTextField* lbl = makeLabel(@"Context", geistFont(@"Geist-Regular", 11.0), mutedColor);
         lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
@@ -4562,7 +4578,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
         [self addSubview:val];
         y += rowH;
     }
-    y += 2.0;
+    y += 6.0; // 6px gap between rows
 
     // Cost row
     {
@@ -4578,7 +4594,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
             costVal   = @"—";
             costColor = mutedColor;
         }
-        const CGFloat vPad = 2.0; const CGFloat rowH = 15.0;
+        const CGFloat vPad = 3.0; const CGFloat rowH = 18.0;
         const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
         NSTextField* lbl = makeLabel(@"Cost", geistFont(@"Geist-Regular", 11.0), mutedColor);
         lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
@@ -4589,7 +4605,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
         [self addSubview:val];
         y += rowH;
     }
-    y += 6.0; // bottom of model/usage section
+    y += 9.0; // bottom of model/usage section
 
     // ---- Section 3: Repository (if git or cwd present) ----
     if (git || cwd.length > 0) {
@@ -4607,10 +4623,10 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
             // details: fontSize=11, gap=4, monoSize=10
             y = [self addGitBranchRow:branch detached:detached fontSize:11.0 gapX:4.0 atY:y];
-            y += 2.0;
+            y += 6.0; // 6px gap between git rows
             y = [self addGitChangesRow:summary insertions:insertions deletions:deletions
                               fontSize:11.0 gapX:4.0 monoSize:10.0 atY:y];
-            y += 2.0;
+            y += 6.0; // 6px bottom of git sub-section
         }
 
         if (cwd.length > 0) {
@@ -4634,11 +4650,11 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
             y += textH;
         }
 
-        y += 4.0; // bottom of repository section
+        y += 6.0; // bottom of repository section
     }
 
-    // Spec: 8px bottom padding (pb-2)
-    y += 8.0;
+    // Spec: 10px bottom padding
+    y += 10.0;
 
     return y;
 }
@@ -4828,31 +4844,30 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
     NSString* nsKindLocal = [NSString stringWithUTF8String:kind.c_str()];
     CGFloat cardWidth = [nsKindLocal isEqualToString:@"hover"] ? 224.0 : 252.0;
 
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no surface entry (no-op)",
-              workspaceId.c_str());
-        return env.Undefined();
-    }
-    GhosttySurfaceEntry& entry = it->second;
-    if (!entry.view || !entry.view.window) {
-        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no view/window (no-op)",
+    // Use the cached contentView from installBackstop. This is global and always
+    // available regardless of whether this workspace has a mounted surface — so
+    // hover cards for inactive workspaces proceed correctly.
+    NSView* cachedContentView = g_popoverHostContentView;
+    if (!cachedContentView) {
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no cached contentView (no-op — installBackstop not called yet?)",
               workspaceId.c_str());
         return env.Undefined();
     }
 
     NSString* nsWorkspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     NSString* nsKind        = [NSString stringWithUTF8String:kind.c_str()];
-    OrpheusPopoverView* __strong* popoverPtr = &entry.popoverView;
+
+    NSLog(@"[ghostty-surface] showPopover proceeding kind=%@ host=%d workspaceId=%s",
+          nsKind, (cachedContentView != nil), workspaceId.c_str());
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSView* contentView = entry.view.window.contentView;
-        if (!contentView) return;
+        NSView* contentView = cachedContentView;
 
-        // Destroy any pre-existing popover for this workspace before creating a new one.
-        if (*popoverPtr) {
-            [*popoverPtr removeFromSuperview];
-            *popoverPtr = nil;
+        // Destroy any pre-existing global popover before creating a new one.
+        if (g_activePopover) {
+            [g_activePopover removeFromSuperview];
+            g_activePopover = nil;
+            g_activePopoverWorkspaceId.clear();
         }
 
         // Create the popover view with real content. initWithKind:workspaceId:width:data:
@@ -4870,7 +4885,8 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         // Parent to contentView ABOVE everything (terminal is below web layer which
         // is below the popover — no z-swap needed, no blackout by construction).
         [contentView addSubview:pv positioned:NSWindowAbove relativeTo:nil];
-        *popoverPtr = pv;
+        g_activePopover = pv;
+        g_activePopoverWorkspaceId = workspaceId;
 
         NSLog(@"[ghostty-surface] showPopover workspaceId=%s kind=%s frame=(%.0f,%.0f,%.0fx%.0f)",
               nsWorkspaceId.UTF8String, nsKind.UTF8String,
@@ -4908,18 +4924,16 @@ static Napi::Value UpdatePopover(const Napi::CallbackInfo& info) {
     }
 
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end() || !it->second.popoverView) {
+    // Only update if the global active popover belongs to this workspace.
+    if (g_activePopoverWorkspaceId != workspaceId || !g_activePopover) {
         return env.Undefined();  // no popover to update — no-op
     }
 
     NSDictionary* patchDict = napiObjectToDict(info[1]);
 
-    OrpheusPopoverView* __strong* popoverPtr = &it->second.popoverView;
-
     dispatch_async(dispatch_get_main_queue(), ^{
-        OrpheusPopoverView* pv = *popoverPtr;
-        if (!pv) return;
+        OrpheusPopoverView* pv = g_activePopover;
+        if (!pv || g_activePopoverWorkspaceId != workspaceId) return;
 
         // Merge patch over current data snapshot.
         NSMutableDictionary* merged = [NSMutableDictionary dictionaryWithDictionary:pv.currentData];
@@ -4964,15 +4978,17 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
 
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
 
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) {
-        return env.Undefined();  // no surface — silent no-op
+    // Only hide if the global active popover belongs to this workspace.
+    if (g_activePopoverWorkspaceId != workspaceId || !g_activePopover) {
+        return env.Undefined();  // no popover for this workspace — silent no-op
     }
 
-    OrpheusPopoverView* __strong* popoverPtr = &it->second.popoverView;
+    // Clear the global ownership immediately so concurrent calls don't double-hide.
+    OrpheusPopoverView* pv = g_activePopover;
+    g_activePopover = nil;
+    g_activePopoverWorkspaceId.clear();
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        OrpheusPopoverView* pv = *popoverPtr;
         if (!pv) return;
 
         NSLog(@"[ghostty-surface] hidePopover: fading out");
@@ -4989,8 +5005,6 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
         [pv.layer addAnimation:fade forKey:@"fadeOut"];
         pv.alphaValue = 0.0;
         [CATransaction commit];
-
-        *popoverPtr = nil;
     });
 
     return env.Undefined();

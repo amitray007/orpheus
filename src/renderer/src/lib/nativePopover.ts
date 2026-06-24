@@ -88,8 +88,8 @@ function gitStatusToNative(gitStatus: GitStatus | null): HoverPopoverData['git']
     branch: gitStatus.branch ?? '',
     detached: gitStatus.branch === null,
     summary: parts.join(' · ') || 'No changes',
-    insertions: gitStatus.insertions,
-    deletions: gitStatus.deletions
+    insertions: gitStatus.insertions ?? 0,
+    deletions: gitStatus.deletions ?? 0
   }
 }
 
