@@ -531,17 +531,6 @@ export function XtermSurface({
           workspaceId,
           message: 'WebGL renderer active'
         })
-        // DIAGNOSTIC: log actual active renderer class name to verify WebGL is active
-        console.log(
-          '[xterm] active renderer:',
-          (
-            term as unknown as {
-              _core?: {
-                _renderService?: { _renderer?: { value?: { constructor?: { name?: string } } } }
-              }
-            }
-          )._core?._renderService?._renderer?.value?.constructor?.name ?? 'unknown'
-        )
       } catch (err) {
         webgl?.dispose()
         webgl = null

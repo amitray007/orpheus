@@ -220,6 +220,24 @@ import {
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
+// Prefer the discrete GPU on multi-GPU Macs for the xterm WebGL renderer. Safe,
+// documented Electron switch; no effect on single-GPU machines.
+//
+// NOTE (do not re-investigate): on a PRE-RELEASE macOS (observed: macOS 26/27 beta,
+// Darwin 27.0.0 on Apple Silicon) Chromium's GPU process fails to initialize on the
+// unrecognized OS and app.getGPUFeatureStatus() reports EVERYTHING
+// "disabled_software"/"disabled_off". This is a Chromium/macOS-beta issue
+// (chromium #447967832), NOT an Orpheus bug — it affects every Electron app on such a
+// machine and NO command-line flag re-enables it (force_high_performance_gpu,
+// ignore-gpu-blocklist, enable-gpu-rasterization, use-angle=gl/metal,
+// disable-gpu-driver-bug-workarounds, disable-software-rasterizer were all verified
+// inert). When the GPU is software-disabled, xterm falls back to the Canvas/DOM
+// renderer and scrolling is software-rendered (laggy). It resolves on a RELEASED
+// macOS / once Chromium supports the OS — nothing to fix in-app. We deliberately do
+// NOT ship ignore-gpu-blocklist / enable-gpu-rasterization: they are inert in this
+// case and can cause visual corruption on genuinely-flaky GPUs on other machines.
+app.commandLine.appendSwitch('force_high_performance_gpu')
+
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
 // ---------------------------------------------------------------------------
