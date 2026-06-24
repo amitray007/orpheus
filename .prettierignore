@@ -9,5 +9,6 @@ tsconfig.json
 tsconfig.*.json
 vendor
 resources/ghostty
-packages/ghostty-native/build
+packages/ghostty-surface/build
 .superpowers
+.claude
