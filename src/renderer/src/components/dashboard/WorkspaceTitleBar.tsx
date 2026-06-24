@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- file exports both component and cache-eviction utility by design */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Info } from '@phosphor-icons/react'
 import {
@@ -18,6 +18,7 @@ import type { GhPullRequest, WorkspaceRecord } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { WorkspaceDetailsPopover } from './WorkspaceDetailsPopover'
 import { useOverlayOpen } from '@/lib/overlayFocus'
+import { useWorkspaceTitle } from '@/lib/titleStore'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -114,8 +115,6 @@ export function WorkspaceTitleBar({
   allWorkspaces,
   terminalEngine
 }: WorkspaceTitleBarProps): React.JSX.Element {
-  const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   useOverlayOpen(detailsOpen)
@@ -133,18 +132,9 @@ export function WorkspaceTitleBar({
   const role = useRole(context, { role: 'dialog' })
   const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss, role])
 
-  const isGhostty = terminalEngine === 'ghostty'
+  const terminalTitle = useWorkspaceTitle(workspace.id)
 
-  useEffect(() => {
-    const workspaceId = workspace.id
-    window.api.workspaces
-      .getTitle(workspaceId)
-      .then(setTerminalTitle)
-      .catch(() => {})
-    return window.api.workspaces.onTitleChanged((e) => {
-      if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
-    })
-  }, [workspace.id])
+  const isGhostty = terminalEngine === 'ghostty'
 
   // Resolve parent name for the "forked from" chip
   const forkedFromSessionId = workspace.forkedFromSessionId ?? null

@@ -695,7 +695,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Hydrate UI state from DB once both projects and uiState are loaded.
   // Uses hydratedRef to avoid re-running on subsequent projects refreshes.
-  /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration effect; all setState calls guarded by hydratedRef */
   useEffect(() => {
     if (!uiState || projectsLoading) return
     if (hydratedRef.current) return
@@ -704,7 +703,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed(uiState.sidebarCollapsed)
 
     // Restore expanded project rows from the projects list itself
-    const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
+    const expanded = new Set(
+      projectsRef.current.filter((p) => p.expandedInSidebar).map((p) => p.id)
+    )
     setExpandedProjectIds(expanded)
     // Sub-rows are gated on workspaces being loaded — kick off fetches so the
     // visual state matches the restored expanded state on the very first render.
@@ -715,14 +716,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
     // Restore view: workspace > project > sessions > dashboard
     if (uiState.lastViewKind === 'workspace' && uiState.lastWorkspaceId && uiState.lastProjectId) {
-      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      const proj = projectsRef.current.find((p) => p.id === uiState.lastProjectId)
       if (proj) {
         handleSelectWorkspace(uiState.lastWorkspaceId, uiState.lastProjectId)
         return
       }
     }
     if (uiState.lastViewKind === 'project' && uiState.lastProjectId) {
-      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      const proj = projectsRef.current.find((p) => p.id === uiState.lastProjectId)
       if (proj) {
         handleSelectProject(uiState.lastProjectId)
         return
@@ -735,8 +736,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // default — Workspaces is the fallback landing
     setView({ kind: 'sessions' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uiState, projectsLoading, projects])
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }, [uiState, projectsLoading])
 
   const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })

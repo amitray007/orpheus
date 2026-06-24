@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
+import type { FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
@@ -57,20 +57,26 @@ export function WorkspaceFooter({
   workspaceName = '',
   activityDetail
 }: WorkspaceFooterProps): React.JSX.Element | null {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const [showFooter, setShowFooter] = useState<boolean | null>(null)
   const { items, loading } = useFooterActions(workspaceId)
 
   useEffect(() => {
     // Fetch initial state
-    window.api.uiState.get().then(setUiState).catch(console.error)
+    window.api.uiState
+      .get()
+      .then((s) => setShowFooter(s.showWorkspaceFooter ?? true))
+      .catch(() => {})
     // Subscribe to changes so toggling showWorkspaceFooter is immediately reactive
-    return window.api.uiState.onChanged(setUiState)
+    return window.api.uiState.onChanged((s) => {
+      const next = s.showWorkspaceFooter ?? true
+      setShowFooter((prev) => (next !== prev ? next : prev))
+    })
   }, [])
 
   // Hide when toggled off (once uiState loads; during load render nothing)
-  if (uiState && !uiState.showWorkspaceFooter) return null
+  if (showFooter === false) return null
   // Don't render the bar at all during initial uiState load to avoid flicker
-  if (!uiState) return null
+  if (showFooter === null) return null
 
   const mutators = items.filter((it) => it.kind === 'mutator')
   const displays = items.filter((it) => it.kind !== 'mutator')

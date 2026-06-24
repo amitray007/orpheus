@@ -137,14 +137,16 @@ interface WorkspaceRowProps {
   staleAfterMinutes: number
   /** Current time in epoch ms, updated once per minute at sidebar root. */
   nowMs: number
-  onSelect: () => void
+  terminalEngine: 'ghostty' | 'xterm'
+  wsId: string
+  onSelect: (id: string) => void
   renaming: boolean
-  onBeginRename: () => void
-  onFinishRename: (newName: string) => void
+  onBeginRename: (id: string) => void
+  onFinishRename: (id: string, newName: string) => void
   onCancelRename: () => void
-  onArchive: () => void
-  onClose: () => void
-  onTogglePin: () => void
+  onArchive: (id: string) => void
+  onClose: (id: string) => void
+  onTogglePin: (id: string) => void
 }
 
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
@@ -153,6 +155,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   sessionTitleBySessionId,
   sessionMtimeBySessionId,
   nowMs,
+  terminalEngine,
+  wsId,
   onSelect,
   renaming,
   onBeginRename,
@@ -173,14 +177,6 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(workspace.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('xterm')
-  useEffect(() => {
-    window.api.uiState
-      .get()
-      .then((s) => setTerminalEngine(s.terminalEngine ?? 'xterm'))
-      .catch(() => {})
-    return window.api.uiState.onChanged((s) => setTerminalEngine(s.terminalEngine ?? 'xterm'))
-  }, [])
   const sidebarBoundsRef = useSidebarBounds()
 
   const sessionTitle = workspace.claudeSessionId
@@ -213,10 +209,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         ])
         .then((action) => {
           if (!action) return
-          if (action === 'togglePin') onTogglePin()
-          else if (action === 'rename') onBeginRename()
-          else if (action === 'close') onClose()
-          else if (action === 'archive') onArchive()
+          if (action === 'togglePin') onTogglePin(wsId)
+          else if (action === 'rename') onBeginRename(wsId)
+          else if (action === 'close') onClose(wsId)
+          else if (action === 'archive') onArchive(wsId)
         })
       return
     }
@@ -225,17 +221,17 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const isPinned = workspace.pinnedAt !== null
   const wsMenuItems: ContextMenuItem[] = [
-    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePin },
-    { label: 'Rename', onClick: onBeginRename },
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: () => onTogglePin(wsId) },
+    { label: 'Rename', onClick: () => onBeginRename(wsId) },
     { label: '', divider: true, onClick: () => {} },
-    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: onClose }] : []),
-    { label: 'Archive', onClick: onArchive }
+    ...(!isClosed && !isBusy ? [{ label: 'Close', onClick: () => onClose(wsId) }] : []),
+    { label: 'Archive', onClick: () => onArchive(wsId) }
   ]
 
   function handleRenameCommit(): void {
     const trimmed = renameValue.trim()
     if (trimmed && trimmed !== workspace.name) {
-      onFinishRename(trimmed)
+      onFinishRename(wsId, trimmed)
     } else {
       onCancelRename()
     }
@@ -318,7 +314,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         })}
       >
         <button
-          onClick={onSelect}
+          onClick={() => onSelect(wsId)}
           className={[
             'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
             'h-8 justify-center',
@@ -398,7 +394,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           <button
             onClick={(e) => {
               e.stopPropagation()
-              onArchive()
+              onArchive(wsId)
             }}
             className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
             aria-label="Archive workspace"
@@ -599,6 +595,7 @@ interface ProjectRowProps {
     workspaces: WorkspaceRecord[]
   ) => void
   onWorkspaceDragEnd: () => void
+  terminalEngine: 'ghostty' | 'xterm'
 }
 
 const ProjectRow = memo(function ProjectRow({
@@ -639,7 +636,8 @@ const ProjectRow = memo(function ProjectRow({
   onWorkspaceDragStart,
   onWorkspaceDragOver,
   onWorkspaceDrop,
-  onWorkspaceDragEnd
+  onWorkspaceDragEnd,
+  terminalEngine
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(project.name)
@@ -818,14 +816,16 @@ const ProjectRow = memo(function ProjectRow({
                   sessionMtimeBySessionId={sessionMtimeBySessionId}
                   staleAfterMinutes={staleAfterMinutes}
                   nowMs={nowMs}
-                  onSelect={() => onSelectWorkspace(ws.id)}
+                  terminalEngine={terminalEngine}
+                  wsId={ws.id}
+                  onSelect={onSelectWorkspace}
                   renaming={renamingWorkspaceId === ws.id}
-                  onBeginRename={() => onBeginRenameWorkspace(ws.id)}
-                  onFinishRename={(name) => onFinishRenameWorkspace(ws.id, name)}
+                  onBeginRename={onBeginRenameWorkspace}
+                  onFinishRename={onFinishRenameWorkspace}
                   onCancelRename={onCancelRenameWorkspace}
-                  onArchive={() => onArchiveWorkspace(ws.id)}
-                  onClose={() => onCloseWorkspace(ws.id)}
-                  onTogglePin={() => onTogglePinWorkspace(ws.id)}
+                  onArchive={onArchiveWorkspace}
+                  onClose={onCloseWorkspace}
+                  onTogglePin={onTogglePinWorkspace}
                 />
                 {showLineBelow && <DropIndicator position="bottom" />}
               </div>
@@ -951,6 +951,7 @@ export function Sidebar({
   >(new Map())
   // Stale threshold from AppUiState (default matches original hardcoded 60 min)
   const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
+  const [terminalEngine, setTerminalEngine] = useState<'ghostty' | 'xterm'>('xterm')
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string>>(new Set())
@@ -993,10 +994,16 @@ export function Sidebar({
     }
   }, [projects])
 
-  // Subscribe to staleAfterMinutes from AppUiState
+  // Subscribe to staleAfterMinutes and terminalEngine from AppUiState
   useEffect(() => {
-    void window.api.uiState.get().then((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    const unsub = window.api.uiState.onChanged((s) => setStaleAfterMinutes(s.staleAfterMinutes))
+    void window.api.uiState.get().then((s) => {
+      setStaleAfterMinutes(s.staleAfterMinutes)
+      setTerminalEngine(s.terminalEngine ?? 'xterm')
+    })
+    const unsub = window.api.uiState.onChanged((s) => {
+      setStaleAfterMinutes(s.staleAfterMinutes)
+      setTerminalEngine(s.terminalEngine ?? 'xterm')
+    })
     return unsub
   }, [])
 
@@ -1277,6 +1284,7 @@ export function Sidebar({
                           onWorkspaceDragOver={onWorkspaceDragOver}
                           onWorkspaceDrop={onWorkspaceDrop}
                           onWorkspaceDragEnd={onWorkspaceDragEnd}
+                          terminalEngine={terminalEngine}
                         />
                         {showLineBelow && <DropIndicator position="bottom" />}
                       </div>

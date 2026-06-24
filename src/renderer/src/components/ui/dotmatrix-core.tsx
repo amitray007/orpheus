@@ -179,6 +179,10 @@ const PATTERN_INDEXES: Record<MatrixPattern, number[]> = {
   rings: RINGS_INDEXES
 }
 
+const PATTERN_INDEX_SETS: ReadonlyMap<MatrixPattern, ReadonlySet<number>> = new Map(
+  (Object.keys(PATTERN_INDEXES) as MatrixPattern[]).map((k) => [k, new Set(PATTERN_INDEXES[k])])
+)
+
 export function getPatternIndexes(pattern: MatrixPattern = 'diamond'): number[] {
   return PATTERN_INDEXES[pattern]
 }
@@ -724,7 +728,7 @@ export function DotMatrixBase({
   boxSize,
   minSize
 }: DotMatrixBaseProps): React.JSX.Element {
-  const patternIndexes = new Set(getPatternIndexes(pattern))
+  const patternIndexes = PATTERN_INDEX_SETS.get(pattern) ?? new Set(getPatternIndexes(pattern))
   const safeSpeed = speed > 0 ? speed : 1
   const speedScale = 1 / safeSpeed
   const { gap, matrixSpan } = getMatrix5Layout(size, dotSize, cellPadding)
