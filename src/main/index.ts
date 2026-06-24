@@ -101,7 +101,6 @@ import {
   startNotifyServer,
   ensureManagedHooks,
   onSessionStart,
-  heartbeatFromTitle,
   clearWorkspaceActivity,
   invalidateWatchdogCache,
   getWorkspaceActivity,
@@ -387,13 +386,6 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     // Stripping also collapses the spinner animation to one stable string
     // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
     // dedupe below uses to avoid hammering the DB on every frame.
-
-    // If the raw title leads with a spinner glyph, re-arm the watchdog so
-    // pure-think turns (no tool events) don't falsely expire during extended thinking.
-    const rawFirst = (title ?? '')[0]
-    if (rawFirst && /^[^\p{L}\p{N}\s]/u.test(rawFirst)) {
-      heartbeatFromTitle(workspaceId)
-    }
 
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
 

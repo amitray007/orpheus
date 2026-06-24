@@ -44,24 +44,7 @@ const HOOK_MATCHER: Partial<Record<string, string>> = {
   Notification: 'permission_prompt'
 }
 
-type DetailState = {
-  toolStack: number
-  compacting: boolean
-  blockingTool: string | null
-  // Wall-clock ms when the current user-prompt turn started. 0 = no turn active.
-  turnStartedAt: number
-  // Cumulative subagents dispatched in THIS turn (Agent/Task PreToolUse).
-  // Reset on next user-prompt.
-  subagentsDispatched: number
-}
-
-// Tools that block claude until the user answers them. Treated as a
-// status=attention transition with detail=asking, so macOS notifications
-// fire and the user sees a distinct glyph.
-const BLOCKING_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
-
 const activityMap = new Map<string, WorkspaceStatus>()
-const detailMap = new Map<string, DetailState>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
 let cachedStaleMinutes: number | null = null
@@ -84,46 +67,12 @@ let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
 
-function getDetailState(workspaceId: string): DetailState {
-  let s = detailMap.get(workspaceId)
-  if (!s) {
-    s = {
-      toolStack: 0,
-      compacting: false,
-      blockingTool: null,
-      turnStartedAt: 0,
-      subagentsDispatched: 0
-    }
-    detailMap.set(workspaceId, s)
-  }
-  return s
-}
-
-export function getBlockingTool(workspaceId: string): string | null {
-  return detailMap.get(workspaceId)?.blockingTool ?? null
-}
-
-export function getTurnSummary(
-  workspaceId: string
-): { elapsedMs: number; subagents: number } | null {
-  const s = detailMap.get(workspaceId)
-  if (!s || !s.turnStartedAt) return null
-  return { elapsedMs: Date.now() - s.turnStartedAt, subagents: s.subagentsDispatched }
-}
-
 export function computeDetail(
-  workspaceId: string,
+  _workspaceId: string,
   status: WorkspaceStatus
 ): WorkspaceActivityDetail {
-  const s = detailMap.get(workspaceId)
-  if (status === 'attention') {
-    return s?.blockingTool ? 'asking' : 'attention'
-  }
-  if (status === 'in_progress') {
-    if (s?.compacting) return 'compacting'
-    if (s && s.toolStack > 0) return 'tool'
-    return 'thinking'
-  }
+  if (status === 'attention') return 'attention'
+  if (status === 'in_progress') return 'working'
   if (status === 'awaiting_input') return 'ready'
   if (status === 'idle') return 'idle'
   return 'archived'
@@ -258,18 +207,6 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   broadcastDetailIfChanged(workspaceId)
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function heartbeat(_workspaceId: string): void {
-  // No-op: in-progress watchdog removed; file now owns busy→in_progress.
-}
-
-// Called from index.ts when a raw title begins with a spinner glyph.
-// No-op: in-progress watchdog removed; file now owns busy→in_progress.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function heartbeatFromTitle(_workspaceId: string): void {
-  // intentional no-op
-}
-
 // Permission-prompt messages contain "permission" (e.g. "Claude needs your
 // permission to use Bash"). Idle/auth/elicitation messages don't. The matcher
 // in settings.json is the primary filter; this string check is defense in
@@ -284,69 +221,22 @@ function handleHookEvent(
   ev: WorkspaceActivityEvent,
   payload: Record<string, unknown>
 ): void {
-  const ds = getDetailState(workspaceId)
-  const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
-  const msg = typeof payload.message === 'string' ? payload.message : null
   if (process.env['ORPHEUS_DEBUG_HOOKS'] === '1') {
+    const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
+    const msg = typeof payload.message === 'string' ? payload.message : null
     console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
   }
 
   switch (ev) {
-    case 'pretool': {
-      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
-      if (toolName && BLOCKING_TOOLS.has(toolName)) {
-        ds.blockingTool = toolName
-        // No status dispatch — file will drive attention via 'waiting' status
-        return
-      }
-      // Track subagent dispatches for notification metadata
-      if (tn === 'Agent' || tn === 'Task') {
-        ds.subagentsDispatched++
-      }
-      ds.toolStack++
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
-    }
-    case 'posttool': {
-      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
-      if (toolName && toolName === ds.blockingTool) {
-        ds.blockingTool = null
-      }
-      ds.toolStack = Math.max(0, ds.toolStack - 1)
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
-    }
+    case 'pretool':
+    case 'posttool':
     case 'precompact':
-      ds.compacting = true
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
     case 'subagent-stop':
-      heartbeat(workspaceId)
-      return
     case 'stop':
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      return
     case 'user-prompt':
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      ds.turnStartedAt = Date.now()
-      ds.subagentsDispatched = 0
-      return
     case 'session-end':
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      ds.turnStartedAt = 0
-      ds.subagentsDispatched = 0
       return
     case 'notification':
-      ds.compacting = false
       // Suppress idle_prompt / auth_success / elicitation_* — only permission
       // prompts should wake the user. Without this guard, every 60s of user
       // think-time fires a "Waiting on a permission decision" macOS toast.
@@ -387,7 +277,6 @@ export function clearWorkspaceActivity(workspaceId: string): void {
   // Force a fresh 'idle' broadcast even if the current cached value is also
   // archived → avoid dispatch's early-return when prev === status.
   activityMap.delete(workspaceId)
-  detailMap.delete(workspaceId)
   lastBroadcastDetail.delete(workspaceId)
   dispatch(workspaceId, 'idle')
   // dispatch('idle') re-arms the auto-close watchdog — defuse it for teardown.

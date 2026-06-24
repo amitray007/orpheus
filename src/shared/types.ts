@@ -616,15 +616,7 @@ export type ContextMenuNativeItem =
 
 export type WorkspaceStatus = 'in_progress' | 'awaiting_input' | 'attention' | 'idle' | 'archived'
 
-export type WorkspaceActivityDetail =
-  | 'thinking'
-  | 'tool'
-  | 'asking'
-  | 'compacting'
-  | 'ready'
-  | 'attention'
-  | 'idle'
-  | 'archived'
+export type WorkspaceActivityDetail = 'working' | 'attention' | 'ready' | 'idle' | 'archived'
 
 // GitHub PR state mapped from `gh pr list` plus the draft flag — drafts come
 // back as OPEN with isDraft=true; we hoist draft into its own state so chip

@@ -14,15 +14,7 @@ import type { GitStatus, GhPullRequest, WorkspaceActivityDetail } from '@shared/
 export type HoverPopoverData = {
   title: string
   activityLabel: string
-  activityState:
-    | 'ready'
-    | 'idle'
-    | 'attention'
-    | 'thinking'
-    | 'tool'
-    | 'compacting'
-    | 'asking'
-    | 'archived'
+  activityState: 'working' | 'ready' | 'idle' | 'attention' | 'archived'
   relativeTime: string
   git?: {
     branch: string
@@ -55,10 +47,7 @@ export type DetailsPopoverData = {
 // ── Activity state mapping ───────────────────────────────────────────────────
 
 const ACTIVITY_LABEL: Partial<Record<WorkspaceActivityDetail, string>> = {
-  thinking: 'thinking',
-  tool: 'running tool',
-  compacting: 'compacting',
-  asking: 'awaiting input',
+  working: 'Working…',
   ready: 'ready',
   idle: 'idle',
   attention: 'needs attention'

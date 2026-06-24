@@ -209,7 +209,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           const prevDetail = getActivitySnapshot().get(workspaceId)
           if (prevDetail !== detail) {
             if (detail === 'ready') playSound('ding')
-            else if (detail === 'attention' || detail === 'asking') playSound('notification')
+            else if (detail === 'attention') playSound('notification')
           }
         }
         setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
@@ -223,7 +223,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       const prevDetail = getActivitySnapshot().get(e.workspaceId)
       if (prevDetail !== e.detail) {
         if (e.detail === 'ready') playSound('ding')
-        else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+        else if (e.detail === 'attention') playSound('notification')
       }
       setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
       bumpActivityTime(e.workspaceId, Date.now())
