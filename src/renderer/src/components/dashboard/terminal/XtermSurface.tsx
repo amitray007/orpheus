@@ -282,7 +282,7 @@ export function XtermSurface({
   const xtermRef = useRef<HTMLDivElement>(null)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [exited, setExited] = useState<{ code: number; signal?: number } | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   // Resolved terminal background — painted on the host container so the floored-row
   // remainder at the bottom matches the terminal color (no visible gap).
   const [bgColor, setBgColor] = useState<string | null>(null)
@@ -531,6 +531,17 @@ export function XtermSurface({
           workspaceId,
           message: 'WebGL renderer active'
         })
+        // DIAGNOSTIC: log actual active renderer class name to verify WebGL is active
+        console.log(
+          '[xterm] active renderer:',
+          (
+            term as unknown as {
+              _core?: {
+                _renderService?: { _renderer?: { value?: { constructor?: { name?: string } } } }
+              }
+            }
+          )._core?._renderService?._renderer?.value?.constructor?.name ?? 'unknown'
+        )
       } catch (err) {
         webgl?.dispose()
         webgl = null
@@ -688,6 +699,7 @@ export function XtermSurface({
       }
 
       if (result.created) {
+        setLoading(true)
         // Fresh spawn: wire the live session immediately.
         wireLiveSession()
         if (active && !disposed) term.focus()
