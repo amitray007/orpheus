@@ -19,7 +19,7 @@ const STATUS_SUMMARY_URL = 'https://status.claude.com/api/v2/summary.json'
 const WATCHED_COMPONENT_NAMES = ['Claude Code', 'Claude API (api.anthropic.com)'] as const
 
 const FETCH_TIMEOUT_MS = 8_000
-const INITIAL_DELAY_MS = 3_000
+const INITIAL_DELAY_MS = 10_000
 
 /** Allowed poll intervals (seconds). */
 const VALID_INTERVALS_SEC = [300, 600, 900, 1800, 3600, 7200, 10800] as const

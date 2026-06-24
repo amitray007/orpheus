@@ -949,6 +949,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   )
 
   const handleCloseWorkspace = useCallback((workspaceId: string): void => {
+    hasFetchedRef.current.delete(workspaceId)
     void window.api.workspaces.close(workspaceId).catch(console.error)
   }, [])
 
