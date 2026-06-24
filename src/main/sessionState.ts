@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as childProcess from 'node:child_process'
 import { getDb } from './db'
 import { getWorkspaceActivity, setFileStatusProvider, setStatusFromFile } from './orpheusNotify'
+import { getAppUiState } from './uiState'
 import { setFileInfoProvider } from './osNotifications'
 import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
@@ -427,7 +428,9 @@ async function reconcile(): Promise<void> {
       if (rawStatus !== lastRawActed.get(ws.id)) {
         let mapped: WorkspaceStatus
         if (rawStatus === 'idle') {
-          mapped = 'awaiting_input'
+          const idleDuration = Date.now() - (session?.statusUpdatedAt ?? Date.now())
+          const threshold = (getAppUiState().staleAfterMinutes ?? 60) * 60_000
+          mapped = idleDuration >= threshold ? 'idle' : 'awaiting_input'
         } else if (rawStatus === 'waiting') {
           mapped = 'attention'
         } else {
