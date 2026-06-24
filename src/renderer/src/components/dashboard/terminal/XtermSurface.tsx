@@ -214,7 +214,10 @@ export function XtermSurface({
       // the original 5k for long agentic sessions with heavy tool output. Still a
       // documented gap vs ghostty's 2,000,000 (native memory) — see ghosttyTheme.ts.
       scrollback: 20000,
-      allowProposedApi: false
+      allowProposedApi: false,
+      // Disable xterm's built-in smooth scroll so scroll events are immediate.
+      // This is the xterm 6 default but we set it explicitly to guard against future default changes.
+      smoothScrollDuration: 0
     })
 
     const fit = new FitAddon()
@@ -307,6 +310,9 @@ export function XtermSurface({
       // C2 — mouse-scroll-multiplier: scale wheel scroll by this factor.
       const rawMultiplier = Number(settings['mouse-scroll-multiplier'])
       scrollMultiplier = !isNaN(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 1
+      // Delegate scroll multiplication to xterm's native wheel pipeline so trackpad
+      // momentum, deltaMode normalization, and sub-line accumulation are preserved.
+      term.options.scrollSensitivity = scrollMultiplier
 
       // P0 — copy-on-select.
       const copyOnSelect =
@@ -684,15 +690,6 @@ export function XtermSurface({
         }
       })()
     }
-    // C2 — mouse-scroll-multiplier: intercept wheel when multiplier != 1.
-    // scrollMultiplier is a closure let so C1 onChanged can update it live.
-    const handleWheel = (e: WheelEvent): void => {
-      if (scrollMultiplier !== 1) {
-        e.preventDefault()
-        term.scrollLines(Math.round((e.deltaY / 30) * scrollMultiplier))
-      }
-    }
-
     // C1 — live settings hot-swap for safe subset (no metric-affecting keys).
     unsubSettingsChanged = window.api.ghosttySettings.onChanged(async () => {
       if (disposed) return
@@ -758,6 +755,7 @@ export function XtermSurface({
         s['mouse-hide-while-typing'] !== false && s['mouse-hide-while-typing'] !== 'false'
       const rawMult = Number(s['mouse-scroll-multiplier'])
       scrollMultiplier = !isNaN(rawMult) && rawMult > 0 ? rawMult : 1
+      term.options.scrollSensitivity = scrollMultiplier
 
       // NOT live-applied (metric-affecting, require restart):
       // font-family, font-size, lineHeight (adjust-cell-height),
@@ -769,7 +767,6 @@ export function XtermSurface({
     el.addEventListener('keydown', onKeyDown)
     el.addEventListener('mousemove', onMouseMove)
     el.addEventListener('paste', onPaste)
-    el.addEventListener('wheel', handleWheel, { passive: false })
 
     return () => {
       disposed = true
@@ -804,7 +801,6 @@ export function XtermSurface({
       el.removeEventListener('keydown', onKeyDown)
       el.removeEventListener('mousemove', onMouseMove)
       el.removeEventListener('paste', onPaste)
-      el.removeEventListener('wheel', handleWheel)
 
       // Dispose WebGL addon before Terminal to avoid GPU resource leaks.
       webgl?.dispose()
