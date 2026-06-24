@@ -285,6 +285,10 @@ type GitWatchEntry = {
 
 const gitWatchers = new Map<string, GitWatchEntry>()
 
+// Tracks workspaceIds with in-flight startGitWatch calls (async rev-parse not yet resolved).
+// Used to detect torn-down watches before the entry is registered in gitWatchers.
+const pendingGitWatches = new Set<string>()
+
 // Debounce window for coalescing rapid filesystem events (index lock files
 // during a commit generate 4-6 events in quick succession).
 const GIT_WATCH_DEBOUNCE_MS = 350
@@ -388,6 +392,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
 
   // Kick off the async rev-parse fire-and-forget — terminal:mount returns
   // immediately without waiting for git. The watcher registers once resolved.
+  pendingGitWatches.add(workspaceId)
   execFile('git', ['-C', cwd, 'rev-parse', '--git-dir'], { timeout: 1500 })
     .then(({ stdout }) => {
       // Guard: the workspace may have been archived/destroyed while the async
@@ -402,6 +407,12 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // Use the resolved absolute git dir as the dedup key (handles worktrees
       // where multiple cwds share the same .git dir).
       const dir = nodePath.resolve(cwd)
+
+      // Race guard: if stopGitWatch was called while the rev-parse was in flight,
+      // this workspaceId was removed from pendingGitWatches — bail without creating
+      // a watcher that can never be closed.
+      if (!pendingGitWatches.has(workspaceId)) return
+      pendingGitWatches.delete(workspaceId)
 
       let entry = gitWatchers.get(dir)
       if (!entry) {
@@ -458,6 +469,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
         })
     })
     .catch(() => {
+      pendingGitWatches.delete(workspaceId)
       // Not a git repo or git unavailable — nothing to watch
     })
 }
@@ -469,6 +481,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
  */
 export function stopGitWatch(workspaceId: string, cwd: string): void {
   if (!cwd) return
+  pendingGitWatches.delete(workspaceId)
   const dir = nodePath.resolve(cwd)
   const entry = gitWatchers.get(dir)
   if (!entry) return
@@ -500,6 +513,7 @@ export function stopGitWatch(workspaceId: string, cwd: string): void {
  * window close so no orphaned watchers remain after the renderer exits.
  */
 export function stopAllGitWatches(): void {
+  pendingGitWatches.clear()
   for (const [dir, entry] of gitWatchers.entries()) {
     if (entry.debounceTimer !== null) clearTimeout(entry.debounceTimer)
     for (const w of entry.watchers) {

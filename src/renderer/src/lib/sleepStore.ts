@@ -54,9 +54,14 @@ export function setSleeping(workspaceId: string, sleeping: boolean): void {
 // IPC subscription — wire up once at module load time
 // ---------------------------------------------------------------------------
 
+let _unsub: (() => void) | null = null
 if (typeof window !== 'undefined' && window.api?.terminal?.onSleepStateChanged) {
-  window.api.terminal.onSleepStateChanged(({ workspaceId, sleeping }) => {
+  _unsub = window.api.terminal.onSleepStateChanged(({ workspaceId, sleeping }) => {
     setSleeping(workspaceId, sleeping)
+  })
+  window.addEventListener('beforeunload', () => {
+    _unsub?.()
+    _unsub = null
   })
 }
 
