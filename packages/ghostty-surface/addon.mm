@@ -3213,18 +3213,25 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     NSString* nsTitle        = [NSString stringWithUTF8String:titleStr.c_str()];
     NSString* nsSubtitle     = subtitleStr.empty()     ? nil : [NSString stringWithUTF8String:subtitleStr.c_str()];
     NSString* nsActionLabel  = actionLabelStr.empty()  ? nil : [NSString stringWithUTF8String:actionLabelStr.c_str()];
-    GhosttySurfaceEntry& entry = it->second;
-
-    // We need a stable pointer to the entry's overlay field for the block.
-    // Safe because: entries are never moved after insertion (std::map guarantee),
-    // and this dispatch runs on the main queue (same thread as all map mutations).
-    OrpheusLoadingOverlayView* __strong* overlayPtr = &entry.loadingOverlay;
-    NSView* ghosttyView = entry.view;
+    // Capture workspaceId by value — NOT a pointer into the map. This is the fix
+    // for a use-after-free crash: if Destroy() erases this entry before the block
+    // runs (e.g. archive racing with setLoadingOverlay), any captured pointer into
+    // the map node would dangle. Instead, the block re-looks-up the entry on the
+    // main queue (where all g_surfaces mutations also occur) and no-ops if the
+    // entry is gone — so it never touches freed memory.
+    std::string capturedWsId = workspaceId;
 
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Re-look-up the entry here on the main queue (same queue as all map
+        // mutations). If Destroy() ran between the dispatch and now, the entry
+        // is gone — return immediately to avoid touching freed memory.
+        auto it2 = g_surfaces.find(capturedWsId);
+        if (it2 == g_surfaces.end()) return;
+        GhosttySurfaceEntry& e = it2->second;
+
         // ---- "hidden" — fade out and remove ----
         if ([nsState isEqualToString:@"hidden"]) {
-            OrpheusLoadingOverlayView* ov = *overlayPtr;
+            OrpheusLoadingOverlayView* ov = e.loadingOverlay;
             if (!ov) return;
             NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
             CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
@@ -3239,12 +3246,13 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             [ov.layer addAnimation:fade forKey:@"fadeOut"];
             ov.alphaValue = 0.0;
             [CATransaction commit];
-            *overlayPtr = nil;
+            e.loadingOverlay = nil;
             return;
         }
 
         // ---- "showing" / "slow" / "error" — create if needed, then update ----
-        OrpheusLoadingOverlayView* ov = *overlayPtr;
+        OrpheusLoadingOverlayView* ov = e.loadingOverlay;
+        NSView* ghosttyView = e.view;
 
         if (!ov) {
             if (!ghosttyView) {
@@ -3260,7 +3268,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             ov = [[OrpheusLoadingOverlayView alloc] initWithFrame:overlayFrame
                                                       workspaceId:nsWorkspaceId];
             [ghosttyView addSubview:ov];
-            *overlayPtr = ov;
+            e.loadingOverlay = ov;
             NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: created overlay",
                   nsWorkspaceId.UTF8String);
 
