@@ -3716,6 +3716,21 @@ static NSColor* fixedColor(const CGFloat c[4]) {
 static const CGFloat kCardPadH  = 11.0;   // horizontal padding (L+R)
 static const CGFloat kSepHeight = 1.0;    // divider height
 
+// centerIconY — vertically centers an icon against a text field's GLYPH center.
+//
+// This view is isFlipped=YES (y increases downward). An NSTextField of height
+// `textBoxH` places its visible glyph ~1 px below the box's geometric center
+// (internal leading). So to optically align an icon to the text glyph:
+//   1. Compute the geometric center of the text box: textBoxTop + textBoxH/2.
+//   2. Back out half the icon height: - iconSz/2.
+//   3. Add a px correction for the NSTextField leading inset (downward = + in flipped).
+//
+// Simplified: iconY = textBoxTop + (textBoxH - iconSz) / 2.0 + kIconGlyphInset
+static const CGFloat kIconGlyphInset = 2.0;  // NSTextField internal top-leading offset
+static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat iconSz) {
+    return textBoxTop + (textBoxH - iconSz) / 2.0 + kIconGlyphInset;
+}
+
 @interface OrpheusPopoverView : NSView
 
 // Fixed display width: 252 for 'details', 224 for 'hover'.
@@ -4148,8 +4163,10 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
     // SF Symbol stand-in for Phosphor GitBranch → "arrow.triangle.branch"
     NSImage* icon = sfSymbol(@"arrow.triangle.branch", iconSz, mutedColor);
+    const CGFloat textBoxH  = fontSize + 2.0;
+    const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
     NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
-        kCardPadH, y + vPad, iconSz, iconSz)];
+        kCardPadH, iconY, iconSz, iconSz)];
     iv.image = icon;
     iv.imageScaling = NSImageScaleProportionallyDown;
     [self addSubview:iv];
@@ -4164,7 +4181,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     NSTextField* branchLbl = makeLabel(branchText, branchFont, branchColor);
     CGFloat branchX = kCardPadH + iconSz + gapX;
     branchLbl.frame = NSMakeRect(branchX, y + vPad,
-                                 self.cardWidth - branchX - kCardPadH, fontSize + 2.0);
+                                 self.cardWidth - branchX - kCardPadH, textBoxH);
     [self addSubview:branchLbl];
 
     return y + rowH;
@@ -4192,8 +4209,10 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
     // SF Symbol stand-in for Phosphor Files → "doc.on.doc"
     NSImage* icon = sfSymbol(@"doc.on.doc", iconSz, mutedColor);
+    const CGFloat textBoxH  = fontSize + 2.0;
+    const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
     NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
-        kCardPadH, y + vPad, iconSz, iconSz)];
+        kCardPadH, iconY, iconSz, iconSz)];
     iv.image = icon;
     iv.imageScaling = NSImageScaleProportionallyDown;
     [self addSubview:iv];
@@ -4505,9 +4524,10 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
     // Status line: ActivityIndicator 12×12 + status text.
     // flex row, gap 5px, items-center.
-    const CGFloat indSz  = 12.0;
-    const CGFloat indGap = 5.0;
-    NSRect indRect = NSMakeRect(kCardPadH, y, indSz, indSz);
+    const CGFloat indSz      = 12.0;
+    const CGFloat indGap     = 5.0;
+    const CGFloat statusBoxH = 14.0;
+    NSRect indRect = NSMakeRect(kCardPadH, centerIconY(y, statusBoxH, indSz), indSz, indSz);
     [self addActivityIndicator:activityState accentColor:accentColor atRect:indRect];
 
     // Status text: "<activityLabel>" + optional " · active <relativeTime> ago"
@@ -4523,9 +4543,9 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     NSTextField* statusLbl = makeLabel(statusText, geistFont(@"Geist-Regular", 12.0), secColor);
     statusLbl.frame = NSMakeRect(kCardPadH + indSz + indGap, y,
                                  self.cardWidth - kCardPadH - indSz - indGap - kCardPadH,
-                                 14.0);
+                                 statusBoxH);
     [self addSubview:statusLbl];
-    y += MAX(indSz, 14.0); // take the taller of indicator and text
+    y += MAX(indSz, statusBoxH); // take the taller of indicator and text
 
     y += sectionPad; // bottom pad of header section
 
