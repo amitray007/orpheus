@@ -323,7 +323,12 @@ const api = {
     update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
       ipcRenderer.invoke('ghosttySettings:update', patch),
     getTheme: (name: string): Promise<GhosttyParsedTheme | null> =>
-      ipcRenderer.invoke('ghosttySettings:getTheme', name)
+      ipcRenderer.invoke('ghosttySettings:getTheme', name),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('ghosttySettings:changed', listener)
+      return () => ipcRenderer.removeListener('ghosttySettings:changed', listener)
+    }
   },
   claudeAuth: {
     get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),

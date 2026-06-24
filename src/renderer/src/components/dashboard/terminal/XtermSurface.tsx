@@ -45,8 +45,9 @@ const GHOSTTY_DEFAULT_FONT_SIZE = 13
 // correct before the canvas is sized. Accepts pre-fetched settings so the caller can
 // batch the single ghosttySettings.get() fetch for other consumers (mouse-hide,
 // copy-on-select, window-padding-x, etc.) without a double round-trip.
-// ghosttySettings.onChanged does not exist in the current preload — live switch
-// is not wired; changes take effect on next mount (workspace restart).
+// Metric-affecting options (fontFamily, fontSize, lineHeight, letterSpacing, padding)
+// must be set before open(); live-changing them glitches cell metrics. Safe-subset
+// options are re-applied live via the onChanged subscription in the mount effect.
 // Returns the resolved font size (for padding) and the resolved terminal
 // background color (so the host container can paint the sub-cell remainder strip
 // the same color → no visible gap at the bottom where FitAddon floors rows).
@@ -233,10 +234,12 @@ export function XtermSurface({
     term.loadAddon(fit)
 
     let webgl: WebglAddon | null = null
+    let webglRetried = false
     let resizeObserver: ResizeObserver | null = null
     let resizeDebounceId: ReturnType<typeof setTimeout> | null = null
     let unsubData: (() => void) | null = null
     let unsubExit: (() => void) | null = null
+    let unsubSettingsChanged: (() => void) | null = null
     let pendingAck = 0
     let disposed = false
 
@@ -244,6 +247,10 @@ export function XtermSurface({
     // Set asynchronously from settings in openAndSpawn before DOM listeners fire;
     // onKeyDown / onMouseMove read this let so they pick up the resolved value.
     let mouseHideWhileTyping = true
+
+    // C2 — mouse-scroll-multiplier: resolved from settings in openAndSpawn.
+    // Reassignable so C1's onChanged can update it live.
+    let scrollMultiplier = 1
 
     // Accumulate committed byte counts and ack in strides of ACK_STRIDE.
     const onWriteCommitted = (count: number): void => {
@@ -310,6 +317,10 @@ export function XtermSurface({
         settings['mouse-hide-while-typing'] !== false &&
         settings['mouse-hide-while-typing'] !== 'false'
 
+      // C2 — mouse-scroll-multiplier: scale wheel scroll by this factor.
+      const rawMultiplier = Number(settings['mouse-scroll-multiplier'])
+      scrollMultiplier = !isNaN(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 1
+
       // P0 — copy-on-select.
       const copyOnSelect =
         settings['copy-on-select'] === true || settings['copy-on-select'] === 'true'
@@ -357,26 +368,50 @@ export function XtermSurface({
       }
 
       // WebGL addon must be loaded after open() so the canvas is attached.
-      webgl = new WebglAddon()
-      webgl.onContextLoss(() => {
-        webgl?.dispose()
-        webgl = null
-        // Fallback to Canvas renderer on WebGL context loss.
-        logDiag({
-          category: 'anomaly',
-          level: 'warn',
-          event: DIAG_EVENTS.XTERM_WEBGL_CONTEXT_LOSS,
-          workspaceId,
-          message: 'WebGL context lost — falling back to Canvas renderer'
+      // On context loss: attempt ONE WebGL re-init before permanently falling to Canvas.
+      const loadWebgl = (): void => {
+        const addon = new WebglAddon()
+        addon.onContextLoss(() => {
+          addon.dispose()
+          if (webgl === addon) webgl = null
+          logDiag({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.XTERM_WEBGL_CONTEXT_LOSS,
+            workspaceId,
+            message: webglRetried
+              ? 'WebGL context lost again — falling back to Canvas renderer'
+              : 'WebGL context lost — attempting re-init'
+          })
+          if (!webglRetried && !disposed) {
+            webglRetried = true
+            setTimeout(() => {
+              if (disposed) return
+              try {
+                loadWebgl()
+              } catch {
+                // Retry failed — fall back to Canvas.
+                try {
+                  term.loadAddon(new CanvasAddon())
+                } catch {
+                  // Canvas fallback failed — terminal degrades to DOM renderer.
+                }
+              }
+            }, 200)
+          } else {
+            // Second loss or already retried — permanent Canvas fallback.
+            try {
+              term.loadAddon(new CanvasAddon())
+            } catch {
+              // Canvas fallback failed — terminal degrades to DOM renderer.
+            }
+          }
         })
-        try {
-          term.loadAddon(new CanvasAddon())
-        } catch {
-          // Canvas fallback failed — terminal degrades to DOM renderer.
-        }
-      })
+        term.loadAddon(addon)
+        webgl = addon
+      }
       try {
-        term.loadAddon(webgl)
+        loadWebgl()
       } catch {
         webgl?.dispose()
         webgl = null
@@ -662,11 +697,92 @@ export function XtermSurface({
         }
       })()
     }
+    // C2 — mouse-scroll-multiplier: intercept wheel when multiplier != 1.
+    // scrollMultiplier is a closure let so C1 onChanged can update it live.
+    const handleWheel = (e: WheelEvent): void => {
+      if (scrollMultiplier !== 1) {
+        e.preventDefault()
+        term.scrollLines(Math.round((e.deltaY / 30) * scrollMultiplier))
+      }
+    }
+
+    // C1 — live settings hot-swap for safe subset (no metric-affecting keys).
+    unsubSettingsChanged = window.api.ghosttySettings.onChanged(async () => {
+      if (disposed) return
+      let s: Record<string, unknown> = {}
+      try {
+        const fetched = await window.api.ghosttySettings.get()
+        s = fetched.settings as Record<string, unknown>
+      } catch {
+        return
+      }
+      if (disposed) return
+
+      // Theme/colors: resolve named theme then merge per-key overrides.
+      const themeName = typeof s['theme'] === 'string' ? s['theme'] : null
+      let theme: ITheme | null = null
+      try {
+        if (themeName) {
+          theme = (await window.api.ghosttySettings.getTheme(themeName)) as ITheme | null
+        }
+      } catch {
+        // Non-fatal: proceed without named theme.
+      }
+      if (disposed) return
+      let currentTheme: ITheme = theme ?? term.options.theme ?? {}
+      if (theme) {
+        if (typeof s['background'] === 'string' && s['background'])
+          currentTheme = { ...currentTheme, background: s['background'] }
+        if (typeof s['foreground'] === 'string' && s['foreground'])
+          currentTheme = { ...currentTheme, foreground: s['foreground'] }
+      }
+      if (typeof s['cursor-color'] === 'string' && s['cursor-color'])
+        currentTheme = { ...currentTheme, cursor: s['cursor-color'] }
+      if (typeof s['selection-background'] === 'string' && s['selection-background'])
+        currentTheme = { ...currentTheme, selectionBackground: s['selection-background'] }
+      if (typeof s['selection-foreground'] === 'string' && s['selection-foreground'])
+        currentTheme = { ...currentTheme, selectionForeground: s['selection-foreground'] }
+      if (Object.keys(currentTheme).length > 0) term.options.theme = currentTheme
+
+      // Cursor.
+      const cursorStyleRaw = s['cursor-style']
+      if (cursorStyleRaw === 'block' || cursorStyleRaw === 'underline' || cursorStyleRaw === 'bar')
+        term.options.cursorStyle = cursorStyleRaw
+      const blinkRaw = s['cursor-style-blink']
+      if (blinkRaw !== undefined && blinkRaw !== null)
+        term.options.cursorBlink = blinkRaw === true || blinkRaw === 'true'
+
+      // Text rendering.
+      const boldIsBright = s['bold-is-bright']
+      if (boldIsBright === true || boldIsBright === 'true')
+        term.options.drawBoldTextInBrightColors = true
+      else if (boldIsBright === false || boldIsBright === 'false')
+        term.options.drawBoldTextInBrightColors = false
+      const minContrast = Number(s['minimum-contrast'])
+      if (!isNaN(minContrast) && minContrast >= 1) term.options.minimumContrastRatio = minContrast
+
+      // Scrollback.
+      const scrollbackNum = Number(s['scrollback-limit'])
+      if (!isNaN(scrollbackNum) && scrollbackNum > 0)
+        term.options.scrollback = Math.min(scrollbackNum, 50000)
+
+      // Reassignable lets — picked up by existing event handlers.
+      mouseHideWhileTyping =
+        s['mouse-hide-while-typing'] !== false && s['mouse-hide-while-typing'] !== 'false'
+      const rawMult = Number(s['mouse-scroll-multiplier'])
+      scrollMultiplier = !isNaN(rawMult) && rawMult > 0 ? rawMult : 1
+
+      // NOT live-applied (metric-affecting, require restart):
+      // font-family, font-size, lineHeight (adjust-cell-height),
+      // letterSpacing (adjust-cell-width), window-padding-x/y.
+    })
+
     el.addEventListener('dragover', onDragOver)
     el.addEventListener('drop', onDrop)
     el.addEventListener('keydown', onKeyDown)
     el.addEventListener('mousemove', onMouseMove)
     el.addEventListener('paste', onPaste)
+    el.addEventListener('wheel', handleWheel, { passive: false })
 
     return () => {
       disposed = true
@@ -688,6 +804,7 @@ export function XtermSurface({
       unsubData?.()
       unsubExit?.()
       unsubSessionReady?.()
+      unsubSettingsChanged?.()
 
       // Flush any remaining ack before teardown.
       if (pendingAck > 0) {
@@ -700,6 +817,7 @@ export function XtermSurface({
       el.removeEventListener('keydown', onKeyDown)
       el.removeEventListener('mousemove', onMouseMove)
       el.removeEventListener('paste', onPaste)
+      el.removeEventListener('wheel', handleWheel)
 
       // Dispose WebGL addon before Terminal to avoid GPU resource leaks.
       webgl?.dispose()

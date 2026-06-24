@@ -1124,6 +1124,7 @@ ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>)
   } catch (err) {
     console.warn('[ghosttySettings] reloadGhosttyConfig failed (non-fatal):', err)
   }
+  getMainWindow()?.webContents.send('ghosttySettings:changed')
   return result
 })
 

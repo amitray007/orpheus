@@ -197,6 +197,7 @@ declare global {
         get: () => Promise<GhosttyUserConfig>
         update: (patch: Partial<GhosttyUserConfig>) => Promise<GhosttyUserConfig>
         getTheme: (name: string) => Promise<GhosttyParsedTheme | null>
+        onChanged: (cb: () => void) => () => void
       }
       claudeAuth: {
         get: () => Promise<ClaudeAuthState>
