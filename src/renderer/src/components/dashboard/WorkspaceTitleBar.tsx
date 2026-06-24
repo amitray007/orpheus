@@ -149,10 +149,9 @@ function ModelContextChip({
 
   if (!info) return null
 
-  const ctxPart = usage
-    ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(info.contextBudget)}`
-    : shortTokens(info.contextBudget)
-  const label = `${modelLabel(info.modelId)} · ${ctxPart}`
+  // Show only the model + total context budget (e.g. "Opus 4.8 · 1M").
+  // The used-context count lives in the hover tooltip, not the always-visible chip.
+  const label = `${modelLabel(info.modelId)} · ${shortTokens(info.contextBudget)}`
 
   return (
     <span
