@@ -1408,7 +1408,7 @@ ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
 
 ipcMain.handle(
   'git:log',
-  (
+  async (
     _e,
     args: {
       cwd: string
@@ -1419,7 +1419,7 @@ ipcMain.handle(
       untilMs?: number
       grep?: string
     }
-  ) => listCommits(args.cwd, args)
+  ) => await listCommits(args.cwd, args)
 )
 
 ipcMain.handle(

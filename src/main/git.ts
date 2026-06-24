@@ -179,7 +179,7 @@ export async function countCommits(
   }
 }
 
-export function listCommits(
+export async function listCommits(
   cwd: string,
   opts?: {
     branch?: string
@@ -192,7 +192,7 @@ export function listCommits(
     /** Substring filter against commit subject (case-insensitive). */
     grep?: string
   }
-): GitCommit[] {
+): Promise<GitCommit[]> {
   if (!cwd) return []
   const limit = opts?.limit ?? 25
   const offset = opts?.offset ?? 0
@@ -219,8 +219,7 @@ export function listCommits(
     `--format=${SENTINEL}%H%x09%h%x09%s%x09%an%x09%ae%x09%ct`
   )
   try {
-    const out = childProcess.execFileSync('git', args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const { stdout } = await execFile('git', args, {
       timeout: 3000,
       encoding: 'utf-8'
     })
@@ -230,7 +229,7 @@ export function listCommits(
     // insertions or deletions may be absent (pure additions / pure deletions).
     const statRe =
       /(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertions?\(\+\))?(?:,\s*(\d+)\s+deletions?\(-\))?/
-    for (const raw of out.split('\n')) {
+    for (const raw of stdout.split('\n')) {
       if (raw.startsWith(SENTINEL)) {
         if (current) commits.push(current)
         const parts = raw.slice(SENTINEL.length).split('\t')
