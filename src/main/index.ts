@@ -1,4 +1,5 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
+import { startSessionStateService } from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
   app,
@@ -212,6 +213,7 @@ const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
+let sessionStateService: { stop: () => void } | null = null
 
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
@@ -2002,6 +2004,13 @@ app.whenReady().then(() => {
     } catch {
       // Failure is non-fatal here; terminal:mount will surface the error when needed.
     }
+
+    // Start shadow-mode session state service (Phase 1 — observes and logs only)
+    try {
+      sessionStateService = startSessionStateService()
+    } catch (err) {
+      console.error('[sessionState] failed to start:', err)
+    }
   })
 
   app.on('activate', function () {
@@ -2013,6 +2022,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
+  sessionStateService?.stop()
   stopStatusPoller()
   stopAutoCheckLoop()
   stopAllGitWatches()
