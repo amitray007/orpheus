@@ -579,14 +579,14 @@ function isManagedCommand(cmd: string): boolean {
   return false
 }
 
-export function ensureManagedHooks(): void {
+export async function ensureManagedHooks(): Promise<void> {
   const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
   const dir = nodePath.dirname(settingsPath)
-  fs.mkdirSync(dir, { recursive: true })
+  await fs.promises.mkdir(dir, { recursive: true })
 
   let parsed: Record<string, unknown> = {}
   try {
-    const raw = fs.readFileSync(settingsPath, 'utf-8')
+    const raw = await fs.promises.readFile(settingsPath, 'utf-8')
     const p = JSON.parse(raw)
     if (typeof p === 'object' && p !== null && !Array.isArray(p)) {
       parsed = p as Record<string, unknown>
@@ -646,15 +646,15 @@ export function ensureManagedHooks(): void {
   // Skip the write + rename if the file already matches — avoids unnecessary
   // disk I/O and atime bumps on every Orpheus launch.
   try {
-    const existing = fs.readFileSync(settingsPath, 'utf-8').trim()
+    const existing = (await fs.promises.readFile(settingsPath, 'utf-8')).trim()
     if (existing === newContent.trim()) return
   } catch {
     // File doesn't exist or is unreadable — proceed with write.
   }
 
   const tmp = settingsPath + '.tmp'
-  fs.writeFileSync(tmp, newContent, 'utf-8')
-  fs.renameSync(tmp, settingsPath)
+  await fs.promises.writeFile(tmp, newContent, 'utf-8')
+  await fs.promises.rename(tmp, settingsPath)
 }
 
 export function startNotifyServer(): { sockPath: string; close: () => void } {

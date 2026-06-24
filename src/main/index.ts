@@ -2164,11 +2164,9 @@ app.whenReady().then(() => {
     }
 
     // Inject managed hooks into ~/.claude/settings.json (idempotent, skips write if unchanged).
-    try {
-      ensureManagedHooks()
-    } catch (err) {
+    ensureManagedHooks().catch((err) => {
       console.error('[orpheusNotify] failed to install managed hooks:', err)
-    }
+    })
 
     setAutoCloseHandler((workspaceId) => {
       performClose(workspaceId)
