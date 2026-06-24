@@ -84,12 +84,87 @@ jobs:
       tag_name: ${{ steps.rp.outputs.tag_name }}
       version: ${{ steps.rp.outputs.version }}
     steps:
+      # ── Determine version bump from PR labels ─────────────────────────────
+      # Look up the PR that was merged to produce this push commit, extract
+      # any major/minor/patch bump label, compute the target version, and
+      # export it as `release_as` (empty string = let always-bump-patch decide).
+      #
+      # Two-run flow:
+      #   Run 1 — staging→main feature PR merged: may carry major/minor/patch
+      #            label → this step computes and exports the override version.
+      #   Run 2 — Release PR ("chore(release): orpheus vX.Y.Z") merged:
+      #            that PR carries NO bump labels → step emits release_as=""
+      #            → release-please just creates the tag/release with the
+      #            version it already baked into the Release PR. No misfire.
+      #
+      # Empty-string safety: release-please-action@v4 reads release-as via
+      # core.getInput() and checks `if (releaseAs)` before applying it.
+      # An empty string is falsy in JS → treated identically to "not set"
+      # → always-bump-patch from release-please-config.json takes over.
+      - name: Resolve version bump from PR labels
+        id: bump
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: |
+          # Fetch the PR(s) associated with this merge commit via the GitHub API.
+          # The endpoint returns an array; a direct push returns [].
+          LABELS=$(gh api \
+            "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '.[0].labels[].name // empty' 2>/dev/null || echo "")
+
+          echo "[bump] commit=${{ github.sha }}"
+          echo "[bump] PR labels found: ${LABELS:-<none>}"
+
+          # Determine the highest bump label present (major > minor > patch).
+          BUMP=""
+          if echo "$LABELS" | grep -qx "major"; then
+            BUMP="major"
+          elif echo "$LABELS" | grep -qx "minor"; then
+            BUMP="minor"
+          elif echo "$LABELS" | grep -qx "patch"; then
+            BUMP="patch"
+          fi
+
+          echo "[bump] selected bump: ${BUMP:-patch (default, no label)}"
+
+          # Compute the target version from the manifest's current version.
+          # For patch / no label we emit release_as="" and let always-bump-patch
+          # handle it — avoids computing the patch version here (release-please
+          # already knows the current version from the manifest).
+          if [ "$BUMP" = "major" ] || [ "$BUMP" = "minor" ]; then
+            # Read current version from .release-please-manifest.json ("." key).
+            CURRENT=$(gh api \
+              "repos/${{ github.repository }}/contents/.release-please-manifest.json" \
+              --jq '.content' | base64 -d | python3 -c "import sys,json; print(json.load(sys.stdin)['.'])")
+            echo "[bump] current version from manifest: $CURRENT"
+
+            MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT" | cut -d. -f2)
+
+            if [ "$BUMP" = "major" ]; then
+              NEXT="$((MAJOR + 1)).0.0"
+            else
+              NEXT="${MAJOR}.$((MINOR + 1)).0"
+            fi
+
+            echo "[bump] → release_as=$NEXT"
+            echo "release_as=$NEXT" >> "$GITHUB_OUTPUT"
+          else
+            # patch or no bump label: let always-bump-patch decide — emit empty.
+            echo "[bump] → release_as= (empty; always-bump-patch applies)"
+            echo "release_as=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: googleapis/release-please-action@v4
         id: rp
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Empty string → release-please-action treats it as "not set" (falsy
+          # in core.getInput check) and falls back to always-bump-patch config.
+          # Non-empty → forces that exact version, overriding commit-based bumping.
+          release-as: ${{ steps.bump.outputs.release_as }}
 
   build-and-attach:
     # Only fire when the previous job actually created a release (i.e. the
