@@ -18,7 +18,6 @@ import {
 //   dev  → ~/Library/Application Support/Orpheus Dev/
 app.setName(APP_NAME)
 import { join } from 'path'
-import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
@@ -83,12 +82,7 @@ import {
   invalidateClaudeWorkspaceSettingsCache
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import {
-  getClaudeAuthState,
-  updateClaudeAuth,
-  getClaudeAuthEnv,
-  testAnthropicConnection
-} from './claudeAuth'
+import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
 import { listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer } from './mcp'
 import {
   listSlashCommands,
@@ -104,7 +98,6 @@ import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
 import {
   startNotifyServer,
   ensureManagedHooks,
-  shimPath,
   onActivityBatch,
   onSessionStart,
   heartbeatFromTitle,
@@ -147,8 +140,7 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath,
-  getCachedShellPath
+  getUserShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -167,6 +159,8 @@ import type {
   WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
+import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
+import type { GhosttySurfaceAddon, SurfaceRect } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
@@ -287,7 +281,7 @@ function applyLoadingOverlayTheme(theme: Theme): void {
   console.log('[loadingOverlay] theme applied:', theme)
 }
 
-function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
+function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   if (loadingOverlayWired) return
   loadingOverlayWired = true
   // Push the current app theme to the native side so the overlay matches.
@@ -311,7 +305,7 @@ function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
   })
 }
 
-function ensureTitleCallback(addon: GhosttyNativeAddon): void {
+function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
   addon.setTitleCallback((workspaceId: string, title: string) => {
@@ -1363,60 +1357,15 @@ ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
 // Terminal IPC — ghostty-surface lifecycle
 // ---------------------------------------------------------------------------
 
-type TerminalRect = { x: number; y: number; w: number; h: number }
-type GhosttyNativeAddon = {
-  mount: (
-    handle: Buffer,
-    opts: {
-      workspaceId: string
-      rect: TerminalRect
-      scaleFactor: number
-      cwd?: string
-      command?: string
-      env?: Record<string, string>
-    }
-  ) => { workspaceId: string; created: boolean }
-  installBackstop: (handle: Buffer) => void
-  hide: (workspaceId: string) => void
-  resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
-  destroy: (workspaceId: string) => void
-  focus: (workspaceId: string) => void
-  setOverlay(workspaceId: string, on: boolean): void
-  setOverlayCompositing(on: boolean): void
-  setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
-  setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
-  setLivenessCallback: (
-    cb: (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => void
-  ) => void
-  setActionTraceCallback: (cb: (tagName: string) => void) => void
-  setLoadingOverlay: (
-    workspaceId: string,
-    state: 'showing' | 'slow' | 'error' | 'hidden',
-    copy: { title: string; subtitle?: string; actionLabel?: string }
-  ) => void
-  setLoadingActionCallback: (cb: (workspaceId: string) => void) => void
-  setLoadingTheme: (colors: {
-    backdrop: [number, number, number]
-    card: [number, number, number]
-    textPrimary: [number, number, number]
-    textSecondary: [number, number, number]
-    border: [number, number, number]
-    isDark: boolean
-    tintAlpha: number
-  }) => void
-  sendInput: (workspaceId: string, utf8Text: string) => boolean
-  sendKeys: (
-    workspaceId: string,
-    keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
-  ) => boolean
-  reloadGhosttyConfig: () => boolean
-  getSurfacePhase: (workspaceId: string) => string
-}
+// TerminalRect is a local alias for SurfaceRect (imported from the generic
+// ghostty-surface package). They are structurally identical; the alias keeps
+// the IPC handler parameter type names stable without a broad rename.
+type TerminalRect = SurfaceRect
 
-let terminalAddon: GhosttyNativeAddon | null = null
+let terminalAddon: GhosttySurfaceAddon | null = null
 let terminalAddonError: string | null = null
 
-function loadTerminalAddon(): GhosttyNativeAddon {
+function loadTerminalAddon(): GhosttySurfaceAddon {
   if (terminalAddon) return terminalAddon
   if (terminalAddonError) throw new Error(terminalAddonError)
 
@@ -1430,13 +1379,9 @@ function loadTerminalAddon(): GhosttyNativeAddon {
   process.env['GHOSTTY_RESOURCES_DIR'] = resDir
   console.log('[terminal] GHOSTTY_RESOURCES_DIR set to', resDir)
 
-  const addonPath = app.isPackaged
-    ? join(process.resourcesPath, 'packages/ghostty-surface/ghostty_native.node')
-    : join(__dirname, '../../packages/ghostty-surface/build/Release/ghostty_native.node')
-
-  console.log('[terminal] loading addon from:', addonPath)
+  console.log('[terminal] loading addon via loadOrpheusSurface')
   try {
-    terminalAddon = createRequire(import.meta.url)(addonPath) as GhosttyNativeAddon
+    terminalAddon = loadOrpheusSurface()
     console.log('[terminal] addon loaded OK')
     // Wire the addon reference into the actions registry so terminal.*
     // actions can delegate through the same addon instance.
@@ -1472,34 +1417,13 @@ ipcMain.handle(
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
 
-    // Compose claude settings into env vars for the wrapper script.
-    const launch = composeClaudeLaunch(projectId, workspaceId)
-
-    // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
-    // Merged LAST so they win over any ambient settings-derived values.
-    // NEVER log authEnv values — they contain plaintext secrets.
-    const authEnv = getClaudeAuthEnv()
-
-    // Inject the user's full shell PATH (captured once at app start via a
-    // login+interactive shell spawn). The wrapper script applies it before
-    // launching claude, replacing the expensive upfront .zshrc source that
-    // was the original reason PATH additions were available. If the promise
-    // hasn't settled yet (extremely rare — it fires at whenReady start), the
-    // key is omitted and the script falls back to sourcing ~/.zshrc.
-    const cachedUserPath = getCachedShellPath()
-
-    const ghosttyConfigPath = writeGhosttyConfigFile()
-    const surfaceEnv: Record<string, string> = {
-      ...launch.env,
-      ...authEnv, // auth env wins on conflict
-      ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
-      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
-      ORPHEUS_WORKSPACE_ID: workspaceId,
-      ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
-      ORPHEUS_NOTIFY: shimPath(),
-      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
-      ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
-    }
+    // Assemble the surface launch env + command via the Orpheus adapter.
+    // buildMountEnv owns the env layering: settings → auth → ORPHEUS_* vars.
+    const {
+      command,
+      env: surfaceEnv,
+      launch
+    } = buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
 
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
@@ -1509,20 +1433,13 @@ ipcMain.handle(
       Object.keys(surfaceEnv).join(',')
     )
 
-    // Resolve the wrapper script path — same pattern as GHOSTTY_RESOURCES_DIR.
-    // Packaged: Contents/Resources/orpheus-claude.sh
-    // Dev:      <repo>/resources/orpheus-claude.sh
-    const wrapperScriptPath = app.isPackaged
-      ? join(process.resourcesPath, 'orpheus-claude.sh')
-      : join(__dirname, '../../resources/orpheus-claude.sh')
-
     const _mountStart = Date.now()
     const result = addon.mount(handle, {
       workspaceId,
       rect,
       scaleFactor,
       cwd,
-      command: wrapperScriptPath,
+      command,
       env: surfaceEnv
     })
     logDiagMain({
