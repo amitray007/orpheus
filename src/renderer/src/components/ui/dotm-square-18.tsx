@@ -5,7 +5,7 @@ import { useMemo } from 'react'
 
 import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
 import { useDotMatrixPhases } from '@/components/ui/dotmatrix-hooks'
-import { useCyclePhase } from '@/components/ui/dotmatrix-hooks'
+import { useSteppedCycle } from '@/components/ui/dotmatrix-hooks'
 import { usePrefersReducedMotion } from '@/components/ui/dotmatrix-hooks'
 import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core'
 
@@ -38,9 +38,10 @@ export function DotmSquare18({
     hoverAnimated: Boolean(hoverAnimated && !reducedMotion),
     speed
   })
-  const animPhase = useCyclePhase({
+  const animStep = useSteppedCycle({
     active: !reducedMotion && matrixPhase !== 'idle',
     cycleMsBase: 1750,
+    steps: STEP_COUNT,
     speed
   })
 
@@ -50,7 +51,7 @@ export function DotmSquare18({
         return { className: 'dmx-inactive' }
       }
 
-      const t = reducedMotion || phase === 'idle' ? 0 : animPhase * STEP_COUNT
+      const t = reducedMotion || phase === 'idle' ? 0 : animStep
       const colPhase = t * 0.52 + col * 1.15
       const level = clampLevel(1 + ((Math.sin(colPhase) + 1) / 2) * (MAX_LEVEL - 1))
       const topLitRow = MAX_LEVEL - level
@@ -63,7 +64,7 @@ export function DotmSquare18({
       }
       return { style: { opacity: BASE_OPACITY } }
     }
-  }, [reducedMotion, animPhase])
+  }, [reducedMotion, animStep])
 
   return (
     <DotMatrixBase

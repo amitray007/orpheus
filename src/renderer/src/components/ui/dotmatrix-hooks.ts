@@ -25,41 +25,6 @@ export function usePrefersReducedMotion(): boolean {
   return prefersReducedMotion
 }
 
-export interface UseCyclePhaseOptions {
-  active: boolean
-  cycleMsBase: number
-  speed?: number
-}
-
-export function useCyclePhase({ active, cycleMsBase, speed = 1 }: UseCyclePhaseOptions): number {
-  const [phase, setPhase] = useState(0)
-
-  useEffect(() => {
-    if (!active) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset animation phase when deactivated
-      setPhase(0)
-      return
-    }
-
-    const safeSpeed = speed > 0 ? speed : 1
-    const raw = cycleMsBase / safeSpeed
-    const cycleMs = raw > 0 && Number.isFinite(raw) ? raw : 1000
-    const start = performance.now()
-    let rafId = 0
-
-    const tick = (now: number): void => {
-      const elapsed = (((now - start) % cycleMs) + cycleMs) % cycleMs
-      setPhase(elapsed / cycleMs)
-      rafId = requestAnimationFrame(tick)
-    }
-
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
-  }, [active, cycleMsBase, speed])
-
-  return phase
-}
-
 interface UseSteppedCycleOptions {
   active: boolean
   cycleMsBase: number
