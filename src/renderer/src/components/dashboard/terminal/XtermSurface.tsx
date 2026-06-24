@@ -405,9 +405,34 @@ export function XtermSurface({
       }
       try {
         loadWebgl()
-      } catch {
+        logDiag({
+          category: 'lifecycle',
+          level: 'info',
+          event: DIAG_EVENTS.XTERM_RENDERER_ACTIVE,
+          workspaceId,
+          message: 'WebGL renderer active'
+        })
+      } catch (err) {
         webgl?.dispose()
         webgl = null
+        logDiag({
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.XTERM_WEBGL_INIT_FAILED,
+          workspaceId,
+          message: `WebGL init failed — falling back to Canvas: ${err}`
+        })
+        try {
+          term.loadAddon(new CanvasAddon())
+        } catch (canvasErr) {
+          logDiag({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.XTERM_WEBGL_INIT_FAILED,
+            workspaceId,
+            message: `Canvas fallback also failed — DOM renderer: ${canvasErr}`
+          })
+        }
       }
 
       await new Promise<void>((resolve) =>

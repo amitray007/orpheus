@@ -31,7 +31,9 @@ export const DIAG_EVENTS = {
   OVERLAY_RETRY: 'overlay.retry',
   OVERLAY_FALLBACK: 'overlay.fallback',
   XTERM_FLOW_STALL: 'terminal.xterm_flow_stall',
-  XTERM_WEBGL_CONTEXT_LOSS: 'terminal.xterm_webgl_context_loss'
+  XTERM_WEBGL_CONTEXT_LOSS: 'terminal.xterm_webgl_context_loss',
+  XTERM_WEBGL_INIT_FAILED: 'terminal.xterm_webgl_init_failed',
+  XTERM_RENDERER_ACTIVE: 'terminal.xterm_renderer_active'
 } as const
 
 export type DiagEventKey = (typeof DIAG_EVENTS)[keyof typeof DIAG_EVENTS]
