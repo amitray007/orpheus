@@ -731,6 +731,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           <SettingRow
             label="Browser integration"
             description="Enable claude's Chrome browser integration for web browsing and interaction."
+            mapsTo="--chrome"
           >
             <Toggle
               ariaLabel="Browser integration enabled"

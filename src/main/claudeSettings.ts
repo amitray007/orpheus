@@ -707,13 +707,12 @@ export function composeClaudeLaunch(
     flagParts.push(`--fallback-model ${s.fallbackModel.trim()}`)
   }
 
-  // --no-chrome: disable claude's browser integration (default is enabled)
-  // Note: claude CLI flag name not confirmed in published docs; stored in DB,
-  // compose is a no-op until the stable flag name is verified.
-  // Uncomment when confirmed:
-  // if (!s.browserIntegration) {
-  //   flagParts.push('--no-chrome')
-  // }
+  // --chrome / --no-chrome: opt-in/out of claude's browser integration
+  if (s.browserIntegration === true) {
+    flagParts.push('--chrome')
+  } else if (s.browserIntegration === false) {
+    flagParts.push('--no-chrome')
+  }
 
   // Session continuity: every workspace ships with a pre-generated UUID
   // (assigned in createWorkspace). On first launch, no .jsonl exists yet, so
@@ -1001,7 +1000,9 @@ export function composeClaudeLaunch(
   // Env-var controls (v52) — Memory & Context
   if (s.additionalDirsClaudeMd) env['CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'] = '1'
 
-  // Custom env vars — merged last; user's keys win on conflict
+  // Custom env vars — merged last; user's keys win on conflict.
+  // NOTE: if the user sets ANTHROPIC_MODEL or CLAUDE_CODE_EFFORT_LEVEL here,
+  // those env vars take precedence over the --model/--effort flags emitted above.
   for (const [k, v] of Object.entries(s.customEnvVars)) {
     if (k && typeof v === 'string') env[k] = v
   }
