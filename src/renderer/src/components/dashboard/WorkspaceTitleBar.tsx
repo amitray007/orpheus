@@ -97,6 +97,14 @@ export function clearContextBudgetCache(workspaceId: string): void {
   }
 }
 
+export function setContextBudgetCache(key: string, value: ContextBudgetInfo): void {
+  if (contextBudgetCache.size >= 50) {
+    const oldest = contextBudgetCache.keys().next().value
+    if (oldest !== undefined) contextBudgetCache.delete(oldest)
+  }
+  contextBudgetCache.set(key, value)
+}
+
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
   drawer: null | 'status' | 'overrides' | 'details'

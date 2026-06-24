@@ -11,6 +11,11 @@ import { getActiveWatchdogWorkspace } from './freezeWatchdog'
 let openCount = 0
 const listeners = new Set<() => void>()
 
+window.addEventListener('beforeunload', () => {
+  openCount = 0
+  emit()
+})
+
 function emit(): void {
   for (const l of listeners) l()
 }

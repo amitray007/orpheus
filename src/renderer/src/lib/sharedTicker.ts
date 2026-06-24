@@ -44,6 +44,7 @@ function stopTicker(ticker: TickerState): void {
   if (ticker.intervalId === null) return
   clearInterval(ticker.intervalId)
   ticker.intervalId = null
+  ticker.frame = 0
 }
 
 function subscribeToTicker(intervalMs: number, fn: () => void): () => void {
@@ -52,7 +53,10 @@ function subscribeToTicker(intervalMs: number, fn: () => void): () => void {
   startTicker(intervalMs, ticker)
   return () => {
     ticker.subscribers.delete(fn)
-    if (ticker.subscribers.size === 0) stopTicker(ticker)
+    if (ticker.subscribers.size === 0) {
+      stopTicker(ticker)
+      tickers.delete(intervalMs)
+    }
   }
 }
 

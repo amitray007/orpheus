@@ -8,6 +8,7 @@ import {
   modelLabel,
   shortTokens,
   contextBudgetCache,
+  setContextBudgetCache,
   type ContextBudgetInfo
 } from './WorkspaceTitleBar'
 
@@ -64,7 +65,10 @@ export function WorkspaceDetailsPopover({
     window.api.sessions
       .getContextBudget(workspace.id)
       .then((result) => {
-        if (!cancelled && result) setModelCtx(result)
+        if (!cancelled && result) {
+          setContextBudgetCache(cacheKey, result)
+          setModelCtx(result)
+        }
       })
       .catch(() => {})
 

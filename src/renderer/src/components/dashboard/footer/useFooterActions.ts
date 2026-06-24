@@ -32,6 +32,14 @@ export function clearFooterActionsCache(workspaceId: string): void {
 // Actions registry — runtime-immutable after first load; fetch once and reuse.
 let registryPromise: Promise<Map<string, ActionKind>> | null = null
 
+function setCachedItems(key: string, value: FooterActionItem[]): void {
+  if (itemsCache.size >= 20) {
+    const oldest = itemsCache.keys().next().value
+    if (oldest !== undefined) itemsCache.delete(oldest)
+  }
+  itemsCache.set(key, value)
+}
+
 function getRegistry(): Promise<Map<string, ActionKind>> {
   if (!registryPromise) {
     registryPromise = window.api.actions
@@ -92,7 +100,7 @@ export function useFooterActions(workspaceId: string): UseFooterActionsResult {
           ...d,
           kind: kindMap.get(d.actionId) ?? 'mutator'
         }))
-        itemsCache.set(workspaceId, enriched)
+        setCachedItems(workspaceId, enriched)
         setItems(enriched)
         setLoading(false)
       })
