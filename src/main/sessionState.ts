@@ -2,9 +2,8 @@
  * sessionState.ts — Shadow-mode session state service (Phase 1)
  *
  * Watches ~/.claude/sessions/<pid>.json files written by the claude CLI and
- * reconciles their reported status against the hook-derived status tracked by
- * orpheusNotify. This module is OBSERVING ONLY — it never calls
- * setWorkspaceStatus, emits IPC, or writes to the DB.
+ * drives workspace status transitions. This module is the SOLE authority for
+ * workspace state (in_progress / attention / awaiting_input / idle).
  */
 
 import * as fs from 'node:fs'
@@ -367,8 +366,11 @@ async function reconcile(): Promise<void> {
     }
 
     if (rawStatus === 'busy') {
-      // Hooks own the busy/active detail — just track that we saw busy
-      lastRawActed.set(ws.id, 'busy')
+      // Drive in_progress on the first busy transition; skip if already recorded busy
+      if (lastRawActed.get(ws.id) !== 'busy') {
+        setStatusFromFile(ws.id, 'in_progress')
+        lastRawActed.set(ws.id, 'busy')
+      }
     } else {
       // Only act on a real transition (avoids fighting the idle watchdog every tick)
       if (rawStatus !== lastRawActed.get(ws.id)) {

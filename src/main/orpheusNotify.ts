@@ -22,14 +22,6 @@ export type WorkspaceActivityEvent =
   | 'precompact'
   | 'subagent-stop'
 
-const EVENT_TO_STATUS: Partial<Record<WorkspaceActivityEvent, WorkspaceStatus>> = {
-  'session-start': 'awaiting_input',
-  'user-prompt': 'in_progress',
-  notification: 'attention',
-  stop: 'awaiting_input',
-  'session-end': 'idle'
-}
-
 const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SessionStart: 'session-start',
   UserPromptSubmit: 'user-prompt',
@@ -55,22 +47,11 @@ const HOOK_MATCHER: Partial<Record<string, string>> = {
 type DetailState = {
   toolStack: number
   compacting: boolean
-  // When set, claude is blocked on a tool that needs user input
-  // (AskUserQuestion, ExitPlanMode). The string is the tool_name from
-  // the PreToolUse payload so PostToolUse can unblock the matching tool.
   blockingTool: string | null
-  // Counts Task tool dispatches whose SubagentStop hasn't arrived yet.
-  // Stop fires per main-transcript turn and does NOT mean subagents are done;
-  // we defer the awaiting_input transition until subagentDepth reaches 0.
-  subagentDepth: number
-  // True when a Stop was received while subagentDepth > 0. The pending
-  // awaiting_input dispatch fires once the last SubagentStop arrives.
-  pendingStop: boolean
   // Wall-clock ms when the current user-prompt turn started. 0 = no turn active.
   turnStartedAt: number
   // Cumulative subagents dispatched in THIS turn (Agent/Task PreToolUse).
-  // Reset on next user-prompt; intentionally NOT reset on Stop so the count
-  // is still readable when the deferred awaiting_input banner fires.
+  // Reset on next user-prompt.
   subagentsDispatched: number
 }
 
@@ -83,14 +64,11 @@ const activityMap = new Map<string, WorkspaceStatus>()
 const detailMap = new Map<string, DetailState>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
-// Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
-let cachedWatchdogSec: number | null = null
 let cachedStaleMinutes: number | null = null
 let cachedAutoCloseMinutes: number | null = null
 
 /** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
 export function invalidateWatchdogCache(): void {
-  cachedWatchdogSec = null
   cachedStaleMinutes = null
   cachedAutoCloseMinutes = null
 }
@@ -103,7 +81,6 @@ let autoCloseHandler: ((workspaceId: string) => void) | null = null
 let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
   null
 
-const watchdogs = new Map<string, NodeJS.Timeout>()
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
 
@@ -114,8 +91,6 @@ function getDetailState(workspaceId: string): DetailState {
       toolStack: 0,
       compacting: false,
       blockingTool: null,
-      subagentDepth: 0,
-      pendingStop: false,
       turnStartedAt: 0,
       subagentsDispatched: 0
     }
@@ -164,13 +139,6 @@ function broadcastDetailIfChanged(workspaceId: string): void {
   stageActivityUpdate({ workspaceId, status, detail })
 }
 
-function clearWatchdog(workspaceId: string): void {
-  const t = watchdogs.get(workspaceId)
-  if (!t) return
-  clearTimeout(t)
-  watchdogs.delete(workspaceId)
-}
-
 function clearIdleWatchdog(workspaceId: string): void {
   const t = idleWatchdogs.get(workspaceId)
   if (!t) return
@@ -183,39 +151,6 @@ function clearAutoCloseWatchdog(workspaceId: string): void {
   if (!t) return
   clearTimeout(t)
   autoCloseWatchdogs.delete(workspaceId)
-}
-
-function armWatchdog(workspaceId: string): void {
-  clearWatchdog(workspaceId)
-  if (cachedWatchdogSec === null) {
-    cachedWatchdogSec = getAppUiState().inProgressWatchdogSec ?? 120
-  }
-  const userSec = cachedWatchdogSec
-  if (userSec <= 0) return
-  const s = detailMap.get(workspaceId)
-  const seconds = s?.compacting ? Math.max(userSec, 300) : userSec
-  const t = setTimeout(() => {
-    watchdogs.delete(workspaceId)
-    if (activityMap.get(workspaceId) === 'in_progress') {
-      console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
-      logDiagMain({
-        category: 'anomaly',
-        level: 'warn',
-        event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
-        workspaceId,
-        data: { afterSeconds: seconds }
-      })
-      dispatch(workspaceId, 'awaiting_input')
-      // Lost-SubagentStop recovery: clear any deferred-subagent state so the
-      // next turn starts clean rather than inheriting a stale pendingStop.
-      const s = detailMap.get(workspaceId)
-      if (s) {
-        s.subagentDepth = 0
-        s.pendingStop = false
-      }
-    }
-  }, seconds * 1000)
-  watchdogs.set(workspaceId, t)
 }
 
 function armIdleWatchdog(workspaceId: string): void {
@@ -307,11 +242,6 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   }
   notifyForTransition(workspaceId, prev, status)
 
-  if (status === 'in_progress') {
-    armWatchdog(workspaceId)
-  } else {
-    clearWatchdog(workspaceId)
-  }
   // Auto-demote ready→idle after staleAfterMinutes of sitting in awaiting_input.
   if (status === 'awaiting_input') {
     armIdleWatchdog(workspaceId)
@@ -328,16 +258,16 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   broadcastDetailIfChanged(workspaceId)
 }
 
-function heartbeat(workspaceId: string): void {
-  if (activityMap.get(workspaceId) === 'in_progress') {
-    armWatchdog(workspaceId)
-  }
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function heartbeat(_workspaceId: string): void {
+  // No-op: in-progress watchdog removed; file now owns busy→in_progress.
 }
 
-// Called from index.ts when a raw title begins with a spinner glyph, re-arming
-// the watchdog during pure-think turns where no tool events fire.
-export function heartbeatFromTitle(workspaceId: string): void {
-  heartbeat(workspaceId)
+// Called from index.ts when a raw title begins with a spinner glyph.
+// No-op: in-progress watchdog removed; file now owns busy→in_progress.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function heartbeatFromTitle(_workspaceId: string): void {
+  // intentional no-op
 }
 
 // Permission-prompt messages contain "permission" (e.g. "Claude needs your
@@ -366,12 +296,11 @@ function handleHookEvent(
       const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
       if (toolName && BLOCKING_TOOLS.has(toolName)) {
         ds.blockingTool = toolName
-        dispatch(workspaceId, 'attention')
+        // No status dispatch — file will drive attention via 'waiting' status
         return
       }
-      // 'Agent' is the current subagent-dispatch tool_name; 'Task' is the legacy alias.
+      // Track subagent dispatches for notification metadata
       if (tn === 'Agent' || tn === 'Task') {
-        ds.subagentDepth++
         ds.subagentsDispatched++
       }
       ds.toolStack++
@@ -383,8 +312,6 @@ function handleHookEvent(
       const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
       if (toolName && toolName === ds.blockingTool) {
         ds.blockingTool = null
-        dispatch(workspaceId, 'in_progress')
-        return
       }
       ds.toolStack = Math.max(0, ds.toolStack - 1)
       heartbeat(workspaceId)
@@ -397,55 +324,27 @@ function handleHookEvent(
       broadcastDetailIfChanged(workspaceId)
       return
     case 'subagent-stop':
-      ds.subagentDepth = Math.max(0, ds.subagentDepth - 1)
       heartbeat(workspaceId)
-      if (ds.subagentDepth === 0 && ds.pendingStop) {
-        ds.pendingStop = false
-        // The last subagent finished and a Stop was deferred. But if a subagent
-        // raised a permission prompt while we waited, the workspace is now in
-        // 'attention'/blocking — don't clobber that live prompt with a green
-        // 'ready' dot. Let PostToolUse/Notification clear attention first.
-        if (activityMap.get(workspaceId) !== 'attention' && !ds.blockingTool) {
-          dispatch(workspaceId, 'awaiting_input')
-        }
-      }
       return
     case 'stop':
-      // Reset per-turn state but not subagentDepth: subagents may still be
-      // running. Stop fires per main-transcript turn and does NOT mean all
-      // subagents have finished.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
-      if (ds.subagentDepth > 0) {
-        // Subagents still in flight — defer the awaiting_input transition.
-        // The 120s watchdog is the safety net if a final SubagentStop is lost.
-        ds.pendingStop = true
-        heartbeat(workspaceId)
-        return
-      }
-      ds.pendingStop = false
-      break
+      return
     case 'user-prompt':
-      // Fresh turn — record start time and reset per-turn state.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
-      ds.subagentDepth = 0
-      ds.pendingStop = false
       ds.turnStartedAt = Date.now()
       ds.subagentsDispatched = 0
-      break
+      return
     case 'session-end':
-      // Session ended — clear all per-turn state.
       ds.toolStack = 0
       ds.compacting = false
       ds.blockingTool = null
-      ds.subagentDepth = 0
-      ds.pendingStop = false
       ds.turnStartedAt = 0
       ds.subagentsDispatched = 0
-      break
+      return
     case 'notification':
       ds.compacting = false
       // Suppress idle_prompt / auth_success / elicitation_* — only permission
@@ -455,7 +354,11 @@ function handleHookEvent(
         broadcastDetailIfChanged(workspaceId)
         return
       }
-      break
+      // Fall through to fire OS notification via notifyForTransition (called
+      // from dispatch). We don't dispatch status here — file owns attention.
+      // Instead just broadcast detail so notification metadata is fresh.
+      broadcastDetailIfChanged(workspaceId)
+      return
     case 'session-start':
       for (const cb of sessionStartListeners) {
         try {
@@ -464,12 +367,8 @@ function handleHookEvent(
           /* ignore */
         }
       }
-      break
+      return
   }
-
-  const status = EVENT_TO_STATUS[ev]
-  if (!status) return
-  dispatch(workspaceId, status)
 }
 
 export function onSessionStart(cb: (workspaceId: string) => void): void {
@@ -483,7 +382,6 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
  * though it's now active again.
  */
 export function clearWorkspaceActivity(workspaceId: string): void {
-  clearWatchdog(workspaceId)
   clearIdleWatchdog(workspaceId)
   clearAutoCloseWatchdog(workspaceId)
   // Force a fresh 'idle' broadcast even if the current cached value is also
