@@ -105,8 +105,6 @@ const api = {
     },
     focus: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:focus', { workspaceId }),
-    setOverlay: (workspaceId: string, on: boolean): Promise<void> =>
-      ipcRenderer.invoke('terminal:setOverlay', { workspaceId, on }),
     getSurfacePhase: (workspaceId: string): Promise<string> =>
       ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
     onSleepStateChanged: (
@@ -131,6 +129,24 @@ const api = {
       ): void => cb(data)
       ipcRenderer.on('terminal:liveness', listener)
       return () => ipcRenderer.removeListener('terminal:liveness', listener)
+    },
+    // Native popover chassis (Phase A)
+    showPopover: (
+      workspaceId: string,
+      kind: string,
+      anchorRect: { x: number; y: number; w: number; h: number },
+      data: Record<string, unknown>,
+      fontDir?: string
+    ): Promise<void> =>
+      ipcRenderer.invoke('terminal:showPopover', { workspaceId, kind, anchorRect, data, fontDir }),
+    updatePopover: (workspaceId: string, data: Record<string, unknown>): Promise<void> =>
+      ipcRenderer.invoke('terminal:updatePopover', { workspaceId, data }),
+    hidePopover: (workspaceId: string): Promise<void> =>
+      ipcRenderer.invoke('terminal:hidePopover', { workspaceId }),
+    onPopoverAction: (cb: (e: { identifier: string }) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: { identifier: string }): void => cb(e)
+      ipcRenderer.on('popover:actionClicked', listener)
+      return () => ipcRenderer.removeListener('popover:actionClicked', listener)
     }
   },
   config: {

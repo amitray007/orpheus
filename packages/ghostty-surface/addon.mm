@@ -1,9 +1,9 @@
-// ghostty-native — production lifecycle addon for Orpheus.
+// ghostty-surface — generic libghostty surface lifecycle addon.
 //
 // Exports four synchronous NAPI functions (all called on the AppKit main thread
 // from the Electron main process):
 //
-//   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? })
+//   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd?, command? })
 //       → { workspaceId, created: bool }
 //   hide(workspaceId)    → void   (keeps surface alive, just removes from superview)
 //   resize(workspaceId, { x, y, w, h }, scaleFactor) → void
@@ -14,7 +14,7 @@
 //   mount()   — creates on first call; re-attaches on subsequent calls.
 //   hide()    — removeFromSuperview + occlusion; keeps entry alive.
 //   destroy() — full teardown; removes from map.
-//   Orpheus quit → process exit GCs everything naturally.
+//   App quit → process exit GCs everything naturally.
 //
 // Threading model:
 //   • NAPI handlers run on the main thread — all ghostty_* calls here are safe.
@@ -29,6 +29,7 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>
 
 #include <string>
 #include <map>
@@ -124,6 +125,8 @@ static void orpheusPushLiveness(const std::string& workspaceId, bool occluded);
 
 // Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
 @class OrpheusLoadingOverlayView;
+// Forward-declare the popover view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusPopoverView;
 
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
@@ -132,6 +135,7 @@ struct GhosttySurfaceEntry {
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
+    // popoverView moved to global g_activePopover (one popover at a time, any workspace)
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
@@ -144,14 +148,6 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // The workspace that should currently be visible+focused. At most one at a time
 // (single-BrowserWindow invariant — Orpheus runs one window).
 static std::string g_visibleWorkspaceId;
-
-// Overlay state (set by SetOverlay / consumed by reconcileSurface + Mount).
-// g_overlayCompositingEnabled is flipped true at startup (Task 8) via setOverlayCompositing();
-// until then the z-reorder in setOverlay is inert (only focus handoff runs). g_overlayOpen
-// gates z-insert and makeFirstResponder in show/mount paths so a newly shown surface doesn't
-// pop above an open overlay or steal focus.
-static bool g_overlayCompositingEnabled = false;
-static bool g_overlayOpen = false;
 
 // Forward declarations for reconcileSurface / setVisibleWorkspace so
 // handleOcclusionChange: (inside @implementation) can call them.
@@ -200,7 +196,7 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
         ghostty_surface_set_content_scale(self.surface, scale, scale);
         ghostty_surface_draw(self.surface);
     }
-    NSLog(@"[ghostty-native] viewDidChangeBackingProperties scale=%.2f", scale);
+    NSLog(@"[ghostty-surface] viewDidChangeBackingProperties scale=%.2f", scale);
 }
 
 // NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
@@ -990,7 +986,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     const char* utf8 = [out UTF8String];
     if (!utf8) return NO;
     ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
-    NSLog(@"[ghostty-native] pasted clipboard image -> %@", path);
+    NSLog(@"[ghostty-surface] pasted clipboard image -> %@", path);
     return YES;
 }
 
@@ -1022,7 +1018,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     const char* utf8 = [trimmed UTF8String];
     if (!utf8) return NO;
     ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
-    NSLog(@"[ghostty-native] performDragOperation: pasted %lu file path(s)", (unsigned long)urls.count);
+    NSLog(@"[ghostty-surface] performDragOperation: pasted %lu file path(s)", (unsigned long)urls.count);
     return YES;
 }
 
@@ -1317,10 +1313,10 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
             }
         }
         if (!wcv) {
-            NSLog(@"[ghostty-native] WebContents NSView not found in contentView.subviews; "
+            NSLog(@"[ghostty-surface] WebContents NSView not found in contentView.subviews; "
                   @"terminal-region input + drag routing will not work. Subview classes seen:");
             for (NSView* sub in contentView.subviews) {
-                NSLog(@"[ghostty-native]   - %@", NSStringFromClass([sub class]));
+                NSLog(@"[ghostty-surface]   - %@", NSStringFromClass([sub class]));
             }
             return;
         }
@@ -1353,7 +1349,7 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
             cls, @selector(concludeDragOperation:),
             (IMP)orpheus_webContents_concludeDragOperation, "v@:@");
 
-        NSLog(@"[ghostty-native] installed input + drag routing swizzles on %s",
+        NSLog(@"[ghostty-surface] installed input + drag routing swizzles on %s",
               class_getName(cls));
     });
 }
@@ -1383,6 +1379,24 @@ static std::map<std::string, uint64_t> g_currentGeneration; // workspaceId -> la
 // reference it before the full TSFN block further down the file.
 static Napi::ThreadSafeFunction g_loadingActionTSFN;
 static bool g_loadingActionTSFNActive = false;
+
+// Popover action TSFN — fires when a clickable element inside a popover is
+// tapped (e.g. the PR chip). Registered via setPopoverActionCallback.
+static Napi::ThreadSafeFunction g_popoverActionTSFN;
+static bool g_popoverActionTSFNActive = false;
+
+// ---------------------------------------------------------------------------
+// Global popover state — decoupled from per-workspace surface entries so hover
+// cards can be shown for inactive workspaces that have no mounted surface.
+// Only one popover is visible at a time (hover OR details), so a single global
+// is sufficient.
+// ---------------------------------------------------------------------------
+static OrpheusPopoverView* __strong g_activePopover = nil;
+static std::string g_activePopoverWorkspaceId;
+
+// contentView cached when installBackstop runs (always before any popover
+// request — installBackstop is called once at ready-to-show).
+static NSView* __strong g_popoverHostContentView = nil;
 
 // ---------------------------------------------------------------------------
 // Loading overlay theme — colors pushed from main process (resolved from the
@@ -1416,6 +1430,44 @@ static OrpheusLoadingTheme g_loadingTheme = {
 static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     return c ? c : fallback;
 }
+
+// ---------------------------------------------------------------------------
+// OrpheusPopoverTheme — color palette for native info-card popovers.
+//
+// Pushed by JS via setPopoverTheme({ card, textPrimary, textSecondary,
+// textMuted, border, accent, isDark }). Separate from g_loadingTheme so the
+// two overlays can evolve independently (loading overlay = frosted VSFView
+// backdrop + card; popover = solid card only with different token set).
+//
+// All NSColor* fields are nil until main pushes the real values; draw code
+// falls back to midnight-ish defaults via themeColorOr.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    NSColor* card;          // solid card background (surface-overlay, full alpha)
+    NSColor* textPrimary;   // primary label color
+    NSColor* textSecondary; // secondary / dim label color
+    NSColor* textMuted;     // muted label (timestamps, labels)
+    NSColor* border;        // 1px hairline border
+    NSColor* accent;        // accent color (activity dot, highlights)
+    BOOL     isDark;        // true = dark aqua appearance
+} OrpheusPopoverTheme;
+
+static OrpheusPopoverTheme g_popoverTheme = {
+    .card          = nil,
+    .textPrimary   = nil,
+    .textSecondary = nil,
+    .textMuted     = nil,
+    .border        = nil,
+    .accent        = nil,
+    .isDark        = YES
+};
+
+// Geist font directory — set by registerPopoverFonts() called from showPopover.
+// Stored globally so we only register once and can skip re-registration.
+static BOOL g_popoverFontsRegistered = NO;
+// Path passed in from JS (process.resourcesPath/fonts in prod, node_modules path in dev).
+static NSString* g_geistFontDir = nil;
 
 // ---------------------------------------------------------------------------
 // OrpheusLoadingOverlayView — translucent loading card drawn above the
@@ -1462,7 +1514,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 - (void)actionButtonClicked:(NSButton*)sender {
     NSString* wsId = sender.identifier;
     if (!wsId || wsId.length == 0) return;
-    NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
+    NSLog(@"[ghostty-surface] loading action clicked workspaceId=%s", wsId.UTF8String);
     if (!g_loadingActionTSFNActive) return;
     std::string wsIdCpp = wsId.UTF8String;
     g_loadingActionTSFN.NonBlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
@@ -1941,7 +1993,7 @@ static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
     g_loadingTheme.isDark        = isDark;
     g_loadingTheme.tintAlpha     = tintAlpha;
 
-    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
+    NSLog(@"[ghostty-surface] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
           (int)isDark, (double)tintAlpha);
     return env.Undefined();
 }
@@ -2156,7 +2208,7 @@ static void write_clipboard_cb(void* /*userdata*/,
                                 size_t count,
                                 bool /*confirm*/) {
     if (!content || count == 0) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: empty content, skip");
+        NSLog(@"[ghostty-surface] write_clipboard_cb: empty content, skip");
         return;
     }
 
@@ -2176,7 +2228,7 @@ static void write_clipboard_cb(void* /*userdata*/,
     }
 
     if (!text) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: no usable text in %zu item(s)", count);
+        NSLog(@"[ghostty-surface] write_clipboard_cb: no usable text in %zu item(s)", count);
         return;
     }
 
@@ -2184,7 +2236,7 @@ static void write_clipboard_cb(void* /*userdata*/,
     // during this callback).
     NSString* str = [NSString stringWithUTF8String:text];
     if (!str) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: UTF-8 decode failed");
+        NSLog(@"[ghostty-surface] write_clipboard_cb: UTF-8 decode failed");
         return;
     }
 
@@ -2222,7 +2274,7 @@ static bool read_clipboard_cb(void* /*userdata*/,
         }
 
         if (!targetSurface) {
-            NSLog(@"[ghostty-native] read_clipboard_cb: no attached surface, aborting");
+            NSLog(@"[ghostty-surface] read_clipboard_cb: no attached surface, aborting");
             return;
         }
 
@@ -2267,7 +2319,7 @@ static void confirm_read_clipboard_cb(void* /*userdata*/,
 }
 
 static void close_surface_cb(void* /*userdata*/, bool process_alive) {
-    NSLog(@"[ghostty-native] close_surface_cb process_alive=%d", (int)process_alive);
+    NSLog(@"[ghostty-surface] close_surface_cb process_alive=%d", (int)process_alive);
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,40 +2343,43 @@ static const char* g_resDir = nullptr;  // set once in ensureApp, used by reload
 static ghostty_config_t buildGhosttyConfig(const char* resDir) {
     ghostty_config_t cfg = ghostty_config_new();
     if (!cfg) {
-        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
+        NSLog(@"[ghostty-surface] ghostty_config_new FAILED");
         return nullptr;
     }
 
-    NSLog(@"[ghostty-native] loading user config (default files)");
+    NSLog(@"[ghostty-surface] loading user config (default files)");
     ghostty_config_load_default_files(cfg);
 
-    // Bundled Orpheus overrides — applied after the user's ~/.config/ghostty
+    // Bundled config overrides — applied after the user's ~/.config/ghostty
     // so these values win over the user's own Ghostty.app preferences.
+    // TODO(ghostty-surface): parameterize the override file name and env-var name
+    // via mount options so this addon has no hard dependency on caller-specific names.
     if (resDir) {
         NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
         if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
-            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            NSLog(@"[ghostty-surface] applying config overrides: %@", overridePath);
             ghostty_config_load_file(cfg, [overridePath UTF8String]);
         } else {
-            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+            NSLog(@"[ghostty-surface] no bundled config overrides found at %@", overridePath);
         }
     }
 
-    // User-editable Ghostty config — layered after bundled Orpheus overrides so
-    // user settings win. ORPHEUS_GHOSTTY_CONFIG is set by the main process and
-    // points to a runtime-generated file. When unset, this is a no-op.
+    // User-editable Ghostty config — layered after bundled overrides so
+    // user settings win. The ORPHEUS_GHOSTTY_CONFIG env var is set by the main
+    // process and points to a runtime-generated file. When unset, this is a no-op.
+    // TODO(ghostty-surface): parameterize this env-var name via mount options.
     const char* userCfgPath = getenv("ORPHEUS_GHOSTTY_CONFIG");
     if (userCfgPath && userCfgPath[0] != '\0') {
         NSString* userCfgNS = [NSString stringWithUTF8String:userCfgPath];
         if ([[NSFileManager defaultManager] fileExistsAtPath:userCfgNS]) {
-            NSLog(@"[ghostty-native] applying user Ghostty config: %@", userCfgNS);
+            NSLog(@"[ghostty-surface] applying user Ghostty config: %@", userCfgNS);
             ghostty_config_load_file(cfg, userCfgPath);
         } else {
-            NSLog(@"[ghostty-native] ORPHEUS_GHOSTTY_CONFIG set but file not found: %@", userCfgNS);
+            NSLog(@"[ghostty-surface] user config env var set but file not found: %@", userCfgNS);
         }
     }
 
-    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
+    NSLog(@"[ghostty-surface] loading recursive config files (theme resolution)");
     ghostty_config_load_recursive_files(cfg);
 
     ghostty_config_finalize(cfg);
@@ -2332,14 +2387,14 @@ static ghostty_config_t buildGhosttyConfig(const char* resDir) {
     // Log any config diagnostics so theme/parse errors are visible in Console.app.
     uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
     if (diagCount > 0) {
-        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
+        NSLog(@"[ghostty-surface] %u config diagnostic(s):", (unsigned)diagCount);
         for (uint32_t i = 0; i < diagCount; i++) {
             ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
-            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
+            NSLog(@"[ghostty-surface]   diag[%u]: %s", (unsigned)i,
                   diag.message ? diag.message : "(null)");
         }
     } else {
-        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
+        NSLog(@"[ghostty-surface] config loaded cleanly (0 diagnostics)");
     }
 
     return cfg;
@@ -2366,19 +2421,19 @@ static NSRect cssRectToAppKit(double x, double y, double w, double h,
 static bool ensureApp() {
     if (g_inited.load(std::memory_order_acquire)) return true;
 
-    NSLog(@"[ghostty-native] initialising ghostty (one-time)");
+    NSLog(@"[ghostty-surface] initialising ghostty (one-time)");
 
     const char* resDir = getenv("GHOSTTY_RESOURCES_DIR");
     if (resDir) {
-        NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR=%s", resDir);
+        NSLog(@"[ghostty-surface] GHOSTTY_RESOURCES_DIR=%s", resDir);
     } else {
-        NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
+        NSLog(@"[ghostty-surface] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
     }
     g_resDir = resDir;  // stash for config reloads
 
     int rc = ghostty_init(0, nullptr);
     if (rc != GHOSTTY_SUCCESS) {
-        NSLog(@"[ghostty-native] ghostty_init FAILED rc=%d", rc);
+        NSLog(@"[ghostty-surface] ghostty_init FAILED rc=%d", rc);
         return false;
     }
 
@@ -2397,12 +2452,12 @@ static bool ensureApp() {
 
     g_app = ghostty_app_new(&rt, g_config);
     if (!g_app) {
-        NSLog(@"[ghostty-native] ghostty_app_new FAILED");
+        NSLog(@"[ghostty-surface] ghostty_app_new FAILED");
         return false;
     }
 
     g_inited.store(true, std::memory_order_release);
-    NSLog(@"[ghostty-native] ghostty app ready");
+    NSLog(@"[ghostty-surface] ghostty app ready");
 
     // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
     // Ghostty has IO activity), issue one synchronous draw per attached surface
@@ -2541,12 +2596,11 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 
     if (entry.desiredVisible) {
         if (!entry.isAttached) {
-            // Surface was hidden — re-attach topmost (or below overlay).
+            // Surface was hidden — re-attach topmost.
             // ensureBackstopView installs the bleed-guard at index 0 as a side effect.
             if (contentView) {
                 (void)ensureBackstopView(contentView);
-                NSWindowOrderingMode mode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
-                [contentView addSubview:entry.view positioned:mode relativeTo:nil];
+                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
             }
             // Gap-fill: paint pre-first-frame gap app-dark.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2566,7 +2620,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // NAPI runs on main thread ✓.
             {
                 NSWindow* win = [entry.view window];
-                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
+                if (win) [win makeFirstResponder:entry.view];
             }
 
         } else {
@@ -2589,7 +2643,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Sync makeFirstResponder for focus re-assertion.
             {
                 NSWindow* win = [entry.view window];
-                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
+                if (win) [win makeFirstResponder:entry.view];
             }
         }
 
@@ -2657,6 +2711,9 @@ static Napi::Value InstallBackstop(const Napi::CallbackInfo& info) {
     memcpy(&rawHandle, handleBuf.Data(), copyLen);
     NSView* contentView = (__bridge NSView*)rawHandle;
     if (!contentView) return env.Undefined();
+    // Cache contentView for ShowPopover — popovers must work even when no
+    // surface entry exists (e.g. hover cards for inactive workspaces).
+    g_popoverHostContentView = contentView;
     // Install the persistent opaque backstop NOW (idempotent via dispatch_once),
     // before any terminal mount, so the transparent window never reveals the
     // desktop on the first workspace navigation.
@@ -2713,6 +2770,15 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         cwdStr = cwdVal.As<Napi::String>().Utf8Value();
     }
 
+    // command — the absolute path to the launch script/binary to exec as the surface process.
+    // REQUIRED for a new surface; the JS caller must resolve and pass this.
+    // Re-attach paths (existing entry) ignore this field since the process is already running.
+    std::string commandStr;
+    Napi::Value commandVal = opts.Get("command");
+    if (commandVal.IsString()) {
+        commandStr = commandVal.As<Napi::String>().Utf8Value();
+    }
+
     // env — optional Record<string,string>; forwarded to the surface process.
     // Keys and values are strdup'd for the lifetime of this mount call and
     // freed after ghostty_surface_new returns (new surfaces only; re-attaches
@@ -2748,7 +2814,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
         if (entry.isAttached) {
             // Should not happen in normal flow — log warning, just resize.
-            NSLog(@"[ghostty-native] mount workspaceId=%s: already attached (defensive resize)",
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: already attached (defensive resize)",
                   workspaceId.c_str());
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
@@ -2760,7 +2826,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             setVisibleWorkspace(workspaceId, contentView, false);
         } else {
             // Re-attach: add back to superview, wake renderer.
-            NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: re-attaching existing surface",
                   workspaceId.c_str());
             entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
@@ -2808,7 +2874,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     double parentH = contentView.bounds.size.height;
     NSRect frame = cssRectToAppKit(rx, ry, rw, rh, parentH);
 
-    NSLog(@"[ghostty-native] mount workspaceId=%s: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
+    NSLog(@"[ghostty-surface] mount workspaceId=%s: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
           workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
@@ -2822,7 +2888,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     {
         auto fit = g_freeingGeneration.find(workspaceId);
         if (fit != g_freeingGeneration.end()) {
-            NSLog(@"[ghostty-native] mount workspaceId=%s: create gen=%" PRIu64
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: create gen=%" PRIu64
                   " while free gen=%" PRIu64 " is still pending (old surface isolated; proceeding)",
                   workspaceId.c_str(), createGen, fit->second);
         }
@@ -2830,9 +2896,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
-    // Same z-order rationale as the re-attach branch above.
-    NSWindowOrderingMode mountMode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
-    [contentView addSubview:termView positioned:mountMode relativeTo:nil];
+    // Terminal always parks above the web layer; popovers are native siblings above it.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
@@ -2860,29 +2925,19 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     const char* fallbackCwd = home ? home : "/tmp";
     surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
-    // Spawn the bundled wrapper script as the surface process.
-    //
-    // orpheus-claude.sh runs claude inside a zsh login session and, when claude
-    // exits, exec's an interactive zsh so the terminal stays alive for further use.
-    //
-    // Ghostty on macOS wraps the command string via login(1):
-    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l <script>"
-    // This gives a full login session so ~/.zprofile, ~/.zshrc, etc. are sourced
-    // and ANTHROPIC_API_KEY / PATH are available.  The wrapper's #!/bin/zsh -l
-    // shebang also sources login files before running claude.
-    //
-    // Path resolution: use [[NSBundle mainBundle] resourcePath] which maps to
-    // Contents/Resources/ in the packaged app.  Fall back to bundlePath +
-    // /Contents/Resources if resourcePath returns an unexpected value.
-    NSString* resourcePath = [[NSBundle mainBundle] resourcePath];
-    if (!resourcePath || resourcePath.length == 0) {
-        // Fallback: derive from bundlePath.
-        resourcePath = [[[NSBundle mainBundle] bundlePath]
-                        stringByAppendingPathComponent:@"Contents/Resources"];
+    // The launch command (absolute path to the wrapper script or binary) is
+    // passed in by the JS caller via opts.command.  The native side no longer
+    // resolves the script name itself — the caller owns that responsibility.
+    if (commandStr.empty()) {
+        NSLog(@"[ghostty-surface] mount workspaceId=%s: opts.command is required but was not provided",
+              workspaceId.c_str());
+        Napi::Error::New(env, "mount: opts.command is required (absolute path to launch script)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
     }
-    NSString* wrapperNSPath = [resourcePath
-                               stringByAppendingPathComponent:@"orpheus-claude.sh"];
-    NSLog(@"[ghostty-native] wrapper script path: %@", wrapperNSPath);
+
+    NSString* wrapperNSPath = [NSString stringWithUTF8String:commandStr.c_str()];
+    NSLog(@"[ghostty-surface] wrapper script path: %@", wrapperNSPath);
 
     // Single-quote the path so ghostty's shell command ("bash -c exec -l <cmd>")
     // handles spaces in the bundle path (e.g. "Orpheus Dev.app") correctly.
@@ -2913,9 +2968,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         }
         surface_cfg.env_vars     = envVarStructs.data();
         surface_cfg.env_var_count = (size_t)envVarStructs.size();
-        NSLog(@"[ghostty-native] surface env_vars count=%zu", envVarStructs.size());
+        NSLog(@"[ghostty-surface] surface env_vars count=%zu", envVarStructs.size());
         for (const auto& ev : envVarStructs) {
-            NSLog(@"[ghostty-native]   env %s=%s", ev.key, ev.value);
+            NSLog(@"[ghostty-surface]   env %s=%s", ev.key, ev.value);
         }
     } else {
         surface_cfg.env_vars     = nullptr;
@@ -2926,7 +2981,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     surface_cfg.wait_after_command = true;  // keep surface alive (academic: exec zsh never exits)
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new command=%s cwd=%s (from_js=%s)",
+    NSLog(@"[ghostty-surface] surface_new command=%s cwd=%s (from_js=%s)",
           commandPath,
           surface_cfg.working_directory,
           cwdStr.empty() ? "(fallback)" : "yes");
@@ -2935,7 +2990,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     @try {
         surface = ghostty_surface_new(g_app, &surface_cfg);
     } @catch (NSException* ex) {
-        NSLog(@"[ghostty-native] ghostty_surface_new EXCEPTION: %@", ex.reason);
+        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION: %@", ex.reason);
         // Free strdup'd env var strings before returning.
         for (char* p : envVarKeys)   free(p);
         for (char* p : envVarValues) free(p);
@@ -2990,7 +3045,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // the watchdog or Focus() will kick it with forceWake=true.
     reconcileSurface(workspaceId, contentView, false);
 
-    NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
+    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
 
     Napi::Object result = Napi::Object::New(env);
@@ -3018,17 +3073,17 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] hide workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] hide workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached) {
-        NSLog(@"[ghostty-native] hide workspaceId=%s: already hidden (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] hide workspaceId=%s: already hidden (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] hide workspaceId=%s", workspaceId.c_str());
 
     entry.desiredVisible = false;
     if (g_visibleWorkspaceId == workspaceId) {
@@ -3065,7 +3120,7 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] resize workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] resize workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
@@ -3147,7 +3202,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
         if (state == "hidden") return env.Undefined();
-        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
+        NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
               workspaceId.c_str(), state.c_str());
         return env.Undefined();
     }
@@ -3158,20 +3213,27 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     NSString* nsTitle        = [NSString stringWithUTF8String:titleStr.c_str()];
     NSString* nsSubtitle     = subtitleStr.empty()     ? nil : [NSString stringWithUTF8String:subtitleStr.c_str()];
     NSString* nsActionLabel  = actionLabelStr.empty()  ? nil : [NSString stringWithUTF8String:actionLabelStr.c_str()];
-    GhosttySurfaceEntry& entry = it->second;
-
-    // We need a stable pointer to the entry's overlay field for the block.
-    // Safe because: entries are never moved after insertion (std::map guarantee),
-    // and this dispatch runs on the main queue (same thread as all map mutations).
-    OrpheusLoadingOverlayView* __strong* overlayPtr = &entry.loadingOverlay;
-    NSView* ghosttyView = entry.view;
+    // Capture workspaceId by value — NOT a pointer into the map. This is the fix
+    // for a use-after-free crash: if Destroy() erases this entry before the block
+    // runs (e.g. archive racing with setLoadingOverlay), any captured pointer into
+    // the map node would dangle. Instead, the block re-looks-up the entry on the
+    // main queue (where all g_surfaces mutations also occur) and no-ops if the
+    // entry is gone — so it never touches freed memory.
+    std::string capturedWsId = workspaceId;
 
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Re-look-up the entry here on the main queue (same queue as all map
+        // mutations). If Destroy() ran between the dispatch and now, the entry
+        // is gone — return immediately to avoid touching freed memory.
+        auto it2 = g_surfaces.find(capturedWsId);
+        if (it2 == g_surfaces.end()) return;
+        GhosttySurfaceEntry& e = it2->second;
+
         // ---- "hidden" — fade out and remove ----
         if ([nsState isEqualToString:@"hidden"]) {
-            OrpheusLoadingOverlayView* ov = *overlayPtr;
+            OrpheusLoadingOverlayView* ov = e.loadingOverlay;
             if (!ov) return;
-            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
+            NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
             CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
             fade.fromValue = @(ov.alphaValue);
             fade.toValue   = @(0.0);
@@ -3184,16 +3246,17 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             [ov.layer addAnimation:fade forKey:@"fadeOut"];
             ov.alphaValue = 0.0;
             [CATransaction commit];
-            *overlayPtr = nil;
+            e.loadingOverlay = nil;
             return;
         }
 
         // ---- "showing" / "slow" / "error" — create if needed, then update ----
-        OrpheusLoadingOverlayView* ov = *overlayPtr;
+        OrpheusLoadingOverlayView* ov = e.loadingOverlay;
+        NSView* ghosttyView = e.view;
 
         if (!ov) {
             if (!ghosttyView) {
-                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
+                NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
                       nsWorkspaceId.UTF8String);
                 return;
             }
@@ -3205,8 +3268,8 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             ov = [[OrpheusLoadingOverlayView alloc] initWithFrame:overlayFrame
                                                       workspaceId:nsWorkspaceId];
             [ghosttyView addSubview:ov];
-            *overlayPtr = ov;
-            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: created overlay",
+            e.loadingOverlay = ov;
+            NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: created overlay",
                   nsWorkspaceId.UTF8String);
 
             // Fade in.
@@ -3220,87 +3283,11 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             [CATransaction commit];
         }
 
-        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: state=%s",
+        NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: state=%s",
               nsWorkspaceId.UTF8String, nsState.UTF8String);
         [ov updateWithState:nsState title:nsTitle subtitle:nsSubtitle actionLabel:nsActionLabel];
     });
 
-    return env.Undefined();
-}
-
-// NAPI: setOverlay(workspaceId, on)
-// OWN writer of the z-order + overlay-focus axis (peer to reconcileSurface, which
-// owns the gate axis). on=true: (when compositing enabled) surface goes BELOW the
-// web layer, and resigns first-responder to the WebContents view so DOM overlays
-// receive keys. on=false: surface returns ABOVE, reclaims first-responder, repaints.
-// Must NOT route through reconcileSurface: its attached branch ends with
-// set_focus(true)+makeFirstResponder, which would fight the handoff.
-static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
-    bool on = info[1].As<Napi::Boolean>().Value();
-    g_overlayOpen = on;                              // visible to the show/mount path
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) return env.Undefined();          // no surface → no-op
-    GhosttySurfaceEntry& entry = it->second;
-    if (!entry.isAttached || !entry.view) return env.Undefined();
-    NSView* superview = entry.view.superview;
-    if (!superview) return env.Undefined();
-    NSWindow* win = [entry.view window];
-
-    if (on) {
-        // Z-reorder ONLY once opaque-on-top is live (Task 8). Pre-Task-8 the surface
-        // is already bottom-parked under the transparent web layer, so a reorder would
-        // be a visible flicker for no benefit — skip it; do the focus handoff only.
-        if (g_overlayCompositingEnabled) {
-            [superview addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
-        }
-        ghostty_surface_set_focus(entry.surface, false);
-        NSView* webView = nil;
-        for (NSView* sub in superview.subviews) {
-            if (sub == entry.view) continue;
-            // skip other ghostty surfaces (they respond YES to nonWebContentView)
-            if ([sub respondsToSelector:@selector(nonWebContentView)]) continue;
-            NSString* cls = NSStringFromClass([sub class]);
-            if ([cls containsString:@"WebContents"] || [cls containsString:@"RenderWidgetHostView"]) {
-                webView = sub;
-                break;
-            }
-        }
-        if (win) {
-            if (webView) [win makeFirstResponder:webView];
-            else [win makeFirstResponder:nil];   // fallback; Chromium reclaims on next click
-        }
-        NSLog(@"[ghostty-native] setOverlay ws=%s on=1 z=%d webView=%d",
-              workspaceId.c_str(), g_overlayCompositingEnabled, webView != nil);
-    } else {
-        if (g_overlayCompositingEnabled) {
-            // Surface back on top, reclaim focus, repaint immediately.
-            [superview addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
-        }
-        ghostty_surface_set_focus(entry.surface, true);
-        if (win) [win makeFirstResponder:entry.view];
-        ghostty_surface_draw(entry.surface);
-        NSLog(@"[ghostty-native] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
-    }
-    return env.Undefined();
-}
-
-// NAPI: setOverlayCompositing(on) — Task 8. Flips g_overlayCompositingEnabled.
-// Called once at startup (ready-to-show) to activate z-reorder in setOverlay.
-static Napi::Value SetOverlayCompositing(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlayCompositing requires boolean").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    g_overlayCompositingEnabled = info[0].As<Napi::Boolean>().Value();
-    NSLog(@"[ghostty-native] setOverlayCompositing enabled=%d", g_overlayCompositingEnabled);
     return env.Undefined();
 }
 
@@ -3318,7 +3305,7 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
 
-    NSLog(@"[ghostty-native] focus workspaceId=%s", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] focus workspaceId=%s", workspaceId.c_str());
 
     if (entry.surface) {
         entry.liveTick++;
@@ -3344,11 +3331,11 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    NSLog(@"[ghostty-native] destroy workspaceId=%s (sync detach + async free)", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] destroy workspaceId=%s (sync detach + async free)", workspaceId.c_str());
 
     // ---- Synchronous, fast — user-visible state disappears immediately ----
     // Move ownership out of the map and erase the entry so any concurrent
@@ -3410,7 +3397,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (fit != g_freeingGeneration.end() && fit->second == gen) {
             g_freeingGeneration.erase(fit);
         }
-        NSLog(@"[ghostty-native] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
+        NSLog(@"[ghostty-surface] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
               capturedWsId.c_str(), gen);
     });
 
@@ -3443,7 +3430,7 @@ static Napi::Value SendInput(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] sendInput workspaceId=%s: no surface (returning false)",
+        NSLog(@"[ghostty-surface] sendInput workspaceId=%s: no surface (returning false)",
               workspaceId.c_str());
         return Napi::Boolean::New(env, false);
     }
@@ -3489,7 +3476,7 @@ static Napi::Value SendKeys(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] sendKeys workspaceId=%s: no surface (returning false)",
+        NSLog(@"[ghostty-surface] sendKeys workspaceId=%s: no surface (returning false)",
               workspaceId.c_str());
         return Napi::Boolean::New(env, false);
     }
@@ -3555,13 +3542,13 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     if (!g_app) {
-        NSLog(@"[ghostty-native] reloadGhosttyConfig: called before init, ignoring");
+        NSLog(@"[ghostty-surface] reloadGhosttyConfig: called before init, ignoring");
         return Napi::Boolean::New(env, false);
     }
 
     ghostty_config_t newConfig = buildGhosttyConfig(g_resDir);
     if (!newConfig) {
-        NSLog(@"[ghostty-native] reloadGhosttyConfig: buildGhosttyConfig failed");
+        NSLog(@"[ghostty-surface] reloadGhosttyConfig: buildGhosttyConfig failed");
         return Napi::Boolean::New(env, false);
     }
 
@@ -3581,7 +3568,7 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     ghostty_config_free(g_config);
     g_config = newConfig;
 
-    NSLog(@"[ghostty-native] config reloaded successfully");
+    NSLog(@"[ghostty-surface] config reloaded successfully");
     return Napi::Boolean::New(env, true);
 }
 
@@ -3618,6 +3605,2030 @@ static Napi::Value GetSurfacePhase(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// registerPopoverFonts — register Geist Sans + Mono TTF files into the process
+// font manager via CoreText. Idempotent: a boolean gate ensures we only run once.
+//
+// Font path strategy:
+//   JS calls showPopover with an optional fontDir parameter on the FIRST call.
+//   The main process resolves the correct path:
+//     • Packaged: path.join(process.resourcesPath, 'fonts')
+//     • Dev:      path.join(__dirname, '../../node_modules/geist/dist/fonts')
+//   Native stores it in g_geistFontDir and uses it here.
+//
+//   If g_geistFontDir is nil (caller didn't pass it or path missing), we fall
+//   back to a compile-time dev path derived from __FILE__ so dev builds work
+//   without a packaged extraResources layout.
+// ---------------------------------------------------------------------------
+
+static void registerPopoverFonts() {
+    if (g_popoverFontsRegistered) return;
+
+    // Determine the font directory.
+    NSString* fontDir = g_geistFontDir;
+
+    if (!fontDir || fontDir.length == 0) {
+        // Fallback: derive from __FILE__ (absolute at compile time).
+        NSString* addonSrc = @__FILE__;
+        if ([addonSrc hasPrefix:@"/"]) {
+            NSString* pkgDir  = [addonSrc stringByDeletingLastPathComponent];
+            NSString* pkgsDir = [pkgDir stringByDeletingLastPathComponent];
+            NSString* repoDir = [pkgsDir stringByDeletingLastPathComponent];
+            fontDir = [repoDir stringByAppendingPathComponent:@"node_modules/geist/dist/fonts"];
+        } else {
+            NSString* cwd = [[[NSFileManager defaultManager] currentDirectoryPath] stringByStandardizingPath];
+            fontDir = [cwd stringByAppendingPathComponent:@"node_modules/geist/dist/fonts"];
+        }
+        NSLog(@"[ghostty-surface] registerPopoverFonts: using fallback dev font dir: %@", fontDir);
+    }
+
+    // All TTF files to register: Geist Sans (Regular/Medium/SemiBold) + Mono (Regular/SemiBold).
+    NSArray<NSDictionary*>* fonts = @[
+        @{ @"psName": @"Geist-Regular",        @"relPath": @"geist-sans/Geist-Regular.ttf" },
+        @{ @"psName": @"Geist-Medium",         @"relPath": @"geist-sans/Geist-Medium.ttf" },
+        @{ @"psName": @"Geist-SemiBold",       @"relPath": @"geist-sans/Geist-SemiBold.ttf" },
+        @{ @"psName": @"GeistMono-Regular",    @"relPath": @"geist-mono/GeistMono-Regular.ttf" },
+        @{ @"psName": @"GeistMono-SemiBold",   @"relPath": @"geist-mono/GeistMono-SemiBold.ttf" },
+    ];
+
+    int registered = 0, skipped = 0, failed = 0;
+    for (NSDictionary* entry in fonts) {
+        NSString* path = [fontDir stringByAppendingPathComponent:entry[@"relPath"]];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            NSLog(@"[ghostty-surface] registerPopoverFonts: font not found: %@", path);
+            failed++;
+            continue;
+        }
+        NSURL* url = [NSURL fileURLWithPath:path];
+        CFErrorRef err = nullptr;
+        BOOL ok = CTFontManagerRegisterFontsForURL(
+            (__bridge CFURLRef)url,
+            kCTFontManagerScopeProcess,
+            &err
+        );
+        if (!ok) {
+            CFIndex code = err ? CFErrorGetCode(err) : 0;
+            if (code == 105) {
+                // Already registered — idempotent, not an error.
+                skipped++;
+            } else {
+                CFStringRef desc = err ? CFErrorCopyDescription(err) : CFSTR("unknown");
+                NSString* errStr = (__bridge_transfer NSString*)CFStringCreateCopy(nullptr, desc);
+                NSLog(@"[ghostty-surface] registerPopoverFonts: FAILED %@: %@", entry[@"psName"], errStr);
+                failed++;
+            }
+            if (err) CFRelease(err);
+        } else {
+            registered++;
+        }
+    }
+    NSLog(@"[ghostty-surface] registerPopoverFonts: registered=%d skipped=%d failed=%d dir=%@",
+          registered, skipped, failed, fontDir);
+
+    // Mark done even if some fonts failed — partial registration is better than retry loops.
+    g_popoverFontsRegistered = YES;
+}
+
+// Helper: safely resolve a Geist font by PostScript name with system font fallback.
+static NSFont* geistFont(NSString* psName, CGFloat size) {
+    NSFont* f = [NSFont fontWithName:psName size:size];
+    return f ?: [NSFont systemFontOfSize:size];
+}
+
+// ---------------------------------------------------------------------------
+// OrpheusPopoverView — plain layer-backed solid card displayed above the
+// terminal surface. Phase B: full row/section content builders for both the
+// 'hover' card (224px wide) and 'details' card (252px wide).
+//
+// Layout uses explicit frames with top-down y accumulation (isFlipped=YES).
+// All colors come from g_popoverTheme tokens (pushed via setPopoverTheme).
+// Fixed colors (emerald, red, GitHub state colors, amber) are literals per spec.
+//
+// Coordinate system: isFlipped = YES (matches the ghostty view and contentView
+// coordinate system used by cssRectToAppKit).
+// ---------------------------------------------------------------------------
+
+// ---- Fixed brand colors (spec literals — not themed) ----------------------
+static const CGFloat kColorEmerald[4]       = { 0x4a/255.0, 0xde/255.0, 0x80/255.0, 1.0 };  // #4ade80
+static const CGFloat kColorRed[4]           = { 0xf8/255.0, 0x71/255.0, 0x71/255.0, 1.0 };  // #f87171
+static const CGFloat kColorAmber[4]         = { 0xfb/255.0, 0xbf/255.0, 0x24/255.0, 1.0 };  // #fbbf24
+static const CGFloat kColorPrOpen[4]        = { 0x1a/255.0, 0x7f/255.0, 0x37/255.0, 1.0 };  // #1a7f37
+static const CGFloat kColorPrMerged[4]      = { 0x82/255.0, 0x50/255.0, 0xdf/255.0, 1.0 };  // #8250df
+static const CGFloat kColorPrClosed[4]      = { 0xcf/255.0, 0x22/255.0, 0x2e/255.0, 1.0 };  // #cf222e
+static const CGFloat kColorPrDraft[4]       = { 0x6e/255.0, 0x77/255.0, 0x81/255.0, 1.0 };  // #6e7781
+
+static NSColor* fixedColor(const CGFloat c[4]) {
+    return [NSColor colorWithCalibratedRed:c[0] green:c[1] blue:c[2] alpha:c[3]];
+}
+
+// ---- Layout constants per spec --------------------------------------------
+static const CGFloat kCardPadH  = 11.0;   // horizontal padding (L+R)
+static const CGFloat kSepHeight = 1.0;    // divider height
+
+// centerIconY — vertically centers an icon against a text field's GLYPH center.
+//
+// This view is isFlipped=YES (y increases downward). An NSTextField of height
+// `textBoxH` places its visible glyph ~1 px below the box's geometric center
+// (internal leading). So to optically align an icon to the text glyph:
+//   1. Compute the geometric center of the text box: textBoxTop + textBoxH/2.
+//   2. Back out half the icon height: - iconSz/2.
+//   3. Add a px correction for the NSTextField leading inset (downward = + in flipped).
+//
+// Simplified: iconY = textBoxTop + (textBoxH - iconSz) / 2.0 + kIconGlyphInset
+static const CGFloat kIconGlyphInset = 2.0;  // NSTextField internal top-leading offset
+static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat iconSz) {
+    return textBoxTop + (textBoxH - iconSz) / 2.0 + kIconGlyphInset;
+}
+
+@interface OrpheusPopoverView : NSView
+
+// Fixed display width: 252 for 'details', 224 for 'hover'.
+@property (nonatomic, assign) CGFloat cardWidth;
+// Kind string ('details' | 'hover').
+@property (nonatomic, copy)   NSString* kind;
+// WorkspaceId — stored so the action callback can identify which surface.
+@property (nonatomic, copy)   NSString* workspaceId;
+
+// Current data snapshot — used by updatePopover to re-render async fields.
+@property (nonatomic, strong) NSDictionary* currentData;
+
+// Activity-indicator spinner timer (running only for animated states).
+@property (nonatomic, strong) NSTimer*      spinnerTimer;
+@property (nonatomic, strong) NSTextField*  spinnerLabel;  // the braille glyph field
+@property (nonatomic, assign) int           spinnerFrame;
+@property (nonatomic, strong) NSArray<NSString*>* spinnerFrames;
+
+// Hover-bridge: set YES when the pointer is inside the native card.
+// Used by HidePopover to defer JS-initiated hides while the pointer is on the card.
+@property (nonatomic, assign) BOOL pointerInCard;
+
+// Rebuild entire card content from data dict. Called from initWithKind and updatePopover.
+- (CGFloat)buildContentFromData:(NSDictionary*)data;
+// Install (or re-install) the NSTrackingArea covering the full card bounds.
+- (void)installCardTrackingArea;
+
+@end
+
+// ---------------------------------------------------------------------------
+// Singleton Obj-C target for popover clickable elements (PR chip click).
+// sender.identifier encodes "workspaceId::pr" — the JS side already holds the
+// PR URL; it just needs the workspaceId to look it up and open it.
+// ---------------------------------------------------------------------------
+@interface OrpheusPopoverActionTarget : NSObject
++ (instancetype)shared;
+- (void)elementClicked:(NSButton*)sender;
+@end
+
+@implementation OrpheusPopoverActionTarget
++ (instancetype)shared {
+    static OrpheusPopoverActionTarget* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ s = [[OrpheusPopoverActionTarget alloc] init]; });
+    return s;
+}
+- (void)elementClicked:(NSButton*)sender {
+    // sender.identifier encodes "workspaceId::pr".
+    // JS receives the identifier string and opens the PR URL it already has for this workspace.
+    NSString* ident = sender.identifier;
+    if (!ident || ident.length == 0) return;
+    NSLog(@"[ghostty-surface] popover element clicked: %s", ident.UTF8String);
+    if (!g_popoverActionTSFNActive) return;
+    std::string identCpp = ident.UTF8String;
+    g_popoverActionTSFN.NonBlockingCall([identCpp](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, identCpp) });
+    });
+}
+@end
+
+// ---------------------------------------------------------------------------
+// Helpers — used by both card builders
+// ---------------------------------------------------------------------------
+
+// Safe string extraction from a (possibly nil) NSDictionary.
+static NSString* dictStr(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    return [v isKindOfClass:[NSString class]] ? (NSString*)v : @"";
+}
+static BOOL dictBool(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber*)v boolValue];
+    return NO;
+}
+static int dictInt(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber*)v intValue];
+    return 0;
+}
+static NSDictionary* dictDict(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    return [v isKindOfClass:[NSDictionary class]] ? (NSDictionary*)v : nil;
+}
+
+// Create a non-editable, non-selectable label with explicit frame disabled.
+static NSTextField* makeLabel(NSString* text, NSFont* font, NSColor* color) {
+    NSTextField* f = [NSTextField labelWithString:text ?: @""];
+    f.font      = font;
+    f.textColor = color;
+    f.drawsBackground = NO;
+    f.bordered        = NO;
+    f.editable        = NO;
+    f.selectable      = NO;
+    f.cell.wraps = NO;
+    f.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    return f;
+}
+
+// Create a 1px horizontal divider line (full card width).
+// isFlipped=YES so origin.y is the TOP of the line.
+static NSView* makeDivider(CGFloat y, CGFloat width) {
+    NSView* sep = [[NSView alloc] initWithFrame:NSMakeRect(0, y, width, kSepHeight)];
+    sep.wantsLayer = YES;
+    // border-white/10 per spec
+    sep.layer.backgroundColor =
+        [NSColor colorWithCalibratedRed:1.0 green:1.0 blue:1.0 alpha:0.10].CGColor;
+    return sep;
+}
+
+// Resolve color for a PR state string.
+static NSColor* prStateColor(NSString* state) {
+    if ([state isEqualToString:@"merged"])  return fixedColor(kColorPrMerged);
+    if ([state isEqualToString:@"closed"])  return fixedColor(kColorPrClosed);
+    if ([state isEqualToString:@"draft"])   return fixedColor(kColorPrDraft);
+    return fixedColor(kColorPrOpen); // open (default)
+}
+
+// ---------------------------------------------------------------------------
+// Phosphor icon renderer — real Phosphor SVG path data, pre-converted to
+// NSBezierPath construction calls (offline arc→cubic conversion; no runtime
+// SVG parsing). Viewbox is 256×256; Y-flip applied (y' = 256 - y).
+//
+// Approach: SVG arc segments (A/a) were converted to cubic bezier approximations
+// offline via a Node.js script using the standard parameterised-arc algorithm
+// (see https://www.w3.org/TR/SVG/implnote.html#ArcImplementationNotes).
+// The resulting NSBezierPath construction code is embedded verbatim so the
+// native addon never does runtime SVG parsing.
+//
+// Icons embedded (name → weight as used in the React app):
+//   GitBranch      regular  (git branch rows)
+//   Files          regular  (git changes rows)
+//   GitPullRequest regular  (PR chip open/closed/draft states)
+//   GitPullRequest fill     (PR chip open state — PrChip.tsx uses fill for open)
+//   GitMerge       regular  (PR chip merged state)
+//   GitMerge       fill     (PR chip merged state — PrChip.tsx uses fill)
+//   Circle         fill     (activity 'ready')
+//   CircleDashed   bold     (activity 'idle')
+//   Diamond        fill     (activity 'attention')
+//
+// PR state mapping (matching PrChip.tsx StateIcon):
+//   merged  → GitMerge  fill
+//   open    → GitPullRequest fill
+//   closed  → GitPullRequest fill   (same as open — github uses same shape)
+//   draft   → GitPullRequest regular (lighter weight signals draft)
+// ---------------------------------------------------------------------------
+
+// Build the NSBezierPath for a named Phosphor icon at 256px viewbox size.
+// Returns nil for unknown names. The path is already Y-flipped (SVG y-down →
+// NSBezierPath y-up) and ready to scale.
+static NSBezierPath* phosphorPath(NSString* name) {
+    NSBezierPath* path = nil;
+
+    if ([name isEqualToString:@"GitBranch_regular"]) {
+        // Phosphor GitBranch weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(232.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(202.6814, 223.8713) controlPoint1:NSMakePoint(231.9916, 208.6274) controlPoint2:NSMakePoint(219.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(168.4521, 197.3436) controlPoint1:NSMakePoint(186.1124, 225.2646) controlPoint2:NSMakePoint(171.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(192.0000, 161.0000) controlPoint1:NSMakePoint(165.6671, 180.9511) controlPoint2:NSMakePoint(175.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(192.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 136.0000) controlPoint1:NSMakePoint(192.0000, 139.5817) controlPoint2:NSMakePoint(188.4183, 136.0000)];
+        [path lineToPoint:NSMakePoint(96.0000, 136.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 134.6200) controlPoint1:NSMakePoint(93.2740, 136.0008) controlPoint2:NSMakePoint(90.5682, 135.5340)];
+        [path lineToPoint:NSMakePoint(88.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(111.7450, 196.0160) controlPoint1:NSMakePoint(103.6025, 165.0285) controlPoint2:NSMakePoint(113.7754, 180.0303)];
+        [path curveToPoint:NSMakePoint(80.0000, 223.9839) controlPoint1:NSMakePoint(109.7145, 212.0017) controlPoint2:NSMakePoint(96.1141, 223.9839)];
+        [path curveToPoint:NSMakePoint(48.2550, 196.0160) controlPoint1:NSMakePoint(63.8859, 223.9839) controlPoint2:NSMakePoint(50.2855, 212.0017)];
+        [path curveToPoint:NSMakePoint(72.0000, 161.0000) controlPoint1:NSMakePoint(46.2246, 180.0303) controlPoint2:NSMakePoint(56.3975, 165.0285)];
+        [path lineToPoint:NSMakePoint(72.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 59.9840) controlPoint1:NSMakePoint(56.3975, 90.9715) controlPoint2:NSMakePoint(46.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 32.0161) controlPoint1:NSMakePoint(50.2855, 43.9983) controlPoint2:NSMakePoint(63.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 59.9840) controlPoint1:NSMakePoint(96.1141, 32.0161) controlPoint2:NSMakePoint(109.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 95.0000) controlPoint1:NSMakePoint(113.7754, 75.9697) controlPoint2:NSMakePoint(103.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 112.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 120.0000) controlPoint1:NSMakePoint(88.0000, 116.4183) controlPoint2:NSMakePoint(91.5817, 120.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 120.0000)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(197.2548, 120.0000) controlPoint2:NSMakePoint(208.0000, 130.7452)];
+        [path lineToPoint:NSMakePoint(208.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 192.0000) controlPoint1:NSMakePoint(222.1221, 164.6682) controlPoint2:NSMakePoint(231.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(64.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 208.0000) controlPoint1:NSMakePoint(64.0000, 200.8366) controlPoint2:NSMakePoint(71.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 192.0000) controlPoint1:NSMakePoint(88.8366, 208.0000) controlPoint2:NSMakePoint(96.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(80.0000, 176.0000) controlPoint1:NSMakePoint(96.0000, 183.1634) controlPoint2:NSMakePoint(88.8366, 176.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 192.0000) controlPoint1:NSMakePoint(71.1634, 176.0000) controlPoint2:NSMakePoint(64.0000, 183.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 48.0000) controlPoint1:NSMakePoint(96.0000, 55.1634) controlPoint2:NSMakePoint(88.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 64.0000) controlPoint1:NSMakePoint(71.1634, 48.0000) controlPoint2:NSMakePoint(64.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 80.0000) controlPoint1:NSMakePoint(64.0000, 72.8366) controlPoint2:NSMakePoint(71.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 64.0000) controlPoint1:NSMakePoint(88.8366, 80.0000) controlPoint2:NSMakePoint(96.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 176.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 192.0000) controlPoint1:NSMakePoint(191.1634, 176.0000) controlPoint2:NSMakePoint(184.0000, 183.1634)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(184.0000, 200.8366) controlPoint2:NSMakePoint(191.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 192.0000) controlPoint1:NSMakePoint(208.8366, 208.0000) controlPoint2:NSMakePoint(216.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(200.0000, 176.0000) controlPoint1:NSMakePoint(216.0000, 183.1634) controlPoint2:NSMakePoint(208.8366, 176.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Files_regular"]) {
+        // Phosphor Files weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(213.6600, 189.6600)];
+        [path lineToPoint:NSMakePoint(173.6600, 229.6600)];
+        [path curveToPoint:NSMakePoint(168.0000, 232.0000) controlPoint1:NSMakePoint(172.1584, 231.1599) controlPoint2:NSMakePoint(170.1224, 232.0017)];
+        [path lineToPoint:NSMakePoint(88.0000, 232.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 216.0000) controlPoint1:NSMakePoint(79.1634, 232.0000) controlPoint2:NSMakePoint(72.0000, 224.8366)];
+        [path lineToPoint:NSMakePoint(72.0000, 200.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(40.0000, 184.0000) controlPoint1:NSMakePoint(47.1634, 200.0000) controlPoint2:NSMakePoint(40.0000, 192.8366)];
+        [path lineToPoint:NSMakePoint(40.0000, 40.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 24.0000) controlPoint1:NSMakePoint(40.0000, 31.1634) controlPoint2:NSMakePoint(47.1634, 24.0000)];
+        [path lineToPoint:NSMakePoint(168.0000, 24.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 40.0000) controlPoint1:NSMakePoint(176.8366, 24.0000) controlPoint2:NSMakePoint(184.0000, 31.1634)];
+        [path lineToPoint:NSMakePoint(184.0000, 56.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 72.0000) controlPoint1:NSMakePoint(208.8366, 56.0000) controlPoint2:NSMakePoint(216.0000, 63.1634)];
+        [path lineToPoint:NSMakePoint(216.0000, 184.0000)];
+        [path curveToPoint:NSMakePoint(213.6600, 189.6600) controlPoint1:NSMakePoint(216.0017, 186.1224) controlPoint2:NSMakePoint(215.1599, 188.1584)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(168.0000, 40.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 40.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 184.0000)];
+        [path lineToPoint:NSMakePoint(132.6900, 184.0000)];
+        [path lineToPoint:NSMakePoint(168.0000, 148.6900)];
+        [path lineToPoint:NSMakePoint(168.0000, 64.1600)];
+        [path curveToPoint:NSMakePoint(168.0000, 64.0000) controlPoint1:NSMakePoint(168.0000, 64.1000) controlPoint2:NSMakePoint(168.0000, 64.0500)];
+        [path curveToPoint:NSMakePoint(168.0000, 63.8400) controlPoint1:NSMakePoint(168.0000, 63.9500) controlPoint2:NSMakePoint(168.0000, 63.9000)];
+        [path lineToPoint:NSMakePoint(168.0000, 40.0000)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 72.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 72.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 152.0000)];
+        [path curveToPoint:NSMakePoint(181.6600, 157.6600) controlPoint1:NSMakePoint(184.0017, 154.1224) controlPoint2:NSMakePoint(183.1599, 156.1584)];
+        [path lineToPoint:NSMakePoint(141.6600, 197.6600)];
+        [path curveToPoint:NSMakePoint(136.0000, 200.0000) controlPoint1:NSMakePoint(140.1584, 199.1599) controlPoint2:NSMakePoint(138.1224, 200.0017)];
+        [path lineToPoint:NSMakePoint(88.0000, 200.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 216.0000)];
+        [path lineToPoint:NSMakePoint(164.6900, 216.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 180.6900)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(144.0000, 104.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 96.0000) controlPoint1:NSMakePoint(144.0000, 99.5817) controlPoint2:NSMakePoint(140.4183, 96.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 104.0000) controlPoint1:NSMakePoint(83.5817, 96.0000) controlPoint2:NSMakePoint(80.0000, 99.5817)];
+        [path curveToPoint:NSMakePoint(88.0000, 112.0000) controlPoint1:NSMakePoint(80.0000, 108.4183) controlPoint2:NSMakePoint(83.5817, 112.0000)];
+        [path lineToPoint:NSMakePoint(136.0000, 112.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 104.0000) controlPoint1:NSMakePoint(140.4183, 112.0000) controlPoint2:NSMakePoint(144.0000, 108.4183)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(144.0000, 72.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 64.0000) controlPoint1:NSMakePoint(144.0000, 67.5817) controlPoint2:NSMakePoint(140.4183, 64.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(83.5817, 64.0000) controlPoint2:NSMakePoint(80.0000, 67.5817)];
+        [path curveToPoint:NSMakePoint(88.0000, 80.0000) controlPoint1:NSMakePoint(80.0000, 76.4183) controlPoint2:NSMakePoint(83.5817, 80.0000)];
+        [path lineToPoint:NSMakePoint(136.0000, 80.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 72.0000) controlPoint1:NSMakePoint(140.4183, 80.0000) controlPoint2:NSMakePoint(144.0000, 76.4183)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitPullRequest_regular"]) {
+        // Phosphor GitPullRequest weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(104.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(74.6814, 223.8713) controlPoint1:NSMakePoint(103.9916, 208.6274) controlPoint2:NSMakePoint(91.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(40.4521, 197.3436) controlPoint1:NSMakePoint(58.1124, 225.2646) controlPoint2:NSMakePoint(43.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(64.0000, 161.0000) controlPoint1:NSMakePoint(37.6671, 180.9511) controlPoint2:NSMakePoint(47.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(64.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(40.2550, 59.9840) controlPoint1:NSMakePoint(48.3975, 90.9715) controlPoint2:NSMakePoint(38.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(72.0000, 32.0161) controlPoint1:NSMakePoint(42.2855, 43.9983) controlPoint2:NSMakePoint(55.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(103.7450, 59.9840) controlPoint1:NSMakePoint(88.1141, 32.0161) controlPoint2:NSMakePoint(101.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(80.0000, 95.0000) controlPoint1:NSMakePoint(105.7754, 75.9697) controlPoint2:NSMakePoint(95.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(80.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(104.0000, 192.0000) controlPoint1:NSMakePoint(94.1221, 164.6682) controlPoint2:NSMakePoint(103.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(56.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 208.0000) controlPoint1:NSMakePoint(56.0000, 200.8366) controlPoint2:NSMakePoint(63.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 192.0000) controlPoint1:NSMakePoint(80.8366, 208.0000) controlPoint2:NSMakePoint(88.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(72.0000, 176.0000) controlPoint1:NSMakePoint(88.0000, 183.1634) controlPoint2:NSMakePoint(80.8366, 176.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 192.0000) controlPoint1:NSMakePoint(63.1634, 176.0000) controlPoint2:NSMakePoint(56.0000, 183.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 48.0000) controlPoint1:NSMakePoint(88.0000, 55.1634) controlPoint2:NSMakePoint(80.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 64.0000) controlPoint1:NSMakePoint(63.1634, 48.0000) controlPoint2:NSMakePoint(56.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(72.0000, 80.0000) controlPoint1:NSMakePoint(56.0000, 72.8366) controlPoint2:NSMakePoint(63.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 64.0000) controlPoint1:NSMakePoint(80.8366, 80.0000) controlPoint2:NSMakePoint(88.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 95.0000)];
+        [path lineToPoint:NSMakePoint(208.0000, 145.3700)];
+        [path curveToPoint:NSMakePoint(201.0000, 162.3700) controlPoint1:NSMakePoint(208.0323, 151.7444) controlPoint2:NSMakePoint(205.5114, 157.8665)];
+        [path lineToPoint:NSMakePoint(163.3100, 200.0000)];
+        [path lineToPoint:NSMakePoint(192.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(196.4183, 200.0000) controlPoint2:NSMakePoint(200.0000, 203.5817)];
+        [path curveToPoint:NSMakePoint(192.0000, 216.0000) controlPoint1:NSMakePoint(200.0000, 212.4183) controlPoint2:NSMakePoint(196.4183, 216.0000)];
+        [path lineToPoint:NSMakePoint(144.0000, 216.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 208.0000) controlPoint1:NSMakePoint(139.5817, 216.0000) controlPoint2:NSMakePoint(136.0000, 212.4183)];
+        [path lineToPoint:NSMakePoint(136.0000, 160.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 152.0000) controlPoint1:NSMakePoint(136.0000, 155.5817) controlPoint2:NSMakePoint(139.5817, 152.0000)];
+        [path curveToPoint:NSMakePoint(152.0000, 160.0000) controlPoint1:NSMakePoint(148.4183, 152.0000) controlPoint2:NSMakePoint(152.0000, 155.5817)];
+        [path lineToPoint:NSMakePoint(152.0000, 188.6900)];
+        [path lineToPoint:NSMakePoint(189.6600, 151.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 145.3400) controlPoint1:NSMakePoint(191.1599, 149.4984) controlPoint2:NSMakePoint(192.0017, 147.4624)];
+        [path lineToPoint:NSMakePoint(192.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(168.2550, 59.9840) controlPoint1:NSMakePoint(176.3975, 90.9715) controlPoint2:NSMakePoint(166.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(200.0000, 32.0161) controlPoint1:NSMakePoint(170.2855, 43.9983) controlPoint2:NSMakePoint(183.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(231.7450, 59.9840) controlPoint1:NSMakePoint(216.1141, 32.0161) controlPoint2:NSMakePoint(229.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(208.0000, 95.0000) controlPoint1:NSMakePoint(233.7754, 75.9697) controlPoint2:NSMakePoint(223.6025, 90.9715)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 48.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 64.0000) controlPoint1:NSMakePoint(191.1634, 48.0000) controlPoint2:NSMakePoint(184.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(200.0000, 80.0000) controlPoint1:NSMakePoint(184.0000, 72.8366) controlPoint2:NSMakePoint(191.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 64.0000) controlPoint1:NSMakePoint(208.8366, 80.0000) controlPoint2:NSMakePoint(216.0000, 72.8366)];
+        [path curveToPoint:NSMakePoint(200.0000, 48.0000) controlPoint1:NSMakePoint(216.0000, 55.1634) controlPoint2:NSMakePoint(208.8366, 48.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitPullRequest_fill"]) {
+        // Phosphor GitPullRequest weight=fill, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(104.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(74.6814, 223.8713) controlPoint1:NSMakePoint(103.9916, 208.6274) controlPoint2:NSMakePoint(91.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(40.4521, 197.3436) controlPoint1:NSMakePoint(58.1124, 225.2646) controlPoint2:NSMakePoint(43.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(64.0000, 161.0000) controlPoint1:NSMakePoint(37.6671, 180.9511) controlPoint2:NSMakePoint(47.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(64.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(40.2550, 59.9840) controlPoint1:NSMakePoint(48.3975, 90.9715) controlPoint2:NSMakePoint(38.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(72.0000, 32.0161) controlPoint1:NSMakePoint(42.2855, 43.9983) controlPoint2:NSMakePoint(55.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(103.7450, 59.9840) controlPoint1:NSMakePoint(88.1141, 32.0161) controlPoint2:NSMakePoint(101.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(80.0000, 95.0000) controlPoint1:NSMakePoint(105.7754, 75.9697) controlPoint2:NSMakePoint(95.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(80.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(104.0000, 192.0000) controlPoint1:NSMakePoint(94.1221, 164.6682) controlPoint2:NSMakePoint(103.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 48.0000) controlPoint1:NSMakePoint(88.0000, 55.1634) controlPoint2:NSMakePoint(80.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 64.0000) controlPoint1:NSMakePoint(63.1634, 48.0000) controlPoint2:NSMakePoint(56.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(72.0000, 80.0000) controlPoint1:NSMakePoint(56.0000, 72.8366) controlPoint2:NSMakePoint(63.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 64.0000) controlPoint1:NSMakePoint(80.8366, 80.0000) controlPoint2:NSMakePoint(88.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(232.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(202.6814, 32.1287) controlPoint1:NSMakePoint(231.9916, 47.3726) controlPoint2:NSMakePoint(219.2503, 33.5219)];
+        [path curveToPoint:NSMakePoint(168.4521, 58.6564) controlPoint1:NSMakePoint(186.1124, 30.7354) controlPoint2:NSMakePoint(171.2370, 42.2638)];
+        [path curveToPoint:NSMakePoint(192.0000, 95.0000) controlPoint1:NSMakePoint(165.6671, 75.0489) controlPoint2:NSMakePoint(175.9006, 90.8431)];
+        [path lineToPoint:NSMakePoint(192.0000, 145.3700)];
+        [path curveToPoint:NSMakePoint(189.6600, 151.0300) controlPoint1:NSMakePoint(192.0017, 147.4924) controlPoint2:NSMakePoint(191.1599, 149.5284)];
+        [path lineToPoint:NSMakePoint(152.0000, 188.6900)];
+        [path lineToPoint:NSMakePoint(152.0000, 160.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 152.0000) controlPoint1:NSMakePoint(152.0000, 155.5817) controlPoint2:NSMakePoint(148.4183, 152.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 160.0000) controlPoint1:NSMakePoint(139.5817, 152.0000) controlPoint2:NSMakePoint(136.0000, 155.5817)];
+        [path lineToPoint:NSMakePoint(136.0000, 208.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 216.0000) controlPoint1:NSMakePoint(136.0000, 212.4183) controlPoint2:NSMakePoint(139.5817, 216.0000)];
+        [path lineToPoint:NSMakePoint(192.0000, 216.0000)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(196.4183, 216.0000) controlPoint2:NSMakePoint(200.0000, 212.4183)];
+        [path curveToPoint:NSMakePoint(192.0000, 200.0000) controlPoint1:NSMakePoint(200.0000, 203.5817) controlPoint2:NSMakePoint(196.4183, 200.0000)];
+        [path lineToPoint:NSMakePoint(163.3100, 200.0000)];
+        [path lineToPoint:NSMakePoint(201.0000, 162.3400)];
+        [path curveToPoint:NSMakePoint(208.0000, 145.3400) controlPoint1:NSMakePoint(205.5114, 157.8365) controlPoint2:NSMakePoint(208.0323, 151.7144)];
+        [path lineToPoint:NSMakePoint(208.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 64.0000) controlPoint1:NSMakePoint(222.1221, 91.3318) controlPoint2:NSMakePoint(231.9862, 78.5907)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitMerge_regular"]) {
+        // Phosphor GitMerge weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(208.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(177.3100, 121.0000) controlPoint1:NSMakePoint(193.8055, 143.9753) controlPoint2:NSMakePoint(181.3181, 134.6169)];
+        [path lineToPoint:NSMakePoint(135.1000, 127.0000)];
+        [path curveToPoint:NSMakePoint(130.1500, 129.7100) controlPoint1:NSMakePoint(133.1756, 127.2721) controlPoint2:NSMakePoint(131.4160, 128.2354)];
+        [path lineToPoint:NSMakePoint(94.4300, 171.4500)];
+        [path curveToPoint:NSMakePoint(110.6369, 209.1114) controlPoint1:NSMakePoint(108.2214, 178.4399) controlPoint2:NSMakePoint(115.0425, 194.2908)];
+        [path curveToPoint:NSMakePoint(76.4888, 231.8041) controlPoint1:NSMakePoint(106.2312, 223.9321) controlPoint2:NSMakePoint(91.8590, 233.4829)];
+        [path curveToPoint:NSMakePoint(48.0449, 202.2746) controlPoint1:NSMakePoint(61.1186, 230.1252) controlPoint2:NSMakePoint(49.1471, 217.6968)];
+        [path curveToPoint:NSMakePoint(72.0000, 169.0000) controlPoint1:NSMakePoint(46.9426, 186.8523) controlPoint2:NSMakePoint(57.0248, 172.8477)];
+        [path lineToPoint:NSMakePoint(72.0000, 87.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 51.9840) controlPoint1:NSMakePoint(56.3975, 82.9715) controlPoint2:NSMakePoint(46.2246, 67.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 24.0161) controlPoint1:NSMakePoint(50.2855, 35.9983) controlPoint2:NSMakePoint(63.8859, 24.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 51.9840) controlPoint1:NSMakePoint(96.1141, 24.0161) controlPoint2:NSMakePoint(109.7145, 35.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 87.0000) controlPoint1:NSMakePoint(113.7754, 67.9697) controlPoint2:NSMakePoint(103.6025, 82.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 154.3700)];
+        [path lineToPoint:NSMakePoint(118.0000, 119.3700)];
+        [path curveToPoint:NSMakePoint(132.8300, 111.2300) controlPoint1:NSMakePoint(121.7915, 114.9466) controlPoint2:NSMakePoint(127.0625, 112.0534)];
+        [path lineToPoint:NSMakePoint(176.8300, 104.9500)];
+        [path curveToPoint:NSMakePoint(212.7797, 80.3524) controlPoint1:NSMakePoint(180.5225, 88.6015) controlPoint2:NSMakePoint(196.2040, 77.8719)];
+        [path curveToPoint:NSMakePoint(239.9539, 114.3964) controlPoint1:NSMakePoint(229.3555, 82.8330) controlPoint2:NSMakePoint(241.2090, 97.6831)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(238.6988, 131.1097) controlPoint2:NSMakePoint(224.7603, 144.0229)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(64.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 216.0000) controlPoint1:NSMakePoint(64.0000, 208.8366) controlPoint2:NSMakePoint(71.1634, 216.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 200.0000) controlPoint1:NSMakePoint(88.8366, 216.0000) controlPoint2:NSMakePoint(96.0000, 208.8366)];
+        [path curveToPoint:NSMakePoint(80.0000, 184.0000) controlPoint1:NSMakePoint(96.0000, 191.1634) controlPoint2:NSMakePoint(88.8366, 184.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 200.0000) controlPoint1:NSMakePoint(71.1634, 184.0000) controlPoint2:NSMakePoint(64.0000, 191.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 40.0000) controlPoint1:NSMakePoint(96.0000, 47.1634) controlPoint2:NSMakePoint(88.8366, 40.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 56.0000) controlPoint1:NSMakePoint(71.1634, 40.0000) controlPoint2:NSMakePoint(64.0000, 47.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(64.0000, 64.8366) controlPoint2:NSMakePoint(71.1634, 72.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 56.0000) controlPoint1:NSMakePoint(88.8366, 72.0000) controlPoint2:NSMakePoint(96.0000, 64.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 112.0000) controlPoint1:NSMakePoint(199.1634, 96.0000) controlPoint2:NSMakePoint(192.0000, 103.1634)];
+        [path curveToPoint:NSMakePoint(208.0000, 128.0000) controlPoint1:NSMakePoint(192.0000, 120.8366) controlPoint2:NSMakePoint(199.1634, 128.0000)];
+        [path curveToPoint:NSMakePoint(224.0000, 112.0000) controlPoint1:NSMakePoint(216.8366, 128.0000) controlPoint2:NSMakePoint(224.0000, 120.8366)];
+        [path curveToPoint:NSMakePoint(208.0000, 96.0000) controlPoint1:NSMakePoint(224.0000, 103.1634) controlPoint2:NSMakePoint(216.8366, 96.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitMerge_fill"]) {
+        // Phosphor GitMerge weight=fill, 256×256 viewbox, Y-flipped
+        // (same main body as regular but without the outline circle sub-paths —
+        // fill variant fills the whole shape solid)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(208.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(177.3100, 121.0000) controlPoint1:NSMakePoint(193.8055, 143.9753) controlPoint2:NSMakePoint(181.3181, 134.6169)];
+        [path lineToPoint:NSMakePoint(135.1000, 127.0000)];
+        [path curveToPoint:NSMakePoint(130.1500, 129.7100) controlPoint1:NSMakePoint(133.1756, 127.2721) controlPoint2:NSMakePoint(131.4160, 128.2354)];
+        [path lineToPoint:NSMakePoint(94.4300, 171.4500)];
+        [path curveToPoint:NSMakePoint(110.6369, 209.1114) controlPoint1:NSMakePoint(108.2214, 178.4399) controlPoint2:NSMakePoint(115.0425, 194.2908)];
+        [path curveToPoint:NSMakePoint(76.4888, 231.8041) controlPoint1:NSMakePoint(106.2312, 223.9321) controlPoint2:NSMakePoint(91.8590, 233.4829)];
+        [path curveToPoint:NSMakePoint(48.0449, 202.2746) controlPoint1:NSMakePoint(61.1186, 230.1252) controlPoint2:NSMakePoint(49.1471, 217.6968)];
+        [path curveToPoint:NSMakePoint(72.0000, 169.0000) controlPoint1:NSMakePoint(46.9426, 186.8523) controlPoint2:NSMakePoint(57.0248, 172.8477)];
+        [path lineToPoint:NSMakePoint(72.0000, 87.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 51.9840) controlPoint1:NSMakePoint(56.3975, 82.9715) controlPoint2:NSMakePoint(46.2246, 67.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 24.0161) controlPoint1:NSMakePoint(50.2855, 35.9983) controlPoint2:NSMakePoint(63.8859, 24.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 51.9840) controlPoint1:NSMakePoint(96.1141, 24.0161) controlPoint2:NSMakePoint(109.7145, 35.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 87.0000) controlPoint1:NSMakePoint(113.7754, 67.9697) controlPoint2:NSMakePoint(103.6025, 82.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 154.3700)];
+        [path lineToPoint:NSMakePoint(118.0000, 119.3700)];
+        [path curveToPoint:NSMakePoint(132.8300, 111.2300) controlPoint1:NSMakePoint(121.7915, 114.9466) controlPoint2:NSMakePoint(127.0625, 112.0534)];
+        [path lineToPoint:NSMakePoint(176.8300, 104.9500)];
+        [path curveToPoint:NSMakePoint(212.7797, 80.3524) controlPoint1:NSMakePoint(180.5225, 88.6015) controlPoint2:NSMakePoint(196.2040, 77.8719)];
+        [path curveToPoint:NSMakePoint(239.9539, 114.3964) controlPoint1:NSMakePoint(229.3555, 82.8330) controlPoint2:NSMakePoint(241.2090, 97.6831)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(238.6988, 131.1097) controlPoint2:NSMakePoint(224.7603, 144.0229)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 40.0000) controlPoint1:NSMakePoint(96.0000, 47.1634) controlPoint2:NSMakePoint(88.8366, 40.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 56.0000) controlPoint1:NSMakePoint(71.1634, 40.0000) controlPoint2:NSMakePoint(64.0000, 47.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(64.0000, 64.8366) controlPoint2:NSMakePoint(71.1634, 72.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 56.0000) controlPoint1:NSMakePoint(88.8366, 72.0000) controlPoint2:NSMakePoint(96.0000, 64.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 112.0000) controlPoint1:NSMakePoint(199.1634, 96.0000) controlPoint2:NSMakePoint(192.0000, 103.1634)];
+        [path curveToPoint:NSMakePoint(208.0000, 128.0000) controlPoint1:NSMakePoint(192.0000, 120.8366) controlPoint2:NSMakePoint(199.1634, 128.0000)];
+        [path curveToPoint:NSMakePoint(224.0000, 112.0000) controlPoint1:NSMakePoint(216.8366, 128.0000) controlPoint2:NSMakePoint(224.0000, 120.8366)];
+        [path curveToPoint:NSMakePoint(208.0000, 96.0000) controlPoint1:NSMakePoint(224.0000, 103.1634) controlPoint2:NSMakePoint(216.8366, 96.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Circle_fill"]) {
+        // Phosphor Circle weight=fill, 256×256 viewbox, Y-flipped
+        // Simple filled circle: A(104,104) arc converted to 4 cubic beziers.
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(232.0000, 128.0000)];
+        [path curveToPoint:NSMakePoint(128.0000, 24.0000) controlPoint1:NSMakePoint(232.0000, 70.5624) controlPoint2:NSMakePoint(185.4376, 24.0000)];
+        [path curveToPoint:NSMakePoint(24.0000, 128.0000) controlPoint1:NSMakePoint(70.5624, 24.0000) controlPoint2:NSMakePoint(24.0000, 70.5624)];
+        [path curveToPoint:NSMakePoint(128.0000, 232.0000) controlPoint1:NSMakePoint(24.0000, 185.4376) controlPoint2:NSMakePoint(70.5624, 232.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 128.0000) controlPoint1:NSMakePoint(185.4079, 231.9284) controlPoint2:NSMakePoint(231.9284, 185.4079)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"CircleDashed_bold"]) {
+        // Phosphor CircleDashed weight=bold, 256×256 viewbox, Y-flipped
+        // Six arc-dashes around the circle, each converted to cubic beziers.
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(92.3800, 217.9500)];
+        [path curveToPoint:NSMakePoint(93.6575, 227.0518) controlPoint1:NSMakePoint(91.5811, 221.0332) controlPoint2:NSMakePoint(92.0406, 224.3076)];
+        [path curveToPoint:NSMakePoint(101.0000, 232.5800) controlPoint1:NSMakePoint(95.2743, 229.7959) controlPoint2:NSMakePoint(97.9158, 231.7847)];
+        [path curveToPoint:NSMakePoint(155.0000, 232.5800) controlPoint1:NSMakePoint(118.7096, 237.1526) controlPoint2:NSMakePoint(137.2904, 237.1526)];
+        [path curveToPoint:NSMakePoint(163.8285, 224.1969) controlPoint1:NSMakePoint(159.2471, 231.5967) controlPoint2:NSMakePoint(162.6268, 228.3874)];
+        [path curveToPoint:NSMakePoint(160.7839, 212.4092) controlPoint1:NSMakePoint(165.0301, 220.0063) controlPoint2:NSMakePoint(163.8645, 215.4937)];
+        [path curveToPoint:NSMakePoint(149.0000, 209.3500) controlPoint1:NSMakePoint(157.7032, 209.3247) controlPoint2:NSMakePoint(153.1920, 208.1536)];
+        [path curveToPoint:NSMakePoint(107.0000, 209.3500) controlPoint1:NSMakePoint(135.2253, 212.9017) controlPoint2:NSMakePoint(120.7747, 212.9017)];
+        [path curveToPoint:NSMakePoint(92.3800, 217.9500) controlPoint1:NSMakePoint(100.5885, 207.6913) controlPoint2:NSMakePoint(94.0453, 211.5402)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(50.9400, 203.6600)];
+        [path curveToPoint:NSMakePoint(23.9400, 156.9000) controlPoint1:NSMakePoint(38.1295, 190.6082) controlPoint2:NSMakePoint(28.8397, 174.5196)];
+        [path curveToPoint:NSMakePoint(25.0645, 147.7806) controlPoint1:NSMakePoint(23.0901, 153.8314) controlPoint2:NSMakePoint(23.4946, 150.5508)];
+        [path curveToPoint:NSMakePoint(32.3100, 142.1300) controlPoint1:NSMakePoint(26.6343, 145.0104) controlPoint2:NSMakePoint(29.2408, 142.9777)];
+        [path curveToPoint:NSMakePoint(35.5100, 141.7000) controlPoint1:NSMakePoint(33.3529, 141.8455) controlPoint2:NSMakePoint(34.4290, 141.7009)];
+        [path curveToPoint:NSMakePoint(47.0700, 150.5000) controlPoint1:NSMakePoint(40.9030, 141.7025) controlPoint2:NSMakePoint(45.6319, 145.3023)];
+        [path curveToPoint:NSMakePoint(68.0700, 186.8500) controlPoint1:NSMakePoint(50.8807, 164.1987) controlPoint2:NSMakePoint(58.1063, 176.7060)];
+        [path curveToPoint:NSMakePoint(67.9100, 203.8200) controlPoint1:NSMakePoint(72.7120, 191.5803) controlPoint2:NSMakePoint(72.6403, 199.1780)];
+        [path curveToPoint:NSMakePoint(50.9400, 203.6600) controlPoint1:NSMakePoint(63.1797, 208.4620) controlPoint2:NSMakePoint(55.5820, 208.3903)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(47.0600, 105.5200)];
+        [path curveToPoint:NSMakePoint(32.3561, 113.6320) controlPoint1:NSMakePoint(45.1823, 111.7744) controlPoint2:NSMakePoint(38.6482, 115.3792)];
+        [path curveToPoint:NSMakePoint(23.9400, 99.1000) controlPoint1:NSMakePoint(26.0640, 111.8848) controlPoint2:NSMakePoint(22.3241, 105.4270)];
+        [path curveToPoint:NSMakePoint(50.9400, 52.3200) controlPoint1:NSMakePoint(28.8325, 81.4715) controlPoint2:NSMakePoint(38.1231, 65.3748)];
+        [path curveToPoint:NSMakePoint(67.4387, 52.6574) controlPoint1:NSMakePoint(55.6565, 48.0332) controlPoint2:NSMakePoint(62.9014, 48.1814)];
+        [path curveToPoint:NSMakePoint(68.0000, 69.1500) controlPoint1:NSMakePoint(71.9759, 57.1335) controlPoint2:NSMakePoint(72.2224, 64.3758)];
+        [path curveToPoint:NSMakePoint(47.0600, 105.5200) controlPoint1:NSMakePoint(58.0552, 79.3063) controlPoint2:NSMakePoint(50.8503, 91.8202)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(149.0000, 46.6500)];
+        [path curveToPoint:NSMakePoint(107.0000, 46.6500) controlPoint1:NSMakePoint(135.2259, 43.0935) controlPoint2:NSMakePoint(120.7741, 43.0935)];
+        [path curveToPoint:NSMakePoint(95.2161, 43.5908) controlPoint1:NSMakePoint(102.8080, 47.8464) controlPoint2:NSMakePoint(98.2968, 46.6753)];
+        [path curveToPoint:NSMakePoint(92.1715, 31.8031) controlPoint1:NSMakePoint(92.1355, 40.5063) controlPoint2:NSMakePoint(90.9699, 35.9937)];
+        [path curveToPoint:NSMakePoint(101.0000, 23.4200) controlPoint1:NSMakePoint(93.3732, 27.6126) controlPoint2:NSMakePoint(96.7529, 24.4033)];
+        [path curveToPoint:NSMakePoint(155.0000, 23.4200) controlPoint1:NSMakePoint(118.7096, 18.8474) controlPoint2:NSMakePoint(137.2904, 18.8474)];
+        [path curveToPoint:NSMakePoint(163.8285, 31.8031) controlPoint1:NSMakePoint(159.2471, 24.4033) controlPoint2:NSMakePoint(162.6268, 27.6126)];
+        [path curveToPoint:NSMakePoint(160.7839, 43.5908) controlPoint1:NSMakePoint(165.0301, 35.9937) controlPoint2:NSMakePoint(163.8645, 40.5063)];
+        [path curveToPoint:NSMakePoint(149.0000, 46.6500) controlPoint1:NSMakePoint(157.7032, 46.6753) controlPoint2:NSMakePoint(153.1920, 47.8464)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(223.7200, 113.8700)];
+        [path curveToPoint:NSMakePoint(209.0000, 105.5000) controlPoint1:NSMakePoint(217.3458, 115.6079) controlPoint2:NSMakePoint(210.7659, 111.8665)];
+        [path curveToPoint:NSMakePoint(188.0000, 69.1500) controlPoint1:NSMakePoint(205.1893, 91.8013) controlPoint2:NSMakePoint(197.9637, 79.2940)];
+        [path curveToPoint:NSMakePoint(188.1500, 52.1800) controlPoint1:NSMakePoint(183.3553, 64.4224) controlPoint2:NSMakePoint(183.4224, 56.8247)];
+        [path curveToPoint:NSMakePoint(205.1200, 52.3300) controlPoint1:NSMakePoint(192.8776, 47.5353) controlPoint2:NSMakePoint(200.4753, 47.6024)];
+        [path curveToPoint:NSMakePoint(232.1200, 99.1000) controlPoint1:NSMakePoint(217.9288, 65.3870) controlPoint2:NSMakePoint(227.2182, 81.4783)];
+        [path curveToPoint:NSMakePoint(230.9806, 108.2305) controlPoint1:NSMakePoint(232.9685, 102.1740) controlPoint2:NSMakePoint(232.5585, 105.4593)];
+        [path curveToPoint:NSMakePoint(223.7100, 113.8700) controlPoint1:NSMakePoint(229.4027, 111.0017) controlPoint2:NSMakePoint(226.7866, 113.0309)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.9500, 150.4800)];
+        [path curveToPoint:NSMakePoint(223.6539, 142.3680) controlPoint1:NSMakePoint(210.8277, 144.2256) controlPoint2:NSMakePoint(217.3618, 140.6208)];
+        [path curveToPoint:NSMakePoint(232.0700, 156.9000) controlPoint1:NSMakePoint(229.9460, 144.1152) controlPoint2:NSMakePoint(233.6859, 150.5730)];
+        [path curveToPoint:NSMakePoint(205.0700, 203.6800) controlPoint1:NSMakePoint(227.1775, 174.5285) controlPoint2:NSMakePoint(217.8869, 190.6252)];
+        [path curveToPoint:NSMakePoint(193.2900, 207.3415) controlPoint1:NSMakePoint(202.1193, 206.9799) controlPoint2:NSMakePoint(197.5914, 208.3873)];
+        [path curveToPoint:NSMakePoint(184.5056, 198.6807) controlPoint1:NSMakePoint(188.9885, 206.2958) controlPoint2:NSMakePoint(185.6121, 202.9669)];
+        [path curveToPoint:NSMakePoint(188.0000, 186.8500) controlPoint1:NSMakePoint(183.3991, 194.3945) controlPoint2:NSMakePoint(184.7422, 189.8472)];
+        [path curveToPoint:NSMakePoint(208.9400, 150.4800) controlPoint1:NSMakePoint(197.9448, 176.6937) controlPoint2:NSMakePoint(205.1497, 164.1798)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Diamond_fill"]) {
+        // Phosphor Diamond weight=fill, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(240.0000, 128.0000)];
+        [path curveToPoint:NSMakePoint(235.3300, 116.7200) controlPoint1:NSMakePoint(240.0119, 123.7673) controlPoint2:NSMakePoint(238.3304, 119.7056)];
+        [path lineToPoint:NSMakePoint(139.2800, 20.6600)];
+        [path curveToPoint:NSMakePoint(116.7200, 20.6600) controlPoint1:NSMakePoint(133.0394, 14.4564) controlPoint2:NSMakePoint(122.9606, 14.4564)];
+        [path lineToPoint:NSMakePoint(116.7200, 20.6600)];
+        [path lineToPoint:NSMakePoint(20.7200, 116.7200)];
+        [path curveToPoint:NSMakePoint(20.7200, 139.2800) controlPoint1:NSMakePoint(14.5164, 122.9606) controlPoint2:NSMakePoint(14.5164, 133.0394)];
+        [path lineToPoint:NSMakePoint(116.7700, 235.3400)];
+        [path curveToPoint:NSMakePoint(139.3300, 235.3400) controlPoint1:NSMakePoint(123.0106, 241.5436) controlPoint2:NSMakePoint(133.0894, 241.5436)];
+        [path lineToPoint:NSMakePoint(235.3800, 139.2800)];
+        [path curveToPoint:NSMakePoint(240.0000, 128.0000) controlPoint1:NSMakePoint(238.3620, 136.2862) controlPoint2:NSMakePoint(240.0252, 132.2255)];
+        [path closePath];
+    }
+    return path;
+}
+
+// Render a Phosphor icon path as a tinted NSImage at the given size.
+// The path is in 256×256 Phosphor viewbox coordinates (already Y-flipped).
+// Scale: scale = size/256. Fills with `color`.
+static NSImage* phosphorIcon(NSString* name, CGFloat size, NSColor* color) {
+    NSBezierPath* rawPath = phosphorPath(name);
+    if (!rawPath) return nil;
+
+    const CGFloat scale = size / 256.0;
+    NSAffineTransform* xf = [NSAffineTransform transform];
+    [xf scaleBy:scale];
+    NSBezierPath* scaledPath = [xf transformBezierPath:rawPath];
+
+    NSImage* result = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
+    [result lockFocus];
+    [color set];
+    [scaledPath fill];
+    [result unlockFocus];
+    return result;
+}
+
+// Phosphor icon name for a PR state, matching PrChip.tsx StateIcon logic:
+//   merged  → GitMerge fill
+//   open    → GitPullRequest fill
+//   closed  → GitPullRequest fill  (same icon shape as open; github convention)
+//   draft   → GitPullRequest regular (lighter weight signals draft)
+static NSString* prStatePhosphorName(NSString* state) {
+    if ([state isEqualToString:@"merged"]) return @"GitMerge_fill";
+    if ([state isEqualToString:@"draft"])  return @"GitPullRequest_regular";
+    return @"GitPullRequest_fill"; // open and closed
+}
+
+// Compute wrapping height for a string at a given width and font.
+static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
+    if (!text.length) return 0;
+    NSTextStorage* ts = [[NSTextStorage alloc] initWithString:text];
+    NSTextContainer* tc = [[NSTextContainer alloc] initWithSize:NSMakeSize(width, CGFLOAT_MAX)];
+    tc.lineFragmentPadding = 0;
+    NSLayoutManager* lm = [[NSLayoutManager alloc] init];
+    [lm addTextContainer:tc];
+    [ts addLayoutManager:lm];
+    [ts addAttribute:NSFontAttributeName value:font range:NSMakeRange(0, text.length)];
+    [lm glyphRangeForTextContainer:tc]; // force layout
+    NSRect usedRect = [lm usedRectForTextContainer:tc];
+    return ceil(usedRect.size.height);
+}
+
+// ---------------------------------------------------------------------------
+// @implementation OrpheusPopoverView
+// ---------------------------------------------------------------------------
+
+@implementation OrpheusPopoverView
+
+- (instancetype)initWithKind:(NSString*)kind
+                 workspaceId:(NSString*)wsId
+                       width:(CGFloat)width
+                        data:(NSDictionary*)data {
+    // Start with zero height; buildContentFromData: sets the real height.
+    self = [super initWithFrame:NSMakeRect(0, 0, width, 0)];
+    if (!self) return nil;
+
+    self.kind        = kind;
+    self.workspaceId = wsId;
+    self.cardWidth   = width;
+    self.currentData = data ?: @{};
+
+    // Layer-backed plain NSView. NOT NSVisualEffectView — solid cards.
+    self.wantsLayer = YES;
+
+    // Card chrome: bg, radius, border, shadow.
+    NSColor* cardColor = themeColorOr(
+        g_popoverTheme.card,
+        [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]
+    );
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:1.0 green:1.0 blue:1.0 alpha:0.10]
+    );
+
+    self.layer.cornerRadius    = 8.0;
+    self.layer.backgroundColor = cardColor.CGColor;
+    self.layer.borderWidth     = 1.0;
+    self.layer.borderColor     = borderColor.CGColor;
+    // shadow-lg equivalent
+    self.layer.masksToBounds   = NO;
+    self.layer.shadowColor     = [NSColor blackColor].CGColor;
+    self.layer.shadowOpacity   = 0.20;
+    self.layer.shadowRadius    = 14.0;
+    self.layer.shadowOffset    = CGSizeMake(0, -4);
+
+    // Start invisible — caller fades in.
+    self.alphaValue = 0.0;
+
+    // Register Geist fonts lazily (idempotent).
+    registerPopoverFonts();
+
+    // Build content and get total height.
+    CGFloat totalHeight = [self buildContentFromData:self.currentData];
+    NSRect f = self.frame;
+    f.size.height = totalHeight;
+    self.frame = f;
+
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (BOOL)nonWebContentView {
+    // Same Chromium hit-test bypass as OrpheusGhosttyView — mouse events inside
+    // the card frame are NOT swallowed by the WebContents layer.
+    return YES;
+}
+
+- (void)dealloc {
+    [self stopSpinnerTimer];
+    // NSTrackingArea is automatically removed when the view is deallocated.
+    // pointerInCard is a scalar; nothing extra to clean up.
+}
+
+// ---------------------------------------------------------------------------
+// Hover-bridge: NSTrackingArea so the card knows when the pointer is over it.
+//
+// mouseEntered: sets pointerInCard=YES — the pointer successfully bridged from
+//   the DOM trigger onto the native card. HidePopover will see this flag and
+//   skip the hide, keeping the card visible until the pointer leaves.
+//
+// mouseExited: sets pointerInCard=NO, then closes the card itself (fade out
+//   via the normal hide path) and notifies JS via the popover action TSFN
+//   with "<workspaceId>::closed". The renderer receives this signal and clears
+//   its own open-state so a subsequent hover re-opens cleanly.
+// ---------------------------------------------------------------------------
+
+- (void)installCardTrackingArea {
+    // Remove any existing tracking areas (re-install after frame change).
+    for (NSTrackingArea* ta in [self.trackingAreas copy]) {
+        [self removeTrackingArea:ta];
+    }
+    NSTrackingAreaOptions opts =
+        NSTrackingMouseEnteredAndExited |
+        NSTrackingActiveAlways          |
+        NSTrackingInVisibleRect;
+    NSTrackingArea* ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:opts
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    [self installCardTrackingArea];
+}
+
+- (void)mouseEntered:(NSEvent*)event {
+    (void)event;
+    self.pointerInCard = YES;
+    NSLog(@"[ghostty-surface] popover mouseEntered workspaceId=%s — pointer in card",
+          self.workspaceId ? self.workspaceId.UTF8String : "(nil)");
+}
+
+- (void)mouseExited:(NSEvent*)event {
+    (void)event;
+    self.pointerInCard = NO;
+    NSLog(@"[ghostty-surface] popover mouseExited workspaceId=%s — closing card",
+          self.workspaceId ? self.workspaceId.UTF8String : "(nil)");
+
+    // Guard: only close if this view is still the active popover.
+    NSString* wsId = self.workspaceId;
+    if (!wsId) return;
+    std::string wsIdCpp = wsId.UTF8String;
+    if (g_activePopoverWorkspaceId != wsIdCpp || g_activePopover != self) {
+        // We are a stale card (a new popover replaced us); nothing to do.
+        return;
+    }
+
+    // Clear global ownership so HidePopover / ShowPopover won't race.
+    g_activePopover = nil;
+    g_activePopoverWorkspaceId.clear();
+    OrpheusPopoverView* pv = self; // captured for the fade block
+
+    // Fade out over 100ms, then remove.
+    CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @(pv.alphaValue);
+    fade.toValue   = @(0.0);
+    fade.duration  = 0.1;
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{
+        [pv removeFromSuperview];
+    }];
+    [pv.layer addAnimation:fade forKey:@"fadeOut"];
+    pv.alphaValue = 0.0;
+    [CATransaction commit];
+
+    // Notify JS: "<workspaceId>::closed" so the renderer can reset open-state.
+    if (g_popoverActionTSFNActive) {
+        std::string closedMsg = wsIdCpp + "::closed";
+        g_popoverActionTSFN.NonBlockingCall(
+            [closedMsg](Napi::Env env, Napi::Function cb) {
+                cb.Call({ Napi::String::New(env, closedMsg) });
+            }
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spinner timer management
+// ---------------------------------------------------------------------------
+
+- (void)stopSpinnerTimer {
+    if (self.spinnerTimer) {
+        [self.spinnerTimer invalidate];
+        self.spinnerTimer = nil;
+    }
+}
+
+- (void)spinnerTick:(NSTimer*)timer {
+    if (!self.spinnerLabel || !self.spinnerFrames.count) return;
+    self.spinnerFrame = (self.spinnerFrame + 1) % (int)self.spinnerFrames.count;
+    self.spinnerLabel.stringValue = self.spinnerFrames[self.spinnerFrame];
+}
+
+// ---------------------------------------------------------------------------
+// addSectionHeader — Geist-Medium 10px uppercase, textMuted.
+// Returns the y position after the header (next row starts here).
+// Padding: left/right kCardPadH, top 11px, bottom 6px.
+// ---------------------------------------------------------------------------
+- (CGFloat)addSectionHeader:(NSString*)title atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+
+    const CGFloat topPad    = 11.0;
+    const CGFloat bottomPad = 6.0;
+    const CGFloat lineH     = 14.0; // ~10px font × 1.4 line-height
+
+    NSTextField* header = makeLabel([title uppercaseString],
+                                    geistFont(@"Geist-Medium", 10.0), mutedColor);
+    // Approximate letter-spacing: use NSKernAttributeName in attributed string.
+    NSMutableAttributedString* attr = [[NSMutableAttributedString alloc]
+        initWithString:[title uppercaseString]];
+    CGFloat ptSize = 10.0;
+    [attr addAttribute:NSFontAttributeName
+                 value:geistFont(@"Geist-Medium", ptSize)
+                 range:NSMakeRange(0, attr.length)];
+    [attr addAttribute:NSForegroundColorAttributeName
+                 value:mutedColor
+                 range:NSMakeRange(0, attr.length)];
+    [attr addAttribute:NSKernAttributeName
+                 value:@(ptSize * 0.05)
+                 range:NSMakeRange(0, attr.length)];
+    header.attributedStringValue = attr;
+
+    CGFloat rowH = topPad + lineH + bottomPad;
+    header.frame = NSMakeRect(kCardPadH, y + topPad, self.cardWidth - 2.0 * kCardPadH, lineH);
+    [self addSubview:header];
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addLabelValueRow — fixed-width 56px label (Geist-Regular 11px, textMuted) +
+// value (Geist-Regular 11px, textSecondary, truncates). 2px vertical padding.
+// Returns new y after the row.
+// ---------------------------------------------------------------------------
+- (CGFloat)addLabelValueRow:(NSString*)label value:(NSString*)value atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat rowH   = 15.0; // ~11px font + 2px pad each side
+    const CGFloat labelW = 56.0;
+    const CGFloat gap    = 7.0;
+
+    NSTextField* lbl = makeLabel(label, geistFont(@"Geist-Regular", 11.0), mutedColor);
+    lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+    [self addSubview:lbl];
+
+    NSTextField* val = makeLabel(value, geistFont(@"Geist-Regular", 11.0), secColor);
+    CGFloat valX = kCardPadH + labelW + gap;
+    CGFloat valW = self.cardWidth - valX - kCardPadH;
+    val.frame = NSMakeRect(valX, y + vPad, valW, rowH - 2 * vPad);
+    [self addSubview:val];
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addGitBranchRow — GitBranch SF Symbol + branch name.
+// fontSize: 11px (details) or 12px (hover). gap: 4px (details) / 5px (hover).
+// Returns new y.
+// ---------------------------------------------------------------------------
+- (CGFloat)addGitBranchRow:(NSString*)branch
+                  detached:(BOOL)detached
+                  fontSize:(CGFloat)fontSize
+                      gapX:(CGFloat)gapX
+                        atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat iconSz = fontSize;
+    const CGFloat rowH   = fontSize + 2.0 * vPad + 2.0;
+
+    // Phosphor GitBranch weight=regular
+    NSImage* icon = phosphorIcon(@"GitBranch_regular", iconSz, mutedColor);
+    const CGFloat textBoxH  = fontSize + 2.0;
+    const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
+    NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
+        kCardPadH, iconY, iconSz, iconSz)];
+    iv.image = icon;
+    iv.imageScaling = NSImageScaleProportionallyDown;
+    [self addSubview:iv];
+
+    NSString* branchText = (branch.length > 0) ? branch : @"(unknown)";
+    NSFont* branchFont = detached
+        ? [[NSFontManager sharedFontManager] convertFont:geistFont(@"Geist-Regular", fontSize)
+                                             toHaveTrait:NSItalicFontMask]
+        : geistFont(@"Geist-Regular", fontSize);
+    NSColor* branchColor = detached ? mutedColor : secColor;
+
+    NSTextField* branchLbl = makeLabel(branchText, branchFont, branchColor);
+    CGFloat branchX = kCardPadH + iconSz + gapX;
+    branchLbl.frame = NSMakeRect(branchX, y + vPad,
+                                 self.cardWidth - branchX - kCardPadH, textBoxH);
+    [self addSubview:branchLbl];
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addGitChangesRow — Files SF Symbol + summary text + "+N"/"−N" mono counts.
+// Returns new y.
+// ---------------------------------------------------------------------------
+- (CGFloat)addGitChangesRow:(NSString*)summary
+                 insertions:(int)insertions
+                  deletions:(int)deletions
+                   fontSize:(CGFloat)fontSize
+                       gapX:(CGFloat)gapX
+                   monoSize:(CGFloat)monoSize
+                        atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat iconSz = fontSize;
+    const CGFloat rowH   = fontSize + 2.0 * vPad;  // matches other 15px rows (no extra +2)
+
+    // Phosphor Files weight=regular
+    NSImage* icon = phosphorIcon(@"Files_regular", iconSz, mutedColor);
+    const CGFloat textBoxH  = fontSize + 2.0;
+    const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
+    NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
+        kCardPadH, iconY, iconSz, iconSz)];
+    iv.image = icon;
+    iv.imageScaling = NSImageScaleProportionallyDown;
+    [self addSubview:iv];
+
+    // Right-side mono counts — lay these out right-to-left so we can get the
+    // leftover width for the summary text.
+    NSString* delStr = (deletions > 0)
+        ? [NSString stringWithFormat:@"−%d", deletions]  // U+2212 minus
+        : nil;
+    NSString* insStr = (insertions > 0)
+        ? [NSString stringWithFormat:@"+%d", insertions]
+        : nil;
+
+    CGFloat countsTotalWidth = 0;
+    NSTextField* insField  = nil;
+    NSTextField* delField  = nil;
+    const CGFloat countGap = 4.0;
+
+    if (insStr) {
+        insField = makeLabel(insStr, geistFont(@"GeistMono-Regular", monoSize),
+                             fixedColor(kColorEmerald));
+        // Use sizeToFit for accurate width — attributedStringValue size can underestimate
+        // when the font is loaded lazily, causing the digit to clip and show only the sign.
+        insField.frame = NSMakeRect(0, y + vPad, 200.0, fontSize + 2.0);
+        [insField sizeToFit];
+        CGFloat w = ceil(insField.frame.size.width) + 2.0;
+        insField.frame = NSMakeRect(0, y + vPad, w, fontSize + 2.0);
+        countsTotalWidth += w;
+    }
+    if (delStr) {
+        delField = makeLabel(delStr, geistFont(@"GeistMono-Regular", monoSize),
+                             fixedColor(kColorRed));
+        delField.frame = NSMakeRect(0, y + vPad, 200.0, fontSize + 2.0);
+        [delField sizeToFit];
+        CGFloat w = ceil(delField.frame.size.width) + 2.0;
+        delField.frame = NSMakeRect(0, y + vPad, w, fontSize + 2.0);
+        if (insStr) countsTotalWidth += countGap;
+        countsTotalWidth += w;
+    }
+
+    // Summary text occupies the space between icon and counts.
+    CGFloat summaryX = kCardPadH + iconSz + gapX;
+    CGFloat summaryW = self.cardWidth - summaryX - kCardPadH - countsTotalWidth - (countsTotalWidth > 0 ? countGap : 0);
+    NSTextField* sumLbl = makeLabel(summary ?: @"", geistFont(@"Geist-Regular", fontSize), secColor);
+    sumLbl.frame = NSMakeRect(summaryX, y + vPad, MAX(summaryW, 0), fontSize + 2.0);
+    [self addSubview:sumLbl];
+
+    // Position counts right-to-left from right edge.
+    CGFloat cx = self.cardWidth - kCardPadH;
+    if (delField) {
+        cx -= delField.frame.size.width;
+        delField.frame = NSMakeRect(cx, delField.frame.origin.y, delField.frame.size.width, delField.frame.size.height);
+        [self addSubview:delField];
+        if (insField) cx -= countGap;
+    }
+    if (insField) {
+        cx -= insField.frame.size.width;
+        insField.frame = NSMakeRect(cx, insField.frame.origin.y, insField.frame.size.width, insField.frame.size.height);
+        [self addSubview:insField];
+    }
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addPRChip — inline clickable chip: icon + "#N" + optional check glyph.
+// Returns new y after the chip row.
+// chipY is the TOP of the chip (isFlipped=YES). verticalPadding = 2px per spec.
+// ---------------------------------------------------------------------------
+- (CGFloat)addPRChip:(NSDictionary*)pr atY:(CGFloat)y {
+    if (!pr) return y;
+
+    NSString* state  = dictStr(pr, @"state");
+    int       number = dictInt(pr, @"number");
+    NSString* check  = dictStr(pr, @"check");  // "ok"|"fail"|"pending"|"none"
+
+    NSColor* stateColor = prStateColor(state);
+
+    // Chip: GeistMono-Regular ~12px, padding L/R 6px V 2px, cornerRadius 4.
+    // bg = card at 50% alpha, border = border token at 40% alpha.
+    NSColor* cardColor = themeColorOr(
+        g_popoverTheme.card,
+        [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]
+    );
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]
+    );
+
+    const CGFloat chipFont   = 12.0;
+    const CGFloat chipPadH   = 6.0;
+    const CGFloat chipPadV   = 2.0;
+    const CGFloat iconSz     = 12.0;
+    const CGFloat iconGap    = 4.0;
+    const CGFloat checkGap   = 4.0;
+    const CGFloat chipH      = chipFont + 2.0 * chipPadV + 4.0;
+
+    // Build the text content: "#number"
+    NSString* numStr = [NSString stringWithFormat:@"#%d", number];
+    NSSize numSz = [numStr sizeWithAttributes:@{
+        NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
+    }];
+
+    // Check glyph text
+    NSString* checkGlyph = nil;
+    NSColor*  checkColor = nil;
+    if ([check isEqualToString:@"ok"]) {
+        checkGlyph = @"✓";
+        checkColor = fixedColor(kColorEmerald);
+    } else if ([check isEqualToString:@"fail"]) {
+        checkGlyph = @"✕";
+        checkColor = fixedColor(kColorRed);
+    } else if ([check isEqualToString:@"pending"]) {
+        checkGlyph = @"⏳";
+        checkColor = themeColorOr(g_popoverTheme.textMuted,
+            [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    }
+    NSSize checkSz = NSMakeSize(0, 0);
+    if (checkGlyph) {
+        checkSz = [checkGlyph sizeWithAttributes:@{
+            NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
+        }];
+    }
+
+    // Compute chip total width.
+    CGFloat chipW = chipPadH + iconSz + iconGap + ceil(numSz.width) + chipPadH;
+    if (checkGlyph) chipW += checkGap + ceil(checkSz.width);
+
+    // Create chip button.
+    NSButton* chip = [[NSButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, chipW, chipH)];
+    chip.bezelStyle = NSBezelStyleRegularSquare;
+    chip.bordered   = NO;
+    chip.wantsLayer = YES;
+    chip.layer.backgroundColor = [cardColor colorWithAlphaComponent:0.5].CGColor;
+    chip.layer.borderColor     = [borderColor colorWithAlphaComponent:0.4].CGColor;
+    chip.layer.borderWidth     = 1.0;
+    chip.layer.cornerRadius    = 4.0;
+    chip.title  = @"";  // custom drawing via subviews
+    chip.target = [OrpheusPopoverActionTarget shared];
+    chip.action = @selector(elementClicked:);
+    chip.identifier = [NSString stringWithFormat:@"%@::pr", self.workspaceId];
+    [self addSubview:chip];
+
+    // PR state icon inside chip — Phosphor icons matching PrChip.tsx StateIcon
+    NSImage* prIcon = phosphorIcon(prStatePhosphorName(state), iconSz, stateColor);
+    NSImageView* iconView = [[NSImageView alloc] initWithFrame:
+        NSMakeRect(chipPadH, (chipH - iconSz) / 2.0, iconSz, iconSz)];
+    iconView.image = prIcon;
+    iconView.imageScaling = NSImageScaleProportionallyDown;
+    [chip addSubview:iconView];
+
+    // "#N" text.
+    NSTextField* numLbl = makeLabel(numStr, geistFont(@"GeistMono-Regular", chipFont), stateColor);
+    numLbl.frame = NSMakeRect(chipPadH + iconSz + iconGap,
+                              (chipH - chipFont - 2.0) / 2.0,
+                              ceil(numSz.width) + 1.0, chipFont + 2.0);
+    [chip addSubview:numLbl];
+
+    // Check glyph.
+    if (checkGlyph && checkColor) {
+        CGFloat checkX = chipPadH + iconSz + iconGap + ceil(numSz.width) + checkGap;
+        NSTextField* checkLbl = makeLabel(checkGlyph, geistFont(@"GeistMono-Regular", chipFont), checkColor);
+        checkLbl.frame = NSMakeRect(checkX, (chipH - chipFont - 2.0) / 2.0,
+                                    ceil(checkSz.width) + 1.0, chipFont + 2.0);
+        [chip addSubview:checkLbl];
+    }
+
+    return y + chipH;
+}
+
+// ---------------------------------------------------------------------------
+// addActivityIndicator — 12×12 box. Returns the NSTextField* used for the
+// spinner so the caller can store it; also kicks off the NSTimer if animated.
+// activityState: ready|idle|attention|asking|thinking|tool|compacting
+// Returns new y after the indicator (height is 12px + margins baked in by caller).
+// The indicator is placed at (startX, y) with the given box size.
+// ---------------------------------------------------------------------------
+- (NSTextField*)addActivityIndicator:(NSString*)activityState
+                              accentColor:(NSColor*)accentColor
+                                  atRect:(NSRect)rect {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+
+    NSTextField* spinnerField = nil;
+    const CGFloat boxSz = rect.size.width;
+
+    // Static states — Phosphor icons matching ActivityIndicator.tsx
+    if ([activityState isEqualToString:@"ready"]) {
+        // Phosphor Circle weight=fill tinted emerald (#4ade80)
+        NSImage* img = phosphorIcon(@"Circle_fill", boxSz - 1.0, fixedColor(kColorEmerald));
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            // Fallback: colored dot via label
+            NSTextField* dot = makeLabel(@"●", geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         fixedColor(kColorEmerald));
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"idle"]) {
+        // Phosphor CircleDashed weight=bold tinted textMuted
+        NSImage* img = phosphorIcon(@"CircleDashed_bold", boxSz - 1.0, mutedColor);
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            NSTextField* dot = makeLabel(@"○", geistFont(@"GeistMono-Regular", boxSz - 1.0), mutedColor);
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"attention"]) {
+        // Phosphor Diamond weight=fill tinted amber (#fbbf24)
+        NSImage* img = phosphorIcon(@"Diamond_fill", boxSz - 1.0, fixedColor(kColorAmber));
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            NSTextField* dot = makeLabel(@"◆", geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         fixedColor(kColorAmber));
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"asking"]) {
+        // Bold "?" in GeistMono-SemiBold 11px, amber.
+        NSTextField* q = makeLabel(@"?", geistFont(@"GeistMono-SemiBold", boxSz - 1.0),
+                                   fixedColor(kColorAmber));
+        q.alignment = NSTextAlignmentCenter;
+        q.frame = rect;
+        [self addSubview:q];
+    } else {
+        // Animated states: thinking (80ms), tool (120ms), compacting (110ms).
+        // Braille spinner frames — same set for all three, different intervals.
+        NSArray<NSString*>* frames = @[@"⠋", @"⠙", @"⠹", @"⠸", @"⠼", @"⠴", @"⠦", @"⠧", @"⠇", @"⠏"];
+        NSTimeInterval interval = 0.08; // thinking default
+        if ([activityState isEqualToString:@"tool"])       interval = 0.12;
+        if ([activityState isEqualToString:@"compacting"]) interval = 0.11;
+
+        NSTextField* spinner = makeLabel(frames[0], geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         accentColor);
+        spinner.alignment = NSTextAlignmentCenter;
+        spinner.frame = rect;
+        [self addSubview:spinner];
+        spinnerField = spinner;
+
+        self.spinnerLabel  = spinner;
+        self.spinnerFrames = frames;
+        self.spinnerFrame  = 0;
+
+        // NSTimer on the main run loop — automatically cleaned up on hide.
+        NSTimer* t = [NSTimer scheduledTimerWithTimeInterval:interval
+                                                      target:self
+                                                    selector:@selector(spinnerTick:)
+                                                    userInfo:nil
+                                                     repeats:YES];
+        self.spinnerTimer = t;
+    }
+
+    return spinnerField;
+}
+
+// ---------------------------------------------------------------------------
+// buildHoverCard — populates subviews for kind="hover". Returns total height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildHoverCard:(NSDictionary*)data {
+    NSColor* primaryColor = themeColorOr(g_popoverTheme.textPrimary,
+        [NSColor colorWithCalibratedRed:0xf4/255.0 green:0xf4/255.0 blue:0xf5/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* accentColor = themeColorOr(g_popoverTheme.accent,
+        [NSColor colorWithCalibratedRed:0x60/255.0 green:0xa5/255.0 blue:0xfa/255.0 alpha:1.0]);
+
+    NSString* title         = dictStr(data, @"title");
+    NSString* activityLabel = dictStr(data, @"activityLabel");
+    NSString* activityState = dictStr(data, @"activityState");
+    NSString* relativeTime  = dictStr(data, @"relativeTime");
+    NSDictionary* git       = dictDict(data, @"git");
+    NSDictionary* pr        = dictDict(data, @"pr");
+    NSString* cwd           = dictStr(data, @"cwd");
+
+    CGFloat y = 0;
+    const CGFloat sectionPad = 9.0;   // all-sides section padding (tighter rhythm)
+    const CGFloat titleH     = 14.0;  // snug to 12px font
+    const CGFloat titleGap   = 3.0;   // gap between title bottom and status line
+
+    // ---- Section 1: Header ----
+    y += sectionPad; // top pad
+
+    // Title: Geist-Medium 12px, textPrimary, truncate.
+    NSTextField* titleLbl = makeLabel(title.length ? title : @"Workspace",
+                                      geistFont(@"Geist-Medium", 12.0), primaryColor);
+    titleLbl.frame = NSMakeRect(kCardPadH, y, self.cardWidth - 2.0 * kCardPadH, titleH);
+    [self addSubview:titleLbl];
+    y += titleH + titleGap; // title height + gap to status line
+
+    // Status line: ActivityIndicator 12×12 + status text.
+    // flex row, gap 5px, items-center.
+    const CGFloat indSz      = 12.0;
+    const CGFloat indGap     = 5.0;
+    const CGFloat statusBoxH = 14.0;
+    NSRect indRect = NSMakeRect(kCardPadH, centerIconY(y, statusBoxH, indSz), indSz, indSz);
+    [self addActivityIndicator:activityState accentColor:accentColor atRect:indRect];
+
+    // Status text: "<activityLabel>" + optional " · active <relativeTime> ago"
+    // Special-case "now" — omit "ago" so it reads "active now" not "active now ago".
+    NSString* statusText = activityLabel.length ? activityLabel : @"";
+    if (relativeTime.length > 0) {
+        if ([relativeTime isEqualToString:@"now"]) {
+            statusText = [statusText stringByAppendingString:@" · active now"];
+        } else {
+            statusText = [statusText stringByAppendingFormat:@" · active %@ ago", relativeTime];
+        }
+    }
+    NSTextField* statusLbl = makeLabel(statusText, geistFont(@"Geist-Regular", 12.0), secColor);
+    statusLbl.frame = NSMakeRect(kCardPadH + indSz + indGap, y,
+                                 self.cardWidth - kCardPadH - indSz - indGap - kCardPadH,
+                                 statusBoxH);
+    [self addSubview:statusLbl];
+    y += MAX(indSz, statusBoxH); // take the taller of indicator and text
+
+    y += sectionPad; // bottom pad of header section
+
+    // ---- Section 2: Git (if present) ----
+    if (git) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+
+        NSString* branch   = dictStr(git, @"branch");
+        BOOL detached      = dictBool(git, @"detached");
+        NSString* summary  = dictStr(git, @"summary");
+        int insertions     = dictInt(git, @"insertions");
+        int deletions      = dictInt(git, @"deletions");
+
+        // hover: fontSize=12, gap=5
+        y = [self addGitBranchRow:branch detached:detached fontSize:12.0 gapX:5.0 atY:y];
+        y += 5.0; // 5px gap between git rows
+        y = [self addGitChangesRow:summary insertions:insertions deletions:deletions
+                          fontSize:12.0 gapX:5.0 monoSize:11.0 atY:y];
+
+        y += sectionPad; // bottom pad
+    }
+
+    // ---- Section 3: PR (if present) ----
+    if (pr) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+        y = [self addPRChip:pr atY:y];
+        y += sectionPad; // bottom pad
+    }
+
+    // ---- Section 4: CWD (if present) ----
+    if (cwd.length > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+
+        // Path text: Geist-Regular 11px, textMuted, wraps (break-all), line-height ~1.4.
+        NSFont* cwdFont = geistFont(@"Geist-Regular", 11.0);
+        CGFloat textW = self.cardWidth - 2.0 * kCardPadH;
+        CGFloat textH = wrappingHeight(cwd, cwdFont, textW);
+        if (textH < 13.0) textH = 13.0;
+
+        NSTextField* cwdLbl = [NSTextField labelWithString:cwd];
+        cwdLbl.font = cwdFont;
+        cwdLbl.textColor = mutedColor;
+        cwdLbl.drawsBackground = NO;
+        cwdLbl.bordered        = NO;
+        cwdLbl.editable        = NO;
+        cwdLbl.selectable      = NO;
+        cwdLbl.cell.wraps      = YES;
+        cwdLbl.cell.lineBreakMode = NSLineBreakByCharWrapping;
+        cwdLbl.frame = NSMakeRect(kCardPadH, y, textW, textH);
+        [self addSubview:cwdLbl];
+        y += textH;
+
+        y += sectionPad; // bottom pad
+    }
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// buildDetailsCard — populates subviews for kind="details". Returns total height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildDetailsCard:(NSDictionary*)data {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    NSDictionary* pr        = dictDict(data, @"pr");
+    NSString* model         = dictStr(data, @"model");
+    NSString* contextText   = dictStr(data, @"contextText");
+    BOOL contextLoading     = dictBool(data, @"contextLoading");
+    NSString* cost          = dictStr(data, @"cost");
+    BOOL costLoading        = dictBool(data, @"costLoading");
+    NSDictionary* git       = dictDict(data, @"git");
+    NSString* cwd           = dictStr(data, @"cwd");
+
+    CGFloat y = 0;
+
+    // ---- Section 1: PR (if present) ----
+    if (pr) {
+        y = [self addSectionHeader:@"Pull Request" atY:y];
+        // Row: chip with padding L/R 11px, bottom 8px.
+        y = [self addPRChip:pr atY:y];
+        y += 8.0; // bottom padding
+        // Divider with margin-top 5px.
+        y += 5.0;
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+    }
+
+    // ---- Section 2: Model & Usage ----
+    y = [self addSectionHeader:@"Model & Usage" atY:y];
+
+    // Model row
+    NSString* modelVal;
+    NSFont*   modelFont;
+    NSColor*  modelColor;
+    if (model.length > 0) {
+        modelVal   = model;
+        modelFont  = geistFont(@"Geist-Regular", 11.0);
+        modelColor = secColor;
+    } else {
+        modelVal   = @"No session yet";
+        modelFont  = [[NSFontManager sharedFontManager]
+            convertFont:geistFont(@"Geist-Regular", 11.0) toHaveTrait:NSItalicFontMask];
+        modelColor = mutedColor;
+    }
+    // Use addLabelValueRow but override value appearance.
+    {
+        const CGFloat vPad   = 3.0;
+        const CGFloat rowH   = 18.0;
+        const CGFloat labelW = 56.0;
+        const CGFloat gap    = 7.0;
+        NSTextField* lbl = makeLabel(@"Model", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(modelVal, modelFont, modelColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 6.0; // 6px gap between rows (breathing room)
+
+    // Context row
+    {
+        NSString* ctxVal;
+        NSColor*  ctxColor;
+        if (contextLoading) {
+            ctxVal   = @"…";
+            ctxColor = mutedColor;
+        } else if (contextText.length > 0) {
+            ctxVal   = contextText;
+            ctxColor = secColor;
+        } else {
+            // reserve space — show dash
+            ctxVal   = @"—";
+            ctxColor = mutedColor;
+        }
+        const CGFloat vPad = 3.0; const CGFloat rowH = 18.0;
+        const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
+        NSTextField* lbl = makeLabel(@"Context", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(ctxVal, geistFont(@"Geist-Regular", 11.0), ctxColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 6.0; // 6px gap between rows
+
+    // Cost row
+    {
+        NSString* costVal;
+        NSColor*  costColor;
+        if (costLoading) {
+            costVal   = @"…";
+            costColor = mutedColor;
+        } else if (cost.length > 0) {
+            costVal   = cost;
+            costColor = secColor;
+        } else {
+            costVal   = @"—";
+            costColor = mutedColor;
+        }
+        const CGFloat vPad = 3.0; const CGFloat rowH = 18.0;
+        const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
+        NSTextField* lbl = makeLabel(@"Cost", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(costVal, geistFont(@"Geist-Regular", 11.0), costColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 9.0; // bottom of model/usage section
+
+    // ---- Section 3: Repository (if git or cwd present) ----
+    if (git || cwd.length > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y = [self addSectionHeader:@"Repository" atY:y];
+
+        if (git) {
+            NSString* branch  = dictStr(git, @"branch");
+            BOOL detached     = dictBool(git, @"detached");
+            NSString* summary = dictStr(git, @"summary");
+            int insertions    = dictInt(git, @"insertions");
+            int deletions     = dictInt(git, @"deletions");
+
+            // details: fontSize=11, gap=4, monoSize=10
+            y = [self addGitBranchRow:branch detached:detached fontSize:11.0 gapX:4.0 atY:y];
+            y += 6.0; // 6px gap between git rows
+            y = [self addGitChangesRow:summary insertions:insertions deletions:deletions
+                              fontSize:11.0 gapX:4.0 monoSize:10.0 atY:y];
+            y += 6.0; // 6px bottom of git sub-section
+        }
+
+        if (cwd.length > 0) {
+            // Path row: GeistMono-Regular 10px, textMuted, wraps, line-height ~1.6.
+            NSFont* cwdFont = geistFont(@"GeistMono-Regular", 10.0);
+            CGFloat textW = self.cardWidth - 2.0 * kCardPadH;
+            CGFloat textH = wrappingHeight(cwd, cwdFont, textW);
+            if (textH < 12.0) textH = 12.0;
+
+            NSTextField* cwdLbl = [NSTextField labelWithString:cwd];
+            cwdLbl.font = cwdFont;
+            cwdLbl.textColor = mutedColor;
+            cwdLbl.drawsBackground = NO;
+            cwdLbl.bordered        = NO;
+            cwdLbl.editable        = NO;
+            cwdLbl.selectable      = NO;
+            cwdLbl.cell.wraps      = YES;
+            cwdLbl.cell.lineBreakMode = NSLineBreakByCharWrapping;
+            cwdLbl.frame = NSMakeRect(kCardPadH, y, textW, textH);
+            [self addSubview:cwdLbl];
+            y += textH;
+        }
+
+        y += 6.0; // bottom of repository section
+    }
+
+    // Spec: 10px bottom padding
+    y += 10.0;
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// buildContentFromData — dispatch to hover or details builder. Removes all
+// existing subviews first (used by updatePopover re-render path). Returns
+// total card height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildContentFromData:(NSDictionary*)data {
+    // Stop any running spinner before clearing subviews.
+    [self stopSpinnerTimer];
+    self.spinnerLabel  = nil;
+    self.spinnerFrames = nil;
+
+    // Remove all existing subviews (clean rebuild for updatePopover path).
+    for (NSView* sv in [self.subviews copy]) {
+        [sv removeFromSuperview];
+    }
+
+    CGFloat totalH = 0;
+    if ([self.kind isEqualToString:@"hover"]) {
+        totalH = [self buildHoverCard:data];
+    } else {
+        // 'details' and default
+        totalH = [self buildDetailsCard:data];
+    }
+    return MAX(totalH, 20.0); // never collapse to zero
+}
+
+@end
+
+// ---------------------------------------------------------------------------
+// NAPI popover functions
+// ---------------------------------------------------------------------------
+
+// Helper: compute the card frame (AppKit coords, bottom-left origin) for a given
+// kind and anchor rect in CSS coordinates.  Returns the clamped frame so the
+// caller can parent the view.
+//
+// Anchor rect is from getBoundingClientRect() (CSS px, top-left origin).
+// Card is placed:
+//   'details': below the anchor button, left-aligned to anchor left edge.
+//   'hover':   to the right of the anchor row, vertically centered on it.
+//
+// Both are clamped to stay within contentView bounds.
+static NSRect computePopoverFrame(NSString* kind,
+                                  double ax, double ay, double aw, double ah,
+                                  CGFloat cardWidth, CGFloat cardHeight,
+                                  NSView* contentView) {
+    CGFloat parentW = contentView.bounds.size.width;
+    CGFloat parentH = contentView.bounds.size.height;
+
+    // 4px gap between anchor and card.
+    const CGFloat kGap = 4.0;
+
+    CGFloat cx, cy;  // CSS top-left origin for the card
+
+    if ([kind isEqualToString:@"hover"]) {
+        // Place to the RIGHT of the anchor row.
+        cx = ax + aw + kGap;
+        // Vertically center on the anchor row's midpoint.
+        cy = ay + (ah / 2.0) - (cardHeight / 2.0);
+    } else {
+        // 'details' and default: place BELOW the anchor button.
+        cx = ax;
+        cy = ay + ah + kGap;
+    }
+
+    // Clamp horizontally: don't overflow right edge.
+    if (cx + cardWidth > parentW - 4.0) {
+        cx = parentW - cardWidth - 4.0;
+    }
+    if (cx < 4.0) cx = 4.0;
+
+    // Clamp vertically (CSS): don't overflow bottom.
+    if (cy + cardHeight > parentH - 4.0) {
+        cy = parentH - cardHeight - 4.0;
+    }
+    if (cy < 4.0) cy = 4.0;
+
+    // Convert CSS top-left → AppKit bottom-left.
+    return cssRectToAppKit(cx, cy, cardWidth, cardHeight, parentH);
+}
+
+// ---------------------------------------------------------------------------
+// napiValueToNSObject — recursively convert a Napi::Value to an NSObject
+// suitable for use as NSDictionary values. Supports:
+//   string  → NSString
+//   number  → NSNumber (double)
+//   boolean → NSNumber (BOOL)
+//   object  → NSDictionary (string keys only)
+//   array   → NSArray
+//   null/undefined → NSNull
+// ---------------------------------------------------------------------------
+static NSObject* napiValueToNSObject(Napi::Value v) {
+    if (v.IsString()) {
+        std::string s = v.As<Napi::String>().Utf8Value();
+        return [NSString stringWithUTF8String:s.c_str()];
+    }
+    if (v.IsBoolean()) {
+        return @(v.As<Napi::Boolean>().Value());
+    }
+    if (v.IsNumber()) {
+        return @(v.As<Napi::Number>().DoubleValue());
+    }
+    if (v.IsNull() || v.IsUndefined()) {
+        return [NSNull null];
+    }
+    if (v.IsArray()) {
+        Napi::Array arr = v.As<Napi::Array>();
+        NSMutableArray* result = [NSMutableArray arrayWithCapacity:arr.Length()];
+        for (uint32_t i = 0; i < arr.Length(); i++) {
+            NSObject* elem = napiValueToNSObject(arr.Get(i));
+            [result addObject:elem ?: [NSNull null]];
+        }
+        return [result copy];
+    }
+    if (v.IsObject()) {
+        Napi::Object obj = v.As<Napi::Object>();
+        NSMutableDictionary* result = [NSMutableDictionary dictionary];
+        Napi::Array keys = obj.GetPropertyNames();
+        for (uint32_t i = 0; i < keys.Length(); i++) {
+            Napi::Value keyVal = keys.Get(i);
+            if (!keyVal.IsString()) continue;
+            std::string keyStr = keyVal.As<Napi::String>().Utf8Value();
+            NSString* nsKey = [NSString stringWithUTF8String:keyStr.c_str()];
+            NSObject* nsVal = napiValueToNSObject(obj.Get(keyStr));
+            if (nsKey && nsVal) {
+                result[nsKey] = nsVal;
+            }
+        }
+        return [result copy];
+    }
+    return [NSNull null];
+}
+
+static NSDictionary* napiObjectToDict(Napi::Value v) {
+    if (!v.IsObject()) return @{};
+    NSObject* obj = napiValueToNSObject(v);
+    return [obj isKindOfClass:[NSDictionary class]] ? (NSDictionary*)obj : @{};
+}
+
+// NAPI: showPopover(workspaceId, kind, anchorRect, data, fontDir?) → void
+//
+// anchorRect = { x, y, w, h } in CSS pixels (from getBoundingClientRect()).
+// data = generic object with card-specific fields (see spec: hover / details data keys).
+// fontDir (optional string) = absolute path to the Geist fonts directory.
+//   Packaged: process.resourcesPath + '/fonts'
+//   Dev:      path.join(__dirname, '../../node_modules/geist/dist/fonts')
+//
+// Creates OrpheusPopoverView with real content, computes height, positions it
+// above the terminal (parented to contentView, NSWindowAbove), and fades it in
+// over 120ms. The view's frame height is set from buildContentFromData before
+// computePopoverFrame is called, so positioning uses the real content height.
+static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 4 || !info[0].IsString() || !info[1].IsString() ||
+        !info[2].IsObject() || !info[3].IsObject()) {
+        Napi::TypeError::New(env, "showPopover requires (workspaceId, kind, anchorRect, data)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string kind        = info[1].As<Napi::String>().Utf8Value();
+    Napi::Object rectObj    = info[2].As<Napi::Object>();
+    NSDictionary* dataDict  = napiObjectToDict(info[3]);
+
+    // Optional fontDir (5th argument).
+    if (info.Length() >= 5 && info[4].IsString()) {
+        std::string fontDirCpp = info[4].As<Napi::String>().Utf8Value();
+        if (!fontDirCpp.empty()) {
+            g_geistFontDir = [NSString stringWithUTF8String:fontDirCpp.c_str()];
+            // Reset registration flag so the new path takes effect.
+            g_popoverFontsRegistered = NO;
+        }
+    }
+
+    double ax = rectObj.Get("x").As<Napi::Number>().DoubleValue();
+    double ay = rectObj.Get("y").As<Napi::Number>().DoubleValue();
+    double aw = rectObj.Get("w").As<Napi::Number>().DoubleValue();
+    double ah = rectObj.Get("h").As<Napi::Number>().DoubleValue();
+
+    // Card width by kind.
+    NSString* nsKindLocal = [NSString stringWithUTF8String:kind.c_str()];
+    CGFloat cardWidth = [nsKindLocal isEqualToString:@"hover"] ? 224.0 : 252.0;
+
+    // Use the cached contentView from installBackstop. This is global and always
+    // available regardless of whether this workspace has a mounted surface — so
+    // hover cards for inactive workspaces proceed correctly.
+    NSView* cachedContentView = g_popoverHostContentView;
+    if (!cachedContentView) {
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no cached contentView (no-op — installBackstop not called yet?)",
+              workspaceId.c_str());
+        return env.Undefined();
+    }
+
+    NSString* nsWorkspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
+    NSString* nsKind        = [NSString stringWithUTF8String:kind.c_str()];
+
+    NSLog(@"[ghostty-surface] showPopover proceeding kind=%@ host=%d workspaceId=%s",
+          nsKind, (cachedContentView != nil), workspaceId.c_str());
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSView* contentView = cachedContentView;
+
+        // Destroy any pre-existing global popover before creating a new one.
+        if (g_activePopover) {
+            [g_activePopover removeFromSuperview];
+            g_activePopover = nil;
+            g_activePopoverWorkspaceId.clear();
+        }
+
+        // Create the popover view with real content. initWithKind:workspaceId:width:data:
+        // calls buildContentFromData internally and sets the frame height to the content
+        // height — so pv.frame.size.height is the real card height before we position it.
+        OrpheusPopoverView* pv = [[OrpheusPopoverView alloc]
+            initWithKind:nsKind workspaceId:nsWorkspaceId width:cardWidth data:dataDict];
+
+        // Now that height is known, compute the final AppKit-coord frame.
+        CGFloat cardHeight = pv.frame.size.height;
+        NSRect frame = computePopoverFrame(nsKind, ax, ay, aw, ah,
+                                           cardWidth, cardHeight, contentView);
+        pv.frame = frame;
+
+        // Install NSTrackingArea covering the full card bounds after the final
+        // frame is set. This is the hover-bridge: mouseEntered/mouseExited fire
+        // when the pointer moves from the DOM trigger onto/off the native card.
+        [pv installCardTrackingArea];
+
+        // Parent to contentView ABOVE everything (terminal is below web layer which
+        // is below the popover — no z-swap needed, no blackout by construction).
+        [contentView addSubview:pv positioned:NSWindowAbove relativeTo:nil];
+        g_activePopover = pv;
+        g_activePopoverWorkspaceId = workspaceId;
+
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s kind=%s frame=(%.0f,%.0f,%.0fx%.0f)",
+              nsWorkspaceId.UTF8String, nsKind.UTF8String,
+              frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+
+        // Fade in over 120ms (same as loading overlay).
+        CABasicAnimation* fadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fadeIn.fromValue = @(0.0);
+        fadeIn.toValue   = @(1.0);
+        fadeIn.duration  = 0.12;
+        [CATransaction begin];
+        [pv.layer addAnimation:fadeIn forKey:@"fadeIn"];
+        pv.alphaValue = 1.0;
+        [CATransaction commit];
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: updatePopover(workspaceId, data) → void
+//
+// Patch the Details card's async fields (model/contextText/contextLoading/cost/
+// costLoading) in place as they resolve. Strategy: merge the incoming data dict
+// over the stored currentData snapshot and rebuild the entire card from scratch.
+// This is flicker-free because the card height is reserved for all rows (even
+// loading placeholders occupy the same space), so height typically doesn't change.
+// If height does change, the card is re-positioned keeping the top edge stable.
+static Napi::Value UpdatePopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "updatePopover requires (workspaceId, data)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    // Only update if the global active popover belongs to this workspace.
+    if (g_activePopoverWorkspaceId != workspaceId || !g_activePopover) {
+        return env.Undefined();  // no popover to update — no-op
+    }
+
+    NSDictionary* patchDict = napiObjectToDict(info[1]);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        OrpheusPopoverView* pv = g_activePopover;
+        if (!pv || g_activePopoverWorkspaceId != workspaceId) return;
+
+        // Merge patch over current data snapshot.
+        NSMutableDictionary* merged = [NSMutableDictionary dictionaryWithDictionary:pv.currentData];
+        [merged addEntriesFromDictionary:patchDict];
+        NSDictionary* newData = [merged copy];
+        pv.currentData = newData;
+
+        // Rebuild content and resize the view. Height usually stays the same
+        // because loading placeholders ("…", "—") occupy the same row space.
+        CGFloat oldH = pv.frame.size.height;
+        CGFloat newH = [pv buildContentFromData:newData];
+
+        NSRect f = pv.frame;
+        if (fabs(newH - oldH) > 0.5) {
+            // Height changed — adjust origin.y to keep the AppKit top edge stable.
+            // In AppKit (non-flipped parent), top = origin.y + height.
+            // Keep top = origin.y + oldH = (origin.y - delta) + newH where delta = newH - oldH.
+            f.origin.y -= (newH - oldH);
+        }
+        f.size.height = newH;
+        pv.frame = f;
+
+        NSLog(@"[ghostty-surface] updatePopover workspaceId=%s rebuilt (h=%.0f→%.0f)",
+              workspaceId.c_str(), oldH, newH);
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: hidePopover(workspaceId) → void
+//
+// Fade out 100ms, removeFromSuperview, clear entry field.
+// Idempotent — no-op if no popover is present for the workspace.
+static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "hidePopover requires workspaceId string")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+
+    // Only hide if the global active popover belongs to this workspace.
+    if (g_activePopoverWorkspaceId != workspaceId || !g_activePopover) {
+        return env.Undefined();  // no popover for this workspace — silent no-op
+    }
+
+    // Hover-bridge: if the pointer has already entered the native card by the
+    // time JS calls hidePopover (the 80ms close-timer on trigger-leave fired,
+    // but the pointer bridged onto the card first), defer the hide. The card
+    // will close itself via mouseExited: and notify JS via "::closed" then.
+    if (g_activePopover.pointerInCard) {
+        NSLog(@"[ghostty-surface] hidePopover ignored — pointer in card (workspaceId=%s)",
+              workspaceId.c_str());
+        return env.Undefined();
+    }
+
+    // Clear the global ownership immediately so concurrent calls don't double-hide.
+    OrpheusPopoverView* pv = g_activePopover;
+    g_activePopover = nil;
+    g_activePopoverWorkspaceId.clear();
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!pv) return;
+
+        NSLog(@"[ghostty-surface] hidePopover: fading out");
+
+        // Fade out over 100ms, then remove (same as loading overlay).
+        CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fade.fromValue = @(pv.alphaValue);
+        fade.toValue   = @(0.0);
+        fade.duration  = 0.1;
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:^{
+            [pv removeFromSuperview];
+        }];
+        [pv.layer addAnimation:fade forKey:@"fadeOut"];
+        pv.alphaValue = 0.0;
+        [CATransaction commit];
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: setPopoverActionCallback(cb) → void
+//
+// Register a JS callback fired when a clickable element in a popover is
+// activated (Phase B: PR chip click). Uses the same TSFN pattern as
+// setLoadingActionCallback. The callback receives a string identifier
+// encoding "workspaceId::elementId" so the renderer can route the action.
+static Napi::Value SetPopoverActionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setPopoverActionCallback requires a function")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (g_popoverActionTSFNActive) {
+        g_popoverActionTSFN.Release();
+        g_popoverActionTSFNActive = false;
+    }
+
+    g_popoverActionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-popover-action-callback",
+        64,
+        1
+    );
+    g_popoverActionTSFNActive = true;
+
+    return env.Undefined();
+}
+
+// NAPI: setPopoverTheme({ card, textPrimary, textSecondary, textMuted, border, accent, isDark })
+//
+// Each color value is a 3-element [r, g, b] array (0-255 integers).
+// isDark is a boolean. Called by main on app startup and on theme change.
+// Replaces g_popoverTheme; existing open popover views are NOT re-tinted in
+// place (popovers are short-lived; reopen to pick up theme change).
+static Napi::Value SetPopoverTheme(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "setPopoverTheme requires an object")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object obj = info[0].As<Napi::Object>();
+
+    g_popoverTheme.card          = parseRgbArray(obj.Get("card"));
+    g_popoverTheme.textPrimary   = parseRgbArray(obj.Get("textPrimary"));
+    g_popoverTheme.textSecondary = parseRgbArray(obj.Get("textSecondary"));
+    g_popoverTheme.textMuted     = parseRgbArray(obj.Get("textMuted"));
+    g_popoverTheme.border        = parseRgbArray(obj.Get("border"));
+    g_popoverTheme.accent        = parseRgbArray(obj.Get("accent"));
+
+    Napi::Value isDarkVal = obj.Get("isDark");
+    g_popoverTheme.isDark = isDarkVal.IsBoolean()
+        ? (isDarkVal.As<Napi::Boolean>().Value() ? YES : NO)
+        : YES;
+
+    NSLog(@"[ghostty-surface] setPopoverTheme applied (isDark=%d)", (int)g_popoverTheme.isDark);
+    return env.Undefined();
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -3631,10 +5642,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
             uv_unref(reinterpret_cast<uv_handle_t*>(&g_tickAsync));
             g_tickAsyncInited.store(true, std::memory_order_release);
         } else {
-            NSLog(@"[ghostty-native] uv_async_init FAILED — terminal titles will not update");
+            NSLog(@"[ghostty-surface] uv_async_init FAILED — terminal titles will not update");
         }
     } else {
-        NSLog(@"[ghostty-native] napi_get_uv_event_loop FAILED — terminal titles will not update");
+        NSLog(@"[ghostty-surface] napi_get_uv_event_loop FAILED — terminal titles will not update");
     }
 
     exports.Set("mount",             Napi::Function::New(env, Mount));
@@ -3643,8 +5654,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
-    exports.Set("setOverlayCompositing", Napi::Function::New(env, SetOverlayCompositing));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
@@ -3653,6 +5662,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
+    exports.Set("showPopover",              Napi::Function::New(env, ShowPopover));
+    exports.Set("updatePopover",            Napi::Function::New(env, UpdatePopover));
+    exports.Set("hidePopover",              Napi::Function::New(env, HidePopover));
+    exports.Set("setPopoverActionCallback", Napi::Function::New(env, SetPopoverActionCallback));
+    exports.Set("setPopoverTheme",          Napi::Function::New(env, SetPopoverTheme));
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));

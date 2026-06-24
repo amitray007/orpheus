@@ -41,7 +41,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build native addon (the API-drift check)
-        # Compiles packages/ghostty-native/addon.mm against the pinned libghostty
+        # Compiles packages/ghostty-surface/addon.mm against the pinned libghostty
         # headers + libghostty.a. Fails the PR if the rolling C API drifted in a
         # way that breaks the addon — the exact gap that was previously manual.
         run: bun run build:native

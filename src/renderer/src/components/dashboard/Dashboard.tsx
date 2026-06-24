@@ -12,7 +12,6 @@ import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './WorkspaceTitleBar'
-import { useOverlayOpenState } from '@/lib/overlayFocus'
 import type {
   AppUiState,
   PinnedItem,
@@ -32,7 +31,6 @@ interface DashboardProps {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- prop forwarded from App.tsx but not yet used in this component
 export function Dashboard(_: DashboardProps): React.JSX.Element {
-  const overlayOpen = useOverlayOpenState()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // UI state hydration
@@ -1132,12 +1130,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
         <main
           className={
-            // Workspace view: transparent at rest so the opaque terminal NSView
-            // (topmost sibling, isOpaque=YES) paints through. bg-surface-base
-            // when an overlay is open (terminal swapped below WebContents) to
-            // avoid a transparent gap. Every other view always paints surface-base.
+            // Workspace view: terminal always sits above web layer (native z-order),
+            // so this container stays transparent to let the NSView paint through.
             view.kind === 'workspace'
-              ? `flex-1 overflow-hidden min-h-0${overlayOpen ? ' bg-surface-base' : ''}`
+              ? 'flex-1 overflow-hidden min-h-0'
               : view.kind === 'settings'
                 ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
                 : view.kind === 'sessions'

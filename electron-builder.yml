@@ -17,8 +17,8 @@ asarUnpack:
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.
-  - from: packages/ghostty-native/build/Release/ghostty_native.node
-    to: packages/ghostty-native/ghostty_native.node
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
   # Ghostty terminfo sentinel — must live at Contents/Resources/terminfo/78/xterm-ghostty
   # so Ghostty's auto-walk (resourcesdir.zig) finds the bundle when scanning up from the
   # Contents/MacOS/Orpheus executable.
@@ -40,6 +40,16 @@ extraResources:
   # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
   - from: resources/bin/orpheus-notify
     to: bin/orpheus-notify
+  # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
+  # so registerPopoverFonts() can resolve them via process.resourcesPath.
+  - from: node_modules/geist/dist/fonts/geist-sans
+    to: fonts/geist-sans
+    filter:
+      - '*.ttf'
+  - from: node_modules/geist/dist/fonts/geist-mono
+    to: fonts/geist-mono
+    filter:
+      - '*.ttf'
 win:
   executableName: Orpheus
 nsis:

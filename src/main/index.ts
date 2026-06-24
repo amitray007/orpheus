@@ -18,7 +18,6 @@ import {
 //   dev  → ~/Library/Application Support/Orpheus Dev/
 app.setName(APP_NAME)
 import { join } from 'path'
-import { createRequire } from 'module'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
@@ -83,12 +82,7 @@ import {
   invalidateClaudeWorkspaceSettingsCache
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import {
-  getClaudeAuthState,
-  updateClaudeAuth,
-  getClaudeAuthEnv,
-  testAnthropicConnection
-} from './claudeAuth'
+import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
 import { listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer } from './mcp'
 import {
   listSlashCommands,
@@ -104,7 +98,6 @@ import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
 import {
   startNotifyServer,
   ensureManagedHooks,
-  shimPath,
   onActivityBatch,
   onSessionStart,
   heartbeatFromTitle,
@@ -147,8 +140,7 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath,
-  getCachedShellPath
+  getUserShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -167,6 +159,8 @@ import type {
   WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
+import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
+import type { GhosttySurfaceAddon, SurfaceRect } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import {
   writeGhosttyConfigFile,
@@ -280,6 +274,75 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Popover theme palettes — separate from loading overlay (different token set:
+// no backdrop/tintAlpha; adds textMuted + accent).
+// surface-overlay tokens are the solid card background for the 3 themes.
+// ---------------------------------------------------------------------------
+type PopoverThemePalette = {
+  card: [number, number, number]
+  textPrimary: [number, number, number]
+  textSecondary: [number, number, number]
+  textMuted: [number, number, number]
+  border: [number, number, number]
+  accent: [number, number, number]
+  isDark: boolean
+}
+
+const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
+  midnight: {
+    card: [0x1c, 0x1c, 0x1f], // surface-overlay: slightly lighter than page bg
+    textPrimary: [0xf4, 0xf4, 0xf5], // zinc-100
+    textSecondary: [0xa1, 0xa1, 0xaa], // zinc-400
+    textMuted: [0x71, 0x71, 0x7a], // zinc-500
+    border: [0x3f, 0x3f, 0x46], // zinc-700 (border-white/10 approximation on dark)
+    accent: [0x60, 0xa5, 0xfa], // blue-400
+    isDark: true
+  },
+  daylight: {
+    card: [0xff, 0xff, 0xff], // white
+    textPrimary: [0x18, 0x18, 0x1b], // zinc-900
+    textSecondary: [0x52, 0x52, 0x5b], // zinc-600
+    textMuted: [0xa1, 0xa1, 0xaa], // zinc-400
+    border: [0xe4, 0xe4, 0xe7], // zinc-200
+    accent: [0x25, 0x63, 0xeb], // blue-600
+    isDark: false
+  },
+  eclipse: {
+    card: [0x10, 0x10, 0x10], // near-black surface
+    textPrimary: [0xff, 0xff, 0xff],
+    textSecondary: [0xb4, 0xb4, 0xb4],
+    textMuted: [0x71, 0x71, 0x71],
+    border: [0x2a, 0x2a, 0x2a],
+    accent: [0x60, 0xa5, 0xfa], // blue-400
+    isDark: true
+  }
+}
+
+let popoverWired = false
+
+function applyPopoverTheme(theme: Theme): void {
+  if (!terminalAddon) return
+  const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
+  terminalAddon.setPopoverTheme(palette)
+  console.log('[popover] theme applied:', theme)
+}
+
+function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
+  if (popoverWired) return
+  popoverWired = true
+  const currentTheme = getAppUiState().theme as Theme
+  addon.setPopoverTheme(POPOVER_THEME_PALETTES[currentTheme] ?? POPOVER_THEME_PALETTES.midnight)
+  // Wire the action callback: fires when a clickable element (Phase B: PR chip)
+  // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
+  addon.setPopoverActionCallback((identifier: string) => {
+    console.log('[popover] action callback:', identifier)
+    // Phase B: parse identifier and route action (e.g. open PR URL).
+    // For now, broadcast to renderer so it can handle it.
+    getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
+  })
+}
+
 function applyLoadingOverlayTheme(theme: Theme): void {
   if (!terminalAddon) return // addon not loaded yet — startup wiring will apply it on first mount
   const palette = THEME_PALETTES[theme] ?? THEME_PALETTES.midnight
@@ -287,7 +350,7 @@ function applyLoadingOverlayTheme(theme: Theme): void {
   console.log('[loadingOverlay] theme applied:', theme)
 }
 
-function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
+function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   if (loadingOverlayWired) return
   loadingOverlayWired = true
   // Push the current app theme to the native side so the overlay matches.
@@ -311,7 +374,7 @@ function ensureLoadingOverlayWiring(addon: GhosttyNativeAddon): void {
   })
 }
 
-function ensureTitleCallback(addon: GhosttyNativeAddon): void {
+function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
   addon.setTitleCallback((workspaceId: string, title: string) => {
@@ -641,7 +704,6 @@ function createWindow(): void {
     mainWindow.show()
     try {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
-      loadTerminalAddon().setOverlayCompositing(true)
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
     }
@@ -1202,7 +1264,10 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
-  if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
+  if (patch.theme !== undefined) {
+    applyLoadingOverlayTheme(patch.theme as Theme)
+    applyPopoverTheme(patch.theme as Theme)
+  }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -1360,62 +1425,18 @@ ipcMain.handle('shell:listEditorApps', () => listEditorApps())
 ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
 
 // ---------------------------------------------------------------------------
-// Terminal IPC — ghostty-native lifecycle
+// Terminal IPC — ghostty-surface lifecycle
 // ---------------------------------------------------------------------------
 
-type TerminalRect = { x: number; y: number; w: number; h: number }
-type GhosttyNativeAddon = {
-  mount: (
-    handle: Buffer,
-    opts: {
-      workspaceId: string
-      rect: TerminalRect
-      scaleFactor: number
-      cwd?: string
-      env?: Record<string, string>
-    }
-  ) => { workspaceId: string; created: boolean }
-  installBackstop: (handle: Buffer) => void
-  hide: (workspaceId: string) => void
-  resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => void
-  destroy: (workspaceId: string) => void
-  focus: (workspaceId: string) => void
-  setOverlay(workspaceId: string, on: boolean): void
-  setOverlayCompositing(on: boolean): void
-  setTitleCallback: (cb: (workspaceId: string, title: string) => void) => void
-  setOcclusionCallback: (cb: (workspaceId: string, occluded: boolean) => void) => void
-  setLivenessCallback: (
-    cb: (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => void
-  ) => void
-  setActionTraceCallback: (cb: (tagName: string) => void) => void
-  setLoadingOverlay: (
-    workspaceId: string,
-    state: 'showing' | 'slow' | 'error' | 'hidden',
-    copy: { title: string; subtitle?: string; actionLabel?: string }
-  ) => void
-  setLoadingActionCallback: (cb: (workspaceId: string) => void) => void
-  setLoadingTheme: (colors: {
-    backdrop: [number, number, number]
-    card: [number, number, number]
-    textPrimary: [number, number, number]
-    textSecondary: [number, number, number]
-    border: [number, number, number]
-    isDark: boolean
-    tintAlpha: number
-  }) => void
-  sendInput: (workspaceId: string, utf8Text: string) => boolean
-  sendKeys: (
-    workspaceId: string,
-    keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
-  ) => boolean
-  reloadGhosttyConfig: () => boolean
-  getSurfacePhase: (workspaceId: string) => string
-}
+// TerminalRect is a local alias for SurfaceRect (imported from the generic
+// ghostty-surface package). They are structurally identical; the alias keeps
+// the IPC handler parameter type names stable without a broad rename.
+type TerminalRect = SurfaceRect
 
-let terminalAddon: GhosttyNativeAddon | null = null
+let terminalAddon: GhosttySurfaceAddon | null = null
 let terminalAddonError: string | null = null
 
-function loadTerminalAddon(): GhosttyNativeAddon {
+function loadTerminalAddon(): GhosttySurfaceAddon {
   if (terminalAddon) return terminalAddon
   if (terminalAddonError) throw new Error(terminalAddonError)
 
@@ -1429,13 +1450,9 @@ function loadTerminalAddon(): GhosttyNativeAddon {
   process.env['GHOSTTY_RESOURCES_DIR'] = resDir
   console.log('[terminal] GHOSTTY_RESOURCES_DIR set to', resDir)
 
-  const addonPath = app.isPackaged
-    ? join(process.resourcesPath, 'packages/ghostty-native/ghostty_native.node')
-    : join(__dirname, '../../packages/ghostty-native/build/Release/ghostty_native.node')
-
-  console.log('[terminal] loading addon from:', addonPath)
+  console.log('[terminal] loading addon via loadOrpheusSurface')
   try {
-    terminalAddon = createRequire(import.meta.url)(addonPath) as GhosttyNativeAddon
+    terminalAddon = loadOrpheusSurface()
     console.log('[terminal] addon loaded OK')
     // Wire the addon reference into the actions registry so terminal.*
     // actions can delegate through the same addon instance.
@@ -1463,6 +1480,7 @@ ipcMain.handle(
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
+    ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
@@ -1471,34 +1489,13 @@ ipcMain.handle(
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
 
-    // Compose claude settings into env vars for the wrapper script.
-    const launch = composeClaudeLaunch(projectId, workspaceId)
-
-    // Auth env vars (ANTHROPIC_API_KEY, provider routing flags, etc.).
-    // Merged LAST so they win over any ambient settings-derived values.
-    // NEVER log authEnv values — they contain plaintext secrets.
-    const authEnv = getClaudeAuthEnv()
-
-    // Inject the user's full shell PATH (captured once at app start via a
-    // login+interactive shell spawn). The wrapper script applies it before
-    // launching claude, replacing the expensive upfront .zshrc source that
-    // was the original reason PATH additions were available. If the promise
-    // hasn't settled yet (extremely rare — it fires at whenReady start), the
-    // key is omitted and the script falls back to sourcing ~/.zshrc.
-    const cachedUserPath = getCachedShellPath()
-
-    const ghosttyConfigPath = writeGhosttyConfigFile()
-    const surfaceEnv: Record<string, string> = {
-      ...launch.env,
-      ...authEnv, // auth env wins on conflict
-      ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
-      ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
-      ORPHEUS_WORKSPACE_ID: workspaceId,
-      ...(notifyServer ? { ORPHEUS_SOCK: notifyServer.sockPath } : {}),
-      ORPHEUS_NOTIFY: shimPath(),
-      ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
-      ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
-    }
+    // Assemble the surface launch env + command via the Orpheus adapter.
+    // buildMountEnv owns the env layering: settings → auth → ORPHEUS_* vars.
+    const {
+      command,
+      env: surfaceEnv,
+      launch
+    } = buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
 
     console.log(
       '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
@@ -1514,6 +1511,7 @@ ipcMain.handle(
       rect,
       scaleFactor,
       cwd,
+      command,
       env: surfaceEnv
     })
     logDiagMain({
@@ -1584,13 +1582,46 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
   })
 })
 
+// ---------------------------------------------------------------------------
+// Native popover IPC handlers (Phase A chassis)
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(
-  'terminal:setOverlay',
-  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+  'terminal:showPopover',
+  (
+    _e,
+    {
+      workspaceId,
+      kind,
+      anchorRect,
+      data
+    }: {
+      workspaceId: string
+      kind: string
+      anchorRect: { x: number; y: number; w: number; h: number }
+      data: Record<string, unknown>
+    }
+  ): void => {
     const addon = loadTerminalAddon()
-    addon.setOverlay(workspaceId, on)
+    // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
+    // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
+    const fontDir = app.isPackaged ? join(process.resourcesPath, 'fonts') : undefined
+    addon.showPopover(workspaceId, kind, anchorRect, data, fontDir)
   }
 )
+
+ipcMain.handle(
+  'terminal:updatePopover',
+  (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
+    const addon = loadTerminalAddon()
+    addon.updatePopover(workspaceId, data)
+  }
+)
+
+ipcMain.handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.hidePopover(workspaceId)
+})
 
 ipcMain.handle(
   'terminal:getSurfacePhase',

@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { useOverlayOpen } from '@/lib/overlayFocus'
 
 interface OverlayProps {
   open: boolean
@@ -12,12 +11,16 @@ interface OverlayProps {
   children: React.ReactNode
 }
 
-// The single sanctioned way to paint DOM over the terminal. Registers overlay-open
-// (drives the native focus handoff + z-swap via the coordinator) for its lifetime;
-// optionally portals to body; and — when interactive — owns Escape + outside-click so
-// overlays stop attaching their own focus-stealing document listeners. POSITIONING-
-// AGNOSTIC: callers keep their own coordinate math via className/style or by rendering
-// in place (portal={false}).
+// The single sanctioned way to paint DOM over the terminal. Optionally portals
+// to body; and — when interactive — owns Escape + outside-click so overlays
+// stop attaching their own focus-stealing document listeners. POSITIONING-
+// AGNOSTIC: callers keep their own coordinate math via className/style or by
+// rendering in place (portal={false}).
+//
+// NOTE: native popovers (showPopover/hidePopover) are used for the workspace
+// hover card and details popover. Those are native NSView siblings above the
+// terminal and do not require any z-swap. This Overlay component is for any
+// remaining DOM overlays that may exist in the app.
 export function Overlay({
   open,
   onDismiss,
@@ -27,7 +30,6 @@ export function Overlay({
   style,
   children
 }: OverlayProps): React.JSX.Element | null {
-  useOverlayOpen(open)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {

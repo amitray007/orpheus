@@ -14,8 +14,8 @@ asarUnpack:
   - resources/**
   - '**/*.node'
 extraResources:
-  - from: packages/ghostty-native/build/Release/ghostty_native.node
-    to: packages/ghostty-native/ghostty_native.node
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
   - from: resources/ghostty/terminfo
     to: terminfo
     filter:
@@ -28,6 +28,16 @@ extraResources:
     to: orpheus-claude.sh
   - from: resources/bin/orpheus-notify
     to: bin/orpheus-notify
+  # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
+  # so registerPopoverFonts() can resolve them via process.resourcesPath.
+  - from: node_modules/geist/dist/fonts/geist-sans
+    to: fonts/geist-sans
+    filter:
+      - '*.ttf'
+  - from: node_modules/geist/dist/fonts/geist-mono
+    to: fonts/geist-mono
+    filter:
+      - '*.ttf'
 win:
   executableName: Orpheus Dev
 nsis:
