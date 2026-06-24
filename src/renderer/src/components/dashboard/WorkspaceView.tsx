@@ -11,20 +11,7 @@ import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
 import { Moon } from '@phosphor-icons/react'
 import { useOverlayOpenState } from '@/lib/overlayFocus'
 import { XtermSurface } from './terminal/XtermSurface'
-
-function isEditableTarget(): boolean {
-  const el = document.activeElement
-  if (!el) return false
-  if (el instanceof HTMLTextAreaElement && el.classList.contains('xterm-helper-textarea'))
-    return false
-  if (el instanceof HTMLInputElement) {
-    const type = (el.type || 'text').toLowerCase()
-    return ['text', 'search', 'email', 'url', 'password', 'number', 'tel', ''].includes(type)
-  }
-  if (el instanceof HTMLTextAreaElement) return true
-  if ((el as HTMLElement).contentEditable === 'true') return true
-  return false
-}
+import { isEditableTarget } from '@/lib/focusTarget'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord

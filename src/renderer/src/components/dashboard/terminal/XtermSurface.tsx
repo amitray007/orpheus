@@ -9,6 +9,7 @@ import { CanvasAddon } from '@xterm/addon-canvas'
 import { DIAG_EVENTS } from '@shared/diagEvents'
 import { logDiag } from '@/lib/diag'
 import { setSleeping } from '@/lib/sleepStore'
+import { isEditableTarget } from '@/lib/focusTarget'
 import { DotmSquare12 } from '@/components/ui/dotm-square-12'
 
 interface XtermSurfaceProps {
@@ -17,20 +18,6 @@ interface XtermSurfaceProps {
   active: boolean
   /** Called when the internal focus function becomes available (on mount) or is released (on unmount). */
   registerFocus?: (fn: (() => void) | null) => void
-}
-
-function isEditableTarget(): boolean {
-  const el = document.activeElement
-  if (!el) return false
-  if (el instanceof HTMLTextAreaElement && el.classList.contains('xterm-helper-textarea'))
-    return false
-  if (el instanceof HTMLInputElement) {
-    const type = (el.type || 'text').toLowerCase()
-    return ['text', 'search', 'email', 'url', 'password', 'number', 'tel', ''].includes(type)
-  }
-  if (el instanceof HTMLTextAreaElement) return true
-  if ((el as HTMLElement).contentEditable === 'true') return true
-  return false
 }
 
 const ACK_STRIDE = 5000
