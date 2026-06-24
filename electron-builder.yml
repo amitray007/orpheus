@@ -17,8 +17,8 @@ asarUnpack:
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.
-  - from: packages/ghostty-native/build/Release/ghostty_native.node
-    to: packages/ghostty-native/ghostty_native.node
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
   # Ghostty terminfo sentinel — must live at Contents/Resources/terminfo/78/xterm-ghostty
   # so Ghostty's auto-walk (resourcesdir.zig) finds the bundle when scanning up from the
   # Contents/MacOS/Orpheus executable.

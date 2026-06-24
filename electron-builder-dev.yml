@@ -14,8 +14,8 @@ asarUnpack:
   - resources/**
   - '**/*.node'
 extraResources:
-  - from: packages/ghostty-native/build/Release/ghostty_native.node
-    to: packages/ghostty-native/ghostty_native.node
+  - from: packages/ghostty-surface/build/Release/ghostty_native.node
+    to: packages/ghostty-surface/ghostty_native.node
   - from: resources/ghostty/terminfo
     to: terminfo
     filter:

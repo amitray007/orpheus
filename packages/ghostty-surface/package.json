@@ -1,5 +1,5 @@
 {
-  "name": "@orpheus/ghostty-native",
+  "name": "@orpheus/ghostty-surface",
   "version": "0.1.0",
   "description": "Production libghostty NAPI addon for Orpheus — mount/unmount/resize lifecycle",
   "private": true,

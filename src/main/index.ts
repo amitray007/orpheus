@@ -1360,7 +1360,7 @@ ipcMain.handle('shell:listEditorApps', () => listEditorApps())
 ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
 
 // ---------------------------------------------------------------------------
-// Terminal IPC — ghostty-native lifecycle
+// Terminal IPC — ghostty-surface lifecycle
 // ---------------------------------------------------------------------------
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -1430,8 +1430,8 @@ function loadTerminalAddon(): GhosttyNativeAddon {
   console.log('[terminal] GHOSTTY_RESOURCES_DIR set to', resDir)
 
   const addonPath = app.isPackaged
-    ? join(process.resourcesPath, 'packages/ghostty-native/ghostty_native.node')
-    : join(__dirname, '../../packages/ghostty-native/build/Release/ghostty_native.node')
+    ? join(process.resourcesPath, 'packages/ghostty-surface/ghostty_native.node')
+    : join(__dirname, '../../packages/ghostty-surface/build/Release/ghostty_native.node')
 
   console.log('[terminal] loading addon from:', addonPath)
   try {
