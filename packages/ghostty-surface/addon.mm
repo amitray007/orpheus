@@ -3856,43 +3856,449 @@ static NSColor* prStateColor(NSString* state) {
     return fixedColor(kColorPrOpen); // open (default)
 }
 
-// SF Symbol name for a PR state.
-// NOTE: These are SF Symbol stand-ins for Phosphor icons (acceptable fidelity; can refine later):
-//   GitPullRequest → "arrow.triangle.pull" or "arrow.branch"
-//   Merged         → "arrow.triangle.merge"
-//   Closed         → "xmark.circle"
-//   Draft          → "circle.dashed"
-static NSString* prStateSymbol(NSString* state) {
-    if ([state isEqualToString:@"merged"])  return @"arrow.triangle.merge";
-    if ([state isEqualToString:@"closed"])  return @"xmark.circle";
-    if ([state isEqualToString:@"draft"])   return @"circle.dashed";
-    return @"arrow.branch"; // open
+// ---------------------------------------------------------------------------
+// Phosphor icon renderer — real Phosphor SVG path data, pre-converted to
+// NSBezierPath construction calls (offline arc→cubic conversion; no runtime
+// SVG parsing). Viewbox is 256×256; Y-flip applied (y' = 256 - y).
+//
+// Approach: SVG arc segments (A/a) were converted to cubic bezier approximations
+// offline via a Node.js script using the standard parameterised-arc algorithm
+// (see https://www.w3.org/TR/SVG/implnote.html#ArcImplementationNotes).
+// The resulting NSBezierPath construction code is embedded verbatim so the
+// native addon never does runtime SVG parsing.
+//
+// Icons embedded (name → weight as used in the React app):
+//   GitBranch      regular  (git branch rows)
+//   Files          regular  (git changes rows)
+//   GitPullRequest regular  (PR chip open/closed/draft states)
+//   GitPullRequest fill     (PR chip open state — PrChip.tsx uses fill for open)
+//   GitMerge       regular  (PR chip merged state)
+//   GitMerge       fill     (PR chip merged state — PrChip.tsx uses fill)
+//   Circle         fill     (activity 'ready')
+//   CircleDashed   bold     (activity 'idle')
+//   Diamond        fill     (activity 'attention')
+//
+// PR state mapping (matching PrChip.tsx StateIcon):
+//   merged  → GitMerge  fill
+//   open    → GitPullRequest fill
+//   closed  → GitPullRequest fill   (same as open — github uses same shape)
+//   draft   → GitPullRequest regular (lighter weight signals draft)
+// ---------------------------------------------------------------------------
+
+// Build the NSBezierPath for a named Phosphor icon at 256px viewbox size.
+// Returns nil for unknown names. The path is already Y-flipped (SVG y-down →
+// NSBezierPath y-up) and ready to scale.
+static NSBezierPath* phosphorPath(NSString* name) {
+    NSBezierPath* path = nil;
+
+    if ([name isEqualToString:@"GitBranch_regular"]) {
+        // Phosphor GitBranch weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(232.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(202.6814, 223.8713) controlPoint1:NSMakePoint(231.9916, 208.6274) controlPoint2:NSMakePoint(219.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(168.4521, 197.3436) controlPoint1:NSMakePoint(186.1124, 225.2646) controlPoint2:NSMakePoint(171.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(192.0000, 161.0000) controlPoint1:NSMakePoint(165.6671, 180.9511) controlPoint2:NSMakePoint(175.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(192.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 136.0000) controlPoint1:NSMakePoint(192.0000, 139.5817) controlPoint2:NSMakePoint(188.4183, 136.0000)];
+        [path lineToPoint:NSMakePoint(96.0000, 136.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 134.6200) controlPoint1:NSMakePoint(93.2740, 136.0008) controlPoint2:NSMakePoint(90.5682, 135.5340)];
+        [path lineToPoint:NSMakePoint(88.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(111.7450, 196.0160) controlPoint1:NSMakePoint(103.6025, 165.0285) controlPoint2:NSMakePoint(113.7754, 180.0303)];
+        [path curveToPoint:NSMakePoint(80.0000, 223.9839) controlPoint1:NSMakePoint(109.7145, 212.0017) controlPoint2:NSMakePoint(96.1141, 223.9839)];
+        [path curveToPoint:NSMakePoint(48.2550, 196.0160) controlPoint1:NSMakePoint(63.8859, 223.9839) controlPoint2:NSMakePoint(50.2855, 212.0017)];
+        [path curveToPoint:NSMakePoint(72.0000, 161.0000) controlPoint1:NSMakePoint(46.2246, 180.0303) controlPoint2:NSMakePoint(56.3975, 165.0285)];
+        [path lineToPoint:NSMakePoint(72.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 59.9840) controlPoint1:NSMakePoint(56.3975, 90.9715) controlPoint2:NSMakePoint(46.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 32.0161) controlPoint1:NSMakePoint(50.2855, 43.9983) controlPoint2:NSMakePoint(63.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 59.9840) controlPoint1:NSMakePoint(96.1141, 32.0161) controlPoint2:NSMakePoint(109.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 95.0000) controlPoint1:NSMakePoint(113.7754, 75.9697) controlPoint2:NSMakePoint(103.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 112.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 120.0000) controlPoint1:NSMakePoint(88.0000, 116.4183) controlPoint2:NSMakePoint(91.5817, 120.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 120.0000)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(197.2548, 120.0000) controlPoint2:NSMakePoint(208.0000, 130.7452)];
+        [path lineToPoint:NSMakePoint(208.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 192.0000) controlPoint1:NSMakePoint(222.1221, 164.6682) controlPoint2:NSMakePoint(231.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(64.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 208.0000) controlPoint1:NSMakePoint(64.0000, 200.8366) controlPoint2:NSMakePoint(71.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 192.0000) controlPoint1:NSMakePoint(88.8366, 208.0000) controlPoint2:NSMakePoint(96.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(80.0000, 176.0000) controlPoint1:NSMakePoint(96.0000, 183.1634) controlPoint2:NSMakePoint(88.8366, 176.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 192.0000) controlPoint1:NSMakePoint(71.1634, 176.0000) controlPoint2:NSMakePoint(64.0000, 183.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 48.0000) controlPoint1:NSMakePoint(96.0000, 55.1634) controlPoint2:NSMakePoint(88.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 64.0000) controlPoint1:NSMakePoint(71.1634, 48.0000) controlPoint2:NSMakePoint(64.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 80.0000) controlPoint1:NSMakePoint(64.0000, 72.8366) controlPoint2:NSMakePoint(71.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 64.0000) controlPoint1:NSMakePoint(88.8366, 80.0000) controlPoint2:NSMakePoint(96.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 176.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 192.0000) controlPoint1:NSMakePoint(191.1634, 176.0000) controlPoint2:NSMakePoint(184.0000, 183.1634)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(184.0000, 200.8366) controlPoint2:NSMakePoint(191.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 192.0000) controlPoint1:NSMakePoint(208.8366, 208.0000) controlPoint2:NSMakePoint(216.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(200.0000, 176.0000) controlPoint1:NSMakePoint(216.0000, 183.1634) controlPoint2:NSMakePoint(208.8366, 176.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Files_regular"]) {
+        // Phosphor Files weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(213.6600, 189.6600)];
+        [path lineToPoint:NSMakePoint(173.6600, 229.6600)];
+        [path curveToPoint:NSMakePoint(168.0000, 232.0000) controlPoint1:NSMakePoint(172.1584, 231.1599) controlPoint2:NSMakePoint(170.1224, 232.0017)];
+        [path lineToPoint:NSMakePoint(88.0000, 232.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 216.0000) controlPoint1:NSMakePoint(79.1634, 232.0000) controlPoint2:NSMakePoint(72.0000, 224.8366)];
+        [path lineToPoint:NSMakePoint(72.0000, 200.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(40.0000, 184.0000) controlPoint1:NSMakePoint(47.1634, 200.0000) controlPoint2:NSMakePoint(40.0000, 192.8366)];
+        [path lineToPoint:NSMakePoint(40.0000, 40.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 24.0000) controlPoint1:NSMakePoint(40.0000, 31.1634) controlPoint2:NSMakePoint(47.1634, 24.0000)];
+        [path lineToPoint:NSMakePoint(168.0000, 24.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 40.0000) controlPoint1:NSMakePoint(176.8366, 24.0000) controlPoint2:NSMakePoint(184.0000, 31.1634)];
+        [path lineToPoint:NSMakePoint(184.0000, 56.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 72.0000) controlPoint1:NSMakePoint(208.8366, 56.0000) controlPoint2:NSMakePoint(216.0000, 63.1634)];
+        [path lineToPoint:NSMakePoint(216.0000, 184.0000)];
+        [path curveToPoint:NSMakePoint(213.6600, 189.6600) controlPoint1:NSMakePoint(216.0017, 186.1224) controlPoint2:NSMakePoint(215.1599, 188.1584)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(168.0000, 40.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 40.0000)];
+        [path lineToPoint:NSMakePoint(56.0000, 184.0000)];
+        [path lineToPoint:NSMakePoint(132.6900, 184.0000)];
+        [path lineToPoint:NSMakePoint(168.0000, 148.6900)];
+        [path lineToPoint:NSMakePoint(168.0000, 64.1600)];
+        [path curveToPoint:NSMakePoint(168.0000, 64.0000) controlPoint1:NSMakePoint(168.0000, 64.1000) controlPoint2:NSMakePoint(168.0000, 64.0500)];
+        [path curveToPoint:NSMakePoint(168.0000, 63.8400) controlPoint1:NSMakePoint(168.0000, 63.9500) controlPoint2:NSMakePoint(168.0000, 63.9000)];
+        [path lineToPoint:NSMakePoint(168.0000, 40.0000)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 72.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 72.0000)];
+        [path lineToPoint:NSMakePoint(184.0000, 152.0000)];
+        [path curveToPoint:NSMakePoint(181.6600, 157.6600) controlPoint1:NSMakePoint(184.0017, 154.1224) controlPoint2:NSMakePoint(183.1599, 156.1584)];
+        [path lineToPoint:NSMakePoint(141.6600, 197.6600)];
+        [path curveToPoint:NSMakePoint(136.0000, 200.0000) controlPoint1:NSMakePoint(140.1584, 199.1599) controlPoint2:NSMakePoint(138.1224, 200.0017)];
+        [path lineToPoint:NSMakePoint(88.0000, 200.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 216.0000)];
+        [path lineToPoint:NSMakePoint(164.6900, 216.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 180.6900)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(144.0000, 104.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 96.0000) controlPoint1:NSMakePoint(144.0000, 99.5817) controlPoint2:NSMakePoint(140.4183, 96.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 104.0000) controlPoint1:NSMakePoint(83.5817, 96.0000) controlPoint2:NSMakePoint(80.0000, 99.5817)];
+        [path curveToPoint:NSMakePoint(88.0000, 112.0000) controlPoint1:NSMakePoint(80.0000, 108.4183) controlPoint2:NSMakePoint(83.5817, 112.0000)];
+        [path lineToPoint:NSMakePoint(136.0000, 112.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 104.0000) controlPoint1:NSMakePoint(140.4183, 112.0000) controlPoint2:NSMakePoint(144.0000, 108.4183)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(144.0000, 72.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 64.0000) controlPoint1:NSMakePoint(144.0000, 67.5817) controlPoint2:NSMakePoint(140.4183, 64.0000)];
+        [path lineToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(83.5817, 64.0000) controlPoint2:NSMakePoint(80.0000, 67.5817)];
+        [path curveToPoint:NSMakePoint(88.0000, 80.0000) controlPoint1:NSMakePoint(80.0000, 76.4183) controlPoint2:NSMakePoint(83.5817, 80.0000)];
+        [path lineToPoint:NSMakePoint(136.0000, 80.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 72.0000) controlPoint1:NSMakePoint(140.4183, 80.0000) controlPoint2:NSMakePoint(144.0000, 76.4183)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitPullRequest_regular"]) {
+        // Phosphor GitPullRequest weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(104.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(74.6814, 223.8713) controlPoint1:NSMakePoint(103.9916, 208.6274) controlPoint2:NSMakePoint(91.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(40.4521, 197.3436) controlPoint1:NSMakePoint(58.1124, 225.2646) controlPoint2:NSMakePoint(43.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(64.0000, 161.0000) controlPoint1:NSMakePoint(37.6671, 180.9511) controlPoint2:NSMakePoint(47.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(64.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(40.2550, 59.9840) controlPoint1:NSMakePoint(48.3975, 90.9715) controlPoint2:NSMakePoint(38.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(72.0000, 32.0161) controlPoint1:NSMakePoint(42.2855, 43.9983) controlPoint2:NSMakePoint(55.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(103.7450, 59.9840) controlPoint1:NSMakePoint(88.1141, 32.0161) controlPoint2:NSMakePoint(101.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(80.0000, 95.0000) controlPoint1:NSMakePoint(105.7754, 75.9697) controlPoint2:NSMakePoint(95.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(80.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(104.0000, 192.0000) controlPoint1:NSMakePoint(94.1221, 164.6682) controlPoint2:NSMakePoint(103.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(56.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 208.0000) controlPoint1:NSMakePoint(56.0000, 200.8366) controlPoint2:NSMakePoint(63.1634, 208.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 192.0000) controlPoint1:NSMakePoint(80.8366, 208.0000) controlPoint2:NSMakePoint(88.0000, 200.8366)];
+        [path curveToPoint:NSMakePoint(72.0000, 176.0000) controlPoint1:NSMakePoint(88.0000, 183.1634) controlPoint2:NSMakePoint(80.8366, 176.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 192.0000) controlPoint1:NSMakePoint(63.1634, 176.0000) controlPoint2:NSMakePoint(56.0000, 183.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 48.0000) controlPoint1:NSMakePoint(88.0000, 55.1634) controlPoint2:NSMakePoint(80.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 64.0000) controlPoint1:NSMakePoint(63.1634, 48.0000) controlPoint2:NSMakePoint(56.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(72.0000, 80.0000) controlPoint1:NSMakePoint(56.0000, 72.8366) controlPoint2:NSMakePoint(63.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 64.0000) controlPoint1:NSMakePoint(80.8366, 80.0000) controlPoint2:NSMakePoint(88.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 95.0000)];
+        [path lineToPoint:NSMakePoint(208.0000, 145.3700)];
+        [path curveToPoint:NSMakePoint(201.0000, 162.3700) controlPoint1:NSMakePoint(208.0323, 151.7444) controlPoint2:NSMakePoint(205.5114, 157.8665)];
+        [path lineToPoint:NSMakePoint(163.3100, 200.0000)];
+        [path lineToPoint:NSMakePoint(192.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(196.4183, 200.0000) controlPoint2:NSMakePoint(200.0000, 203.5817)];
+        [path curveToPoint:NSMakePoint(192.0000, 216.0000) controlPoint1:NSMakePoint(200.0000, 212.4183) controlPoint2:NSMakePoint(196.4183, 216.0000)];
+        [path lineToPoint:NSMakePoint(144.0000, 216.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 208.0000) controlPoint1:NSMakePoint(139.5817, 216.0000) controlPoint2:NSMakePoint(136.0000, 212.4183)];
+        [path lineToPoint:NSMakePoint(136.0000, 160.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 152.0000) controlPoint1:NSMakePoint(136.0000, 155.5817) controlPoint2:NSMakePoint(139.5817, 152.0000)];
+        [path curveToPoint:NSMakePoint(152.0000, 160.0000) controlPoint1:NSMakePoint(148.4183, 152.0000) controlPoint2:NSMakePoint(152.0000, 155.5817)];
+        [path lineToPoint:NSMakePoint(152.0000, 188.6900)];
+        [path lineToPoint:NSMakePoint(189.6600, 151.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 145.3400) controlPoint1:NSMakePoint(191.1599, 149.4984) controlPoint2:NSMakePoint(192.0017, 147.4624)];
+        [path lineToPoint:NSMakePoint(192.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(168.2550, 59.9840) controlPoint1:NSMakePoint(176.3975, 90.9715) controlPoint2:NSMakePoint(166.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(200.0000, 32.0161) controlPoint1:NSMakePoint(170.2855, 43.9983) controlPoint2:NSMakePoint(183.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(231.7450, 59.9840) controlPoint1:NSMakePoint(216.1141, 32.0161) controlPoint2:NSMakePoint(229.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(208.0000, 95.0000) controlPoint1:NSMakePoint(233.7754, 75.9697) controlPoint2:NSMakePoint(223.6025, 90.9715)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 48.0000)];
+        [path curveToPoint:NSMakePoint(184.0000, 64.0000) controlPoint1:NSMakePoint(191.1634, 48.0000) controlPoint2:NSMakePoint(184.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(200.0000, 80.0000) controlPoint1:NSMakePoint(184.0000, 72.8366) controlPoint2:NSMakePoint(191.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(216.0000, 64.0000) controlPoint1:NSMakePoint(208.8366, 80.0000) controlPoint2:NSMakePoint(216.0000, 72.8366)];
+        [path curveToPoint:NSMakePoint(200.0000, 48.0000) controlPoint1:NSMakePoint(216.0000, 55.1634) controlPoint2:NSMakePoint(208.8366, 48.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitPullRequest_fill"]) {
+        // Phosphor GitPullRequest weight=fill, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(104.0000, 192.0000)];
+        [path curveToPoint:NSMakePoint(74.6814, 223.8713) controlPoint1:NSMakePoint(103.9916, 208.6274) controlPoint2:NSMakePoint(91.2503, 222.4781)];
+        [path curveToPoint:NSMakePoint(40.4521, 197.3436) controlPoint1:NSMakePoint(58.1124, 225.2646) controlPoint2:NSMakePoint(43.2370, 213.7362)];
+        [path curveToPoint:NSMakePoint(64.0000, 161.0000) controlPoint1:NSMakePoint(37.6671, 180.9511) controlPoint2:NSMakePoint(47.9006, 165.1569)];
+        [path lineToPoint:NSMakePoint(64.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(40.2550, 59.9840) controlPoint1:NSMakePoint(48.3975, 90.9715) controlPoint2:NSMakePoint(38.2246, 75.9697)];
+        [path curveToPoint:NSMakePoint(72.0000, 32.0161) controlPoint1:NSMakePoint(42.2855, 43.9983) controlPoint2:NSMakePoint(55.8859, 32.0161)];
+        [path curveToPoint:NSMakePoint(103.7450, 59.9840) controlPoint1:NSMakePoint(88.1141, 32.0161) controlPoint2:NSMakePoint(101.7145, 43.9983)];
+        [path curveToPoint:NSMakePoint(80.0000, 95.0000) controlPoint1:NSMakePoint(105.7754, 75.9697) controlPoint2:NSMakePoint(95.6025, 90.9715)];
+        [path lineToPoint:NSMakePoint(80.0000, 161.0000)];
+        [path curveToPoint:NSMakePoint(104.0000, 192.0000) controlPoint1:NSMakePoint(94.1221, 164.6682) controlPoint2:NSMakePoint(103.9862, 177.4093)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(88.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 48.0000) controlPoint1:NSMakePoint(88.0000, 55.1634) controlPoint2:NSMakePoint(80.8366, 48.0000)];
+        [path curveToPoint:NSMakePoint(56.0000, 64.0000) controlPoint1:NSMakePoint(63.1634, 48.0000) controlPoint2:NSMakePoint(56.0000, 55.1634)];
+        [path curveToPoint:NSMakePoint(72.0000, 80.0000) controlPoint1:NSMakePoint(56.0000, 72.8366) controlPoint2:NSMakePoint(63.1634, 80.0000)];
+        [path curveToPoint:NSMakePoint(88.0000, 64.0000) controlPoint1:NSMakePoint(80.8366, 80.0000) controlPoint2:NSMakePoint(88.0000, 72.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(232.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(202.6814, 32.1287) controlPoint1:NSMakePoint(231.9916, 47.3726) controlPoint2:NSMakePoint(219.2503, 33.5219)];
+        [path curveToPoint:NSMakePoint(168.4521, 58.6564) controlPoint1:NSMakePoint(186.1124, 30.7354) controlPoint2:NSMakePoint(171.2370, 42.2638)];
+        [path curveToPoint:NSMakePoint(192.0000, 95.0000) controlPoint1:NSMakePoint(165.6671, 75.0489) controlPoint2:NSMakePoint(175.9006, 90.8431)];
+        [path lineToPoint:NSMakePoint(192.0000, 145.3700)];
+        [path curveToPoint:NSMakePoint(189.6600, 151.0300) controlPoint1:NSMakePoint(192.0017, 147.4924) controlPoint2:NSMakePoint(191.1599, 149.5284)];
+        [path lineToPoint:NSMakePoint(152.0000, 188.6900)];
+        [path lineToPoint:NSMakePoint(152.0000, 160.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 152.0000) controlPoint1:NSMakePoint(152.0000, 155.5817) controlPoint2:NSMakePoint(148.4183, 152.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 160.0000) controlPoint1:NSMakePoint(139.5817, 152.0000) controlPoint2:NSMakePoint(136.0000, 155.5817)];
+        [path lineToPoint:NSMakePoint(136.0000, 208.0000)];
+        [path curveToPoint:NSMakePoint(144.0000, 216.0000) controlPoint1:NSMakePoint(136.0000, 212.4183) controlPoint2:NSMakePoint(139.5817, 216.0000)];
+        [path lineToPoint:NSMakePoint(192.0000, 216.0000)];
+        [path curveToPoint:NSMakePoint(200.0000, 208.0000) controlPoint1:NSMakePoint(196.4183, 216.0000) controlPoint2:NSMakePoint(200.0000, 212.4183)];
+        [path curveToPoint:NSMakePoint(192.0000, 200.0000) controlPoint1:NSMakePoint(200.0000, 203.5817) controlPoint2:NSMakePoint(196.4183, 200.0000)];
+        [path lineToPoint:NSMakePoint(163.3100, 200.0000)];
+        [path lineToPoint:NSMakePoint(201.0000, 162.3400)];
+        [path curveToPoint:NSMakePoint(208.0000, 145.3400) controlPoint1:NSMakePoint(205.5114, 157.8365) controlPoint2:NSMakePoint(208.0323, 151.7144)];
+        [path lineToPoint:NSMakePoint(208.0000, 95.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 64.0000) controlPoint1:NSMakePoint(222.1221, 91.3318) controlPoint2:NSMakePoint(231.9862, 78.5907)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitMerge_regular"]) {
+        // Phosphor GitMerge weight=regular, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(208.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(177.3100, 121.0000) controlPoint1:NSMakePoint(193.8055, 143.9753) controlPoint2:NSMakePoint(181.3181, 134.6169)];
+        [path lineToPoint:NSMakePoint(135.1000, 127.0000)];
+        [path curveToPoint:NSMakePoint(130.1500, 129.7100) controlPoint1:NSMakePoint(133.1756, 127.2721) controlPoint2:NSMakePoint(131.4160, 128.2354)];
+        [path lineToPoint:NSMakePoint(94.4300, 171.4500)];
+        [path curveToPoint:NSMakePoint(110.6369, 209.1114) controlPoint1:NSMakePoint(108.2214, 178.4399) controlPoint2:NSMakePoint(115.0425, 194.2908)];
+        [path curveToPoint:NSMakePoint(76.4888, 231.8041) controlPoint1:NSMakePoint(106.2312, 223.9321) controlPoint2:NSMakePoint(91.8590, 233.4829)];
+        [path curveToPoint:NSMakePoint(48.0449, 202.2746) controlPoint1:NSMakePoint(61.1186, 230.1252) controlPoint2:NSMakePoint(49.1471, 217.6968)];
+        [path curveToPoint:NSMakePoint(72.0000, 169.0000) controlPoint1:NSMakePoint(46.9426, 186.8523) controlPoint2:NSMakePoint(57.0248, 172.8477)];
+        [path lineToPoint:NSMakePoint(72.0000, 87.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 51.9840) controlPoint1:NSMakePoint(56.3975, 82.9715) controlPoint2:NSMakePoint(46.2246, 67.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 24.0161) controlPoint1:NSMakePoint(50.2855, 35.9983) controlPoint2:NSMakePoint(63.8859, 24.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 51.9840) controlPoint1:NSMakePoint(96.1141, 24.0161) controlPoint2:NSMakePoint(109.7145, 35.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 87.0000) controlPoint1:NSMakePoint(113.7754, 67.9697) controlPoint2:NSMakePoint(103.6025, 82.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 154.3700)];
+        [path lineToPoint:NSMakePoint(118.0000, 119.3700)];
+        [path curveToPoint:NSMakePoint(132.8300, 111.2300) controlPoint1:NSMakePoint(121.7915, 114.9466) controlPoint2:NSMakePoint(127.0625, 112.0534)];
+        [path lineToPoint:NSMakePoint(176.8300, 104.9500)];
+        [path curveToPoint:NSMakePoint(212.7797, 80.3524) controlPoint1:NSMakePoint(180.5225, 88.6015) controlPoint2:NSMakePoint(196.2040, 77.8719)];
+        [path curveToPoint:NSMakePoint(239.9539, 114.3964) controlPoint1:NSMakePoint(229.3555, 82.8330) controlPoint2:NSMakePoint(241.2090, 97.6831)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(238.6988, 131.1097) controlPoint2:NSMakePoint(224.7603, 144.0229)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(64.0000, 200.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 216.0000) controlPoint1:NSMakePoint(64.0000, 208.8366) controlPoint2:NSMakePoint(71.1634, 216.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 200.0000) controlPoint1:NSMakePoint(88.8366, 216.0000) controlPoint2:NSMakePoint(96.0000, 208.8366)];
+        [path curveToPoint:NSMakePoint(80.0000, 184.0000) controlPoint1:NSMakePoint(96.0000, 191.1634) controlPoint2:NSMakePoint(88.8366, 184.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 200.0000) controlPoint1:NSMakePoint(71.1634, 184.0000) controlPoint2:NSMakePoint(64.0000, 191.1634)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 40.0000) controlPoint1:NSMakePoint(96.0000, 47.1634) controlPoint2:NSMakePoint(88.8366, 40.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 56.0000) controlPoint1:NSMakePoint(71.1634, 40.0000) controlPoint2:NSMakePoint(64.0000, 47.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(64.0000, 64.8366) controlPoint2:NSMakePoint(71.1634, 72.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 56.0000) controlPoint1:NSMakePoint(88.8366, 72.0000) controlPoint2:NSMakePoint(96.0000, 64.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 112.0000) controlPoint1:NSMakePoint(199.1634, 96.0000) controlPoint2:NSMakePoint(192.0000, 103.1634)];
+        [path curveToPoint:NSMakePoint(208.0000, 128.0000) controlPoint1:NSMakePoint(192.0000, 120.8366) controlPoint2:NSMakePoint(199.1634, 128.0000)];
+        [path curveToPoint:NSMakePoint(224.0000, 112.0000) controlPoint1:NSMakePoint(216.8366, 128.0000) controlPoint2:NSMakePoint(224.0000, 120.8366)];
+        [path curveToPoint:NSMakePoint(208.0000, 96.0000) controlPoint1:NSMakePoint(224.0000, 103.1634) controlPoint2:NSMakePoint(216.8366, 96.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GitMerge_fill"]) {
+        // Phosphor GitMerge weight=fill, 256×256 viewbox, Y-flipped
+        // (same main body as regular but without the outline circle sub-paths —
+        // fill variant fills the whole shape solid)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(208.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(177.3100, 121.0000) controlPoint1:NSMakePoint(193.8055, 143.9753) controlPoint2:NSMakePoint(181.3181, 134.6169)];
+        [path lineToPoint:NSMakePoint(135.1000, 127.0000)];
+        [path curveToPoint:NSMakePoint(130.1500, 129.7100) controlPoint1:NSMakePoint(133.1756, 127.2721) controlPoint2:NSMakePoint(131.4160, 128.2354)];
+        [path lineToPoint:NSMakePoint(94.4300, 171.4500)];
+        [path curveToPoint:NSMakePoint(110.6369, 209.1114) controlPoint1:NSMakePoint(108.2214, 178.4399) controlPoint2:NSMakePoint(115.0425, 194.2908)];
+        [path curveToPoint:NSMakePoint(76.4888, 231.8041) controlPoint1:NSMakePoint(106.2312, 223.9321) controlPoint2:NSMakePoint(91.8590, 233.4829)];
+        [path curveToPoint:NSMakePoint(48.0449, 202.2746) controlPoint1:NSMakePoint(61.1186, 230.1252) controlPoint2:NSMakePoint(49.1471, 217.6968)];
+        [path curveToPoint:NSMakePoint(72.0000, 169.0000) controlPoint1:NSMakePoint(46.9426, 186.8523) controlPoint2:NSMakePoint(57.0248, 172.8477)];
+        [path lineToPoint:NSMakePoint(72.0000, 87.0000)];
+        [path curveToPoint:NSMakePoint(48.2550, 51.9840) controlPoint1:NSMakePoint(56.3975, 82.9715) controlPoint2:NSMakePoint(46.2246, 67.9697)];
+        [path curveToPoint:NSMakePoint(80.0000, 24.0161) controlPoint1:NSMakePoint(50.2855, 35.9983) controlPoint2:NSMakePoint(63.8859, 24.0161)];
+        [path curveToPoint:NSMakePoint(111.7450, 51.9840) controlPoint1:NSMakePoint(96.1141, 24.0161) controlPoint2:NSMakePoint(109.7145, 35.9983)];
+        [path curveToPoint:NSMakePoint(88.0000, 87.0000) controlPoint1:NSMakePoint(113.7754, 67.9697) controlPoint2:NSMakePoint(103.6025, 82.9715)];
+        [path lineToPoint:NSMakePoint(88.0000, 154.3700)];
+        [path lineToPoint:NSMakePoint(118.0000, 119.3700)];
+        [path curveToPoint:NSMakePoint(132.8300, 111.2300) controlPoint1:NSMakePoint(121.7915, 114.9466) controlPoint2:NSMakePoint(127.0625, 112.0534)];
+        [path lineToPoint:NSMakePoint(176.8300, 104.9500)];
+        [path curveToPoint:NSMakePoint(212.7797, 80.3524) controlPoint1:NSMakePoint(180.5225, 88.6015) controlPoint2:NSMakePoint(196.2040, 77.8719)];
+        [path curveToPoint:NSMakePoint(239.9539, 114.3964) controlPoint1:NSMakePoint(229.3555, 82.8330) controlPoint2:NSMakePoint(241.2090, 97.6831)];
+        [path curveToPoint:NSMakePoint(208.0000, 144.0000) controlPoint1:NSMakePoint(238.6988, 131.1097) controlPoint2:NSMakePoint(224.7603, 144.0229)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(96.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(80.0000, 40.0000) controlPoint1:NSMakePoint(96.0000, 47.1634) controlPoint2:NSMakePoint(88.8366, 40.0000)];
+        [path curveToPoint:NSMakePoint(64.0000, 56.0000) controlPoint1:NSMakePoint(71.1634, 40.0000) controlPoint2:NSMakePoint(64.0000, 47.1634)];
+        [path curveToPoint:NSMakePoint(80.0000, 72.0000) controlPoint1:NSMakePoint(64.0000, 64.8366) controlPoint2:NSMakePoint(71.1634, 72.0000)];
+        [path curveToPoint:NSMakePoint(96.0000, 56.0000) controlPoint1:NSMakePoint(88.8366, 72.0000) controlPoint2:NSMakePoint(96.0000, 64.8366)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.0000, 96.0000)];
+        [path curveToPoint:NSMakePoint(192.0000, 112.0000) controlPoint1:NSMakePoint(199.1634, 96.0000) controlPoint2:NSMakePoint(192.0000, 103.1634)];
+        [path curveToPoint:NSMakePoint(208.0000, 128.0000) controlPoint1:NSMakePoint(192.0000, 120.8366) controlPoint2:NSMakePoint(199.1634, 128.0000)];
+        [path curveToPoint:NSMakePoint(224.0000, 112.0000) controlPoint1:NSMakePoint(216.8366, 128.0000) controlPoint2:NSMakePoint(224.0000, 120.8366)];
+        [path curveToPoint:NSMakePoint(208.0000, 96.0000) controlPoint1:NSMakePoint(224.0000, 103.1634) controlPoint2:NSMakePoint(216.8366, 96.0000)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Circle_fill"]) {
+        // Phosphor Circle weight=fill, 256×256 viewbox, Y-flipped
+        // Simple filled circle: A(104,104) arc converted to 4 cubic beziers.
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(232.0000, 128.0000)];
+        [path curveToPoint:NSMakePoint(128.0000, 24.0000) controlPoint1:NSMakePoint(232.0000, 70.5624) controlPoint2:NSMakePoint(185.4376, 24.0000)];
+        [path curveToPoint:NSMakePoint(24.0000, 128.0000) controlPoint1:NSMakePoint(70.5624, 24.0000) controlPoint2:NSMakePoint(24.0000, 70.5624)];
+        [path curveToPoint:NSMakePoint(128.0000, 232.0000) controlPoint1:NSMakePoint(24.0000, 185.4376) controlPoint2:NSMakePoint(70.5624, 232.0000)];
+        [path curveToPoint:NSMakePoint(232.0000, 128.0000) controlPoint1:NSMakePoint(185.4079, 231.9284) controlPoint2:NSMakePoint(231.9284, 185.4079)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"CircleDashed_bold"]) {
+        // Phosphor CircleDashed weight=bold, 256×256 viewbox, Y-flipped
+        // Six arc-dashes around the circle, each converted to cubic beziers.
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(92.3800, 217.9500)];
+        [path curveToPoint:NSMakePoint(93.6575, 227.0518) controlPoint1:NSMakePoint(91.5811, 221.0332) controlPoint2:NSMakePoint(92.0406, 224.3076)];
+        [path curveToPoint:NSMakePoint(101.0000, 232.5800) controlPoint1:NSMakePoint(95.2743, 229.7959) controlPoint2:NSMakePoint(97.9158, 231.7847)];
+        [path curveToPoint:NSMakePoint(155.0000, 232.5800) controlPoint1:NSMakePoint(118.7096, 237.1526) controlPoint2:NSMakePoint(137.2904, 237.1526)];
+        [path curveToPoint:NSMakePoint(163.8285, 224.1969) controlPoint1:NSMakePoint(159.2471, 231.5967) controlPoint2:NSMakePoint(162.6268, 228.3874)];
+        [path curveToPoint:NSMakePoint(160.7839, 212.4092) controlPoint1:NSMakePoint(165.0301, 220.0063) controlPoint2:NSMakePoint(163.8645, 215.4937)];
+        [path curveToPoint:NSMakePoint(149.0000, 209.3500) controlPoint1:NSMakePoint(157.7032, 209.3247) controlPoint2:NSMakePoint(153.1920, 208.1536)];
+        [path curveToPoint:NSMakePoint(107.0000, 209.3500) controlPoint1:NSMakePoint(135.2253, 212.9017) controlPoint2:NSMakePoint(120.7747, 212.9017)];
+        [path curveToPoint:NSMakePoint(92.3800, 217.9500) controlPoint1:NSMakePoint(100.5885, 207.6913) controlPoint2:NSMakePoint(94.0453, 211.5402)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(50.9400, 203.6600)];
+        [path curveToPoint:NSMakePoint(23.9400, 156.9000) controlPoint1:NSMakePoint(38.1295, 190.6082) controlPoint2:NSMakePoint(28.8397, 174.5196)];
+        [path curveToPoint:NSMakePoint(25.0645, 147.7806) controlPoint1:NSMakePoint(23.0901, 153.8314) controlPoint2:NSMakePoint(23.4946, 150.5508)];
+        [path curveToPoint:NSMakePoint(32.3100, 142.1300) controlPoint1:NSMakePoint(26.6343, 145.0104) controlPoint2:NSMakePoint(29.2408, 142.9777)];
+        [path curveToPoint:NSMakePoint(35.5100, 141.7000) controlPoint1:NSMakePoint(33.3529, 141.8455) controlPoint2:NSMakePoint(34.4290, 141.7009)];
+        [path curveToPoint:NSMakePoint(47.0700, 150.5000) controlPoint1:NSMakePoint(40.9030, 141.7025) controlPoint2:NSMakePoint(45.6319, 145.3023)];
+        [path curveToPoint:NSMakePoint(68.0700, 186.8500) controlPoint1:NSMakePoint(50.8807, 164.1987) controlPoint2:NSMakePoint(58.1063, 176.7060)];
+        [path curveToPoint:NSMakePoint(67.9100, 203.8200) controlPoint1:NSMakePoint(72.7120, 191.5803) controlPoint2:NSMakePoint(72.6403, 199.1780)];
+        [path curveToPoint:NSMakePoint(50.9400, 203.6600) controlPoint1:NSMakePoint(63.1797, 208.4620) controlPoint2:NSMakePoint(55.5820, 208.3903)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(47.0600, 105.5200)];
+        [path curveToPoint:NSMakePoint(32.3561, 113.6320) controlPoint1:NSMakePoint(45.1823, 111.7744) controlPoint2:NSMakePoint(38.6482, 115.3792)];
+        [path curveToPoint:NSMakePoint(23.9400, 99.1000) controlPoint1:NSMakePoint(26.0640, 111.8848) controlPoint2:NSMakePoint(22.3241, 105.4270)];
+        [path curveToPoint:NSMakePoint(50.9400, 52.3200) controlPoint1:NSMakePoint(28.8325, 81.4715) controlPoint2:NSMakePoint(38.1231, 65.3748)];
+        [path curveToPoint:NSMakePoint(67.4387, 52.6574) controlPoint1:NSMakePoint(55.6565, 48.0332) controlPoint2:NSMakePoint(62.9014, 48.1814)];
+        [path curveToPoint:NSMakePoint(68.0000, 69.1500) controlPoint1:NSMakePoint(71.9759, 57.1335) controlPoint2:NSMakePoint(72.2224, 64.3758)];
+        [path curveToPoint:NSMakePoint(47.0600, 105.5200) controlPoint1:NSMakePoint(58.0552, 79.3063) controlPoint2:NSMakePoint(50.8503, 91.8202)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(149.0000, 46.6500)];
+        [path curveToPoint:NSMakePoint(107.0000, 46.6500) controlPoint1:NSMakePoint(135.2259, 43.0935) controlPoint2:NSMakePoint(120.7741, 43.0935)];
+        [path curveToPoint:NSMakePoint(95.2161, 43.5908) controlPoint1:NSMakePoint(102.8080, 47.8464) controlPoint2:NSMakePoint(98.2968, 46.6753)];
+        [path curveToPoint:NSMakePoint(92.1715, 31.8031) controlPoint1:NSMakePoint(92.1355, 40.5063) controlPoint2:NSMakePoint(90.9699, 35.9937)];
+        [path curveToPoint:NSMakePoint(101.0000, 23.4200) controlPoint1:NSMakePoint(93.3732, 27.6126) controlPoint2:NSMakePoint(96.7529, 24.4033)];
+        [path curveToPoint:NSMakePoint(155.0000, 23.4200) controlPoint1:NSMakePoint(118.7096, 18.8474) controlPoint2:NSMakePoint(137.2904, 18.8474)];
+        [path curveToPoint:NSMakePoint(163.8285, 31.8031) controlPoint1:NSMakePoint(159.2471, 24.4033) controlPoint2:NSMakePoint(162.6268, 27.6126)];
+        [path curveToPoint:NSMakePoint(160.7839, 43.5908) controlPoint1:NSMakePoint(165.0301, 35.9937) controlPoint2:NSMakePoint(163.8645, 40.5063)];
+        [path curveToPoint:NSMakePoint(149.0000, 46.6500) controlPoint1:NSMakePoint(157.7032, 46.6753) controlPoint2:NSMakePoint(153.1920, 47.8464)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(223.7200, 113.8700)];
+        [path curveToPoint:NSMakePoint(209.0000, 105.5000) controlPoint1:NSMakePoint(217.3458, 115.6079) controlPoint2:NSMakePoint(210.7659, 111.8665)];
+        [path curveToPoint:NSMakePoint(188.0000, 69.1500) controlPoint1:NSMakePoint(205.1893, 91.8013) controlPoint2:NSMakePoint(197.9637, 79.2940)];
+        [path curveToPoint:NSMakePoint(188.1500, 52.1800) controlPoint1:NSMakePoint(183.3553, 64.4224) controlPoint2:NSMakePoint(183.4224, 56.8247)];
+        [path curveToPoint:NSMakePoint(205.1200, 52.3300) controlPoint1:NSMakePoint(192.8776, 47.5353) controlPoint2:NSMakePoint(200.4753, 47.6024)];
+        [path curveToPoint:NSMakePoint(232.1200, 99.1000) controlPoint1:NSMakePoint(217.9288, 65.3870) controlPoint2:NSMakePoint(227.2182, 81.4783)];
+        [path curveToPoint:NSMakePoint(230.9806, 108.2305) controlPoint1:NSMakePoint(232.9685, 102.1740) controlPoint2:NSMakePoint(232.5585, 105.4593)];
+        [path curveToPoint:NSMakePoint(223.7100, 113.8700) controlPoint1:NSMakePoint(229.4027, 111.0017) controlPoint2:NSMakePoint(226.7866, 113.0309)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(208.9500, 150.4800)];
+        [path curveToPoint:NSMakePoint(223.6539, 142.3680) controlPoint1:NSMakePoint(210.8277, 144.2256) controlPoint2:NSMakePoint(217.3618, 140.6208)];
+        [path curveToPoint:NSMakePoint(232.0700, 156.9000) controlPoint1:NSMakePoint(229.9460, 144.1152) controlPoint2:NSMakePoint(233.6859, 150.5730)];
+        [path curveToPoint:NSMakePoint(205.0700, 203.6800) controlPoint1:NSMakePoint(227.1775, 174.5285) controlPoint2:NSMakePoint(217.8869, 190.6252)];
+        [path curveToPoint:NSMakePoint(193.2900, 207.3415) controlPoint1:NSMakePoint(202.1193, 206.9799) controlPoint2:NSMakePoint(197.5914, 208.3873)];
+        [path curveToPoint:NSMakePoint(184.5056, 198.6807) controlPoint1:NSMakePoint(188.9885, 206.2958) controlPoint2:NSMakePoint(185.6121, 202.9669)];
+        [path curveToPoint:NSMakePoint(188.0000, 186.8500) controlPoint1:NSMakePoint(183.3991, 194.3945) controlPoint2:NSMakePoint(184.7422, 189.8472)];
+        [path curveToPoint:NSMakePoint(208.9400, 150.4800) controlPoint1:NSMakePoint(197.9448, 176.6937) controlPoint2:NSMakePoint(205.1497, 164.1798)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Diamond_fill"]) {
+        // Phosphor Diamond weight=fill, 256×256 viewbox, Y-flipped
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(240.0000, 128.0000)];
+        [path curveToPoint:NSMakePoint(235.3300, 116.7200) controlPoint1:NSMakePoint(240.0119, 123.7673) controlPoint2:NSMakePoint(238.3304, 119.7056)];
+        [path lineToPoint:NSMakePoint(139.2800, 20.6600)];
+        [path curveToPoint:NSMakePoint(116.7200, 20.6600) controlPoint1:NSMakePoint(133.0394, 14.4564) controlPoint2:NSMakePoint(122.9606, 14.4564)];
+        [path lineToPoint:NSMakePoint(116.7200, 20.6600)];
+        [path lineToPoint:NSMakePoint(20.7200, 116.7200)];
+        [path curveToPoint:NSMakePoint(20.7200, 139.2800) controlPoint1:NSMakePoint(14.5164, 122.9606) controlPoint2:NSMakePoint(14.5164, 133.0394)];
+        [path lineToPoint:NSMakePoint(116.7700, 235.3400)];
+        [path curveToPoint:NSMakePoint(139.3300, 235.3400) controlPoint1:NSMakePoint(123.0106, 241.5436) controlPoint2:NSMakePoint(133.0894, 241.5436)];
+        [path lineToPoint:NSMakePoint(235.3800, 139.2800)];
+        [path curveToPoint:NSMakePoint(240.0000, 128.0000) controlPoint1:NSMakePoint(238.3620, 136.2862) controlPoint2:NSMakePoint(240.0252, 132.2255)];
+        [path closePath];
+    }
+    return path;
 }
 
-// Render a tinted SF Symbol image at pointSize. Falls back to a colored text glyph on failure.
-static NSImage* sfSymbol(NSString* name, CGFloat pointSize, NSColor* color) {
-    NSImage* img = [NSImage imageWithSystemSymbolName:name
-                              accessibilityDescription:nil];
-    if (!img) return nil;
-    NSImage* copy = [img copy];
-    [copy setTemplate:NO];
-    // Tint via NSImage drawing at the target color.
-    NSSize sz = NSMakeSize(pointSize, pointSize);
-    NSImage* result = [[NSImage alloc] initWithSize:sz];
+// Render a Phosphor icon path as a tinted NSImage at the given size.
+// The path is in 256×256 Phosphor viewbox coordinates (already Y-flipped).
+// Scale: scale = size/256. Fills with `color`.
+static NSImage* phosphorIcon(NSString* name, CGFloat size, NSColor* color) {
+    NSBezierPath* rawPath = phosphorPath(name);
+    if (!rawPath) return nil;
+
+    const CGFloat scale = size / 256.0;
+    NSAffineTransform* xf = [NSAffineTransform transform];
+    [xf scaleBy:scale];
+    NSBezierPath* scaledPath = [xf transformBezierPath:rawPath];
+
+    NSImage* result = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
     [result lockFocus];
     [color set];
-    NSRect r = NSMakeRect(0, 0, sz.width, sz.height);
-    NSImageSymbolConfiguration* cfg =
-        [NSImageSymbolConfiguration configurationWithPointSize:pointSize weight:NSFontWeightRegular];
-    NSImage* conf = [img imageWithSymbolConfiguration:cfg];
-    if (conf) {
-        [conf drawInRect:r fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
-        // Tint by drawing a colored rect in multiply mode.
-        [color set];
-        NSRectFillUsingOperation(r, NSCompositingOperationSourceIn);
-    }
+    [scaledPath fill];
     [result unlockFocus];
     return result;
+}
+
+// Phosphor icon name for a PR state, matching PrChip.tsx StateIcon logic:
+//   merged  → GitMerge fill
+//   open    → GitPullRequest fill
+//   closed  → GitPullRequest fill  (same icon shape as open; github convention)
+//   draft   → GitPullRequest regular (lighter weight signals draft)
+static NSString* prStatePhosphorName(NSString* state) {
+    if ([state isEqualToString:@"merged"]) return @"GitMerge_fill";
+    if ([state isEqualToString:@"draft"])  return @"GitPullRequest_regular";
+    return @"GitPullRequest_fill"; // open and closed
 }
 
 // Compute wrapping height for a string at a given width and font.
@@ -4169,8 +4575,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     const CGFloat iconSz = fontSize;
     const CGFloat rowH   = fontSize + 2.0 * vPad + 2.0;
 
-    // SF Symbol stand-in for Phosphor GitBranch → "arrow.triangle.branch"
-    NSImage* icon = sfSymbol(@"arrow.triangle.branch", iconSz, mutedColor);
+    // Phosphor GitBranch weight=regular
+    NSImage* icon = phosphorIcon(@"GitBranch_regular", iconSz, mutedColor);
     const CGFloat textBoxH  = fontSize + 2.0;
     const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
     NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
@@ -4215,8 +4621,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     const CGFloat iconSz = fontSize;
     const CGFloat rowH   = fontSize + 2.0 * vPad;  // matches other 15px rows (no extra +2)
 
-    // SF Symbol stand-in for Phosphor Files → "doc.on.doc"
-    NSImage* icon = sfSymbol(@"doc.on.doc", iconSz, mutedColor);
+    // Phosphor Files weight=regular
+    NSImage* icon = phosphorIcon(@"Files_regular", iconSz, mutedColor);
     const CGFloat textBoxH  = fontSize + 2.0;
     const CGFloat iconY     = centerIconY(y + vPad, textBoxH, iconSz);
     NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
@@ -4364,8 +4770,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     chip.identifier = [NSString stringWithFormat:@"%@::pr", self.workspaceId];
     [self addSubview:chip];
 
-    // PR state icon inside chip.
-    NSImage* prIcon = sfSymbol(prStateSymbol(state), iconSz, stateColor);
+    // PR state icon inside chip — Phosphor icons matching PrChip.tsx StateIcon
+    NSImage* prIcon = phosphorIcon(prStatePhosphorName(state), iconSz, stateColor);
     NSImageView* iconView = [[NSImageView alloc] initWithFrame:
         NSMakeRect(chipPadH, (chipH - iconSz) / 2.0, iconSz, iconSz)];
     iconView.image = prIcon;
@@ -4407,11 +4813,10 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     NSTextField* spinnerField = nil;
     const CGFloat boxSz = rect.size.width;
 
-    // Static states — use SF Symbols or a text glyph.
+    // Static states — Phosphor icons matching ActivityIndicator.tsx
     if ([activityState isEqualToString:@"ready"]) {
-        // SF Symbol "circle.fill" tinted #4ade80
-        // Stand-in for Phosphor Circle filled.
-        NSImage* img = sfSymbol(@"circle.fill", boxSz - 1.0, fixedColor(kColorEmerald));
+        // Phosphor Circle weight=fill tinted emerald (#4ade80)
+        NSImage* img = phosphorIcon(@"Circle_fill", boxSz - 1.0, fixedColor(kColorEmerald));
         if (img) {
             NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
             iv.image = img;
@@ -4426,9 +4831,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
             [self addSubview:dot];
         }
     } else if ([activityState isEqualToString:@"idle"]) {
-        // SF Symbol "circle.dashed" tinted textMuted
-        // Stand-in for Phosphor CircleDashed.
-        NSImage* img = sfSymbol(@"circle.dashed", boxSz - 1.0, mutedColor);
+        // Phosphor CircleDashed weight=bold tinted textMuted
+        NSImage* img = phosphorIcon(@"CircleDashed_bold", boxSz - 1.0, mutedColor);
         if (img) {
             NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
             iv.image = img;
@@ -4441,9 +4845,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
             [self addSubview:dot];
         }
     } else if ([activityState isEqualToString:@"attention"]) {
-        // SF Symbol "diamond.fill" tinted #fbbf24 (amber)
-        // Stand-in for Phosphor Diamond.
-        NSImage* img = sfSymbol(@"diamond.fill", boxSz - 1.0, fixedColor(kColorAmber));
+        // Phosphor Diamond weight=fill tinted amber (#fbbf24)
+        NSImage* img = phosphorIcon(@"Diamond_fill", boxSz - 1.0, fixedColor(kColorAmber));
         if (img) {
             NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
             iv.image = img;
