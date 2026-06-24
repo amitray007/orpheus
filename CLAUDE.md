@@ -34,11 +34,27 @@ Releases ship by raising a PR from `staging` → `main`. `main` is the release b
 
 **ALWAYS merge `staging` → `main` with a real merge commit — never squash or
 rebase.** Versioning is owned by **release-please**, which reads the individual
-conventional-commit messages (`feat:` → minor, `fix:` → patch) off `main` to
-compute the version + CHANGELOG. Squashing collapses the 80+ commits into one
-non-conventional commit and breaks that detection. Do not hand-bump
-`package.json#version` — release-please opens a release PR on `main` that does
-the bump; merge that release PR (also a merge commit) to publish.
+conventional-commit messages off `main` to compute the version + CHANGELOG.
+Squashing collapses the 80+ commits into one non-conventional commit and breaks
+that detection. Do not hand-bump `package.json#version` — release-please opens a
+release PR on `main` that does the bump; merge that release PR (also a merge
+commit) to publish.
+
+**Versioning policy — PATCH-ONLY while private (the current state).** The repo
+is in private/pre-share development, so `release-please-config.json` sets
+`"versioning": "always-bump-patch"`: **every release is a patch bump**
+(`0.5.0 → 0.5.1 → 0.5.2 …`) regardless of commit type — even `feat:` and
+breaking changes only bump patch. This is deliberate: the version is just a
+"newer build" marker right now, and we don't want minor/major inflation from
+routine feature work. Commit prefixes (`feat:`/`fix:`/`refactor:`/`chore:`) are
+still used — they drive **CHANGELOG grouping only** while private, NOT the
+version size — so keep writing accurate conventional-commit subjects.
+
+**When Orpheus goes share-ready** (see [[project_audience_of_one]]): remove the
+`"versioning": "always-bump-patch"` line from `release-please-config.json` to
+restore default SemVer (`feat:` → minor, `feat!:`/`BREAKING CHANGE` → major,
+`fix:` → patch). At that point, reserve `feat:` for genuine new user-facing
+capability so the version stays meaningful. Until then: **all patches.**
 
 ## Build + verify loop (the only one that matters)
 
@@ -202,5 +218,5 @@ the first clean release after these fixes is `v0.3.2`.
 - **No hardcoded paths or URLs.** Derive from `os.homedir()`, `process.env.SHELL`, `app.getPath(...)`, or read from the DB. `getUserShellPath()` in `index.ts` spawns the user's login+interactive shell once to capture their real `$PATH` (Finder-launched Electron apps get a stripped PATH).
 - **Workspace surfaces are sticky.** `hide` ≠ `destroy`. Renderer navigation must call `terminal:hide` then `terminal:mount` again on return; never `destroy` unless the workspace is being archived/removed.
 - **Settings are layered.** Any UI control that maps to claude settings must compose through `composeClaudeLaunch` and carry a `mapsTo` chip pointing to the env var or settings key it produces.
-- **Commits use Conventional Commits, no emoji.** `feat(scope):`, `fix(scope):`, `chore(scope):`. No `Co-Authored-By: Claude` lines unless explicitly requested.
+- **Commits use Conventional Commits, no emoji.** `feat(scope):`, `fix(scope):`, `chore(scope):`. No `Co-Authored-By: Claude` lines unless explicitly requested. While private, prefixes drive CHANGELOG grouping only — versioning is patch-only regardless of prefix (see the versioning policy in the Git-workflow section).
 - **Audit env vars before adding new settings.** The `.claude/agents/audit-claude-env-vars.md` agent diffs `https://code.claude.com/docs/en/env-vars.md` against `.claude/snapshots/env-vars.json` — run it (or invoke it as a subagent) before guessing whether something is already wired.

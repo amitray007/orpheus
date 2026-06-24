@@ -4,6 +4,7 @@
     ".": {
       "release-type": "node",
       "package-name": "orpheus",
+      "versioning": "always-bump-patch",
       "include-component-in-tag": false,
       "include-v-in-tag": true,
       "skip-changelog": true,
