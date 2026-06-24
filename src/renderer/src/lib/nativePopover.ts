@@ -113,6 +113,29 @@ function prToNative(pr: GhPullRequest | null | undefined): HoverPopoverData['pr'
 // Maps workspaceId → pr.url for the currently shown popover.
 const prUrlByWorkspace = new Map<string, string>()
 
+// ── Native-closed callback registry ─────────────────────────────────────────
+// When the native card's NSTrackingArea fires mouseExited, the native side
+// sends "<workspaceId>::closed" through the popover action TSFN. Callers
+// (Sidebar WorkspaceSubRow, WorkspaceTitleBar) register a per-workspace
+// handler here so they can reset their own open-state and cancel any timers,
+// ensuring a subsequent hover re-opens the card cleanly.
+//
+// Only one handler per workspaceId is retained at a time (latest registration
+// wins). Handlers are keyed by workspaceId and called once on the "::closed"
+// signal, then left registered (they are cheap no-ops if the card is already
+// closed — idempotency is the caller's responsibility).
+const nativeCloseHandlers = new Map<string, () => void>()
+
+export function onNativePopoverClosed(workspaceId: string, handler: () => void): () => void {
+  nativeCloseHandlers.set(workspaceId, handler)
+  // Returns a cleanup function to remove the registration.
+  return () => {
+    if (nativeCloseHandlers.get(workspaceId) === handler) {
+      nativeCloseHandlers.delete(workspaceId)
+    }
+  }
+}
+
 // ── One-time action listener registration ───────────────────────────────────
 
 let actionListenerRegistered = false
@@ -121,7 +144,7 @@ function ensurePopoverActionListener(): void {
   if (actionListenerRegistered) return
   actionListenerRegistered = true
   window.api.terminal.onPopoverAction((e) => {
-    // identifier format: "workspaceId::pr"
+    // identifier format: "workspaceId::pr" or "workspaceId::closed"
     const sep = e.identifier.lastIndexOf('::')
     if (sep === -1) return
     const workspaceId = e.identifier.slice(0, sep)
@@ -130,6 +153,15 @@ function ensurePopoverActionListener(): void {
       const url = prUrlByWorkspace.get(workspaceId)
       if (url) {
         window.open(url, '_blank', 'noopener,noreferrer')
+      }
+    } else if (elementId === 'closed') {
+      // Native card closed via mouseExited — reset renderer open-state.
+      // Clear the PR URL entry so it doesn't linger.
+      prUrlByWorkspace.delete(workspaceId)
+      // Invoke the registered close handler if any.
+      const handler = nativeCloseHandlers.get(workspaceId)
+      if (handler) {
+        handler()
       }
     }
   })

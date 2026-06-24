@@ -3734,8 +3734,14 @@ static const CGFloat kSepHeight = 1.0;    // divider height
 @property (nonatomic, assign) int           spinnerFrame;
 @property (nonatomic, strong) NSArray<NSString*>* spinnerFrames;
 
+// Hover-bridge: set YES when the pointer is inside the native card.
+// Used by HidePopover to defer JS-initiated hides while the pointer is on the card.
+@property (nonatomic, assign) BOOL pointerInCard;
+
 // Rebuild entire card content from data dict. Called from initWithKind and updatePopover.
 - (CGFloat)buildContentFromData:(NSDictionary*)data;
+// Install (or re-install) the NSTrackingArea covering the full card bounds.
+- (void)installCardTrackingArea;
 
 @end
 
@@ -3949,6 +3955,94 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
 - (void)dealloc {
     [self stopSpinnerTimer];
+    // NSTrackingArea is automatically removed when the view is deallocated.
+    // pointerInCard is a scalar; nothing extra to clean up.
+}
+
+// ---------------------------------------------------------------------------
+// Hover-bridge: NSTrackingArea so the card knows when the pointer is over it.
+//
+// mouseEntered: sets pointerInCard=YES — the pointer successfully bridged from
+//   the DOM trigger onto the native card. HidePopover will see this flag and
+//   skip the hide, keeping the card visible until the pointer leaves.
+//
+// mouseExited: sets pointerInCard=NO, then closes the card itself (fade out
+//   via the normal hide path) and notifies JS via the popover action TSFN
+//   with "<workspaceId>::closed". The renderer receives this signal and clears
+//   its own open-state so a subsequent hover re-opens cleanly.
+// ---------------------------------------------------------------------------
+
+- (void)installCardTrackingArea {
+    // Remove any existing tracking areas (re-install after frame change).
+    for (NSTrackingArea* ta in [self.trackingAreas copy]) {
+        [self removeTrackingArea:ta];
+    }
+    NSTrackingAreaOptions opts =
+        NSTrackingMouseEnteredAndExited |
+        NSTrackingActiveAlways          |
+        NSTrackingInVisibleRect;
+    NSTrackingArea* ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:opts
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    [self installCardTrackingArea];
+}
+
+- (void)mouseEntered:(NSEvent*)event {
+    (void)event;
+    self.pointerInCard = YES;
+    NSLog(@"[ghostty-surface] popover mouseEntered workspaceId=%s — pointer in card",
+          self.workspaceId ? self.workspaceId.UTF8String : "(nil)");
+}
+
+- (void)mouseExited:(NSEvent*)event {
+    (void)event;
+    self.pointerInCard = NO;
+    NSLog(@"[ghostty-surface] popover mouseExited workspaceId=%s — closing card",
+          self.workspaceId ? self.workspaceId.UTF8String : "(nil)");
+
+    // Guard: only close if this view is still the active popover.
+    NSString* wsId = self.workspaceId;
+    if (!wsId) return;
+    std::string wsIdCpp = wsId.UTF8String;
+    if (g_activePopoverWorkspaceId != wsIdCpp || g_activePopover != self) {
+        // We are a stale card (a new popover replaced us); nothing to do.
+        return;
+    }
+
+    // Clear global ownership so HidePopover / ShowPopover won't race.
+    g_activePopover = nil;
+    g_activePopoverWorkspaceId.clear();
+    OrpheusPopoverView* pv = self; // captured for the fade block
+
+    // Fade out over 100ms, then remove.
+    CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @(pv.alphaValue);
+    fade.toValue   = @(0.0);
+    fade.duration  = 0.1;
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{
+        [pv removeFromSuperview];
+    }];
+    [pv.layer addAnimation:fade forKey:@"fadeOut"];
+    pv.alphaValue = 0.0;
+    [CATransaction commit];
+
+    // Notify JS: "<workspaceId>::closed" so the renderer can reset open-state.
+    if (g_popoverActionTSFNActive) {
+        std::string closedMsg = wsIdCpp + "::closed";
+        g_popoverActionTSFN.NonBlockingCall(
+            [closedMsg](Napi::Env env, Napi::Function cb) {
+                cb.Call({ Napi::String::New(env, closedMsg) });
+            }
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4121,17 +4215,23 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     if (insStr) {
         insField = makeLabel(insStr, geistFont(@"GeistMono-Regular", monoSize),
                              fixedColor(kColorEmerald));
-        NSSize sz = [insField.attributedStringValue size];
-        insField.frame = NSMakeRect(0, y + vPad, ceil(sz.width) + 2.0, fontSize + 2.0);
-        countsTotalWidth += ceil(sz.width) + 2.0;
+        // Use sizeToFit for accurate width — attributedStringValue size can underestimate
+        // when the font is loaded lazily, causing the digit to clip and show only the sign.
+        insField.frame = NSMakeRect(0, y + vPad, 200.0, fontSize + 2.0);
+        [insField sizeToFit];
+        CGFloat w = ceil(insField.frame.size.width) + 2.0;
+        insField.frame = NSMakeRect(0, y + vPad, w, fontSize + 2.0);
+        countsTotalWidth += w;
     }
     if (delStr) {
         delField = makeLabel(delStr, geistFont(@"GeistMono-Regular", monoSize),
                              fixedColor(kColorRed));
-        NSSize sz = [delField.attributedStringValue size];
-        delField.frame = NSMakeRect(0, y + vPad, ceil(sz.width) + 2.0, fontSize + 2.0);
+        delField.frame = NSMakeRect(0, y + vPad, 200.0, fontSize + 2.0);
+        [delField sizeToFit];
+        CGFloat w = ceil(delField.frame.size.width) + 2.0;
+        delField.frame = NSMakeRect(0, y + vPad, w, fontSize + 2.0);
         if (insStr) countsTotalWidth += countGap;
-        countsTotalWidth += ceil(sz.width) + 2.0;
+        countsTotalWidth += w;
     }
 
     // Summary text occupies the space between icon and counts.
@@ -4389,7 +4489,9 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     NSString* cwd           = dictStr(data, @"cwd");
 
     CGFloat y = 0;
-    const CGFloat sectionPad = 11.0; // all-sides section padding
+    const CGFloat sectionPad = 9.0;   // all-sides section padding (tighter rhythm)
+    const CGFloat titleH     = 14.0;  // snug to 12px font
+    const CGFloat titleGap   = 3.0;   // gap between title bottom and status line
 
     // ---- Section 1: Header ----
     y += sectionPad; // top pad
@@ -4397,9 +4499,9 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     // Title: Geist-Medium 12px, textPrimary, truncate.
     NSTextField* titleLbl = makeLabel(title.length ? title : @"Workspace",
                                       geistFont(@"Geist-Medium", 12.0), primaryColor);
-    titleLbl.frame = NSMakeRect(kCardPadH, y, self.cardWidth - 2.0 * kCardPadH, 15.0);
+    titleLbl.frame = NSMakeRect(kCardPadH, y, self.cardWidth - 2.0 * kCardPadH, titleH);
     [self addSubview:titleLbl];
-    y += 15.0 + 4.0; // title height + margin-top 4px
+    y += titleH + titleGap; // title height + gap to status line
 
     // Status line: ActivityIndicator 12×12 + status text.
     // flex row, gap 5px, items-center.
@@ -4409,9 +4511,14 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     [self addActivityIndicator:activityState accentColor:accentColor atRect:indRect];
 
     // Status text: "<activityLabel>" + optional " · active <relativeTime> ago"
+    // Special-case "now" — omit "ago" so it reads "active now" not "active now ago".
     NSString* statusText = activityLabel.length ? activityLabel : @"";
     if (relativeTime.length > 0) {
-        statusText = [statusText stringByAppendingFormat:@" · active %@ ago", relativeTime];
+        if ([relativeTime isEqualToString:@"now"]) {
+            statusText = [statusText stringByAppendingString:@" · active now"];
+        } else {
+            statusText = [statusText stringByAppendingFormat:@" · active %@ ago", relativeTime];
+        }
     }
     NSTextField* statusLbl = makeLabel(statusText, geistFont(@"Geist-Regular", 12.0), secColor);
     statusLbl.frame = NSMakeRect(kCardPadH + indSz + indGap, y,
@@ -4882,6 +4989,11 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
                                            cardWidth, cardHeight, contentView);
         pv.frame = frame;
 
+        // Install NSTrackingArea covering the full card bounds after the final
+        // frame is set. This is the hover-bridge: mouseEntered/mouseExited fire
+        // when the pointer moves from the DOM trigger onto/off the native card.
+        [pv installCardTrackingArea];
+
         // Parent to contentView ABOVE everything (terminal is below web layer which
         // is below the popover — no z-swap needed, no blackout by construction).
         [contentView addSubview:pv positioned:NSWindowAbove relativeTo:nil];
@@ -4981,6 +5093,16 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
     // Only hide if the global active popover belongs to this workspace.
     if (g_activePopoverWorkspaceId != workspaceId || !g_activePopover) {
         return env.Undefined();  // no popover for this workspace — silent no-op
+    }
+
+    // Hover-bridge: if the pointer has already entered the native card by the
+    // time JS calls hidePopover (the 80ms close-timer on trigger-leave fired,
+    // but the pointer bridged onto the card first), defer the hide. The card
+    // will close itself via mouseExited: and notify JS via "::closed" then.
+    if (g_activePopover.pointerInCard) {
+        NSLog(@"[ghostty-surface] hidePopover ignored — pointer in card (workspaceId=%s)",
+              workspaceId.c_str());
+        return env.Undefined();
     }
 
     // Clear the global ownership immediately so concurrent calls don't double-hide.

@@ -10,6 +10,7 @@ import {
   showDetailsPopover,
   updateDetailsPopover,
   hideNativePopover,
+  onNativePopoverClosed,
   gitStatusToNative,
   prToNative
 } from '@/lib/nativePopover'
@@ -307,6 +308,17 @@ export function WorkspaceTitleBar({
       clearDetailsHoverTimer()
       hideNativePopover(workspace.id)
     }
+  }, [workspace.id])
+
+  // Hover-bridge: when the native card closes itself via NSTrackingArea
+  // mouseExited (pointer left the card without returning to the trigger),
+  // reset our open-state by cancelling any pending timers. This ensures a
+  // subsequent hover on the Details button re-opens the card cleanly.
+  useEffect(() => {
+    const unregister = onNativePopoverClosed(workspace.id, () => {
+      clearDetailsHoverTimer()
+    })
+    return unregister
   }, [workspace.id])
 
   // Resolve parent name for the "forked from" chip

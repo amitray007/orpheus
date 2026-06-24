@@ -25,7 +25,7 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { showHoverPopover, hideNativePopover } from '@/lib/nativePopover'
+import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
 
 // ---------------------------------------------------------------------------
 // Module-level stable empty maps (avoid new Map() on every render as fallback)
@@ -297,6 +297,17 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
       clearHoverTimer()
       hideNativePopover(workspace.id)
     }
+  }, [workspace.id])
+
+  // Hover-bridge: when the native card closes itself via NSTrackingArea
+  // mouseExited (pointer left the card without returning to the trigger),
+  // reset our open-state by cancelling any pending timers. This ensures a
+  // subsequent hover on this row re-opens the card cleanly.
+  useEffect(() => {
+    const unregister = onNativePopoverClosed(workspace.id, () => {
+      clearHoverTimer()
+    })
+    return unregister
   }, [workspace.id])
 
   return (
