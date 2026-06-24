@@ -169,6 +169,106 @@ async function applyGhosttyAppearance(
   return { fontSize: resolvedFontSize, background }
 }
 
+// Map a ghostty trigger string to a KeyboardEvent match.
+// Returns false immediately if the trigger has no modifier tokens (safety guard:
+// never consume bare key presses that would break normal typing).
+function matchTrigger(e: KeyboardEvent, trigger: string): boolean {
+  const parts = trigger.toLowerCase().split('+')
+  const MODIFIER_TOKENS = new Set([
+    'ctrl',
+    'control',
+    'cmd',
+    'super',
+    'command',
+    'alt',
+    'opt',
+    'option',
+    'shift'
+  ])
+  const modifiers = parts.filter((p) => MODIFIER_TOKENS.has(p))
+  const keyTokens = parts.filter((p) => !MODIFIER_TOKENS.has(p))
+  if (modifiers.length === 0) return false // safety: never match bare keys
+  if (keyTokens.length !== 1) return false
+  const key = keyTokens[0]
+
+  const needsCtrl = modifiers.some((m) => m === 'ctrl' || m === 'control')
+  const needsMeta = modifiers.some((m) => m === 'cmd' || m === 'super' || m === 'command')
+  const needsAlt = modifiers.some((m) => m === 'alt' || m === 'opt' || m === 'option')
+  const needsShift = modifiers.includes('shift')
+
+  if (e.ctrlKey !== needsCtrl) return false
+  if (e.metaKey !== needsMeta) return false
+  if (e.altKey !== needsAlt) return false
+  if (e.shiftKey !== needsShift) return false
+  return e.key.toLowerCase() === key
+}
+
+// Dispatch a ghostty action string to the corresponding xterm terminal operation.
+// Returns true if the action was consumed (caller should return false from the
+// key handler so xterm does not process the key further). Returns false for
+// actions with no xterm equivalent (splits, unknown) so the caller can pass through.
+function dispatchGhosttyAction(action: string, term: Terminal, doFit: () => void): boolean {
+  // Parse optional ':N' numeric suffix (e.g. increase_font_size:2).
+  const colonIdx = action.indexOf(':')
+  const baseAction = colonIdx === -1 ? action : action.slice(0, colonIdx)
+  const suffixStr = colonIdx === -1 ? '' : action.slice(colonIdx + 1)
+  const suffixN = suffixStr ? parseInt(suffixStr, 10) : NaN
+
+  switch (baseAction) {
+    case 'copy_to_clipboard':
+      void navigator.clipboard.writeText(term.getSelection())
+      return true
+    case 'paste_from_clipboard':
+      navigator.clipboard
+        .readText()
+        .then((t) => term.paste(t))
+        .catch(() => {})
+      return true
+    case 'select_all':
+      term.selectAll()
+      return true
+    case 'clear_screen':
+      term.clear()
+      return true
+    case 'scroll_to_top':
+      term.scrollToTop()
+      return true
+    case 'scroll_to_bottom':
+      term.scrollToBottom()
+      return true
+    case 'scroll_page_up':
+      term.scrollLines(-term.rows)
+      return true
+    case 'scroll_page_down':
+      term.scrollLines(term.rows)
+      return true
+    case 'increase_font_size': {
+      const delta = !isNaN(suffixN) && suffixN > 0 ? suffixN : 1
+      term.options.fontSize = (term.options.fontSize ?? GHOSTTY_DEFAULT_FONT_SIZE) + delta
+      doFit()
+      return true
+    }
+    case 'decrease_font_size': {
+      const delta = !isNaN(suffixN) && suffixN > 0 ? suffixN : 1
+      term.options.fontSize = Math.max(
+        6,
+        (term.options.fontSize ?? GHOSTTY_DEFAULT_FONT_SIZE) - delta
+      )
+      doFit()
+      return true
+    }
+    case 'reset_font_size':
+      term.options.fontSize = GHOSTTY_DEFAULT_FONT_SIZE
+      doFit()
+      return true
+    case 'ignore':
+      return true
+    // split actions and anything else: do not consume
+    default:
+      return false
+  }
+}
+
 export function XtermSurface({
   workspaceId,
   cwd,
@@ -243,6 +343,9 @@ export function XtermSurface({
     // Reassignable so C1's onChanged can update it live.
     let scrollMultiplier = 1
 
+    // User-defined ghostty keybinds: loaded in openAndSpawn, refreshed in onChanged.
+    let userKeybinds: Array<{ trigger: string; action: string }> = []
+
     // Accumulate committed byte counts and ack in strides of ACK_STRIDE.
     const onWriteCommitted = (count: number): void => {
       if (disposed) return
@@ -295,8 +398,9 @@ export function XtermSurface({
       // appearance (applyGhosttyAppearance), mouse-hide-while-typing, copy-on-select,
       // and window-padding-x. A single fetch avoids redundant IPC round-trips.
       let settings: Record<string, unknown> = {}
+      let config: Awaited<ReturnType<typeof window.api.ghosttySettings.get>> | null = null
       try {
-        const config = await window.api.ghosttySettings.get()
+        config = await window.api.ghosttySettings.get()
         settings = config.settings as Record<string, unknown>
       } catch {
         // Non-fatal: use empty settings, all features fall back to defaults.
@@ -314,6 +418,9 @@ export function XtermSurface({
       // Delegate scroll multiplication to xterm's native wheel pipeline so trackpad
       // momentum, deltaMode normalization, and sub-line accumulation are preserved.
       term.options.scrollSensitivity = scrollMultiplier
+
+      // Load user keybinds from the fetched config (config is the full GhosttyUserConfig).
+      userKeybinds = config?.keybinds ?? []
 
       // P0 — copy-on-select.
       const copyOnSelect =
@@ -528,6 +635,15 @@ export function XtermSurface({
             return true
           }
 
+          // User-defined ghostty keybinds: checked AFTER hardcoded combos so the
+          // hardcoded ones above always win (they already returned false or true).
+          for (const kb of userKeybinds) {
+            if (matchTrigger(e, kb.trigger)) {
+              const consumed = dispatchGhosttyAction(kb.action, term, () => doFitRef.current?.())
+              if (consumed) return false
+            }
+          }
+
           // All other keys (plain typing, arrows, Ctrl+C, Tab, Escape, IME
           // composition, etc.) pass through to xterm's default handler unchanged.
           return true
@@ -731,8 +847,9 @@ export function XtermSurface({
     unsubSettingsChanged = window.api.ghosttySettings.onChanged(async () => {
       if (disposed) return
       let s: Record<string, unknown> = {}
+      let fetched: Awaited<ReturnType<typeof window.api.ghosttySettings.get>> | null = null
       try {
-        const fetched = await window.api.ghosttySettings.get()
+        fetched = await window.api.ghosttySettings.get()
         s = fetched.settings as Record<string, unknown>
       } catch {
         return
@@ -793,6 +910,7 @@ export function XtermSurface({
       const rawMult = Number(s['mouse-scroll-multiplier'])
       scrollMultiplier = !isNaN(rawMult) && rawMult > 0 ? rawMult : 1
       term.options.scrollSensitivity = scrollMultiplier
+      userKeybinds = fetched?.keybinds ?? []
 
       // NOT live-applied (metric-affecting, require restart):
       // font-family, font-size, lineHeight (adjust-cell-height),
