@@ -1,4 +1,4 @@
-import { APP_NAME, APP_ID, isDev } from './appMode'
+import { APP_NAME, APP_ID, isDev, SHARE_DATA_WITH } from './appMode'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
   app,
@@ -17,6 +17,14 @@ import {
 //   prod → ~/Library/Application Support/Orpheus/
 //   dev  → ~/Library/Application Support/Orpheus Dev/
 app.setName(APP_NAME)
+
+// A named worktree variant can share another variant's data dir (set at build time)
+// so it sees the same projects/workspaces/settings without re-setup. Generic — the
+// target name comes from build config, never hardcoded. Safe only when the two
+// variants aren't run simultaneously (shared sqlite + notify socket).
+if (SHARE_DATA_WITH) {
+  app.setPath('userData', join(app.getPath('appData'), SHARE_DATA_WITH))
+}
 import { join, basename } from 'path'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'module'

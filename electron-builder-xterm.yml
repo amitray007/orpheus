@@ -1,0 +1,54 @@
+appId: dev.orpheus.xterm
+productName: Orpheus Xterm
+directories:
+  buildResources: build
+  output: dist-xterm
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+  - '**/*.node'
+  # spawn-helper is a bare Mach-O sibling of pty.node (no .node extension);
+  # **/*.node won't match it, so we need an explicit glob.
+  - '**/node_modules/@lydell/node-pty-darwin-arm64/prebuilds/**'
+extraResources:
+  - from: packages/ghostty-native/build/Release/ghostty_native.node
+    to: packages/ghostty-native/ghostty_native.node
+  - from: resources/ghostty/terminfo
+    to: terminfo
+    filter:
+      - '**/*'
+  - from: resources/ghostty/ghostty
+    to: ghostty
+    filter:
+      - '**/*'
+  - from: resources/orpheus-claude.sh
+    to: orpheus-claude.sh
+  - from: resources/bin/orpheus-notify
+    to: bin/orpheus-notify
+win:
+  executableName: Orpheus Xterm
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  icon: build/icon-dev.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+# Xterm builds: install to /Applications/Orpheus Xterm.app, own data at
+# ~/Library/Application Support/Orpheus Xterm/. Never released via Homebrew.

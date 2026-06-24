@@ -23,11 +23,12 @@ if (process.platform !== 'darwin') {
 }
 
 const isDev = process.argv.includes('--dev')
+const isXterm = process.argv.includes('--xterm')
 
 // Guard: prod local-install is opt-in only. Without the flag, refuse rather than
-// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev installs are
-// always allowed — they target the isolated /Applications/Orpheus Dev.app.
-if (!isDev && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
+// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev and xterm installs
+// are always allowed — they target isolated app variants.
+if (!isDev && !isXterm && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   console.error(
     '[install-mac] refusing to install the PRODUCTION bundle locally.\n' +
       '  Production Orpheus.app is managed by Homebrew / CI — a local build must not clobber it.\n' +
@@ -36,9 +37,9 @@ if (!isDev && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   )
   process.exit(1)
 }
-const tag = isDev ? '[install-mac-dev]' : '[install-mac]'
+const tag = isXterm ? '[install-mac-xterm]' : isDev ? '[install-mac-dev]' : '[install-mac]'
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const distDir = resolve(projectRoot, isDev ? 'dist-dev' : 'dist')
+const distDir = resolve(projectRoot, isXterm ? 'dist-xterm' : isDev ? 'dist-dev' : 'dist')
 
 // Tell Spotlight to skip dist/ so the build-output .app doesn't appear
 // alongside the real one in /Applications when searching.
