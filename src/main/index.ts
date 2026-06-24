@@ -96,10 +96,10 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
+import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
   ensureManagedHooks,
-  onActivityBatch,
   onSessionStart,
   heartbeatFromTitle,
   clearWorkspaceActivity,
