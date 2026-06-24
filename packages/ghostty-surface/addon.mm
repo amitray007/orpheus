@@ -1,9 +1,9 @@
-// ghostty-native — production lifecycle addon for Orpheus.
+// ghostty-surface — generic libghostty surface lifecycle addon.
 //
 // Exports four synchronous NAPI functions (all called on the AppKit main thread
 // from the Electron main process):
 //
-//   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd? })
+//   mount(handleBuffer, { workspaceId, rect: {x,y,w,h}, scaleFactor, cwd?, command? })
 //       → { workspaceId, created: bool }
 //   hide(workspaceId)    → void   (keeps surface alive, just removes from superview)
 //   resize(workspaceId, { x, y, w, h }, scaleFactor) → void
@@ -14,7 +14,7 @@
 //   mount()   — creates on first call; re-attaches on subsequent calls.
 //   hide()    — removeFromSuperview + occlusion; keeps entry alive.
 //   destroy() — full teardown; removes from map.
-//   Orpheus quit → process exit GCs everything naturally.
+//   App quit → process exit GCs everything naturally.
 //
 // Threading model:
 //   • NAPI handlers run on the main thread — all ghostty_* calls here are safe.
@@ -200,7 +200,7 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
         ghostty_surface_set_content_scale(self.surface, scale, scale);
         ghostty_surface_draw(self.surface);
     }
-    NSLog(@"[ghostty-native] viewDidChangeBackingProperties scale=%.2f", scale);
+    NSLog(@"[ghostty-surface] viewDidChangeBackingProperties scale=%.2f", scale);
 }
 
 // NOTE: file-drop-to-terminal — with the terminal as the BOTTOM sibling,
@@ -990,7 +990,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     const char* utf8 = [out UTF8String];
     if (!utf8) return NO;
     ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
-    NSLog(@"[ghostty-native] pasted clipboard image -> %@", path);
+    NSLog(@"[ghostty-surface] pasted clipboard image -> %@", path);
     return YES;
 }
 
@@ -1022,7 +1022,7 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
     const char* utf8 = [trimmed UTF8String];
     if (!utf8) return NO;
     ghostty_surface_text(self.surface, utf8, (uintptr_t)strlen(utf8));
-    NSLog(@"[ghostty-native] performDragOperation: pasted %lu file path(s)", (unsigned long)urls.count);
+    NSLog(@"[ghostty-surface] performDragOperation: pasted %lu file path(s)", (unsigned long)urls.count);
     return YES;
 }
 
@@ -1317,10 +1317,10 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
             }
         }
         if (!wcv) {
-            NSLog(@"[ghostty-native] WebContents NSView not found in contentView.subviews; "
+            NSLog(@"[ghostty-surface] WebContents NSView not found in contentView.subviews; "
                   @"terminal-region input + drag routing will not work. Subview classes seen:");
             for (NSView* sub in contentView.subviews) {
-                NSLog(@"[ghostty-native]   - %@", NSStringFromClass([sub class]));
+                NSLog(@"[ghostty-surface]   - %@", NSStringFromClass([sub class]));
             }
             return;
         }
@@ -1353,7 +1353,7 @@ static void installWebContentsRoutingSwizzles(NSView* contentView) {
             cls, @selector(concludeDragOperation:),
             (IMP)orpheus_webContents_concludeDragOperation, "v@:@");
 
-        NSLog(@"[ghostty-native] installed input + drag routing swizzles on %s",
+        NSLog(@"[ghostty-surface] installed input + drag routing swizzles on %s",
               class_getName(cls));
     });
 }
@@ -1462,7 +1462,7 @@ static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
 - (void)actionButtonClicked:(NSButton*)sender {
     NSString* wsId = sender.identifier;
     if (!wsId || wsId.length == 0) return;
-    NSLog(@"[ghostty-native] loading action clicked workspaceId=%s", wsId.UTF8String);
+    NSLog(@"[ghostty-surface] loading action clicked workspaceId=%s", wsId.UTF8String);
     if (!g_loadingActionTSFNActive) return;
     std::string wsIdCpp = wsId.UTF8String;
     g_loadingActionTSFN.NonBlockingCall([wsIdCpp](Napi::Env env, Napi::Function cb) {
@@ -1941,7 +1941,7 @@ static Napi::Value SetLoadingTheme(const Napi::CallbackInfo& info) {
     g_loadingTheme.isDark        = isDark;
     g_loadingTheme.tintAlpha     = tintAlpha;
 
-    NSLog(@"[ghostty-native] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
+    NSLog(@"[ghostty-surface] setLoadingTheme applied (isDark=%d tintAlpha=%.2f)",
           (int)isDark, (double)tintAlpha);
     return env.Undefined();
 }
@@ -2156,7 +2156,7 @@ static void write_clipboard_cb(void* /*userdata*/,
                                 size_t count,
                                 bool /*confirm*/) {
     if (!content || count == 0) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: empty content, skip");
+        NSLog(@"[ghostty-surface] write_clipboard_cb: empty content, skip");
         return;
     }
 
@@ -2176,7 +2176,7 @@ static void write_clipboard_cb(void* /*userdata*/,
     }
 
     if (!text) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: no usable text in %zu item(s)", count);
+        NSLog(@"[ghostty-surface] write_clipboard_cb: no usable text in %zu item(s)", count);
         return;
     }
 
@@ -2184,7 +2184,7 @@ static void write_clipboard_cb(void* /*userdata*/,
     // during this callback).
     NSString* str = [NSString stringWithUTF8String:text];
     if (!str) {
-        NSLog(@"[ghostty-native] write_clipboard_cb: UTF-8 decode failed");
+        NSLog(@"[ghostty-surface] write_clipboard_cb: UTF-8 decode failed");
         return;
     }
 
@@ -2222,7 +2222,7 @@ static bool read_clipboard_cb(void* /*userdata*/,
         }
 
         if (!targetSurface) {
-            NSLog(@"[ghostty-native] read_clipboard_cb: no attached surface, aborting");
+            NSLog(@"[ghostty-surface] read_clipboard_cb: no attached surface, aborting");
             return;
         }
 
@@ -2267,7 +2267,7 @@ static void confirm_read_clipboard_cb(void* /*userdata*/,
 }
 
 static void close_surface_cb(void* /*userdata*/, bool process_alive) {
-    NSLog(@"[ghostty-native] close_surface_cb process_alive=%d", (int)process_alive);
+    NSLog(@"[ghostty-surface] close_surface_cb process_alive=%d", (int)process_alive);
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,40 +2291,43 @@ static const char* g_resDir = nullptr;  // set once in ensureApp, used by reload
 static ghostty_config_t buildGhosttyConfig(const char* resDir) {
     ghostty_config_t cfg = ghostty_config_new();
     if (!cfg) {
-        NSLog(@"[ghostty-native] ghostty_config_new FAILED");
+        NSLog(@"[ghostty-surface] ghostty_config_new FAILED");
         return nullptr;
     }
 
-    NSLog(@"[ghostty-native] loading user config (default files)");
+    NSLog(@"[ghostty-surface] loading user config (default files)");
     ghostty_config_load_default_files(cfg);
 
-    // Bundled Orpheus overrides — applied after the user's ~/.config/ghostty
+    // Bundled config overrides — applied after the user's ~/.config/ghostty
     // so these values win over the user's own Ghostty.app preferences.
+    // TODO(ghostty-surface): parameterize the override file name and env-var name
+    // via mount options so this addon has no hard dependency on caller-specific names.
     if (resDir) {
         NSString* overridePath = [NSString stringWithFormat:@"%s/orpheus-overrides.conf", resDir];
         if ([[NSFileManager defaultManager] fileExistsAtPath:overridePath]) {
-            NSLog(@"[ghostty-native] applying Orpheus overrides: %@", overridePath);
+            NSLog(@"[ghostty-surface] applying config overrides: %@", overridePath);
             ghostty_config_load_file(cfg, [overridePath UTF8String]);
         } else {
-            NSLog(@"[ghostty-native] no Orpheus overrides found at %@", overridePath);
+            NSLog(@"[ghostty-surface] no bundled config overrides found at %@", overridePath);
         }
     }
 
-    // User-editable Ghostty config — layered after bundled Orpheus overrides so
-    // user settings win. ORPHEUS_GHOSTTY_CONFIG is set by the main process and
-    // points to a runtime-generated file. When unset, this is a no-op.
+    // User-editable Ghostty config — layered after bundled overrides so
+    // user settings win. The ORPHEUS_GHOSTTY_CONFIG env var is set by the main
+    // process and points to a runtime-generated file. When unset, this is a no-op.
+    // TODO(ghostty-surface): parameterize this env-var name via mount options.
     const char* userCfgPath = getenv("ORPHEUS_GHOSTTY_CONFIG");
     if (userCfgPath && userCfgPath[0] != '\0') {
         NSString* userCfgNS = [NSString stringWithUTF8String:userCfgPath];
         if ([[NSFileManager defaultManager] fileExistsAtPath:userCfgNS]) {
-            NSLog(@"[ghostty-native] applying user Ghostty config: %@", userCfgNS);
+            NSLog(@"[ghostty-surface] applying user Ghostty config: %@", userCfgNS);
             ghostty_config_load_file(cfg, userCfgPath);
         } else {
-            NSLog(@"[ghostty-native] ORPHEUS_GHOSTTY_CONFIG set but file not found: %@", userCfgNS);
+            NSLog(@"[ghostty-surface] user config env var set but file not found: %@", userCfgNS);
         }
     }
 
-    NSLog(@"[ghostty-native] loading recursive config files (theme resolution)");
+    NSLog(@"[ghostty-surface] loading recursive config files (theme resolution)");
     ghostty_config_load_recursive_files(cfg);
 
     ghostty_config_finalize(cfg);
@@ -2332,14 +2335,14 @@ static ghostty_config_t buildGhosttyConfig(const char* resDir) {
     // Log any config diagnostics so theme/parse errors are visible in Console.app.
     uint32_t diagCount = ghostty_config_diagnostics_count(cfg);
     if (diagCount > 0) {
-        NSLog(@"[ghostty-native] %u config diagnostic(s):", (unsigned)diagCount);
+        NSLog(@"[ghostty-surface] %u config diagnostic(s):", (unsigned)diagCount);
         for (uint32_t i = 0; i < diagCount; i++) {
             ghostty_diagnostic_s diag = ghostty_config_get_diagnostic(cfg, i);
-            NSLog(@"[ghostty-native]   diag[%u]: %s", (unsigned)i,
+            NSLog(@"[ghostty-surface]   diag[%u]: %s", (unsigned)i,
                   diag.message ? diag.message : "(null)");
         }
     } else {
-        NSLog(@"[ghostty-native] config loaded cleanly (0 diagnostics)");
+        NSLog(@"[ghostty-surface] config loaded cleanly (0 diagnostics)");
     }
 
     return cfg;
@@ -2366,19 +2369,19 @@ static NSRect cssRectToAppKit(double x, double y, double w, double h,
 static bool ensureApp() {
     if (g_inited.load(std::memory_order_acquire)) return true;
 
-    NSLog(@"[ghostty-native] initialising ghostty (one-time)");
+    NSLog(@"[ghostty-surface] initialising ghostty (one-time)");
 
     const char* resDir = getenv("GHOSTTY_RESOURCES_DIR");
     if (resDir) {
-        NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR=%s", resDir);
+        NSLog(@"[ghostty-surface] GHOSTTY_RESOURCES_DIR=%s", resDir);
     } else {
-        NSLog(@"[ghostty-native] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
+        NSLog(@"[ghostty-surface] GHOSTTY_RESOURCES_DIR not set — Ghostty will auto-walk");
     }
     g_resDir = resDir;  // stash for config reloads
 
     int rc = ghostty_init(0, nullptr);
     if (rc != GHOSTTY_SUCCESS) {
-        NSLog(@"[ghostty-native] ghostty_init FAILED rc=%d", rc);
+        NSLog(@"[ghostty-surface] ghostty_init FAILED rc=%d", rc);
         return false;
     }
 
@@ -2397,12 +2400,12 @@ static bool ensureApp() {
 
     g_app = ghostty_app_new(&rt, g_config);
     if (!g_app) {
-        NSLog(@"[ghostty-native] ghostty_app_new FAILED");
+        NSLog(@"[ghostty-surface] ghostty_app_new FAILED");
         return false;
     }
 
     g_inited.store(true, std::memory_order_release);
-    NSLog(@"[ghostty-native] ghostty app ready");
+    NSLog(@"[ghostty-surface] ghostty app ready");
 
     // Safety-net 10Hz timer: if g_damageFlag was raised by wakeup_cb (meaning
     // Ghostty has IO activity), issue one synchronous draw per attached surface
@@ -2713,6 +2716,15 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         cwdStr = cwdVal.As<Napi::String>().Utf8Value();
     }
 
+    // command — the absolute path to the launch script/binary to exec as the surface process.
+    // REQUIRED for a new surface; the JS caller must resolve and pass this.
+    // Re-attach paths (existing entry) ignore this field since the process is already running.
+    std::string commandStr;
+    Napi::Value commandVal = opts.Get("command");
+    if (commandVal.IsString()) {
+        commandStr = commandVal.As<Napi::String>().Utf8Value();
+    }
+
     // env — optional Record<string,string>; forwarded to the surface process.
     // Keys and values are strdup'd for the lifetime of this mount call and
     // freed after ghostty_surface_new returns (new surfaces only; re-attaches
@@ -2748,7 +2760,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
         if (entry.isAttached) {
             // Should not happen in normal flow — log warning, just resize.
-            NSLog(@"[ghostty-native] mount workspaceId=%s: already attached (defensive resize)",
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: already attached (defensive resize)",
                   workspaceId.c_str());
             double parentH = contentView.bounds.size.height;
             NSRect newFrame = cssRectToAppKit(rx, ry, rw, rh, parentH);
@@ -2760,7 +2772,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
             setVisibleWorkspace(workspaceId, contentView, false);
         } else {
             // Re-attach: add back to superview, wake renderer.
-            NSLog(@"[ghostty-native] mount workspaceId=%s: re-attaching existing surface",
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: re-attaching existing surface",
                   workspaceId.c_str());
             entry.view.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
 
@@ -2808,7 +2820,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     double parentH = contentView.bounds.size.height;
     NSRect frame = cssRectToAppKit(rx, ry, rw, rh, parentH);
 
-    NSLog(@"[ghostty-native] mount workspaceId=%s: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
+    NSLog(@"[ghostty-surface] mount workspaceId=%s: css(%.0f,%.0f,%.0fx%.0f) → appkit(%.0f,%.0f,%.0fx%.0f) parentH=%.0f scale=%.1f",
           workspaceId.c_str(),
           rx, ry, rw, rh, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, parentH, scaleFactor);
 
@@ -2822,7 +2834,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     {
         auto fit = g_freeingGeneration.find(workspaceId);
         if (fit != g_freeingGeneration.end()) {
-            NSLog(@"[ghostty-native] mount workspaceId=%s: create gen=%" PRIu64
+            NSLog(@"[ghostty-surface] mount workspaceId=%s: create gen=%" PRIu64
                   " while free gen=%" PRIu64 " is still pending (old surface isolated; proceeding)",
                   workspaceId.c_str(), createGen, fit->second);
         }
@@ -2860,29 +2872,19 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     const char* fallbackCwd = home ? home : "/tmp";
     surface_cfg.working_directory = cwdStr.empty() ? fallbackCwd : cwdStr.c_str();
 
-    // Spawn the bundled wrapper script as the surface process.
-    //
-    // orpheus-claude.sh runs claude inside a zsh login session and, when claude
-    // exits, exec's an interactive zsh so the terminal stays alive for further use.
-    //
-    // Ghostty on macOS wraps the command string via login(1):
-    //   /usr/bin/login -flp <username> /bin/bash --noprofile --norc -c "exec -l <script>"
-    // This gives a full login session so ~/.zprofile, ~/.zshrc, etc. are sourced
-    // and ANTHROPIC_API_KEY / PATH are available.  The wrapper's #!/bin/zsh -l
-    // shebang also sources login files before running claude.
-    //
-    // Path resolution: use [[NSBundle mainBundle] resourcePath] which maps to
-    // Contents/Resources/ in the packaged app.  Fall back to bundlePath +
-    // /Contents/Resources if resourcePath returns an unexpected value.
-    NSString* resourcePath = [[NSBundle mainBundle] resourcePath];
-    if (!resourcePath || resourcePath.length == 0) {
-        // Fallback: derive from bundlePath.
-        resourcePath = [[[NSBundle mainBundle] bundlePath]
-                        stringByAppendingPathComponent:@"Contents/Resources"];
+    // The launch command (absolute path to the wrapper script or binary) is
+    // passed in by the JS caller via opts.command.  The native side no longer
+    // resolves the script name itself — the caller owns that responsibility.
+    if (commandStr.empty()) {
+        NSLog(@"[ghostty-surface] mount workspaceId=%s: opts.command is required but was not provided",
+              workspaceId.c_str());
+        Napi::Error::New(env, "mount: opts.command is required (absolute path to launch script)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
     }
-    NSString* wrapperNSPath = [resourcePath
-                               stringByAppendingPathComponent:@"orpheus-claude.sh"];
-    NSLog(@"[ghostty-native] wrapper script path: %@", wrapperNSPath);
+
+    NSString* wrapperNSPath = [NSString stringWithUTF8String:commandStr.c_str()];
+    NSLog(@"[ghostty-surface] wrapper script path: %@", wrapperNSPath);
 
     // Single-quote the path so ghostty's shell command ("bash -c exec -l <cmd>")
     // handles spaces in the bundle path (e.g. "Orpheus Dev.app") correctly.
@@ -2913,9 +2915,9 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
         }
         surface_cfg.env_vars     = envVarStructs.data();
         surface_cfg.env_var_count = (size_t)envVarStructs.size();
-        NSLog(@"[ghostty-native] surface env_vars count=%zu", envVarStructs.size());
+        NSLog(@"[ghostty-surface] surface env_vars count=%zu", envVarStructs.size());
         for (const auto& ev : envVarStructs) {
-            NSLog(@"[ghostty-native]   env %s=%s", ev.key, ev.value);
+            NSLog(@"[ghostty-surface]   env %s=%s", ev.key, ev.value);
         }
     } else {
         surface_cfg.env_vars     = nullptr;
@@ -2926,7 +2928,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     surface_cfg.wait_after_command = true;  // keep surface alive (academic: exec zsh never exits)
     surface_cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
-    NSLog(@"[ghostty-native] surface_new command=%s cwd=%s (from_js=%s)",
+    NSLog(@"[ghostty-surface] surface_new command=%s cwd=%s (from_js=%s)",
           commandPath,
           surface_cfg.working_directory,
           cwdStr.empty() ? "(fallback)" : "yes");
@@ -2935,7 +2937,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     @try {
         surface = ghostty_surface_new(g_app, &surface_cfg);
     } @catch (NSException* ex) {
-        NSLog(@"[ghostty-native] ghostty_surface_new EXCEPTION: %@", ex.reason);
+        NSLog(@"[ghostty-surface] ghostty_surface_new EXCEPTION: %@", ex.reason);
         // Free strdup'd env var strings before returning.
         for (char* p : envVarKeys)   free(p);
         for (char* p : envVarValues) free(p);
@@ -2990,7 +2992,7 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     // the watchdog or Focus() will kick it with forceWake=true.
     reconcileSurface(workspaceId, contentView, false);
 
-    NSLog(@"[ghostty-native] mount workspaceId=%s created (physPx %ux%u)",
+    NSLog(@"[ghostty-surface] mount workspaceId=%s created (physPx %ux%u)",
           workspaceId.c_str(), physW, physH);
 
     Napi::Object result = Napi::Object::New(env);
@@ -3018,17 +3020,17 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] hide workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] hide workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached) {
-        NSLog(@"[ghostty-native] hide workspaceId=%s: already hidden (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] hide workspaceId=%s: already hidden (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    NSLog(@"[ghostty-native] hide workspaceId=%s", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] hide workspaceId=%s", workspaceId.c_str());
 
     entry.desiredVisible = false;
     if (g_visibleWorkspaceId == workspaceId) {
@@ -3065,7 +3067,7 @@ static Napi::Value Resize(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] resize workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] resize workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
@@ -3147,7 +3149,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
         if (state == "hidden") return env.Undefined();
-        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
+        NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: no entry (no-op for state=%s)",
               workspaceId.c_str(), state.c_str());
         return env.Undefined();
     }
@@ -3171,7 +3173,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
         if ([nsState isEqualToString:@"hidden"]) {
             OrpheusLoadingOverlayView* ov = *overlayPtr;
             if (!ov) return;
-            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
+            NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: hiding", nsWorkspaceId.UTF8String);
             CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
             fade.fromValue = @(ov.alphaValue);
             fade.toValue   = @(0.0);
@@ -3193,7 +3195,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
 
         if (!ov) {
             if (!ghosttyView) {
-                NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
+                NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: ghostty view missing, deferring",
                       nsWorkspaceId.UTF8String);
                 return;
             }
@@ -3206,7 +3208,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
                                                       workspaceId:nsWorkspaceId];
             [ghosttyView addSubview:ov];
             *overlayPtr = ov;
-            NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: created overlay",
+            NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: created overlay",
                   nsWorkspaceId.UTF8String);
 
             // Fade in.
@@ -3220,7 +3222,7 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
             [CATransaction commit];
         }
 
-        NSLog(@"[ghostty-native] setLoadingOverlay workspaceId=%s: state=%s",
+        NSLog(@"[ghostty-surface] setLoadingOverlay workspaceId=%s: state=%s",
               nsWorkspaceId.UTF8String, nsState.UTF8String);
         [ov updateWithState:nsState title:nsTitle subtitle:nsSubtitle actionLabel:nsActionLabel];
     });
@@ -3276,7 +3278,7 @@ static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
             if (webView) [win makeFirstResponder:webView];
             else [win makeFirstResponder:nil];   // fallback; Chromium reclaims on next click
         }
-        NSLog(@"[ghostty-native] setOverlay ws=%s on=1 z=%d webView=%d",
+        NSLog(@"[ghostty-surface] setOverlay ws=%s on=1 z=%d webView=%d",
               workspaceId.c_str(), g_overlayCompositingEnabled, webView != nil);
     } else {
         if (g_overlayCompositingEnabled) {
@@ -3286,7 +3288,7 @@ static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
         ghostty_surface_set_focus(entry.surface, true);
         if (win) [win makeFirstResponder:entry.view];
         ghostty_surface_draw(entry.surface);
-        NSLog(@"[ghostty-native] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
+        NSLog(@"[ghostty-surface] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
     }
     return env.Undefined();
 }
@@ -3300,7 +3302,7 @@ static Napi::Value SetOverlayCompositing(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
     g_overlayCompositingEnabled = info[0].As<Napi::Boolean>().Value();
-    NSLog(@"[ghostty-native] setOverlayCompositing enabled=%d", g_overlayCompositingEnabled);
+    NSLog(@"[ghostty-surface] setOverlayCompositing enabled=%d", g_overlayCompositingEnabled);
     return env.Undefined();
 }
 
@@ -3318,7 +3320,7 @@ static Napi::Value Focus(const Napi::CallbackInfo& info) {
     GhosttySurfaceEntry& entry = it->second;
     if (!entry.isAttached || !entry.view) return env.Undefined();
 
-    NSLog(@"[ghostty-native] focus workspaceId=%s", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] focus workspaceId=%s", workspaceId.c_str());
 
     if (entry.surface) {
         entry.liveTick++;
@@ -3344,11 +3346,11 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
+        NSLog(@"[ghostty-surface] destroy workspaceId=%s: no entry (no-op)", workspaceId.c_str());
         return env.Undefined();
     }
 
-    NSLog(@"[ghostty-native] destroy workspaceId=%s (sync detach + async free)", workspaceId.c_str());
+    NSLog(@"[ghostty-surface] destroy workspaceId=%s (sync detach + async free)", workspaceId.c_str());
 
     // ---- Synchronous, fast — user-visible state disappears immediately ----
     // Move ownership out of the map and erase the entry so any concurrent
@@ -3410,7 +3412,7 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (fit != g_freeingGeneration.end() && fit->second == gen) {
             g_freeingGeneration.erase(fit);
         }
-        NSLog(@"[ghostty-native] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
+        NSLog(@"[ghostty-surface] destroy workspaceId=%s gen=%" PRIu64 ": surface freed",
               capturedWsId.c_str(), gen);
     });
 
@@ -3443,7 +3445,7 @@ static Napi::Value SendInput(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] sendInput workspaceId=%s: no surface (returning false)",
+        NSLog(@"[ghostty-surface] sendInput workspaceId=%s: no surface (returning false)",
               workspaceId.c_str());
         return Napi::Boolean::New(env, false);
     }
@@ -3489,7 +3491,7 @@ static Napi::Value SendKeys(const Napi::CallbackInfo& info) {
 
     auto it = g_surfaces.find(workspaceId);
     if (it == g_surfaces.end()) {
-        NSLog(@"[ghostty-native] sendKeys workspaceId=%s: no surface (returning false)",
+        NSLog(@"[ghostty-surface] sendKeys workspaceId=%s: no surface (returning false)",
               workspaceId.c_str());
         return Napi::Boolean::New(env, false);
     }
@@ -3555,13 +3557,13 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     if (!g_app) {
-        NSLog(@"[ghostty-native] reloadGhosttyConfig: called before init, ignoring");
+        NSLog(@"[ghostty-surface] reloadGhosttyConfig: called before init, ignoring");
         return Napi::Boolean::New(env, false);
     }
 
     ghostty_config_t newConfig = buildGhosttyConfig(g_resDir);
     if (!newConfig) {
-        NSLog(@"[ghostty-native] reloadGhosttyConfig: buildGhosttyConfig failed");
+        NSLog(@"[ghostty-surface] reloadGhosttyConfig: buildGhosttyConfig failed");
         return Napi::Boolean::New(env, false);
     }
 
@@ -3581,7 +3583,7 @@ static Napi::Value ReloadGhosttyConfig(const Napi::CallbackInfo& info) {
     ghostty_config_free(g_config);
     g_config = newConfig;
 
-    NSLog(@"[ghostty-native] config reloaded successfully");
+    NSLog(@"[ghostty-surface] config reloaded successfully");
     return Napi::Boolean::New(env, true);
 }
 
@@ -3631,10 +3633,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
             uv_unref(reinterpret_cast<uv_handle_t*>(&g_tickAsync));
             g_tickAsyncInited.store(true, std::memory_order_release);
         } else {
-            NSLog(@"[ghostty-native] uv_async_init FAILED — terminal titles will not update");
+            NSLog(@"[ghostty-surface] uv_async_init FAILED — terminal titles will not update");
         }
     } else {
-        NSLog(@"[ghostty-native] napi_get_uv_event_loop FAILED — terminal titles will not update");
+        NSLog(@"[ghostty-surface] napi_get_uv_event_loop FAILED — terminal titles will not update");
     }
 
     exports.Set("mount",             Napi::Function::New(env, Mount));

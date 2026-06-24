@@ -1372,6 +1372,7 @@ type GhosttyNativeAddon = {
       rect: TerminalRect
       scaleFactor: number
       cwd?: string
+      command?: string
       env?: Record<string, string>
     }
   ) => { workspaceId: string; created: boolean }
@@ -1508,12 +1509,20 @@ ipcMain.handle(
       Object.keys(surfaceEnv).join(',')
     )
 
+    // Resolve the wrapper script path — same pattern as GHOSTTY_RESOURCES_DIR.
+    // Packaged: Contents/Resources/orpheus-claude.sh
+    // Dev:      <repo>/resources/orpheus-claude.sh
+    const wrapperScriptPath = app.isPackaged
+      ? join(process.resourcesPath, 'orpheus-claude.sh')
+      : join(__dirname, '../../resources/orpheus-claude.sh')
+
     const _mountStart = Date.now()
     const result = addon.mount(handle, {
       workspaceId,
       rect,
       scaleFactor,
       cwd,
+      command: wrapperScriptPath,
       env: surfaceEnv
     })
     logDiagMain({
