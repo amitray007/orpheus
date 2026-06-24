@@ -136,15 +136,16 @@ When **any** layer mutates, `recomputeDirty()` in `src/main/index.ts` compares t
 
 The shell-integration resources (terminfo + integration scripts) live under `resources/ghostty/` and are bundled to `Contents/Resources/{terminfo,ghostty}/` by `electron-builder.yml`. `GHOSTTY_RESOURCES_DIR` is set in `loadTerminalAddon()` before the `.node` is `require`'d so ghostty's auto-walk can find them in both packaged and dev layouts.
 
-### Hook activity pipeline
+### Workspace activity status (file-authoritative)
 
-Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `idle`) driven by claude's hooks:
+Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `idle`) shown by `Dashboard/ActivityIndicator.tsx`. **Claude's own on-disk session registry is the single source of truth — not hooks** (this changed in the Phase 2 cutover).
 
-1. `src/main/orpheusNotify.ts` starts a Unix-domain socket server on app launch and idempotently installs managed hooks (`SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `SessionEnd`, `PreToolUse`, `PostToolUse`, `PreCompact`, `SubagentStop`) into `~/.claude/settings.json` — each hook is a shell command that runs `resources/bin/orpheus-notify` (the shim) which posts to the socket.
+1. Every running `claude` writes `~/.claude/sessions/<pid>.json` (`status`: `busy`/`idle`/`waiting`; `waitingFor`: `permission prompt`/`input needed`; `sessionId`; `statusUpdatedAt`). `claude agents --json` is just a reader of these files. Workspace claude must register here, which requires `resources/orpheus-claude.sh` to `unset` inherited Claude Code session vars (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, …) — otherwise it's treated as a nested session and skips registration.
+2. `src/main/sessionState.ts` watches that dir (`fs.watch` + debounced single-flight `reconcile` + interval backstop), matches each live session to a workspace by `claude_session_id` (pre-assigned via `--session-id`, stable across `--resume`), and drives status through `setStatusFromFile` → `orpheusNotify.dispatch`: `busy → in_progress`, `waiting → attention`, `idle → awaiting_input` (or `idle` when idle longer than `staleAfterMinutes`), file-gone/dead-pid → `idle`. Dead pids and torn reads are tolerated; transitions are gated via `lastRawActed`.
+3. `dispatch` (`orpheusNotify.ts`) persists via `setWorkspaceStatus`, broadcasts through `activitySink` (`workspace:activityBatch` IPC → renderer `activityStore`), fires OS notifications via `osNotifications.notifyForTransition`, and arms the idle-watchdog (`awaiting_input → idle`) + auto-close watchdog. `WorkspaceActivityDetail` is `working` / `attention` / `ready` / `idle` / `archived`.
+4. OS notification **content** is also file-sourced (`sessionState.getWorkspaceFileInfo`): attention copy from `waitingFor`, "Claude finished" elapsed from a `busySince` timer.
 
-- `ORPHEUS_WORKSPACE_ID` is injected as an env var for the wrapper script so the shim can attribute events.
-- A watchdog demotes `in_progress` → `awaiting_input` after `inProgressWatchdogSec` (default 120s, longer while compacting). OSC 0/2 title updates from the spinner glyph also count as heartbeats.
-- The status maps to a `WorkspaceActivityDetail` (`thinking` / `tool` / `compacting` / `asking` / `ready` / `idle` / `archived` / `attention`) that the renderer renders via `Dashboard/ActivityIndicator.tsx`.
+**Hooks are dormant enrichment, not the status driver.** `orpheusNotify.ts` still runs the Unix-domain socket server + shim (`resources/bin/orpheus-notify`), still installs managed hooks into `~/.claude/settings.json`, and `ORPHEUS_WORKSPACE_ID` is still injected so the shim can attribute events — but `handleHookEvent` no longer decides status. The only live hook behavior is `SessionStart → onSessionStart` (loading-overlay dismissal); other cases are wired no-ops kept revivable. (A future phase could re-home the overlay and remove the hook stack entirely.)
 
 ### Renderer view kinds
 
