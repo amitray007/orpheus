@@ -10,6 +10,24 @@ export type UpdateCheckResult = {
   error?: string
 }
 
+export type UpdatePhase = 'refresh' | 'download' | 'verify' | 'install'
+
+export interface UpdateProgress {
+  phase: UpdatePhase
+  percent: number | null
+  line: string
+}
+
+export interface UpdateSnapshot {
+  kind: 'idle' | 'checking' | 'up_to_date' | 'available' | 'installing' | 'installed' | 'error'
+  latest: string | null
+  lastChecked: number | null
+  phase: UpdatePhase | null
+  percent: number | null
+  log: string[]
+  reason: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Shell app detection (re-exported from main for use in renderer via IPC)
 // ---------------------------------------------------------------------------

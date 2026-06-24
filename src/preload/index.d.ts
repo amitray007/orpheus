@@ -36,6 +36,8 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
+  UpdateProgress,
+  UpdateSnapshot,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -318,7 +320,8 @@ declare global {
         check: () => Promise<UpdateCheckResult>
         install: () => Promise<void>
         restart: () => Promise<void>
-        onProgress: (cb: (e: { line: string }) => void) => () => void
+        getState: () => Promise<UpdateSnapshot>
+        onProgress: (cb: (e: UpdateProgress) => void) => () => void
         onDone: (cb: (e: { success: boolean; code: number | null }) => void) => () => void
         onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
       }

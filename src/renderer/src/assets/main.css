@@ -261,3 +261,22 @@ pre,
     display: none;
   }
 }
+
+/* Indeterminate progress bar — slides a partial fill across the track */
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+    width: 40%;
+  }
+  50% {
+    width: 60%;
+  }
+  100% {
+    transform: translateX(300%);
+    width: 40%;
+  }
+}
+
+@utility animate-indeterminate {
+  animation: indeterminate-slide 1.4s ease-in-out infinite;
+}

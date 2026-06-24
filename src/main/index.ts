@@ -123,7 +123,8 @@ import {
   installUpdate,
   relaunchApp,
   startAutoCheckLoop,
-  stopAutoCheckLoop
+  stopAutoCheckLoop,
+  getUpdateSnapshot
 } from './updates'
 import {
   getStatusSnapshot,
@@ -1308,6 +1309,7 @@ ipcMain.handle('updates:install', () => {
 ipcMain.handle('updates:restart', () => {
   relaunchApp()
 })
+ipcMain.handle('updates:getState', () => getUpdateSnapshot())
 
 // ---------------------------------------------------------------------------
 // Claude status IPC

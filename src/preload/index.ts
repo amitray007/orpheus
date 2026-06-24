@@ -38,6 +38,8 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
+  UpdateProgress,
+  UpdateSnapshot,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -500,8 +502,9 @@ const api = {
     check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
     install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
     restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
-    onProgress: (cb: (e: { line: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { line: string }): void => cb(e)
+    getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke('updates:getState'),
+    onProgress: (cb: (e: UpdateProgress) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: UpdateProgress): void => cb(e)
       ipcRenderer.on('updates:progress', listener)
       return () => ipcRenderer.removeListener('updates:progress', listener)
     },
