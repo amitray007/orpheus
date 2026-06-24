@@ -12,16 +12,6 @@ import {
   Gear,
   GitFork
 } from '@phosphor-icons/react'
-import {
-  useFloating,
-  offset,
-  flip,
-  shift,
-  useHover,
-  useRole,
-  useInteractions,
-  FloatingPortal
-} from '@floating-ui/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
@@ -35,8 +25,7 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { useOverlayOpen } from '@/lib/overlayFocus'
-import { WorkspaceHoverCard } from './WorkspaceHoverCard'
+import { showHoverPopover, hideNativePopover } from '@/lib/nativePopover'
 
 // ---------------------------------------------------------------------------
 // Module-level stable empty maps (avoid new Map() on every render as fallback)
@@ -250,48 +239,70 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const hasDetail = gitStatus !== null || pr != null
 
-  // Floating-ui hover card
-  const [cardOpen, setCardOpen] = useState(false)
-
-  // Single source of truth: the card is only allowed when the row is inactive,
-  // not being renamed, and has something to show. Used for both the hover
-  // enable flag and the render gate so they can never disagree.
+  // Native popover: only allowed when inactive, not renaming, and has data.
   const cardAllowed = hasDetail && !renaming && !active
 
-  useOverlayOpen(cardOpen)
+  // Ref to the row element used as anchor for the native popover.
+  const rowRef = useRef<HTMLDivElement>(null)
 
-  const { refs, floatingStyles, context } = useFloating({
-    open: cardOpen,
-    onOpenChange: (open) => {
-      setCardOpen(open)
-    },
-    placement: 'right-start',
-    middleware: [offset(8), flip(), shift({ padding: 8 })]
-  })
+  // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // If the card is open but no longer allowed to show (row became active,
-  // entered rename, or lost detail), close it. floating-ui's `enabled:false`
-  // stops NEW opens but does not close an already-open card, which would
-  // otherwise leave a DOM overlay over a now-live terminal (focus race).
-  useEffect(() => {
-    if (cardOpen && !cardAllowed) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: close card when it becomes disallowed (active/renaming/no-detail); floating-ui `enabled:false` only prevents new opens, not closing an already-open card
-      setCardOpen(false)
+  function clearHoverTimer(): void {
+    if (hoverTimerRef.current !== null) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
     }
-  }, [cardOpen, cardAllowed])
+  }
 
-  // Don't show the hover card for the ACTIVE workspace's row: its terminal is live and a DOM overlay over it races with terminal keyboard focus. Inactive rows' terminals are hidden, so hovering them is race-free.
-  const hover = useHover(context, {
-    enabled: cardAllowed,
-    delay: { open: 120, close: 80 }
-  })
-  const role = useRole(context, { role: 'tooltip' })
-  const { getReferenceProps, getFloatingProps } = useInteractions([hover, role])
+  function handleRowMouseEnter(): void {
+    if (!cardAllowed) return
+    clearHoverTimer()
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null
+      if (!rowRef.current || !cardAllowed) return
+      showHoverPopover(
+        workspace.id,
+        rowRef.current,
+        gitStatus,
+        pr,
+        dn.text,
+        activity,
+        relativeTime,
+        workspace.cwd
+      )
+    }, 120)
+  }
+
+  function handleRowMouseLeave(): void {
+    clearHoverTimer()
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null
+      hideNativePopover(workspace.id)
+    }, 80)
+  }
+
+  // If the card is allowed but the row becomes active / renaming / loses detail,
+  // close it immediately so it never sits over a live terminal.
+  useEffect(() => {
+    if (!cardAllowed) {
+      clearHoverTimer()
+      hideNativePopover(workspace.id)
+    }
+  }, [cardAllowed, workspace.id])
+
+  // Clean up on unmount.
+  useEffect(() => {
+    return () => {
+      clearHoverTimer()
+      hideNativePopover(workspace.id)
+    }
+  }, [workspace.id])
 
   return (
     <>
       <div
-        ref={refs.setReference}
+        ref={rowRef}
         className={[
           'relative flex rounded-r-md transition-colors duration-150 group',
           isVeryOld && !isClosed ? 'opacity-60' : '',
@@ -302,12 +313,15 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
             : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
         ].join(' ')}
-        // eslint-disable-next-line react-hooks/refs -- floating-ui callback refs via getReferenceProps, not .current access
-        {...getReferenceProps({
-          onMouseEnter: () => setHovered(true),
-          onMouseLeave: () => setHovered(false),
-          onContextMenu: handleContextMenu
-        })}
+        onMouseEnter={() => {
+          setHovered(true)
+          handleRowMouseEnter()
+        }}
+        onMouseLeave={() => {
+          setHovered(false)
+          handleRowMouseLeave()
+        }}
+        onContextMenu={handleContextMenu}
       >
         <button
           onClick={onSelect}
@@ -408,26 +422,6 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           />
         )}
       </div>
-      {cardOpen && cardAllowed && (
-        <FloatingPortal>
-          <div
-            // eslint-disable-next-line react-hooks/refs -- callback ref from @floating-ui/react, not .current access
-            ref={refs.setFloating}
-            style={floatingStyles}
-            {...getFloatingProps()}
-            className="z-50 pointer-events-none"
-          >
-            <WorkspaceHoverCard
-              title={dn.text}
-              activity={activity}
-              relativeTime={relativeTime}
-              gitStatus={gitStatus}
-              pr={pr}
-              cwd={workspace.cwd}
-            />
-          </div>
-        </FloatingPortal>
-      )}
     </>
   )
 })

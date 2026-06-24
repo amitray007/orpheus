@@ -1,23 +1,19 @@
 /* eslint-disable react-refresh/only-export-components -- file exports both component and cache-eviction utility by design */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Cpu, Info } from '@phosphor-icons/react'
-import {
-  useFloating,
-  useClick,
-  useDismiss,
-  useRole,
-  useInteractions,
-  FloatingPortal,
-  offset,
-  flip,
-  shift
-} from '@floating-ui/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
-import type { GhPullRequest, WorkspaceRecord, SessionUsage } from '@shared/types'
+import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
-import { WorkspaceDetailsPopover } from './WorkspaceDetailsPopover'
-import { useOverlayOpen } from '@/lib/overlayFocus'
+import { useGitStatus } from '@/lib/gitStore'
+import {
+  showDetailsPopover,
+  updateDetailsPopover,
+  hideNativePopover,
+  gitStatusToNative,
+  prToNative
+} from '@/lib/nativePopover'
+import type { DetailsPopoverData } from '@/lib/nativePopover'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -189,23 +185,11 @@ export function WorkspaceTitleBar({
   allWorkspaces
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailsButtonRef = useRef<HTMLButtonElement>(null)
 
-  useOverlayOpen(detailsOpen)
-
-  const { refs, floatingStyles, context } = useFloating({
-    open: detailsOpen,
-    onOpenChange: (open: boolean) => {
-      setDetailsOpen(open)
-    },
-    placement: 'bottom-end',
-    middleware: [offset(6), flip(), shift({ padding: 8 })]
-  })
-  const click = useClick(context)
-  const dismiss = useDismiss(context)
-  const role = useRole(context, { role: 'dialog' })
-  const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss, role])
+  // Git status for the details popover
+  const gitStatus = useGitStatus(workspace.id)
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -217,6 +201,114 @@ export function WorkspaceTitleBar({
       if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
   }, [workspace.id])
+
+  // ── Details popover — open / close + async data fetching ─────────────────
+
+  function openDetailsPopover(): void {
+    if (!detailsButtonRef.current) return
+    setDetailsOpen(true)
+
+    // Build initial data with whatever is synchronously available.
+    const initialData: DetailsPopoverData = {
+      pr: prToNative(pr ?? null),
+      git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
+      cwd: workspace.cwd,
+      contextLoading: true,
+      costLoading: true
+    }
+    showDetailsPopover(workspace.id, detailsButtonRef.current, initialData, pr ?? null)
+
+    // ── Async: context budget ────────────────────────────────────────────────
+    const cacheKey = `${workspace.id}:${workspace.claudeSessionId ?? ''}`
+    const cached = contextBudgetCache.get(cacheKey)
+    if (cached) {
+      updateDetailsPopover(workspace.id, {
+        model: modelLabel(cached.modelId),
+        contextLoading: false
+      })
+    }
+
+    window.api.sessions
+      .getContextBudget(workspace.id)
+      .then((result) => {
+        if (!result) return
+        if (workspace.claudeSessionId !== null) {
+          contextBudgetCache.set(cacheKey, result)
+        }
+        // Fetch usage too so we can compose "1.2k / 200k · 85%"
+        return window.api.actions
+          .invoke(
+            { id: 'session.getUsage', params: {}, workspaceId: workspace.id },
+            'workspace-context'
+          )
+          .then((usageResult) => {
+            const usage =
+              usageResult.ok && usageResult.value != null
+                ? (usageResult.value as SessionUsage)
+                : null
+            const ctxText = usage
+              ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(result.contextBudget)} · ${Math.round(usage.usedPct)}%`
+              : shortTokens(result.contextBudget)
+            updateDetailsPopover(workspace.id, {
+              model: modelLabel(result.modelId),
+              contextText: ctxText,
+              contextLoading: false
+            })
+          })
+      })
+      .catch(() => {
+        updateDetailsPopover(workspace.id, { contextLoading: false })
+      })
+
+    // ── Async: cost ──────────────────────────────────────────────────────────
+    window.api.actions
+      .invoke({ id: 'session.getCost', params: {}, workspaceId: workspace.id }, 'workspace-details')
+      .then((result) => {
+        if (result.ok && result.value != null) {
+          const cost = result.value as SessionCost
+          updateDetailsPopover(workspace.id, {
+            cost: `$${cost.usd.toFixed(2)}`,
+            costLoading: false
+          })
+        } else {
+          updateDetailsPopover(workspace.id, { costLoading: false })
+        }
+      })
+      .catch(() => {
+        updateDetailsPopover(workspace.id, { costLoading: false })
+      })
+  }
+
+  function closeDetailsPopover(): void {
+    setDetailsOpen(false)
+    hideNativePopover(workspace.id)
+  }
+
+  // Close on workspace change
+  useEffect(() => {
+    return () => {
+      hideNativePopover(workspace.id)
+    }
+  }, [workspace.id])
+
+  // Outside-click / Escape dismissal
+  useEffect(() => {
+    if (!detailsOpen) return
+    function handleClickOutside(e: MouseEvent): void {
+      if (detailsButtonRef.current && detailsButtonRef.current.contains(e.target as Node)) return
+      closeDetailsPopover()
+    }
+    function handleKeyDown(e: KeyboardEvent): void {
+      if (e.key === 'Escape') closeDetailsPopover()
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailsOpen])
 
   // Resolve parent name for the "forked from" chip
   const forkedFromSessionId = workspace.forkedFromSessionId ?? null
@@ -269,11 +361,17 @@ export function WorkspaceTitleBar({
 
       <div className="ml-auto flex items-center gap-1">
         <button
-          ref={refs.setReference}
+          ref={detailsButtonRef}
           onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            if (detailsOpen) {
+              closeDetailsPopover()
+            } else {
+              openDetailsPopover()
+            }
+          }}
           title="Details"
           aria-label="Details"
-          {...getReferenceProps()}
           className={[
             'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
             'transition-colors duration-150',
@@ -304,24 +402,6 @@ export function WorkspaceTitleBar({
           <span>Workspace Settings</span>
         </button>
       </div>
-
-      {detailsOpen && (
-        <FloatingPortal>
-          <div
-            // eslint-disable-next-line react-hooks/refs -- callback ref from @floating-ui/react, not .current access
-            ref={refs.setFloating}
-            style={floatingStyles}
-            {...getFloatingProps()}
-            className="z-50"
-          >
-            <WorkspaceDetailsPopover
-              workspace={workspace}
-              pr={pr ?? null}
-              onClose={() => setDetailsOpen(false)}
-            />
-          </div>
-        </FloatingPortal>
-      )}
     </div>
   )
 }

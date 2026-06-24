@@ -274,6 +274,75 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Popover theme palettes — separate from loading overlay (different token set:
+// no backdrop/tintAlpha; adds textMuted + accent).
+// surface-overlay tokens are the solid card background for the 3 themes.
+// ---------------------------------------------------------------------------
+type PopoverThemePalette = {
+  card: [number, number, number]
+  textPrimary: [number, number, number]
+  textSecondary: [number, number, number]
+  textMuted: [number, number, number]
+  border: [number, number, number]
+  accent: [number, number, number]
+  isDark: boolean
+}
+
+const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
+  midnight: {
+    card: [0x1c, 0x1c, 0x1f], // surface-overlay: slightly lighter than page bg
+    textPrimary: [0xf4, 0xf4, 0xf5], // zinc-100
+    textSecondary: [0xa1, 0xa1, 0xaa], // zinc-400
+    textMuted: [0x71, 0x71, 0x7a], // zinc-500
+    border: [0x3f, 0x3f, 0x46], // zinc-700 (border-white/10 approximation on dark)
+    accent: [0x60, 0xa5, 0xfa], // blue-400
+    isDark: true
+  },
+  daylight: {
+    card: [0xff, 0xff, 0xff], // white
+    textPrimary: [0x18, 0x18, 0x1b], // zinc-900
+    textSecondary: [0x52, 0x52, 0x5b], // zinc-600
+    textMuted: [0xa1, 0xa1, 0xaa], // zinc-400
+    border: [0xe4, 0xe4, 0xe7], // zinc-200
+    accent: [0x25, 0x63, 0xeb], // blue-600
+    isDark: false
+  },
+  eclipse: {
+    card: [0x10, 0x10, 0x10], // near-black surface
+    textPrimary: [0xff, 0xff, 0xff],
+    textSecondary: [0xb4, 0xb4, 0xb4],
+    textMuted: [0x71, 0x71, 0x71],
+    border: [0x2a, 0x2a, 0x2a],
+    accent: [0x60, 0xa5, 0xfa], // blue-400
+    isDark: true
+  }
+}
+
+let popoverWired = false
+
+function applyPopoverTheme(theme: Theme): void {
+  if (!terminalAddon) return
+  const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
+  terminalAddon.setPopoverTheme(palette)
+  console.log('[popover] theme applied:', theme)
+}
+
+function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
+  if (popoverWired) return
+  popoverWired = true
+  const currentTheme = getAppUiState().theme as Theme
+  addon.setPopoverTheme(POPOVER_THEME_PALETTES[currentTheme] ?? POPOVER_THEME_PALETTES.midnight)
+  // Wire the action callback: fires when a clickable element (Phase B: PR chip)
+  // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
+  addon.setPopoverActionCallback((identifier: string) => {
+    console.log('[popover] action callback:', identifier)
+    // Phase B: parse identifier and route action (e.g. open PR URL).
+    // For now, broadcast to renderer so it can handle it.
+    getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
+  })
+}
+
 function applyLoadingOverlayTheme(theme: Theme): void {
   if (!terminalAddon) return // addon not loaded yet — startup wiring will apply it on first mount
   const palette = THEME_PALETTES[theme] ?? THEME_PALETTES.midnight
@@ -635,7 +704,6 @@ function createWindow(): void {
     mainWindow.show()
     try {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
-      loadTerminalAddon().setOverlayCompositing(true)
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
     }
@@ -1196,7 +1264,10 @@ ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
-  if (patch.theme !== undefined) applyLoadingOverlayTheme(patch.theme as Theme)
+  if (patch.theme !== undefined) {
+    applyLoadingOverlayTheme(patch.theme as Theme)
+    applyPopoverTheme(patch.theme as Theme)
+  }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
   if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -1409,6 +1480,7 @@ ipcMain.handle(
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
+    ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const handle = win.getNativeWindowHandle()
@@ -1510,13 +1582,46 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
   })
 })
 
+// ---------------------------------------------------------------------------
+// Native popover IPC handlers (Phase A chassis)
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(
-  'terminal:setOverlay',
-  (_e, { workspaceId, on }: { workspaceId: string; on: boolean }): void => {
+  'terminal:showPopover',
+  (
+    _e,
+    {
+      workspaceId,
+      kind,
+      anchorRect,
+      data
+    }: {
+      workspaceId: string
+      kind: string
+      anchorRect: { x: number; y: number; w: number; h: number }
+      data: Record<string, unknown>
+    }
+  ): void => {
     const addon = loadTerminalAddon()
-    addon.setOverlay(workspaceId, on)
+    // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
+    // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
+    const fontDir = app.isPackaged ? join(process.resourcesPath, 'fonts') : undefined
+    addon.showPopover(workspaceId, kind, anchorRect, data, fontDir)
   }
 )
+
+ipcMain.handle(
+  'terminal:updatePopover',
+  (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
+    const addon = loadTerminalAddon()
+    addon.updatePopover(workspaceId, data)
+  }
+)
+
+ipcMain.handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
+  const addon = loadTerminalAddon()
+  addon.hidePopover(workspaceId)
+})
 
 ipcMain.handle(
   'terminal:getSurfacePhase',

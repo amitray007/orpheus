@@ -29,6 +29,7 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>
 
 #include <string>
 #include <map>
@@ -124,6 +125,8 @@ static void orpheusPushLiveness(const std::string& workspaceId, bool occluded);
 
 // Forward-declare the loading overlay view so GhosttySurfaceEntry can hold a pointer to it.
 @class OrpheusLoadingOverlayView;
+// Forward-declare the popover view so GhosttySurfaceEntry can hold a pointer to it.
+@class OrpheusPopoverView;
 
 struct GhosttySurfaceEntry {
     ghostty_surface_t surface;
@@ -132,6 +135,7 @@ struct GhosttySurfaceEntry {
     CGRect lastRect;              // last known CSS rect (top-left origin, pre-flip)
     CGFloat lastScale;
     OrpheusLoadingOverlayView* __strong loadingOverlay; // nil when no overlay is present
+    OrpheusPopoverView* __strong popoverView;           // nil when no popover is shown
     uint64_t inputTick{0};   // per-workspace input counter (plain, not atomic — bumped on main thread only)
     uint64_t liveTick{0};    // per-workspace draw counter (plain, not atomic — bumped on main thread only)
     bool desiredVisible{false};  // true when this workspace should be shown+focused
@@ -144,14 +148,6 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // The workspace that should currently be visible+focused. At most one at a time
 // (single-BrowserWindow invariant — Orpheus runs one window).
 static std::string g_visibleWorkspaceId;
-
-// Overlay state (set by SetOverlay / consumed by reconcileSurface + Mount).
-// g_overlayCompositingEnabled is flipped true at startup (Task 8) via setOverlayCompositing();
-// until then the z-reorder in setOverlay is inert (only focus handoff runs). g_overlayOpen
-// gates z-insert and makeFirstResponder in show/mount paths so a newly shown surface doesn't
-// pop above an open overlay or steal focus.
-static bool g_overlayCompositingEnabled = false;
-static bool g_overlayOpen = false;
 
 // Forward declarations for reconcileSurface / setVisibleWorkspace so
 // handleOcclusionChange: (inside @implementation) can call them.
@@ -1384,6 +1380,11 @@ static std::map<std::string, uint64_t> g_currentGeneration; // workspaceId -> la
 static Napi::ThreadSafeFunction g_loadingActionTSFN;
 static bool g_loadingActionTSFNActive = false;
 
+// Popover action TSFN — fires when a clickable element inside a popover is
+// tapped (e.g. the PR chip). Registered via setPopoverActionCallback.
+static Napi::ThreadSafeFunction g_popoverActionTSFN;
+static bool g_popoverActionTSFNActive = false;
+
 // ---------------------------------------------------------------------------
 // Loading overlay theme — colors pushed from main process (resolved from the
 // active app theme: midnight / daylight / eclipse). The native side stays
@@ -1416,6 +1417,44 @@ static OrpheusLoadingTheme g_loadingTheme = {
 static NSColor* themeColorOr(NSColor* c, NSColor* fallback) {
     return c ? c : fallback;
 }
+
+// ---------------------------------------------------------------------------
+// OrpheusPopoverTheme — color palette for native info-card popovers.
+//
+// Pushed by JS via setPopoverTheme({ card, textPrimary, textSecondary,
+// textMuted, border, accent, isDark }). Separate from g_loadingTheme so the
+// two overlays can evolve independently (loading overlay = frosted VSFView
+// backdrop + card; popover = solid card only with different token set).
+//
+// All NSColor* fields are nil until main pushes the real values; draw code
+// falls back to midnight-ish defaults via themeColorOr.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    NSColor* card;          // solid card background (surface-overlay, full alpha)
+    NSColor* textPrimary;   // primary label color
+    NSColor* textSecondary; // secondary / dim label color
+    NSColor* textMuted;     // muted label (timestamps, labels)
+    NSColor* border;        // 1px hairline border
+    NSColor* accent;        // accent color (activity dot, highlights)
+    BOOL     isDark;        // true = dark aqua appearance
+} OrpheusPopoverTheme;
+
+static OrpheusPopoverTheme g_popoverTheme = {
+    .card          = nil,
+    .textPrimary   = nil,
+    .textSecondary = nil,
+    .textMuted     = nil,
+    .border        = nil,
+    .accent        = nil,
+    .isDark        = YES
+};
+
+// Geist font directory — set by registerPopoverFonts() called from showPopover.
+// Stored globally so we only register once and can skip re-registration.
+static BOOL g_popoverFontsRegistered = NO;
+// Path passed in from JS (process.resourcesPath/fonts in prod, node_modules path in dev).
+static NSString* g_geistFontDir = nil;
 
 // ---------------------------------------------------------------------------
 // OrpheusLoadingOverlayView — translucent loading card drawn above the
@@ -2544,12 +2583,11 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 
     if (entry.desiredVisible) {
         if (!entry.isAttached) {
-            // Surface was hidden — re-attach topmost (or below overlay).
+            // Surface was hidden — re-attach topmost.
             // ensureBackstopView installs the bleed-guard at index 0 as a side effect.
             if (contentView) {
                 (void)ensureBackstopView(contentView);
-                NSWindowOrderingMode mode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
-                [contentView addSubview:entry.view positioned:mode relativeTo:nil];
+                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
             }
             // Gap-fill: paint pre-first-frame gap app-dark.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2569,7 +2607,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // NAPI runs on main thread ✓.
             {
                 NSWindow* win = [entry.view window];
-                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
+                if (win) [win makeFirstResponder:entry.view];
             }
 
         } else {
@@ -2592,7 +2630,7 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Sync makeFirstResponder for focus re-assertion.
             {
                 NSWindow* win = [entry.view window];
-                if (!g_overlayOpen && win) [win makeFirstResponder:entry.view];
+                if (win) [win makeFirstResponder:entry.view];
             }
         }
 
@@ -2842,9 +2880,8 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
-    // Same z-order rationale as the re-attach branch above.
-    NSWindowOrderingMode mountMode = g_overlayOpen ? NSWindowBelow : NSWindowAbove;
-    [contentView addSubview:termView positioned:mountMode relativeTo:nil];
+    // Terminal always parks above the web layer; popovers are native siblings above it.
+    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
@@ -3230,82 +3267,6 @@ static Napi::Value SetLoadingOverlay(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// NAPI: setOverlay(workspaceId, on)
-// OWN writer of the z-order + overlay-focus axis (peer to reconcileSurface, which
-// owns the gate axis). on=true: (when compositing enabled) surface goes BELOW the
-// web layer, and resigns first-responder to the WebContents view so DOM overlays
-// receive keys. on=false: surface returns ABOVE, reclaims first-responder, repaints.
-// Must NOT route through reconcileSurface: its attached branch ends with
-// set_focus(true)+makeFirstResponder, which would fight the handoff.
-static Napi::Value SetOverlay(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlay requires (workspaceId: string, on: boolean)")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
-    bool on = info[1].As<Napi::Boolean>().Value();
-    g_overlayOpen = on;                              // visible to the show/mount path
-    auto it = g_surfaces.find(workspaceId);
-    if (it == g_surfaces.end()) return env.Undefined();          // no surface → no-op
-    GhosttySurfaceEntry& entry = it->second;
-    if (!entry.isAttached || !entry.view) return env.Undefined();
-    NSView* superview = entry.view.superview;
-    if (!superview) return env.Undefined();
-    NSWindow* win = [entry.view window];
-
-    if (on) {
-        // Z-reorder ONLY once opaque-on-top is live (Task 8). Pre-Task-8 the surface
-        // is already bottom-parked under the transparent web layer, so a reorder would
-        // be a visible flicker for no benefit — skip it; do the focus handoff only.
-        if (g_overlayCompositingEnabled) {
-            [superview addSubview:entry.view positioned:NSWindowBelow relativeTo:nil];
-        }
-        ghostty_surface_set_focus(entry.surface, false);
-        NSView* webView = nil;
-        for (NSView* sub in superview.subviews) {
-            if (sub == entry.view) continue;
-            // skip other ghostty surfaces (they respond YES to nonWebContentView)
-            if ([sub respondsToSelector:@selector(nonWebContentView)]) continue;
-            NSString* cls = NSStringFromClass([sub class]);
-            if ([cls containsString:@"WebContents"] || [cls containsString:@"RenderWidgetHostView"]) {
-                webView = sub;
-                break;
-            }
-        }
-        if (win) {
-            if (webView) [win makeFirstResponder:webView];
-            else [win makeFirstResponder:nil];   // fallback; Chromium reclaims on next click
-        }
-        NSLog(@"[ghostty-surface] setOverlay ws=%s on=1 z=%d webView=%d",
-              workspaceId.c_str(), g_overlayCompositingEnabled, webView != nil);
-    } else {
-        if (g_overlayCompositingEnabled) {
-            // Surface back on top, reclaim focus, repaint immediately.
-            [superview addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
-        }
-        ghostty_surface_set_focus(entry.surface, true);
-        if (win) [win makeFirstResponder:entry.view];
-        ghostty_surface_draw(entry.surface);
-        NSLog(@"[ghostty-surface] setOverlay ws=%s on=0 z=%d", workspaceId.c_str(), g_overlayCompositingEnabled);
-    }
-    return env.Undefined();
-}
-
-// NAPI: setOverlayCompositing(on) — Task 8. Flips g_overlayCompositingEnabled.
-// Called once at startup (ready-to-show) to activate z-reorder in setOverlay.
-static Napi::Value SetOverlayCompositing(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsBoolean()) {
-        Napi::TypeError::New(env, "setOverlayCompositing requires boolean").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    g_overlayCompositingEnabled = info[0].As<Napi::Boolean>().Value();
-    NSLog(@"[ghostty-surface] setOverlayCompositing enabled=%d", g_overlayCompositingEnabled);
-    return env.Undefined();
-}
-
 // NAPI: focus(workspaceId) — make the workspace's terminal view first responder.
 // Called when Orpheus regains app focus so typing goes directly to the terminal.
 static Napi::Value Focus(const Napi::CallbackInfo& info) {
@@ -3620,6 +3581,1487 @@ static Napi::Value GetSurfacePhase(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// registerPopoverFonts — register Geist Sans + Mono TTF files into the process
+// font manager via CoreText. Idempotent: a boolean gate ensures we only run once.
+//
+// Font path strategy:
+//   JS calls showPopover with an optional fontDir parameter on the FIRST call.
+//   The main process resolves the correct path:
+//     • Packaged: path.join(process.resourcesPath, 'fonts')
+//     • Dev:      path.join(__dirname, '../../node_modules/geist/dist/fonts')
+//   Native stores it in g_geistFontDir and uses it here.
+//
+//   If g_geistFontDir is nil (caller didn't pass it or path missing), we fall
+//   back to a compile-time dev path derived from __FILE__ so dev builds work
+//   without a packaged extraResources layout.
+// ---------------------------------------------------------------------------
+
+static void registerPopoverFonts() {
+    if (g_popoverFontsRegistered) return;
+
+    // Determine the font directory.
+    NSString* fontDir = g_geistFontDir;
+
+    if (!fontDir || fontDir.length == 0) {
+        // Fallback: derive from __FILE__ (absolute at compile time).
+        NSString* addonSrc = @__FILE__;
+        if ([addonSrc hasPrefix:@"/"]) {
+            NSString* pkgDir  = [addonSrc stringByDeletingLastPathComponent];
+            NSString* pkgsDir = [pkgDir stringByDeletingLastPathComponent];
+            NSString* repoDir = [pkgsDir stringByDeletingLastPathComponent];
+            fontDir = [repoDir stringByAppendingPathComponent:@"node_modules/geist/dist/fonts"];
+        } else {
+            NSString* cwd = [[[NSFileManager defaultManager] currentDirectoryPath] stringByStandardizingPath];
+            fontDir = [cwd stringByAppendingPathComponent:@"node_modules/geist/dist/fonts"];
+        }
+        NSLog(@"[ghostty-surface] registerPopoverFonts: using fallback dev font dir: %@", fontDir);
+    }
+
+    // All TTF files to register: Geist Sans (Regular/Medium/SemiBold) + Mono (Regular/SemiBold).
+    NSArray<NSDictionary*>* fonts = @[
+        @{ @"psName": @"Geist-Regular",        @"relPath": @"geist-sans/Geist-Regular.ttf" },
+        @{ @"psName": @"Geist-Medium",         @"relPath": @"geist-sans/Geist-Medium.ttf" },
+        @{ @"psName": @"Geist-SemiBold",       @"relPath": @"geist-sans/Geist-SemiBold.ttf" },
+        @{ @"psName": @"GeistMono-Regular",    @"relPath": @"geist-mono/GeistMono-Regular.ttf" },
+        @{ @"psName": @"GeistMono-SemiBold",   @"relPath": @"geist-mono/GeistMono-SemiBold.ttf" },
+    ];
+
+    int registered = 0, skipped = 0, failed = 0;
+    for (NSDictionary* entry in fonts) {
+        NSString* path = [fontDir stringByAppendingPathComponent:entry[@"relPath"]];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            NSLog(@"[ghostty-surface] registerPopoverFonts: font not found: %@", path);
+            failed++;
+            continue;
+        }
+        NSURL* url = [NSURL fileURLWithPath:path];
+        CFErrorRef err = nullptr;
+        BOOL ok = CTFontManagerRegisterFontsForURL(
+            (__bridge CFURLRef)url,
+            kCTFontManagerScopeProcess,
+            &err
+        );
+        if (!ok) {
+            CFIndex code = err ? CFErrorGetCode(err) : 0;
+            if (code == 105) {
+                // Already registered — idempotent, not an error.
+                skipped++;
+            } else {
+                CFStringRef desc = err ? CFErrorCopyDescription(err) : CFSTR("unknown");
+                NSString* errStr = (__bridge_transfer NSString*)CFStringCreateCopy(nullptr, desc);
+                NSLog(@"[ghostty-surface] registerPopoverFonts: FAILED %@: %@", entry[@"psName"], errStr);
+                failed++;
+            }
+            if (err) CFRelease(err);
+        } else {
+            registered++;
+        }
+    }
+    NSLog(@"[ghostty-surface] registerPopoverFonts: registered=%d skipped=%d failed=%d dir=%@",
+          registered, skipped, failed, fontDir);
+
+    // Mark done even if some fonts failed — partial registration is better than retry loops.
+    g_popoverFontsRegistered = YES;
+}
+
+// Helper: safely resolve a Geist font by PostScript name with system font fallback.
+static NSFont* geistFont(NSString* psName, CGFloat size) {
+    NSFont* f = [NSFont fontWithName:psName size:size];
+    return f ?: [NSFont systemFontOfSize:size];
+}
+
+// ---------------------------------------------------------------------------
+// OrpheusPopoverView — plain layer-backed solid card displayed above the
+// terminal surface. Phase B: full row/section content builders for both the
+// 'hover' card (224px wide) and 'details' card (252px wide).
+//
+// Layout uses explicit frames with top-down y accumulation (isFlipped=YES).
+// All colors come from g_popoverTheme tokens (pushed via setPopoverTheme).
+// Fixed colors (emerald, red, GitHub state colors, amber) are literals per spec.
+//
+// Coordinate system: isFlipped = YES (matches the ghostty view and contentView
+// coordinate system used by cssRectToAppKit).
+// ---------------------------------------------------------------------------
+
+// ---- Fixed brand colors (spec literals — not themed) ----------------------
+static const CGFloat kColorEmerald[4]       = { 0x4a/255.0, 0xde/255.0, 0x80/255.0, 1.0 };  // #4ade80
+static const CGFloat kColorRed[4]           = { 0xf8/255.0, 0x71/255.0, 0x71/255.0, 1.0 };  // #f87171
+static const CGFloat kColorAmber[4]         = { 0xfb/255.0, 0xbf/255.0, 0x24/255.0, 1.0 };  // #fbbf24
+static const CGFloat kColorPrOpen[4]        = { 0x1a/255.0, 0x7f/255.0, 0x37/255.0, 1.0 };  // #1a7f37
+static const CGFloat kColorPrMerged[4]      = { 0x82/255.0, 0x50/255.0, 0xdf/255.0, 1.0 };  // #8250df
+static const CGFloat kColorPrClosed[4]      = { 0xcf/255.0, 0x22/255.0, 0x2e/255.0, 1.0 };  // #cf222e
+static const CGFloat kColorPrDraft[4]       = { 0x6e/255.0, 0x77/255.0, 0x81/255.0, 1.0 };  // #6e7781
+
+static NSColor* fixedColor(const CGFloat c[4]) {
+    return [NSColor colorWithCalibratedRed:c[0] green:c[1] blue:c[2] alpha:c[3]];
+}
+
+// ---- Layout constants per spec --------------------------------------------
+static const CGFloat kCardPadH  = 11.0;   // horizontal padding (L+R)
+static const CGFloat kSepHeight = 1.0;    // divider height
+
+@interface OrpheusPopoverView : NSView
+
+// Fixed display width: 252 for 'details', 224 for 'hover'.
+@property (nonatomic, assign) CGFloat cardWidth;
+// Kind string ('details' | 'hover').
+@property (nonatomic, copy)   NSString* kind;
+// WorkspaceId — stored so the action callback can identify which surface.
+@property (nonatomic, copy)   NSString* workspaceId;
+
+// Current data snapshot — used by updatePopover to re-render async fields.
+@property (nonatomic, strong) NSDictionary* currentData;
+
+// Activity-indicator spinner timer (running only for animated states).
+@property (nonatomic, strong) NSTimer*      spinnerTimer;
+@property (nonatomic, strong) NSTextField*  spinnerLabel;  // the braille glyph field
+@property (nonatomic, assign) int           spinnerFrame;
+@property (nonatomic, strong) NSArray<NSString*>* spinnerFrames;
+
+// Rebuild entire card content from data dict. Called from initWithKind and updatePopover.
+- (CGFloat)buildContentFromData:(NSDictionary*)data;
+
+@end
+
+// ---------------------------------------------------------------------------
+// Singleton Obj-C target for popover clickable elements (PR chip click).
+// sender.identifier encodes "workspaceId::pr" — the JS side already holds the
+// PR URL; it just needs the workspaceId to look it up and open it.
+// ---------------------------------------------------------------------------
+@interface OrpheusPopoverActionTarget : NSObject
++ (instancetype)shared;
+- (void)elementClicked:(NSButton*)sender;
+@end
+
+@implementation OrpheusPopoverActionTarget
++ (instancetype)shared {
+    static OrpheusPopoverActionTarget* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ s = [[OrpheusPopoverActionTarget alloc] init]; });
+    return s;
+}
+- (void)elementClicked:(NSButton*)sender {
+    // sender.identifier encodes "workspaceId::pr".
+    // JS receives the identifier string and opens the PR URL it already has for this workspace.
+    NSString* ident = sender.identifier;
+    if (!ident || ident.length == 0) return;
+    NSLog(@"[ghostty-surface] popover element clicked: %s", ident.UTF8String);
+    if (!g_popoverActionTSFNActive) return;
+    std::string identCpp = ident.UTF8String;
+    g_popoverActionTSFN.NonBlockingCall([identCpp](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, identCpp) });
+    });
+}
+@end
+
+// ---------------------------------------------------------------------------
+// Helpers — used by both card builders
+// ---------------------------------------------------------------------------
+
+// Safe string extraction from a (possibly nil) NSDictionary.
+static NSString* dictStr(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    return [v isKindOfClass:[NSString class]] ? (NSString*)v : @"";
+}
+static BOOL dictBool(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber*)v boolValue];
+    return NO;
+}
+static int dictInt(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber*)v intValue];
+    return 0;
+}
+static NSDictionary* dictDict(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    return [v isKindOfClass:[NSDictionary class]] ? (NSDictionary*)v : nil;
+}
+
+// Create a non-editable, non-selectable label with explicit frame disabled.
+static NSTextField* makeLabel(NSString* text, NSFont* font, NSColor* color) {
+    NSTextField* f = [NSTextField labelWithString:text ?: @""];
+    f.font      = font;
+    f.textColor = color;
+    f.drawsBackground = NO;
+    f.bordered        = NO;
+    f.editable        = NO;
+    f.selectable      = NO;
+    f.cell.wraps = NO;
+    f.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    return f;
+}
+
+// Create a 1px horizontal divider line (full card width).
+// isFlipped=YES so origin.y is the TOP of the line.
+static NSView* makeDivider(CGFloat y, CGFloat width) {
+    NSView* sep = [[NSView alloc] initWithFrame:NSMakeRect(0, y, width, kSepHeight)];
+    sep.wantsLayer = YES;
+    // border-white/10 per spec
+    sep.layer.backgroundColor =
+        [NSColor colorWithCalibratedRed:1.0 green:1.0 blue:1.0 alpha:0.10].CGColor;
+    return sep;
+}
+
+// Resolve color for a PR state string.
+static NSColor* prStateColor(NSString* state) {
+    if ([state isEqualToString:@"merged"])  return fixedColor(kColorPrMerged);
+    if ([state isEqualToString:@"closed"])  return fixedColor(kColorPrClosed);
+    if ([state isEqualToString:@"draft"])   return fixedColor(kColorPrDraft);
+    return fixedColor(kColorPrOpen); // open (default)
+}
+
+// SF Symbol name for a PR state.
+// NOTE: These are SF Symbol stand-ins for Phosphor icons (acceptable fidelity; can refine later):
+//   GitPullRequest → "arrow.triangle.pull" or "arrow.branch"
+//   Merged         → "arrow.triangle.merge"
+//   Closed         → "xmark.circle"
+//   Draft          → "circle.dashed"
+static NSString* prStateSymbol(NSString* state) {
+    if ([state isEqualToString:@"merged"])  return @"arrow.triangle.merge";
+    if ([state isEqualToString:@"closed"])  return @"xmark.circle";
+    if ([state isEqualToString:@"draft"])   return @"circle.dashed";
+    return @"arrow.branch"; // open
+}
+
+// Render a tinted SF Symbol image at pointSize. Falls back to a colored text glyph on failure.
+static NSImage* sfSymbol(NSString* name, CGFloat pointSize, NSColor* color) {
+    NSImage* img = [NSImage imageWithSystemSymbolName:name
+                              accessibilityDescription:nil];
+    if (!img) return nil;
+    NSImage* copy = [img copy];
+    [copy setTemplate:NO];
+    // Tint via NSImage drawing at the target color.
+    NSSize sz = NSMakeSize(pointSize, pointSize);
+    NSImage* result = [[NSImage alloc] initWithSize:sz];
+    [result lockFocus];
+    [color set];
+    NSRect r = NSMakeRect(0, 0, sz.width, sz.height);
+    NSImageSymbolConfiguration* cfg =
+        [NSImageSymbolConfiguration configurationWithPointSize:pointSize weight:NSFontWeightRegular];
+    NSImage* conf = [img imageWithSymbolConfiguration:cfg];
+    if (conf) {
+        [conf drawInRect:r fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+        // Tint by drawing a colored rect in multiply mode.
+        [color set];
+        NSRectFillUsingOperation(r, NSCompositingOperationSourceIn);
+    }
+    [result unlockFocus];
+    return result;
+}
+
+// Compute wrapping height for a string at a given width and font.
+static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
+    if (!text.length) return 0;
+    NSTextStorage* ts = [[NSTextStorage alloc] initWithString:text];
+    NSTextContainer* tc = [[NSTextContainer alloc] initWithSize:NSMakeSize(width, CGFLOAT_MAX)];
+    tc.lineFragmentPadding = 0;
+    NSLayoutManager* lm = [[NSLayoutManager alloc] init];
+    [lm addTextContainer:tc];
+    [ts addLayoutManager:lm];
+    [ts addAttribute:NSFontAttributeName value:font range:NSMakeRange(0, text.length)];
+    [lm glyphRangeForTextContainer:tc]; // force layout
+    NSRect usedRect = [lm usedRectForTextContainer:tc];
+    return ceil(usedRect.size.height);
+}
+
+// ---------------------------------------------------------------------------
+// @implementation OrpheusPopoverView
+// ---------------------------------------------------------------------------
+
+@implementation OrpheusPopoverView
+
+- (instancetype)initWithKind:(NSString*)kind
+                 workspaceId:(NSString*)wsId
+                       width:(CGFloat)width
+                        data:(NSDictionary*)data {
+    // Start with zero height; buildContentFromData: sets the real height.
+    self = [super initWithFrame:NSMakeRect(0, 0, width, 0)];
+    if (!self) return nil;
+
+    self.kind        = kind;
+    self.workspaceId = wsId;
+    self.cardWidth   = width;
+    self.currentData = data ?: @{};
+
+    // Layer-backed plain NSView. NOT NSVisualEffectView — solid cards.
+    self.wantsLayer = YES;
+
+    // Card chrome: bg, radius, border, shadow.
+    NSColor* cardColor = themeColorOr(
+        g_popoverTheme.card,
+        [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]
+    );
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:1.0 green:1.0 blue:1.0 alpha:0.10]
+    );
+
+    self.layer.cornerRadius    = 8.0;
+    self.layer.backgroundColor = cardColor.CGColor;
+    self.layer.borderWidth     = 1.0;
+    self.layer.borderColor     = borderColor.CGColor;
+    // shadow-lg equivalent
+    self.layer.masksToBounds   = NO;
+    self.layer.shadowColor     = [NSColor blackColor].CGColor;
+    self.layer.shadowOpacity   = 0.20;
+    self.layer.shadowRadius    = 14.0;
+    self.layer.shadowOffset    = CGSizeMake(0, -4);
+
+    // Start invisible — caller fades in.
+    self.alphaValue = 0.0;
+
+    // Register Geist fonts lazily (idempotent).
+    registerPopoverFonts();
+
+    // Build content and get total height.
+    CGFloat totalHeight = [self buildContentFromData:self.currentData];
+    NSRect f = self.frame;
+    f.size.height = totalHeight;
+    self.frame = f;
+
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (BOOL)nonWebContentView {
+    // Same Chromium hit-test bypass as OrpheusGhosttyView — mouse events inside
+    // the card frame are NOT swallowed by the WebContents layer.
+    return YES;
+}
+
+- (void)dealloc {
+    [self stopSpinnerTimer];
+}
+
+// ---------------------------------------------------------------------------
+// Spinner timer management
+// ---------------------------------------------------------------------------
+
+- (void)stopSpinnerTimer {
+    if (self.spinnerTimer) {
+        [self.spinnerTimer invalidate];
+        self.spinnerTimer = nil;
+    }
+}
+
+- (void)spinnerTick:(NSTimer*)timer {
+    if (!self.spinnerLabel || !self.spinnerFrames.count) return;
+    self.spinnerFrame = (self.spinnerFrame + 1) % (int)self.spinnerFrames.count;
+    self.spinnerLabel.stringValue = self.spinnerFrames[self.spinnerFrame];
+}
+
+// ---------------------------------------------------------------------------
+// addSectionHeader — Geist-Medium 10px uppercase, textMuted.
+// Returns the y position after the header (next row starts here).
+// Padding: left/right kCardPadH, top 9px, bottom 4px.
+// ---------------------------------------------------------------------------
+- (CGFloat)addSectionHeader:(NSString*)title atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+
+    const CGFloat topPad    = 9.0;
+    const CGFloat bottomPad = 4.0;
+    const CGFloat lineH     = 14.0; // ~10px font × 1.4 line-height
+
+    NSTextField* header = makeLabel([title uppercaseString],
+                                    geistFont(@"Geist-Medium", 10.0), mutedColor);
+    // Approximate letter-spacing: use NSKernAttributeName in attributed string.
+    NSMutableAttributedString* attr = [[NSMutableAttributedString alloc]
+        initWithString:[title uppercaseString]];
+    CGFloat ptSize = 10.0;
+    [attr addAttribute:NSFontAttributeName
+                 value:geistFont(@"Geist-Medium", ptSize)
+                 range:NSMakeRange(0, attr.length)];
+    [attr addAttribute:NSForegroundColorAttributeName
+                 value:mutedColor
+                 range:NSMakeRange(0, attr.length)];
+    [attr addAttribute:NSKernAttributeName
+                 value:@(ptSize * 0.05)
+                 range:NSMakeRange(0, attr.length)];
+    header.attributedStringValue = attr;
+
+    CGFloat rowH = topPad + lineH + bottomPad;
+    header.frame = NSMakeRect(kCardPadH, y + topPad, self.cardWidth - 2.0 * kCardPadH, lineH);
+    [self addSubview:header];
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addLabelValueRow — fixed-width 56px label (Geist-Regular 11px, textMuted) +
+// value (Geist-Regular 11px, textSecondary, truncates). 2px vertical padding.
+// Returns new y after the row.
+// ---------------------------------------------------------------------------
+- (CGFloat)addLabelValueRow:(NSString*)label value:(NSString*)value atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat rowH   = 15.0; // ~11px font + 2px pad each side
+    const CGFloat labelW = 56.0;
+    const CGFloat gap    = 7.0;
+
+    NSTextField* lbl = makeLabel(label, geistFont(@"Geist-Regular", 11.0), mutedColor);
+    lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+    [self addSubview:lbl];
+
+    NSTextField* val = makeLabel(value, geistFont(@"Geist-Regular", 11.0), secColor);
+    CGFloat valX = kCardPadH + labelW + gap;
+    CGFloat valW = self.cardWidth - valX - kCardPadH;
+    val.frame = NSMakeRect(valX, y + vPad, valW, rowH - 2 * vPad);
+    [self addSubview:val];
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addGitBranchRow — GitBranch SF Symbol + branch name.
+// fontSize: 11px (details) or 12px (hover). gap: 4px (details) / 5px (hover).
+// Returns new y.
+// ---------------------------------------------------------------------------
+- (CGFloat)addGitBranchRow:(NSString*)branch
+                  detached:(BOOL)detached
+                  fontSize:(CGFloat)fontSize
+                      gapX:(CGFloat)gapX
+                        atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat iconSz = fontSize;
+    const CGFloat rowH   = fontSize + 2.0 * vPad + 2.0;
+
+    // SF Symbol stand-in for Phosphor GitBranch → "arrow.triangle.branch"
+    NSImage* icon = sfSymbol(@"arrow.triangle.branch", iconSz, mutedColor);
+    NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
+        kCardPadH, y + vPad, iconSz, iconSz)];
+    iv.image = icon;
+    iv.imageScaling = NSImageScaleProportionallyDown;
+    [self addSubview:iv];
+
+    NSString* branchText = (branch.length > 0) ? branch : @"(unknown)";
+    NSFont* branchFont = detached
+        ? [[NSFontManager sharedFontManager] convertFont:geistFont(@"Geist-Regular", fontSize)
+                                             toHaveTrait:NSItalicFontMask]
+        : geistFont(@"Geist-Regular", fontSize);
+    NSColor* branchColor = detached ? mutedColor : secColor;
+
+    NSTextField* branchLbl = makeLabel(branchText, branchFont, branchColor);
+    CGFloat branchX = kCardPadH + iconSz + gapX;
+    branchLbl.frame = NSMakeRect(branchX, y + vPad,
+                                 self.cardWidth - branchX - kCardPadH, fontSize + 2.0);
+    [self addSubview:branchLbl];
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addGitChangesRow — Files SF Symbol + summary text + "+N"/"−N" mono counts.
+// Returns new y.
+// ---------------------------------------------------------------------------
+- (CGFloat)addGitChangesRow:(NSString*)summary
+                 insertions:(int)insertions
+                  deletions:(int)deletions
+                   fontSize:(CGFloat)fontSize
+                       gapX:(CGFloat)gapX
+                   monoSize:(CGFloat)monoSize
+                        atY:(CGFloat)y {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    const CGFloat vPad   = 2.0;
+    const CGFloat iconSz = fontSize;
+    const CGFloat rowH   = fontSize + 2.0 * vPad + 2.0;
+
+    // SF Symbol stand-in for Phosphor Files → "doc.on.doc"
+    NSImage* icon = sfSymbol(@"doc.on.doc", iconSz, mutedColor);
+    NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(
+        kCardPadH, y + vPad, iconSz, iconSz)];
+    iv.image = icon;
+    iv.imageScaling = NSImageScaleProportionallyDown;
+    [self addSubview:iv];
+
+    // Right-side mono counts — lay these out right-to-left so we can get the
+    // leftover width for the summary text.
+    NSString* delStr = (deletions > 0)
+        ? [NSString stringWithFormat:@"−%d", deletions]  // U+2212 minus
+        : nil;
+    NSString* insStr = (insertions > 0)
+        ? [NSString stringWithFormat:@"+%d", insertions]
+        : nil;
+
+    CGFloat countsTotalWidth = 0;
+    NSTextField* insField  = nil;
+    NSTextField* delField  = nil;
+    const CGFloat countGap = 4.0;
+
+    if (insStr) {
+        insField = makeLabel(insStr, geistFont(@"GeistMono-Regular", monoSize),
+                             fixedColor(kColorEmerald));
+        NSSize sz = [insField.attributedStringValue size];
+        insField.frame = NSMakeRect(0, y + vPad, ceil(sz.width) + 2.0, fontSize + 2.0);
+        countsTotalWidth += ceil(sz.width) + 2.0;
+    }
+    if (delStr) {
+        delField = makeLabel(delStr, geistFont(@"GeistMono-Regular", monoSize),
+                             fixedColor(kColorRed));
+        NSSize sz = [delField.attributedStringValue size];
+        delField.frame = NSMakeRect(0, y + vPad, ceil(sz.width) + 2.0, fontSize + 2.0);
+        if (insStr) countsTotalWidth += countGap;
+        countsTotalWidth += ceil(sz.width) + 2.0;
+    }
+
+    // Summary text occupies the space between icon and counts.
+    CGFloat summaryX = kCardPadH + iconSz + gapX;
+    CGFloat summaryW = self.cardWidth - summaryX - kCardPadH - countsTotalWidth - (countsTotalWidth > 0 ? countGap : 0);
+    NSTextField* sumLbl = makeLabel(summary ?: @"", geistFont(@"Geist-Regular", fontSize), secColor);
+    sumLbl.frame = NSMakeRect(summaryX, y + vPad, MAX(summaryW, 0), fontSize + 2.0);
+    [self addSubview:sumLbl];
+
+    // Position counts right-to-left from right edge.
+    CGFloat cx = self.cardWidth - kCardPadH;
+    if (delField) {
+        cx -= delField.frame.size.width;
+        delField.frame = NSMakeRect(cx, delField.frame.origin.y, delField.frame.size.width, delField.frame.size.height);
+        [self addSubview:delField];
+        if (insField) cx -= countGap;
+    }
+    if (insField) {
+        cx -= insField.frame.size.width;
+        insField.frame = NSMakeRect(cx, insField.frame.origin.y, insField.frame.size.width, insField.frame.size.height);
+        [self addSubview:insField];
+    }
+
+    return y + rowH;
+}
+
+// ---------------------------------------------------------------------------
+// addPRChip — inline clickable chip: icon + "#N" + optional check glyph.
+// Returns new y after the chip row.
+// chipY is the TOP of the chip (isFlipped=YES). verticalPadding = 2px per spec.
+// ---------------------------------------------------------------------------
+- (CGFloat)addPRChip:(NSDictionary*)pr atY:(CGFloat)y {
+    if (!pr) return y;
+
+    NSString* state  = dictStr(pr, @"state");
+    int       number = dictInt(pr, @"number");
+    NSString* check  = dictStr(pr, @"check");  // "ok"|"fail"|"pending"|"none"
+
+    NSColor* stateColor = prStateColor(state);
+
+    // Chip: GeistMono-Regular ~12px, padding L/R 6px V 2px, cornerRadius 4.
+    // bg = card at 50% alpha, border = border token at 40% alpha.
+    NSColor* cardColor = themeColorOr(
+        g_popoverTheme.card,
+        [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]
+    );
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]
+    );
+
+    const CGFloat chipFont   = 12.0;
+    const CGFloat chipPadH   = 6.0;
+    const CGFloat chipPadV   = 2.0;
+    const CGFloat iconSz     = 12.0;
+    const CGFloat iconGap    = 4.0;
+    const CGFloat checkGap   = 4.0;
+    const CGFloat chipH      = chipFont + 2.0 * chipPadV + 4.0;
+
+    // Build the text content: "#number"
+    NSString* numStr = [NSString stringWithFormat:@"#%d", number];
+    NSSize numSz = [numStr sizeWithAttributes:@{
+        NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
+    }];
+
+    // Check glyph text
+    NSString* checkGlyph = nil;
+    NSColor*  checkColor = nil;
+    if ([check isEqualToString:@"ok"]) {
+        checkGlyph = @"✓";
+        checkColor = fixedColor(kColorEmerald);
+    } else if ([check isEqualToString:@"fail"]) {
+        checkGlyph = @"✕";
+        checkColor = fixedColor(kColorRed);
+    } else if ([check isEqualToString:@"pending"]) {
+        checkGlyph = @"⏳";
+        checkColor = themeColorOr(g_popoverTheme.textMuted,
+            [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    }
+    NSSize checkSz = NSMakeSize(0, 0);
+    if (checkGlyph) {
+        checkSz = [checkGlyph sizeWithAttributes:@{
+            NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
+        }];
+    }
+
+    // Compute chip total width.
+    CGFloat chipW = chipPadH + iconSz + iconGap + ceil(numSz.width) + chipPadH;
+    if (checkGlyph) chipW += checkGap + ceil(checkSz.width);
+
+    // Create chip button.
+    NSButton* chip = [[NSButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, chipW, chipH)];
+    chip.bezelStyle = NSBezelStyleRegularSquare;
+    chip.bordered   = NO;
+    chip.wantsLayer = YES;
+    chip.layer.backgroundColor = [cardColor colorWithAlphaComponent:0.5].CGColor;
+    chip.layer.borderColor     = [borderColor colorWithAlphaComponent:0.4].CGColor;
+    chip.layer.borderWidth     = 1.0;
+    chip.layer.cornerRadius    = 4.0;
+    chip.title  = @"";  // custom drawing via subviews
+    chip.target = [OrpheusPopoverActionTarget shared];
+    chip.action = @selector(elementClicked:);
+    chip.identifier = [NSString stringWithFormat:@"%@::pr", self.workspaceId];
+    [self addSubview:chip];
+
+    // PR state icon inside chip.
+    NSImage* prIcon = sfSymbol(prStateSymbol(state), iconSz, stateColor);
+    NSImageView* iconView = [[NSImageView alloc] initWithFrame:
+        NSMakeRect(chipPadH, (chipH - iconSz) / 2.0, iconSz, iconSz)];
+    iconView.image = prIcon;
+    iconView.imageScaling = NSImageScaleProportionallyDown;
+    [chip addSubview:iconView];
+
+    // "#N" text.
+    NSTextField* numLbl = makeLabel(numStr, geistFont(@"GeistMono-Regular", chipFont), stateColor);
+    numLbl.frame = NSMakeRect(chipPadH + iconSz + iconGap,
+                              (chipH - chipFont - 2.0) / 2.0,
+                              ceil(numSz.width) + 1.0, chipFont + 2.0);
+    [chip addSubview:numLbl];
+
+    // Check glyph.
+    if (checkGlyph && checkColor) {
+        CGFloat checkX = chipPadH + iconSz + iconGap + ceil(numSz.width) + checkGap;
+        NSTextField* checkLbl = makeLabel(checkGlyph, geistFont(@"GeistMono-Regular", chipFont), checkColor);
+        checkLbl.frame = NSMakeRect(checkX, (chipH - chipFont - 2.0) / 2.0,
+                                    ceil(checkSz.width) + 1.0, chipFont + 2.0);
+        [chip addSubview:checkLbl];
+    }
+
+    return y + chipH;
+}
+
+// ---------------------------------------------------------------------------
+// addActivityIndicator — 12×12 box. Returns the NSTextField* used for the
+// spinner so the caller can store it; also kicks off the NSTimer if animated.
+// activityState: ready|idle|attention|asking|thinking|tool|compacting
+// Returns new y after the indicator (height is 12px + margins baked in by caller).
+// The indicator is placed at (startX, y) with the given box size.
+// ---------------------------------------------------------------------------
+- (NSTextField*)addActivityIndicator:(NSString*)activityState
+                              accentColor:(NSColor*)accentColor
+                                  atRect:(NSRect)rect {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+
+    NSTextField* spinnerField = nil;
+    const CGFloat boxSz = rect.size.width;
+
+    // Static states — use SF Symbols or a text glyph.
+    if ([activityState isEqualToString:@"ready"]) {
+        // SF Symbol "circle.fill" tinted #4ade80
+        // Stand-in for Phosphor Circle filled.
+        NSImage* img = sfSymbol(@"circle.fill", boxSz - 1.0, fixedColor(kColorEmerald));
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            // Fallback: colored dot via label
+            NSTextField* dot = makeLabel(@"●", geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         fixedColor(kColorEmerald));
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"idle"]) {
+        // SF Symbol "circle.dashed" tinted textMuted
+        // Stand-in for Phosphor CircleDashed.
+        NSImage* img = sfSymbol(@"circle.dashed", boxSz - 1.0, mutedColor);
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            NSTextField* dot = makeLabel(@"○", geistFont(@"GeistMono-Regular", boxSz - 1.0), mutedColor);
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"attention"]) {
+        // SF Symbol "diamond.fill" tinted #fbbf24 (amber)
+        // Stand-in for Phosphor Diamond.
+        NSImage* img = sfSymbol(@"diamond.fill", boxSz - 1.0, fixedColor(kColorAmber));
+        if (img) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:rect];
+            iv.image = img;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        } else {
+            NSTextField* dot = makeLabel(@"◆", geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         fixedColor(kColorAmber));
+            dot.alignment = NSTextAlignmentCenter;
+            dot.frame = rect;
+            [self addSubview:dot];
+        }
+    } else if ([activityState isEqualToString:@"asking"]) {
+        // Bold "?" in GeistMono-SemiBold 11px, amber.
+        NSTextField* q = makeLabel(@"?", geistFont(@"GeistMono-SemiBold", boxSz - 1.0),
+                                   fixedColor(kColorAmber));
+        q.alignment = NSTextAlignmentCenter;
+        q.frame = rect;
+        [self addSubview:q];
+    } else {
+        // Animated states: thinking (80ms), tool (120ms), compacting (110ms).
+        // Braille spinner frames — same set for all three, different intervals.
+        NSArray<NSString*>* frames = @[@"⠋", @"⠙", @"⠹", @"⠸", @"⠼", @"⠴", @"⠦", @"⠧", @"⠇", @"⠏"];
+        NSTimeInterval interval = 0.08; // thinking default
+        if ([activityState isEqualToString:@"tool"])       interval = 0.12;
+        if ([activityState isEqualToString:@"compacting"]) interval = 0.11;
+
+        NSTextField* spinner = makeLabel(frames[0], geistFont(@"GeistMono-Regular", boxSz - 1.0),
+                                         accentColor);
+        spinner.alignment = NSTextAlignmentCenter;
+        spinner.frame = rect;
+        [self addSubview:spinner];
+        spinnerField = spinner;
+
+        self.spinnerLabel  = spinner;
+        self.spinnerFrames = frames;
+        self.spinnerFrame  = 0;
+
+        // NSTimer on the main run loop — automatically cleaned up on hide.
+        NSTimer* t = [NSTimer scheduledTimerWithTimeInterval:interval
+                                                      target:self
+                                                    selector:@selector(spinnerTick:)
+                                                    userInfo:nil
+                                                     repeats:YES];
+        self.spinnerTimer = t;
+    }
+
+    return spinnerField;
+}
+
+// ---------------------------------------------------------------------------
+// buildHoverCard — populates subviews for kind="hover". Returns total height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildHoverCard:(NSDictionary*)data {
+    NSColor* primaryColor = themeColorOr(g_popoverTheme.textPrimary,
+        [NSColor colorWithCalibratedRed:0xf4/255.0 green:0xf4/255.0 blue:0xf5/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* accentColor = themeColorOr(g_popoverTheme.accent,
+        [NSColor colorWithCalibratedRed:0x60/255.0 green:0xa5/255.0 blue:0xfa/255.0 alpha:1.0]);
+
+    NSString* title         = dictStr(data, @"title");
+    NSString* activityLabel = dictStr(data, @"activityLabel");
+    NSString* activityState = dictStr(data, @"activityState");
+    NSString* relativeTime  = dictStr(data, @"relativeTime");
+    NSDictionary* git       = dictDict(data, @"git");
+    NSDictionary* pr        = dictDict(data, @"pr");
+    NSString* cwd           = dictStr(data, @"cwd");
+
+    CGFloat y = 0;
+    const CGFloat sectionPad = 11.0; // all-sides section padding
+
+    // ---- Section 1: Header ----
+    y += sectionPad; // top pad
+
+    // Title: Geist-Medium 12px, textPrimary, truncate.
+    NSTextField* titleLbl = makeLabel(title.length ? title : @"Workspace",
+                                      geistFont(@"Geist-Medium", 12.0), primaryColor);
+    titleLbl.frame = NSMakeRect(kCardPadH, y, self.cardWidth - 2.0 * kCardPadH, 15.0);
+    [self addSubview:titleLbl];
+    y += 15.0 + 4.0; // title height + margin-top 4px
+
+    // Status line: ActivityIndicator 12×12 + status text.
+    // flex row, gap 5px, items-center.
+    const CGFloat indSz  = 12.0;
+    const CGFloat indGap = 5.0;
+    NSRect indRect = NSMakeRect(kCardPadH, y, indSz, indSz);
+    [self addActivityIndicator:activityState accentColor:accentColor atRect:indRect];
+
+    // Status text: "<activityLabel>" + optional " · active <relativeTime> ago"
+    NSString* statusText = activityLabel.length ? activityLabel : @"";
+    if (relativeTime.length > 0) {
+        statusText = [statusText stringByAppendingFormat:@" · active %@ ago", relativeTime];
+    }
+    NSTextField* statusLbl = makeLabel(statusText, geistFont(@"Geist-Regular", 12.0), secColor);
+    statusLbl.frame = NSMakeRect(kCardPadH + indSz + indGap, y,
+                                 self.cardWidth - kCardPadH - indSz - indGap - kCardPadH,
+                                 14.0);
+    [self addSubview:statusLbl];
+    y += MAX(indSz, 14.0); // take the taller of indicator and text
+
+    y += sectionPad; // bottom pad of header section
+
+    // ---- Section 2: Git (if present) ----
+    if (git) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+
+        NSString* branch   = dictStr(git, @"branch");
+        BOOL detached      = dictBool(git, @"detached");
+        NSString* summary  = dictStr(git, @"summary");
+        int insertions     = dictInt(git, @"insertions");
+        int deletions      = dictInt(git, @"deletions");
+
+        // hover: fontSize=12, gap=5
+        y = [self addGitBranchRow:branch detached:detached fontSize:12.0 gapX:5.0 atY:y];
+        y += 5.0; // 5px gap between git rows
+        y = [self addGitChangesRow:summary insertions:insertions deletions:deletions
+                          fontSize:12.0 gapX:5.0 monoSize:11.0 atY:y];
+
+        y += sectionPad; // bottom pad
+    }
+
+    // ---- Section 3: PR (if present) ----
+    if (pr) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+        y = [self addPRChip:pr atY:y];
+        y += sectionPad; // bottom pad
+    }
+
+    // ---- Section 4: CWD (if present) ----
+    if (cwd.length > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y += sectionPad; // top pad
+
+        // Path text: Geist-Regular 11px, textMuted, wraps (break-all), line-height ~1.4.
+        NSFont* cwdFont = geistFont(@"Geist-Regular", 11.0);
+        CGFloat textW = self.cardWidth - 2.0 * kCardPadH;
+        CGFloat textH = wrappingHeight(cwd, cwdFont, textW);
+        if (textH < 13.0) textH = 13.0;
+
+        NSTextField* cwdLbl = [NSTextField labelWithString:cwd];
+        cwdLbl.font = cwdFont;
+        cwdLbl.textColor = mutedColor;
+        cwdLbl.drawsBackground = NO;
+        cwdLbl.bordered        = NO;
+        cwdLbl.editable        = NO;
+        cwdLbl.selectable      = NO;
+        cwdLbl.cell.wraps      = YES;
+        cwdLbl.cell.lineBreakMode = NSLineBreakByCharWrapping;
+        cwdLbl.frame = NSMakeRect(kCardPadH, y, textW, textH);
+        [self addSubview:cwdLbl];
+        y += textH;
+
+        y += sectionPad; // bottom pad
+    }
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// buildDetailsCard — populates subviews for kind="details". Returns total height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildDetailsCard:(NSDictionary*)data {
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+
+    NSDictionary* pr        = dictDict(data, @"pr");
+    NSString* model         = dictStr(data, @"model");
+    NSString* contextText   = dictStr(data, @"contextText");
+    BOOL contextLoading     = dictBool(data, @"contextLoading");
+    NSString* cost          = dictStr(data, @"cost");
+    BOOL costLoading        = dictBool(data, @"costLoading");
+    NSDictionary* git       = dictDict(data, @"git");
+    NSString* cwd           = dictStr(data, @"cwd");
+
+    CGFloat y = 0;
+
+    // ---- Section 1: PR (if present) ----
+    if (pr) {
+        y = [self addSectionHeader:@"Pull Request" atY:y];
+        // Row: chip with padding L/R 11px, bottom 6px.
+        y = [self addPRChip:pr atY:y];
+        y += 6.0; // bottom padding
+        // Divider with margin-top 4px.
+        y += 4.0;
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+    }
+
+    // ---- Section 2: Model & Usage ----
+    y = [self addSectionHeader:@"Model & Usage" atY:y];
+
+    // Model row
+    NSString* modelVal;
+    NSFont*   modelFont;
+    NSColor*  modelColor;
+    if (model.length > 0) {
+        modelVal   = model;
+        modelFont  = geistFont(@"Geist-Regular", 11.0);
+        modelColor = secColor;
+    } else {
+        modelVal   = @"No session yet";
+        modelFont  = [[NSFontManager sharedFontManager]
+            convertFont:geistFont(@"Geist-Regular", 11.0) toHaveTrait:NSItalicFontMask];
+        modelColor = mutedColor;
+    }
+    // Use addLabelValueRow but override value appearance.
+    {
+        const CGFloat vPad   = 2.0;
+        const CGFloat rowH   = 15.0;
+        const CGFloat labelW = 56.0;
+        const CGFloat gap    = 7.0;
+        NSTextField* lbl = makeLabel(@"Model", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(modelVal, modelFont, modelColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 2.0; // 2px gap between rows
+
+    // Context row
+    {
+        NSString* ctxVal;
+        NSColor*  ctxColor;
+        if (contextLoading) {
+            ctxVal   = @"…";
+            ctxColor = mutedColor;
+        } else if (contextText.length > 0) {
+            ctxVal   = contextText;
+            ctxColor = secColor;
+        } else {
+            // reserve space — show dash
+            ctxVal   = @"—";
+            ctxColor = mutedColor;
+        }
+        const CGFloat vPad = 2.0; const CGFloat rowH = 15.0;
+        const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
+        NSTextField* lbl = makeLabel(@"Context", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(ctxVal, geistFont(@"Geist-Regular", 11.0), ctxColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 2.0;
+
+    // Cost row
+    {
+        NSString* costVal;
+        NSColor*  costColor;
+        if (costLoading) {
+            costVal   = @"…";
+            costColor = mutedColor;
+        } else if (cost.length > 0) {
+            costVal   = cost;
+            costColor = secColor;
+        } else {
+            costVal   = @"—";
+            costColor = mutedColor;
+        }
+        const CGFloat vPad = 2.0; const CGFloat rowH = 15.0;
+        const CGFloat labelW = 56.0; const CGFloat gap = 7.0;
+        NSTextField* lbl = makeLabel(@"Cost", geistFont(@"Geist-Regular", 11.0), mutedColor);
+        lbl.frame = NSMakeRect(kCardPadH, y + vPad, labelW, rowH - 2 * vPad);
+        [self addSubview:lbl];
+        NSTextField* val = makeLabel(costVal, geistFont(@"Geist-Regular", 11.0), costColor);
+        CGFloat valX = kCardPadH + labelW + gap;
+        val.frame = NSMakeRect(valX, y + vPad, self.cardWidth - valX - kCardPadH, rowH - 2 * vPad);
+        [self addSubview:val];
+        y += rowH;
+    }
+    y += 6.0; // bottom of model/usage section
+
+    // ---- Section 3: Repository (if git or cwd present) ----
+    if (git || cwd.length > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+
+        y = [self addSectionHeader:@"Repository" atY:y];
+
+        if (git) {
+            NSString* branch  = dictStr(git, @"branch");
+            BOOL detached     = dictBool(git, @"detached");
+            NSString* summary = dictStr(git, @"summary");
+            int insertions    = dictInt(git, @"insertions");
+            int deletions     = dictInt(git, @"deletions");
+
+            // details: fontSize=11, gap=4, monoSize=10
+            y = [self addGitBranchRow:branch detached:detached fontSize:11.0 gapX:4.0 atY:y];
+            y += 2.0;
+            y = [self addGitChangesRow:summary insertions:insertions deletions:deletions
+                              fontSize:11.0 gapX:4.0 monoSize:10.0 atY:y];
+            y += 2.0;
+        }
+
+        if (cwd.length > 0) {
+            // Path row: GeistMono-Regular 10px, textMuted, wraps, line-height ~1.6.
+            NSFont* cwdFont = geistFont(@"GeistMono-Regular", 10.0);
+            CGFloat textW = self.cardWidth - 2.0 * kCardPadH;
+            CGFloat textH = wrappingHeight(cwd, cwdFont, textW);
+            if (textH < 12.0) textH = 12.0;
+
+            NSTextField* cwdLbl = [NSTextField labelWithString:cwd];
+            cwdLbl.font = cwdFont;
+            cwdLbl.textColor = mutedColor;
+            cwdLbl.drawsBackground = NO;
+            cwdLbl.bordered        = NO;
+            cwdLbl.editable        = NO;
+            cwdLbl.selectable      = NO;
+            cwdLbl.cell.wraps      = YES;
+            cwdLbl.cell.lineBreakMode = NSLineBreakByCharWrapping;
+            cwdLbl.frame = NSMakeRect(kCardPadH, y, textW, textH);
+            [self addSubview:cwdLbl];
+            y += textH;
+        }
+
+        y += 4.0; // bottom of repository section
+    }
+
+    // Spec: 8px bottom padding (pb-2)
+    y += 8.0;
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// buildContentFromData — dispatch to hover or details builder. Removes all
+// existing subviews first (used by updatePopover re-render path). Returns
+// total card height.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildContentFromData:(NSDictionary*)data {
+    // Stop any running spinner before clearing subviews.
+    [self stopSpinnerTimer];
+    self.spinnerLabel  = nil;
+    self.spinnerFrames = nil;
+
+    // Remove all existing subviews (clean rebuild for updatePopover path).
+    for (NSView* sv in [self.subviews copy]) {
+        [sv removeFromSuperview];
+    }
+
+    CGFloat totalH = 0;
+    if ([self.kind isEqualToString:@"hover"]) {
+        totalH = [self buildHoverCard:data];
+    } else {
+        // 'details' and default
+        totalH = [self buildDetailsCard:data];
+    }
+    return MAX(totalH, 20.0); // never collapse to zero
+}
+
+@end
+
+// ---------------------------------------------------------------------------
+// NAPI popover functions
+// ---------------------------------------------------------------------------
+
+// Helper: compute the card frame (AppKit coords, bottom-left origin) for a given
+// kind and anchor rect in CSS coordinates.  Returns the clamped frame so the
+// caller can parent the view.
+//
+// Anchor rect is from getBoundingClientRect() (CSS px, top-left origin).
+// Card is placed:
+//   'details': below the anchor button, left-aligned to anchor left edge.
+//   'hover':   to the right of the anchor row, vertically centered on it.
+//
+// Both are clamped to stay within contentView bounds.
+static NSRect computePopoverFrame(NSString* kind,
+                                  double ax, double ay, double aw, double ah,
+                                  CGFloat cardWidth, CGFloat cardHeight,
+                                  NSView* contentView) {
+    CGFloat parentW = contentView.bounds.size.width;
+    CGFloat parentH = contentView.bounds.size.height;
+
+    // 4px gap between anchor and card.
+    const CGFloat kGap = 4.0;
+
+    CGFloat cx, cy;  // CSS top-left origin for the card
+
+    if ([kind isEqualToString:@"hover"]) {
+        // Place to the RIGHT of the anchor row.
+        cx = ax + aw + kGap;
+        // Vertically center on the anchor row's midpoint.
+        cy = ay + (ah / 2.0) - (cardHeight / 2.0);
+    } else {
+        // 'details' and default: place BELOW the anchor button.
+        cx = ax;
+        cy = ay + ah + kGap;
+    }
+
+    // Clamp horizontally: don't overflow right edge.
+    if (cx + cardWidth > parentW - 4.0) {
+        cx = parentW - cardWidth - 4.0;
+    }
+    if (cx < 4.0) cx = 4.0;
+
+    // Clamp vertically (CSS): don't overflow bottom.
+    if (cy + cardHeight > parentH - 4.0) {
+        cy = parentH - cardHeight - 4.0;
+    }
+    if (cy < 4.0) cy = 4.0;
+
+    // Convert CSS top-left → AppKit bottom-left.
+    return cssRectToAppKit(cx, cy, cardWidth, cardHeight, parentH);
+}
+
+// ---------------------------------------------------------------------------
+// napiValueToNSObject — recursively convert a Napi::Value to an NSObject
+// suitable for use as NSDictionary values. Supports:
+//   string  → NSString
+//   number  → NSNumber (double)
+//   boolean → NSNumber (BOOL)
+//   object  → NSDictionary (string keys only)
+//   array   → NSArray
+//   null/undefined → NSNull
+// ---------------------------------------------------------------------------
+static NSObject* napiValueToNSObject(Napi::Value v) {
+    if (v.IsString()) {
+        std::string s = v.As<Napi::String>().Utf8Value();
+        return [NSString stringWithUTF8String:s.c_str()];
+    }
+    if (v.IsBoolean()) {
+        return @(v.As<Napi::Boolean>().Value());
+    }
+    if (v.IsNumber()) {
+        return @(v.As<Napi::Number>().DoubleValue());
+    }
+    if (v.IsNull() || v.IsUndefined()) {
+        return [NSNull null];
+    }
+    if (v.IsArray()) {
+        Napi::Array arr = v.As<Napi::Array>();
+        NSMutableArray* result = [NSMutableArray arrayWithCapacity:arr.Length()];
+        for (uint32_t i = 0; i < arr.Length(); i++) {
+            NSObject* elem = napiValueToNSObject(arr.Get(i));
+            [result addObject:elem ?: [NSNull null]];
+        }
+        return [result copy];
+    }
+    if (v.IsObject()) {
+        Napi::Object obj = v.As<Napi::Object>();
+        NSMutableDictionary* result = [NSMutableDictionary dictionary];
+        Napi::Array keys = obj.GetPropertyNames();
+        for (uint32_t i = 0; i < keys.Length(); i++) {
+            Napi::Value keyVal = keys.Get(i);
+            if (!keyVal.IsString()) continue;
+            std::string keyStr = keyVal.As<Napi::String>().Utf8Value();
+            NSString* nsKey = [NSString stringWithUTF8String:keyStr.c_str()];
+            NSObject* nsVal = napiValueToNSObject(obj.Get(keyStr));
+            if (nsKey && nsVal) {
+                result[nsKey] = nsVal;
+            }
+        }
+        return [result copy];
+    }
+    return [NSNull null];
+}
+
+static NSDictionary* napiObjectToDict(Napi::Value v) {
+    if (!v.IsObject()) return @{};
+    NSObject* obj = napiValueToNSObject(v);
+    return [obj isKindOfClass:[NSDictionary class]] ? (NSDictionary*)obj : @{};
+}
+
+// NAPI: showPopover(workspaceId, kind, anchorRect, data, fontDir?) → void
+//
+// anchorRect = { x, y, w, h } in CSS pixels (from getBoundingClientRect()).
+// data = generic object with card-specific fields (see spec: hover / details data keys).
+// fontDir (optional string) = absolute path to the Geist fonts directory.
+//   Packaged: process.resourcesPath + '/fonts'
+//   Dev:      path.join(__dirname, '../../node_modules/geist/dist/fonts')
+//
+// Creates OrpheusPopoverView with real content, computes height, positions it
+// above the terminal (parented to contentView, NSWindowAbove), and fades it in
+// over 120ms. The view's frame height is set from buildContentFromData before
+// computePopoverFrame is called, so positioning uses the real content height.
+static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 4 || !info[0].IsString() || !info[1].IsString() ||
+        !info[2].IsObject() || !info[3].IsObject()) {
+        Napi::TypeError::New(env, "showPopover requires (workspaceId, kind, anchorRect, data)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    std::string kind        = info[1].As<Napi::String>().Utf8Value();
+    Napi::Object rectObj    = info[2].As<Napi::Object>();
+    NSDictionary* dataDict  = napiObjectToDict(info[3]);
+
+    // Optional fontDir (5th argument).
+    if (info.Length() >= 5 && info[4].IsString()) {
+        std::string fontDirCpp = info[4].As<Napi::String>().Utf8Value();
+        if (!fontDirCpp.empty()) {
+            g_geistFontDir = [NSString stringWithUTF8String:fontDirCpp.c_str()];
+            // Reset registration flag so the new path takes effect.
+            g_popoverFontsRegistered = NO;
+        }
+    }
+
+    double ax = rectObj.Get("x").As<Napi::Number>().DoubleValue();
+    double ay = rectObj.Get("y").As<Napi::Number>().DoubleValue();
+    double aw = rectObj.Get("w").As<Napi::Number>().DoubleValue();
+    double ah = rectObj.Get("h").As<Napi::Number>().DoubleValue();
+
+    // Card width by kind.
+    NSString* nsKindLocal = [NSString stringWithUTF8String:kind.c_str()];
+    CGFloat cardWidth = [nsKindLocal isEqualToString:@"hover"] ? 224.0 : 252.0;
+
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no surface entry (no-op)",
+              workspaceId.c_str());
+        return env.Undefined();
+    }
+    GhosttySurfaceEntry& entry = it->second;
+    if (!entry.view || !entry.view.window) {
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s: no view/window (no-op)",
+              workspaceId.c_str());
+        return env.Undefined();
+    }
+
+    NSString* nsWorkspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
+    NSString* nsKind        = [NSString stringWithUTF8String:kind.c_str()];
+    OrpheusPopoverView* __strong* popoverPtr = &entry.popoverView;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSView* contentView = entry.view.window.contentView;
+        if (!contentView) return;
+
+        // Destroy any pre-existing popover for this workspace before creating a new one.
+        if (*popoverPtr) {
+            [*popoverPtr removeFromSuperview];
+            *popoverPtr = nil;
+        }
+
+        // Create the popover view with real content. initWithKind:workspaceId:width:data:
+        // calls buildContentFromData internally and sets the frame height to the content
+        // height — so pv.frame.size.height is the real card height before we position it.
+        OrpheusPopoverView* pv = [[OrpheusPopoverView alloc]
+            initWithKind:nsKind workspaceId:nsWorkspaceId width:cardWidth data:dataDict];
+
+        // Now that height is known, compute the final AppKit-coord frame.
+        CGFloat cardHeight = pv.frame.size.height;
+        NSRect frame = computePopoverFrame(nsKind, ax, ay, aw, ah,
+                                           cardWidth, cardHeight, contentView);
+        pv.frame = frame;
+
+        // Parent to contentView ABOVE everything (terminal is below web layer which
+        // is below the popover — no z-swap needed, no blackout by construction).
+        [contentView addSubview:pv positioned:NSWindowAbove relativeTo:nil];
+        *popoverPtr = pv;
+
+        NSLog(@"[ghostty-surface] showPopover workspaceId=%s kind=%s frame=(%.0f,%.0f,%.0fx%.0f)",
+              nsWorkspaceId.UTF8String, nsKind.UTF8String,
+              frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+
+        // Fade in over 120ms (same as loading overlay).
+        CABasicAnimation* fadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fadeIn.fromValue = @(0.0);
+        fadeIn.toValue   = @(1.0);
+        fadeIn.duration  = 0.12;
+        [CATransaction begin];
+        [pv.layer addAnimation:fadeIn forKey:@"fadeIn"];
+        pv.alphaValue = 1.0;
+        [CATransaction commit];
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: updatePopover(workspaceId, data) → void
+//
+// Patch the Details card's async fields (model/contextText/contextLoading/cost/
+// costLoading) in place as they resolve. Strategy: merge the incoming data dict
+// over the stored currentData snapshot and rebuild the entire card from scratch.
+// This is flicker-free because the card height is reserved for all rows (even
+// loading placeholders occupy the same space), so height typically doesn't change.
+// If height does change, the card is re-positioned keeping the top edge stable.
+static Napi::Value UpdatePopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "updatePopover requires (workspaceId, data)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end() || !it->second.popoverView) {
+        return env.Undefined();  // no popover to update — no-op
+    }
+
+    NSDictionary* patchDict = napiObjectToDict(info[1]);
+
+    OrpheusPopoverView* __strong* popoverPtr = &it->second.popoverView;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        OrpheusPopoverView* pv = *popoverPtr;
+        if (!pv) return;
+
+        // Merge patch over current data snapshot.
+        NSMutableDictionary* merged = [NSMutableDictionary dictionaryWithDictionary:pv.currentData];
+        [merged addEntriesFromDictionary:patchDict];
+        NSDictionary* newData = [merged copy];
+        pv.currentData = newData;
+
+        // Rebuild content and resize the view. Height usually stays the same
+        // because loading placeholders ("…", "—") occupy the same row space.
+        CGFloat oldH = pv.frame.size.height;
+        CGFloat newH = [pv buildContentFromData:newData];
+
+        NSRect f = pv.frame;
+        if (fabs(newH - oldH) > 0.5) {
+            // Height changed — adjust origin.y to keep the AppKit top edge stable.
+            // In AppKit (non-flipped parent), top = origin.y + height.
+            // Keep top = origin.y + oldH = (origin.y - delta) + newH where delta = newH - oldH.
+            f.origin.y -= (newH - oldH);
+        }
+        f.size.height = newH;
+        pv.frame = f;
+
+        NSLog(@"[ghostty-surface] updatePopover workspaceId=%s rebuilt (h=%.0f→%.0f)",
+              workspaceId.c_str(), oldH, newH);
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: hidePopover(workspaceId) → void
+//
+// Fade out 100ms, removeFromSuperview, clear entry field.
+// Idempotent — no-op if no popover is present for the workspace.
+static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "hidePopover requires workspaceId string")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string workspaceId = info[0].As<Napi::String>().Utf8Value();
+
+    auto it = g_surfaces.find(workspaceId);
+    if (it == g_surfaces.end()) {
+        return env.Undefined();  // no surface — silent no-op
+    }
+
+    OrpheusPopoverView* __strong* popoverPtr = &it->second.popoverView;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        OrpheusPopoverView* pv = *popoverPtr;
+        if (!pv) return;
+
+        NSLog(@"[ghostty-surface] hidePopover: fading out");
+
+        // Fade out over 100ms, then remove (same as loading overlay).
+        CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fade.fromValue = @(pv.alphaValue);
+        fade.toValue   = @(0.0);
+        fade.duration  = 0.1;
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:^{
+            [pv removeFromSuperview];
+        }];
+        [pv.layer addAnimation:fade forKey:@"fadeOut"];
+        pv.alphaValue = 0.0;
+        [CATransaction commit];
+
+        *popoverPtr = nil;
+    });
+
+    return env.Undefined();
+}
+
+// NAPI: setPopoverActionCallback(cb) → void
+//
+// Register a JS callback fired when a clickable element in a popover is
+// activated (Phase B: PR chip click). Uses the same TSFN pattern as
+// setLoadingActionCallback. The callback receives a string identifier
+// encoding "workspaceId::elementId" so the renderer can route the action.
+static Napi::Value SetPopoverActionCallback(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "setPopoverActionCallback requires a function")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (g_popoverActionTSFNActive) {
+        g_popoverActionTSFN.Release();
+        g_popoverActionTSFNActive = false;
+    }
+
+    g_popoverActionTSFN = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ghostty-popover-action-callback",
+        64,
+        1
+    );
+    g_popoverActionTSFNActive = true;
+
+    return env.Undefined();
+}
+
+// NAPI: setPopoverTheme({ card, textPrimary, textSecondary, textMuted, border, accent, isDark })
+//
+// Each color value is a 3-element [r, g, b] array (0-255 integers).
+// isDark is a boolean. Called by main on app startup and on theme change.
+// Replaces g_popoverTheme; existing open popover views are NOT re-tinted in
+// place (popovers are short-lived; reopen to pick up theme change).
+static Napi::Value SetPopoverTheme(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "setPopoverTheme requires an object")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object obj = info[0].As<Napi::Object>();
+
+    g_popoverTheme.card          = parseRgbArray(obj.Get("card"));
+    g_popoverTheme.textPrimary   = parseRgbArray(obj.Get("textPrimary"));
+    g_popoverTheme.textSecondary = parseRgbArray(obj.Get("textSecondary"));
+    g_popoverTheme.textMuted     = parseRgbArray(obj.Get("textMuted"));
+    g_popoverTheme.border        = parseRgbArray(obj.Get("border"));
+    g_popoverTheme.accent        = parseRgbArray(obj.Get("accent"));
+
+    Napi::Value isDarkVal = obj.Get("isDark");
+    g_popoverTheme.isDark = isDarkVal.IsBoolean()
+        ? (isDarkVal.As<Napi::Boolean>().Value() ? YES : NO)
+        : YES;
+
+    NSLog(@"[ghostty-surface] setPopoverTheme applied (isDark=%d)", (int)g_popoverTheme.isDark);
+    return env.Undefined();
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -3645,8 +5087,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("resize",            Napi::Function::New(env, Resize));
     exports.Set("destroy",           Napi::Function::New(env, Destroy));
     exports.Set("focus",             Napi::Function::New(env, Focus));
-    exports.Set("setOverlay",        Napi::Function::New(env, SetOverlay));
-    exports.Set("setOverlayCompositing", Napi::Function::New(env, SetOverlayCompositing));
     exports.Set("getSurfacePhase",   Napi::Function::New(env, GetSurfacePhase));
     exports.Set("setTitleCallback",         Napi::Function::New(env, SetTitleCallback));
     exports.Set("setOcclusionCallback",     Napi::Function::New(env, SetOcclusionCallback));
@@ -3655,6 +5095,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setLoadingOverlay",        Napi::Function::New(env, SetLoadingOverlay));
     exports.Set("setLoadingActionCallback", Napi::Function::New(env, SetLoadingActionCallback));
     exports.Set("setLoadingTheme",          Napi::Function::New(env, SetLoadingTheme));
+    exports.Set("showPopover",              Napi::Function::New(env, ShowPopover));
+    exports.Set("updatePopover",            Napi::Function::New(env, UpdatePopover));
+    exports.Set("hidePopover",              Napi::Function::New(env, HidePopover));
+    exports.Set("setPopoverActionCallback", Napi::Function::New(env, SetPopoverActionCallback));
+    exports.Set("setPopoverTheme",          Napi::Function::New(env, SetPopoverTheme));
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
