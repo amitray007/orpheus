@@ -94,6 +94,7 @@ export function getWorkspaceFileStatusSync(
 
   const session = liveSessionMap.get(sessionId)
   if (!session) return 'unknown'
+  if (!isAlive(session.pid)) return 'unknown'
 
   // Freshly read the file to avoid stale in-memory state
   const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
@@ -310,9 +311,11 @@ async function reconcile(): Promise<void> {
   }
 
   // 4. For each owned (non-archived) workspace, compute file-derived status and log
+  const activeWorkspaceIds = new Set<string>()
   for (const ws of workspaceRows) {
     // Skip archived workspaces
     if (ws.archived_at !== null) continue
+    activeWorkspaceIds.add(ws.id)
     if (!ws.claude_session_id) continue
 
     const session = liveSessionMap.get(ws.claude_session_id)
@@ -372,10 +375,8 @@ async function reconcile(): Promise<void> {
         let mapped: WorkspaceStatus
         if (rawStatus === 'idle') {
           mapped = 'awaiting_input'
-        } else if (rawStatus === 'waiting' && session?.waitingFor === 'permission prompt') {
-          mapped = 'attention'
         } else if (rawStatus === 'waiting') {
-          mapped = 'awaiting_input'
+          mapped = 'attention'
         } else {
           // 'gone'
           mapped = 'idle'
@@ -384,6 +385,14 @@ async function reconcile(): Promise<void> {
         lastRawActed.set(ws.id, rawStatus)
       }
     }
+  }
+
+  // Prune entries for archived/removed workspaces to prevent memory leaks
+  for (const key of lastRawActed.keys()) {
+    if (!activeWorkspaceIds.has(key)) lastRawActed.delete(key)
+  }
+  for (const key of lastSnapshot.keys()) {
+    if (!activeWorkspaceIds.has(key)) lastSnapshot.delete(key)
   }
 }
 

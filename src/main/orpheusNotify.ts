@@ -281,13 +281,13 @@ function armAutoCloseWatchdog(workspaceId: string): void {
 
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   // File-authoritative veto: if the session file says the main process is still
-  // busy, suppress premature demotion from hooks or the watchdog. This is the
-  // single guard covering subagent-stop, stop, and watchdog demotions.
-  if (
-    (status === 'awaiting_input' || status === 'idle') &&
-    fileStatusProvider?.(workspaceId) === 'busy'
-  ) {
-    return
+  // busy or waiting (e.g. AskUserQuestion/ExitPlanMode), suppress premature
+  // demotion to awaiting_input or idle from hooks or the watchdog.
+  // attention and in_progress are never blocked — the drive step's attention
+  // dispatch must still pass through.
+  if (status === 'awaiting_input' || status === 'idle') {
+    const fileStatus = fileStatusProvider?.(workspaceId)
+    if (fileStatus === 'busy' || fileStatus === 'waiting') return
   }
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
