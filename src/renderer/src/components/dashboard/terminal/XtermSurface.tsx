@@ -210,10 +210,11 @@ export function XtermSurface({
     const term = new Terminal({
       macOptionIsMeta: true,
       convertEol: false,
-      // ~20k lines ≈ 29MB/surface @120 cols (xterm cells are light); 4x headroom over
-      // the original 5k for long agentic sessions with heavy tool output. Still a
-      // documented gap vs ghostty's 2,000,000 (native memory) — see ghosttyTheme.ts.
-      scrollback: 20000,
+      // 5k lines (~7MB/surface @120 cols); reasonable default matching the xterm 5×
+      // original (1k) while staying well under the per-workspace memory budget.
+      // Users can raise this up to 50k via the scrollback-limit ghostty setting,
+      // which applyGhosttyAppearance reads and applies on top of this constructor value.
+      scrollback: 5000,
       allowProposedApi: false,
       // Disable xterm's built-in smooth scroll so scroll events are immediate.
       // This is the xterm 6 default but we set it explicitly to guard against future default changes.
@@ -351,7 +352,18 @@ export function XtermSurface({
           hPad = Math.round(fontSize * 0.6 * paddingXNum)
         }
       }
-      const vPad = 0
+      // window-padding-y: read the same way as window-padding-x (ghostty cell count).
+      // Vertical cell height ≈ fontSize * lineHeight; use fontSize * 1.2 as a stable
+      // estimate (matches the default lineHeight in applyGhosttyAppearance). Defaults
+      // to 0 (flush) when the setting is absent — preserving the flush-bottom default.
+      const windowPaddingY = settings['window-padding-y']
+      let vPad = 0
+      if (windowPaddingY !== undefined && windowPaddingY !== null) {
+        const paddingYNum = Number(windowPaddingY)
+        if (!isNaN(paddingYNum) && paddingYNum > 0) {
+          vPad = Math.round(fontSize * 1.2 * paddingYNum)
+        }
+      }
       if (term.element) {
         term.element.style.paddingLeft = `${hPad}px`
         term.element.style.paddingRight = `${hPad}px`
