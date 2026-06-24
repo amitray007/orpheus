@@ -100,6 +100,8 @@ export function invalidateWatchdogCache(): void {
 // the workspace was previously in 'awaiting_input' (re-mount of a known session).
 const sessionStartListeners = new Set<(workspaceId: string) => void>()
 let autoCloseHandler: ((workspaceId: string) => void) | null = null
+let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
+  null
 
 const watchdogs = new Map<string, NodeJS.Timeout>()
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
@@ -278,6 +280,15 @@ function armAutoCloseWatchdog(workspaceId: string): void {
 }
 
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
+  // File-authoritative veto: if the session file says the main process is still
+  // busy, suppress premature demotion from hooks or the watchdog. This is the
+  // single guard covering subagent-stop, stop, and watchdog demotions.
+  if (
+    (status === 'awaiting_input' || status === 'idle') &&
+    fileStatusProvider?.(workspaceId) === 'busy'
+  ) {
+    return
+  }
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
   activityMap.set(workspaceId, status)
@@ -491,6 +502,20 @@ export function getWorkspaceActivity(workspaceId: string): WorkspaceStatus {
 
 export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
   autoCloseHandler = fn
+}
+
+export function setFileStatusProvider(
+  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown'
+): void {
+  fileStatusProvider = fn
+}
+
+/** Drive a status update from the session file. Runs through dispatch so
+ *  persistence, broadcast, and watchdog-arming all happen consistently.
+ *  The Half-1 veto inside dispatch still applies (which is correct — if the
+ *  file just reported idle/waiting, the veto won't block it). */
+export function setStatusFromFile(workspaceId: string, status: WorkspaceStatus): void {
+  dispatch(workspaceId, status)
 }
 
 export function shimPath(): string {

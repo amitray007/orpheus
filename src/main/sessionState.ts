@@ -12,7 +12,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import * as childProcess from 'node:child_process'
 import { getDb } from './db'
-import { getWorkspaceActivity } from './orpheusNotify'
+import { getWorkspaceActivity, setFileStatusProvider, setStatusFromFile } from './orpheusNotify'
 import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
 
@@ -58,6 +58,8 @@ let liveSessionMap = new Map<string, LiveSession>()
 
 /** Keyed by workspaceId → composite "fileStatus|hookStatus" key; logs only on change. */
 const lastSnapshot = new Map<string, string>()
+/** Tracks the last raw file status we acted on, per workspaceId. */
+const lastRawActed = new Map<string, string>()
 
 let reconcileRunning = false
 let dirty = false
@@ -70,6 +72,41 @@ let stopped = false
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Synchronously returns the raw session-file status for the workspace.
+ * Used as the fileStatusProvider veto in orpheusNotify.
+ * Returns 'unknown' on any miss (no sessionId, not in map, file gone, parse error).
+ */
+export function getWorkspaceFileStatusSync(
+  workspaceId: string
+): 'busy' | 'idle' | 'waiting' | 'unknown' {
+  let sessionId: string | null = null
+  try {
+    const row = getDb()
+      .prepare('SELECT claude_session_id FROM workspaces WHERE id = ?')
+      .get(workspaceId) as { claude_session_id: string | null } | undefined
+    sessionId = row?.claude_session_id ?? null
+  } catch {
+    return 'unknown'
+  }
+  if (!sessionId) return 'unknown'
+
+  const session = liveSessionMap.get(sessionId)
+  if (!session) return 'unknown'
+
+  // Freshly read the file to avoid stale in-memory state
+  const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(raw) as { status?: string }
+    const s = parsed.status
+    if (s === 'busy' || s === 'idle' || s === 'waiting') return s
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 export function startSessionStateService(): { stop: () => void } {
   stopped = false
@@ -92,6 +129,10 @@ export function startSessionStateService(): { stop: () => void } {
 
   // One-time background startup cross-check (non-blocking)
   void _startupCrossCheck()
+
+  // Register the file-status provider so orpheusNotify can veto premature
+  // demotions while the main process is still busy.
+  setFileStatusProvider(getWorkspaceFileStatusSync)
 
   return {
     stop() {
@@ -309,6 +350,38 @@ async function reconcile(): Promise<void> {
           _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, null, session)
           lastSnapshot.set(ws.id, key)
         }
+      }
+    }
+
+    // --- Drive step: act on file→status transitions (not just log them) ---
+    // Compute rawStatus from the live session
+    let rawStatus: string
+    if (!session || !isAlive(session.pid)) {
+      rawStatus = 'gone'
+    } else {
+      // session.status !== null is guaranteed here (null path hit `continue` above)
+      rawStatus = session.status as string
+    }
+
+    if (rawStatus === 'busy') {
+      // Hooks own the busy/active detail — just track that we saw busy
+      lastRawActed.set(ws.id, 'busy')
+    } else {
+      // Only act on a real transition (avoids fighting the idle watchdog every tick)
+      if (rawStatus !== lastRawActed.get(ws.id)) {
+        let mapped: WorkspaceStatus
+        if (rawStatus === 'idle') {
+          mapped = 'awaiting_input'
+        } else if (rawStatus === 'waiting' && session?.waitingFor === 'permission prompt') {
+          mapped = 'attention'
+        } else if (rawStatus === 'waiting') {
+          mapped = 'awaiting_input'
+        } else {
+          // 'gone'
+          mapped = 'idle'
+        }
+        setStatusFromFile(ws.id, mapped)
+        lastRawActed.set(ws.id, rawStatus)
       }
     }
   }
