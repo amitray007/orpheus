@@ -519,10 +519,11 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section is a constant width (traffic-light clearance + the toggle and
-  // status-chip controls) so the top bar never shifts when the sidebar is
-  // collapsed or resized.
-  const leftWidth = MIN_LEFT_WIDTH
+  // Left section width matches the sidebar so the workspace title bar lines up
+  // with the content column below it. Driven by sidebarWidth (not the collapsed
+  // flag), so toggling collapse does NOT shift the top bar; only a deliberate
+  // sidebar resize moves it. MIN_LEFT_WIDTH floors it so the controls always fit.
+  const leftWidth = Math.max(MIN_LEFT_WIDTH, sidebarWidth)
 
   return (
     <header
