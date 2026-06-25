@@ -50,7 +50,9 @@ import type {
   FooterActionScope,
   GhosttyUserConfig,
   DiagEvent,
-  HealthReport
+  HealthReport,
+  KeepAwakeState,
+  KeepAwakeBaseMode
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -641,6 +643,20 @@ const api = {
       jsonPath?: string
       error?: string
     }> => ipcRenderer.invoke('diag:export', opts)
+  },
+  keepAwake: {
+    get: (): Promise<KeepAwakeState> => ipcRenderer.invoke('keepAwake:get'),
+    setMode: (mode: KeepAwakeBaseMode): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:setMode', mode),
+    setDisplayOn: (on: boolean): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:setDisplayOn', on),
+    startTimer: (minutes: number): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:startTimer', minutes),
+    onState: (cb: (state: KeepAwakeState) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
+      ipcRenderer.on('keepAwake:state', handler)
+      return () => ipcRenderer.removeListener('keepAwake:state', handler)
+    }
   }
 }
 

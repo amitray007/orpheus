@@ -48,7 +48,9 @@ import type {
   FooterActionScope,
   GhosttyUserConfig,
   DiagEvent,
-  HealthReport
+  HealthReport,
+  KeepAwakeState,
+  KeepAwakeBaseMode
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -384,6 +386,13 @@ declare global {
           jsonPath?: string
           error?: string
         }>
+      }
+      keepAwake: {
+        get: () => Promise<KeepAwakeState>
+        setMode: (mode: KeepAwakeBaseMode) => Promise<KeepAwakeState>
+        setDisplayOn: (on: boolean) => Promise<KeepAwakeState>
+        startTimer: (minutes: number) => Promise<KeepAwakeState>
+        onState: (cb: (state: KeepAwakeState) => void) => () => void
       }
     }
   }
