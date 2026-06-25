@@ -151,7 +151,8 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath
+  getUserShellPath,
+  getCachedShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -1610,7 +1611,7 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
 
 ipcMain.handle(
   'terminal:mount',
-  (
+  async (
     e,
     {
       workspaceId,
@@ -1618,7 +1619,7 @@ ipcMain.handle(
       scaleFactor,
       cwd
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): { workspaceId: string; created: boolean } => {
+  ): Promise<{ workspaceId: string; created: boolean }> => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
@@ -1630,6 +1631,13 @@ ipcMain.handle(
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
+
+    // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
+    // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
+    // instead of forcing the .zshrc fallback (+100–800 ms).
+    if (getCachedShellPath() === null) {
+      await getUserShellPath()
+    }
 
     // Assemble the surface launch env + command via the Orpheus adapter.
     // buildMountEnv owns the env layering: settings → auth → ORPHEUS_* vars.
