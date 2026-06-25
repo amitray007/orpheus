@@ -214,6 +214,7 @@ import {
   setDiagCategoryFlags,
   diag
 } from './diagnostics'
+import { openDiagConsole } from './diagConsoleWindow'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
@@ -1299,6 +1300,10 @@ ipcMain.handle(
 
 ipcMain.on('diag:event', (_e, evt) => {
   ingestDiagEvent(evt)
+})
+
+ipcMain.handle('diag:openConsole', () => {
+  openDiagConsole()
 })
 
 // ---------------------------------------------------------------------------

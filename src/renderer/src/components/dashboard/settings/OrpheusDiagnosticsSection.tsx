@@ -123,6 +123,27 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
           </SettingRow>
         </div>
       </section>
+
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Live console</Eyebrow>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4 flex items-center justify-between">
+          <p className="text-xs text-text-muted max-w-sm">
+            Open a separate window that streams diagnostic events live as they happen. Opening it
+            starts the stream; closing it stops capture.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              window.api.diag.openConsole().catch((err) => {
+                console.error('[settings] failed to open diag console', err)
+              })
+            }}
+            className="shrink-0 ml-4 rounded-md border border-border-default bg-surface-overlay px-3 py-1.5 text-xs font-medium text-text-primary hover:border-border-hover transition-colors cursor-pointer"
+          >
+            Open live console
+          </button>
+        </div>
+      </section>
     </div>
   )
 }

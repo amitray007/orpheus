@@ -375,6 +375,8 @@ declare global {
       }
       diag: {
         event: (evt: DiagEvent) => void
+        openConsole: () => Promise<void>
+        onStream: (cb: (batch: unknown[]) => void) => () => void
       }
     }
   }

@@ -625,6 +625,12 @@ const api = {
       } catch {
         /* never throw */
       }
+    },
+    openConsole: (): Promise<void> => ipcRenderer.invoke('diag:openConsole'),
+    onStream: (cb: (batch: unknown[]) => void): (() => void) => {
+      const listener = (_e: IpcRendererEvent, batch: unknown[]): void => cb(batch)
+      ipcRenderer.on('diag:stream', listener)
+      return () => ipcRenderer.removeListener('diag:stream', listener)
     }
   }
 }
