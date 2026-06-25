@@ -47,6 +47,25 @@ const HOOK_MATCHER: Partial<Record<string, string>> = {
 const activityMap = new Map<string, WorkspaceStatus>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
+type StatusObserver = (
+  workspaceId: string,
+  oldStatus: WorkspaceStatus | undefined,
+  newStatus: WorkspaceStatus
+) => void
+
+const statusObservers = new Set<StatusObserver>()
+
+/** Subscribe to every committed workspace status transition. Returns an unsubscribe fn. */
+export function onWorkspaceStatusChange(cb: StatusObserver): () => void {
+  statusObservers.add(cb)
+  return () => statusObservers.delete(cb)
+}
+
+/** Snapshot of current in-memory per-workspace statuses. */
+export function getAllWorkspaceStatuses(): Map<string, WorkspaceStatus> {
+  return new Map(activityMap)
+}
+
 let cachedStaleMinutes: number | null = null
 let cachedAutoCloseMinutes: number | null = null
 
@@ -172,6 +191,14 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
   activityMap.set(workspaceId, status)
+  // Fan out to keep-awake / future observers. Errors are isolated.
+  statusObservers.forEach((obs) => {
+    try {
+      obs(workspaceId, prev, status)
+    } catch (err) {
+      console.error('[orpheusNotify] status observer error:', err)
+    }
+  })
   logDiagMain({
     category: 'lifecycle',
     level: 'debug',
