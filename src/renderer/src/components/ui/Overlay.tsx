@@ -8,6 +8,8 @@ interface OverlayProps {
   portal?: boolean
   className?: string
   style?: React.CSSProperties
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
   children: React.ReactNode
 }
 
@@ -28,6 +30,8 @@ export function Overlay({
   portal = false,
   className,
   style,
+  onMouseEnter,
+  onMouseLeave,
   children
 }: OverlayProps): React.JSX.Element | null {
   const ref = useRef<HTMLDivElement>(null)
@@ -50,7 +54,13 @@ export function Overlay({
 
   if (!open) return null
   const node = (
-    <div ref={ref} className={className} style={style}>
+    <div
+      ref={ref}
+      className={className}
+      style={style}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       {children}
     </div>
   )

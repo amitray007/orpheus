@@ -190,13 +190,17 @@ interface StatusPopoverProps {
   triggerRef: React.RefObject<HTMLButtonElement | null>
   sidebarWidth: number
   onClose: () => void
+  onPopoverEnter?: () => void
+  onPopoverLeave?: () => void
 }
 
 function StatusPopover({
   snapshot,
   triggerRef,
   sidebarWidth,
-  onClose
+  onClose,
+  onPopoverEnter,
+  onPopoverLeave
 }: StatusPopoverProps): React.JSX.Element {
   const headerBraille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot.isFetching)
   const [pos, setPos] = useState<{
@@ -261,6 +265,8 @@ function StatusPopover({
         zIndex: 1000
       }}
       className="bg-surface-overlay border border-border-default rounded-lg shadow-xl overflow-hidden text-sm"
+      onMouseEnter={onPopoverEnter}
+      onMouseLeave={onPopoverLeave}
     >
       {initialLoading ? (
         <>
@@ -408,6 +414,7 @@ function StatusChip({
   const [snapshot, setSnapshot] = useState<ClaudeStatusSnapshot | null>(null)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -445,12 +452,40 @@ function StatusChip({
     }
   }
 
+  function cancelClose(): void {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+  }
+
+  function openNow(): void {
+    cancelClose()
+    setOpen(true)
+  }
+
+  function scheduleClose(): void {
+    cancelClose()
+    closeTimer.current = setTimeout(() => setOpen(false), 180)
+  }
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+    },
+    []
+  )
+
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
         onClick={handleClick}
+        onMouseEnter={() => {
+          if (!sidebarCollapsed) openNow()
+        }}
+        onMouseLeave={scheduleClose}
         aria-label={tooltip}
         title={tooltip}
         aria-expanded={open}
@@ -465,6 +500,8 @@ function StatusChip({
           triggerRef={triggerRef}
           sidebarWidth={sidebarWidth}
           onClose={() => setOpen(false)}
+          onPopoverEnter={cancelClose}
+          onPopoverLeave={scheduleClose}
         />
       )}
     </>
