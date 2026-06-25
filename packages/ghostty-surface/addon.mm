@@ -4726,9 +4726,6 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
     // Build the text content: "#number"
     NSString* numStr = [NSString stringWithFormat:@"#%d", number];
-    NSSize numSz = [numStr sizeWithAttributes:@{
-        NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
-    }];
 
     // Check glyph text
     NSString* checkGlyph = nil;
@@ -4744,16 +4741,26 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
         checkColor = themeColorOr(g_popoverTheme.textMuted,
             [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
     }
-    NSSize checkSz = NSMakeSize(0, 0);
-    if (checkGlyph) {
-        checkSz = [checkGlyph sizeWithAttributes:@{
-            NSFontAttributeName: geistFont(@"GeistMono-Regular", chipFont)
-        }];
+
+    // Measure labels via sizeToFit — sizeWithAttributes underestimates when the
+    // font is loaded lazily, causing the digit to clip and AppKit to show "…".
+    NSTextField* numLbl = makeLabel(numStr, geistFont(@"GeistMono-Regular", chipFont), nil);
+    numLbl.frame = NSMakeRect(0, 0, 200.0, chipFont + 2.0);
+    [numLbl sizeToFit];
+    CGFloat numW = ceil(numLbl.frame.size.width) + 2.0;
+
+    CGFloat checkW = 0;
+    NSTextField* checkLbl = nil;
+    if (checkGlyph && checkColor) {
+        checkLbl = makeLabel(checkGlyph, geistFont(@"GeistMono-Regular", chipFont), checkColor);
+        checkLbl.frame = NSMakeRect(0, 0, 200.0, chipFont + 2.0);
+        [checkLbl sizeToFit];
+        checkW = ceil(checkLbl.frame.size.width) + 2.0;
     }
 
-    // Compute chip total width.
-    CGFloat chipW = chipPadH + iconSz + iconGap + ceil(numSz.width) + chipPadH;
-    if (checkGlyph) chipW += checkGap + ceil(checkSz.width);
+    // Compute chip total width from measured label widths.
+    CGFloat chipW = chipPadH + iconSz + iconGap + numW + chipPadH;
+    if (checkGlyph) chipW += checkGap + checkW;
 
     // Create chip button.
     NSButton* chip = [[NSButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, chipW, chipH)];
@@ -4778,19 +4785,18 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     iconView.imageScaling = NSImageScaleProportionallyDown;
     [chip addSubview:iconView];
 
-    // "#N" text.
-    NSTextField* numLbl = makeLabel(numStr, geistFont(@"GeistMono-Regular", chipFont), stateColor);
+    // "#N" text — apply final color and position within chip.
+    numLbl.textColor = stateColor;
     numLbl.frame = NSMakeRect(chipPadH + iconSz + iconGap,
                               (chipH - chipFont - 2.0) / 2.0,
-                              ceil(numSz.width) + 1.0, chipFont + 2.0);
+                              numW, chipFont + 2.0);
     [chip addSubview:numLbl];
 
     // Check glyph.
-    if (checkGlyph && checkColor) {
-        CGFloat checkX = chipPadH + iconSz + iconGap + ceil(numSz.width) + checkGap;
-        NSTextField* checkLbl = makeLabel(checkGlyph, geistFont(@"GeistMono-Regular", chipFont), checkColor);
+    if (checkLbl) {
+        CGFloat checkX = chipPadH + iconSz + iconGap + numW + checkGap;
         checkLbl.frame = NSMakeRect(checkX, (chipH - chipFont - 2.0) / 2.0,
-                                    ceil(checkSz.width) + 1.0, chipFont + 2.0);
+                                    checkW, chipFont + 2.0);
         [chip addSubview:checkLbl];
     }
 
