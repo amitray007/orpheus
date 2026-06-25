@@ -46,8 +46,8 @@ export function logDiagMain(
   evt: Omit<DiagEvent, 'process' | 'ts'> & { process?: DiagProcess; ts?: number }
 ): void {
   try {
-    if (!isCategoryEnabled(evt.category)) return
-    pushRing({
+    if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
+    fanOut({
       ts: evt.ts ?? Date.now(),
       process: evt.process ?? 'main',
       category: evt.category,
@@ -72,8 +72,8 @@ export function logDiagMain(
 export function ingestDiagEvent(evt: DiagEvent): void {
   try {
     if (!evt || typeof evt.event !== 'string') return
-    if (!isCategoryEnabled(evt.category)) return
-    pushRing(evt)
+    if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
+    fanOut(evt)
   } catch {
     /* swallow */
   }
@@ -81,18 +81,53 @@ export function ingestDiagEvent(evt: DiagEvent): void {
 
 // ── Trace context (main owns it via AsyncLocalStorage) ──────────────────────
 const traceStore = new AsyncLocalStorage<TraceContext>()
-const traceSubscribers = new Set<(rec: TraceRecord) => void>()
 
-// Live-stream seam: the Live Observability spec attaches here. No-op by default.
+const diagSubscribers = new Set<(e: DiagEvent) => void>()
+
+export function subscribeDiag(fn: (e: DiagEvent) => void): () => void {
+  diagSubscribers.add(fn)
+  return () => diagSubscribers.delete(fn)
+}
+
 export function subscribeTrace(fn: (rec: TraceRecord) => void): () => void {
-  traceSubscribers.add(fn)
-  return () => traceSubscribers.delete(fn)
+  return subscribeDiag((e) => {
+    if (e.category === 'trace') {
+      fn({
+        ts: e.ts,
+        kind: (e.kind as TraceRecord['kind']) ?? 'event',
+        name: e.name ?? e.event,
+        traceId: e.traceId ?? '',
+        spanId: e.spanId ?? '',
+        parentSpanId: e.parentSpanId ?? null,
+        durationMs: e.durationMs ?? null,
+        level: e.level,
+        workspaceId: e.workspaceId ?? null,
+        sessionId: e.sessionId ?? null,
+        data: e.data ?? null
+      })
+    }
+  })
+}
+
+function fanOut(evt: DiagEvent): void {
+  if (isCategoryEnabled(evt.category)) {
+    pushRing(evt)
+  }
+  if (diagSubscribers.size > 0) {
+    for (const fn of diagSubscribers) {
+      try {
+        fn(evt)
+      } catch {
+        /* a bad subscriber must not break emit or other subscribers */
+      }
+    }
+  }
 }
 
 function emitTrace(rec: TraceRecord): void {
   try {
-    if (!isCategoryEnabled('trace')) return
-    pushRing({
+    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return
+    fanOut({
       ts: rec.ts,
       process: 'main',
       category: 'trace',
@@ -109,13 +144,6 @@ function emitTrace(rec: TraceRecord): void {
       name: rec.name,
       kind: rec.kind
     })
-    for (const s of traceSubscribers) {
-      try {
-        s(rec)
-      } catch {
-        /* a bad subscriber must not break tracing */
-      }
-    }
   } catch {
     /* never throw */
   }
@@ -141,7 +169,8 @@ export const diag = {
     attrs: Record<string, unknown> | undefined,
     fn: (s: Span) => Promise<T> | T
   ): Promise<T> {
-    if (!isCategoryEnabled('trace')) return fn(NOOP_SPAN) as Promise<T>
+    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0)
+      return fn(NOOP_SPAN) as Promise<T>
     const span = startSpan(name, attrs)
     try {
       return await traceStore.run(span.ctx, () => fn(span))
@@ -151,7 +180,7 @@ export const diag = {
   },
   // sync unit of work.
   span<T>(name: string, attrs: Record<string, unknown> | undefined, fn: (s: Span) => T): T {
-    if (!isCategoryEnabled('trace')) return fn(NOOP_SPAN)
+    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return fn(NOOP_SPAN)
     const span = startSpan(name, attrs)
     try {
       return traceStore.run(span.ctx, () => fn(span))
@@ -161,7 +190,7 @@ export const diag = {
   },
   // point event (no span).
   event(name: string, attrs?: Record<string, unknown>, level: DiagLevel = 'info'): void {
-    if (!isCategoryEnabled('trace')) return
+    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return
     const parent = traceStore.getStore()
     emitTrace({
       ts: Date.now(),

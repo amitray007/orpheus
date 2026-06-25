@@ -14,6 +14,7 @@
 import { Database } from 'bun:sqlite'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { formatTraceTree, formatEventLine } from '../src/shared/diagFormat'
 
 function dbPath(): string {
   const appName = process.env.ORPHEUS_DIAG_APP ?? 'Orpheus Dev'
@@ -134,94 +135,6 @@ function buildWhere(): { sql: string; params: Record<string, unknown> } {
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', params }
 }
 
-function renderTrace(rows: Array<Record<string, unknown>>): string {
-  if (rows.length === 0) return '(no rows for that trace id)'
-  // Index spans by span_id; group marks/events under their span_id.
-  const spans = rows.filter((r) => r.kind === 'span')
-  const childrenOf = new Map<string | null, Array<Record<string, unknown>>>()
-  for (const s of spans) {
-    const p = (s.parent_span_id as string | null) ?? null
-    if (!childrenOf.has(p)) childrenOf.set(p, [])
-    childrenOf.get(p)!.push(s)
-  }
-  const marksOf = new Map<string, Array<Record<string, unknown>>>()
-  for (const r of rows) {
-    if (r.kind === 'mark' || r.kind === 'event') {
-      const sid = (r.span_id as string) ?? ''
-      if (!marksOf.has(sid)) marksOf.set(sid, [])
-      marksOf.get(sid)!.push(r)
-    }
-  }
-  const out: string[] = []
-  // Compute t0 from earliest root-span START (span.ts is the END timestamp;
-  // subtract duration to get start). Fall back to first DB row if no spans yet.
-  const known = new Set(spans.map((s) => s.span_id as string))
-  const rootSpans = spans.filter((s) => {
-    const p = (s.parent_span_id as string | null) ?? null
-    return p === null || !known.has(p)
-  })
-  const t0 = rootSpans.length
-    ? Math.min(...rootSpans.map((s) => Number(s.ts) - (Number(s.duration_ms) || 0)))
-    : Number(rows[0].ts)
-
-  // Handle in-flight / all-marks case: no spans closed yet
-  if (spans.length === 0) {
-    out.push('(trace in progress — no spans closed yet)')
-    const markRows = rows.filter((r) => r.kind === 'mark' || r.kind === 'event')
-    for (const m of markRows) {
-      const label =
-        m.kind === 'mark'
-          ? String(m.name ?? '(unnamed)')
-              .split(':')
-              .slice(1)
-              .join(':') || String(m.name ?? '(unnamed)')
-          : String(m.name ?? '(unnamed)')
-      out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
-    }
-    return out.join('\n')
-  }
-
-  const walk = (parentSpanId: string | null, depth: number): void => {
-    for (const s of childrenOf.get(parentSpanId) ?? []) {
-      const pad = '  '.repeat(depth)
-      const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
-      out.push(
-        `${pad}▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
-      )
-      for (const m of marksOf.get(s.span_id as string) ?? []) {
-        const label =
-          m.kind === 'mark'
-            ? String(m.name ?? '(unnamed)')
-                .split(':')
-                .slice(1)
-                .join(':') || String(m.name ?? '(unnamed)')
-            : String(m.name ?? '(unnamed)')
-        out.push(`${pad}  · ${label}  +${Number(m.ts) - t0}ms`)
-      }
-      walk(s.span_id as string, depth + 1)
-    }
-  }
-  // roots = spans whose parent is null OR whose parent isn't in this trace
-  for (const s of rootSpans) {
-    const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
-    out.push(
-      `▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
-    )
-    for (const m of marksOf.get(s.span_id as string) ?? []) {
-      const label =
-        m.kind === 'mark'
-          ? String(m.name ?? '(unnamed)')
-              .split(':')
-              .slice(1)
-              .join(':') || String(m.name ?? '(unnamed)')
-          : String(m.name ?? '(unnamed)')
-      out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
-    }
-    walk(s.span_id as string, 1)
-  }
-  return out.join('\n')
-}
-
 if (stats) {
   const { sql, params } = buildWhere()
   const rows = db
@@ -262,16 +175,16 @@ if (traceId) {
     .all(traceId) as Array<Record<string, unknown>>
   if (tail) {
     // follow: re-query every 1s
-    console.log(renderTrace(rows))
+    console.log(formatTraceTree(rows))
     setInterval(() => {
       const r2 = db
         .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
         .all(traceId) as Array<Record<string, unknown>>
       console.clear()
-      console.log(renderTrace(r2))
+      console.log(formatTraceTree(r2))
     }, 1000)
   } else {
-    console.log(renderTrace(rows))
+    console.log(formatTraceTree(rows))
     process.exit(0)
   }
 } else if (tail) {
@@ -287,7 +200,7 @@ if (traceId) {
       .all({ ...params, $lastId: lastId }) as Array<Record<string, unknown>>
     if (rows.length) {
       lastId = Number(rows[rows.length - 1].id)
-      console.log(table(rows))
+      console.log(rows.map((r) => formatEventLine(r)).join('\n'))
     }
   }
   setInterval(tick, 1000)
