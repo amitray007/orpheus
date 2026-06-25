@@ -1,6 +1,10 @@
 import type Database from 'better-sqlite3'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { getDb } from './db'
 import type { DiagEvent, DiagRow, DiagQuery, DiagCategory, DiagProcess } from '../shared/types'
+import type { DiagLevel } from '../shared/types'
+import { Span, newTraceId, newSpanId } from '../shared/trace'
+import type { TraceContext, TraceRecord } from '../shared/trace'
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const ROW_CAP = 50_000
@@ -14,13 +18,14 @@ let seqCounter = 0
 let timer: ReturnType<typeof setInterval> | null = null
 let insertStmt: Database.Statement | null = null
 
-let categoryFlags = { error: true, lifecycle: false, perf: false, anomaly: false }
+let categoryFlags = { error: true, lifecycle: false, perf: false, anomaly: false, trace: false }
 
 export function setDiagCategoryFlags(flags: {
   error: boolean
   lifecycle: boolean
   perf: boolean
   anomaly: boolean
+  trace: boolean
 }): void {
   categoryFlags = flags
 }
@@ -52,7 +57,12 @@ export function logDiagMain(
       sessionId: evt.sessionId ?? null,
       durationMs: evt.durationMs ?? null,
       message: evt.message,
-      data: evt.data ?? null
+      data: evt.data ?? null,
+      traceId: evt.traceId ?? null,
+      spanId: evt.spanId ?? null,
+      parentSpanId: evt.parentSpanId ?? null,
+      name: evt.name ?? null,
+      kind: evt.kind ?? null
     })
   } catch {
     /* diagnostics must never throw into app code */
@@ -69,6 +79,112 @@ export function ingestDiagEvent(evt: DiagEvent): void {
   }
 }
 
+// ── Trace context (main owns it via AsyncLocalStorage) ──────────────────────
+const traceStore = new AsyncLocalStorage<TraceContext>()
+const traceSubscribers = new Set<(rec: TraceRecord) => void>()
+
+// Live-stream seam: the Live Observability spec attaches here. No-op by default.
+export function subscribeTrace(fn: (rec: TraceRecord) => void): () => void {
+  traceSubscribers.add(fn)
+  return () => traceSubscribers.delete(fn)
+}
+
+function emitTrace(rec: TraceRecord): void {
+  try {
+    if (!isCategoryEnabled('trace')) return
+    pushRing({
+      ts: rec.ts,
+      process: 'main',
+      category: 'trace',
+      level: rec.level,
+      event: rec.name,
+      workspaceId: rec.workspaceId ?? null,
+      sessionId: rec.sessionId ?? null,
+      durationMs: rec.durationMs ?? null,
+      message: undefined,
+      data: rec.data ?? null,
+      traceId: rec.traceId,
+      spanId: rec.spanId,
+      parentSpanId: rec.parentSpanId ?? null,
+      name: rec.name,
+      kind: rec.kind
+    })
+    for (const s of traceSubscribers) {
+      try {
+        s(rec)
+      } catch {
+        /* a bad subscriber must not break tracing */
+      }
+    }
+  } catch {
+    /* never throw */
+  }
+}
+
+function startSpan(name: string, attrs?: Record<string, unknown>): Span {
+  const parent = traceStore.getStore()
+  const ctx: TraceContext = {
+    traceId: parent?.traceId ?? newTraceId(),
+    spanId: newSpanId()
+  }
+  return new Span(emitTrace, ctx, name, parent?.spanId ?? null, attrs)
+}
+
+// When the trace category is off, hand callers a Span that emits nothing.
+function noopSpan(): Span {
+  return new Span(() => {}, { traceId: 't0', spanId: 's0' }, 'noop', null, undefined)
+}
+
+export const diag = {
+  // async unit of work — child spans nest automatically via ALS.
+  async trace<T>(
+    name: string,
+    attrs: Record<string, unknown> | undefined,
+    fn: (s: Span) => Promise<T> | T
+  ): Promise<T> {
+    if (!isCategoryEnabled('trace')) return await fn(noopSpan())
+    const span = startSpan(name, attrs)
+    try {
+      return await traceStore.run(span.ctx, () => fn(span))
+    } finally {
+      span.end()
+    }
+  },
+  // sync unit of work.
+  span<T>(name: string, attrs: Record<string, unknown> | undefined, fn: (s: Span) => T): T {
+    if (!isCategoryEnabled('trace')) return fn(noopSpan())
+    const span = startSpan(name, attrs)
+    try {
+      return traceStore.run(span.ctx, () => fn(span))
+    } finally {
+      span.end()
+    }
+  },
+  // point event (no span).
+  event(name: string, attrs?: Record<string, unknown>, level: DiagLevel = 'info'): void {
+    const parent = traceStore.getStore()
+    emitTrace({
+      ts: Date.now(),
+      kind: 'event',
+      name,
+      traceId: parent?.traceId ?? newTraceId(),
+      spanId: parent?.spanId ?? newSpanId(),
+      parentSpanId: parent?.spanId ?? null,
+      level,
+      workspaceId: typeof attrs?.workspaceId === 'string' ? attrs.workspaceId : null,
+      sessionId: typeof attrs?.sessionId === 'string' ? attrs.sessionId : null,
+      data: attrs ?? null
+    })
+  },
+  currentContext(): TraceContext | undefined {
+    return traceStore.getStore()
+  },
+  // resume a trace under an explicit context (e.g. after parsing an IPC payload).
+  withContext<T>(ctx: TraceContext, fn: () => T): T {
+    return traceStore.run(ctx, fn)
+  }
+}
+
 function flush(): void {
   if (ring.length === 0) return
   let db: Database.Database
@@ -82,8 +198,10 @@ function flush(): void {
     if (!insertStmt) {
       insertStmt = db.prepare(
         `INSERT INTO diagnostics_events
-           (ts, process, category, level, event, workspace_id, session_id, duration_ms, message, data, seq)
-         VALUES (@ts, @process, @category, @level, @event, @workspaceId, @sessionId, @durationMs, @message, @data, @seq)`
+           (ts, process, category, level, event, workspace_id, session_id, duration_ms, message, data, seq,
+            trace_id, span_id, parent_span_id, name, kind)
+         VALUES (@ts, @process, @category, @level, @event, @workspaceId, @sessionId, @durationMs, @message, @data, @seq,
+            @traceId, @spanId, @parentSpanId, @name, @kind)`
       )
     }
     const stmt = insertStmt
@@ -100,7 +218,12 @@ function flush(): void {
           durationMs: r.durationMs ?? null,
           message: r.message ?? null,
           data: r.data != null ? JSON.stringify(r.data) : null,
-          seq: seqCounter++
+          seq: seqCounter++,
+          traceId: r.traceId ?? null,
+          spanId: r.spanId ?? null,
+          parentSpanId: r.parentSpanId ?? null,
+          name: r.name ?? null,
+          kind: r.kind ?? null
         })
       }
     })
@@ -158,6 +281,10 @@ export function queryDiagnostics(q: DiagQuery): DiagRow[] {
     where.push('workspace_id = @workspaceId')
     params.workspaceId = q.workspaceId
   }
+  if (q.traceId) {
+    where.push('trace_id = @traceId')
+    params.traceId = q.traceId
+  }
   if (q.categories?.length) {
     where.push(`category IN (${q.categories.map((_, i) => `@cat${i}`).join(',')})`)
     q.categories.forEach((c, i) => (params[`cat${i}`] = c))
@@ -168,7 +295,8 @@ export function queryDiagnostics(q: DiagQuery): DiagRow[] {
   }
   const sql = `SELECT id, ts, process, category, level, event,
             workspace_id AS workspaceId, session_id AS sessionId,
-            duration_ms AS durationMs, message, data, seq
+            duration_ms AS durationMs, message, data, seq,
+            trace_id AS traceId, span_id AS spanId, parent_span_id AS parentSpanId, name, kind
        FROM diagnostics_events
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY ts ASC, seq ASC
