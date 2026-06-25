@@ -961,7 +961,46 @@ async function checkClaude(): Promise<{
 // IPC handlers
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('config:openFolder', async () => {
+// ---------------------------------------------------------------------------
+// Diagnostics: typed IPC wrapper — times every handler, logs slow (>50ms) calls
+// as PERF_IPC_ROUNDTRIP, captures and re-throws errors as ERROR_IPC_FAIL.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+function handle(
+  channel: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+  fn: (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any
+): void {
+  ipcMain.handle(channel, async (e, ...args) => {
+    const start = Date.now()
+    try {
+      const result = await fn(e, ...args)
+      const ms = Date.now() - start
+      if (ms > 50) {
+        logDiagMain({
+          category: 'perf',
+          level: 'info',
+          event: DIAG_EVENTS.PERF_IPC_ROUNDTRIP,
+          message: channel,
+          durationMs: ms,
+          data: { channel }
+        })
+      }
+      return result
+    } catch (err) {
+      logDiagMain({
+        category: 'error',
+        level: 'error',
+        event: DIAG_EVENTS.ERROR_IPC_FAIL,
+        message: `${channel}: ${err instanceof Error ? err.message : String(err)}`,
+        data: { channel, stack: err instanceof Error ? err.stack : null }
+      })
+      throw err
+    }
+  })
+}
+
+handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   if (result.canceled) return null
   const chosen = result.filePaths[0]
@@ -969,20 +1008,20 @@ ipcMain.handle('config:openFolder', async () => {
   return chosen ?? null
 })
 
-ipcMain.handle('app:getVersion', () => app.getVersion())
+handle('app:getVersion', () => app.getVersion())
 
-ipcMain.handle('app:getPaths', () => ({
+handle('app:getPaths', () => ({
   userData: app.getPath('userData'),
   logs: app.getPath('logs')
 }))
 
-ipcMain.handle('window:openDevTools', (e) => {
+handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
   win.webContents.openDevTools({ mode: 'detach' })
 })
 
-ipcMain.handle('window:reload', (e) => {
+handle('window:reload', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
   win.webContents.reload()
@@ -992,11 +1031,11 @@ ipcMain.handle('window:reload', (e) => {
 // Projects IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('projects:list', () => listProjects())
+handle('projects:list', () => listProjects())
 
-ipcMain.handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
+handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
 
-ipcMain.handle('projects:pickAndAdd', async () => {
+handle('projects:pickAndAdd', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   if (result.canceled || !result.filePaths[0]) return null
   const chosen = result.filePaths[0]
@@ -1004,9 +1043,9 @@ ipcMain.handle('projects:pickAndAdd', async () => {
   return addProject(chosen)
 })
 
-ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
+handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
+handle('projects:remove', (_e, { id }: { id: string }) => {
   // Enumerate workspaces before the cascade-delete removes the rows so we can
   // tear down each one's in-memory state and native surface. The renderer
   // pre-destroys surfaces via terminal:destroy, but projects:remove must be
@@ -1026,7 +1065,7 @@ ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
   deleteProject(id)
 })
 
-ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
+handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
 )
 
@@ -1034,23 +1073,23 @@ ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string 
 // Workspaces IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'workspaces:listForProject',
   (_e, { projectId, scope }: { projectId: string; scope?: 'active' | 'archived' | 'all' }) =>
     listWorkspacesForProject(projectId, { scope })
 )
 
-ipcMain.handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
+handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
   createWorkspace(args)
 )
 
-ipcMain.handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
+handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
 
-ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
   setWorkspacePinned(id, pinned)
 )
 
-ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+handle('workspaces:archive', (_e, { id }: { id: string }) => {
   // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
   // Destroy the libghostty surface so the NSView is freed before the DB row
@@ -1068,7 +1107,7 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
   teardownWorkspaceResources(id, ws?.cwd ?? null)
 })
 
-ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
+handle('workspace:close', (_e, { id }: { id: string }) => {
   const status = getWorkspaceActivity(id)
   if (status === 'in_progress') {
     return { ok: false as const, reason: 'busy' as const }
@@ -1077,22 +1116,22 @@ ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-ipcMain.handle('workspace:reopen', (_e, { id }: { id: string }) => {
+handle('workspace:reopen', (_e, { id }: { id: string }) => {
   const workspace = reopenWorkspace(id)
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
+handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
 
-ipcMain.handle(
+handle(
   'workspaces:reorder',
   (_e, { projectId, orderedIds }: { projectId: string; orderedIds: string[] }) =>
     reorderWorkspaces(projectId, orderedIds)
 )
 
-ipcMain.handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
+handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
   dirtyWorkspaces.has(workspaceId)
 )
 
@@ -1100,44 +1139,44 @@ ipcMain.handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string 
 // Pins IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('pins:listAll', () => listAllPinned())
+handle('pins:listAll', () => listAllPinned())
 
 // ---------------------------------------------------------------------------
 // Sessions IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'sessions:listForProject',
   (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
     listSessionsForProject(projectId, { includeArchived })
 )
 
-ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
+handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
 
-ipcMain.handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
+handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
   setSessionStatus(id, status)
 )
 
-ipcMain.handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
+handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
   listSessionsForProjectPaged(req)
 )
 
-ipcMain.handle(
+handle(
   'sessions:resumeInNewWorkspace',
   (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
-ipcMain.handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
+handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
   const t0 = process.hrtime.bigint()
   await refreshSessionMetadata(projectId)
   const ms = Number(process.hrtime.bigint() - t0) / 1e6
   if (ms > 50) console.log('[perf] sessions:refreshMetadata %dms', Math.round(ms))
 })
 
-ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
+handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
 
-ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
   getContextBudget(workspaceId)
 )
 
@@ -1145,9 +1184,9 @@ ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId:
 // Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
+handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
-ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
+handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
   const result = updateClaudeGlobalSettings(patch)
   recomputeDirty()
   return result
@@ -1157,9 +1196,9 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 // Ghostty Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('ghosttySettings:get', () => getGhosttyUserConfig())
+handle('ghosttySettings:get', () => getGhosttyUserConfig())
 
-ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
+handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
   const result = updateGhosttyUserConfig(patch)
   writeGhosttyConfigFile()
   // TODO: add "restart to apply" signal for keys that require restart
@@ -1176,16 +1215,16 @@ ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>)
 // MCP IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('mcp:listServers', () => listMcpServers())
-ipcMain.handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
-ipcMain.handle(
+handle('mcp:listServers', () => listMcpServers())
+handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
+handle(
   'mcp:update',
   (
     _e,
     args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }
   ) => updateMcpServer(args.filePath, args.oldName, args.draft)
 )
-ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
+handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
   deleteMcpServer(args.filePath, args.name)
 )
 
@@ -1193,28 +1232,28 @@ ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
 // Claude Agents IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
-ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
+handle('claudeAgents:listSlashCommands', () => listSlashCommands())
+handle('claudeAgents:listSubagents', () => listSubagents())
 
-ipcMain.handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
+handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
   addSlashCommand(draft)
 )
-ipcMain.handle(
+handle(
   'claudeAgents:updateSlashCommand',
   (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
     updateSlashCommand(args.filePath, args.draft)
 )
-ipcMain.handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
+handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
   deleteSlashCommand(args.filePath)
 )
 
-ipcMain.handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
-ipcMain.handle(
+handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
+handle(
   'claudeAgents:updateSubagent',
   (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
     updateSubagent(args.filePath, args.draft)
 )
-ipcMain.handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
+handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
   deleteSubagent(args.filePath)
 )
 
@@ -1222,12 +1261,12 @@ ipcMain.handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =
 // Claude Hooks IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeHooks:list', () => listClaudeHooks())
-ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+handle('claudeHooks:list', () => listClaudeHooks())
+handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
   await shell.openPath(filePath)
 })
-ipcMain.handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
-ipcMain.handle(
+handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
+handle(
   'claudeHooks:update',
   (
     _e,
@@ -1240,7 +1279,7 @@ ipcMain.handle(
     }
   ) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
 )
-ipcMain.handle(
+handle(
   'claudeHooks:delete',
   (
     _e,
@@ -1257,21 +1296,21 @@ ipcMain.handle(
 // Claude Auth IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeAuth:get', () => getClaudeAuthState())
+handle('claudeAuth:get', () => getClaudeAuthState())
 
-ipcMain.handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
+handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
 
-ipcMain.handle('claudeAuth:testConnection', () => testAnthropicConnection())
+handle('claudeAuth:testConnection', () => testAnthropicConnection())
 
 // ---------------------------------------------------------------------------
 // Per-project Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
+handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
   getClaudeProjectSettings(projectId)
 )
 
-ipcMain.handle(
+handle(
   'claudeProjectSettings:update',
   (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) => {
     const result = updateClaudeProjectSettings(args.projectId, args.patch)
@@ -1284,11 +1323,11 @@ ipcMain.handle(
 // Per-workspace Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
   getClaudeWorkspaceSettings(workspaceId)
 )
 
-ipcMain.handle(
+handle(
   'claudeWorkspaceSettings:update',
   (_e, args: { workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }) => {
     const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
@@ -1305,11 +1344,11 @@ ipcMain.on('diag:event', (_e, evt) => {
   ingestDiagEvent(evt)
 })
 
-ipcMain.handle('diag:openConsole', () => {
+handle('diag:openConsole', () => {
   openDiagConsole()
 })
 
-ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
+handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
   try {
     const result = await dialog.showSaveDialog({
       title: 'Export Diagnostics',
@@ -1403,7 +1442,7 @@ ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
 // UI State IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('uiState:get', () => getAppUiState())
+handle('uiState:get', () => getAppUiState())
 
 function syncDiagFlags(): void {
   const s = getAppUiState()
@@ -1416,7 +1455,7 @@ function syncDiagFlags(): void {
   })
 }
 
-ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
+handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
@@ -1453,19 +1492,19 @@ ipcMain.on(
 // Hooks integration IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('hooks:setEnabled', (_e, enabled: boolean) => {
+handle('hooks:setEnabled', (_e, enabled: boolean) => {
   updateAppUiState({ hooksIntegrationEnabled: enabled })
   reconcileHooks()
   return { enabled }
 })
 
-ipcMain.handle('hooks:getStatus', () => {
+handle('hooks:getStatus', () => {
   const enabled = getAppUiState().hooksIntegrationEnabled
   const installed = countManagedHooks()
   return { enabled, installed }
 })
 
-ipcMain.handle('notifications:test', () => {
+handle('notifications:test', () => {
   fireTestNotification()
 })
 
@@ -1473,7 +1512,7 @@ ipcMain.handle('notifications:test', () => {
 // Health IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('health:get', async (): Promise<HealthReport> => {
+handle('health:get', async (): Promise<HealthReport> => {
   // claudeCli
   let claudeCli: HealthReport['claudeCli']
   try {
@@ -1556,40 +1595,38 @@ ipcMain.handle('health:get', async (): Promise<HealthReport> => {
 // Updates IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('updates:check', () => checkForUpdates())
-ipcMain.handle('updates:install', () => {
+handle('updates:check', () => checkForUpdates())
+handle('updates:install', () => {
   installUpdate()
 })
-ipcMain.handle('updates:restart', () => {
+handle('updates:restart', () => {
   relaunchApp()
 })
-ipcMain.handle('updates:getState', () => getUpdateSnapshot())
+handle('updates:getState', () => getUpdateSnapshot())
 
 // ---------------------------------------------------------------------------
 // Claude status IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('status:get', () => getStatusSnapshot())
-ipcMain.handle('status:refresh', async () => refreshStatusNow())
-ipcMain.handle('status:openPage', () => {
+handle('status:get', () => getStatusSnapshot())
+handle('status:refresh', async () => refreshStatusNow())
+handle('status:openPage', () => {
   shell.openExternal('https://status.claude.com').catch((err) => {
     console.warn('[status] openExternal failed:', err)
   })
 })
 
-ipcMain.handle(
-  'projects:setExpandedInSidebar',
-  (_e, { id, expanded }: { id: string; expanded: boolean }) =>
-    setProjectExpandedInSidebar(id, expanded)
+handle('projects:setExpandedInSidebar', (_e, { id, expanded }: { id: string; expanded: boolean }) =>
+  setProjectExpandedInSidebar(id, expanded)
 )
 
-ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
+handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
   reorderProjects(orderedIds)
 )
 
-ipcMain.handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
+handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
 
-ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
+handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()
   return {
     claudeInstalled: installed,
@@ -1602,7 +1639,7 @@ ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
 // Context menu IPC (native Electron menu — renders above NSView)
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
+handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return null
   return showContextMenu(items, win)
@@ -1612,12 +1649,9 @@ ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => 
 // Git IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
-  'git:status',
-  (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd)
-)
+handle('git:status', (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd))
 
-ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
+handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
   const t0 = process.hrtime.bigint()
   const result = await listBranches(cwd)
   const ms = Number(process.hrtime.bigint() - t0) / 1e6
@@ -1625,7 +1659,7 @@ ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
   return result
 })
 
-ipcMain.handle(
+handle(
   'git:log',
   (
     _e,
@@ -1641,7 +1675,7 @@ ipcMain.handle(
   ) => listCommits(args.cwd, args)
 )
 
-ipcMain.handle(
+handle(
   'git:count',
   async (
     _e,
@@ -1659,7 +1693,7 @@ ipcMain.handle(
 // GitHub IPC — `gh` CLI passthrough; null on every failure mode.
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
+handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
   getPrForBranch(cwd, branch)
 )
 
@@ -1667,18 +1701,18 @@ ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch
 // Shell helpers IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
-ipcMain.handle('shell:openInEditor', (_e, { path }: { path: string }) => {
+handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
+handle('shell:openInEditor', (_e, { path }: { path: string }) => {
   const state = getAppUiState()
   return openInEditor(path, state.preferredEditorApp ?? undefined)
 })
-ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => {
+handle('shell:openTerminal', (_e, { path }: { path: string }) => {
   const state = getAppUiState()
   return openTerminal(path, state.preferredTerminalApp ?? undefined)
 })
-ipcMain.handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
-ipcMain.handle('shell:listEditorApps', () => listEditorApps())
-ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
+handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
+handle('shell:listEditorApps', () => listEditorApps())
+handle('shell:listTerminalApps', () => listTerminalApps())
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-surface lifecycle
@@ -1722,7 +1756,7 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
   }
 }
 
-ipcMain.handle(
+handle(
   'terminal:mount',
   async (
     e,
@@ -1739,7 +1773,7 @@ ipcMain.handle(
     ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
-    const handle = win.getNativeWindowHandle()
+    const nativeHandle = win.getNativeWindowHandle()
 
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
@@ -1770,14 +1804,27 @@ ipcMain.handle(
 
     const _mountStart = Date.now()
     const result = await diag.trace('terminal.mount', { workspaceId }, async (s) => {
-      const mountResult = addon.mount(handle, {
-        workspaceId,
-        rect,
-        scaleFactor,
-        cwd,
-        command,
-        env: surfaceEnv
-      })
+      let mountResult: { workspaceId: string; created: boolean }
+      try {
+        mountResult = addon.mount(nativeHandle, {
+          workspaceId,
+          rect,
+          scaleFactor,
+          cwd,
+          command,
+          env: surfaceEnv
+        })
+      } catch (err) {
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.ERROR_NATIVE,
+          message: `addon.mount failed: ${err instanceof Error ? err.message : String(err)}`,
+          workspaceId,
+          data: { stack: err instanceof Error ? err.stack : null }
+        })
+        throw err
+      }
       s.mark('surface-created')
       logDiagMain({
         category: 'lifecycle',
@@ -1796,6 +1843,15 @@ ipcMain.handle(
       return mountResult
     })
 
+    if (result.created) {
+      logDiagMain({
+        category: 'lifecycle',
+        level: 'info',
+        event: DIAG_EVENTS.TERMINAL_SURFACE_CREATED,
+        workspaceId
+      })
+    }
+
     // Show the loading overlay only when a new surface was actually created —
     // re-attaching a hidden surface or a defensive resize means claude is
     // already running and there's no boot to mask.
@@ -1813,6 +1869,13 @@ ipcMain.handle(
         if (prev) clearTimeout(prev)
         const t = setTimeout(() => {
           overlayFallbackTimers.delete(workspaceId)
+          logDiagMain({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.OVERLAY_FALLBACK,
+            workspaceId,
+            message: 'overlay dismissed by fallback timeout'
+          })
           hideLoadingOverlay(workspaceId)
         }, 10000)
         overlayFallbackTimers.set(workspaceId, t)
@@ -1840,7 +1903,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
   // If the user navigates away mid-boot, dismiss the overlay so it doesn't
   // outlive its parent surface in the contentView.
@@ -1850,7 +1913,19 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
     overlayFallbackTimers.delete(workspaceId)
   }
   hideLoadingOverlay(workspaceId)
-  addon.hide(workspaceId)
+  try {
+    addon.hide(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.hide failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1859,9 +1934,21 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   })
 })
 
-ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
-  addon.focus(workspaceId)
+  try {
+    addon.focus(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.focus failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'anomaly',
     level: 'warn',
@@ -1874,7 +1961,7 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
 // Native popover IPC handlers (Phase A chassis)
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'terminal:showPopover',
   (
     _e,
@@ -1900,7 +1987,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle(
+handle(
   'terminal:updatePopover',
   (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
     const addon = loadTerminalAddon()
@@ -1908,23 +1995,20 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
   addon.hidePopover(workspaceId)
 })
 
-ipcMain.handle(
-  'terminal:getSurfacePhase',
-  (_e, { workspaceId }: { workspaceId: string }): string => {
-    try {
-      return loadTerminalAddon().getSurfacePhase(workspaceId)
-    } catch {
-      return 'none'
-    }
+handle('terminal:getSurfacePhase', (_e, { workspaceId }: { workspaceId: string }): string => {
+  try {
+    return loadTerminalAddon().getSurfacePhase(workspaceId)
+  } catch {
+    return 'none'
   }
-)
+})
 
-ipcMain.handle(
+handle(
   'terminal:resize',
   (
     _e,
@@ -1935,11 +2019,23 @@ ipcMain.handle(
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number }
   ): void => {
     const addon = loadTerminalAddon()
-    addon.resize(workspaceId, rect, scaleFactor)
+    try {
+      addon.resize(workspaceId, rect, scaleFactor)
+    } catch (err) {
+      logDiagMain({
+        category: 'error',
+        level: 'error',
+        event: DIAG_EVENTS.ERROR_NATIVE,
+        message: `addon.resize failed: ${err instanceof Error ? err.message : String(err)}`,
+        workspaceId,
+        data: { stack: err instanceof Error ? err.stack : null }
+      })
+      throw err
+    }
   }
 )
 
-ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
   // NOTE: terminal:destroy is called in two distinct scenarios:
   //   1. Workspace death (archive / project-remove) — full teardown happens in
   //      the archive/remove handlers via teardownWorkspaceResources; this path
@@ -1973,7 +2069,19 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
     stopGitWatch(workspaceId, wsForGit.cwd)
   }
   const addon = loadTerminalAddon()
-  addon.destroy(workspaceId)
+  try {
+    addon.destroy(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.destroy failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1986,15 +2094,12 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
-  'terminal:sendInput',
-  (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
-    const addon = loadTerminalAddon()
-    return terminalActions.sendInput(addon, workspaceId, text)
-  }
-)
+handle('terminal:sendInput', (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.sendInput(addon, workspaceId, text)
+})
 
-ipcMain.handle(
+handle(
   'terminal:sendKeys',
   (_e, { workspaceId, keys }: { workspaceId: string; keys: TerminalSendKeyDescriptor[] }) => {
     const addon = loadTerminalAddon()
@@ -2002,17 +2107,17 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
+handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
   const addon = loadTerminalAddon()
   return terminalActions.submit(addon, workspaceId)
 })
 
-ipcMain.handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
+handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
   const addon = loadTerminalAddon()
   return terminalActions.clearInput(addon, workspaceId)
 })
 
-ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
+handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
   return terminalActions.canInject(workspaceId)
 })
 
@@ -2020,7 +2125,7 @@ ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'actions:invoke',
   (
     _e,
@@ -2041,15 +2146,13 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('actions:list', () => actionsList())
+handle('actions:list', () => actionsList())
 
-ipcMain.handle(
-  'actions:history',
-  (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
-    getAuditHistory(workspaceId, limit)
+handle('actions:history', (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
+  getAuditHistory(workspaceId, limit)
 )
 
-ipcMain.handle(
+handle(
   'actions:subscribe',
   (
     e,
@@ -2075,7 +2178,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
+handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
   stopSubscription(subscriptionId)
   return { ok: true }
 })
@@ -2084,11 +2187,11 @@ ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId:
 // Footer actions — phase 3a: CRUD + merge IPC surface
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
   listMergedFooterActions(workspaceId)
 )
 
-ipcMain.handle(
+handle(
   'footerActions:listAtScope',
   (_e, { scope, scopeId }: { scope: FooterActionScope; scopeId?: string }) => {
     if (scope === 'global') return listGlobalFooterActions()
@@ -2097,7 +2200,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle(
+handle(
   'footerActions:create',
   (
     _e,
@@ -2109,17 +2212,17 @@ ipcMain.handle(
   ) => createFooterAction(scope, scopeId, draft)
 )
 
-ipcMain.handle(
+handle(
   'footerActions:update',
   (_e, { id, patch }: { id: string; patch: Partial<FooterActionDraft> }) =>
     updateFooterAction(id, patch)
 )
 
-ipcMain.handle('footerActions:remove', (_e, { id }: { id: string }) => {
+handle('footerActions:remove', (_e, { id }: { id: string }) => {
   removeFooterAction(id)
 })
 
-ipcMain.handle(
+handle(
   'footerActions:reorder',
   (
     _e,
@@ -2131,11 +2234,11 @@ ipcMain.handle(
   ) => reorderFooterActions(scope, scopeId, orderedIds)
 )
 
-ipcMain.handle('footerActions:resetDefaults', () => {
+handle('footerActions:resetDefaults', () => {
   resetFooterActionsToDefaults()
 })
 
-ipcMain.handle(
+handle(
   'workspace:getTitle',
   (_e, { workspaceId }: { workspaceId: string }): string | null =>
     workspaceTitles.get(workspaceId) ?? null

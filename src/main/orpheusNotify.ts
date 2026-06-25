@@ -117,9 +117,9 @@ function armIdleWatchdog(workspaceId: string): void {
           'min'
         )
         logDiagMain({
-          category: 'lifecycle',
-          level: 'debug',
-          event: DIAG_EVENTS.HOOK_ACTIVITY,
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
           workspaceId,
           message: 'ready→idle (stale)',
           data: { afterMinutes: minutes }
