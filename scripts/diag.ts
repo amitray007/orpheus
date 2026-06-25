@@ -4,6 +4,8 @@
  *   bun run diag --workspace <id> --around <ms> [--window 30s]
  *   bun run diag --event terminal.mount --stats
  *   bun run diag --tail
+ *   bun run diag --trace <traceId>
+ *   bun run diag --trace <traceId> --tail
  *   bun run diag --export --since 7d > bug.json
  *
  * DB path: defaults to the Dev data dir. Override the app name with
@@ -132,6 +134,56 @@ function buildWhere(): { sql: string; params: Record<string, unknown> } {
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', params }
 }
 
+function renderTrace(rows: Array<Record<string, unknown>>): string {
+  if (rows.length === 0) return '(no rows for that trace id)'
+  // Index spans by span_id; group marks/events under their span_id.
+  const spans = rows.filter((r) => r.kind === 'span')
+  const childrenOf = new Map<string | null, Array<Record<string, unknown>>>()
+  for (const s of spans) {
+    const p = (s.parent_span_id as string | null) ?? null
+    if (!childrenOf.has(p)) childrenOf.set(p, [])
+    childrenOf.get(p)!.push(s)
+  }
+  const marksOf = new Map<string, Array<Record<string, unknown>>>()
+  for (const r of rows) {
+    if (r.kind === 'mark' || r.kind === 'event') {
+      const sid = (r.span_id as string) ?? ''
+      if (!marksOf.has(sid)) marksOf.set(sid, [])
+      marksOf.get(sid)!.push(r)
+    }
+  }
+  const out: string[] = []
+  const t0 = Number(rows[0].ts)
+  const walk = (parentSpanId: string | null, depth: number): void => {
+    for (const s of childrenOf.get(parentSpanId) ?? []) {
+      const pad = '  '.repeat(depth)
+      const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
+      out.push(`${pad}▸ ${s.name}  (${dur})  +${Number(s.ts) - t0}ms`)
+      for (const m of marksOf.get(s.span_id as string) ?? []) {
+        out.push(
+          `${pad}  · ${String(m.name).split(':').slice(1).join(':') || m.name}  +${Number(m.ts) - t0}ms`
+        )
+      }
+      walk(s.span_id as string, depth + 1)
+    }
+  }
+  // roots = spans whose parent is null OR whose parent isn't in this trace
+  const known = new Set(spans.map((s) => s.span_id as string))
+  for (const s of spans) {
+    const p = (s.parent_span_id as string | null) ?? null
+    if (p === null || !known.has(p)) {
+      out.push(`▸ ${s.name}  (${s.duration_ms != null ? s.duration_ms + 'ms' : '—'})`)
+      for (const m of marksOf.get(s.span_id as string) ?? []) {
+        out.push(
+          `  · ${String(m.name).split(':').slice(1).join(':') || m.name}  +${Number(m.ts) - t0}ms`
+        )
+      }
+      walk(s.span_id as string, 1)
+    }
+  }
+  return out.join('\n')
+}
+
 if (stats) {
   const { sql, params } = buildWhere()
   const rows = db
@@ -153,6 +205,27 @@ if (stats) {
           .join('\n') || '(no events)'
   )
   process.exit(0)
+}
+
+const traceId = arg('trace')
+if (traceId) {
+  const rows = db
+    .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
+    .all(traceId) as Array<Record<string, unknown>>
+  if (tail) {
+    // follow: re-query every 1s, print new rows' trace tree (simple full re-render)
+    console.log(renderTrace(rows))
+    setInterval(() => {
+      const r2 = db
+        .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
+        .all(traceId) as Array<Record<string, unknown>>
+      console.clear()
+      console.log(renderTrace(r2))
+    }, 1000)
+  } else {
+    console.log(renderTrace(rows))
+    process.exit(0)
+  }
 }
 
 const SELECT = `SELECT id, ts, process, category, level, event,
