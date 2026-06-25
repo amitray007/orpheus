@@ -22,7 +22,8 @@ import {
   Lightning,
   Terminal,
   Stack,
-  FirstAidKit
+  FirstAidKit,
+  Coffee
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -52,6 +53,7 @@ import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
 import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
 import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
 import { OrpheusHealthSection } from './settings/OrpheusHealthSection'
+import { OrpheusKeepAwakeSection } from './settings/OrpheusKeepAwakeSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -75,6 +77,7 @@ export type SectionId =
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
+  | 'orpheus-keep-awake'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-footer'
@@ -132,6 +135,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Workspaces',
         icon: Stack,
         Component: OrpheusWorkspacesSection
+      },
+      {
+        id: 'orpheus-keep-awake',
+        label: 'Keep Awake',
+        icon: Coffee,
+        Component: OrpheusKeepAwakeSection
       },
       {
         id: 'orpheus-updates',
