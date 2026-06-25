@@ -1,5 +1,9 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
-import { startSessionStateService } from './sessionState'
+import {
+  startSessionStateService,
+  setSessionReadyHandler,
+  isWorkspaceSessionReady
+} from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
   app,
@@ -100,7 +104,6 @@ import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
   ensureManagedHooks,
-  onSessionStart,
   clearWorkspaceActivity,
   invalidateWatchdogCache,
   getWorkspaceActivity,
@@ -210,6 +213,10 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Keyed by workspaceId — snapshot of the ClaudeLaunch used at terminal:mount time.
 const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
+
+// Fallback auto-hide timers for loading overlays — ensures a stuck overlay
+// is always dismissed even if claude never registers a session file.
+const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let sessionStateService: { stop: () => void } | null = null
@@ -368,10 +375,10 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
     console.log('[loadingOverlay] action click', workspaceId)
     hideLoadingOverlay(workspaceId)
   })
-  // SessionStart hook is the canonical "claude is ready" signal — dismiss the
-  // overlay regardless of prior activity status. Min-show debounce in the state
-  // machine prevents flash on fast mounts.
-  onSessionStart((workspaceId: string) => {
+  // Session file reaching a concrete status (busy|idle|waiting) is the canonical
+  // "claude is ready" signal — dismiss the overlay. Min-show debounce in the
+  // state machine prevents flash on fast mounts.
+  setSessionReadyHandler((workspaceId: string) => {
     hideLoadingOverlay(workspaceId)
   })
 }
@@ -1530,6 +1537,22 @@ ipcMain.handle(
     // already running and there's no boot to mask.
     if (result.created) {
       showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
+
+      // If the session is already past its starting phase (re-mount of a
+      // running workspace), dismiss the overlay immediately.
+      if (isWorkspaceSessionReady(workspaceId)) {
+        hideLoadingOverlay(workspaceId)
+      } else {
+        // Fallback: ensure the overlay is always dismissed after 10s even if
+        // claude never registers a session file (e.g. auth failure, crash).
+        const prev = overlayFallbackTimers.get(workspaceId)
+        if (prev) clearTimeout(prev)
+        const t = setTimeout(() => {
+          overlayFallbackTimers.delete(workspaceId)
+          hideLoadingOverlay(workspaceId)
+        }, 10000)
+        overlayFallbackTimers.set(workspaceId, t)
+      }
     }
 
     // Snapshot the composed launch so we can detect settings drift later.
@@ -1557,6 +1580,11 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   const addon = loadTerminalAddon()
   // If the user navigates away mid-boot, dismiss the overlay so it doesn't
   // outlive its parent surface in the contentView.
+  const fallback = overlayFallbackTimers.get(workspaceId)
+  if (fallback) {
+    clearTimeout(fallback)
+    overlayFallbackTimers.delete(workspaceId)
+  }
   hideLoadingOverlay(workspaceId)
   addon.hide(workspaceId)
   logDiagMain({
@@ -1655,6 +1683,11 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
+  const fallbackTimer = overlayFallbackTimers.get(workspaceId)
+  if (fallbackTimer) {
+    clearTimeout(fallbackTimer)
+    overlayFallbackTimers.delete(workspaceId)
+  }
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   launchSnapshots.delete(workspaceId)

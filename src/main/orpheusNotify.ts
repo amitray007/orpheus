@@ -56,10 +56,6 @@ export function invalidateWatchdogCache(): void {
   cachedAutoCloseMinutes = null
 }
 
-// Fires only on the SessionStart hook, regardless of prior activity status.
-// Used by loadingOverlay to dismiss its mount-time overlay reliably even when
-// the workspace was previously in 'awaiting_input' (re-mount of a known session).
-const sessionStartListeners = new Set<(workspaceId: string) => void>()
 let autoCloseHandler: ((workspaceId: string) => void) | null = null
 let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
   null
@@ -250,19 +246,10 @@ function handleHookEvent(
       broadcastDetailIfChanged(workspaceId)
       return
     case 'session-start':
-      for (const cb of sessionStartListeners) {
-        try {
-          cb(workspaceId)
-        } catch {
-          /* ignore */
-        }
-      }
+      // Hook plumbing kept intact — no-op; overlay dismissal is now driven
+      // by the session file reaching a concrete status (sessionState.ts).
       return
   }
-}
-
-export function onSessionStart(cb: (workspaceId: string) => void): void {
-  sessionStartListeners.add(cb)
 }
 
 /**

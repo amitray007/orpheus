@@ -63,6 +63,8 @@ const lastSnapshot = new Map<string, string>()
 const lastRawActed = new Map<string, string>()
 /** Tracks when each workspace last transitioned into busy, per workspaceId. */
 const busySince = new Map<string, number>()
+/** Tracks workspaces for which the session-ready signal has already been fired. */
+const readySignaled = new Set<string>()
 
 let reconcileRunning = false
 let dirty = false
@@ -71,6 +73,8 @@ let watcher: fs.FSWatcher | null = null
 let debounceTimer: NodeJS.Timeout | null = null
 let intervalHandle: NodeJS.Timeout | null = null
 let stopped = false
+
+let sessionReadyHandler: ((workspaceId: string) => void) | null = null
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -210,6 +214,20 @@ export function getLiveSessionState(): Map<string, LiveSession> {
 
 export async function forceReconcile(): Promise<void> {
   return reconcile()
+}
+
+export function setSessionReadyHandler(fn: (workspaceId: string) => void): void {
+  sessionReadyHandler = fn
+}
+
+/**
+ * Returns true when the workspace's claude session file reports a concrete
+ * status (busy | idle | waiting). Returns false when the session is absent,
+ * still starting (status field null), or the process is dead.
+ */
+export function isWorkspaceSessionReady(workspaceId: string): boolean {
+  const s = getWorkspaceFileStatusSync(workspaceId)
+  return s === 'busy' || s === 'idle' || s === 'waiting'
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +459,23 @@ async function reconcile(): Promise<void> {
         lastRawActed.set(ws.id, rawStatus)
       }
     }
+
+    // Session-ready signal: fire once per session lifecycle when the file
+    // first reports a concrete status (busy | idle | waiting). This allows
+    // the loading overlay to dismiss without relying on the SessionStart hook.
+    if (rawStatus === 'busy' || rawStatus === 'idle' || rawStatus === 'waiting') {
+      if (!readySignaled.has(ws.id)) {
+        readySignaled.add(ws.id)
+        try {
+          sessionReadyHandler?.(ws.id)
+        } catch {
+          /* ignore */
+        }
+      }
+    } else if (rawStatus === 'gone') {
+      // Clear so the next session (--resume with new pid/file) re-signals.
+      readySignaled.delete(ws.id)
+    }
   }
 
   // Prune entries for archived/removed workspaces to prevent memory leaks
@@ -452,6 +487,9 @@ async function reconcile(): Promise<void> {
   }
   for (const key of busySince.keys()) {
     if (!activeWorkspaceIds.has(key)) busySince.delete(key)
+  }
+  for (const key of readySignaled) {
+    if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
   }
 }
 
