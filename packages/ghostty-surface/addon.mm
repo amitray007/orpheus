@@ -3800,6 +3800,42 @@ static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat 
 @end
 
 // ---------------------------------------------------------------------------
+// OrpheusChipButton — NSButton subclass for the PR chip overlay element.
+// ---------------------------------------------------------------------------
+@interface OrpheusChipButton : NSButton
+@end
+
+@implementation OrpheusChipButton
+// Collapse hits on the inner icon/label subviews onto the button itself so the
+// ENTIRE chip area is clickable, not just the bare padding between subviews.
+- (NSView*)hitTest:(NSPoint)point {
+    return [super hitTest:point] ? self : nil;
+}
+// Pointing-hand cursor over the whole chip so it reads as a button.
+- (void)resetCursorRects {
+    [self addCursorRect:self.bounds cursor:[NSCursor pointingHandCursor]];
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea* ta in [self.trackingAreas copy]) {
+        [self removeTrackingArea:ta];
+    }
+    NSTrackingArea* ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:(NSTrackingCursorUpdate | NSTrackingActiveAlways | NSTrackingInVisibleRect)
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+// Reliable cursor switch in the overlay context (cursor rects alone can be flaky
+// for dynamically-added overlay views).
+- (void)cursorUpdate:(NSEvent*)event {
+    (void)event;
+    [[NSCursor pointingHandCursor] set];
+}
+@end
+
+// ---------------------------------------------------------------------------
 // Helpers — used by both card builders
 // ---------------------------------------------------------------------------
 
@@ -4763,7 +4799,7 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     if (checkGlyph) chipW += checkGap + checkW;
 
     // Create chip button.
-    NSButton* chip = [[NSButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, chipW, chipH)];
+    OrpheusChipButton* chip = [[OrpheusChipButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, chipW, chipH)];
     chip.bezelStyle = NSBezelStyleRegularSquare;
     chip.bordered   = NO;
     chip.wantsLayer = YES;
