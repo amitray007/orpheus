@@ -11,6 +11,8 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
   const [exportResult, setExportResult] = useState<{
     ok: boolean
     path?: string
+    txtPath?: string
+    jsonPath?: string
     error?: string
   } | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -200,10 +202,13 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
               </button>
             </div>
           </div>
+          <p className="text-[11px] text-text-muted">
+            Includes a .json with raw event data — review before sharing.
+          </p>
           {exportResult && (
             <p className={`text-xs ${exportResult.ok ? 'text-green-400' : 'text-red-400'}`}>
               {exportResult.ok
-                ? `Saved to ${exportResult.path}`
+                ? `Saved ${exportResult.txtPath ?? exportResult.path} (+ .json)`
                 : `Export failed: ${exportResult.error}`}
             </p>
           )}

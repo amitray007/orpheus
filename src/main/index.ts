@@ -1311,8 +1311,6 @@ ipcMain.handle('diag:openConsole', () => {
 
 ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
   try {
-    const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
-
     const result = await dialog.showSaveDialog({
       title: 'Export Diagnostics',
       defaultPath: 'orpheus-diagnostics.txt',
@@ -1324,7 +1322,10 @@ ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
     }
 
     const txtPath = result.filePath
-    const jsonPath = txtPath.replace(/\.txt$/i, '') + '.json'
+    const { dir, name } = path.parse(txtPath)
+    const jsonPath = path.join(dir, name + '.json')
+
+    const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
 
     // Build readable .txt report
     const exportedAt = new Date().toISOString()
@@ -1372,17 +1373,27 @@ ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
 
     const txtContent = lines.join('\n')
 
+    // Write the .txt first, then the .json sidecar. If the JSON write fails
+    // after the txt landed, remove the orphaned txt so we never leave a
+    // half-completed report behind.
+    fs.writeFileSync(txtPath, txtContent, 'utf8')
     try {
-      fs.writeFileSync(txtPath, txtContent, 'utf8')
       fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
-    } catch (writeErr) {
+    } catch (jsonErr) {
+      try {
+        fs.unlinkSync(txtPath)
+      } catch {
+        /* best-effort cleanup */
+      }
       return {
         ok: false,
-        error: writeErr instanceof Error ? writeErr.message : String(writeErr)
+        error: `Report could not be completed (JSON sidecar failed): ${
+          jsonErr instanceof Error ? jsonErr.message : String(jsonErr)
+        }`
       }
     }
 
-    return { ok: true, path: txtPath }
+    return { ok: true, path: txtPath, txtPath, jsonPath }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

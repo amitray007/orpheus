@@ -632,8 +632,15 @@ const api = {
       ipcRenderer.on('diag:stream', listener)
       return () => ipcRenderer.removeListener('diag:stream', listener)
     },
-    export: (opts: { sinceMs: number }): Promise<{ ok: boolean; path?: string; error?: string }> =>
-      ipcRenderer.invoke('diag:export', opts)
+    export: (opts: {
+      sinceMs: number
+    }): Promise<{
+      ok: boolean
+      path?: string
+      txtPath?: string
+      jsonPath?: string
+      error?: string
+    }> => ipcRenderer.invoke('diag:export', opts)
   }
 }
 
