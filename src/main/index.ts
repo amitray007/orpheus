@@ -372,6 +372,11 @@ const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
 
 let popoverWired = false
 
+// PR URL per workspace, captured when a popover is shown so the popover
+// action callback can open it directly via shell.openExternal — avoids the
+// fragile renderer round-trip whose Map entry is cleared before the click.
+const popoverPrUrlByWorkspace = new Map<string, string>()
+
 function applyPopoverTheme(theme: Theme): void {
   if (!terminalAddon) return
   const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
@@ -388,6 +393,13 @@ function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
   // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
   addon.setPopoverActionCallback((identifier: string) => {
     console.log('[popover] action callback:', identifier)
+    // Open the PR directly from main on a PR-chip click — the renderer Map that
+    // used to hold the URL is cleared before the click lands, so main owns this.
+    if (identifier.endsWith('::pr')) {
+      const wsId = identifier.slice(0, identifier.lastIndexOf('::'))
+      const url = popoverPrUrlByWorkspace.get(wsId)
+      if (url) shell.openExternal(url)
+    }
     // Phase B: parse identifier and route action (e.g. open PR URL).
     // For now, broadcast to renderer so it can handle it.
     getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
@@ -1774,6 +1786,8 @@ ipcMain.handle(
       data: Record<string, unknown>
     }
   ): void => {
+    const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
+    if (prUrl) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
     const addon = loadTerminalAddon()
     // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
     // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).

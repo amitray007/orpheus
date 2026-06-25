@@ -3833,6 +3833,13 @@ static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat 
     (void)event;
     [[NSCursor pointingHandCursor] set];
 }
+// Receive the FIRST click even when the window/overlay isn't already key —
+// the popover is summoned on hover, so the first click on the chip would
+// otherwise be swallowed as a window-activating "first mouse" event.
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
+    return YES;
+}
 @end
 
 // ---------------------------------------------------------------------------
@@ -4415,6 +4422,11 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 - (BOOL)nonWebContentView {
     // Same Chromium hit-test bypass as OrpheusGhosttyView — mouse events inside
     // the card frame are NOT swallowed by the WebContents layer.
+    return YES;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
     return YES;
 }
 
