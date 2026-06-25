@@ -52,6 +52,7 @@ export function DiagConsole(): React.JSX.Element {
 
   const feedRef = useRef<HTMLDivElement>(null)
   const pausedRef = useRef(false)
+  const seqCounter = useRef(0)
 
   useEffect(() => {
     pausedRef.current = paused
@@ -63,13 +64,18 @@ export function DiagConsole(): React.JSX.Element {
     const ring = ringRef.current
     let newDropped = 0
 
+    // Stable identity for React keys: monotonic seq assigned on ring entry.
     for (const evt of evts) {
-      if (ring.length >= RING_CAP) {
-        ring.shift()
-        newDropped++
-      }
-      ring.push(evt)
+      ;(evt as { __seq?: number }).__seq = seqCounter.current++
     }
+
+    // Bulk drop-oldest in one splice instead of per-event shift().
+    const overflow = Math.max(0, ring.length + evts.length - RING_CAP)
+    if (overflow > 0) {
+      ring.splice(0, overflow)
+      newDropped += overflow
+    }
+    ring.push(...evts)
 
     setTotalReceived((n) => n + evts.length)
     if (newDropped > 0) setDropped((n) => n + newDropped)
@@ -192,7 +198,7 @@ export function DiagConsole(): React.JSX.Element {
         ) : (
           filtered.map((evt, i) => (
             <FeedRow
-              key={i}
+              key={(evt as { __seq?: number }).__seq ?? i}
               evt={evt}
               isSelected={selectedTraceId != null && evt.traceId === selectedTraceId}
               onClick={() => handleRowClick(evt)}

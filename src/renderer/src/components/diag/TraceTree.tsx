@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import type React from 'react'
 import { Copy, X } from '@phosphor-icons/react'
 import { formatTraceTree } from '@shared/diagFormat'
@@ -10,8 +11,11 @@ interface TraceTreeProps {
 }
 
 export function TraceTree({ traceId, rows, onClose }: TraceTreeProps): React.JSX.Element {
-  const traceRows = rows.filter((r) => r.traceId === traceId)
-  const tree = formatTraceTree(traceRows as unknown as Array<Record<string, unknown>>)
+  const traceRows = useMemo(() => rows.filter((r) => r.traceId === traceId), [rows, traceId])
+  const tree = useMemo(
+    () => formatTraceTree(traceRows as unknown as Array<Record<string, unknown>>),
+    [traceRows]
+  )
 
   function handleCopyJson(): void {
     window.api.shell.copyToClipboard(JSON.stringify(traceRows, null, 2)).catch(() => {
