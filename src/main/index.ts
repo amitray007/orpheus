@@ -1786,24 +1786,40 @@ handle(
       await getUserShellPath()
     }
 
-    // Assemble the surface launch env + command via the Orpheus adapter.
-    // buildMountEnv owns the env layering: settings → auth → ORPHEUS_* vars.
-    const {
-      command,
-      env: surfaceEnv,
-      launch
-    } = buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
-
-    console.log(
-      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
-      workspaceId,
-      launch.flags || '(none)',
-      launch.settingsJson || '(none)',
-      Object.keys(surfaceEnv).join(',')
-    )
-
+    let launch!: ReturnType<typeof buildMountEnv>['launch']
     const _mountStart = Date.now()
     const result = await diag.trace('terminal.mount', { workspaceId }, async (s) => {
+      // Compose launch env as a child span nested under terminal.mount.
+      // buildMountEnv is sync; use diag.span (not diag.trace).
+      let buildResult!: ReturnType<typeof buildMountEnv>
+      try {
+        buildResult = diag.span(
+          'launch.compose',
+          { workspaceId, projectId: projectId ?? null },
+          () => buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
+        )
+      } catch (err) {
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: 'launch.compose_failed',
+          message: err instanceof Error ? err.message : String(err),
+          workspaceId,
+          data: { stack: err instanceof Error ? err.stack : null }
+        })
+        throw err
+      }
+      const { command, env: surfaceEnv, launch: composedLaunch } = buildResult
+      launch = composedLaunch
+
+      console.log(
+        '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
+        workspaceId,
+        launch.flags || '(none)',
+        launch.settingsJson || '(none)',
+        Object.keys(surfaceEnv).join(',')
+      )
+
       let mountResult: { workspaceId: string; created: boolean }
       try {
         mountResult = addon.mount(nativeHandle, {
@@ -2250,9 +2266,16 @@ handle(
 app.whenReady().then(() => {
   // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
   // This is a no-op after the first call (getUserShellPath caches internally).
-  getUserShellPath().catch(() => {
-    /* swallow — logged inside getUserShellPath */
-  })
+  void diag
+    .trace('startup.shell_path', {}, async () => {
+      const resolvedPath = await getUserShellPath()
+      if (!resolvedPath) {
+        logDiagMain({ category: 'anomaly', level: 'warn', event: 'startup.shell_path_unresolved' })
+      }
+    })
+    .catch(() => {
+      /* swallow — getUserShellPath already logs errors internally */
+    })
 
   electronApp.setAppUserModelId(APP_ID)
 

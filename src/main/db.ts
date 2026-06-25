@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { logDiagMain } from './diagnostics'
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -397,6 +398,7 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database): void {
+  const t0 = Date.now()
   // schema_version must exist before we can read it — create it unconditionally
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);')
 
@@ -2259,6 +2261,17 @@ function migrate(db: Database.Database): void {
     }
     db.prepare('UPDATE schema_version SET version = ?').run(61)
   }
+
+  // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()
+  // which is called before setDiagCategoryFlags syncs from settings — this event may
+  // not persist on the very first run; that is an accepted limitation.
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: 'db.migrate',
+    durationMs: Date.now() - t0,
+    data: { from: currentVersion, to: CURRENT_VERSION }
+  })
 }
 
 // projects.archived_at was dropped by the Version 3 migration, but it is still declared

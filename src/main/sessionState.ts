@@ -16,6 +16,7 @@ import { getAppUiState } from './uiState'
 import { setFileInfoProvider } from './osNotifications'
 import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
+import { logDiagMain } from './diagnostics'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -294,6 +295,7 @@ async function _runReconcile(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function reconcile(): Promise<void> {
+  const t0 = Date.now()
   // 1. Read all session files
   let files: string[] = []
   try {
@@ -337,6 +339,13 @@ async function reconcile(): Promise<void> {
       // Torn write or invalid JSON — keep last-good if available
       // We can't identify which sessionId this was from the filename alone
       // so we just skip; the previous entry (if any) stays in liveSessionMap
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: 'session.parse_error',
+        message: filename,
+        data: { filename }
+      })
     }
   }
 
@@ -409,6 +418,12 @@ async function reconcile(): Promise<void> {
         const key = `${fileStatus}|${hookStatus}`
         if (lastSnapshot.get(ws.id) !== key) {
           _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'pid dead/gone', session)
+          logDiagMain({
+            category: 'anomaly',
+            level: 'debug',
+            event: 'session.dead_pid',
+            data: { pid }
+          })
           lastSnapshot.set(ws.id, key)
         }
       } else if (session.status === null) {
@@ -490,6 +505,18 @@ async function reconcile(): Promise<void> {
   }
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
+  }
+
+  // Emit perf span only when reconcile is slow (>20 ms threshold) to avoid flooding.
+  const durationMs = Date.now() - t0
+  if (durationMs > 20) {
+    logDiagMain({
+      category: 'perf',
+      level: 'info',
+      event: 'session.reconcile',
+      durationMs,
+      data: { liveCount: liveSessionMap.size }
+    })
   }
 }
 
