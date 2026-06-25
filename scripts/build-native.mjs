@@ -54,18 +54,56 @@ for (const target of TARGETS) {
     }
   }
 
-  const cmd = [
-    resolve(ROOT, 'node_modules/.bin/node-gyp'),
-    'rebuild',
+  const gypBin = resolve(ROOT, 'node_modules/.bin/node-gyp')
+  // Pass an explicit python3 so node-gyp does NOT create its temporary
+  // `build/node_gyp_bins` PATH-shim symlink dir. On macOS 27 + node-gyp 12 that
+  // dir's end-of-run cleanup races and throws an UNCAUGHT `ENOENT lstat
+  // node_gyp_bins` (exit 7) even though compile+link fully succeeded.
+  const pythonBin = process.env.PYTHON || process.env.npm_config_python || 'python3'
+  const gypFlags = [
     `--target=${electronVersion}`,
     '--dist-url=https://electronjs.org/headers',
     '--arch=arm64',
+    `--python=${pythonBin}`,
     '--verbose'
   ].join(' ')
 
-  console.log(`[build-native] $ ${cmd}`)
   try {
-    execSync(cmd, { cwd: pkgDir, stdio: 'inherit' })
+    // Step 1: clean + configure (generates the Makefile and build/ skeleton).
+    console.log(`[build-native] $ node-gyp rebuild (clean+configure) ${gypFlags}`)
+    execSync(`${gypBin} clean`, { cwd: pkgDir, stdio: 'inherit' })
+    execSync(`${gypBin} configure ${gypFlags}`, { cwd: pkgDir, stdio: 'inherit' })
+
+    // Step 2: pre-create the .deps directory tree that clang's -MMD flag needs.
+    // node-gyp's generated Makefile does NOT mkdir -p the .deps/ path before the
+    // compile step, so the first compile fails with "No such file or directory"
+    // when writing the .d.raw dependency tracking file.  Creating it here (after
+    // configure has made the build/ skeleton) is the minimal fix.
+    const { mkdirSync } = await import('fs')
+    const depsDir = resolve(pkgDir, 'build/Release/.deps/Release/obj.target/ghostty_native')
+    mkdirSync(depsDir, { recursive: true })
+    console.log(`[build-native] pre-created .deps dir: ${depsDir}`)
+
+    // Step 3: build (make). Force serial make (JOBS=1): even with the .deps dir
+    // pre-created, parallel make can re-race on per-object dep dirs.
+    console.log(`[build-native] $ node-gyp build ${gypFlags}`)
+    execSync(`${gypBin} build ${gypFlags}`, {
+      cwd: pkgDir,
+      stdio: 'inherit',
+      env: { ...process.env, JOBS: '1' }
+    })
+
+    // Step 4: prune build intermediates, keeping ONLY the final .node. The
+    // .deps/ and obj.target/ trees hold transient .o/.o.tmp/.d.raw files that
+    // electron-builder's node_modules traversal walks into and intermittently
+    // fails on ("ENOENT ... addon.o.d.raw" / ".../ghostty_native.node.d") when a
+    // temp file vanishes mid-walk. Only build/Release/ghostty_native.node is
+    // consumed downstream (package.json#main + electron-builder extraResources).
+    const { rmSync, existsSync } = await import('fs')
+    for (const sub of ['Release/.deps', 'Release/obj.target']) {
+      const p = resolve(pkgDir, 'build', sub)
+      if (existsSync(p)) rmSync(p, { recursive: true, force: true })
+    }
     console.log(`[build-native] ${target} OK`)
   } catch {
     console.error(`[build-native] ${target} FAILED`)
