@@ -160,7 +160,9 @@ if (stats) {
 
 const SELECT = `SELECT id, ts, process, category, level, event,
           workspace_id AS workspaceId, session_id AS sessionId,
-          duration_ms AS durationMs, message, data
+          duration_ms AS durationMs, message, data,
+          name, kind, trace_id AS traceId, span_id AS spanId,
+          parent_span_id AS parentSpanId, seq
      FROM diagnostics_events`
 
 const traceId = arg('trace')
