@@ -519,9 +519,10 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section aligns with the sidebar's right edge when expanded so the
-  // workspace title bar lines up with the content area below it.
-  const leftWidth = sidebarCollapsed ? MIN_LEFT_WIDTH : Math.max(MIN_LEFT_WIDTH, sidebarWidth)
+  // Left section is a constant width (traffic-light clearance + the toggle and
+  // status-chip controls) so the top bar never shifts when the sidebar is
+  // collapsed or resized.
+  const leftWidth = MIN_LEFT_WIDTH
 
   return (
     <header
