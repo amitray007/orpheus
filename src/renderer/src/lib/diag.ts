@@ -28,6 +28,9 @@ export function logDiag(partial: {
 let current: TraceContext | undefined
 
 export const diag = {
+  // NOTE: The module-level `current` context supports one active trace at a time
+  // (explicit-edge design). Concurrent overlapping diag.trace calls will mis-parent
+  // their spans — callers must not interleave them.
   // Renderer spans use EXPLICIT context (no AsyncLocalStorage in Chromium).
   // Emits a single completed-span record on resolution.
   async trace<T>(
@@ -70,7 +73,8 @@ export const diag = {
       name,
       kind: 'event',
       traceId: current?.traceId ?? newTraceId(),
-      spanId: current?.spanId ?? newSpanId(),
+      spanId: newSpanId(),
+      parentSpanId: current?.spanId ?? null,
       data: attrs ?? null
     })
   },

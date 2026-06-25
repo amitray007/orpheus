@@ -1695,7 +1695,6 @@ ipcMain.handle(
         workspaceId,
         durationMs: Date.now() - _mountStart
       })
-      s.mark('first-frame')
       return mountResult
     })
 

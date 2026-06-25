@@ -131,9 +131,8 @@ function startSpan(name: string, attrs?: Record<string, unknown>): Span {
 }
 
 // When the trace category is off, hand callers a Span that emits nothing.
-function noopSpan(): Span {
-  return new Span(() => {}, { traceId: 't0', spanId: 's0' }, 'noop', null, undefined)
-}
+// Singleton — allocated once at import, never per-call.
+const NOOP_SPAN = new Span(() => {}, { traceId: 't0', spanId: 's0' }, 'noop', null)
 
 export const diag = {
   // async unit of work — child spans nest automatically via ALS.
@@ -142,7 +141,7 @@ export const diag = {
     attrs: Record<string, unknown> | undefined,
     fn: (s: Span) => Promise<T> | T
   ): Promise<T> {
-    if (!isCategoryEnabled('trace')) return await fn(noopSpan())
+    if (!isCategoryEnabled('trace')) return fn(NOOP_SPAN) as Promise<T>
     const span = startSpan(name, attrs)
     try {
       return await traceStore.run(span.ctx, () => fn(span))
@@ -152,7 +151,7 @@ export const diag = {
   },
   // sync unit of work.
   span<T>(name: string, attrs: Record<string, unknown> | undefined, fn: (s: Span) => T): T {
-    if (!isCategoryEnabled('trace')) return fn(noopSpan())
+    if (!isCategoryEnabled('trace')) return fn(NOOP_SPAN)
     const span = startSpan(name, attrs)
     try {
       return traceStore.run(span.ctx, () => fn(span))
@@ -162,13 +161,14 @@ export const diag = {
   },
   // point event (no span).
   event(name: string, attrs?: Record<string, unknown>, level: DiagLevel = 'info'): void {
+    if (!isCategoryEnabled('trace')) return
     const parent = traceStore.getStore()
     emitTrace({
       ts: Date.now(),
       kind: 'event',
       name,
       traceId: parent?.traceId ?? newTraceId(),
-      spanId: parent?.spanId ?? newSpanId(),
+      spanId: newSpanId(),
       parentSpanId: parent?.spanId ?? null,
       level,
       workspaceId: typeof attrs?.workspaceId === 'string' ? attrs.workspaceId : null,

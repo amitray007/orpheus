@@ -95,14 +95,15 @@ export class Span {
   end(level: DiagLevel = 'info'): void {
     if (this.ended) return
     this.ended = true
+    const endTs = Date.now()
     this.emit({
-      ts: Date.now(),
+      ts: endTs,
       kind: 'span',
       name: this.name,
       traceId: this.ctx.traceId,
       spanId: this.ctx.spanId,
       parentSpanId: this.parentSpanId,
-      durationMs: Date.now() - this.startTs,
+      durationMs: endTs - this.startTs,
       level,
       workspaceId: pick(this.attrs, 'workspaceId'),
       sessionId: pick(this.attrs, 'sessionId'),
