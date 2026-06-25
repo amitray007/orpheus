@@ -51,8 +51,8 @@ export function FeedRow({ evt, isSelected, onClick }: FeedRowProps): React.JSX.E
         .join(' ')}
     >
       <span className="shrink-0 text-text-muted">{formatTime(evt.ts)}</span>
-      <span className="shrink-0 w-14 text-text-muted">{evt.process ?? 'main'}</span>
-      <span className="shrink-0 w-24 opacity-70">{catLevel}</span>
+      <span className="shrink-0 w-[9ch] text-text-muted">{evt.process ?? 'main'}</span>
+      <span className="shrink-0 w-[16ch] opacity-70">{catLevel}</span>
       <span className="shrink-0 truncate max-w-[200px]">{nameOrEvent}</span>
       {evt.workspaceId != null && evt.workspaceId !== '' && (
         <span className="shrink-0 text-text-muted">ws={String(evt.workspaceId).slice(0, 8)}</span>
