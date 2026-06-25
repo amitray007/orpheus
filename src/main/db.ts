@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 60
+const CURRENT_VERSION = 61
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -238,12 +238,18 @@ const DIAGNOSTICS_SCHEMA_SQL = `
     duration_ms  INTEGER,
     message      TEXT,
     data         TEXT,
-    seq          INTEGER NOT NULL
+    seq          INTEGER NOT NULL,
+    trace_id        TEXT,
+    span_id         TEXT,
+    parent_span_id  TEXT,
+    name            TEXT,
+    kind            TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_diag_ts       ON diagnostics_events(ts);
   CREATE INDEX IF NOT EXISTS idx_diag_cat_ts   ON diagnostics_events(category, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_ws_ts    ON diagnostics_events(workspace_id, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_event_ts ON diagnostics_events(event, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_trace    ON diagnostics_events(trace_id, ts);
 `
 
 // Footer actions — phase 3a. Three-scope additive list.
@@ -351,6 +357,8 @@ const UI_STATE_SCHEMA_SQL = `
     diag_lifecycle INTEGER NOT NULL DEFAULT 0,
     diag_perf INTEGER NOT NULL DEFAULT 0,
     diag_anomaly INTEGER NOT NULL DEFAULT 0,
+    -- Trace capture (v61) — off by default
+    diag_trace INTEGER NOT NULL DEFAULT 0,
     auto_close_after_minutes INTEGER,
     -- Notification enrichment (v59)
     notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
@@ -2223,6 +2231,33 @@ function migrate(db: Database.Database): void {
       /* column may already exist on fresh install */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(60)
+  }
+
+  if (currentVersion < 61) {
+    for (const col of [
+      'trace_id TEXT',
+      'span_id TEXT',
+      'parent_span_id TEXT',
+      'name TEXT',
+      'kind TEXT'
+    ]) {
+      try {
+        db.exec(`ALTER TABLE diagnostics_events ADD COLUMN ${col}`)
+      } catch {
+        /* column may already exist */
+      }
+    }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_diag_trace ON diagnostics_events(trace_id, ts)')
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN diag_trace INTEGER NOT NULL DEFAULT 0')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(61)
   }
 }
 
