@@ -211,7 +211,8 @@ import {
   stopDiagnostics,
   logDiagMain,
   ingestDiagEvent,
-  setDiagCategoryFlags
+  setDiagCategoryFlags,
+  diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
@@ -1312,7 +1313,8 @@ function syncDiagFlags(): void {
     error: s.diagError,
     lifecycle: s.diagLifecycle,
     perf: s.diagPerf,
-    anomaly: s.diagAnomaly
+    anomaly: s.diagAnomaly,
+    trace: s.diagTrace
   })
 }
 
@@ -1669,27 +1671,32 @@ ipcMain.handle(
     )
 
     const _mountStart = Date.now()
-    const result = addon.mount(handle, {
-      workspaceId,
-      rect,
-      scaleFactor,
-      cwd,
-      command,
-      env: surfaceEnv
-    })
-    logDiagMain({
-      category: 'lifecycle',
-      level: 'info',
-      event: DIAG_EVENTS.TERMINAL_MOUNT,
-      workspaceId,
-      data: { created: result?.created ?? null }
-    })
-    logDiagMain({
-      category: 'perf',
-      level: 'info',
-      event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
-      workspaceId,
-      durationMs: Date.now() - _mountStart
+    const result = await diag.trace('terminal.mount', { workspaceId }, async (s) => {
+      const mountResult = addon.mount(handle, {
+        workspaceId,
+        rect,
+        scaleFactor,
+        cwd,
+        command,
+        env: surfaceEnv
+      })
+      s.mark('surface-created')
+      logDiagMain({
+        category: 'lifecycle',
+        level: 'info',
+        event: DIAG_EVENTS.TERMINAL_MOUNT,
+        workspaceId,
+        data: { created: mountResult?.created ?? null }
+      })
+      logDiagMain({
+        category: 'perf',
+        level: 'info',
+        event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
+        workspaceId,
+        durationMs: Date.now() - _mountStart
+      })
+      s.mark('first-frame')
+      return mountResult
     })
 
     // Show the loading overlay only when a new surface was actually created —

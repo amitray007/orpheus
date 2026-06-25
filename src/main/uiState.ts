@@ -82,6 +82,8 @@ type AppUiStateRow = {
   diag_lifecycle: number | null
   diag_perf: number | null
   diag_anomaly: number | null
+  // Trace capture (v61)
+  diag_trace: number | null
   updated_at: number
 }
 
@@ -155,6 +157,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagLifecycle: row.diag_lifecycle === 1,
     diagPerf: row.diag_perf === 1,
     diagAnomaly: row.diag_anomaly === 1,
+    // Trace capture (v61) — off by default
+    diagTrace: row.diag_trace === 1,
     updatedAt: row.updated_at
   }
 }
@@ -339,7 +343,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',
     diagPerf: 'diag_perf',
-    diagAnomaly: 'diag_anomaly'
+    diagAnomaly: 'diag_anomaly',
+    // Trace capture (v61)
+    diagTrace: 'diag_trace'
   }
 
   const setClauses: string[] = []

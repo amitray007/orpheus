@@ -111,6 +111,16 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
               ariaLabel="Capture anomalies"
             />
           </SettingRow>
+          <SettingRow
+            label="Trace"
+            description="Cross-process span tracing. Verbose; off by default."
+          >
+            <Toggle
+              value={uiState.diagTrace ?? false}
+              onChange={(v) => patch({ diagTrace: v })}
+              ariaLabel="Capture trace spans"
+            />
+          </SettingRow>
         </div>
       </section>
     </div>

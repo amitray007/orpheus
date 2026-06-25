@@ -132,6 +132,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           diagLifecycle: false,
           diagPerf: false,
           diagAnomaly: false,
+          diagTrace: false,
           theme: 'midnight',
           accentColor: null,
           uiFontScale: 'default',
