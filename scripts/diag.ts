@@ -153,33 +153,71 @@ function renderTrace(rows: Array<Record<string, unknown>>): string {
     }
   }
   const out: string[] = []
-  const t0 = Number(rows[0].ts)
+  // Compute t0 from earliest root-span START (span.ts is the END timestamp;
+  // subtract duration to get start). Fall back to first DB row if no spans yet.
+  const known = new Set(spans.map((s) => s.span_id as string))
+  const rootSpans = spans.filter((s) => {
+    const p = (s.parent_span_id as string | null) ?? null
+    return p === null || !known.has(p)
+  })
+  const t0 = rootSpans.length
+    ? Math.min(...rootSpans.map((s) => Number(s.ts) - (Number(s.duration_ms) || 0)))
+    : Number(rows[0].ts)
+
+  // Handle in-flight / all-marks case: no spans closed yet
+  if (spans.length === 0) {
+    out.push('(trace in progress — no spans closed yet)')
+    const markRows = rows.filter((r) => r.kind === 'mark' || r.kind === 'event')
+    for (const m of markRows) {
+      const label =
+        m.kind === 'mark'
+          ? String(m.name ?? '(unnamed)')
+              .split(':')
+              .slice(1)
+              .join(':') || String(m.name ?? '(unnamed)')
+          : String(m.name ?? '(unnamed)')
+      out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
+    }
+    return out.join('\n')
+  }
+
   const walk = (parentSpanId: string | null, depth: number): void => {
     for (const s of childrenOf.get(parentSpanId) ?? []) {
       const pad = '  '.repeat(depth)
       const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
-      out.push(`${pad}▸ ${s.name}  (${dur})  +${Number(s.ts) - t0}ms`)
+      out.push(
+        `${pad}▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
+      )
       for (const m of marksOf.get(s.span_id as string) ?? []) {
-        out.push(
-          `${pad}  · ${String(m.name).split(':').slice(1).join(':') || m.name}  +${Number(m.ts) - t0}ms`
-        )
+        const label =
+          m.kind === 'mark'
+            ? String(m.name ?? '(unnamed)')
+                .split(':')
+                .slice(1)
+                .join(':') || String(m.name ?? '(unnamed)')
+            : String(m.name ?? '(unnamed)')
+        out.push(`${pad}  · ${label}  +${Number(m.ts) - t0}ms`)
       }
       walk(s.span_id as string, depth + 1)
     }
   }
   // roots = spans whose parent is null OR whose parent isn't in this trace
-  const known = new Set(spans.map((s) => s.span_id as string))
-  for (const s of spans) {
-    const p = (s.parent_span_id as string | null) ?? null
-    if (p === null || !known.has(p)) {
-      out.push(`▸ ${s.name}  (${s.duration_ms != null ? s.duration_ms + 'ms' : '—'})`)
-      for (const m of marksOf.get(s.span_id as string) ?? []) {
-        out.push(
-          `  · ${String(m.name).split(':').slice(1).join(':') || m.name}  +${Number(m.ts) - t0}ms`
-        )
-      }
-      walk(s.span_id as string, 1)
+  for (const s of rootSpans) {
+    const dur = s.duration_ms != null ? `${s.duration_ms}ms` : '—'
+    out.push(
+      `▸ ${String(s.name ?? '(unnamed)')}  (${dur})  +${Number(s.ts) - (Number(s.duration_ms) || 0) - t0}ms`
+    )
+    for (const m of marksOf.get(s.span_id as string) ?? []) {
+      const label =
+        m.kind === 'mark'
+          ? String(m.name ?? '(unnamed)')
+              .split(':')
+              .slice(1)
+              .join(':') || String(m.name ?? '(unnamed)')
+          : String(m.name ?? '(unnamed)')
+      out.push(`  · ${label}  +${Number(m.ts) - t0}ms`)
     }
+    walk(s.span_id as string, 1)
   }
   return out.join('\n')
 }
@@ -207,13 +245,23 @@ if (stats) {
   process.exit(0)
 }
 
+const SELECT = `SELECT id, ts, process, category, level, event,
+          workspace_id AS workspaceId, session_id AS sessionId,
+          duration_ms AS durationMs, message, data
+     FROM diagnostics_events`
+
 const traceId = arg('trace')
+if (process.argv.includes('--trace') && !traceId) {
+  console.error('[diag] --trace requires a trace ID argument')
+  process.exit(1)
+}
+
 if (traceId) {
   const rows = db
     .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
     .all(traceId) as Array<Record<string, unknown>>
   if (tail) {
-    // follow: re-query every 1s, print new rows' trace tree (simple full re-render)
+    // follow: re-query every 1s
     console.log(renderTrace(rows))
     setInterval(() => {
       const r2 = db
@@ -226,14 +274,7 @@ if (traceId) {
     console.log(renderTrace(rows))
     process.exit(0)
   }
-}
-
-const SELECT = `SELECT id, ts, process, category, level, event,
-          workspace_id AS workspaceId, session_id AS sessionId,
-          duration_ms AS durationMs, message, data
-     FROM diagnostics_events`
-
-if (tail) {
+} else if (tail) {
   // Poll every 1s, print new rows. Ctrl-C to stop.
   const { sql, params } = buildWhere()
   let lastId =
