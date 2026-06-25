@@ -235,6 +235,27 @@ export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
 export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
+// Keep Awake (power management) — see docs/superpowers/specs/2026-06-26-keep-awake-design.md
+export type KeepAwakeBaseMode = 'off' | 'auto' | 'on'
+export type KeepAwakeMode = KeepAwakeBaseMode | 'timer'
+
+export type KeepAwakeState = {
+  /** Effective current mode — 'timer' while a countdown is active, else the base mode. */
+  mode: KeepAwakeMode
+  /** Persisted base mode the control reverts to when a timer expires/restarts. */
+  baseMode: KeepAwakeBaseMode
+  /** false → prevent-app-suspension (screen may sleep); true → prevent-display-sleep. */
+  keepDisplayOn: boolean
+  /** Whether a powerSaveBlocker is currently held. */
+  isHolding: boolean
+  /** Milliseconds remaining on the active timer, or null when no timer is running. */
+  timerRemainingMs: number | null
+  /** Default duration (minutes) used when starting a 'For a while' timer. */
+  defaultTimerMinutes: number
+  /** Number of workspaces currently in_progress (drives the Auto status line). */
+  busyCount: number
+}
+
 // Shared model picker options — keep this list in one place so the General
 // settings, ProjectView overrides, and WorkspaceDrawer all agree.
 //

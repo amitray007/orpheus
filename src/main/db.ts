@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 61
+const CURRENT_VERSION = 62
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -371,6 +371,17 @@ const UI_STATE_SCHEMA_SQL = `
   );
 `
 
+const KEEP_AWAKE_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS keep_awake_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
+    display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
+    timer_minutes INTEGER NOT NULL DEFAULT 120
+  );
+  INSERT OR IGNORE INTO keep_awake_settings (id, mode, display_on, timer_minutes)
+    VALUES (1, 'auto', 0, 120);
+`
+
 // ---------------------------------------------------------------------------
 // Singleton
 // ---------------------------------------------------------------------------
@@ -430,6 +441,7 @@ function migrate(db: Database.Database): void {
   db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
   db.exec(DIAGNOSTICS_SCHEMA_SQL)
   db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
+  db.exec(KEEP_AWAKE_SCHEMA_SQL)
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
