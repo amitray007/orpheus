@@ -195,6 +195,8 @@ export type AppUiState = {
   diagLifecycle: boolean
   diagPerf: boolean
   diagAnomaly: boolean
+  // (v61) Cross-process span/trace capture. Opt-in; off by default.
+  diagTrace: boolean
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
@@ -851,12 +853,12 @@ export type FooterActionDraft = Omit<
   position?: number
 }
 
-export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly'
+export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly' | 'trace'
 export type DiagLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 export type DiagProcess = 'main' | 'renderer' | 'native'
 
-// One diagnostic event. `event` should be a value from DIAG_EVENTS (string-typed
-// here to avoid a cross-import; callers use the const).
+// One diagnostic event. `event` should be a value from DIAG_EVENTS for curated
+// point-events, OR a free-form dotted span/trace name (category 'trace').
 export type DiagEvent = {
   ts: number
   process: DiagProcess
@@ -868,6 +870,12 @@ export type DiagEvent = {
   durationMs?: number | null
   message?: string
   data?: Record<string, unknown> | null
+  // Trace correlation (category 'trace'); null/undefined for plain events.
+  traceId?: string | null
+  spanId?: string | null
+  parentSpanId?: string | null
+  name?: string | null
+  kind?: 'span' | 'event' | 'mark' | null
 }
 
 // Stored row shape returned by queries (adds id + seq).
@@ -880,6 +888,7 @@ export type DiagQuery = {
   levels?: DiagLevel[]
   event?: string
   workspaceId?: string
+  traceId?: string
   limit?: number
 }
 
