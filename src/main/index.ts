@@ -1168,10 +1168,7 @@ handle(
 )
 
 handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
-  const t0 = process.hrtime.bigint()
   await refreshSessionMetadata(projectId)
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6
-  if (ms > 50) console.log('[perf] sessions:refreshMetadata %dms', Math.round(ms))
 })
 
 handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
@@ -1652,10 +1649,7 @@ handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
 handle('git:status', (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd))
 
 handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
-  const t0 = process.hrtime.bigint()
   const result = await listBranches(cwd)
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6
-  if (ms > 50) console.log('[perf] git:branches %dms', Math.round(ms))
   return result
 })
 
@@ -1681,10 +1675,7 @@ handle(
     _e,
     args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
   ) => {
-    const t0 = process.hrtime.bigint()
     const result = await countCommits(args.cwd, args)
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6
-    if (ms > 50) console.log('[perf] git:count %dms', Math.round(ms))
     return result
   }
 )
@@ -1802,7 +1793,7 @@ handle(
         logDiagMain({
           category: 'error',
           level: 'error',
-          event: 'launch.compose_failed',
+          event: DIAG_EVENTS.LAUNCH_COMPOSE_FAILED,
           message: err instanceof Error ? err.message : String(err),
           workspaceId,
           data: { stack: err instanceof Error ? err.stack : null }
@@ -1841,7 +1832,7 @@ handle(
         })
         throw err
       }
-      s.mark('surface-created')
+      s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
       logDiagMain({
         category: 'lifecycle',
         level: 'info',
@@ -2270,7 +2261,11 @@ app.whenReady().then(() => {
     .trace('startup.shell_path', {}, async () => {
       const resolvedPath = await getUserShellPath()
       if (!resolvedPath) {
-        logDiagMain({ category: 'anomaly', level: 'warn', event: 'startup.shell_path_unresolved' })
+        logDiagMain({
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
+        })
       }
     })
     .catch(() => {

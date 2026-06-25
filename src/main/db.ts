@@ -3,6 +3,7 @@ import { app } from 'electron'
 import * as nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -398,7 +399,6 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database): void {
-  const t0 = Date.now()
   // schema_version must exist before we can read it — create it unconditionally
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);')
 
@@ -418,6 +418,7 @@ function migrate(db: Database.Database): void {
 
   // Fast path: already up-to-date — skip all DDL and migration steps
   if (currentVersion === CURRENT_VERSION) return
+  const t0 = Date.now()
 
   // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run on new/old installs)
   db.exec(SCHEMA_SQL)
@@ -2268,7 +2269,7 @@ function migrate(db: Database.Database): void {
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
-    event: 'db.migrate',
+    event: DIAG_EVENTS.DB_MIGRATE,
     durationMs: Date.now() - t0,
     data: { from: currentVersion, to: CURRENT_VERSION }
   })

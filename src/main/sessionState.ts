@@ -17,6 +17,7 @@ import { setFileInfoProvider } from './osNotifications'
 import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
 import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +75,11 @@ let watcher: fs.FSWatcher | null = null
 let debounceTimer: NodeJS.Timeout | null = null
 let intervalHandle: NodeJS.Timeout | null = null
 let stopped = false
+
+/** Tracks filenames that have already emitted a parse-error warning; cleared when file becomes valid or disappears. */
+const knownBadSessionFiles = new Set<string>()
+/** Tracks pids that have already emitted a dead-pid warning. Pids are recycled OS-wide but accumulation is bounded. */
+const deadPidReported = new Set<number>()
 
 let sessionReadyHandler: ((workspaceId: string) => void) | null = null
 
@@ -310,6 +316,9 @@ async function reconcile(): Promise<void> {
   const newMap = new Map<string, LiveSession>()
   const lastGoodMap = new Map<string, LiveSession>(liveSessionMap) // keep old for fallback
 
+  // Prune parse-error dedup set for files that are no longer present
+  for (const f of knownBadSessionFiles) if (!files.includes(f)) knownBadSessionFiles.delete(f)
+
   for (const filename of files) {
     const filePath = path.join(SESSIONS_DIR, filename)
     try {
@@ -335,17 +344,21 @@ async function reconcile(): Promise<void> {
       }
 
       newMap.set(parsed.sessionId, session)
+      knownBadSessionFiles.delete(filename)
     } catch {
       // Torn write or invalid JSON — keep last-good if available
       // We can't identify which sessionId this was from the filename alone
       // so we just skip; the previous entry (if any) stays in liveSessionMap
-      logDiagMain({
-        category: 'anomaly',
-        level: 'warn',
-        event: 'session.parse_error',
-        message: filename,
-        data: { filename }
-      })
+      if (!knownBadSessionFiles.has(filename)) {
+        knownBadSessionFiles.add(filename)
+        logDiagMain({
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.SESSION_PARSE_ERROR,
+          message: filename,
+          data: { filename }
+        })
+      }
     }
   }
 
@@ -418,13 +431,17 @@ async function reconcile(): Promise<void> {
         const key = `${fileStatus}|${hookStatus}`
         if (lastSnapshot.get(ws.id) !== key) {
           _logWorkspace(ws.id, ws.name, fileStatus, hookStatus, 'pid dead/gone', session)
+          lastSnapshot.set(ws.id, key)
+        }
+        if (!deadPidReported.has(pid)) {
+          deadPidReported.add(pid)
           logDiagMain({
             category: 'anomaly',
             level: 'debug',
-            event: 'session.dead_pid',
+            event: DIAG_EVENTS.SESSION_DEAD_PID,
+            workspaceId: ws.id,
             data: { pid }
           })
-          lastSnapshot.set(ws.id, key)
         }
       } else if (session.status === null) {
         // Status field absent (starting) — skip this workspace, leave snapshot untouched
@@ -513,7 +530,7 @@ async function reconcile(): Promise<void> {
     logDiagMain({
       category: 'perf',
       level: 'info',
-      event: 'session.reconcile',
+      event: DIAG_EVENTS.SESSION_RECONCILE,
       durationMs,
       data: { liveCount: liveSessionMap.size }
     })
