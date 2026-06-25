@@ -33,6 +33,7 @@ import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
+import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
   listBranches,
@@ -713,7 +714,7 @@ function createWindow(): void {
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
-    trafficLightPosition: { x: 16, y: 15 },
+    trafficLightPosition: { x: TRAFFIC_LIGHT_INSET, y: 15 },
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {

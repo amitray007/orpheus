@@ -13,6 +13,7 @@ import {
   Wrench
 } from '@phosphor-icons/react'
 import type { ClaudeStatusSnapshot } from '@shared/types'
+import { TRAFFIC_LIGHT_CLEARANCE } from '@shared/windowChrome'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,8 @@ interface TopBarProps {
 
 // macOS traffic lights + toggle button + status chip need at least this much
 // room before the workspace content starts.
-const MIN_LEFT_WIDTH = 160
+// 64 = two 32px controls (sidebar toggle + status chip) immediately after the spacer.
+const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 64
 
 // Components filtered out of the popover and settings list
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
@@ -527,8 +529,11 @@ export function TopBar({
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
-        {/* Traffic-light spacer — reserves 96px on the left */}
-        <div className="w-[96px] flex-shrink-0" />
+        {/* Traffic-light spacer — reserves exactly TRAFFIC_LIGHT_CLEARANCE (88px) for the
+            macOS window buttons. Derived from geometry in src/shared/windowChrome.ts,
+            not a magic number. The lights are at a fixed window position that does not
+            change when the sidebar collapses, so this clearance is the same in both states. */}
+        <div className="flex-shrink-0" style={{ width: TRAFFIC_LIGHT_CLEARANCE }} />
 
         {/* Sidebar collapse toggle */}
         <button
