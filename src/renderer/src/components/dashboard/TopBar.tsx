@@ -551,6 +551,7 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<KeepAwakeState | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const suppressDismiss = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -567,32 +568,34 @@ function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element 
     }
   }, [])
 
-  const holding = state?.isHolding ?? false
-  const armed = state?.mode === 'auto' && !holding
-
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
+        onMouseDown={() => {
+          if (open) suppressDismiss.current = true
+        }}
         aria-label="Keep awake"
         title="Keep awake"
-        className={[
-          'w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none',
-          holding ? 'text-accent' : armed ? 'text-text-secondary' : 'text-text-muted',
-          'hover:bg-surface-overlay'
-        ].join(' ')}
+        className="w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none text-text-secondary hover:bg-surface-overlay"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <Coffee size={16} weight={holding ? 'fill' : 'regular'} />
+        <Coffee size={16} weight="regular" />
       </button>
       {open && state && (
         <KeepAwakePopover
           state={state}
           triggerRef={triggerRef}
           sidebarWidth={sidebarWidth}
-          onClose={() => setOpen(false)}
+          onClose={() => {
+            if (suppressDismiss.current) {
+              suppressDismiss.current = false
+              return
+            }
+            setOpen(false)
+          }}
         />
       )}
     </>
