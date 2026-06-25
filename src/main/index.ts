@@ -2,7 +2,8 @@ import { APP_NAME, APP_ID, isDev } from './appMode'
 import {
   startSessionStateService,
   setSessionReadyHandler,
-  isWorkspaceSessionReady
+  isWorkspaceSessionReady,
+  getLiveSessionState
 } from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
@@ -13,7 +14,8 @@ import {
   dialog,
   screen,
   globalShortcut,
-  powerMonitor
+  powerMonitor,
+  Notification
 } from 'electron'
 
 // Set app name before anything reads app.getPath('userData'). Electron derives
@@ -27,7 +29,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
-import type { DoctorResult, GitStatus } from '../shared/types'
+import * as os from 'node:os'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
 import {
   getGitStatus,
   listBranches,
@@ -1348,6 +1353,89 @@ ipcMain.handle('hooks:getStatus', () => {
 
 ipcMain.handle('notifications:test', () => {
   fireTestNotification()
+})
+
+// ---------------------------------------------------------------------------
+// Health IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('health:get', async (): Promise<HealthReport> => {
+  // claudeCli
+  let claudeCli: HealthReport['claudeCli']
+  try {
+    const userPath = await getUserShellPath()
+    const whichResult = await new Promise<string>((resolve, reject) => {
+      childProcess.exec(
+        'which claude',
+        { env: { ...process.env, PATH: userPath } },
+        (err, stdout) => {
+          if (err) reject(err)
+          else resolve(stdout.trim())
+        }
+      )
+    })
+    if (!whichResult) throw new Error('claude not found on PATH')
+    const version = await new Promise<string>((resolve, reject) => {
+      const child = childProcess.spawn(whichResult, ['--version'], {
+        env: { ...process.env, PATH: userPath },
+        timeout: 5000
+      })
+      let out = ''
+      child.stdout.on('data', (d: Buffer) => {
+        out += d.toString()
+      })
+      child.stderr.on('data', (d: Buffer) => {
+        out += d.toString()
+      })
+      child.on('close', (code) => {
+        if (code === 0) resolve(out.trim())
+        else reject(new Error(`exit ${code}`))
+      })
+      child.on('error', reject)
+    })
+    claudeCli = { status: 'ok', detail: version }
+  } catch {
+    claudeCli = { status: 'error', detail: 'claude not found on PATH' }
+  }
+
+  // sessionRegistry
+  let sessionRegistry: HealthReport['sessionRegistry']
+  try {
+    const sessionDir = path.join(os.homedir(), '.claude', 'sessions')
+    await fs.promises.access(sessionDir, fs.constants.R_OK)
+    const liveCount = getLiveSessionState().size
+    sessionRegistry = { status: 'ok', detail: `${liveCount} live session(s)` }
+  } catch {
+    sessionRegistry = { status: 'warn', detail: 'session directory not found' }
+  }
+
+  // notifications
+  const notifSupported = Notification.isSupported()
+  const notifications: HealthReport['notifications'] = notifSupported
+    ? { status: 'ok', detail: 'Supported' }
+    : { status: 'warn', detail: 'Not supported on this platform' }
+
+  // hooks
+  const hooksEnabled = getAppUiState().hooksIntegrationEnabled
+  const hooksInstalled = countManagedHooks()
+  const hooksDetail = hooksEnabled ? `enabled · ${hooksInstalled} installed` : 'disabled'
+  const hooks: HealthReport['hooks'] = {
+    status: 'ok',
+    detail: hooksDetail,
+    enabled: hooksEnabled,
+    installed: hooksInstalled
+  }
+
+  // dataDir
+  let dataDir: HealthReport['dataDir']
+  try {
+    await fs.promises.access(app.getPath('userData'), fs.constants.W_OK)
+    dataDir = { status: 'ok', detail: 'Writable' }
+  } catch {
+    dataDir = { status: 'error', detail: 'Not writable' }
+  }
+
+  return { claudeCli, sessionRegistry, notifications, hooks, dataDir }
 })
 
 // ---------------------------------------------------------------------------

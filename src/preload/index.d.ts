@@ -47,7 +47,8 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
-  DiagEvent
+  DiagEvent,
+  HealthReport
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -368,6 +369,9 @@ declare global {
       hooks: {
         setEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>
         getStatus: () => Promise<{ enabled: boolean; installed: number }>
+      }
+      health: {
+        get: () => Promise<HealthReport>
       }
       diag: {
         event: (evt: DiagEvent) => void

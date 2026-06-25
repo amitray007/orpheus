@@ -882,3 +882,17 @@ export type DiagQuery = {
   workspaceId?: string
   limit?: number
 }
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
+export type HealthProbe = { status: 'ok' | 'warn' | 'error'; detail: string }
+
+export type HealthReport = {
+  claudeCli: HealthProbe
+  sessionRegistry: HealthProbe
+  notifications: HealthProbe
+  hooks: HealthProbe & { enabled: boolean; installed: number }
+  dataDir: HealthProbe
+}

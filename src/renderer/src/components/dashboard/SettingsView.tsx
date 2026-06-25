@@ -21,7 +21,8 @@ import {
   Pulse,
   Lightning,
   Terminal,
-  Stack
+  Stack,
+  FirstAidKit
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -50,6 +51,7 @@ import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
 import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
 import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
+import { OrpheusHealthSection } from './settings/OrpheusHealthSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -78,6 +80,7 @@ export type SectionId =
   | 'orpheus-footer'
   | 'orpheus-developer'
   | 'orpheus-diagnostics'
+  | 'orpheus-health'
   | 'orpheus-about'
 
 interface SectionDef {
@@ -159,6 +162,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Diagnostics',
         icon: Pulse,
         Component: OrpheusDiagnosticsSection
+      },
+      {
+        id: 'orpheus-health',
+        label: 'Health',
+        icon: FirstAidKit,
+        Component: OrpheusHealthSection
       },
       { id: 'orpheus-about', label: 'About Orpheus', icon: Info, Component: OrpheusAboutSection }
     ]

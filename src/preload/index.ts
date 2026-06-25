@@ -49,7 +49,8 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
-  DiagEvent
+  DiagEvent,
+  HealthReport
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -613,6 +614,9 @@ const api = {
       ipcRenderer.invoke('hooks:setEnabled', enabled),
     getStatus: (): Promise<{ enabled: boolean; installed: number }> =>
       ipcRenderer.invoke('hooks:getStatus')
+  },
+  health: {
+    get: (): Promise<HealthReport> => ipcRenderer.invoke('health:get')
   },
   diag: {
     event: (evt: DiagEvent): void => {
