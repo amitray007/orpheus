@@ -173,6 +173,8 @@ export type AppUiState = {
   globalHotkey: string
   // Archive cap (v25)
   archivedWorkspaceLimit: number
+  // Hooks integration (v60) — default false; opt-in to socket server + ~/.claude/settings.json hooks
+  hooksIntegrationEnabled: boolean
   // Notification preferences (v29)
   notifyAttention: boolean
   notifyStop: boolean

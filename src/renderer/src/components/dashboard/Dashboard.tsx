@@ -118,6 +118,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           launchAtLogin: false,
           globalHotkey: '',
           archivedWorkspaceLimit: 20,
+          hooksIntegrationEnabled: false,
           notifyAttention: true,
           notifyStop: true,
           notifyAlways: false,

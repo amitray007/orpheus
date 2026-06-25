@@ -306,7 +306,7 @@ function managedCommand(event: WorkspaceActivityEvent): string {
 
 // Anything mentioning our env var is ours; the legacy absolute-path form is
 // also recognized so first-run after this change cleans up the old entries.
-function isManagedCommand(cmd: string): boolean {
+export function isManagedCommand(cmd: string): boolean {
   if (cmd.includes('$ORPHEUS_NOTIFY')) return true
   if (cmd.startsWith(shimPath())) return true
   return false
@@ -388,6 +388,142 @@ export function ensureManagedHooks(): void {
   const tmp = settingsPath + '.tmp'
   fs.writeFileSync(tmp, newContent, 'utf-8')
   fs.renameSync(tmp, settingsPath)
+}
+
+/**
+ * Count the number of Orpheus-managed hook entries currently present in
+ * ~/.claude/settings.json. Returns 0 if the file is absent or unreadable.
+ */
+export function countManagedHooks(): number {
+  const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
+  let count = 0
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0
+    const hooksObj = (parsed as Record<string, unknown>)['hooks']
+    if (!hooksObj || typeof hooksObj !== 'object' || Array.isArray(hooksObj)) return 0
+    for (const eventArr of Object.values(hooksObj as Record<string, unknown>)) {
+      if (!Array.isArray(eventArr)) continue
+      for (const entry of eventArr) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const hookList = (entry as Record<string, unknown>)['hooks']
+        if (!Array.isArray(hookList)) continue
+        for (const h of hookList) {
+          if (
+            typeof h === 'object' &&
+            h !== null &&
+            typeof (h as Record<string, unknown>)['command'] === 'string' &&
+            isManagedCommand((h as Record<string, unknown>)['command'] as string)
+          ) {
+            count++
+          }
+        }
+      }
+    }
+  } catch {
+    // ENOENT or parse error — zero is correct
+  }
+  return count
+}
+
+/**
+ * Remove ONLY Orpheus-managed hook entries from ~/.claude/settings.json.
+ * User-added hooks are never touched. Tolerates ENOENT (silent no-op) and
+ * parse errors (warns + returns). Is the clean-without-re-add twin of
+ * ensureManagedHooks.
+ */
+export function uninstallManagedHooks(): void {
+  const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf-8')
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return // nothing to clean
+    console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    return
+  }
+
+  let parsed: Record<string, unknown>
+  try {
+    const p = JSON.parse(raw)
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+      console.warn(
+        '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
+      )
+      return
+    }
+    parsed = p as Record<string, unknown>
+  } catch (err) {
+    console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    return
+  }
+
+  if (
+    typeof parsed['hooks'] !== 'object' ||
+    parsed['hooks'] === null ||
+    Array.isArray(parsed['hooks'])
+  ) {
+    return // no hooks section — nothing to remove
+  }
+
+  const hooksObj = parsed['hooks'] as Record<string, unknown>
+  let changed = false
+
+  for (const hookEvent of Object.keys(hooksObj)) {
+    if (!Array.isArray(hooksObj[hookEvent])) continue
+    const eventArr = hooksObj[hookEvent] as Array<unknown>
+
+    const filtered = eventArr.filter((entry) => {
+      if (typeof entry !== 'object' || entry === null) return true
+      const hookList = (entry as Record<string, unknown>)['hooks']
+      if (!Array.isArray(hookList)) return true
+      // Remove the entry if ALL of its hooks are managed by Orpheus.
+      // If an entry mixes Orpheus hooks with user hooks, remove only the
+      // managed hooks from that entry's hooks array.
+      const remaining = hookList.filter(
+        (h) =>
+          !(
+            typeof h === 'object' &&
+            h !== null &&
+            typeof (h as Record<string, unknown>)['command'] === 'string' &&
+            isManagedCommand((h as Record<string, unknown>)['command'] as string)
+          )
+      )
+      if (remaining.length === hookList.length) return true // nothing removed
+      changed = true
+      if (remaining.length === 0)
+        return false // drop the whole matcher entry
+      ;(entry as Record<string, unknown>)['hooks'] = remaining
+      return true
+    })
+
+    if (filtered.length !== eventArr.length) changed = true
+    if (filtered.length === 0) {
+      delete hooksObj[hookEvent]
+    } else {
+      hooksObj[hookEvent] = filtered
+    }
+  }
+
+  // Drop the hooks key entirely if it became empty.
+  if (Object.keys(hooksObj).length === 0) {
+    delete parsed['hooks']
+    changed = true
+  }
+
+  if (!changed) return
+
+  const newContent = JSON.stringify(parsed, null, 2)
+  const tmp = settingsPath + '.tmp'
+  try {
+    fs.writeFileSync(tmp, newContent, 'utf-8')
+    fs.renameSync(tmp, settingsPath)
+  } catch (err) {
+    console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+  }
 }
 
 export function startNotifyServer(): { sockPath: string; close: () => void } {

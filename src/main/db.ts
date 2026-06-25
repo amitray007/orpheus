@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 59
+const CURRENT_VERSION = 60
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -355,6 +355,8 @@ const UI_STATE_SCHEMA_SQL = `
     -- Notification enrichment (v59)
     notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
     notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0,
+    -- Hooks integration (v60) — default 0 (off); opt-in to socket server + settings.json hooks
+    hooks_integration_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
 `
@@ -2210,6 +2212,17 @@ function migrate(db: Database.Database): void {
       /* column may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(59)
+  }
+
+  if (currentVersion < 60) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN hooks_integration_enabled INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(60)
   }
 }
 

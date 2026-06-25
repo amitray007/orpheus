@@ -38,6 +38,8 @@ type AppUiStateRow = {
   global_hotkey: string
   // Archive cap (v25)
   archived_workspace_limit: number
+  // Hooks integration (v60)
+  hooks_integration_enabled: number | null
   // Notification preferences (v29)
   notify_attention: number
   notify_stop: number
@@ -114,6 +116,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     globalHotkey: row.global_hotkey ?? '',
     // Archive cap (v25)
     archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
+    // Hooks integration (v60) — default false (off)
+    hooksIntegrationEnabled: (row.hooks_integration_enabled ?? 0) === 1,
     // Notification preferences (v29)
     notifyAttention: (row.notify_attention ?? 1) === 1,
     notifyStop: (row.notify_stop ?? 1) === 1,
@@ -293,6 +297,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     globalHotkey: 'global_hotkey',
     // Archive cap (v25)
     archivedWorkspaceLimit: 'archived_workspace_limit',
+    // Hooks integration (v60)
+    hooksIntegrationEnabled: 'hooks_integration_enabled',
     // Notification preferences (v29)
     notifyAttention: 'notify_attention',
     notifyStop: 'notify_stop',

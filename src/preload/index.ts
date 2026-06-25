@@ -608,6 +608,12 @@ const api = {
 
     resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
   },
+  hooks: {
+    setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>
+      ipcRenderer.invoke('hooks:setEnabled', enabled),
+    getStatus: (): Promise<{ enabled: boolean; installed: number }> =>
+      ipcRenderer.invoke('hooks:getStatus')
+  },
   diag: {
     event: (evt: DiagEvent): void => {
       try {

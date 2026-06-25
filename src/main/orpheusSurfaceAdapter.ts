@@ -20,6 +20,7 @@ import { getClaudeAuthEnv } from './claudeAuth'
 import { shimPath } from './orpheusNotify'
 import { getCachedShellPath } from './shellHelpers'
 import { writeGhosttyConfigFile } from './ghosttyConfig'
+import { getAppUiState } from './uiState'
 
 // ---------------------------------------------------------------------------
 // loadOrpheusSurface
@@ -92,14 +93,20 @@ export function buildMountEnv(
 
   const ghosttyConfigPath = writeGhosttyConfigFile()
 
+  // Only inject hook-plumbing env vars when hooks integration is enabled.
+  // When disabled, ORPHEUS_NOTIFY is absent so the managed hook command's
+  // guard (`[ -n "$ORPHEUS_NOTIFY" ]`) short-circuits to a no-op, and
+  // ORPHEUS_WORKSPACE_ID is not needed (consumed only by the hook shim).
+  const hooksEnabled = getAppUiState().hooksIntegrationEnabled
+
   const env: Record<string, string> = {
     ...launch.env,
     ...authEnv, // auth env wins on conflict
     ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
     ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
-    ORPHEUS_WORKSPACE_ID: workspaceId,
+    ...(hooksEnabled ? { ORPHEUS_WORKSPACE_ID: workspaceId } : {}),
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
-    ORPHEUS_NOTIFY: shimPath(),
+    ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),
     ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),
     ORPHEUS_GHOSTTY_CONFIG: ghosttyConfigPath
   }

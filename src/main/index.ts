@@ -104,6 +104,8 @@ import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
   ensureManagedHooks,
+  uninstallManagedHooks,
+  countManagedHooks,
   clearWorkspaceActivity,
   invalidateWatchdogCache,
   getWorkspaceActivity,
@@ -220,6 +222,39 @@ const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let sessionStateService: { stop: () => void } | null = null
+
+/**
+ * Declarative reconcile: reads hooksIntegrationEnabled and either starts the
+ * notify server + installs managed hooks (enabled) or shuts down the server +
+ * removes managed hooks (disabled). Safe to call multiple times.
+ */
+function reconcileHooks(): void {
+  const enabled = getAppUiState().hooksIntegrationEnabled
+  if (enabled) {
+    if (!notifyServer) {
+      try {
+        notifyServer = startNotifyServer()
+      } catch (err) {
+        console.error('[orpheusNotify] failed to start notify server:', err)
+      }
+    }
+    try {
+      ensureManagedHooks()
+    } catch (err) {
+      console.error('[orpheusNotify] failed to install managed hooks:', err)
+    }
+  } else {
+    if (notifyServer) {
+      notifyServer.close()
+      notifyServer = null
+    }
+    try {
+      uninstallManagedHooks()
+    } catch (err) {
+      console.error('[orpheusNotify] failed to uninstall managed hooks:', err)
+    }
+  }
+}
 
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
@@ -1295,6 +1330,22 @@ ipcMain.on(
   }
 )
 
+// ---------------------------------------------------------------------------
+// Hooks integration IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('hooks:setEnabled', (_e, enabled: boolean) => {
+  updateAppUiState({ hooksIntegrationEnabled: enabled })
+  reconcileHooks()
+  return { enabled }
+})
+
+ipcMain.handle('hooks:getStatus', () => {
+  const enabled = getAppUiState().hooksIntegrationEnabled
+  const installed = countManagedHooks()
+  return { enabled, installed }
+})
+
 ipcMain.handle('notifications:test', () => {
   fireTestNotification()
 })
@@ -1976,46 +2027,33 @@ app.whenReady().then(() => {
   // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
   startStatusPoller()
 
-  // Defer notify server + hook install until after the first frame — keeps
+  // Defer notify server + hook reconcile until after the first frame — keeps
   // createWindow() hot so the UI appears faster on launch.
   setImmediate(() => {
-    // Start the Unix-domain socket server that hook shims post to.
-    try {
-      notifyServer = startNotifyServer()
-      // Batch channel: sends the entire coalesced flush as one IPC message.
-      // The renderer switches to onActivityBatch; batchListeners fan out to
-      // the legacy per-event listeners as well so onActivityChanged still works.
-      onActivityBatch((updates) => {
-        const win = getMainWindow()
-        if (!win) return
-        win.webContents.send('workspace:activityBatch', updates)
-        // Push canInject state for each workspace that changed activity so the
-        // renderer chips don't need to poll terminal:canInject every second.
-        // Use the authoritative terminalActions.canInject() so 'attention' and
-        // any future status additions are handled identically to the IPC handler.
-        for (const { workspaceId } of updates) {
-          if (!win.webContents.isDestroyed()) {
-            win.webContents.send('terminal:canInjectChanged', {
-              workspaceId,
-              canInject: terminalActions.canInject(workspaceId)
-            })
-          }
+    // Wire up the activity batch channel regardless of hook integration state —
+    // the batch listener is always needed for file-based status updates.
+    onActivityBatch((updates) => {
+      const win = getMainWindow()
+      if (!win) return
+      win.webContents.send('workspace:activityBatch', updates)
+      // Push canInject state for each workspace that changed activity so the
+      // renderer chips don't need to poll terminal:canInject every second.
+      // Use the authoritative terminalActions.canInject() so 'attention' and
+      // any future status additions are handled identically to the IPC handler.
+      for (const { workspaceId } of updates) {
+        if (!win.webContents.isDestroyed()) {
+          win.webContents.send('terminal:canInjectChanged', {
+            workspaceId,
+            canInject: terminalActions.canInject(workspaceId)
+          })
         }
-      })
-      // Legacy onActivityChange registration removed — the renderer uses
-      // onActivityBatch as primary. The preload onActivityChanged method and
-      // the renderer's fallback listener are intentionally kept as dead-but-safe
-      // code so older code paths compile without changes.
-    } catch (err) {
-      console.error('[orpheusNotify] failed to start notify server:', err)
-    }
+      }
+    })
 
-    // Inject managed hooks into ~/.claude/settings.json (idempotent, skips write if unchanged).
-    try {
-      ensureManagedHooks()
-    } catch (err) {
-      console.error('[orpheusNotify] failed to install managed hooks:', err)
-    }
+    // Declarative hook reconcile: enabled → start server + install hooks;
+    // disabled (default) → remove any previously-installed managed hooks and
+    // do NOT start the socket server.
+    reconcileHooks()
 
     setAutoCloseHandler((workspaceId) => {
       performClose(workspaceId)

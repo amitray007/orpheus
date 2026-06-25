@@ -365,6 +365,10 @@ declare global {
         ) => Promise<void>
         resetDefaults: () => Promise<void>
       }
+      hooks: {
+        setEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>
+        getStatus: () => Promise<{ enabled: boolean; installed: number }>
+      }
       diag: {
         event: (evt: DiagEvent) => void
       }
