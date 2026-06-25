@@ -219,6 +219,14 @@ import { openDiagConsole } from './diagConsoleWindow'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { formatTraceTree, formatEventLine } from '../shared/diagFormat'
 import type { DiagRow } from '../shared/types'
+import {
+  startPowerAwake,
+  getKeepAwakeState,
+  setKeepAwakeMode,
+  setKeepAwakeDisplayOn,
+  startKeepAwakeTimer
+} from './powerAwake'
+import type { KeepAwakeBaseMode } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -234,6 +242,7 @@ const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let sessionStateService: { stop: () => void } | null = null
+let powerAwakeCleanup: (() => void) | null = null
 
 /**
  * Declarative reconcile: reads hooksIntegrationEnabled and either starts the
@@ -2252,6 +2261,15 @@ handle(
 )
 
 // ---------------------------------------------------------------------------
+// Keep Awake IPC
+// ---------------------------------------------------------------------------
+
+handle('keepAwake:get', () => getKeepAwakeState())
+handle('keepAwake:setMode', (_e, mode: KeepAwakeBaseMode) => setKeepAwakeMode(mode))
+handle('keepAwake:setDisplayOn', (_e, on: boolean) => setKeepAwakeDisplayOn(on))
+handle('keepAwake:startTimer', (_e, minutes: number) => startKeepAwakeTimer(minutes))
+
+// ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
@@ -2410,6 +2428,12 @@ app.whenReady().then(() => {
     } catch (err) {
       console.error('[sessionState] failed to start:', err)
     }
+
+    try {
+      powerAwakeCleanup = startPowerAwake(getMainWindow)
+    } catch (err) {
+      console.error('[powerAwake] failed to start:', err)
+    }
   })
 
   app.on('activate', function () {
@@ -2422,6 +2446,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
   sessionStateService?.stop()
+  powerAwakeCleanup?.()
   stopStatusPoller()
   stopAutoCheckLoop()
   stopAllGitWatches()
