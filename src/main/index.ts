@@ -212,10 +212,13 @@ import {
   logDiagMain,
   ingestDiagEvent,
   setDiagCategoryFlags,
+  queryDiagnostics,
   diag
 } from './diagnostics'
 import { openDiagConsole } from './diagConsoleWindow'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { formatTraceTree, formatEventLine } from '../shared/diagFormat'
+import type { DiagRow } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1304,6 +1307,85 @@ ipcMain.on('diag:event', (_e, evt) => {
 
 ipcMain.handle('diag:openConsole', () => {
   openDiagConsole()
+})
+
+ipcMain.handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
+  try {
+    const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
+
+    const result = await dialog.showSaveDialog({
+      title: 'Export Diagnostics',
+      defaultPath: 'orpheus-diagnostics.txt',
+      filters: [{ name: 'Text', extensions: ['txt'] }]
+    })
+
+    if (result.canceled || !result.filePath) {
+      return { ok: false, error: 'canceled' }
+    }
+
+    const txtPath = result.filePath
+    const jsonPath = txtPath.replace(/\.txt$/i, '') + '.json'
+
+    // Build readable .txt report
+    const exportedAt = new Date().toISOString()
+    const rangeStart = new Date(sinceMs).toISOString()
+    const lines: string[] = [
+      `Orpheus Diagnostics Export`,
+      `Exported: ${exportedAt}`,
+      `Range: ${rangeStart} — ${exportedAt}`,
+      `Rows: ${rows.length}`,
+      '',
+      '═'.repeat(72),
+      ''
+    ]
+
+    // Group rows by traceId
+    const traceRows = new Map<string, DiagRow[]>()
+    const nonTraceRows: DiagRow[] = []
+    for (const row of rows) {
+      if (row.traceId) {
+        if (!traceRows.has(row.traceId)) traceRows.set(row.traceId, [])
+        traceRows.get(row.traceId)!.push(row)
+      } else {
+        nonTraceRows.push(row)
+      }
+    }
+
+    // Trace trees section
+    if (traceRows.size > 0) {
+      lines.push('TRACES', '─'.repeat(72), '')
+      for (const [traceId, tRows] of traceRows) {
+        lines.push(`Trace: ${traceId}`)
+        lines.push(formatTraceTree(tRows))
+        lines.push('')
+      }
+    }
+
+    // Flat events section
+    if (nonTraceRows.length > 0) {
+      lines.push('EVENTS', '─'.repeat(72), '')
+      for (const row of nonTraceRows) {
+        lines.push(formatEventLine(row))
+      }
+      lines.push('')
+    }
+
+    const txtContent = lines.join('\n')
+
+    try {
+      fs.writeFileSync(txtPath, txtContent, 'utf8')
+      fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
+    } catch (writeErr) {
+      return {
+        ok: false,
+        error: writeErr instanceof Error ? writeErr.message : String(writeErr)
+      }
+    }
+
+    return { ok: true, path: txtPath }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 })
 
 // ---------------------------------------------------------------------------

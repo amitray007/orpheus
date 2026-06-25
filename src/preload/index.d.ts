@@ -377,6 +377,9 @@ declare global {
         event: (evt: DiagEvent) => void
         openConsole: () => Promise<void>
         onStream: (cb: (batch: unknown[]) => void) => () => void
+        export: (opts: {
+          sinceMs: number
+        }) => Promise<{ ok: boolean; path?: string; error?: string }>
       }
     }
   }

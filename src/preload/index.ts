@@ -631,7 +631,9 @@ const api = {
       const listener = (_e: IpcRendererEvent, batch: unknown[]): void => cb(batch)
       ipcRenderer.on('diag:stream', listener)
       return () => ipcRenderer.removeListener('diag:stream', listener)
-    }
+    },
+    export: (opts: { sinceMs: number }): Promise<{ ok: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke('diag:export', opts)
   }
 }
 
