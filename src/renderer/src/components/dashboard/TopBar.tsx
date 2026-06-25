@@ -27,7 +27,7 @@ interface TopBarProps {
 
 // macOS traffic lights + toggle button + status chip need at least this much
 // room before the workspace content starts.
-const MIN_LEFT_WIDTH = 144
+const MIN_LEFT_WIDTH = 160
 
 // Components filtered out of the popover and settings list
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
@@ -527,8 +527,8 @@ export function TopBar({
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
-        {/* Traffic-light spacer — reserves 80px on the left */}
-        <div className="w-[80px] flex-shrink-0" />
+        {/* Traffic-light spacer — reserves 96px on the left */}
+        <div className="w-[96px] flex-shrink-0" />
 
         {/* Sidebar collapse toggle */}
         <button
