@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom'
 import type React from 'react'
 import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@shared/types'
+import { logDiag } from '@/lib/diag'
+import { DIAG_EVENTS } from '@shared/diagEvents'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
@@ -451,6 +453,15 @@ export function WorkspaceView({
           return
         }
 
+        if (phase === 'attached') {
+          logDiag({
+            category: 'lifecycle',
+            level: 'info',
+            event: DIAG_EVENTS.TERMINAL_REATTACH,
+            workspaceId
+          })
+        }
+
         console.log(
           '[WorkspaceView] re-mounting surface (activated) workspaceId=',
           workspaceId,
@@ -458,9 +469,17 @@ export function WorkspaceView({
           'phase=',
           phase
         )
+        const t0 = performance.now()
         window.api.terminal
           .mount(workspaceId, termRect, scaleFactor, cwd)
           .then((result) => {
+            logDiag({
+              category: 'perf',
+              level: 'info',
+              event: DIAG_EVENTS.PERF_WORKSPACE_SWITCH,
+              workspaceId,
+              durationMs: Math.round(performance.now() - t0)
+            })
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
             // immediately so the surface doesn't draw while inactive.
