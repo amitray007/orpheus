@@ -42,6 +42,8 @@ function pushRing(evt: DiagEvent): void {
   ring.push(evt)
 }
 
+const diagSubscribers = new Set<(e: DiagEvent) => void>()
+
 export function logDiagMain(
   evt: Omit<DiagEvent, 'process' | 'ts'> & { process?: DiagProcess; ts?: number }
 ): void {
@@ -82,8 +84,6 @@ export function ingestDiagEvent(evt: DiagEvent): void {
 // ── Trace context (main owns it via AsyncLocalStorage) ──────────────────────
 const traceStore = new AsyncLocalStorage<TraceContext>()
 
-const diagSubscribers = new Set<(e: DiagEvent) => void>()
-
 export function subscribeDiag(fn: (e: DiagEvent) => void): () => void {
   diagSubscribers.add(fn)
   return () => diagSubscribers.delete(fn)
@@ -114,7 +114,9 @@ function fanOut(evt: DiagEvent): void {
     pushRing(evt)
   }
   if (diagSubscribers.size > 0) {
-    for (const fn of diagSubscribers) {
+    // Snapshot before iterating: a subscriber may (un)subscribe during fan-out.
+    const subs = [...diagSubscribers]
+    for (const fn of subs) {
       try {
         fn(evt)
       } catch {
@@ -159,7 +161,9 @@ function startSpan(name: string, attrs?: Record<string, unknown>): Span {
 }
 
 // When the trace category is off, hand callers a Span that emits nothing.
-// Singleton — allocated once at import, never per-call.
+// Singleton — allocated once at import, never per-call. Its internal `ended`
+// latch is intentional and harmless here: emit is a no-op, so a "stuck" latch
+// has no observable effect — don't "fix" it by re-creating the span per call.
 const NOOP_SPAN = new Span(() => {}, { traceId: 't0', spanId: 's0' }, 'noop', null)
 
 export const diag = {

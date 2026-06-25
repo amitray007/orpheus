@@ -20,6 +20,8 @@ const SEND_BATCH_MAX = 500
 const BUFFER_CAP = 5000
 
 function teardown(): void {
+  // Idempotent: a renderer crash then a close (or vice-versa) both call this.
+  if (!unsub && !flushTimer) return
   if (flushTimer) {
     clearInterval(flushTimer)
     flushTimer = null
@@ -89,8 +91,18 @@ export function openDiagConsole(): void {
     // events are sent before the listener is wired.
     created.webContents.on('did-finish-load', () => {
       if (created.isDestroyed()) return
-      if (unsub) return // already streaming (e.g. reload) — don't double-subscribe
+      if (unsub) {
+        // Reload of an already-streaming window: the renderer's in-memory feed
+        // is gone, so drop any buffered events to start the reload clean.
+        buffer = []
+        droppedForBackpressure = 0
+        return // already subscribed — don't double-subscribe
+      }
       startStreaming(created)
+    })
+
+    created.webContents.on('render-process-gone', () => {
+      teardown()
     })
 
     created.on('closed', () => {
