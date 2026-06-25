@@ -2275,6 +2275,15 @@ function migrate(db: Database.Database): void {
     db.prepare('UPDATE schema_version SET version = ?').run(61)
   }
 
+  if (currentVersion < 62) {
+    try {
+      db.exec(KEEP_AWAKE_SCHEMA_SQL)
+    } catch {
+      /* table may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(62)
+  }
+
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()
   // which is called before setDiagCategoryFlags syncs from settings — this event may
   // not persist on the very first run; that is an accepted limitation.
