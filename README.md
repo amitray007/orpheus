@@ -26,7 +26,7 @@ What the current implementation provides:
 ### To run the app
 
 - macOS (Apple Silicon or Intel)
-- The Claude Code CLI (`claude`) installed and authenticated — see the [Claude Code documentation](https://docs.anthropic.com/en/claude-code)
+- The Claude Code CLI (`claude`) installed and authenticated — see the [Claude Code documentation](https://docs.claude.com/en/docs/claude-code)
 
 ### To build from source
 
