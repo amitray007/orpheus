@@ -50,7 +50,7 @@ routine feature work. Commit prefixes (`feat:`/`fix:`/`refactor:`/`chore:`) are
 still used — they drive **CHANGELOG grouping only** while private, NOT the
 version size — so keep writing accurate conventional-commit subjects.
 
-**When Orpheus goes share-ready** (see [[project_audience_of_one]]): remove the
+**When Orpheus goes public**: remove the
 `"versioning": "always-bump-patch"` line from `release-please-config.json` to
 restore default SemVer (`feat:` → minor, `feat!:`/`BREAKING CHANGE` → major,
 `fix:` → patch). At that point, reserve `feat:` for genuine new user-facing
