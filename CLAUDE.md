@@ -153,7 +153,7 @@ Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `
 
 ### Distribution
 
-Ships exclusively via **private Homebrew tap** (`amitray007/homebrew-tap` cask; the dmg is hosted on a release on the public `homebrew-tap` repo — see the release-pipeline section above). Brew installs strip macOS quarantine so the ad-hoc-signed bundle launches. There is no `electron-updater`; auto-publish IS wired (release-please on merge to `main` — not `scripts/release.mjs`, which is the rarely-used manual fallback). The in-app updates check (`src/main/updates.ts` → `OrpheusUpdatesSection.tsx`) uses `brew outdated`/`brew upgrade` against the tap cask (refreshing the tap first).
+Ships exclusively via **public Homebrew tap** (`amitray007/homebrew-tap` cask; the dmg is hosted on a release on that public repo — see the release-pipeline section above). Brew installs strip macOS quarantine so the ad-hoc-signed bundle launches. There is no `electron-updater`; auto-publish IS wired (release-please on merge to `main` — not `scripts/release.mjs`, which is the rarely-used manual fallback). The in-app updates check (`src/main/updates.ts` → `OrpheusUpdatesSection.tsx`) uses `brew outdated`/`brew upgrade` against the tap cask (refreshing the tap first).
 
 Ad-hoc codesigning is re-applied to the whole bundle in `scripts/install-mac.mjs` because electron-builder leaves inner frameworks with mismatched Team IDs and macOS 15+ refuses to load them. **Do not store secrets in macOS Keychain** until proper Developer ID signing exists — ad-hoc re-sign reshuffles ACLs on every build. Plaintext SQLite columns are intentional (`auth_api_key`, `auth_token`, etc.).
 

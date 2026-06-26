@@ -75,6 +75,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed walkthrough of:
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Contributions are accepted at the owner's discretion under the project's terms — submitting a contribution does not grant you any rights to the project beyond what the [LICENSE](LICENSE) already permits.
+
 All work lands on the **`staging` branch** — do not create per-feature branches unless explicitly discussed. Pull requests go `staging → main`; `main` is the release branch only.
 
 Commits must follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope):`, `fix(scope):`, `chore(scope):`, `refactor(scope):`, etc. No emoji in commit subjects.
@@ -91,4 +93,4 @@ bun run format
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party attributions in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Orpheus is **source-available, not open-source** — © 2026 Amit Ray, all rights reserved. You may read the source for personal evaluation, but copying, modification, redistribution, and any use beyond evaluation require prior written permission (hey@amitray.dev). See [LICENSE](LICENSE) for the full terms. Third-party attributions in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

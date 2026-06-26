@@ -4,7 +4,7 @@
   "private": true,
   "description": "A Mac IDE built around Claude Code",
   "author": "Amit Ray <hey@amitray.dev>",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/amitray007/orpheus.git"

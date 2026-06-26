@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents working in this repository.
 
 ## What this is
 
-Orpheus is an **open-source macOS Electron app** (MIT-licensed) that wraps **`claude`** — the [Claude Code CLI](https://claude.ai/code) — in a project/workspace UI. It is not associated with Codex or any other CLI tool. The terminal is rendered by a native NAPI addon embedding prebuilt **libghostty** (`vendor/GhosttyKit.xcframework`) as an `NSView` parented onto Electron's `BrowserWindow` native handle.
+Orpheus is a **source-available macOS Electron app** (proprietary; all rights reserved) that wraps **`claude`** — the [Claude Code CLI](https://claude.ai/code) — in a project/workspace UI. It is not associated with Codex or any other CLI tool. The terminal is rendered by a native NAPI addon embedding prebuilt **libghostty** (`vendor/GhosttyKit.xcframework`) as an `NSView` parented onto Electron's `BrowserWindow` native handle.
 
 ## Canonical references
 
