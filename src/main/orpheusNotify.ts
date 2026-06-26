@@ -621,7 +621,25 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
     })
   })
 
-  server.listen(sockPath)
+  // TODO(security): a per-session token (generated at mount time, injected via
+  // ORPHEUS_NOTIFY_TOKEN env var into orpheus-claude.sh, forwarded by the
+  // orpheus-notify shim as an Authorization header, and validated here) would
+  // add a second layer on top of the filesystem permission below. The plumbing
+  // is mostly in place (ORPHEUS_WORKSPACE_ID is already injected at mount time
+  // in the same env-var merge; adding a token would follow the same path through
+  // composeClaudeLaunch → terminal:mount → orpheus-claude.sh → shim). Not
+  // wiring it here because it requires coordinated changes to resources/bin/orpheus-notify
+  // and src/main/index.ts (the mount handler), which are out of scope for this pass.
+  server.listen(sockPath, () => {
+    try {
+      fs.chmodSync(sockPath, 0o600)
+    } catch (err) {
+      console.warn(
+        '[orpheusNotify] could not chmod notify.sock to 0600 — socket is accessible to all local users:',
+        err
+      )
+    }
+  })
 
   return {
     sockPath,

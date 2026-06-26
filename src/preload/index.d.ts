@@ -1,4 +1,3 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   DetectedApp,
   DoctorResult,
@@ -57,7 +56,6 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 
 declare global {
   interface Window {
-    electron: ElectronAPI
     api: {
       app: {
         getVersion: () => Promise<string>

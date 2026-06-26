@@ -783,7 +783,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -1009,6 +1009,59 @@ function handle(
   })
 }
 
+// ---------------------------------------------------------------------------
+// IPC input-validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert that `value` is a non-empty string and an absolute filesystem path.
+ * Throws on any renderer-supplied value that isn't a clean absolute path.
+ */
+function assertAbsolutePath(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`IPC validation: ${label} must be a non-empty string`)
+  }
+  if (!path.isAbsolute(value)) {
+    throw new Error(`IPC validation: ${label} must be an absolute path`)
+  }
+}
+
+/**
+ * Assert that `value` is an absolute path confined to a legitimate Claude
+ * config root: the user's home directory (for `~/.claude/...` / `~/.claude.json`)
+ * or any registered project's directory (for project-scoped settings files).
+ * Used for renderer-supplied config-file paths so a compromised renderer cannot
+ * redirect a write/delete/open at an arbitrary system path.
+ */
+function assertManagedConfigPath(value: unknown, label: string): asserts value is string {
+  assertAbsolutePath(value, label)
+  const v = value as string
+  const isUnder = (root: string): boolean => v === root || v.startsWith(root + path.sep)
+  if (isUnder(os.homedir())) return
+  for (const project of listProjects()) {
+    if (project.path && isUnder(project.path)) return
+  }
+  throw new Error(
+    `IPC validation: ${label} must be under the home directory or a registered project`
+  )
+}
+
+const ALLOWED_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
+
+/**
+ * Return true iff `url` is safe to pass to shell.openExternal().
+ * Only http, https, and mailto are permitted — blocks file:, javascript:, etc.
+ */
+function isSafeExternalUrl(url: unknown): url is string {
+  if (typeof url !== 'string' || url.length === 0) return false
+  try {
+    const { protocol } = new URL(url)
+    return ALLOWED_EXTERNAL_SCHEMES.has(protocol)
+  } catch {
+    return false
+  }
+}
+
 handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   if (result.canceled) return null
@@ -1228,11 +1281,15 @@ handle(
   (
     _e,
     args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }
-  ) => updateMcpServer(args.filePath, args.oldName, args.draft)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateMcpServer(args.filePath, args.oldName, args.draft)
+  }
 )
-handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
-  deleteMcpServer(args.filePath, args.name)
-)
+handle('mcp:delete', (_e, args: { filePath: string; name: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteMcpServer(args.filePath, args.name)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Agents IPC
@@ -1246,22 +1303,31 @@ handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
 )
 handle(
   'claudeAgents:updateSlashCommand',
-  (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
-    updateSlashCommand(args.filePath, args.draft)
+  (
+    _e,
+    args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateSlashCommand(args.filePath, args.draft)
+  }
 )
-handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
-  deleteSlashCommand(args.filePath)
-)
+handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteSlashCommand(args.filePath)
+})
 
 handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
 handle(
   'claudeAgents:updateSubagent',
-  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
-    updateSubagent(args.filePath, args.draft)
+  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateSubagent(args.filePath, args.draft)
+  }
 )
-handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
-  deleteSubagent(args.filePath)
-)
+handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteSubagent(args.filePath)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Hooks IPC
@@ -1269,6 +1335,7 @@ handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
 
 handle('claudeHooks:list', () => listClaudeHooks())
 handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+  assertManagedConfigPath(filePath, 'filePath')
   await shell.openPath(filePath)
 })
 handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
@@ -1283,7 +1350,10 @@ handle(
       hookIdx: number
       draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
     }
-  ) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+  }
 )
 handle(
   'claudeHooks:delete',
@@ -1295,7 +1365,10 @@ handle(
       matcherEntryIdx: number
       hookIdx: number
     }
-  ) => deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+  }
 )
 
 // ---------------------------------------------------------------------------
@@ -1701,14 +1774,19 @@ handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string
 // Shell helpers IPC
 // ---------------------------------------------------------------------------
 
-handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
-handle('shell:openInEditor', (_e, { path }: { path: string }) => {
-  const state = getAppUiState()
-  return openInEditor(path, state.preferredEditorApp ?? undefined)
+handle('shell:revealInFinder', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
+  return revealInFinder(filePath)
 })
-handle('shell:openTerminal', (_e, { path }: { path: string }) => {
+handle('shell:openInEditor', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
   const state = getAppUiState()
-  return openTerminal(path, state.preferredTerminalApp ?? undefined)
+  return openInEditor(filePath, state.preferredEditorApp ?? undefined)
+})
+handle('shell:openTerminal', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
+  const state = getAppUiState()
+  return openTerminal(filePath, state.preferredTerminalApp ?? undefined)
 })
 handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
 handle('shell:listEditorApps', () => listEditorApps())
@@ -1994,7 +2072,7 @@ handle(
     }
   ): void => {
     const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
-    if (prUrl) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
+    if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
     const addon = loadTerminalAddon()
     // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
     // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
