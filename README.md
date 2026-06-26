@@ -32,7 +32,7 @@ What the current implementation provides:
 
 - macOS (Apple Silicon or Intel)
 - [Bun](https://bun.sh) — the project's package manager (`bun.lock` is committed)
-- Xcode Command Line Tools (`xcode-select --install`) — required by node-gyp to compile the native `.mm` NAPI addon (`packages/ghostty-native/addon.mm`)
+- Xcode Command Line Tools (`xcode-select --install`) — required by node-gyp to compile the native `.mm` NAPI addon (`packages/ghostty-surface/addon.mm`)
 
 No Apple Developer account is required. `bun install` triggers a `postinstall` hook that fetches a SHA-256-verified prebuilt `GhosttyKit.xcframework` from a public GitHub release.
 
@@ -70,7 +70,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed walkthrough of:
 - Core domain model (projects, workspaces, sessions)
 - The Claude launch composition pipeline (`composeClaudeLaunch`)
 - SQLite schema and migration conventions
-- The native terminal addon (`packages/ghostty-native/addon.mm`)
+- The native terminal addon (`packages/ghostty-surface/addon.mm`)
 - Workspace activity status sourced from Claude Code's session registry
 
 ## Contributing
@@ -90,6 +90,12 @@ bun run format
 ```
 
 **There are no automated tests.** CI runs typecheck and lint only. Manual verification against `Orpheus Dev.app` is the current quality gate — be honest in your PR description about what you tested.
+
+## Support
+
+If Orpheus is useful to you, consider supporting its development through [GitHub Sponsors](https://github.com/sponsors/amitray007) — it's entirely optional and helps fund continued work on the project.
+
+For bugs and feature requests, use [GitHub Issues](https://github.com/amitray007/orpheus/issues).
 
 ## License
 
