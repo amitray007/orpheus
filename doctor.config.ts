@@ -13,9 +13,8 @@
 //
 // NOTE: the `react-doctor/no-unused-dependency` rule is left ENABLED on purpose.
 // It currently flags `geist` (a false positive — used via src/renderer/.../main.css
-// and src/main/index.ts) plus `@floating-ui/react` and `@electron-toolkit/preload`
-// (which do appear unused). Those are deferred to a deliberate dependency-cleanup
-// pass rather than suppressed here, so the signal isn't lost.
+// and src/main/index.ts). The signal is preserved so any genuinely unused deps
+// added in future are caught.
 export default {
   ignore: {
     files: ['vendor/**', '.claude/**']
