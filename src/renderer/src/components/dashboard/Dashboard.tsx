@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, mem
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
 import { logDiag } from '../../lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
-import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
+import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
@@ -14,6 +14,14 @@ import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
+import {
+  DEFAULT_UI_STATE_FALLBACK,
+  viewToSidebarActiveView,
+  mainContainerClassName,
+  nextWorkspaceName,
+  reorderById,
+  reorderWithTail
+} from './dashboard.helpers'
 import type {
   AppUiState,
   PinnedItem,
@@ -101,53 +109,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       .then(setUiState)
       .catch((err) => {
         console.error('[dashboard] failed to load ui state', err)
-        setUiState({
-          sidebarCollapsed: false,
-          lastViewKind: 'sessions',
-          lastProjectId: null,
-          lastWorkspaceId: null,
-          windowX: null,
-          windowY: null,
-          windowWidth: null,
-          windowHeight: null,
-          windowFullscreen: false,
-          restoreGeometry: true,
-          closeHides: true,
-          openAtLastView: true,
-          pinnedSectionVisible: true,
-          workspaceCountInline: true,
-          sidebarWidth: 256,
-          defaultProjectExpanded: false,
-          launchAtLogin: false,
-          globalHotkey: '',
-          archivedWorkspaceLimit: 20,
-          hooksIntegrationEnabled: false,
-          notifyAttention: true,
-          notifyStop: true,
-          notifyAlways: false,
-          notifyRichSummary: true,
-          notifySuppressWhenFocused: false,
-          notifyMaxAttentionRepeats: 5,
-          inProgressWatchdogSec: 120,
-          staleAfterMinutes: 60,
-          autoCloseAfterMinutes: 120,
-          diagError: true,
-          diagLifecycle: false,
-          diagPerf: false,
-          diagAnomaly: false,
-          diagTrace: false,
-          theme: 'midnight',
-          accentColor: null,
-          uiFontScale: 'default',
-          fetchGithubAvatars: true,
-          playInteractionSounds: true,
-          soundPack: 'core',
-          autoCheckUpdates: true,
-          statusPollIntervalSec: 1800,
-          muteStatusNotifications: false,
-          showWorkspaceFooter: true,
-          updatedAt: 0
-        })
+        setUiState(DEFAULT_UI_STATE_FALLBACK)
       })
   }, [])
 
@@ -854,15 +816,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       if (!projectPath) return
 
       const existing = workspacesByProjectRef.current[projectId] ?? []
-      const usedNumbers = new Set(
-        existing
-          .map((w) => /^Workspace\s+(\d+)$/.exec(w.name)?.[1])
-          .filter((s): s is string => typeof s === 'string')
-          .map((s) => parseInt(s, 10))
-      )
-      let n = 1
-      while (usedNumbers.has(n)) n++
-      const defaultName = `Workspace ${n}`
+      const defaultName = nextWorkspaceName(existing)
 
       const finalPath = projectPath
       try {
@@ -1038,10 +992,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleReorderProjects = useCallback((orderedIds: string[]): void => {
     // Optimistic reorder — update local state immediately using functional updater
-    setProjects((arr) => {
-      const byId = new Map(arr.map((p) => [p.id, p]))
-      return orderedIds.map((id) => byId.get(id)).filter((p): p is ProjectRecord => !!p)
-    })
+    setProjects((arr) => reorderById(arr, orderedIds))
     window.api.projects.reorder(orderedIds).catch((err) => {
       console.error('[dashboard] reorder failed; refetching', err)
       window.api.projects.list().then(setProjects).catch(console.error)
@@ -1050,18 +1001,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleReorderWorkspaces = useCallback(
     (projectId: string, orderedIds: string[]): void => {
-      // Optimistic: reorder the local workspacesByProject[projectId] immediately
-      setWorkspacesByProject((prev) => {
-        const list = prev[projectId] ?? []
-        const byId = new Map(list.map((w) => [w.id, w]))
-        const reordered = orderedIds
-          .map((id) => byId.get(id))
-          .filter((w): w is WorkspaceRecord => !!w)
-        // Append any workspaces missing from orderedIds (e.g. archived ones not in the visible group)
-        const seen = new Set(orderedIds)
-        const tail = list.filter((w) => !seen.has(w.id))
-        return { ...prev, [projectId]: [...reordered, ...tail] }
-      })
+      // Optimistic: reorder the local workspacesByProject[projectId] immediately.
+      // reorderWithTail appends workspaces missing from orderedIds (e.g. archived
+      // ones not in the visible drag group) to the tail.
+      setWorkspacesByProject((prev) => ({
+        ...prev,
+        [projectId]: reorderWithTail(prev[projectId] ?? [], orderedIds)
+      }))
       window.api.workspaces.reorder(projectId, orderedIds).catch((err) => {
         console.error('[dashboard] workspace reorder failed; refetching', err)
         fetchWorkspacesForProject(projectId).catch(console.error)
@@ -1092,14 +1038,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       ? (workspacesByProject[view.projectId] ?? []).find((w) => w.id === view.workspaceId)
       : undefined
 
-  const activeView: SidebarActiveView =
-    view.kind === 'workspace'
-      ? 'workspace'
-      : view.kind === 'project'
-        ? 'project'
-        : view.kind === 'settings'
-          ? 'settings'
-          : 'sessions'
+  const activeView = viewToSidebarActiveView(view)
 
   return (
     <div className="flex flex-col h-screen">
@@ -1147,14 +1086,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           className={
             // Workspace view: terminal always sits above web layer (native z-order),
             // so this container stays transparent to let the NSView paint through.
-            view.kind === 'workspace'
-              ? 'flex-1 overflow-hidden min-h-0'
-              : view.kind === 'settings'
-                ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
-                : view.kind === 'sessions'
-                  ? // Workspaces kanban: tight padding so the board sits close to the app edges
-                    'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
-                  : 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+            mainContainerClassName(view.kind)
           }
         >
           <MainContent
