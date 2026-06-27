@@ -227,6 +227,17 @@ function validateKeybind(kb: GhosttyKeybind): string | null {
 // OrpheusTerminalSection — ghostty terminal settings
 // ---------------------------------------------------------------------------
 
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const header = (
+  <div>
+    <SectionTitle>Terminal</SectionTitle>
+    <p className="text-xs text-text-muted mt-1">
+      Configures the embedded Ghostty terminal. Most changes apply immediately to open workspaces;
+      font changes may require restarting a workspace.
+    </p>
+  </div>
+)
+
 export function OrpheusTerminalSection(): React.JSX.Element {
   const [config, setConfig] = useState<GhosttyUserConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -321,16 +332,6 @@ export function OrpheusTerminalSection(): React.JSX.Element {
     const next = config.keybinds.filter((_kb, i) => i !== index)
     patchKeybinds(next)
   }
-
-  const header = (
-    <div>
-      <SectionTitle>Terminal</SectionTitle>
-      <p className="text-xs text-text-muted mt-1">
-        Configures the embedded Ghostty terminal. Most changes apply immediately to open workspaces;
-        font changes may require restarting a workspace.
-      </p>
-    </div>
-  )
 
   if (error) {
     return (

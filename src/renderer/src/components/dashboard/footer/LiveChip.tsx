@@ -118,6 +118,10 @@ export function LiveChip({
 
   const isStatus = actionId === 'workspace.getActivityStatus'
 
+  // Serialize params so the effect dep compares by content, not object reference.
+  // Prevents re-subscribing on every render when the parent passes a new `{}` each time.
+  const paramsKey = JSON.stringify(params)
+
   useEffect(() => {
     if (!workspaceId) return
     if (!enabled) return
@@ -175,7 +179,8 @@ export function LiveChip({
       cancelled = true
       clearInterval(id)
     }
-  }, [actionId, workspaceId, kind, params, enabled])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionId, workspaceId, kind, paramsKey, enabled])
 
   const displayText = formatValue(actionId, value)
   const dotColor = isStatus ? getStatusDotColor(value) : null

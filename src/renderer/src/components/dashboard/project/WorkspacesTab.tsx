@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import {
   DotsThree,
@@ -289,13 +289,16 @@ export function WorkspacesTab({
     setRenameValue(ws.name)
   }
 
-  function commitRename(ws: WorkspaceRecord): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== ws.name) {
-      onRenameWorkspace(ws.id, projectId, trimmed)
-    }
-    setRenamingId(null)
-  }
+  const commitRename = useCallback(
+    (ws: WorkspaceRecord): void => {
+      const trimmed = renameValue.trim()
+      if (trimmed && trimmed !== ws.name) {
+        onRenameWorkspace(ws.id, projectId, trimmed)
+      }
+      setRenamingId(null)
+    },
+    [renameValue, onRenameWorkspace, projectId]
+  )
 
   const menuItems: ContextMenuItem[] = useMemo(() => {
     if (!menu) return []

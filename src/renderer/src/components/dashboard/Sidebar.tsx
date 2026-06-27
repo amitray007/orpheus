@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState, useEffect, useRef, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
   Circle,
@@ -960,15 +960,16 @@ export function Sidebar({
   const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const fetchedProjectSessions = useRef<Set<string>>(new Set())
+  const fetchedProjectSessions = useRef<Set<string> | null>(null)
+  if (fetchedProjectSessions.current === null) fetchedProjectSessions.current = new Set<string>()
   const sidebarRef = useRef<HTMLElement>(null)
 
   // Fetch sessions for any visible project that hasn't been loaded yet.
   useEffect(() => {
     const projectIds = projects.map((p) => p.id)
     for (const projectId of projectIds) {
-      if (fetchedProjectSessions.current.has(projectId)) continue
-      fetchedProjectSessions.current.add(projectId)
+      if (fetchedProjectSessions.current!.has(projectId)) continue
+      fetchedProjectSessions.current!.add(projectId)
       window.api.sessions
         .listForProject(projectId, { includeArchived: true })
         .then((sessions: SessionRecord[]) => {
@@ -1022,13 +1023,13 @@ export function Sidebar({
     setRenamingProjectId(null)
   }
 
-  function handleCancelRename(): void {
+  const handleCancelRename = useCallback((): void => {
     setRenamingProjectId(null)
-  }
+  }, [])
 
-  function handleBeginRenameWorkspace(id: string): void {
+  const handleBeginRenameWorkspace = useCallback((id: string): void => {
     setRenamingWorkspaceId(id)
-  }
+  }, [])
 
   function handleFinishRenameWorkspace(
     workspaceId: string,
@@ -1039,9 +1040,9 @@ export function Sidebar({
     setRenamingWorkspaceId(null)
   }
 
-  function handleCancelRenameWorkspace(): void {
+  const handleCancelRenameWorkspace = useCallback((): void => {
     setRenamingWorkspaceId(null)
-  }
+  }, [])
 
   function onProjectDragStart(e: React.DragEvent<HTMLDivElement>, id: string): void {
     e.dataTransfer.effectAllowed = 'move'
@@ -1084,70 +1085,71 @@ export function Sidebar({
     setDropTargetId(null)
   }
 
-  function onWorkspaceDragStart(
-    e: React.DragEvent<HTMLDivElement>,
-    wsId: string,
-    projectId: string
-  ): void {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', wsId)
-    setWsDragId(wsId)
-    setWsDragProjectId(projectId)
-  }
+  const onWorkspaceDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string): void => {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', wsId)
+      setWsDragId(wsId)
+      setWsDragProjectId(projectId)
+    },
+    []
+  )
 
-  function onWorkspaceDragOver(
-    e: React.DragEvent<HTMLDivElement>,
-    wsId: string,
-    projectId: string
-  ): void {
-    if (!wsDragId || wsDragId === wsId) return
-    // Cross-project drag: no-op
-    if (wsDragProjectId !== projectId) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    const rect = e.currentTarget.getBoundingClientRect()
-    const isAbove = e.clientY < rect.top + rect.height / 2
-    setWsDropTargetId(wsId)
-    setWsDropPos(isAbove ? 'before' : 'after')
-  }
+  const onWorkspaceDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string): void => {
+      if (!wsDragId || wsDragId === wsId) return
+      // Cross-project drag: no-op
+      if (wsDragProjectId !== projectId) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const rect = e.currentTarget.getBoundingClientRect()
+      const isAbove = e.clientY < rect.top + rect.height / 2
+      setWsDropTargetId(wsId)
+      setWsDropPos(isAbove ? 'before' : 'after')
+    },
+    [wsDragId, wsDragProjectId]
+  )
 
-  function onWorkspaceDrop(
-    e: React.DragEvent<HTMLDivElement>,
-    targetId: string,
-    projectId: string,
-    workspaces: WorkspaceRecord[]
-  ): void {
-    e.preventDefault()
-    if (!wsDragId || wsDragId === targetId || wsDragProjectId !== projectId) {
+  const onWorkspaceDrop = useCallback(
+    (
+      e: React.DragEvent<HTMLDivElement>,
+      targetId: string,
+      projectId: string,
+      workspaces: WorkspaceRecord[]
+    ): void => {
+      e.preventDefault()
+      if (!wsDragId || wsDragId === targetId || wsDragProjectId !== projectId) {
+        setWsDragId(null)
+        setWsDragProjectId(null)
+        setWsDropTargetId(null)
+        return
+      }
+      const ids = workspaces.map((w) => w.id)
+      const fromIdx = ids.indexOf(wsDragId)
+      if (fromIdx === -1) {
+        setWsDragId(null)
+        setWsDragProjectId(null)
+        setWsDropTargetId(null)
+        return
+      }
+      ids.splice(fromIdx, 1)
+      let toIdx = ids.indexOf(targetId)
+      if (toIdx === -1) toIdx = ids.length
+      if (wsDropPos === 'after') toIdx += 1
+      ids.splice(toIdx, 0, wsDragId)
+      onReorderWorkspaces(projectId, ids)
       setWsDragId(null)
       setWsDragProjectId(null)
       setWsDropTargetId(null)
-      return
-    }
-    const ids = workspaces.map((w) => w.id)
-    const fromIdx = ids.indexOf(wsDragId)
-    if (fromIdx === -1) {
-      setWsDragId(null)
-      setWsDragProjectId(null)
-      setWsDropTargetId(null)
-      return
-    }
-    ids.splice(fromIdx, 1)
-    let toIdx = ids.indexOf(targetId)
-    if (toIdx === -1) toIdx = ids.length
-    if (wsDropPos === 'after') toIdx += 1
-    ids.splice(toIdx, 0, wsDragId)
-    onReorderWorkspaces(projectId, ids)
-    setWsDragId(null)
-    setWsDragProjectId(null)
-    setWsDropTargetId(null)
-  }
+    },
+    [wsDragId, wsDragProjectId, wsDropPos, onReorderWorkspaces]
+  )
 
-  function onWorkspaceDragEnd(): void {
+  const onWorkspaceDragEnd = useCallback((): void => {
     setWsDragId(null)
     setWsDragProjectId(null)
     setWsDropTargetId(null)
-  }
+  }, [])
 
   const addProjectButton = (
     <button

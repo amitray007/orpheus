@@ -248,6 +248,17 @@ const PROVIDER_OPTIONS: ReadonlyArray<{ value: ClaudeCloudProvider; label: strin
   { value: 'foundry', label: 'Foundry' }
 ]
 
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const header = (
+  <div>
+    <SectionTitle>Authentication</SectionTitle>
+    <p className="text-xs text-text-muted mt-1">
+      API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
+      database (single-user macOS).
+    </p>
+  </div>
+)
+
 export function ClaudeAuthSection(): React.JSX.Element {
   const [state, setState] = useState<ClaudeAuthState | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -279,19 +290,6 @@ export function ClaudeAuthSection(): React.JSX.Element {
         window.api.claudeAuth.get().then(setState).catch(console.error)
       })
   }
-
-  // ---------------------------------------------------------------------------
-  // Render: header section
-  // ---------------------------------------------------------------------------
-  const header = (
-    <div>
-      <SectionTitle>Authentication</SectionTitle>
-      <p className="text-xs text-text-muted mt-1">
-        API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
-        database (single-user macOS).
-      </p>
-    </div>
-  )
 
   if (error) {
     return (

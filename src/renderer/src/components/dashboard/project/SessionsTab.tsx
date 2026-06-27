@@ -118,6 +118,11 @@ interface SessionsTabProps {
   compact?: boolean
 }
 
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const filteredEmptyState = (
+  <p className="text-sm text-text-muted py-6 text-center">No matching sessions.</p>
+)
+
 export function SessionsTab({
   projectId,
   onSessionCountChange,
@@ -438,12 +443,6 @@ export function SessionsTab({
   // hasAnySessions=null means the unfiltered check is still in flight — treat
   // as indeterminate (don't hide controls prematurely).
   const noSessionsAtAll = hasAnySessions === false && !loading
-
-  // "No matches" empty state shown inside the DataTable when filters are
-  // active and yield zero results, but sessions do exist.
-  const filteredEmptyState = (
-    <p className="text-sm text-text-muted py-6 text-center">No matching sessions.</p>
-  )
 
   return (
     <div className="flex flex-col gap-3">
