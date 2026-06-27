@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import {
+  Coffee,
   SidebarSimple,
   ArrowSquareOut,
   ArrowClockwise,
@@ -12,7 +13,13 @@ import {
   WifiSlash,
   Wrench
 } from '@phosphor-icons/react'
-import type { ClaudeStatusSnapshot } from '@shared/types'
+import type {
+  ClaudeStatusSnapshot,
+  KeepAwakeBaseMode,
+  KeepAwakeMode,
+  KeepAwakeState
+} from '@shared/types'
+import { TRAFFIC_LIGHT_CLEARANCE } from '@shared/windowChrome'
 import { BRAILLE_FRAMES, useAnimatedFrame } from '@/lib/braille'
 
 // ---------------------------------------------------------------------------
@@ -27,7 +34,8 @@ interface TopBarProps {
 
 // macOS traffic lights + toggle button + status chip need at least this much
 // room before the workspace content starts.
-const MIN_LEFT_WIDTH = 144
+// 64 = two 32px controls (sidebar toggle + status chip) immediately after the spacer.
+const MIN_LEFT_WIDTH = TRAFFIC_LIGHT_CLEARANCE + 64
 
 // Components filtered out of the popover and settings list
 const HIDDEN_COMPONENT_NAMES = new Set(['Claude for Government', 'Claude Cowork'])
@@ -190,13 +198,17 @@ interface StatusPopoverProps {
   triggerRef: React.RefObject<HTMLButtonElement | null>
   sidebarWidth: number
   onClose: () => void
+  onPopoverEnter?: () => void
+  onPopoverLeave?: () => void
 }
 
 function StatusPopover({
   snapshot,
   triggerRef,
   sidebarWidth,
-  onClose
+  onClose,
+  onPopoverEnter,
+  onPopoverLeave
 }: StatusPopoverProps): React.JSX.Element {
   const headerBraille = useAnimatedFrame(BRAILLE_FRAMES, 80, snapshot.isFetching)
   const [pos, setPos] = useState<{
@@ -261,6 +273,8 @@ function StatusPopover({
         zIndex: 1000
       }}
       className="bg-surface-overlay border border-border-default rounded-lg shadow-xl overflow-hidden text-sm"
+      onMouseEnter={onPopoverEnter}
+      onMouseLeave={onPopoverLeave}
     >
       {initialLoading ? (
         <>
@@ -408,6 +422,7 @@ function StatusChip({
   const [snapshot, setSnapshot] = useState<ClaudeStatusSnapshot | null>(null)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -445,12 +460,40 @@ function StatusChip({
     }
   }
 
+  function cancelClose(): void {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+  }
+
+  function openNow(): void {
+    cancelClose()
+    setOpen(true)
+  }
+
+  function scheduleClose(): void {
+    cancelClose()
+    closeTimer.current = setTimeout(() => setOpen(false), 180)
+  }
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+    },
+    []
+  )
+
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
         onClick={handleClick}
+        onMouseEnter={() => {
+          if (!sidebarCollapsed) openNow()
+        }}
+        onMouseLeave={scheduleClose}
         aria-label={tooltip}
         title={tooltip}
         aria-expanded={open}
@@ -465,9 +508,230 @@ function StatusChip({
           triggerRef={triggerRef}
           sidebarWidth={sidebarWidth}
           onClose={() => setOpen(false)}
+          onPopoverEnter={cancelClose}
+          onPopoverLeave={scheduleClose}
         />
       )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// KeepAwakeChip + KeepAwakePopover — sidebar-constrained coffee-cup chip
+// ---------------------------------------------------------------------------
+
+const KEEP_AWAKE_MODES: Array<{ id: KeepAwakeBaseMode; label: string; desc: string }> = [
+  { id: 'off', label: 'Off', desc: 'Respect normal Mac sleep settings.' },
+  { id: 'auto', label: 'Auto', desc: 'Keep awake while agents are running.' },
+  { id: 'on', label: 'On', desc: 'Stay awake until I turn it off.' }
+]
+const TIMER_PRESETS = [60, 120, 240] // minutes
+
+function keepAwakeStatusLine(s: KeepAwakeState): string {
+  if (s.mode === 'timer' && s.timerRemainingMs !== null) {
+    const mins = Math.ceil(s.timerRemainingMs / 60_000)
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return `Awake for ${h > 0 ? `${h}h ` : ''}${m}m more.`
+  }
+  if (s.mode === 'on') return 'On — staying awake.'
+  if (s.mode === 'auto') {
+    return s.busyCount > 0
+      ? `Active — ${s.busyCount} agent${s.busyCount === 1 ? '' : 's'} running. Releases when idle.`
+      : 'Watching — sleeps normally until agents run.'
+  }
+  return 'Off — normal sleep settings.'
+}
+
+interface KeepAwakeChipProps {
+  sidebarWidth: number
+}
+
+function KeepAwakeChip({ sidebarWidth }: KeepAwakeChipProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [state, setState] = useState<KeepAwakeState | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const suppressDismiss = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.keepAwake
+      .get()
+      .then((s) => {
+        if (!cancelled) setState(s)
+      })
+      .catch(console.error)
+    const off = window.api.keepAwake.onState((s) => setState(s))
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        onMouseDown={() => {
+          if (open) suppressDismiss.current = true
+        }}
+        aria-label="Keep awake"
+        title="Keep awake"
+        className="w-7 h-7 inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-visible:outline-none text-text-secondary hover:bg-surface-overlay"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <Coffee size={16} weight="regular" />
+      </button>
+      {open && state && (
+        <KeepAwakePopover
+          state={state}
+          triggerRef={triggerRef}
+          sidebarWidth={sidebarWidth}
+          onClose={() => {
+            if (suppressDismiss.current) {
+              suppressDismiss.current = false
+              return
+            }
+            setOpen(false)
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+interface KeepAwakePopoverProps {
+  state: KeepAwakeState
+  triggerRef: React.RefObject<HTMLButtonElement | null>
+  sidebarWidth: number
+  onClose: () => void
+}
+
+function KeepAwakePopover({
+  state,
+  triggerRef,
+  sidebarWidth,
+  onClose
+}: KeepAwakePopoverProps): React.JSX.Element {
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
+
+  useLayoutEffect(() => {
+    function place(): void {
+      const t = triggerRef.current
+      if (!t) return
+      const rect = t.getBoundingClientRect()
+      setPos({ left: 4, top: rect.bottom + 6, width: Math.min(320, sidebarWidth - 8) })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [triggerRef, sidebarWidth])
+
+  const mode: KeepAwakeMode = state.mode
+
+  return (
+    <Overlay
+      open
+      interactive
+      portal
+      onDismiss={onClose}
+      style={{
+        position: 'fixed',
+        left: pos?.left ?? 4,
+        top: pos?.top ?? 40,
+        width: pos?.width ?? 300,
+        zIndex: 1000
+      }}
+      className="bg-surface-overlay border border-border-default rounded-lg shadow-xl overflow-hidden text-sm"
+    >
+      <div className="px-4 py-3 border-b border-border-default/50">
+        <div className="flex items-center gap-2">
+          <Coffee size={14} className={state.isHolding ? 'text-accent' : 'text-text-muted'} />
+          <span className="text-xs font-medium text-text-primary">Keep Awake</span>
+        </div>
+        <p className="text-xs text-text-muted mt-0.5">{keepAwakeStatusLine(state)}</p>
+      </div>
+
+      <div className="p-1.5">
+        {KEEP_AWAKE_MODES.map((m) => {
+          const selected = mode === m.id
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => window.api.keepAwake.setMode(m.id).catch(console.error)}
+              className={[
+                'w-full flex items-start gap-2.5 px-2.5 py-2 rounded-md text-left cursor-pointer transition-colors',
+                selected ? 'bg-surface-raised' : 'hover:bg-surface-raised/60'
+              ].join(' ')}
+            >
+              <span
+                className={[
+                  'mt-0.5 w-3.5 h-3.5 rounded-full border flex-none flex items-center justify-center',
+                  selected ? 'border-accent' : 'border-border-default'
+                ].join(' ')}
+              >
+                {selected && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm text-text-primary leading-tight">{m.label}</span>
+                <span className="block text-xs text-text-muted mt-0.5">{m.desc}</span>
+              </span>
+            </button>
+          )
+        })}
+
+        {/* For a while (timer) */}
+        <div
+          className={[
+            'flex items-start gap-2.5 px-2.5 py-2 rounded-md',
+            mode === 'timer' ? 'bg-surface-raised' : ''
+          ].join(' ')}
+        >
+          <span
+            className={[
+              'mt-0.5 w-3.5 h-3.5 rounded-full border flex-none flex items-center justify-center',
+              mode === 'timer' ? 'border-accent' : 'border-border-default'
+            ].join(' ')}
+          >
+            {mode === 'timer' && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm text-text-primary leading-tight">For a while</span>
+            <span className="block text-xs text-text-muted mt-0.5">
+              Stay awake for a set time, then revert.
+            </span>
+            <span className="flex gap-1.5 mt-1.5">
+              {TIMER_PRESETS.map((min) => (
+                <button
+                  key={min}
+                  type="button"
+                  onClick={() => window.api.keepAwake.startTimer(min).catch(console.error)}
+                  className="px-2 py-0.5 rounded text-xs bg-surface-raised border border-border-default text-text-secondary hover:text-text-primary cursor-pointer"
+                >
+                  {min % 60 === 0 ? `${min / 60}h` : `${min}m`}
+                </button>
+              ))}
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <div className="border-t border-border-default/50 flex items-center justify-between px-4 py-2.5">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={state.keepDisplayOn}
+            onChange={(e) =>
+              window.api.keepAwake.setDisplayOn(e.target.checked).catch(console.error)
+            }
+          />
+          <span className="text-xs text-text-secondary">Also keep the display on</span>
+        </label>
+      </div>
+    </Overlay>
   )
 }
 
@@ -480,9 +744,11 @@ export function TopBar({
   sidebarCollapsed,
   sidebarWidth
 }: TopBarProps): React.JSX.Element {
-  // Left section aligns with the sidebar's right edge when expanded so the
-  // workspace title bar lines up with the content area below it.
-  const leftWidth = sidebarCollapsed ? MIN_LEFT_WIDTH : Math.max(MIN_LEFT_WIDTH, sidebarWidth)
+  // Left section width matches the sidebar so the workspace title bar lines up
+  // with the content column below it. Driven by sidebarWidth (not the collapsed
+  // flag), so toggling collapse does NOT shift the top bar; only a deliberate
+  // sidebar resize moves it. MIN_LEFT_WIDTH floors it so the controls always fit.
+  const leftWidth = Math.max(MIN_LEFT_WIDTH, sidebarWidth)
 
   return (
     <header
@@ -490,8 +756,11 @@ export function TopBar({
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div className="flex items-center flex-shrink-0" style={{ width: leftWidth }}>
-        {/* Traffic-light spacer — reserves 80px on the left */}
-        <div className="w-[80px] flex-shrink-0" />
+        {/* Traffic-light spacer — reserves exactly TRAFFIC_LIGHT_CLEARANCE (88px) for the
+            macOS window buttons. Derived from geometry in src/shared/windowChrome.ts,
+            not a magic number. The lights are at a fixed window position that does not
+            change when the sidebar collapses, so this clearance is the same in both states. */}
+        <div className="flex-shrink-0" style={{ width: TRAFFIC_LIGHT_CLEARANCE }} />
 
         {/* Sidebar collapse toggle */}
         <button
@@ -510,6 +779,9 @@ export function TopBar({
           sidebarCollapsed={sidebarCollapsed}
           onToggleCollapsed={onToggleCollapsed}
         />
+
+        {/* Keep awake chip — immediately after status chip */}
+        <KeepAwakeChip sidebarWidth={sidebarWidth} />
 
         {__ORPHEUS_MODE__ === 'development' && (
           <span

@@ -5,9 +5,18 @@
   "description": "A Mac IDE built around Claude Code",
   "author": "Amit Ray <hey@amitray.dev>",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amitray007/orpheus.git"
+  },
+  "homepage": "https://github.com/amitray007/orpheus#readme",
+  "bugs": {
+    "url": "https://github.com/amitray007/orpheus/issues"
+  },
   "main": "./out/main/index.js",
   "scripts": {
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "lint": "eslint --cache .",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
@@ -20,9 +29,9 @@
     "install:mac-prod": "node scripts/install-mac.mjs",
     "build:native": "node scripts/build-native.mjs",
     "build:unpack": "bun run build:dev",
-    "build:dev": "bun run build:native && ORPHEUS_MODE=development bun run build && bunx electron-builder --config electron-builder-dev.yml --dir && bun run install:mac",
+    "build:dev": "bun run build:native && ORPHEUS_MODE=development bun run build && GOMAXPROCS=1 bunx electron-builder --config electron-builder-dev.yml --dir && bun run install:mac",
     "build:win": "bun run build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac && bun run install:mac-prod",
+    "build:mac": "electron-vite build && GOMAXPROCS=1 electron-builder --mac && bun run install:mac-prod",
     "build:linux": "electron-vite build && electron-builder --linux",
     "fetch:libghostty": "bash scripts/fetch-libghostty.sh",
     "bump:libghostty": "bun scripts/bump-libghostty.mjs",

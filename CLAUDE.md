@@ -50,7 +50,7 @@ routine feature work. Commit prefixes (`feat:`/`fix:`/`refactor:`/`chore:`) are
 still used — they drive **CHANGELOG grouping only** while private, NOT the
 version size — so keep writing accurate conventional-commit subjects.
 
-**When Orpheus goes share-ready** (see [[project_audience_of_one]]): remove the
+**When Orpheus goes public**: remove the
 `"versioning": "always-bump-patch"` line from `release-please-config.json` to
 restore default SemVer (`feat:` → minor, `feat!:`/`BREAKING CHANGE` → major,
 `fix:` → patch). At that point, reserve `feat:` for genuine new user-facing
@@ -84,7 +84,7 @@ open "/Applications/Orpheus Dev.app"
 | `bun run typecheck`        | Runs both `typecheck:node` (main + preload + shared) and `typecheck:web` (renderer) against composite tsconfigs.                                                                                                                                                                                                                             |
 | `bun run lint`             | ESLint over the workspace (flat config, `.eslintcache` enabled).                                                                                                                                                                                                                                                                             |
 | `bun run format`           | Prettier-format the workspace. Enforced by `husky` `pre-commit` (lint-staged Prettier) and `pre-push` (`prettier --check`).                                                                                                                                                                                                                  |
-| `bun run build:native`     | Rebuild `packages/ghostty-native` (`node-gyp` against the installed Electron ABI).                                                                                                                                                                                                                                                           |
+| `bun run build:native`     | Rebuild `packages/ghostty-surface` (`node-gyp` against the installed Electron ABI).                                                                                                                                                                                                                                                          |
 | `bun run fetch:libghostty` | Re-fetch `vendor/GhosttyKit.xcframework` + `vendor/ghostty` source pin (SHA-256-verified). Runs as `postinstall`.                                                                                                                                                                                                                            |
 | `bun run release`          | **Manual fallback only** (release-please owns the normal path — see release-pipeline section). Build `.dmg`, publish a `vX.Y.Z` GitHub release, render `scripts/orpheus-cask.template.rb`, commit + push the cask in `../homebrew-tap` (override path with `ORPHEUS_TAP_PATH`). Do NOT hand-bump `package.json#version` for the normal flow. |
 
@@ -132,19 +132,20 @@ When **any** layer mutates, `recomputeDirty()` in `src/main/index.ts` compares t
 
 ### Native terminal addon
 
-`packages/ghostty-native/addon.mm` exports four NAPI functions (`mount` / `hide` / `resize` / `destroy`) called only from the Electron main thread, plus `setTitleCallback` / `setActionTraceCallback` for events fanned back to JS. Surface lifecycle = workspace lifecycle (one entry per `workspace.id`). `CVDisplayLink` drives drawing; the callback dispatches `ghostty_surface_draw` back to the main queue.
+`packages/ghostty-surface/addon.mm` exports four NAPI functions (`mount` / `hide` / `resize` / `destroy`) called only from the Electron main thread, plus `setTitleCallback` / `setActionTraceCallback` for events fanned back to JS. Surface lifecycle = workspace lifecycle (one entry per `workspace.id`). `CVDisplayLink` drives drawing; the callback dispatches `ghostty_surface_draw` back to the main queue.
 
 The shell-integration resources (terminfo + integration scripts) live under `resources/ghostty/` and are bundled to `Contents/Resources/{terminfo,ghostty}/` by `electron-builder.yml`. `GHOSTTY_RESOURCES_DIR` is set in `loadTerminalAddon()` before the `.node` is `require`'d so ghostty's auto-walk can find them in both packaged and dev layouts.
 
-### Hook activity pipeline
+### Workspace activity status (file-authoritative)
 
-Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `idle`) driven by claude's hooks:
+Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `idle`) shown by `Dashboard/ActivityIndicator.tsx`. **Claude's own on-disk session registry is the single source of truth — not hooks** (this changed in the Phase 2 cutover).
 
-1. `src/main/orpheusNotify.ts` starts a Unix-domain socket server on app launch and idempotently installs managed hooks (`SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `SessionEnd`, `PreToolUse`, `PostToolUse`, `PreCompact`, `SubagentStop`) into `~/.claude/settings.json` — each hook is a shell command that runs `resources/bin/orpheus-notify` (the shim) which posts to the socket.
+1. Every running `claude` writes `~/.claude/sessions/<pid>.json` (`status`: `busy`/`idle`/`waiting`; `waitingFor`: `permission prompt`/`input needed`; `sessionId`; `statusUpdatedAt`). `claude agents --json` is just a reader of these files. Workspace claude must register here, which requires `resources/orpheus-claude.sh` to `unset` inherited Claude Code session vars (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, …) — otherwise it's treated as a nested session and skips registration.
+2. `src/main/sessionState.ts` watches that dir (`fs.watch` + debounced single-flight `reconcile` + interval backstop), matches each live session to a workspace by `claude_session_id` (pre-assigned via `--session-id`, stable across `--resume`), and drives status through `setStatusFromFile` → `orpheusNotify.dispatch`: `busy → in_progress`, `waiting → attention`, `idle → awaiting_input` (or `idle` when idle longer than `staleAfterMinutes`), file-gone/dead-pid → `idle`. Dead pids and torn reads are tolerated; transitions are gated via `lastRawActed`.
+3. `dispatch` (`orpheusNotify.ts`) persists via `setWorkspaceStatus`, broadcasts through `activitySink` (`workspace:activityBatch` IPC → renderer `activityStore`), fires OS notifications via `osNotifications.notifyForTransition`, and arms the idle-watchdog (`awaiting_input → idle`) + auto-close watchdog. `WorkspaceActivityDetail` is `working` / `attention` / `ready` / `idle` / `archived`.
+4. OS notification **content** is also file-sourced (`sessionState.getWorkspaceFileInfo`): attention copy from `waitingFor`, "Claude finished" elapsed from a `busySince` timer.
 
-- `ORPHEUS_WORKSPACE_ID` is injected as an env var for the wrapper script so the shim can attribute events.
-- A watchdog demotes `in_progress` → `awaiting_input` after `inProgressWatchdogSec` (default 120s, longer while compacting). OSC 0/2 title updates from the spinner glyph also count as heartbeats.
-- The status maps to a `WorkspaceActivityDetail` (`thinking` / `tool` / `compacting` / `asking` / `ready` / `idle` / `archived` / `attention`) that the renderer renders via `Dashboard/ActivityIndicator.tsx`.
+**Hooks are dormant enrichment, not the status driver.** `orpheusNotify.ts` still runs the Unix-domain socket server + shim (`resources/bin/orpheus-notify`), still installs managed hooks into `~/.claude/settings.json`, and `ORPHEUS_WORKSPACE_ID` is still injected so the shim can attribute events — but `handleHookEvent` no longer decides status. The only live hook behavior is `SessionStart → onSessionStart` (loading-overlay dismissal); other cases are wired no-ops kept revivable. (A future phase could re-home the overlay and remove the hook stack entirely.)
 
 ### Renderer view kinds
 
@@ -152,7 +153,7 @@ Workspaces get a live status (`in_progress` / `attention` / `awaiting_input` / `
 
 ### Distribution
 
-Ships exclusively via **private Homebrew tap** (`amitray007/homebrew-tap` cask; the dmg is hosted on a release on the public `homebrew-tap` repo — see the release-pipeline section above). Brew installs strip macOS quarantine so the ad-hoc-signed bundle launches. There is no `electron-updater`; auto-publish IS wired (release-please on merge to `main` — not `scripts/release.mjs`, which is the rarely-used manual fallback). The in-app updates check (`src/main/updates.ts` → `OrpheusUpdatesSection.tsx`) uses `brew outdated`/`brew upgrade` against the tap cask (refreshing the tap first).
+Ships exclusively via **public Homebrew tap** (`amitray007/homebrew-tap` cask; the dmg is hosted on a release on that public repo — see the release-pipeline section above). Brew installs strip macOS quarantine so the ad-hoc-signed bundle launches. There is no `electron-updater`; auto-publish IS wired (release-please on merge to `main` — not `scripts/release.mjs`, which is the rarely-used manual fallback). The in-app updates check (`src/main/updates.ts` → `OrpheusUpdatesSection.tsx`) uses `brew outdated`/`brew upgrade` against the tap cask (refreshing the tap first).
 
 Ad-hoc codesigning is re-applied to the whole bundle in `scripts/install-mac.mjs` because electron-builder leaves inner frameworks with mismatched Team IDs and macOS 15+ refuses to load them. **Do not store secrets in macOS Keychain** until proper Developer ID signing exists — ad-hoc re-sign reshuffles ACLs on every build. Plaintext SQLite columns are intentional (`auth_api_key`, `auth_token`, etc.).
 
@@ -219,4 +220,7 @@ the first clean release after these fixes is `v0.3.2`.
 - **Workspace surfaces are sticky.** `hide` ≠ `destroy`. Renderer navigation must call `terminal:hide` then `terminal:mount` again on return; never `destroy` unless the workspace is being archived/removed.
 - **Settings are layered.** Any UI control that maps to claude settings must compose through `composeClaudeLaunch` and carry a `mapsTo` chip pointing to the env var or settings key it produces.
 - **Commits use Conventional Commits, no emoji.** `feat(scope):`, `fix(scope):`, `chore(scope):`. No `Co-Authored-By: Claude` lines unless explicitly requested. While private, prefixes drive CHANGELOG grouping only — versioning is patch-only regardless of prefix (see the versioning policy in the Git-workflow section).
+  - **Enforced in CI by commitlint** (`commitlint.config.js` → `.github/workflows/commitlint.yml`, `wagoid/commitlint-github-action`). It runs on PRs to `staging` (contributor PRs) and is intentionally skipped on the `staging → main` release PR (`branches-ignore: [main]`).
+  - **Allowed types (`type-enum`):** `feat`, `fix`, `chore`, `refactor`, `docs`, `perf`, `build`, `ci`, `style`, `test`, `revert`. A type outside this list fails the check. The format is `type(scope): subject` — scope is **optional** and unrestricted (`keep-awake`, `diag`, etc. all pass).
+  - **Deliberate relaxations** (so the project's own style isn't flagged): `header-max-length` is **off** (long subjects are fine), `subject-case` is **off** (any casing), and `scope-empty`/`scope-case` are off. Merge commits are auto-ignored by commitlint's `defaultIgnores`. Keep subjects accurate and conventionally prefixed; don't rely on the relaxations as license for sloppy messages.
 - **Audit env vars before adding new settings.** The `.claude/agents/audit-claude-env-vars.md` agent diffs `https://code.claude.com/docs/en/env-vars.md` against `.claude/snapshots/env-vars.json` — run it (or invoke it as a subagent) before guessing whether something is already wired.

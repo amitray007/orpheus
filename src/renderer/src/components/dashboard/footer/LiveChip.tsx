@@ -31,11 +31,8 @@ function formatUsd(n: number): string {
 function getStatusDotColor(value: unknown): string {
   if (typeof value !== 'string') return 'bg-text-muted/40'
   switch (value as WorkspaceActivityDetail) {
-    case 'thinking':
-    case 'tool':
-    case 'compacting':
+    case 'working':
       return 'bg-accent/70 animate-pulse'
-    case 'asking':
     case 'ready':
       return 'bg-[#22c55e]' // green
     case 'attention':

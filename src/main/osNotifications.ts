@@ -2,18 +2,28 @@ import { Notification, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
 import { getWorkspace } from './workspaces'
 import { getDb } from './db'
-import { getBlockingTool, getTurnSummary } from './orpheusNotify'
 import type { WorkspaceStatus } from '../shared/types'
 
+let fileInfoProvider:
+  | ((workspaceId: string) => {
+      status: string
+      waitingFor?: string
+      elapsedMs?: number
+    })
+  | null = null
+
+export function setFileInfoProvider(
+  fn: ((workspaceId: string) => { status: string; waitingFor?: string; elapsedMs?: number }) | null
+): void {
+  fileInfoProvider = fn
+}
+
 function attentionCopy(workspaceId: string): { title: string; body: string } {
-  const tool = getBlockingTool(workspaceId)
-  if (tool === 'AskUserQuestion') {
-    return { title: 'Claude is asking', body: 'Has a question for you' }
+  const info = fileInfoProvider?.(workspaceId)
+  if (info?.waitingFor === 'permission prompt') {
+    return { title: 'Claude needs you', body: 'Waiting on a permission decision' }
   }
-  if (tool === 'ExitPlanMode') {
-    return { title: 'Claude has a plan', body: 'Waiting for your review before continuing' }
-  }
-  return { title: 'Claude needs you', body: 'Waiting on a permission decision' }
+  return { title: 'Claude is asking', body: 'Has a question for you' }
 }
 
 function formatElapsed(ms: number): string {
@@ -147,18 +157,14 @@ export function notifyForTransition(
   if (nextStatus === 'awaiting_input' && prevStatus === 'in_progress' && state.notifyStop) {
     if (shouldSuppress(workspaceId)) return
     // Suppress when Orpheus is focused regardless of which workspace is viewed.
-    // Turn summary is still valid here — it's reset on the NEXT user-prompt, not on Stop.
     const win = BrowserWindow.getAllWindows()[0]
     if (state.notifySuppressWhenFocused && win && win.isFocused()) return
     const label = resolveWorkspaceLabel(workspaceId)
     let body = 'Ready for your next message'
     if (state.notifyRichSummary) {
-      const summary = getTurnSummary(workspaceId)
-      if (summary) {
-        body = `Finished in ${formatElapsed(summary.elapsedMs)}`
-        if (summary.subagents > 0) {
-          body += ` · ${summary.subagents} subagent${summary.subagents === 1 ? '' : 's'}`
-        }
+      const info = fileInfoProvider?.(workspaceId)
+      if (info?.elapsedMs !== undefined) {
+        body = `Finished in ${formatElapsed(info.elapsedMs)}`
       }
     }
     const notif = new Notification({

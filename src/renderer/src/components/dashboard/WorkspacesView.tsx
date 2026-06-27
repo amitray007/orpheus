@@ -42,9 +42,8 @@ type GroupKey = 'in_review' | 'in_progress' | 'done' | 'waiting'
 
 function deriveGroup(ws: WorkspaceRecord, activity: WorkspaceActivityDetail | undefined): GroupKey {
   // Live activity wins
-  if (activity === 'attention' || activity === 'asking') return 'in_review'
-  if (activity === 'thinking' || activity === 'tool' || activity === 'compacting')
-    return 'in_progress'
+  if (activity === 'attention') return 'in_review'
+  if (activity === 'working') return 'in_progress'
   if (activity === 'ready') return 'done'
   if (activity === 'idle') return 'waiting'
 
@@ -61,8 +60,8 @@ function deriveGroup(ws: WorkspaceRecord, activity: WorkspaceActivityDetail | un
 // live event has fired yet (gives the ActivityIndicator something to show)
 function fallbackActivity(ws: WorkspaceRecord): WorkspaceActivityDetail {
   if (ws.status === 'attention') return 'attention'
-  if (ws.status === 'awaiting_input') return 'asking'
-  if (ws.status === 'in_progress') return 'thinking'
+  if (ws.status === 'awaiting_input') return 'ready'
+  if (ws.status === 'in_progress') return 'working'
   return 'idle'
 }
 
@@ -78,7 +77,7 @@ interface ColumnConfig {
 
 const COLUMN_CONFIGS: ColumnConfig[] = [
   { key: 'in_review', label: 'In Review', indicatorDetail: 'attention' },
-  { key: 'in_progress', label: 'In Progress', indicatorDetail: 'thinking' },
+  { key: 'in_progress', label: 'In Progress', indicatorDetail: 'working' },
   { key: 'done', label: 'Done', indicatorDetail: 'ready' },
   { key: 'waiting', label: 'Waiting', indicatorDetail: 'idle' }
 ]

@@ -10,6 +10,24 @@ export type UpdateCheckResult = {
   error?: string
 }
 
+export type UpdatePhase = 'refresh' | 'download' | 'verify' | 'install'
+
+export interface UpdateProgress {
+  phase: UpdatePhase
+  percent: number | null
+  line: string
+}
+
+export interface UpdateSnapshot {
+  kind: 'idle' | 'checking' | 'up_to_date' | 'available' | 'installing' | 'installed' | 'error'
+  latest: string | null
+  lastChecked: number | null
+  phase: UpdatePhase | null
+  percent: number | null
+  log: string[]
+  reason: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Shell app detection (re-exported from main for use in renderer via IPC)
 // ---------------------------------------------------------------------------
@@ -155,6 +173,8 @@ export type AppUiState = {
   globalHotkey: string
   // Archive cap (v25)
   archivedWorkspaceLimit: number
+  // Hooks integration (v60) — default false; opt-in to socket server + ~/.claude/settings.json hooks
+  hooksIntegrationEnabled: boolean
   // Notification preferences (v29)
   notifyAttention: boolean
   notifyStop: boolean
@@ -175,6 +195,8 @@ export type AppUiState = {
   diagLifecycle: boolean
   diagPerf: boolean
   diagAnomaly: boolean
+  // (v61) Cross-process span/trace capture. Opt-in; off by default.
+  diagTrace: boolean
   // App picker preferences (v32) — null = auto-detect first found
   preferredEditorApp?: string | null
   preferredTerminalApp?: string | null
@@ -212,6 +234,27 @@ export type ClaudeOutputStyle = 'default' | 'explanatory' | 'proactive' | 'learn
 export type ClaudeTuiMode = 'default' | 'fullscreen'
 export type ClaudeEditorMode = 'normal' | 'vim'
 export type ClaudeLogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+// Keep Awake (power management) — see docs/superpowers/specs/2026-06-26-keep-awake-design.md
+export type KeepAwakeBaseMode = 'off' | 'auto' | 'on'
+export type KeepAwakeMode = KeepAwakeBaseMode | 'timer'
+
+export type KeepAwakeState = {
+  /** Effective current mode — 'timer' while a countdown is active, else the base mode. */
+  mode: KeepAwakeMode
+  /** Persisted base mode the control reverts to when a timer expires/restarts. */
+  baseMode: KeepAwakeBaseMode
+  /** false → prevent-app-suspension (screen may sleep); true → prevent-display-sleep. */
+  keepDisplayOn: boolean
+  /** Whether a powerSaveBlocker is currently held. */
+  isHolding: boolean
+  /** Milliseconds remaining on the active timer, or null when no timer is running. */
+  timerRemainingMs: number | null
+  /** Default duration (minutes) used when starting a 'For a while' timer. */
+  defaultTimerMinutes: number
+  /** Number of workspaces currently in_progress (drives the Auto status line). */
+  busyCount: number
+}
 
 // Shared model picker options — keep this list in one place so the General
 // settings, ProjectView overrides, and WorkspaceDrawer all agree.
@@ -598,15 +641,7 @@ export type ContextMenuNativeItem =
 
 export type WorkspaceStatus = 'in_progress' | 'awaiting_input' | 'attention' | 'idle' | 'archived'
 
-export type WorkspaceActivityDetail =
-  | 'thinking'
-  | 'tool'
-  | 'asking'
-  | 'compacting'
-  | 'ready'
-  | 'attention'
-  | 'idle'
-  | 'archived'
+export type WorkspaceActivityDetail = 'working' | 'attention' | 'ready' | 'idle' | 'archived'
 
 // GitHub PR state mapped from `gh pr list` plus the draft flag — drafts come
 // back as OPEN with isDraft=true; we hoist draft into its own state so chip
@@ -839,12 +874,12 @@ export type FooterActionDraft = Omit<
   position?: number
 }
 
-export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly'
+export type DiagCategory = 'error' | 'lifecycle' | 'perf' | 'anomaly' | 'trace'
 export type DiagLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 export type DiagProcess = 'main' | 'renderer' | 'native'
 
-// One diagnostic event. `event` should be a value from DIAG_EVENTS (string-typed
-// here to avoid a cross-import; callers use the const).
+// One diagnostic event. `event` should be a value from DIAG_EVENTS for curated
+// point-events, OR a free-form dotted span/trace name (category 'trace').
 export type DiagEvent = {
   ts: number
   process: DiagProcess
@@ -856,6 +891,12 @@ export type DiagEvent = {
   durationMs?: number | null
   message?: string
   data?: Record<string, unknown> | null
+  // Trace correlation (category 'trace'); null/undefined for plain events.
+  traceId?: string | null
+  spanId?: string | null
+  parentSpanId?: string | null
+  name?: string | null
+  kind?: 'span' | 'event' | 'mark' | null
 }
 
 // Stored row shape returned by queries (adds id + seq).
@@ -868,5 +909,20 @@ export type DiagQuery = {
   levels?: DiagLevel[]
   event?: string
   workspaceId?: string
+  traceId?: string
   limit?: number
+}
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
+export type HealthProbe = { status: 'ok' | 'warn' | 'error'; detail: string }
+
+export type HealthReport = {
+  claudeCli: HealthProbe
+  sessionRegistry: HealthProbe
+  notifications: HealthProbe
+  hooks: HealthProbe & { enabled: boolean; installed: number }
+  dataDir: HealthProbe
 }

@@ -4,6 +4,8 @@
  *   bun run diag --workspace <id> --around <ms> [--window 30s]
  *   bun run diag --event terminal.mount --stats
  *   bun run diag --tail
+ *   bun run diag --trace <traceId>
+ *   bun run diag --trace <traceId> --tail
  *   bun run diag --export --since 7d > bug.json
  *
  * DB path: defaults to the Dev data dir. Override the app name with
@@ -12,6 +14,7 @@
 import { Database } from 'bun:sqlite'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { formatTraceTree, formatEventLine } from '../src/shared/diagFormat'
 
 function dbPath(): string {
   const appName = process.env.ORPHEUS_DIAG_APP ?? 'Orpheus Dev'
@@ -157,10 +160,36 @@ if (stats) {
 
 const SELECT = `SELECT id, ts, process, category, level, event,
           workspace_id AS workspaceId, session_id AS sessionId,
-          duration_ms AS durationMs, message, data
+          duration_ms AS durationMs, message, data,
+          name, kind, trace_id AS traceId, span_id AS spanId,
+          parent_span_id AS parentSpanId, seq
      FROM diagnostics_events`
 
-if (tail) {
+const traceId = arg('trace')
+if (process.argv.includes('--trace') && !traceId) {
+  console.error('[diag] --trace requires a trace ID argument')
+  process.exit(1)
+}
+
+if (traceId) {
+  const rows = db
+    .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
+    .all(traceId) as Array<Record<string, unknown>>
+  if (tail) {
+    // follow: re-query every 1s
+    console.log(formatTraceTree(rows))
+    setInterval(() => {
+      const r2 = db
+        .query('SELECT * FROM diagnostics_events WHERE trace_id = ? ORDER BY ts ASC, seq ASC')
+        .all(traceId) as Array<Record<string, unknown>>
+      console.clear()
+      console.log(formatTraceTree(r2))
+    }, 1000)
+  } else {
+    console.log(formatTraceTree(rows))
+    process.exit(0)
+  }
+} else if (tail) {
   // Poll every 1s, print new rows. Ctrl-C to stop.
   const { sql, params } = buildWhere()
   let lastId =
@@ -173,7 +202,7 @@ if (tail) {
       .all({ ...params, $lastId: lastId }) as Array<Record<string, unknown>>
     if (rows.length) {
       lastId = Number(rows[rows.length - 1].id)
-      console.log(table(rows))
+      console.log(rows.map((r) => formatEventLine(r)).join('\n'))
     }
   }
   setInterval(tick, 1000)

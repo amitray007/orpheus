@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 import type {
   DetectedApp,
   DoctorResult,
@@ -38,6 +37,8 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
+  UpdateProgress,
+  UpdateSnapshot,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -47,7 +48,10 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
-  DiagEvent
+  DiagEvent,
+  HealthReport,
+  KeepAwakeState,
+  KeepAwakeBaseMode
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -500,8 +504,9 @@ const api = {
     check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
     install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
     restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
-    onProgress: (cb: (e: { line: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { line: string }): void => cb(e)
+    getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke('updates:getState'),
+    onProgress: (cb: (e: UpdateProgress) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: UpdateProgress): void => cb(e)
       ipcRenderer.on('updates:progress', listener)
       return () => ipcRenderer.removeListener('updates:progress', listener)
     },
@@ -605,6 +610,15 @@ const api = {
 
     resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
   },
+  hooks: {
+    setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>
+      ipcRenderer.invoke('hooks:setEnabled', enabled),
+    getStatus: (): Promise<{ enabled: boolean; installed: number }> =>
+      ipcRenderer.invoke('hooks:getStatus')
+  },
+  health: {
+    get: (): Promise<HealthReport> => ipcRenderer.invoke('health:get')
+  },
   diag: {
     event: (evt: DiagEvent): void => {
       try {
@@ -612,6 +626,35 @@ const api = {
       } catch {
         /* never throw */
       }
+    },
+    openConsole: (): Promise<void> => ipcRenderer.invoke('diag:openConsole'),
+    onStream: (cb: (batch: unknown[]) => void): (() => void) => {
+      const listener = (_e: IpcRendererEvent, batch: unknown[]): void => cb(batch)
+      ipcRenderer.on('diag:stream', listener)
+      return () => ipcRenderer.removeListener('diag:stream', listener)
+    },
+    export: (opts: {
+      sinceMs: number
+    }): Promise<{
+      ok: boolean
+      path?: string
+      txtPath?: string
+      jsonPath?: string
+      error?: string
+    }> => ipcRenderer.invoke('diag:export', opts)
+  },
+  keepAwake: {
+    get: (): Promise<KeepAwakeState> => ipcRenderer.invoke('keepAwake:get'),
+    setMode: (mode: KeepAwakeBaseMode): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:setMode', mode),
+    setDisplayOn: (on: boolean): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:setDisplayOn', on),
+    startTimer: (minutes: number): Promise<KeepAwakeState> =>
+      ipcRenderer.invoke('keepAwake:startTimer', minutes),
+    onState: (cb: (state: KeepAwakeState) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
+      ipcRenderer.on('keepAwake:state', handler)
+      return () => ipcRenderer.removeListener('keepAwake:state', handler)
     }
   }
 }
@@ -621,14 +664,11 @@ const api = {
 // just add to the DOM global.
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
   // @ts-ignore (define in dts)
   window.api = api
 }

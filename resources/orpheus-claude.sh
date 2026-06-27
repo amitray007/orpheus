@@ -16,6 +16,17 @@
 [[ -n "${ORPHEUS_USER_PATH:-}" ]] && export PATH="${ORPHEUS_USER_PATH}"
 command -v claude >/dev/null 2>&1 || { [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null; }
 
+# Strip Claude Code's per-session self-identification vars. When Orpheus is
+# launched from inside a Claude Code session these variables leak down the
+# process tree and make each workspace's `claude` behave as a nested/child
+# session — notably it skips registering itself in ~/.claude/sessions/<pid>.json
+# and therefore never appears in `claude agents --json`. Unsetting them here
+# (unconditionally, safe no-op when absent) guarantees every workspace claude
+# starts as a clean, top-level session regardless of how Orpheus was launched.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID \
+      CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_EXECPATH \
+      CLAUDE_CODE_SSE_PORT AI_AGENT
+
 # ORPHEUS_CLAUDE_FLAGS — whitespace-separated CLI flags composed by Orpheus
 # from the user's Settings (e.g., "--model opus --permission-mode acceptEdits").
 # ORPHEUS_CLAUDE_SETTINGS_JSON — inline JSON blob for --settings, covering

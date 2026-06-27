@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, memo } from 'react'
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
+import { logDiag } from '../../lib/diag'
+import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
@@ -118,6 +120,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           launchAtLogin: false,
           globalHotkey: '',
           archivedWorkspaceLimit: 20,
+          hooksIntegrationEnabled: false,
           notifyAttention: true,
           notifyStop: true,
           notifyAlways: false,
@@ -131,6 +134,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           diagLifecycle: false,
           diagPerf: false,
           diagAnomaly: false,
+          diagTrace: false,
           theme: 'midnight',
           accentColor: null,
           uiFontScale: 'default',
@@ -209,7 +213,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           const prevDetail = getActivitySnapshot().get(workspaceId)
           if (prevDetail !== detail) {
             if (detail === 'ready') playSound('ding')
-            else if (detail === 'attention' || detail === 'asking') playSound('notification')
+            else if (detail === 'attention') playSound('notification')
           }
         }
         setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
@@ -223,7 +227,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       const prevDetail = getActivitySnapshot().get(e.workspaceId)
       if (prevDetail !== e.detail) {
         if (e.detail === 'ready') playSound('ding')
-        else if (e.detail === 'attention' || e.detail === 'asking') playSound('notification')
+        else if (e.detail === 'attention') playSound('notification')
       }
       setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
       bumpActivityTime(e.workspaceId, Date.now())
@@ -426,6 +430,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleSelectWorkspace = useCallback(
     (workspaceId: string, projectId: string): void => {
+      const fromId = selectedWorkspaceIdRef.current
+      const toId = workspaceId
+      if (fromId !== toId) {
+        logDiag({
+          category: 'lifecycle',
+          level: 'info',
+          event: DIAG_EVENTS.WORKSPACE_SWITCH,
+          workspaceId: toId,
+          data: { fromId, toId }
+        })
+      }
       setSelectedProjectId(projectId)
       setSelectedWorkspaceId(workspaceId)
       setView({ kind: 'workspace', workspaceId, projectId })

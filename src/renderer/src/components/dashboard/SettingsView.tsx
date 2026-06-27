@@ -21,7 +21,9 @@ import {
   Pulse,
   Lightning,
   Terminal,
-  Stack
+  Stack,
+  FirstAidKit,
+  Coffee
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -50,6 +52,8 @@ import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
 import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
 import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
 import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
+import { OrpheusHealthSection } from './settings/OrpheusHealthSection'
+import { OrpheusKeepAwakeSection } from './settings/OrpheusKeepAwakeSection'
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -73,11 +77,13 @@ export type SectionId =
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
+  | 'orpheus-keep-awake'
   | 'orpheus-updates'
   | 'orpheus-status'
   | 'orpheus-footer'
   | 'orpheus-developer'
   | 'orpheus-diagnostics'
+  | 'orpheus-health'
   | 'orpheus-about'
 
 interface SectionDef {
@@ -131,6 +137,12 @@ const GROUPS: SectionGroup[] = [
         Component: OrpheusWorkspacesSection
       },
       {
+        id: 'orpheus-keep-awake',
+        label: 'Keep Awake',
+        icon: Coffee,
+        Component: OrpheusKeepAwakeSection
+      },
+      {
         id: 'orpheus-updates',
         label: 'Updates',
         icon: ArrowsClockwise,
@@ -159,6 +171,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Diagnostics',
         icon: Pulse,
         Component: OrpheusDiagnosticsSection
+      },
+      {
+        id: 'orpheus-health',
+        label: 'Health',
+        icon: FirstAidKit,
+        Component: OrpheusHealthSection
       },
       { id: 'orpheus-about', label: 'About Orpheus', icon: Info, Component: OrpheusAboutSection }
     ]

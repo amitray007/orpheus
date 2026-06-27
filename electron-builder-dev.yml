@@ -54,8 +54,18 @@ mac:
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
+  # Skip electron-builder's internal ad-hoc codesign for the DEV build. It races
+  # on this toolchain (intermittent "Application ... could not be found" at the
+  # sign step). scripts/install-mac.mjs re-signs the whole bundle ad-hoc
+  # (codesign --force --deep --sign -) right after install, so the in-builder
+  # sign is redundant here anyway.
+  identity: null
 dmg:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
+# Use the pre-extracted Electron dist from node_modules rather than downloading
+# and re-extracting the zip via app-builder (which fails intermittently on
+# macOS 27 / Xcode Beta due to permission handling in the Go extractor).
+electronDist: node_modules/electron/dist
 # Dev builds: install to /Applications/Orpheus Dev.app, own data at
 # ~/Library/Application Support/Orpheus Dev/. Never released via Homebrew.

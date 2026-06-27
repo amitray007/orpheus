@@ -1,4 +1,10 @@
 import { APP_NAME, APP_ID, isDev } from './appMode'
+import {
+  startSessionStateService,
+  setSessionReadyHandler,
+  isWorkspaceSessionReady,
+  getLiveSessionState
+} from './sessionState'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import {
   app,
@@ -8,7 +14,8 @@ import {
   dialog,
   screen,
   globalShortcut,
-  powerMonitor
+  powerMonitor,
+  Notification
 } from 'electron'
 
 // Set app name before anything reads app.getPath('userData'). Electron derives
@@ -22,7 +29,11 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
-import type { DoctorResult, GitStatus } from '../shared/types'
+import * as os from 'node:os'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
+import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
   listBranches,
@@ -95,12 +106,12 @@ import {
   deleteSubagent
 } from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
+import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
   ensureManagedHooks,
-  onActivityBatch,
-  onSessionStart,
-  heartbeatFromTitle,
+  uninstallManagedHooks,
+  countManagedHooks,
   clearWorkspaceActivity,
   invalidateWatchdogCache,
   getWorkspaceActivity,
@@ -123,7 +134,8 @@ import {
   installUpdate,
   relaunchApp,
   startAutoCheckLoop,
-  stopAutoCheckLoop
+  stopAutoCheckLoop,
+  getUpdateSnapshot
 } from './updates'
 import {
   getStatusSnapshot,
@@ -140,7 +152,8 @@ import {
   copyToClipboard,
   listEditorApps,
   listTerminalApps,
-  getUserShellPath
+  getUserShellPath,
+  getCachedShellPath
 } from './shellHelpers'
 import type {
   SessionStatus,
@@ -198,9 +211,22 @@ import {
   stopDiagnostics,
   logDiagMain,
   ingestDiagEvent,
-  setDiagCategoryFlags
+  setDiagCategoryFlags,
+  queryDiagnostics,
+  diag
 } from './diagnostics'
+import { openDiagConsole } from './diagConsoleWindow'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { formatTraceTree, formatEventLine } from '../shared/diagFormat'
+import type { DiagRow } from '../shared/types'
+import {
+  startPowerAwake,
+  getKeepAwakeState,
+  setKeepAwakeMode,
+  setKeepAwakeDisplayOn,
+  startKeepAwakeTimer
+} from './powerAwake'
+import type { KeepAwakeBaseMode } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -210,7 +236,46 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 const launchSnapshots = new Map<string, ClaudeLaunch>()
 const dirtyWorkspaces = new Set<string>()
 
+// Fallback auto-hide timers for loading overlays — ensures a stuck overlay
+// is always dismissed even if claude never registers a session file.
+const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
+
 let notifyServer: { sockPath: string; close: () => void } | null = null
+let sessionStateService: { stop: () => void } | null = null
+let powerAwakeCleanup: (() => void) | null = null
+
+/**
+ * Declarative reconcile: reads hooksIntegrationEnabled and either starts the
+ * notify server + installs managed hooks (enabled) or shuts down the server +
+ * removes managed hooks (disabled). Safe to call multiple times.
+ */
+function reconcileHooks(): void {
+  const enabled = getAppUiState().hooksIntegrationEnabled
+  if (enabled) {
+    if (!notifyServer) {
+      try {
+        notifyServer = startNotifyServer()
+      } catch (err) {
+        console.error('[orpheusNotify] failed to start notify server:', err)
+      }
+    }
+    try {
+      ensureManagedHooks()
+    } catch (err) {
+      console.error('[orpheusNotify] failed to install managed hooks:', err)
+    }
+  } else {
+    if (notifyServer) {
+      notifyServer.close()
+      notifyServer = null
+    }
+    try {
+      uninstallManagedHooks()
+    } catch (err) {
+      console.error('[orpheusNotify] failed to uninstall managed hooks:', err)
+    }
+  }
+}
 
 // Cached main window reference — avoids BrowserWindow.getAllWindows() in hot paths.
 let mainWindowRef: BrowserWindow | null = null
@@ -321,6 +386,11 @@ const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
 
 let popoverWired = false
 
+// PR URL per workspace, captured when a popover is shown so the popover
+// action callback can open it directly via shell.openExternal — avoids the
+// fragile renderer round-trip whose Map entry is cleared before the click.
+const popoverPrUrlByWorkspace = new Map<string, string>()
+
 function applyPopoverTheme(theme: Theme): void {
   if (!terminalAddon) return
   const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
@@ -337,6 +407,13 @@ function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
   // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
   addon.setPopoverActionCallback((identifier: string) => {
     console.log('[popover] action callback:', identifier)
+    // Open the PR directly from main on a PR-chip click — the renderer Map that
+    // used to hold the URL is cleared before the click lands, so main owns this.
+    if (identifier.endsWith('::pr')) {
+      const wsId = identifier.slice(0, identifier.lastIndexOf('::'))
+      const url = popoverPrUrlByWorkspace.get(wsId)
+      if (url) shell.openExternal(url)
+    }
     // Phase B: parse identifier and route action (e.g. open PR URL).
     // For now, broadcast to renderer so it can handle it.
     getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
@@ -366,10 +443,10 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
     console.log('[loadingOverlay] action click', workspaceId)
     hideLoadingOverlay(workspaceId)
   })
-  // SessionStart hook is the canonical "claude is ready" signal — dismiss the
-  // overlay regardless of prior activity status. Min-show debounce in the state
-  // machine prevents flash on fast mounts.
-  onSessionStart((workspaceId: string) => {
+  // Session file reaching a concrete status (busy|idle|waiting) is the canonical
+  // "claude is ready" signal — dismiss the overlay. Min-show debounce in the
+  // state machine prevents flash on fast mounts.
+  setSessionReadyHandler((workspaceId: string) => {
     hideLoadingOverlay(workspaceId)
   })
 }
@@ -384,13 +461,6 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     // Stripping also collapses the spinner animation to one stable string
     // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
     // dedupe below uses to avoid hammering the DB on every frame.
-
-    // If the raw title leads with a spinner glyph, re-arm the watchdog so
-    // pure-think turns (no tool events) don't falsely expire during extended thinking.
-    const rawFirst = (title ?? '')[0]
-    if (rawFirst && /^[^\p{L}\p{N}\s]/u.test(rawFirst)) {
-      heartbeatFromTitle(workspaceId)
-    }
 
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
 
@@ -670,7 +740,7 @@ function createWindow(): void {
     titleBarStyle: 'hiddenInset',
     // Traffic lights vertically centered in the 44px (h-11) sidebar top strip:
     // (44 - 14) / 2 = 15
-    trafficLightPosition: { x: 16, y: 15 },
+    trafficLightPosition: { x: TRAFFIC_LIGHT_INSET, y: 15 },
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
@@ -713,7 +783,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -900,7 +970,99 @@ async function checkClaude(): Promise<{
 // IPC handlers
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('config:openFolder', async () => {
+// ---------------------------------------------------------------------------
+// Diagnostics: typed IPC wrapper — times every handler, logs slow (>50ms) calls
+// as PERF_IPC_ROUNDTRIP, captures and re-throws errors as ERROR_IPC_FAIL.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+function handle(
+  channel: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+  fn: (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any
+): void {
+  ipcMain.handle(channel, async (e, ...args) => {
+    const start = Date.now()
+    try {
+      const result = await fn(e, ...args)
+      const ms = Date.now() - start
+      if (ms > 50) {
+        logDiagMain({
+          category: 'perf',
+          level: 'info',
+          event: DIAG_EVENTS.PERF_IPC_ROUNDTRIP,
+          message: channel,
+          durationMs: ms,
+          data: { channel }
+        })
+      }
+      return result
+    } catch (err) {
+      logDiagMain({
+        category: 'error',
+        level: 'error',
+        event: DIAG_EVENTS.ERROR_IPC_FAIL,
+        message: `${channel}: ${err instanceof Error ? err.message : String(err)}`,
+        data: { channel, stack: err instanceof Error ? err.stack : null }
+      })
+      throw err
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// IPC input-validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert that `value` is a non-empty string and an absolute filesystem path.
+ * Throws on any renderer-supplied value that isn't a clean absolute path.
+ */
+function assertAbsolutePath(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`IPC validation: ${label} must be a non-empty string`)
+  }
+  if (!path.isAbsolute(value)) {
+    throw new Error(`IPC validation: ${label} must be an absolute path`)
+  }
+}
+
+/**
+ * Assert that `value` is an absolute path confined to a legitimate Claude
+ * config root: the user's home directory (for `~/.claude/...` / `~/.claude.json`)
+ * or any registered project's directory (for project-scoped settings files).
+ * Used for renderer-supplied config-file paths so a compromised renderer cannot
+ * redirect a write/delete/open at an arbitrary system path.
+ */
+function assertManagedConfigPath(value: unknown, label: string): asserts value is string {
+  assertAbsolutePath(value, label)
+  const v = value as string
+  const isUnder = (root: string): boolean => v === root || v.startsWith(root + path.sep)
+  if (isUnder(os.homedir())) return
+  for (const project of listProjects()) {
+    if (project.path && isUnder(project.path)) return
+  }
+  throw new Error(
+    `IPC validation: ${label} must be under the home directory or a registered project`
+  )
+}
+
+const ALLOWED_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
+
+/**
+ * Return true iff `url` is safe to pass to shell.openExternal().
+ * Only http, https, and mailto are permitted — blocks file:, javascript:, etc.
+ */
+function isSafeExternalUrl(url: unknown): url is string {
+  if (typeof url !== 'string' || url.length === 0) return false
+  try {
+    const { protocol } = new URL(url)
+    return ALLOWED_EXTERNAL_SCHEMES.has(protocol)
+  } catch {
+    return false
+  }
+}
+
+handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   if (result.canceled) return null
   const chosen = result.filePaths[0]
@@ -908,20 +1070,20 @@ ipcMain.handle('config:openFolder', async () => {
   return chosen ?? null
 })
 
-ipcMain.handle('app:getVersion', () => app.getVersion())
+handle('app:getVersion', () => app.getVersion())
 
-ipcMain.handle('app:getPaths', () => ({
+handle('app:getPaths', () => ({
   userData: app.getPath('userData'),
   logs: app.getPath('logs')
 }))
 
-ipcMain.handle('window:openDevTools', (e) => {
+handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
   win.webContents.openDevTools({ mode: 'detach' })
 })
 
-ipcMain.handle('window:reload', (e) => {
+handle('window:reload', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
   win.webContents.reload()
@@ -931,11 +1093,11 @@ ipcMain.handle('window:reload', (e) => {
 // Projects IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('projects:list', () => listProjects())
+handle('projects:list', () => listProjects())
 
-ipcMain.handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
+handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
 
-ipcMain.handle('projects:pickAndAdd', async () => {
+handle('projects:pickAndAdd', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   if (result.canceled || !result.filePaths[0]) return null
   const chosen = result.filePaths[0]
@@ -943,9 +1105,9 @@ ipcMain.handle('projects:pickAndAdd', async () => {
   return addProject(chosen)
 })
 
-ipcMain.handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
+handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
+handle('projects:remove', (_e, { id }: { id: string }) => {
   // Enumerate workspaces before the cascade-delete removes the rows so we can
   // tear down each one's in-memory state and native surface. The renderer
   // pre-destroys surfaces via terminal:destroy, but projects:remove must be
@@ -965,7 +1127,7 @@ ipcMain.handle('projects:remove', (_e, { id }: { id: string }) => {
   deleteProject(id)
 })
 
-ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
+handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameProject(id, name)
 )
 
@@ -973,23 +1135,23 @@ ipcMain.handle('projects:rename', (_e, { id, name }: { id: string; name: string 
 // Workspaces IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'workspaces:listForProject',
   (_e, { projectId, scope }: { projectId: string; scope?: 'active' | 'archived' | 'all' }) =>
     listWorkspacesForProject(projectId, { scope })
 )
 
-ipcMain.handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
+handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
   createWorkspace(args)
 )
 
-ipcMain.handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
+handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
 
-ipcMain.handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
   setWorkspacePinned(id, pinned)
 )
 
-ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
+handle('workspaces:archive', (_e, { id }: { id: string }) => {
   // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
   // Destroy the libghostty surface so the NSView is freed before the DB row
@@ -1007,7 +1169,7 @@ ipcMain.handle('workspaces:archive', (_e, { id }: { id: string }) => {
   teardownWorkspaceResources(id, ws?.cwd ?? null)
 })
 
-ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
+handle('workspace:close', (_e, { id }: { id: string }) => {
   const status = getWorkspaceActivity(id)
   if (status === 'in_progress') {
     return { ok: false as const, reason: 'busy' as const }
@@ -1016,22 +1178,22 @@ ipcMain.handle('workspace:close', (_e, { id }: { id: string }) => {
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-ipcMain.handle('workspace:reopen', (_e, { id }: { id: string }) => {
+handle('workspace:reopen', (_e, { id }: { id: string }) => {
   const workspace = reopenWorkspace(id)
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-ipcMain.handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
+handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
 
-ipcMain.handle(
+handle(
   'workspaces:reorder',
   (_e, { projectId, orderedIds }: { projectId: string; orderedIds: string[] }) =>
     reorderWorkspaces(projectId, orderedIds)
 )
 
-ipcMain.handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
+handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
   dirtyWorkspaces.has(workspaceId)
 )
 
@@ -1039,44 +1201,41 @@ ipcMain.handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string 
 // Pins IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('pins:listAll', () => listAllPinned())
+handle('pins:listAll', () => listAllPinned())
 
 // ---------------------------------------------------------------------------
 // Sessions IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'sessions:listForProject',
   (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
     listSessionsForProject(projectId, { includeArchived })
 )
 
-ipcMain.handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
+handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
 
-ipcMain.handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
+handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
   setSessionStatus(id, status)
 )
 
-ipcMain.handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
+handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
   listSessionsForProjectPaged(req)
 )
 
-ipcMain.handle(
+handle(
   'sessions:resumeInNewWorkspace',
   (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
     createWorkspaceResumingSession(projectId, sessionId)
 )
 
-ipcMain.handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
-  const t0 = process.hrtime.bigint()
+handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
   await refreshSessionMetadata(projectId)
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6
-  if (ms > 50) console.log('[perf] sessions:refreshMetadata %dms', Math.round(ms))
 })
 
-ipcMain.handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
+handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
 
-ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
   getContextBudget(workspaceId)
 )
 
@@ -1084,9 +1243,9 @@ ipcMain.handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId:
 // Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeSettings:get', () => getClaudeGlobalSettings())
+handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
-ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
+handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
   const result = updateClaudeGlobalSettings(patch)
   recomputeDirty()
   return result
@@ -1096,9 +1255,9 @@ ipcMain.handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) =
 // Ghostty Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('ghosttySettings:get', () => getGhosttyUserConfig())
+handle('ghosttySettings:get', () => getGhosttyUserConfig())
 
-ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
+handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
   const result = updateGhosttyUserConfig(patch)
   writeGhosttyConfigFile()
   // TODO: add "restart to apply" signal for keys that require restart
@@ -1115,58 +1274,72 @@ ipcMain.handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>)
 // MCP IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('mcp:listServers', () => listMcpServers())
-ipcMain.handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
-ipcMain.handle(
+handle('mcp:listServers', () => listMcpServers())
+handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
+handle(
   'mcp:update',
   (
     _e,
     args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }
-  ) => updateMcpServer(args.filePath, args.oldName, args.draft)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateMcpServer(args.filePath, args.oldName, args.draft)
+  }
 )
-ipcMain.handle('mcp:delete', (_e, args: { filePath: string; name: string }) =>
-  deleteMcpServer(args.filePath, args.name)
-)
+handle('mcp:delete', (_e, args: { filePath: string; name: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteMcpServer(args.filePath, args.name)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Agents IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeAgents:listSlashCommands', () => listSlashCommands())
-ipcMain.handle('claudeAgents:listSubagents', () => listSubagents())
+handle('claudeAgents:listSlashCommands', () => listSlashCommands())
+handle('claudeAgents:listSubagents', () => listSubagents())
 
-ipcMain.handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
+handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
   addSlashCommand(draft)
 )
-ipcMain.handle(
+handle(
   'claudeAgents:updateSlashCommand',
-  (_e, args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }) =>
-    updateSlashCommand(args.filePath, args.draft)
+  (
+    _e,
+    args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateSlashCommand(args.filePath, args.draft)
+  }
 )
-ipcMain.handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) =>
-  deleteSlashCommand(args.filePath)
-)
+handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteSlashCommand(args.filePath)
+})
 
-ipcMain.handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
-ipcMain.handle(
+handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
+handle(
   'claudeAgents:updateSubagent',
-  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) =>
-    updateSubagent(args.filePath, args.draft)
+  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateSubagent(args.filePath, args.draft)
+  }
 )
-ipcMain.handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) =>
-  deleteSubagent(args.filePath)
-)
+handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteSubagent(args.filePath)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Hooks IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeHooks:list', () => listClaudeHooks())
-ipcMain.handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+handle('claudeHooks:list', () => listClaudeHooks())
+handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+  assertManagedConfigPath(filePath, 'filePath')
   await shell.openPath(filePath)
 })
-ipcMain.handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
-ipcMain.handle(
+handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
+handle(
   'claudeHooks:update',
   (
     _e,
@@ -1177,9 +1350,12 @@ ipcMain.handle(
       hookIdx: number
       draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
     }
-  ) => updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+  }
 )
-ipcMain.handle(
+handle(
   'claudeHooks:delete',
   (
     _e,
@@ -1189,28 +1365,31 @@ ipcMain.handle(
       matcherEntryIdx: number
       hookIdx: number
     }
-  ) => deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+  ) => {
+    assertManagedConfigPath(args.filePath, 'filePath')
+    return deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+  }
 )
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeAuth:get', () => getClaudeAuthState())
+handle('claudeAuth:get', () => getClaudeAuthState())
 
-ipcMain.handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
+handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
 
-ipcMain.handle('claudeAuth:testConnection', () => testAnthropicConnection())
+handle('claudeAuth:testConnection', () => testAnthropicConnection())
 
 // ---------------------------------------------------------------------------
 // Per-project Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
+handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
   getClaudeProjectSettings(projectId)
 )
 
-ipcMain.handle(
+handle(
   'claudeProjectSettings:update',
   (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) => {
     const result = updateClaudeProjectSettings(args.projectId, args.patch)
@@ -1223,11 +1402,11 @@ ipcMain.handle(
 // Per-workspace Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
   getClaudeWorkspaceSettings(workspaceId)
 )
 
-ipcMain.handle(
+handle(
   'claudeWorkspaceSettings:update',
   (_e, args: { workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }) => {
     const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
@@ -1244,11 +1423,105 @@ ipcMain.on('diag:event', (_e, evt) => {
   ingestDiagEvent(evt)
 })
 
+handle('diag:openConsole', () => {
+  openDiagConsole()
+})
+
+handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
+  try {
+    const result = await dialog.showSaveDialog({
+      title: 'Export Diagnostics',
+      defaultPath: 'orpheus-diagnostics.txt',
+      filters: [{ name: 'Text', extensions: ['txt'] }]
+    })
+
+    if (result.canceled || !result.filePath) {
+      return { ok: false, error: 'canceled' }
+    }
+
+    const txtPath = result.filePath
+    const { dir, name } = path.parse(txtPath)
+    const jsonPath = path.join(dir, name + '.json')
+
+    const rows = queryDiagnostics({ sinceMs, limit: 100_000 })
+
+    // Build readable .txt report
+    const exportedAt = new Date().toISOString()
+    const rangeStart = new Date(sinceMs).toISOString()
+    const lines: string[] = [
+      `Orpheus Diagnostics Export`,
+      `Exported: ${exportedAt}`,
+      `Range: ${rangeStart} — ${exportedAt}`,
+      `Rows: ${rows.length}`,
+      '',
+      '═'.repeat(72),
+      ''
+    ]
+
+    // Group rows by traceId
+    const traceRows = new Map<string, DiagRow[]>()
+    const nonTraceRows: DiagRow[] = []
+    for (const row of rows) {
+      if (row.traceId) {
+        if (!traceRows.has(row.traceId)) traceRows.set(row.traceId, [])
+        traceRows.get(row.traceId)!.push(row)
+      } else {
+        nonTraceRows.push(row)
+      }
+    }
+
+    // Trace trees section
+    if (traceRows.size > 0) {
+      lines.push('TRACES', '─'.repeat(72), '')
+      for (const [traceId, tRows] of traceRows) {
+        lines.push(`Trace: ${traceId}`)
+        lines.push(formatTraceTree(tRows))
+        lines.push('')
+      }
+    }
+
+    // Flat events section
+    if (nonTraceRows.length > 0) {
+      lines.push('EVENTS', '─'.repeat(72), '')
+      for (const row of nonTraceRows) {
+        lines.push(formatEventLine(row))
+      }
+      lines.push('')
+    }
+
+    const txtContent = lines.join('\n')
+
+    // Write the .txt first, then the .json sidecar. If the JSON write fails
+    // after the txt landed, remove the orphaned txt so we never leave a
+    // half-completed report behind.
+    fs.writeFileSync(txtPath, txtContent, 'utf8')
+    try {
+      fs.writeFileSync(jsonPath, JSON.stringify(rows, null, 2), 'utf8')
+    } catch (jsonErr) {
+      try {
+        fs.unlinkSync(txtPath)
+      } catch {
+        /* best-effort cleanup */
+      }
+      return {
+        ok: false,
+        error: `Report could not be completed (JSON sidecar failed): ${
+          jsonErr instanceof Error ? jsonErr.message : String(jsonErr)
+        }`
+      }
+    }
+
+    return { ok: true, path: txtPath, txtPath, jsonPath }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
 // ---------------------------------------------------------------------------
 // UI State IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('uiState:get', () => getAppUiState())
+handle('uiState:get', () => getAppUiState())
 
 function syncDiagFlags(): void {
   const s = getAppUiState()
@@ -1256,11 +1529,12 @@ function syncDiagFlags(): void {
     error: s.diagError,
     lifecycle: s.diagLifecycle,
     perf: s.diagPerf,
-    anomaly: s.diagAnomaly
+    anomaly: s.diagAnomaly,
+    trace: s.diagTrace
   })
 }
 
-ipcMain.handle('uiState:update', (_e, patch: AppUiStatePatch) => {
+handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   const result = updateAppUiState(patch)
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
@@ -1293,47 +1567,145 @@ ipcMain.on(
   }
 )
 
-ipcMain.handle('notifications:test', () => {
+// ---------------------------------------------------------------------------
+// Hooks integration IPC
+// ---------------------------------------------------------------------------
+
+handle('hooks:setEnabled', (_e, enabled: boolean) => {
+  updateAppUiState({ hooksIntegrationEnabled: enabled })
+  reconcileHooks()
+  return { enabled }
+})
+
+handle('hooks:getStatus', () => {
+  const enabled = getAppUiState().hooksIntegrationEnabled
+  const installed = countManagedHooks()
+  return { enabled, installed }
+})
+
+handle('notifications:test', () => {
   fireTestNotification()
+})
+
+// ---------------------------------------------------------------------------
+// Health IPC
+// ---------------------------------------------------------------------------
+
+handle('health:get', async (): Promise<HealthReport> => {
+  // claudeCli
+  let claudeCli: HealthReport['claudeCli']
+  try {
+    const userPath = await getUserShellPath()
+    const whichResult = await new Promise<string>((resolve, reject) => {
+      childProcess.exec(
+        'which claude',
+        { env: { ...process.env, PATH: userPath } },
+        (err, stdout) => {
+          if (err) reject(err)
+          else resolve(stdout.trim())
+        }
+      )
+    })
+    if (!whichResult) throw new Error('claude not found on PATH')
+    const version = await new Promise<string>((resolve, reject) => {
+      const child = childProcess.spawn(whichResult, ['--version'], {
+        env: { ...process.env, PATH: userPath },
+        timeout: 5000
+      })
+      let out = ''
+      child.stdout.on('data', (d: Buffer) => {
+        out += d.toString()
+      })
+      child.stderr.on('data', (d: Buffer) => {
+        out += d.toString()
+      })
+      child.on('close', (code) => {
+        if (code === 0) resolve(out.trim())
+        else reject(new Error(`exit ${code}`))
+      })
+      child.on('error', reject)
+    })
+    claudeCli = { status: 'ok', detail: version }
+  } catch {
+    claudeCli = { status: 'error', detail: 'claude not found on PATH' }
+  }
+
+  // sessionRegistry
+  let sessionRegistry: HealthReport['sessionRegistry']
+  try {
+    const sessionDir = path.join(os.homedir(), '.claude', 'sessions')
+    await fs.promises.access(sessionDir, fs.constants.R_OK)
+    const liveCount = getLiveSessionState().size
+    sessionRegistry = { status: 'ok', detail: `${liveCount} live session(s)` }
+  } catch {
+    sessionRegistry = { status: 'warn', detail: 'session directory not found' }
+  }
+
+  // notifications
+  const notifSupported = Notification.isSupported()
+  const notifications: HealthReport['notifications'] = notifSupported
+    ? { status: 'ok', detail: 'Supported' }
+    : { status: 'warn', detail: 'Not supported on this platform' }
+
+  // hooks
+  const hooksEnabled = getAppUiState().hooksIntegrationEnabled
+  const hooksInstalled = countManagedHooks()
+  const hooksDetail = hooksEnabled ? `enabled · ${hooksInstalled} installed` : 'disabled'
+  const hooks: HealthReport['hooks'] = {
+    status: 'ok',
+    detail: hooksDetail,
+    enabled: hooksEnabled,
+    installed: hooksInstalled
+  }
+
+  // dataDir
+  let dataDir: HealthReport['dataDir']
+  try {
+    await fs.promises.access(app.getPath('userData'), fs.constants.W_OK)
+    dataDir = { status: 'ok', detail: 'Writable' }
+  } catch {
+    dataDir = { status: 'error', detail: 'Not writable' }
+  }
+
+  return { claudeCli, sessionRegistry, notifications, hooks, dataDir }
 })
 
 // ---------------------------------------------------------------------------
 // Updates IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('updates:check', () => checkForUpdates())
-ipcMain.handle('updates:install', () => {
+handle('updates:check', () => checkForUpdates())
+handle('updates:install', () => {
   installUpdate()
 })
-ipcMain.handle('updates:restart', () => {
+handle('updates:restart', () => {
   relaunchApp()
 })
+handle('updates:getState', () => getUpdateSnapshot())
 
 // ---------------------------------------------------------------------------
 // Claude status IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('status:get', () => getStatusSnapshot())
-ipcMain.handle('status:refresh', async () => refreshStatusNow())
-ipcMain.handle('status:openPage', () => {
+handle('status:get', () => getStatusSnapshot())
+handle('status:refresh', async () => refreshStatusNow())
+handle('status:openPage', () => {
   shell.openExternal('https://status.claude.com').catch((err) => {
     console.warn('[status] openExternal failed:', err)
   })
 })
 
-ipcMain.handle(
-  'projects:setExpandedInSidebar',
-  (_e, { id, expanded }: { id: string; expanded: boolean }) =>
-    setProjectExpandedInSidebar(id, expanded)
+handle('projects:setExpandedInSidebar', (_e, { id, expanded }: { id: string; expanded: boolean }) =>
+  setProjectExpandedInSidebar(id, expanded)
 )
 
-ipcMain.handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
+handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
   reorderProjects(orderedIds)
 )
 
-ipcMain.handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
+handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
 
-ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
+handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()
   return {
     claudeInstalled: installed,
@@ -1346,7 +1718,7 @@ ipcMain.handle('doctor:check', async (): Promise<DoctorResult> => {
 // Context menu IPC (native Electron menu — renders above NSView)
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
+handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return null
   return showContextMenu(items, win)
@@ -1356,20 +1728,14 @@ ipcMain.handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => 
 // Git IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
-  'git:status',
-  (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd)
-)
+handle('git:status', (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd))
 
-ipcMain.handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
-  const t0 = process.hrtime.bigint()
+handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
   const result = await listBranches(cwd)
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6
-  if (ms > 50) console.log('[perf] git:branches %dms', Math.round(ms))
   return result
 })
 
-ipcMain.handle(
+handle(
   'git:log',
   (
     _e,
@@ -1385,16 +1751,13 @@ ipcMain.handle(
   ) => listCommits(args.cwd, args)
 )
 
-ipcMain.handle(
+handle(
   'git:count',
   async (
     _e,
     args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
   ) => {
-    const t0 = process.hrtime.bigint()
     const result = await countCommits(args.cwd, args)
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6
-    if (ms > 50) console.log('[perf] git:count %dms', Math.round(ms))
     return result
   }
 )
@@ -1403,7 +1766,7 @@ ipcMain.handle(
 // GitHub IPC — `gh` CLI passthrough; null on every failure mode.
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
+handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
   getPrForBranch(cwd, branch)
 )
 
@@ -1411,18 +1774,23 @@ ipcMain.handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch
 // Shell helpers IPC
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('shell:revealInFinder', (_e, { path }: { path: string }) => revealInFinder(path))
-ipcMain.handle('shell:openInEditor', (_e, { path }: { path: string }) => {
-  const state = getAppUiState()
-  return openInEditor(path, state.preferredEditorApp ?? undefined)
+handle('shell:revealInFinder', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
+  return revealInFinder(filePath)
 })
-ipcMain.handle('shell:openTerminal', (_e, { path }: { path: string }) => {
+handle('shell:openInEditor', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
   const state = getAppUiState()
-  return openTerminal(path, state.preferredTerminalApp ?? undefined)
+  return openInEditor(filePath, state.preferredEditorApp ?? undefined)
 })
-ipcMain.handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
-ipcMain.handle('shell:listEditorApps', () => listEditorApps())
-ipcMain.handle('shell:listTerminalApps', () => listTerminalApps())
+handle('shell:openTerminal', (_e, { path: filePath }: { path: string }) => {
+  assertAbsolutePath(filePath, 'path')
+  const state = getAppUiState()
+  return openTerminal(filePath, state.preferredTerminalApp ?? undefined)
+})
+handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
+handle('shell:listEditorApps', () => listEditorApps())
+handle('shell:listTerminalApps', () => listTerminalApps())
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-surface lifecycle
@@ -1466,9 +1834,9 @@ function loadTerminalAddon(): GhosttySurfaceAddon {
   }
 }
 
-ipcMain.handle(
+handle(
   'terminal:mount',
-  (
+  async (
     e,
     {
       workspaceId,
@@ -1476,64 +1844,136 @@ ipcMain.handle(
       scaleFactor,
       cwd
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): { workspaceId: string; created: boolean } => {
+  ): Promise<{ workspaceId: string; created: boolean }> => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
     ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
-    const handle = win.getNativeWindowHandle()
+    const nativeHandle = win.getNativeWindowHandle()
 
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
 
-    // Assemble the surface launch env + command via the Orpheus adapter.
-    // buildMountEnv owns the env layering: settings → auth → ORPHEUS_* vars.
-    const {
-      command,
-      env: surfaceEnv,
-      launch
-    } = buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
+    // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
+    // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
+    // instead of forcing the .zshrc fallback (+100–800 ms).
+    if (getCachedShellPath() === null) {
+      await getUserShellPath()
+    }
 
-    console.log(
-      '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
-      workspaceId,
-      launch.flags || '(none)',
-      launch.settingsJson || '(none)',
-      Object.keys(surfaceEnv).join(',')
-    )
-
+    let launch!: ReturnType<typeof buildMountEnv>['launch']
     const _mountStart = Date.now()
-    const result = addon.mount(handle, {
-      workspaceId,
-      rect,
-      scaleFactor,
-      cwd,
-      command,
-      env: surfaceEnv
+    const result = await diag.trace('terminal.mount', { workspaceId }, async (s) => {
+      // Compose launch env as a child span nested under terminal.mount.
+      // buildMountEnv is sync; use diag.span (not diag.trace).
+      let buildResult!: ReturnType<typeof buildMountEnv>
+      try {
+        buildResult = diag.span(
+          'launch.compose',
+          { workspaceId, projectId: projectId ?? null },
+          () => buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
+        )
+      } catch (err) {
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.LAUNCH_COMPOSE_FAILED,
+          message: err instanceof Error ? err.message : String(err),
+          workspaceId,
+          data: { stack: err instanceof Error ? err.stack : null }
+        })
+        throw err
+      }
+      const { command, env: surfaceEnv, launch: composedLaunch } = buildResult
+      launch = composedLaunch
+
+      console.log(
+        '[terminal] mount workspaceId=%s flags=%s settingsJson=%s envKeys=%s',
+        workspaceId,
+        launch.flags || '(none)',
+        launch.settingsJson || '(none)',
+        Object.keys(surfaceEnv).join(',')
+      )
+
+      let mountResult: { workspaceId: string; created: boolean }
+      try {
+        mountResult = addon.mount(nativeHandle, {
+          workspaceId,
+          rect,
+          scaleFactor,
+          cwd,
+          command,
+          env: surfaceEnv
+        })
+      } catch (err) {
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.ERROR_NATIVE,
+          message: `addon.mount failed: ${err instanceof Error ? err.message : String(err)}`,
+          workspaceId,
+          data: { stack: err instanceof Error ? err.stack : null }
+        })
+        throw err
+      }
+      s.mark(mountResult.created ? 'surface-created' : 'surface-reattached')
+      logDiagMain({
+        category: 'lifecycle',
+        level: 'info',
+        event: DIAG_EVENTS.TERMINAL_MOUNT,
+        workspaceId,
+        data: { created: mountResult?.created ?? null }
+      })
+      logDiagMain({
+        category: 'perf',
+        level: 'info',
+        event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
+        workspaceId,
+        durationMs: Date.now() - _mountStart
+      })
+      return mountResult
     })
-    logDiagMain({
-      category: 'lifecycle',
-      level: 'info',
-      event: DIAG_EVENTS.TERMINAL_MOUNT,
-      workspaceId,
-      data: { created: result?.created ?? null }
-    })
-    logDiagMain({
-      category: 'perf',
-      level: 'info',
-      event: DIAG_EVENTS.PERF_TERMINAL_MOUNT,
-      workspaceId,
-      durationMs: Date.now() - _mountStart
-    })
+
+    if (result.created) {
+      logDiagMain({
+        category: 'lifecycle',
+        level: 'info',
+        event: DIAG_EVENTS.TERMINAL_SURFACE_CREATED,
+        workspaceId
+      })
+    }
 
     // Show the loading overlay only when a new surface was actually created —
     // re-attaching a hidden surface or a defensive resize means claude is
     // already running and there's no boot to mask.
     if (result.created) {
       showLoadingOverlay(workspaceId, { title: 'Starting workspace' })
+
+      // If the session is already past its starting phase (re-mount of a
+      // running workspace), dismiss the overlay immediately.
+      if (isWorkspaceSessionReady(workspaceId)) {
+        hideLoadingOverlay(workspaceId)
+      } else {
+        // Fallback: ensure the overlay is always dismissed after 10s even if
+        // claude never registers a session file (e.g. auth failure, crash).
+        const prev = overlayFallbackTimers.get(workspaceId)
+        if (prev) clearTimeout(prev)
+        const t = setTimeout(() => {
+          overlayFallbackTimers.delete(workspaceId)
+          logDiagMain({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.OVERLAY_FALLBACK,
+            workspaceId,
+            message: 'overlay dismissed by fallback timeout'
+          })
+          hideLoadingOverlay(workspaceId)
+        }, 10000)
+        overlayFallbackTimers.set(workspaceId, t)
+      }
     }
 
     // Snapshot the composed launch so we can detect settings drift later.
@@ -1557,12 +1997,29 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
   // If the user navigates away mid-boot, dismiss the overlay so it doesn't
   // outlive its parent surface in the contentView.
+  const fallback = overlayFallbackTimers.get(workspaceId)
+  if (fallback) {
+    clearTimeout(fallback)
+    overlayFallbackTimers.delete(workspaceId)
+  }
   hideLoadingOverlay(workspaceId)
-  addon.hide(workspaceId)
+  try {
+    addon.hide(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.hide failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1571,9 +2028,21 @@ ipcMain.handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): 
   })
 })
 
-ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
-  addon.focus(workspaceId)
+  try {
+    addon.focus(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.focus failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'anomaly',
     level: 'warn',
@@ -1586,7 +2055,7 @@ ipcMain.handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }):
 // Native popover IPC handlers (Phase A chassis)
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'terminal:showPopover',
   (
     _e,
@@ -1602,6 +2071,8 @@ ipcMain.handle(
       data: Record<string, unknown>
     }
   ): void => {
+    const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
+    if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
     const addon = loadTerminalAddon()
     // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
     // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
@@ -1610,7 +2081,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle(
+handle(
   'terminal:updatePopover',
   (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
     const addon = loadTerminalAddon()
@@ -1618,23 +2089,20 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
   const addon = loadTerminalAddon()
   addon.hidePopover(workspaceId)
 })
 
-ipcMain.handle(
-  'terminal:getSurfacePhase',
-  (_e, { workspaceId }: { workspaceId: string }): string => {
-    try {
-      return loadTerminalAddon().getSurfacePhase(workspaceId)
-    } catch {
-      return 'none'
-    }
+handle('terminal:getSurfacePhase', (_e, { workspaceId }: { workspaceId: string }): string => {
+  try {
+    return loadTerminalAddon().getSurfacePhase(workspaceId)
+  } catch {
+    return 'none'
   }
-)
+})
 
-ipcMain.handle(
+handle(
   'terminal:resize',
   (
     _e,
@@ -1645,11 +2113,23 @@ ipcMain.handle(
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number }
   ): void => {
     const addon = loadTerminalAddon()
-    addon.resize(workspaceId, rect, scaleFactor)
+    try {
+      addon.resize(workspaceId, rect, scaleFactor)
+    } catch (err) {
+      logDiagMain({
+        category: 'error',
+        level: 'error',
+        event: DIAG_EVENTS.ERROR_NATIVE,
+        message: `addon.resize failed: ${err instanceof Error ? err.message : String(err)}`,
+        workspaceId,
+        data: { stack: err instanceof Error ? err.stack : null }
+      })
+      throw err
+    }
   }
 )
 
-ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
+handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void => {
   // NOTE: terminal:destroy is called in two distinct scenarios:
   //   1. Workspace death (archive / project-remove) — full teardown happens in
   //      the archive/remove handlers via teardownWorkspaceResources; this path
@@ -1659,6 +2139,11 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
+  const fallbackTimer = overlayFallbackTimers.get(workspaceId)
+  if (fallbackTimer) {
+    clearTimeout(fallbackTimer)
+    overlayFallbackTimers.delete(workspaceId)
+  }
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   launchSnapshots.delete(workspaceId)
@@ -1678,7 +2163,19 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
     stopGitWatch(workspaceId, wsForGit.cwd)
   }
   const addon = loadTerminalAddon()
-  addon.destroy(workspaceId)
+  try {
+    addon.destroy(workspaceId)
+  } catch (err) {
+    logDiagMain({
+      category: 'error',
+      level: 'error',
+      event: DIAG_EVENTS.ERROR_NATIVE,
+      message: `addon.destroy failed: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceId,
+      data: { stack: err instanceof Error ? err.stack : null }
+    })
+    throw err
+  }
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1691,15 +2188,12 @@ ipcMain.handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
-  'terminal:sendInput',
-  (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
-    const addon = loadTerminalAddon()
-    return terminalActions.sendInput(addon, workspaceId, text)
-  }
-)
+handle('terminal:sendInput', (_e, { workspaceId, text }: { workspaceId: string; text: string }) => {
+  const addon = loadTerminalAddon()
+  return terminalActions.sendInput(addon, workspaceId, text)
+})
 
-ipcMain.handle(
+handle(
   'terminal:sendKeys',
   (_e, { workspaceId, keys }: { workspaceId: string; keys: TerminalSendKeyDescriptor[] }) => {
     const addon = loadTerminalAddon()
@@ -1707,17 +2201,17 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
+handle('terminal:submit', (_e, { workspaceId }: { workspaceId: string }) => {
   const addon = loadTerminalAddon()
   return terminalActions.submit(addon, workspaceId)
 })
 
-ipcMain.handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
+handle('terminal:clearInput', (_e, { workspaceId }: { workspaceId: string }) => {
   const addon = loadTerminalAddon()
   return terminalActions.clearInput(addon, workspaceId)
 })
 
-ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
+handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boolean => {
   return terminalActions.canInject(workspaceId)
 })
 
@@ -1725,7 +2219,7 @@ ipcMain.handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------
 
-ipcMain.handle(
+handle(
   'actions:invoke',
   (
     _e,
@@ -1746,15 +2240,13 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('actions:list', () => actionsList())
+handle('actions:list', () => actionsList())
 
-ipcMain.handle(
-  'actions:history',
-  (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
-    getAuditHistory(workspaceId, limit)
+handle('actions:history', (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
+  getAuditHistory(workspaceId, limit)
 )
 
-ipcMain.handle(
+handle(
   'actions:subscribe',
   (
     e,
@@ -1780,7 +2272,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
+handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
   stopSubscription(subscriptionId)
   return { ok: true }
 })
@@ -1789,11 +2281,11 @@ ipcMain.handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId:
 // Footer actions — phase 3a: CRUD + merge IPC surface
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
   listMergedFooterActions(workspaceId)
 )
 
-ipcMain.handle(
+handle(
   'footerActions:listAtScope',
   (_e, { scope, scopeId }: { scope: FooterActionScope; scopeId?: string }) => {
     if (scope === 'global') return listGlobalFooterActions()
@@ -1802,7 +2294,7 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle(
+handle(
   'footerActions:create',
   (
     _e,
@@ -1814,17 +2306,17 @@ ipcMain.handle(
   ) => createFooterAction(scope, scopeId, draft)
 )
 
-ipcMain.handle(
+handle(
   'footerActions:update',
   (_e, { id, patch }: { id: string; patch: Partial<FooterActionDraft> }) =>
     updateFooterAction(id, patch)
 )
 
-ipcMain.handle('footerActions:remove', (_e, { id }: { id: string }) => {
+handle('footerActions:remove', (_e, { id }: { id: string }) => {
   removeFooterAction(id)
 })
 
-ipcMain.handle(
+handle(
   'footerActions:reorder',
   (
     _e,
@@ -1836,15 +2328,24 @@ ipcMain.handle(
   ) => reorderFooterActions(scope, scopeId, orderedIds)
 )
 
-ipcMain.handle('footerActions:resetDefaults', () => {
+handle('footerActions:resetDefaults', () => {
   resetFooterActionsToDefaults()
 })
 
-ipcMain.handle(
+handle(
   'workspace:getTitle',
   (_e, { workspaceId }: { workspaceId: string }): string | null =>
     workspaceTitles.get(workspaceId) ?? null
 )
+
+// ---------------------------------------------------------------------------
+// Keep Awake IPC
+// ---------------------------------------------------------------------------
+
+handle('keepAwake:get', () => getKeepAwakeState())
+handle('keepAwake:setMode', (_e, mode: KeepAwakeBaseMode) => setKeepAwakeMode(mode))
+handle('keepAwake:setDisplayOn', (_e, on: boolean) => setKeepAwakeDisplayOn(on))
+handle('keepAwake:startTimer', (_e, minutes: number) => startKeepAwakeTimer(minutes))
 
 // ---------------------------------------------------------------------------
 // App lifecycle
@@ -1852,9 +2353,20 @@ ipcMain.handle(
 app.whenReady().then(() => {
   // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
   // This is a no-op after the first call (getUserShellPath caches internally).
-  getUserShellPath().catch(() => {
-    /* swallow — logged inside getUserShellPath */
-  })
+  void diag
+    .trace('startup.shell_path', {}, async () => {
+      const resolvedPath = await getUserShellPath()
+      if (!resolvedPath) {
+        logDiagMain({
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
+        })
+      }
+    })
+    .catch(() => {
+      /* swallow — getUserShellPath already logs errors internally */
+    })
 
   electronApp.setAppUserModelId(APP_ID)
 
@@ -1947,46 +2459,33 @@ app.whenReady().then(() => {
   // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
   startStatusPoller()
 
-  // Defer notify server + hook install until after the first frame — keeps
+  // Defer notify server + hook reconcile until after the first frame — keeps
   // createWindow() hot so the UI appears faster on launch.
   setImmediate(() => {
-    // Start the Unix-domain socket server that hook shims post to.
-    try {
-      notifyServer = startNotifyServer()
-      // Batch channel: sends the entire coalesced flush as one IPC message.
-      // The renderer switches to onActivityBatch; batchListeners fan out to
-      // the legacy per-event listeners as well so onActivityChanged still works.
-      onActivityBatch((updates) => {
-        const win = getMainWindow()
-        if (!win) return
-        win.webContents.send('workspace:activityBatch', updates)
-        // Push canInject state for each workspace that changed activity so the
-        // renderer chips don't need to poll terminal:canInject every second.
-        // Use the authoritative terminalActions.canInject() so 'attention' and
-        // any future status additions are handled identically to the IPC handler.
-        for (const { workspaceId } of updates) {
-          if (!win.webContents.isDestroyed()) {
-            win.webContents.send('terminal:canInjectChanged', {
-              workspaceId,
-              canInject: terminalActions.canInject(workspaceId)
-            })
-          }
+    // Wire up the activity batch channel regardless of hook integration state —
+    // the batch listener is always needed for file-based status updates.
+    onActivityBatch((updates) => {
+      const win = getMainWindow()
+      if (!win) return
+      win.webContents.send('workspace:activityBatch', updates)
+      // Push canInject state for each workspace that changed activity so the
+      // renderer chips don't need to poll terminal:canInject every second.
+      // Use the authoritative terminalActions.canInject() so 'attention' and
+      // any future status additions are handled identically to the IPC handler.
+      for (const { workspaceId } of updates) {
+        if (!win.webContents.isDestroyed()) {
+          win.webContents.send('terminal:canInjectChanged', {
+            workspaceId,
+            canInject: terminalActions.canInject(workspaceId)
+          })
         }
-      })
-      // Legacy onActivityChange registration removed — the renderer uses
-      // onActivityBatch as primary. The preload onActivityChanged method and
-      // the renderer's fallback listener are intentionally kept as dead-but-safe
-      // code so older code paths compile without changes.
-    } catch (err) {
-      console.error('[orpheusNotify] failed to start notify server:', err)
-    }
+      }
+    })
 
-    // Inject managed hooks into ~/.claude/settings.json (idempotent, skips write if unchanged).
-    try {
-      ensureManagedHooks()
-    } catch (err) {
-      console.error('[orpheusNotify] failed to install managed hooks:', err)
-    }
+    // Declarative hook reconcile: enabled → start server + install hooks;
+    // disabled (default) → remove any previously-installed managed hooks and
+    // do NOT start the socket server.
+    reconcileHooks()
 
     setAutoCloseHandler((workspaceId) => {
       performClose(workspaceId)
@@ -2000,6 +2499,19 @@ app.whenReady().then(() => {
     } catch {
       // Failure is non-fatal here; terminal:mount will surface the error when needed.
     }
+
+    // Start shadow-mode session state service (Phase 1 — observes and logs only)
+    try {
+      sessionStateService = startSessionStateService()
+    } catch (err) {
+      console.error('[sessionState] failed to start:', err)
+    }
+
+    try {
+      powerAwakeCleanup = startPowerAwake(getMainWindow)
+    } catch (err) {
+      console.error('[powerAwake] failed to start:', err)
+    }
   })
 
   app.on('activate', function () {
@@ -2011,6 +2523,8 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
+  sessionStateService?.stop()
+  powerAwakeCleanup?.()
   stopStatusPoller()
   stopAutoCheckLoop()
   stopAllGitWatches()

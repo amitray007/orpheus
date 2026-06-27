@@ -110,7 +110,7 @@ export function OrpheusNotificationsSection(): React.JSX.Element {
           </SettingRow>
           <SettingRow
             label="Detailed finish summary"
-            description="Show how long the turn took and how many subagents ran in the 'Claude finished' notification."
+            description="Show how long the turn took in the 'Claude finished' notification."
           >
             <Toggle
               value={uiState.notifyRichSummary ?? true}

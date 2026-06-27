@@ -9,6 +9,7 @@ import { getAppUiState } from './uiState'
 import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { stageActivityUpdate } from './activitySink'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -20,14 +21,6 @@ export type WorkspaceActivityEvent =
   | 'posttool'
   | 'precompact'
   | 'subagent-stop'
-
-const EVENT_TO_STATUS: Partial<Record<WorkspaceActivityEvent, WorkspaceStatus>> = {
-  'session-start': 'awaiting_input',
-  'user-prompt': 'in_progress',
-  notification: 'attention',
-  stop: 'awaiting_input',
-  'session-end': 'idle'
-}
 
 const HOOK_EVENT_MAP: Record<string, WorkspaceActivityEvent> = {
   SessionStart: 'session-start',
@@ -51,157 +44,50 @@ const HOOK_MATCHER: Partial<Record<string, string>> = {
   Notification: 'permission_prompt'
 }
 
-type DetailState = {
-  toolStack: number
-  compacting: boolean
-  // When set, claude is blocked on a tool that needs user input
-  // (AskUserQuestion, ExitPlanMode). The string is the tool_name from
-  // the PreToolUse payload so PostToolUse can unblock the matching tool.
-  blockingTool: string | null
-  // Counts Task tool dispatches whose SubagentStop hasn't arrived yet.
-  // Stop fires per main-transcript turn and does NOT mean subagents are done;
-  // we defer the awaiting_input transition until subagentDepth reaches 0.
-  subagentDepth: number
-  // True when a Stop was received while subagentDepth > 0. The pending
-  // awaiting_input dispatch fires once the last SubagentStop arrives.
-  pendingStop: boolean
-  // Wall-clock ms when the current user-prompt turn started. 0 = no turn active.
-  turnStartedAt: number
-  // Cumulative subagents dispatched in THIS turn (Agent/Task PreToolUse).
-  // Reset on next user-prompt; intentionally NOT reset on Stop so the count
-  // is still readable when the deferred awaiting_input banner fires.
-  subagentsDispatched: number
-}
-
-// Tools that block claude until the user answers them. Treated as a
-// status=attention transition with detail=asking, so macOS notifications
-// fire and the user sees a distinct glyph.
-const BLOCKING_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
-
 const activityMap = new Map<string, WorkspaceStatus>()
-const detailMap = new Map<string, DetailState>()
 const lastBroadcastDetail = new Map<string, WorkspaceActivityDetail>()
 
-// Cached watchdog duration — invalidated when the uiState inProgressWatchdogSec changes.
-let cachedWatchdogSec: number | null = null
+type StatusObserver = (
+  workspaceId: string,
+  oldStatus: WorkspaceStatus | undefined,
+  newStatus: WorkspaceStatus
+) => void
+
+const statusObservers = new Set<StatusObserver>()
+
+/** Subscribe to every committed workspace status transition. Returns an unsubscribe fn. */
+export function onWorkspaceStatusChange(cb: StatusObserver): () => void {
+  statusObservers.add(cb)
+  return () => statusObservers.delete(cb)
+}
+
+/** Snapshot of current in-memory per-workspace statuses. */
+export function getAllWorkspaceStatuses(): Map<string, WorkspaceStatus> {
+  return new Map(activityMap)
+}
+
 let cachedStaleMinutes: number | null = null
 let cachedAutoCloseMinutes: number | null = null
 
 /** Call this after updating inProgressWatchdogSec so the next arm picks up the new value. */
 export function invalidateWatchdogCache(): void {
-  cachedWatchdogSec = null
   cachedStaleMinutes = null
   cachedAutoCloseMinutes = null
 }
-const listeners = new Set<
-  (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
->()
 
-// ---------------------------------------------------------------------------
-// Batch coalescing for activity broadcasts
-//
-// Instead of firing listeners immediately on every hook event (which can be
-// N×F times/sec with N busy terminals), we stage the latest state per
-// workspace in a pending Map and schedule a single flush ~16ms later.
-// The flush emits the whole batch to `batchListeners` via onActivityBatch,
-// and also fans out to the legacy per-event `listeners` for backwards compat.
-// ---------------------------------------------------------------------------
-
-type ActivityUpdate = {
-  workspaceId: string
-  status: WorkspaceStatus
-  detail: WorkspaceActivityDetail
-}
-
-const pendingBatch = new Map<string, ActivityUpdate>()
-let flushScheduled = false
-
-const batchListeners = new Set<(updates: ActivityUpdate[]) => void>()
-
-function scheduleBatchFlush(): void {
-  if (flushScheduled) return
-  flushScheduled = true
-  setTimeout(() => {
-    flushScheduled = false
-    if (pendingBatch.size === 0) return
-    const updates = Array.from(pendingBatch.values())
-    pendingBatch.clear()
-    for (const cb of batchListeners) {
-      try {
-        cb(updates)
-      } catch {
-        /* ignore */
-      }
-    }
-    // Fan out to legacy per-event listeners for backwards compat.
-    for (const update of updates) {
-      for (const cb of listeners) {
-        try {
-          cb(update.workspaceId, update.status, update.detail)
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }, 16)
-}
-
-export function onActivityBatch(cb: (updates: ActivityUpdate[]) => void): () => void {
-  batchListeners.add(cb)
-  return () => batchListeners.delete(cb)
-}
-// Fires only on the SessionStart hook, regardless of prior activity status.
-// Used by loadingOverlay to dismiss its mount-time overlay reliably even when
-// the workspace was previously in 'awaiting_input' (re-mount of a known session).
-const sessionStartListeners = new Set<(workspaceId: string) => void>()
 let autoCloseHandler: ((workspaceId: string) => void) | null = null
+let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
+  null
 
-const watchdogs = new Map<string, NodeJS.Timeout>()
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
 
-function getDetailState(workspaceId: string): DetailState {
-  let s = detailMap.get(workspaceId)
-  if (!s) {
-    s = {
-      toolStack: 0,
-      compacting: false,
-      blockingTool: null,
-      subagentDepth: 0,
-      pendingStop: false,
-      turnStartedAt: 0,
-      subagentsDispatched: 0
-    }
-    detailMap.set(workspaceId, s)
-  }
-  return s
-}
-
-export function getBlockingTool(workspaceId: string): string | null {
-  return detailMap.get(workspaceId)?.blockingTool ?? null
-}
-
-export function getTurnSummary(
-  workspaceId: string
-): { elapsedMs: number; subagents: number } | null {
-  const s = detailMap.get(workspaceId)
-  if (!s || !s.turnStartedAt) return null
-  return { elapsedMs: Date.now() - s.turnStartedAt, subagents: s.subagentsDispatched }
-}
-
 export function computeDetail(
-  workspaceId: string,
+  _workspaceId: string,
   status: WorkspaceStatus
 ): WorkspaceActivityDetail {
-  const s = detailMap.get(workspaceId)
-  if (status === 'attention') {
-    return s?.blockingTool ? 'asking' : 'attention'
-  }
-  if (status === 'in_progress') {
-    if (s?.compacting) return 'compacting'
-    if (s && s.toolStack > 0) return 'tool'
-    return 'thinking'
-  }
+  if (status === 'attention') return 'attention'
+  if (status === 'in_progress') return 'working'
   if (status === 'awaiting_input') return 'ready'
   if (status === 'idle') return 'idle'
   return 'archived'
@@ -214,18 +100,7 @@ function broadcastDetailIfChanged(workspaceId: string): void {
   const last = lastBroadcastDetail.get(workspaceId)
   if (last === detail) return
   lastBroadcastDetail.set(workspaceId, detail)
-  // Stage into the pending batch rather than firing listeners synchronously.
-  // scheduleBatchFlush will emit to batchListeners (and fan out to legacy
-  // listeners) in a single ~16ms coalesced flush.
-  pendingBatch.set(workspaceId, { workspaceId, status, detail })
-  scheduleBatchFlush()
-}
-
-function clearWatchdog(workspaceId: string): void {
-  const t = watchdogs.get(workspaceId)
-  if (!t) return
-  clearTimeout(t)
-  watchdogs.delete(workspaceId)
+  stageActivityUpdate({ workspaceId, status, detail })
 }
 
 function clearIdleWatchdog(workspaceId: string): void {
@@ -240,39 +115,6 @@ function clearAutoCloseWatchdog(workspaceId: string): void {
   if (!t) return
   clearTimeout(t)
   autoCloseWatchdogs.delete(workspaceId)
-}
-
-function armWatchdog(workspaceId: string): void {
-  clearWatchdog(workspaceId)
-  if (cachedWatchdogSec === null) {
-    cachedWatchdogSec = getAppUiState().inProgressWatchdogSec ?? 120
-  }
-  const userSec = cachedWatchdogSec
-  if (userSec <= 0) return
-  const s = detailMap.get(workspaceId)
-  const seconds = s?.compacting ? Math.max(userSec, 300) : userSec
-  const t = setTimeout(() => {
-    watchdogs.delete(workspaceId)
-    if (activityMap.get(workspaceId) === 'in_progress') {
-      console.log('[orpheusNotify] watchdog fired — demoting', workspaceId, 'after', seconds, 's')
-      logDiagMain({
-        category: 'anomaly',
-        level: 'warn',
-        event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
-        workspaceId,
-        data: { afterSeconds: seconds }
-      })
-      dispatch(workspaceId, 'awaiting_input')
-      // Lost-SubagentStop recovery: clear any deferred-subagent state so the
-      // next turn starts clean rather than inheriting a stale pendingStop.
-      const s = detailMap.get(workspaceId)
-      if (s) {
-        s.subagentDepth = 0
-        s.pendingStop = false
-      }
-    }
-  }, seconds * 1000)
-  watchdogs.set(workspaceId, t)
 }
 
 function armIdleWatchdog(workspaceId: string): void {
@@ -294,9 +136,9 @@ function armIdleWatchdog(workspaceId: string): void {
           'min'
         )
         logDiagMain({
-          category: 'lifecycle',
-          level: 'debug',
-          event: DIAG_EVENTS.HOOK_ACTIVITY,
+          category: 'anomaly',
+          level: 'warn',
+          event: DIAG_EVENTS.ACTIVITY_WATCHDOG_FIRED,
           workspaceId,
           message: 'ready→idle (stale)',
           data: { afterMinutes: minutes }
@@ -337,9 +179,26 @@ function armAutoCloseWatchdog(workspaceId: string): void {
 }
 
 function dispatch(workspaceId: string, status: WorkspaceStatus): void {
+  // File-authoritative veto: if the session file says the main process is still
+  // busy or waiting (e.g. AskUserQuestion/ExitPlanMode), suppress premature
+  // demotion to awaiting_input or idle from hooks or the watchdog.
+  // attention and in_progress are never blocked — the drive step's attention
+  // dispatch must still pass through.
+  if (status === 'awaiting_input' || status === 'idle') {
+    const fileStatus = fileStatusProvider?.(workspaceId)
+    if (fileStatus === 'busy' || fileStatus === 'waiting') return
+  }
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
   activityMap.set(workspaceId, status)
+  // Fan out to keep-awake / future observers. Errors are isolated.
+  statusObservers.forEach((obs) => {
+    try {
+      obs(workspaceId, prev, status)
+    } catch (err) {
+      console.error('[orpheusNotify] status observer error:', err)
+    }
+  })
   logDiagMain({
     category: 'lifecycle',
     level: 'debug',
@@ -355,11 +214,6 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   }
   notifyForTransition(workspaceId, prev, status)
 
-  if (status === 'in_progress') {
-    armWatchdog(workspaceId)
-  } else {
-    clearWatchdog(workspaceId)
-  }
   // Auto-demote ready→idle after staleAfterMinutes of sitting in awaiting_input.
   if (status === 'awaiting_input') {
     armIdleWatchdog(workspaceId)
@@ -376,18 +230,6 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   broadcastDetailIfChanged(workspaceId)
 }
 
-function heartbeat(workspaceId: string): void {
-  if (activityMap.get(workspaceId) === 'in_progress') {
-    armWatchdog(workspaceId)
-  }
-}
-
-// Called from index.ts when a raw title begins with a spinner glyph, re-arming
-// the watchdog during pure-think turns where no tool events fire.
-export function heartbeatFromTitle(workspaceId: string): void {
-  heartbeat(workspaceId)
-}
-
 // Permission-prompt messages contain "permission" (e.g. "Claude needs your
 // permission to use Bash"). Idle/auth/elicitation messages don't. The matcher
 // in settings.json is the primary filter; this string check is defense in
@@ -402,100 +244,22 @@ function handleHookEvent(
   ev: WorkspaceActivityEvent,
   payload: Record<string, unknown>
 ): void {
-  const ds = getDetailState(workspaceId)
-  const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
-  const msg = typeof payload.message === 'string' ? payload.message : null
   if (process.env['ORPHEUS_DEBUG_HOOKS'] === '1') {
+    const tn = typeof payload.tool_name === 'string' ? payload.tool_name : null
+    const msg = typeof payload.message === 'string' ? payload.message : null
     console.log('[orpheusNotify] hook', { ev, workspaceId, tool_name: tn, message: msg })
   }
 
   switch (ev) {
-    case 'pretool': {
-      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
-      if (toolName && BLOCKING_TOOLS.has(toolName)) {
-        ds.blockingTool = toolName
-        dispatch(workspaceId, 'attention')
-        return
-      }
-      // 'Agent' is the current subagent-dispatch tool_name; 'Task' is the legacy alias.
-      if (tn === 'Agent' || tn === 'Task') {
-        ds.subagentDepth++
-        ds.subagentsDispatched++
-      }
-      ds.toolStack++
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
-    }
-    case 'posttool': {
-      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null
-      if (toolName && toolName === ds.blockingTool) {
-        ds.blockingTool = null
-        dispatch(workspaceId, 'in_progress')
-        return
-      }
-      ds.toolStack = Math.max(0, ds.toolStack - 1)
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
-    }
+    case 'pretool':
+    case 'posttool':
     case 'precompact':
-      ds.compacting = true
-      heartbeat(workspaceId)
-      broadcastDetailIfChanged(workspaceId)
-      return
     case 'subagent-stop':
-      ds.subagentDepth = Math.max(0, ds.subagentDepth - 1)
-      heartbeat(workspaceId)
-      if (ds.subagentDepth === 0 && ds.pendingStop) {
-        ds.pendingStop = false
-        // The last subagent finished and a Stop was deferred. But if a subagent
-        // raised a permission prompt while we waited, the workspace is now in
-        // 'attention'/blocking — don't clobber that live prompt with a green
-        // 'ready' dot. Let PostToolUse/Notification clear attention first.
-        if (activityMap.get(workspaceId) !== 'attention' && !ds.blockingTool) {
-          dispatch(workspaceId, 'awaiting_input')
-        }
-      }
-      return
     case 'stop':
-      // Reset per-turn state but not subagentDepth: subagents may still be
-      // running. Stop fires per main-transcript turn and does NOT mean all
-      // subagents have finished.
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      if (ds.subagentDepth > 0) {
-        // Subagents still in flight — defer the awaiting_input transition.
-        // The 120s watchdog is the safety net if a final SubagentStop is lost.
-        ds.pendingStop = true
-        heartbeat(workspaceId)
-        return
-      }
-      ds.pendingStop = false
-      break
     case 'user-prompt':
-      // Fresh turn — record start time and reset per-turn state.
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      ds.subagentDepth = 0
-      ds.pendingStop = false
-      ds.turnStartedAt = Date.now()
-      ds.subagentsDispatched = 0
-      break
     case 'session-end':
-      // Session ended — clear all per-turn state.
-      ds.toolStack = 0
-      ds.compacting = false
-      ds.blockingTool = null
-      ds.subagentDepth = 0
-      ds.pendingStop = false
-      ds.turnStartedAt = 0
-      ds.subagentsDispatched = 0
-      break
+      return
     case 'notification':
-      ds.compacting = false
       // Suppress idle_prompt / auth_success / elicitation_* — only permission
       // prompts should wake the user. Without this guard, every 60s of user
       // think-time fires a "Waiting on a permission decision" macOS toast.
@@ -503,25 +267,16 @@ function handleHookEvent(
         broadcastDetailIfChanged(workspaceId)
         return
       }
-      break
+      // Fall through to fire OS notification via notifyForTransition (called
+      // from dispatch). We don't dispatch status here — file owns attention.
+      // Instead just broadcast detail so notification metadata is fresh.
+      broadcastDetailIfChanged(workspaceId)
+      return
     case 'session-start':
-      for (const cb of sessionStartListeners) {
-        try {
-          cb(workspaceId)
-        } catch {
-          /* ignore */
-        }
-      }
-      break
+      // Hook plumbing kept intact — no-op; overlay dismissal is now driven
+      // by the session file reaching a concrete status (sessionState.ts).
+      return
   }
-
-  const status = EVENT_TO_STATUS[ev]
-  if (!status) return
-  dispatch(workspaceId, status)
-}
-
-export function onSessionStart(cb: (workspaceId: string) => void): void {
-  sessionStartListeners.add(cb)
 }
 
 /**
@@ -531,13 +286,11 @@ export function onSessionStart(cb: (workspaceId: string) => void): void {
  * though it's now active again.
  */
 export function clearWorkspaceActivity(workspaceId: string): void {
-  clearWatchdog(workspaceId)
   clearIdleWatchdog(workspaceId)
   clearAutoCloseWatchdog(workspaceId)
   // Force a fresh 'idle' broadcast even if the current cached value is also
   // archived → avoid dispatch's early-return when prev === status.
   activityMap.delete(workspaceId)
-  detailMap.delete(workspaceId)
   lastBroadcastDetail.delete(workspaceId)
   dispatch(workspaceId, 'idle')
   // dispatch('idle') re-arms the auto-close watchdog — defuse it for teardown.
@@ -552,11 +305,18 @@ export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
   autoCloseHandler = fn
 }
 
-export function onActivityChange(
-  cb: (workspaceId: string, status: WorkspaceStatus, detail: WorkspaceActivityDetail) => void
-): () => void {
-  listeners.add(cb)
-  return () => listeners.delete(cb)
+export function setFileStatusProvider(
+  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown'
+): void {
+  fileStatusProvider = fn
+}
+
+/** Drive a status update from the session file. Runs through dispatch so
+ *  persistence, broadcast, and watchdog-arming all happen consistently.
+ *  The Half-1 veto inside dispatch still applies (which is correct — if the
+ *  file just reported idle/waiting, the veto won't block it). */
+export function setStatusFromFile(workspaceId: string, status: WorkspaceStatus): void {
+  dispatch(workspaceId, status)
 }
 
 export function shimPath(): string {
@@ -573,7 +333,7 @@ function managedCommand(event: WorkspaceActivityEvent): string {
 
 // Anything mentioning our env var is ours; the legacy absolute-path form is
 // also recognized so first-run after this change cleans up the old entries.
-function isManagedCommand(cmd: string): boolean {
+export function isManagedCommand(cmd: string): boolean {
   if (cmd.includes('$ORPHEUS_NOTIFY')) return true
   if (cmd.startsWith(shimPath())) return true
   return false
@@ -657,6 +417,142 @@ export function ensureManagedHooks(): void {
   fs.renameSync(tmp, settingsPath)
 }
 
+/**
+ * Count the number of Orpheus-managed hook entries currently present in
+ * ~/.claude/settings.json. Returns 0 if the file is absent or unreadable.
+ */
+export function countManagedHooks(): number {
+  const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
+  let count = 0
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0
+    const hooksObj = (parsed as Record<string, unknown>)['hooks']
+    if (!hooksObj || typeof hooksObj !== 'object' || Array.isArray(hooksObj)) return 0
+    for (const eventArr of Object.values(hooksObj as Record<string, unknown>)) {
+      if (!Array.isArray(eventArr)) continue
+      for (const entry of eventArr) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const hookList = (entry as Record<string, unknown>)['hooks']
+        if (!Array.isArray(hookList)) continue
+        for (const h of hookList) {
+          if (
+            typeof h === 'object' &&
+            h !== null &&
+            typeof (h as Record<string, unknown>)['command'] === 'string' &&
+            isManagedCommand((h as Record<string, unknown>)['command'] as string)
+          ) {
+            count++
+          }
+        }
+      }
+    }
+  } catch {
+    // ENOENT or parse error — zero is correct
+  }
+  return count
+}
+
+/**
+ * Remove ONLY Orpheus-managed hook entries from ~/.claude/settings.json.
+ * User-added hooks are never touched. Tolerates ENOENT (silent no-op) and
+ * parse errors (warns + returns). Is the clean-without-re-add twin of
+ * ensureManagedHooks.
+ */
+export function uninstallManagedHooks(): void {
+  const settingsPath = nodePath.join(os.homedir(), '.claude', 'settings.json')
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf-8')
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return // nothing to clean
+    console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    return
+  }
+
+  let parsed: Record<string, unknown>
+  try {
+    const p = JSON.parse(raw)
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+      console.warn(
+        '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
+      )
+      return
+    }
+    parsed = p as Record<string, unknown>
+  } catch (err) {
+    console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    return
+  }
+
+  if (
+    typeof parsed['hooks'] !== 'object' ||
+    parsed['hooks'] === null ||
+    Array.isArray(parsed['hooks'])
+  ) {
+    return // no hooks section — nothing to remove
+  }
+
+  const hooksObj = parsed['hooks'] as Record<string, unknown>
+  let changed = false
+
+  for (const hookEvent of Object.keys(hooksObj)) {
+    if (!Array.isArray(hooksObj[hookEvent])) continue
+    const eventArr = hooksObj[hookEvent] as Array<unknown>
+
+    const filtered = eventArr.filter((entry) => {
+      if (typeof entry !== 'object' || entry === null) return true
+      const hookList = (entry as Record<string, unknown>)['hooks']
+      if (!Array.isArray(hookList)) return true
+      // Remove the entry if ALL of its hooks are managed by Orpheus.
+      // If an entry mixes Orpheus hooks with user hooks, remove only the
+      // managed hooks from that entry's hooks array.
+      const remaining = hookList.filter(
+        (h) =>
+          !(
+            typeof h === 'object' &&
+            h !== null &&
+            typeof (h as Record<string, unknown>)['command'] === 'string' &&
+            isManagedCommand((h as Record<string, unknown>)['command'] as string)
+          )
+      )
+      if (remaining.length === hookList.length) return true // nothing removed
+      changed = true
+      if (remaining.length === 0)
+        return false // drop the whole matcher entry
+      ;(entry as Record<string, unknown>)['hooks'] = remaining
+      return true
+    })
+
+    if (filtered.length !== eventArr.length) changed = true
+    if (filtered.length === 0) {
+      delete hooksObj[hookEvent]
+    } else {
+      hooksObj[hookEvent] = filtered
+    }
+  }
+
+  // Drop the hooks key entirely if it became empty.
+  if (Object.keys(hooksObj).length === 0) {
+    delete parsed['hooks']
+    changed = true
+  }
+
+  if (!changed) return
+
+  const newContent = JSON.stringify(parsed, null, 2)
+  const tmp = settingsPath + '.tmp'
+  try {
+    fs.writeFileSync(tmp, newContent, 'utf-8')
+    fs.renameSync(tmp, settingsPath)
+  } catch (err) {
+    console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+  }
+}
+
 export function startNotifyServer(): { sockPath: string; close: () => void } {
   const sockPath = nodePath.join(app.getPath('userData'), 'notify.sock')
 
@@ -725,7 +621,25 @@ export function startNotifyServer(): { sockPath: string; close: () => void } {
     })
   })
 
-  server.listen(sockPath)
+  // TODO(security): a per-session token (generated at mount time, injected via
+  // ORPHEUS_NOTIFY_TOKEN env var into orpheus-claude.sh, forwarded by the
+  // orpheus-notify shim as an Authorization header, and validated here) would
+  // add a second layer on top of the filesystem permission below. The plumbing
+  // is mostly in place (ORPHEUS_WORKSPACE_ID is already injected at mount time
+  // in the same env-var merge; adding a token would follow the same path through
+  // composeClaudeLaunch → terminal:mount → orpheus-claude.sh → shim). Not
+  // wiring it here because it requires coordinated changes to resources/bin/orpheus-notify
+  // and src/main/index.ts (the mount handler), which are out of scope for this pass.
+  server.listen(sockPath, () => {
+    try {
+      fs.chmodSync(sockPath, 0o600)
+    } catch (err) {
+      console.warn(
+        '[orpheusNotify] could not chmod notify.sock to 0600 — socket is accessible to all local users:',
+        err
+      )
+    }
+  })
 
   return {
     sockPath,

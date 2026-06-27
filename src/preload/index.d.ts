@@ -1,4 +1,3 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   DetectedApp,
   DoctorResult,
@@ -36,6 +35,8 @@ import type {
   ClaudeHookDraft,
   ContextMenuNativeItem,
   UpdateCheckResult,
+  UpdateProgress,
+  UpdateSnapshot,
   ClaudeStatusSnapshot,
   ActionResult,
   ActionAuditEntry,
@@ -45,14 +46,16 @@ import type {
   FooterActionDraft,
   FooterActionScope,
   GhosttyUserConfig,
-  DiagEvent
+  DiagEvent,
+  HealthReport,
+  KeepAwakeState,
+  KeepAwakeBaseMode
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
 
 declare global {
   interface Window {
-    electron: ElectronAPI
     api: {
       app: {
         getVersion: () => Promise<string>
@@ -318,7 +321,8 @@ declare global {
         check: () => Promise<UpdateCheckResult>
         install: () => Promise<void>
         restart: () => Promise<void>
-        onProgress: (cb: (e: { line: string }) => void) => () => void
+        getState: () => Promise<UpdateSnapshot>
+        onProgress: (cb: (e: UpdateProgress) => void) => () => void
         onDone: (cb: (e: { success: boolean; code: number | null }) => void) => () => void
         onCheckResult: (cb: (result: UpdateCheckResult) => void) => () => void
       }
@@ -362,8 +366,31 @@ declare global {
         ) => Promise<void>
         resetDefaults: () => Promise<void>
       }
+      hooks: {
+        setEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>
+        getStatus: () => Promise<{ enabled: boolean; installed: number }>
+      }
+      health: {
+        get: () => Promise<HealthReport>
+      }
       diag: {
         event: (evt: DiagEvent) => void
+        openConsole: () => Promise<void>
+        onStream: (cb: (batch: unknown[]) => void) => () => void
+        export: (opts: { sinceMs: number }) => Promise<{
+          ok: boolean
+          path?: string
+          txtPath?: string
+          jsonPath?: string
+          error?: string
+        }>
+      }
+      keepAwake: {
+        get: () => Promise<KeepAwakeState>
+        setMode: (mode: KeepAwakeBaseMode) => Promise<KeepAwakeState>
+        setDisplayOn: (on: boolean) => Promise<KeepAwakeState>
+        startTimer: (minutes: number) => Promise<KeepAwakeState>
+        onState: (cb: (state: KeepAwakeState) => void) => () => void
       }
     }
   }

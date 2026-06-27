@@ -14,15 +14,7 @@ import type { GitStatus, GhPullRequest, WorkspaceActivityDetail } from '@shared/
 export type HoverPopoverData = {
   title: string
   activityLabel: string
-  activityState:
-    | 'ready'
-    | 'idle'
-    | 'attention'
-    | 'thinking'
-    | 'tool'
-    | 'compacting'
-    | 'asking'
-    | 'archived'
+  activityState: 'working' | 'ready' | 'idle' | 'attention' | 'archived'
   relativeTime: string
   git?: {
     branch: string
@@ -32,11 +24,13 @@ export type HoverPopoverData = {
     deletions: number
   }
   pr?: { number: number; state: 'open' | 'merged' | 'closed' | 'draft'; check: string }
+  prUrl?: string
   cwd?: string
 }
 
 export type DetailsPopoverData = {
   pr?: { number: number; state: 'open' | 'merged' | 'closed' | 'draft'; check: string }
+  prUrl?: string
   model?: string
   contextText?: string
   contextLoading?: boolean
@@ -55,10 +49,7 @@ export type DetailsPopoverData = {
 // ── Activity state mapping ───────────────────────────────────────────────────
 
 const ACTIVITY_LABEL: Partial<Record<WorkspaceActivityDetail, string>> = {
-  thinking: 'thinking',
-  tool: 'running tool',
-  compacting: 'compacting',
-  asking: 'awaiting input',
+  working: 'Working…',
   ready: 'ready',
   idle: 'idle',
   attention: 'needs attention'
@@ -152,7 +143,11 @@ function ensurePopoverActionListener(): void {
     if (elementId === 'pr') {
       const url = prUrlByWorkspace.get(workspaceId)
       if (url) {
-        window.open(url, '_blank', 'noopener,noreferrer')
+        try {
+          window.open(url, '_blank', 'noopener,noreferrer')
+        } catch {
+          // no-op
+        }
       }
     } else if (elementId === 'closed') {
       // Native card closed via mouseExited — reset renderer open-state.
@@ -197,6 +192,7 @@ export function showHoverPopover(
     relativeTime,
     git: gitStatusToNative(gitStatus),
     pr: prToNative(pr),
+    prUrl: pr?.url ?? undefined,
     cwd
   }
 
@@ -222,9 +218,10 @@ export function showDetailsPopover(
   const rect = anchorEl.getBoundingClientRect()
   const anchorRect = { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
 
-  const nativeData: DetailsPopoverData = {
+  const nativeData = {
     ...data,
-    pr: prToNative(pr ?? null)
+    pr: prToNative(pr ?? null),
+    prUrl: pr?.url ?? undefined
   }
 
   void window.api.terminal

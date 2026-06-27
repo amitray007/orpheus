@@ -153,7 +153,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 }: WorkspaceRowProps): React.JSX.Element {
   // Subscribe to this workspace's key only — no re-render on other workspaces
   const activity = useWorkspaceActivity(workspace.id)
-  const isBusy = activity === 'thinking' || activity === 'tool' || activity === 'compacting'
+  const isBusy = activity === 'working'
   const isClosed = workspace.closedAt !== null
   const liveActivityAt = useWorkspaceActivityTime(workspace.id)
   const terminalTitle = useWorkspaceTitle(workspace.id)

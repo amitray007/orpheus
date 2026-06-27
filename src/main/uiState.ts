@@ -38,6 +38,8 @@ type AppUiStateRow = {
   global_hotkey: string
   // Archive cap (v25)
   archived_workspace_limit: number
+  // Hooks integration (v60)
+  hooks_integration_enabled: number | null
   // Notification preferences (v29)
   notify_attention: number
   notify_stop: number
@@ -80,6 +82,8 @@ type AppUiStateRow = {
   diag_lifecycle: number | null
   diag_perf: number | null
   diag_anomaly: number | null
+  // Trace capture (v61)
+  diag_trace: number | null
   updated_at: number
 }
 
@@ -114,6 +118,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     globalHotkey: row.global_hotkey ?? '',
     // Archive cap (v25)
     archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
+    // Hooks integration (v60) — default false (off)
+    hooksIntegrationEnabled: (row.hooks_integration_enabled ?? 0) === 1,
     // Notification preferences (v29)
     notifyAttention: (row.notify_attention ?? 1) === 1,
     notifyStop: (row.notify_stop ?? 1) === 1,
@@ -151,6 +157,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagLifecycle: row.diag_lifecycle === 1,
     diagPerf: row.diag_perf === 1,
     diagAnomaly: row.diag_anomaly === 1,
+    // Trace capture (v61) — off by default
+    diagTrace: row.diag_trace === 1,
     updatedAt: row.updated_at
   }
 }
@@ -293,6 +301,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     globalHotkey: 'global_hotkey',
     // Archive cap (v25)
     archivedWorkspaceLimit: 'archived_workspace_limit',
+    // Hooks integration (v60)
+    hooksIntegrationEnabled: 'hooks_integration_enabled',
     // Notification preferences (v29)
     notifyAttention: 'notify_attention',
     notifyStop: 'notify_stop',
@@ -333,7 +343,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',
     diagPerf: 'diag_perf',
-    diagAnomaly: 'diag_anomaly'
+    diagAnomaly: 'diag_anomaly',
+    // Trace capture (v61)
+    diagTrace: 'diag_trace'
   }
 
   const setClauses: string[] = []

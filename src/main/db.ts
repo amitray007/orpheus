@@ -2,12 +2,14 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 59
+const CURRENT_VERSION = 62
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -238,12 +240,18 @@ const DIAGNOSTICS_SCHEMA_SQL = `
     duration_ms  INTEGER,
     message      TEXT,
     data         TEXT,
-    seq          INTEGER NOT NULL
+    seq          INTEGER NOT NULL,
+    trace_id        TEXT,
+    span_id         TEXT,
+    parent_span_id  TEXT,
+    name            TEXT,
+    kind            TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_diag_ts       ON diagnostics_events(ts);
   CREATE INDEX IF NOT EXISTS idx_diag_cat_ts   ON diagnostics_events(category, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_ws_ts    ON diagnostics_events(workspace_id, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_event_ts ON diagnostics_events(event, ts);
+  CREATE INDEX IF NOT EXISTS idx_diag_trace    ON diagnostics_events(trace_id, ts);
 `
 
 // Footer actions — phase 3a. Three-scope additive list.
@@ -351,12 +359,27 @@ const UI_STATE_SCHEMA_SQL = `
     diag_lifecycle INTEGER NOT NULL DEFAULT 0,
     diag_perf INTEGER NOT NULL DEFAULT 0,
     diag_anomaly INTEGER NOT NULL DEFAULT 0,
+    -- Trace capture (v61) — off by default
+    diag_trace INTEGER NOT NULL DEFAULT 0,
     auto_close_after_minutes INTEGER,
     -- Notification enrichment (v59)
     notify_rich_summary BOOLEAN NOT NULL DEFAULT 1,
     notify_suppress_when_focused BOOLEAN NOT NULL DEFAULT 0,
+    -- Hooks integration (v60) — default 0 (off); opt-in to socket server + settings.json hooks
+    hooks_integration_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
+`
+
+const KEEP_AWAKE_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS keep_awake_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
+    display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
+    timer_minutes INTEGER NOT NULL DEFAULT 120
+  );
+  INSERT OR IGNORE INTO keep_awake_settings (id, mode, display_on, timer_minutes)
+    VALUES (1, 'auto', 0, 120);
 `
 
 // ---------------------------------------------------------------------------
@@ -406,6 +429,7 @@ function migrate(db: Database.Database): void {
 
   // Fast path: already up-to-date — skip all DDL and migration steps
   if (currentVersion === CURRENT_VERSION) return
+  const t0 = Date.now()
 
   // Apply base schema (all CREATE IF NOT EXISTS — safe to re-run on new/old installs)
   db.exec(SCHEMA_SQL)
@@ -417,6 +441,7 @@ function migrate(db: Database.Database): void {
   db.exec(ACTION_AUDIT_LOG_SCHEMA_SQL)
   db.exec(DIAGNOSTICS_SCHEMA_SQL)
   db.exec(FOOTER_ACTIONS_SCHEMA_SQL)
+  db.exec(KEEP_AWAKE_SCHEMA_SQL)
 
   if (!row) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(CURRENT_VERSION)
@@ -2211,6 +2236,64 @@ function migrate(db: Database.Database): void {
     }
     db.prepare('UPDATE schema_version SET version = ?').run(59)
   }
+
+  if (currentVersion < 60) {
+    try {
+      db.exec(
+        'ALTER TABLE app_ui_state ADD COLUMN hooks_integration_enabled INTEGER NOT NULL DEFAULT 0'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(60)
+  }
+
+  if (currentVersion < 61) {
+    for (const col of [
+      'trace_id TEXT',
+      'span_id TEXT',
+      'parent_span_id TEXT',
+      'name TEXT',
+      'kind TEXT'
+    ]) {
+      try {
+        db.exec(`ALTER TABLE diagnostics_events ADD COLUMN ${col}`)
+      } catch {
+        /* column may already exist */
+      }
+    }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_diag_trace ON diagnostics_events(trace_id, ts)')
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.exec('ALTER TABLE app_ui_state ADD COLUMN diag_trace INTEGER NOT NULL DEFAULT 0')
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(61)
+  }
+
+  if (currentVersion < 62) {
+    try {
+      db.exec(KEEP_AWAKE_SCHEMA_SQL)
+    } catch {
+      /* table may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(62)
+  }
+
+  // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()
+  // which is called before setDiagCategoryFlags syncs from settings — this event may
+  // not persist on the very first run; that is an accepted limitation.
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.DB_MIGRATE,
+    durationMs: Date.now() - t0,
+    data: { from: currentVersion, to: CURRENT_VERSION }
+  })
 }
 
 // projects.archived_at was dropped by the Version 3 migration, but it is still declared
