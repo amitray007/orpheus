@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { GhosttyKeybind, GhosttyUserConfig } from '@shared/types'
 import { SettingRow, Toggle, Select, NumberInput, SectionTitle, Eyebrow } from './primitives'
@@ -224,6 +224,122 @@ function validateKeybind(kb: GhosttyKeybind): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// KeybindRow — a single saved keybinding with a remove button
+// ---------------------------------------------------------------------------
+
+interface KeybindRowProps {
+  kb: GhosttyKeybind
+  index: number
+  onRemove: (index: number) => void
+}
+
+const KeybindRow = memo(function KeybindRow({
+  kb,
+  index,
+  onRemove
+}: KeybindRowProps): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-3 bg-surface-raised border border-border-default rounded-lg px-4 py-2.5">
+      <span className="bg-surface-overlay border border-border-default rounded px-2 py-0.5 font-mono text-xs text-text-primary shrink-0">
+        {kb.trigger}
+      </span>
+      <span className="text-xs text-text-muted">→</span>
+      <span className="text-xs text-text-primary flex-1 min-w-0 truncate">{kb.action}</span>
+      <button
+        type="button"
+        onClick={() => onRemove(index)}
+        className="text-text-muted hover:text-red-400 text-sm leading-none shrink-0 px-1"
+        aria-label="Remove keybinding"
+      >
+        ×
+      </button>
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// KeybindEditor — inline form for adding a new keybinding; owns its own draft
+// state so the parent doesn't re-render as the user types trigger/action.
+// ---------------------------------------------------------------------------
+
+interface KeybindEditorProps {
+  onSave: (kb: GhosttyKeybind) => void
+  onCancel: () => void
+}
+
+const KeybindEditor = memo(function KeybindEditor({
+  onSave,
+  onCancel
+}: KeybindEditorProps): React.JSX.Element {
+  const [kbTrigger, setKbTrigger] = useState('')
+  const [kbActionSelect, setKbActionSelect] = useState('')
+  const [kbRawAction, setKbRawAction] = useState('')
+  const [kbError, setKbError] = useState<string | null>(null)
+
+  function handleSave(): void {
+    if (kbActionSelect === '__raw__' && !kbRawAction.trim()) {
+      setKbError('Enter a raw action')
+      return
+    }
+    const action =
+      kbActionSelect === '__raw__' && kbRawAction.trim() ? kbRawAction.trim() : kbActionSelect
+    const kb: GhosttyKeybind = { trigger: kbTrigger, action }
+    const err = validateKeybind(kb)
+    if (err) {
+      setKbError(err)
+      return
+    }
+    onSave(kb)
+  }
+
+  return (
+    <div className="flex flex-col gap-3 bg-surface-raised border border-border-default rounded-lg px-4 py-4">
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-text-muted font-medium">Trigger</span>
+        <KeyRecorder value={kbTrigger} onChange={setKbTrigger} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-text-muted font-medium">Action</span>
+        <Select
+          options={ACTION_OPTIONS}
+          value={kbActionSelect}
+          onChange={setKbActionSelect}
+          ariaLabel="Keybind action"
+          className="w-56"
+        />
+        {kbActionSelect === '__raw__' && (
+          <input
+            type="text"
+            aria-label="Raw keybind action"
+            value={kbRawAction}
+            onChange={(e) => setKbRawAction(e.target.value)}
+            placeholder="e.g. write_scrollback_file:/tmp/buf.txt"
+            className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-text font-mono"
+          />
+        )}
+      </div>
+      {kbError && <p className="text-red-400 text-xs">{kbError}</p>}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={handleSave}
+          className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent/90"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-overlay border border-border-default text-text-secondary hover:bg-surface-raised"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
 // OrpheusTerminalSection — ghostty terminal settings
 // ---------------------------------------------------------------------------
 
@@ -277,61 +393,50 @@ export function OrpheusTerminalSection(): React.JSX.Element {
       })
   }
 
-  function patchKeybinds(nextKeybinds: GhosttyKeybind[]): void {
-    if (!config) return
-    const next: GhosttyUserConfig = { settings: config.settings, keybinds: nextKeybinds }
-    setConfig(next)
-    window.api.ghosttySettings
-      .update({ settings: config.settings, keybinds: nextKeybinds })
-      .catch((err) => {
-        console.error('[settings] ghosttySettings update failed; refetching', err)
-        window.api.ghosttySettings
-          .get()
-          .then((c) => setConfig(c))
-          .catch(console.error)
-      })
-  }
-
-  const [kbTrigger, setKbTrigger] = useState('')
-  const [kbActionSelect, setKbActionSelect] = useState('')
-  const [kbRawAction, setKbRawAction] = useState('')
-  const [kbError, setKbError] = useState<string | null>(null)
   const [kbShowEditor, setKbShowEditor] = useState(false)
 
-  function handleSaveKeybind(): void {
-    if (kbActionSelect === '__raw__' && !kbRawAction.trim()) {
-      setKbError('Enter a raw action')
-      return
-    }
-    const action =
-      kbActionSelect === '__raw__' && kbRawAction.trim() ? kbRawAction.trim() : kbActionSelect
-    const kb: GhosttyKeybind = { trigger: kbTrigger, action }
-    const err = validateKeybind(kb)
-    if (err) {
-      setKbError(err)
-      return
-    }
-    patchKeybinds([...(config?.keybinds ?? []), kb])
-    setKbTrigger('')
-    setKbActionSelect('')
-    setKbRawAction('')
-    setKbError(null)
-    setKbShowEditor(false)
-  }
+  // useCallback so memoized KeybindRow/KeybindEditor see stable references;
+  // both depend on config since they read config.keybinds / config.settings.
+  const handleRemoveKeybind = useCallback(
+    (index: number): void => {
+      if (!config) return
+      const nextKeybinds = config.keybinds.filter((_kb, i) => i !== index)
+      setConfig({ settings: config.settings, keybinds: nextKeybinds })
+      window.api.ghosttySettings
+        .update({ settings: config.settings, keybinds: nextKeybinds })
+        .catch((err) => {
+          console.error('[settings] ghosttySettings update failed; refetching', err)
+          window.api.ghosttySettings
+            .get()
+            .then((c) => setConfig(c))
+            .catch(console.error)
+        })
+    },
+    [config]
+  )
 
-  function handleCancelKeybind(): void {
-    setKbTrigger('')
-    setKbActionSelect('')
-    setKbRawAction('')
-    setKbError(null)
-    setKbShowEditor(false)
-  }
+  const handleSaveKeybind = useCallback(
+    (kb: GhosttyKeybind): void => {
+      if (!config) return
+      const nextKeybinds = [...config.keybinds, kb]
+      setConfig({ settings: config.settings, keybinds: nextKeybinds })
+      window.api.ghosttySettings
+        .update({ settings: config.settings, keybinds: nextKeybinds })
+        .catch((err) => {
+          console.error('[settings] ghosttySettings update failed; refetching', err)
+          window.api.ghosttySettings
+            .get()
+            .then((c) => setConfig(c))
+            .catch(console.error)
+        })
+      setKbShowEditor(false)
+    },
+    [config]
+  )
 
-  function handleRemoveKeybind(index: number): void {
-    if (!config) return
-    const next = config.keybinds.filter((_kb, i) => i !== index)
-    patchKeybinds(next)
-  }
+  const handleCancelKeybind = useCallback((): void => {
+    setKbShowEditor(false)
+  }, [])
 
   if (error) {
     return (
@@ -476,69 +581,15 @@ export function OrpheusTerminalSection(): React.JSX.Element {
             <p className="text-xs text-text-muted">No custom keybindings.</p>
           )}
           {config.keybinds.map((kb, i) => (
-            <div
+            <KeybindRow
               key={`${kb.trigger}-${kb.action}-${i}`}
-              className="flex items-center gap-3 bg-surface-raised border border-border-default rounded-lg px-4 py-2.5"
-            >
-              <span className="bg-surface-overlay border border-border-default rounded px-2 py-0.5 font-mono text-xs text-text-primary shrink-0">
-                {kb.trigger}
-              </span>
-              <span className="text-xs text-text-muted">→</span>
-              <span className="text-xs text-text-primary flex-1 min-w-0 truncate">{kb.action}</span>
-              <button
-                type="button"
-                onClick={() => handleRemoveKeybind(i)}
-                className="text-text-muted hover:text-red-400 text-sm leading-none shrink-0 px-1"
-                aria-label="Remove keybinding"
-              >
-                ×
-              </button>
-            </div>
+              kb={kb}
+              index={i}
+              onRemove={handleRemoveKeybind}
+            />
           ))}
           {kbShowEditor && (
-            <div className="flex flex-col gap-3 bg-surface-raised border border-border-default rounded-lg px-4 py-4">
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-text-muted font-medium">Trigger</span>
-                <KeyRecorder value={kbTrigger} onChange={setKbTrigger} />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-text-muted font-medium">Action</span>
-                <Select
-                  options={ACTION_OPTIONS}
-                  value={kbActionSelect}
-                  onChange={setKbActionSelect}
-                  ariaLabel="Keybind action"
-                  className="w-56"
-                />
-                {kbActionSelect === '__raw__' && (
-                  <input
-                    type="text"
-                    aria-label="Raw keybind action"
-                    value={kbRawAction}
-                    onChange={(e) => setKbRawAction(e.target.value)}
-                    placeholder="e.g. write_scrollback_file:/tmp/buf.txt"
-                    className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-text font-mono"
-                  />
-                )}
-              </div>
-              {kbError && <p className="text-red-400 text-xs">{kbError}</p>}
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={handleSaveKeybind}
-                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent/90"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCancelKeybind}
-                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-overlay border border-border-default text-text-secondary hover:bg-surface-raised"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+            <KeybindEditor onSave={handleSaveKeybind} onCancel={handleCancelKeybind} />
           )}
           {!kbShowEditor && (
             <button
