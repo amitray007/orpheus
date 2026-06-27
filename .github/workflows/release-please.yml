@@ -176,7 +176,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Check out the tag release-please just created so the build sees
           # the bumped package.json + CHANGELOG.md.
@@ -225,7 +225,7 @@ jobs:
             "${{ steps.sha.outputs.dmg }}" --clobber
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: amitray007/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
