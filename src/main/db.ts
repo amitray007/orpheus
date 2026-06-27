@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION = 62
+export const CURRENT_VERSION = 62
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -251,7 +251,6 @@ const DIAGNOSTICS_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_diag_cat_ts   ON diagnostics_events(category, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_ws_ts    ON diagnostics_events(workspace_id, ts);
   CREATE INDEX IF NOT EXISTS idx_diag_event_ts ON diagnostics_events(event, ts);
-  CREATE INDEX IF NOT EXISTS idx_diag_trace    ON diagnostics_events(trace_id, ts);
 `
 
 // Footer actions — phase 3a. Three-scope additive list.
@@ -409,7 +408,7 @@ export function getDb(): Database.Database {
   return _db
 }
 
-function migrate(db: Database.Database): void {
+export function migrate(db: Database.Database): void {
   // schema_version must exist before we can read it — create it unconditionally
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);')
 
