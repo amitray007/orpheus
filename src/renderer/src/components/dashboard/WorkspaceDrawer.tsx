@@ -343,13 +343,22 @@ export function WorkspaceDrawer({
 
   useEffect(() => {
     const workspaceId = workspace.id
+    let cancelled = false
     window.api.workspaces
       .isDirty(workspaceId)
-      .then(setIsDirty)
-      .catch(() => setIsDirty(false))
-    return window.api.workspaces.onDirtyChanged((e) => {
+      .then((d) => {
+        if (!cancelled) setIsDirty(d)
+      })
+      .catch(() => {
+        if (!cancelled) setIsDirty(false)
+      })
+    const unsub = window.api.workspaces.onDirtyChanged((e) => {
       if (e.workspaceId === workspaceId) setIsDirty(e.dirty)
     })
+    return () => {
+      cancelled = true
+      unsub()
+    }
   }, [workspace.id])
 
   return (

@@ -456,7 +456,7 @@ export function WorkspacesTab({
         )
       }
     ],
-    [gitByWs, renamingId, renameValue, sessionStats]
+    [gitByWs, renamingId, renameValue, sessionStats, commitRename]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

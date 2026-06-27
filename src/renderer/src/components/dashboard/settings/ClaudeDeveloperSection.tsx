@@ -18,10 +18,10 @@ import { SettingsSectionSkeleton } from '../../Skeleton'
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-type EnvRow = { key: string; value: string }
+type EnvRow = { id: string; key: string; value: string }
 
 function recordToRows(record: Record<string, string>): EnvRow[] {
-  return Object.entries(record).map(([key, value]) => ({ key, value }))
+  return Object.entries(record).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }))
 }
 
 function rowsToRecord(rows: EnvRow[]): Record<string, string> {
@@ -71,7 +71,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
   }
 
   function addRow(): void {
-    setRows((prev) => [...prev, { key: '', value: '' }])
+    setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
   }
 
   if (rows.length === 0) {
@@ -97,7 +97,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
       {rows.map((row, idx) => {
         const keyInvalid = row.key.trim() !== '' && !KEY_RE.test(row.key.trim())
         return (
-          <div key={idx} className="flex items-center gap-2">
+          <div key={row.id} className="flex items-center gap-2">
             <input
               type="text"
               aria-label="Environment variable name"

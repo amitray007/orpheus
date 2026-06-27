@@ -193,13 +193,20 @@ export function WorkspaceTitleBar({
 
   useEffect(() => {
     const workspaceId = workspace.id
+    let cancelled = false
     window.api.workspaces
       .getTitle(workspaceId)
-      .then(setTerminalTitle)
+      .then((t) => {
+        if (!cancelled) setTerminalTitle(t)
+      })
       .catch(() => {})
-    return window.api.workspaces.onTitleChanged((e) => {
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
+    return () => {
+      cancelled = true
+      unsub()
+    }
   }, [workspace.id])
 
   // ── Details popover — hover open/close + async data fetching ────────────────

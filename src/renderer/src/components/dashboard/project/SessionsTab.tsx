@@ -200,6 +200,14 @@ export function SessionsTab({
     }
   }, [projectId, metadataVersion])
 
+  // Keep a ref to onSessionCountChange so the fetch effect can call the latest
+  // version without listing it as a dep (an un-memoized callback from the parent
+  // would otherwise cause a full refetch every render).
+  const onSessionCountChangeRef = useRef(onSessionCountChange)
+  useEffect(() => {
+    onSessionCountChangeRef.current = onSessionCountChange
+  })
+
   // Snapshot the IPC call so a stale request can be ignored once it returns.
   const reqIdRef = useRef(0)
 
@@ -239,7 +247,7 @@ export function SessionsTab({
         setRows(res.rows)
         setTotal(res.total)
         setLoading(false)
-        onSessionCountChange?.(res.total)
+        onSessionCountChangeRef.current?.(res.total)
       })
       .catch((err) => {
         if (reqId !== reqIdRef.current) return
@@ -257,8 +265,7 @@ export function SessionsTab({
     page,
     metadataVersion,
     hasAnySessions,
-    autoWidened,
-    onSessionCountChange
+    autoWidened
   ])
 
   // Filter changes reset to page 1; these go through handlers so we never set
@@ -423,7 +430,7 @@ export function SessionsTab({
       deleteCol,
       resumeCol
     ]
-  }, [resumingId, compact])
+  }, [resumingId, compact, onResumedInWorkspace])
 
   async function confirmDelete(): Promise<void> {
     if (!pendingDelete) return
