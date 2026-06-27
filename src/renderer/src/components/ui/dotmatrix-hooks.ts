@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { DotMatrixPhase } from '@/components/ui/dotmatrix-core'
+import type { DotMatrixPhase } from '@/components/ui/dotmatrix-core-lib'
 
 export function usePrefersReducedMotion(): boolean {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)

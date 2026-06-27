@@ -6,7 +6,7 @@ import type React from 'react'
 import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
 import { useDotMatrixPhases } from '@/components/ui/dotmatrix-hooks'
 import { usePrefersReducedMotion } from '@/components/ui/dotmatrix-hooks'
-import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core'
+import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core-lib'
 
 export type DotmSquare12Props = DotMatrixCommonProps
 

@@ -13,7 +13,7 @@ import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { clearFooterActionsCache } from './footer/useFooterActions'
-import { clearContextBudgetCache } from './WorkspaceTitleBar'
+import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import type {
   AppUiState,
   PinnedItem,

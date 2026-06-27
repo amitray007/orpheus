@@ -5,7 +5,7 @@ import type { CSSProperties } from 'react'
 
 import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
 import { useDotMatrixPhases, usePrefersReducedMotion } from '@/components/ui/dotmatrix-hooks'
-import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core'
+import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core-lib'
 
 // Footer-specific loader: cross pattern, grad-neon color, size 16 dots (default).
 // Uses a rotating fade sweep distinct from the ripple-echo used in dotm-square-11.
