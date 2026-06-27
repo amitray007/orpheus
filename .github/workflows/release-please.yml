@@ -197,6 +197,14 @@ jobs:
           bun run build:native
           bun run build
 
+      - name: Smoke-test DB migrations
+        run: |
+          bunx esbuild scripts/smoke-db-migrations.ts \
+            --bundle --platform=node --format=cjs \
+            --external:better-sqlite3 --external:electron \
+            --outfile=out/smoke-db-migrations.cjs
+          ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron out/smoke-db-migrations.cjs
+
       - name: Build .dmg
         # `--publish never` is load-bearing: electron-builder otherwise sees
         # CI=true and tries to implicitly publish to GitHub Releases without

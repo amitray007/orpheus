@@ -1,5 +1,10 @@
 appId: dev.orpheus.app
 productName: Orpheus
+# Re-sign the whole bundle as a single ad-hoc unit after electron-builder's
+# per-component signing pass. This unifies Team IDs across all inner frameworks
+# (Electron Framework.framework, Squirrel.framework, etc.) so macOS 15+ doesn't
+# refuse to load them at launch. See build/afterSign.mjs for details.
+afterSign: ./build/afterSign.mjs
 directories:
   buildResources: build
 files:
