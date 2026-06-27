@@ -13,6 +13,7 @@
 
 import { register } from './registry'
 import type { ActionResult } from '../../shared/types'
+import { setTerminalAddonRef, getAddonRef, destroyAddonSurface } from './addonSurface'
 
 // Session handlers
 import { handleGetMeta, handleGetUsage, handleGetCost, handleGetLastTurn } from './session'
@@ -44,35 +45,14 @@ export { startSubscription, stopSubscription, registerWebContentsCleanup } from 
 // These wrappers are intentionally limited: they are stub registrations that
 // let actions.invoke('terminal.*') work for future callers. The direct IPC
 // handlers in index.ts remain the primary path and continue to work unchanged.
+//
+// The addon reference itself lives in addonSurface.ts (shared with workspace.ts)
+// to avoid the index ↔ workspace mutual-import cycle.
 // ---------------------------------------------------------------------------
 
-let addonRef: {
-  sendInput: (workspaceId: string, utf8Text: string) => boolean
-  sendKeys: (
-    workspaceId: string,
-    keys: Array<{ keycode: number; mods?: number; action?: 'press' | 'release' | 'repeat' }>
-  ) => boolean
-  destroy: (workspaceId: string) => void
-} | null = null
-
-/** Called from index.ts once the addon is loaded, to wire terminal actions. */
-export function setTerminalAddonRef(addon: typeof addonRef): void {
-  addonRef = addon
-}
-
-/**
- * Destroy the libghostty surface for a workspace.
- * Silently no-ops when the addon isn't loaded or the surface wasn't mounted.
- * Used by handleArchive so workspace.ts doesn't need a direct addon import.
- */
-export function destroyAddonSurface(workspaceId: string): void {
-  if (!addonRef) return
-  try {
-    addonRef.destroy(workspaceId)
-  } catch {
-    // Surface was never mounted or already destroyed — ignore.
-  }
-}
+// Re-export setTerminalAddonRef so main/index.ts can import it from './actions/index'
+// without changing its import path.
+export { setTerminalAddonRef, destroyAddonSurface }
 
 // ---------------------------------------------------------------------------
 // bootActions — register all actions
@@ -214,6 +194,7 @@ export function bootActions(): void {
       return true
     },
     handler: async (params, workspaceId): Promise<ActionResult> => {
+      const addonRef = getAddonRef()
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { sendInput, sendKeys } = await import('./terminal')
       const result = sendInput(addonRef, workspaceId, params['text'] as string)
@@ -236,6 +217,7 @@ export function bootActions(): void {
       return Array.isArray((p as Record<string, unknown>)['keys'])
     },
     handler: async (params, workspaceId): Promise<ActionResult> => {
+      const addonRef = getAddonRef()
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { sendKeys } = await import('./terminal')
       return sendKeys(
@@ -255,6 +237,7 @@ export function bootActions(): void {
     kind: 'mutator',
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
+      const addonRef = getAddonRef()
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { submit } = await import('./terminal')
       return submit(addonRef, workspaceId)
@@ -266,6 +249,7 @@ export function bootActions(): void {
     kind: 'mutator',
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
+      const addonRef = getAddonRef()
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { clearInput } = await import('./terminal')
       return clearInput(addonRef, workspaceId)
@@ -287,6 +271,7 @@ export function bootActions(): void {
     kind: 'mutator',
     validate: () => true,
     handler: async (_params, workspaceId): Promise<ActionResult> => {
+      const addonRef = getAddonRef()
       if (!addonRef) return { ok: false, code: 'failed', error: 'Terminal addon not loaded' }
       const { cancel } = await import('./terminal')
       return cancel(addonRef, workspaceId)

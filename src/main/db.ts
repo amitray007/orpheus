@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { logDiagMain } from './diagnostics'
+import { logDiagMain } from './diagCore'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------

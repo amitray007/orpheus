@@ -17,7 +17,7 @@ import { shell, clipboard } from 'electron'
 import type { ActionResult, WorkspaceForkParams } from '../../shared/types'
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
 import { getWorkspaceActivity, computeDetail } from '../orpheusNotify'
-import { destroyAddonSurface } from './index'
+import { destroyAddonSurface } from './addonSurface'
 
 // ---------------------------------------------------------------------------
 // workspace.fork
