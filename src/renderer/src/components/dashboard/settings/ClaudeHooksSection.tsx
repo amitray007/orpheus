@@ -242,6 +242,14 @@ function HookForm({
 // Component
 // ---------------------------------------------------------------------------
 
+const defaultAddDraft: HookFormValues = {
+  event: 'Stop',
+  matcher: '',
+  command: '',
+  source: 'user',
+  projectId: ''
+}
+
 export function ClaudeHooksSection(): React.JSX.Element {
   const [hooks, setHooks] = useState<ClaudeHookEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -250,14 +258,6 @@ export function ClaudeHooksSection(): React.JSX.Element {
   const [adding, setAdding] = useState(false)
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [deletingEntry, setDeletingEntry] = useState<ClaudeHookEntry | null>(null)
-
-  const defaultAddDraft: HookFormValues = {
-    event: 'Stop',
-    matcher: '',
-    command: '',
-    source: 'user',
-    projectId: ''
-  }
 
   async function reload(): Promise<void> {
     try {

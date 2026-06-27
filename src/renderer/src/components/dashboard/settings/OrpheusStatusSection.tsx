@@ -105,6 +105,10 @@ function parseComponentName(name: string): { primary: string; subtitle: string |
   return { primary: m[1], subtitle: m[2] }
 }
 
+function handleOpenPage(): void {
+  window.api.status.openPage().catch(console.error)
+}
+
 // ---------------------------------------------------------------------------
 // OrpheusStatusSection
 // ---------------------------------------------------------------------------
@@ -184,10 +188,6 @@ export function OrpheusStatusSection(): React.JSX.Element {
     } finally {
       setRefreshing(false)
     }
-  }
-
-  function handleOpenPage(): void {
-    window.api.status.openPage().catch(console.error)
   }
 
   if (!uiState) {

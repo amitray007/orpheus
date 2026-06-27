@@ -16,6 +16,12 @@ interface TextInputProps {
   ariaLabel?: string
 }
 
+function handleTextInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+  if (e.key === 'Enter') {
+    e.currentTarget.blur()
+  }
+}
+
 function TextInput({
   value,
   onChange,
@@ -39,12 +45,6 @@ function TextInput({
     onChange(trimmed)
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
-    if (e.key === 'Enter') {
-      e.currentTarget.blur()
-    }
-  }
-
   return (
     <input
       type="text"
@@ -53,7 +53,7 @@ function TextInput({
       onChange={(e) => setLocal(e.target.value)}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
+      onKeyDown={handleTextInputKeyDown}
       placeholder={placeholder}
       className={
         className ??

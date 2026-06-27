@@ -57,6 +57,14 @@ function statusToGroup(ws: WorkspaceRecord): ActivityFilterKey {
   return 'waiting'
 }
 
+function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
+  if (a === null || a === undefined) return 1
+  if (b === null || b === undefined) return -1
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms
   const s = Math.floor(diff / 1000)
@@ -310,14 +318,6 @@ export function WorkspacesTab({
       }
     ]
   }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin])
-
-  function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
-    if (a === null || a === undefined) return 1
-    if (b === null || b === undefined) return -1
-    if (a < b) return -1
-    if (a > b) return 1
-    return 0
-  }
 
   // Filter active workspaces by activity group and search term.
   const filtered = useMemo(() => {

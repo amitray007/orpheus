@@ -275,6 +275,28 @@ function SlashCommandForm({
 // Component
 // ---------------------------------------------------------------------------
 
+const defaultAddDraft: SlashCommandFormValues = {
+  name: '',
+  description: '',
+  allowedToolsRaw: '',
+  argumentHint: '',
+  body: '',
+  source: 'user',
+  projectId: ''
+}
+
+function commandToFormValues(cmd: ClaudeSlashCommand): SlashCommandFormValues {
+  return {
+    name: cmd.name,
+    description: cmd.description ?? '',
+    allowedToolsRaw: cmd.allowedTools ? cmd.allowedTools.join(', ') : '',
+    argumentHint: cmd.argumentHint ?? '',
+    body: cmd.bodyPreview, // bodyPreview has the full body (up to 600 chars)
+    source: cmd.source,
+    projectId: cmd.projectId ?? ''
+  }
+}
+
 export function ClaudeSlashCommandsSection(): React.JSX.Element {
   const [commands, setCommands] = useState<ClaudeSlashCommand[]>([])
   const [loading, setLoading] = useState(true)
@@ -356,28 +378,6 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
     await window.api.claudeAgents.deleteSlashCommand(cmd.path)
     await reload()
     setDeletingCmd(null)
-  }
-
-  const defaultAddDraft: SlashCommandFormValues = {
-    name: '',
-    description: '',
-    allowedToolsRaw: '',
-    argumentHint: '',
-    body: '',
-    source: 'user',
-    projectId: ''
-  }
-
-  function commandToFormValues(cmd: ClaudeSlashCommand): SlashCommandFormValues {
-    return {
-      name: cmd.name,
-      description: cmd.description ?? '',
-      allowedToolsRaw: cmd.allowedTools ? cmd.allowedTools.join(', ') : '',
-      argumentHint: cmd.argumentHint ?? '',
-      body: cmd.bodyPreview, // bodyPreview has the full body (up to 600 chars)
-      source: cmd.source,
-      projectId: cmd.projectId ?? ''
-    }
   }
 
   return (

@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- file mixes component and utility exports by design */
 'use client'
 
+import { useMemo } from 'react'
 import type React from 'react'
 import type { CSSProperties } from 'react'
 
@@ -862,6 +863,20 @@ export function DotMatrixBase({
     </div>
   )
 
+  const wrapperStyle = useMemo(
+    () => ({
+      display: 'inline-flex' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      width: outerDim,
+      height: outerDim,
+      minWidth: minSize,
+      minHeight: minSize,
+      overflow: 'hidden' as const
+    }),
+    [outerDim, minSize]
+  )
+
   if (useWrapper) {
     return (
       <div
@@ -869,16 +884,7 @@ export function DotMatrixBase({
         aria-live="polite"
         aria-label={ariaLabel}
         className={className}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: outerDim,
-          height: outerDim,
-          minWidth: minSize,
-          minHeight: minSize,
-          overflow: 'hidden'
-        }}
+        style={wrapperStyle}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
       >

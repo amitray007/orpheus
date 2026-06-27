@@ -179,19 +179,19 @@ function LogDisclosure({ log }: { log: string[] }): React.JSX.Element {
 // Gated strictly: only renders when __ORPHEUS_MODE__ === 'development'
 // ---------------------------------------------------------------------------
 
+const fakeLog = [
+  '==> Downloading orpheus-0.6.0.dmg',
+  '  ###   5.0%',
+  '==> Verifying checksum',
+  '==> Installing orpheus'
+]
+
 function DevStateControls({
   onSet
 }: {
   onSet: (s: UpdateState) => void
 }): React.JSX.Element | null {
   if (__ORPHEUS_MODE__ !== 'development') return null
-
-  const fakeLog = [
-    '==> Downloading orpheus-0.6.0.dmg',
-    '  ###   5.0%',
-    '==> Verifying checksum',
-    '==> Installing orpheus'
-  ]
 
   return (
     <div className="mt-3 p-2 border border-dashed border-border-default rounded text-xs text-text-muted flex flex-wrap gap-1">
@@ -272,6 +272,10 @@ function DevStateControls({
 // ---------------------------------------------------------------------------
 // OrpheusUpdatesSection
 // ---------------------------------------------------------------------------
+
+function handleRestart(): void {
+  window.api.updates.restart().catch(console.error)
+}
 
 export function OrpheusUpdatesSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -368,10 +372,6 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
     installTargetRef.current = target
     setUpdateState({ kind: 'installing', phase: 'refresh', percent: null, log: [], latest: target })
     window.api.updates.install().catch(console.error)
-  }
-
-  function handleRestart(): void {
-    window.api.updates.restart().catch(console.error)
   }
 
   function handleLater(): void {

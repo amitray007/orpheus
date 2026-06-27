@@ -274,6 +274,28 @@ function SubagentForm({
 // Component
 // ---------------------------------------------------------------------------
 
+const defaultAddDraft: SubagentFormValues = {
+  name: '',
+  description: '',
+  toolsRaw: '',
+  model: '',
+  body: '',
+  source: 'user',
+  projectId: ''
+}
+
+function agentToFormValues(agent: ClaudeSubagent): SubagentFormValues {
+  return {
+    name: agent.name,
+    description: agent.description ?? '',
+    toolsRaw: agent.tools ? agent.tools.join(', ') : '',
+    model: agent.model ?? '',
+    body: agent.bodyPreview,
+    source: agent.source,
+    projectId: agent.projectId ?? ''
+  }
+}
+
 export function ClaudeSubagentsSection(): React.JSX.Element {
   const [agents, setAgents] = useState<ClaudeSubagent[]>([])
   const [loading, setLoading] = useState(true)
@@ -352,28 +374,6 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
     await window.api.claudeAgents.deleteSubagent(agent.path)
     await reload()
     setDeletingAgent(null)
-  }
-
-  const defaultAddDraft: SubagentFormValues = {
-    name: '',
-    description: '',
-    toolsRaw: '',
-    model: '',
-    body: '',
-    source: 'user',
-    projectId: ''
-  }
-
-  function agentToFormValues(agent: ClaudeSubagent): SubagentFormValues {
-    return {
-      name: agent.name,
-      description: agent.description ?? '',
-      toolsRaw: agent.tools ? agent.tools.join(', ') : '',
-      model: agent.model ?? '',
-      body: agent.bodyPreview,
-      source: agent.source,
-      projectId: agent.projectId ?? ''
-    }
   }
 
   return (

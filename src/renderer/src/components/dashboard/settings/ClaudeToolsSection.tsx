@@ -363,6 +363,18 @@ function serverToFormValues(s: DiscoveredMcpServer): McpFormValues {
 // Component
 // ---------------------------------------------------------------------------
 
+const defaultAddDraft: McpFormValues = {
+  name: '',
+  transport: 'stdio',
+  command: '',
+  argsRaw: '',
+  envRaw: '',
+  url: '',
+  source: 'user',
+  projectId: '',
+  showAdvanced: false
+}
+
 export function ClaudeToolsSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
   const [servers, setServers] = useState<DiscoveredMcpServer[]>([])
@@ -484,18 +496,6 @@ export function ClaudeToolsSection(): React.JSX.Element {
     await window.api.mcp.delete(server.filePath, server.name)
     await reloadServers()
     setDeletingServer(null)
-  }
-
-  const defaultAddDraft: McpFormValues = {
-    name: '',
-    transport: 'stdio',
-    command: '',
-    argsRaw: '',
-    envRaw: '',
-    url: '',
-    source: 'user',
-    projectId: '',
-    showAdvanced: false
   }
 
   if (!settings) {
