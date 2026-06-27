@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import {
   Archive,
@@ -40,6 +40,260 @@ function relativeTime(ms: number): string {
 function shortAppLabel(app: DetectedApp): string {
   return app.label ?? app.name
 }
+
+// ---------------------------------------------------------------------------
+// Subcomponents (private — not reusable outside this file)
+// ---------------------------------------------------------------------------
+
+// Shared CSS for the two icon-only square buttons (Settings, More-actions).
+const ICON_BTN_CLS = [
+  'inline-flex items-center justify-center w-8 h-8 rounded-md',
+  'border border-border-default text-text-secondary',
+  'transition-colors duration-150 cursor-pointer',
+  'hover:text-text-primary hover:bg-surface-overlay',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+].join(' ')
+
+interface HeaderIconButtonProps {
+  onClick: (e: React.MouseEvent) => void
+  ariaLabel: string
+  title?: string
+  ariaHasPopup?: React.AriaAttributes['aria-haspopup']
+  children: React.ReactNode
+}
+
+const HeaderIconButton = memo(function HeaderIconButton({
+  onClick,
+  ariaLabel,
+  title,
+  ariaHasPopup,
+  children
+}: HeaderIconButtonProps): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      aria-haspopup={ariaHasPopup}
+      title={title}
+      className={ICON_BTN_CLS}
+    >
+      {children}
+    </button>
+  )
+})
+
+// Path display + copy-to-clipboard button — a single inline unit so they never wrap apart.
+interface PathWithCopyProps {
+  path: string
+  onCopy: () => void
+  copied: boolean
+}
+
+const PathWithCopy = memo(function PathWithCopy({
+  path,
+  onCopy,
+  copied
+}: PathWithCopyProps): React.JSX.Element {
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0 flex-1">
+      <p className="text-xs text-text-muted font-mono truncate min-w-0" title={path}>
+        {path}
+      </p>
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={copied ? 'Path copied' : 'Copy path to clipboard'}
+        title={copied ? 'Copied' : 'Copy path'}
+        className={[
+          'flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md',
+          'transition-colors duration-150 cursor-pointer',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+          copied
+            ? 'text-emerald-400'
+            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+        ].join(' ')}
+      >
+        {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
+      </button>
+    </span>
+  )
+})
+
+// Metadata strip: git branch, workspace count, last-activity, and override count.
+interface ProjectMetaProps {
+  gitBranch: string | null | undefined
+  workspacesLabel: string | null
+  activityLabel: string
+  overrideCount: number | null
+  onOpenSettings: () => void
+}
+
+const ProjectMeta = memo(function ProjectMeta({
+  gitBranch,
+  workspacesLabel,
+  activityLabel,
+  overrideCount,
+  onOpenSettings
+}: ProjectMetaProps): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
+      {gitBranch && (
+        <>
+          <span
+            className="inline-flex items-center gap-1"
+            title={`Current git branch: ${gitBranch}`}
+          >
+            <GitMerge size={11} />
+            <span className="font-mono">{gitBranch}</span>
+          </span>
+          <span aria-hidden>·</span>
+        </>
+      )}
+      {workspacesLabel ? (
+        <span>{workspacesLabel}</span>
+      ) : (
+        <Skeleton className="inline-block h-3 w-24 align-middle opacity-60" />
+      )}
+      <span aria-hidden>·</span>
+      <span>{activityLabel}</span>
+      {overrideCount === null ? (
+        <>
+          <span aria-hidden>·</span>
+          <Skeleton className="inline-block h-3 w-20 align-middle opacity-60" />
+        </>
+      ) : overrideCount > 0 ? (
+        <>
+          <span aria-hidden>·</span>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="text-accent hover:underline cursor-pointer"
+          >
+            {overrideCount} override{overrideCount === 1 ? '' : 's'}
+          </button>
+        </>
+      ) : null}
+    </div>
+  )
+})
+
+// Right-side action bar: Finder, Editor split-button, Terminal split-button,
+// New-workspace, Settings, and More-actions.
+interface ProjectActionsProps {
+  projectPath: string
+  editors: DetectedApp[]
+  terminals: DetectedApp[]
+  activeEditor: DetectedApp | null
+  activeTerminal: DetectedApp | null
+  onPickEditor: (name: string) => void
+  onPickTerminal: (name: string) => void
+  onNewWorkspace: () => void
+  onOpenSettings: () => void
+  onOpenMenu: (e: React.MouseEvent) => void
+}
+
+const ProjectActions = memo(function ProjectActions({
+  projectPath,
+  editors,
+  terminals,
+  activeEditor,
+  activeTerminal,
+  onPickEditor,
+  onPickTerminal,
+  onNewWorkspace,
+  onOpenSettings,
+  onOpenMenu
+}: ProjectActionsProps): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-1.5 flex-shrink-0">
+      {/* Show in Finder — no picker, single OS app */}
+      <button
+        type="button"
+        onClick={() => window.api.shell.revealInFinder(projectPath).catch(console.error)}
+        aria-label="Show project in Finder"
+        title="Show in Finder"
+        className={[
+          'inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs',
+          'text-text-secondary border border-border-default',
+          'transition-colors duration-150 cursor-pointer',
+          'hover:text-text-primary hover:bg-surface-overlay',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+        ].join(' ')}
+      >
+        <FolderOpen size={12} weight="regular" />
+        Finder
+      </button>
+
+      {/* Open in editor — picker */}
+      <SplitButton<string>
+        options={editors.map((e) => ({
+          value: e.name,
+          label: shortAppLabel(e)
+        }))}
+        value={activeEditor?.name ?? null}
+        onChange={onPickEditor}
+        onClick={() => window.api.shell.openInEditor(projectPath).catch(console.error)}
+        popoverHeader="Open in"
+        primaryDisabled={editors.length === 0}
+      >
+        <Code size={12} weight="regular" />
+        <span>{activeEditor ? shortAppLabel(activeEditor) : 'Editor'}</span>
+      </SplitButton>
+
+      {/* Open in terminal — picker */}
+      <SplitButton<string>
+        options={terminals.map((t) => ({
+          value: t.name,
+          label: shortAppLabel(t)
+        }))}
+        value={activeTerminal?.name ?? null}
+        onChange={onPickTerminal}
+        onClick={() => window.api.shell.openTerminal(projectPath).catch(console.error)}
+        popoverHeader="Open in"
+        primaryDisabled={terminals.length === 0}
+      >
+        <Terminal size={12} weight="regular" />
+        <span>{activeTerminal ? shortAppLabel(activeTerminal) : 'Terminal'}</span>
+      </SplitButton>
+
+      <span className="w-px h-5 bg-border-default mx-1" aria-hidden />
+
+      <button
+        type="button"
+        onClick={onNewWorkspace}
+        aria-label="Create new workspace"
+        className={[
+          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium',
+          'bg-accent/15 border border-accent/30 text-text-primary',
+          'transition-colors duration-150 cursor-pointer',
+          'hover:bg-accent/25',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+        ].join(' ')}
+      >
+        <Plus size={12} weight="bold" />
+        New workspace
+      </button>
+
+      <HeaderIconButton
+        onClick={onOpenSettings}
+        ariaLabel="Project settings"
+        title="Project settings"
+      >
+        <GearSix size={14} />
+      </HeaderIconButton>
+
+      <HeaderIconButton
+        onClick={onOpenMenu}
+        ariaLabel="More actions"
+        ariaHasPopup="menu"
+        title="More actions"
+      >
+        <DotsThree size={16} weight="bold" />
+      </HeaderIconButton>
+    </div>
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Header
@@ -119,7 +373,7 @@ export function ProjectHeader({
     []
   )
 
-  async function copyPath(): Promise<void> {
+  const copyPath = useCallback(async (): Promise<void> => {
     try {
       await window.api.shell.copyToClipboard(project.path)
       playSound('copy')
@@ -129,25 +383,30 @@ export function ProjectHeader({
     } catch (err) {
       console.error('[project-header] copy failed', err)
     }
-  }
+  }, [project.path])
 
-  async function pickEditor(name: string): Promise<void> {
+  const pickEditor = useCallback(async (name: string): Promise<void> => {
     setUiState((prev) => (prev ? { ...prev, preferredEditorApp: name } : prev))
     try {
       await window.api.uiState.update({ preferredEditorApp: name })
     } catch (err) {
       console.error('[project-header] persist editor pref failed', err)
     }
-  }
+  }, [])
 
-  async function pickTerminal(name: string): Promise<void> {
+  const pickTerminal = useCallback(async (name: string): Promise<void> => {
     setUiState((prev) => (prev ? { ...prev, preferredTerminalApp: name } : prev))
     try {
       await window.api.uiState.update({ preferredTerminalApp: name })
     } catch (err) {
       console.error('[project-header] persist terminal pref failed', err)
     }
-  }
+  }, [])
+
+  const openMenu = useCallback((e: React.MouseEvent): void => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setMenu({ x: rect.right - 200, y: rect.bottom + 4 })
+  }, [])
 
   const preferredEditor = uiState?.preferredEditorApp ?? null
   const preferredTerminal = uiState?.preferredTerminalApp ?? null
@@ -163,11 +422,6 @@ export function ProjectHeader({
       destructive: true
     }
   ]
-
-  function openMenu(e: React.MouseEvent): void {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setMenu({ x: rect.right - 200, y: rect.bottom + 4 })
-  }
 
   const workspacesLabel =
     workspaceCount === null ? null : `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'}`
@@ -194,172 +448,30 @@ export function ProjectHeader({
           <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
             <h1 className="text-lg font-semibold text-text-primary truncate">{project.name}</h1>
             {/* Path + copy as a single unit so they never wrap apart. */}
-            <span className="inline-flex items-center gap-1 min-w-0 flex-1">
-              <p
-                className="text-xs text-text-muted font-mono truncate min-w-0"
-                title={project.path}
-              >
-                {project.path}
-              </p>
-              <button
-                type="button"
-                onClick={copyPath}
-                aria-label={pathCopied ? 'Path copied' : 'Copy path to clipboard'}
-                title={pathCopied ? 'Copied' : 'Copy path'}
-                className={[
-                  'flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md',
-                  'transition-colors duration-150 cursor-pointer',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                  pathCopied
-                    ? 'text-emerald-400'
-                    : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-                ].join(' ')}
-              >
-                {pathCopied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
-              </button>
-            </span>
+            <PathWithCopy path={project.path} onCopy={copyPath} copied={pathCopied} />
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
-            {gitStatus?.branch && (
-              <>
-                <span
-                  className="inline-flex items-center gap-1"
-                  title={`Current git branch: ${gitStatus.branch}`}
-                >
-                  <GitMerge size={11} />
-                  <span className="font-mono">{gitStatus.branch}</span>
-                </span>
-                <span aria-hidden>·</span>
-              </>
-            )}
-            {workspacesLabel ? (
-              <span>{workspacesLabel}</span>
-            ) : (
-              <Skeleton className="inline-block h-3 w-24 align-middle opacity-60" />
-            )}
-            <span aria-hidden>·</span>
-            <span>{activityLabel}</span>
-            {overrideCount === null ? (
-              <>
-                <span aria-hidden>·</span>
-                <Skeleton className="inline-block h-3 w-20 align-middle opacity-60" />
-              </>
-            ) : overrideCount > 0 ? (
-              <>
-                <span aria-hidden>·</span>
-                <button
-                  type="button"
-                  onClick={onOpenSettings}
-                  className="text-accent hover:underline cursor-pointer"
-                >
-                  {overrideCount} override{overrideCount === 1 ? '' : 's'}
-                </button>
-              </>
-            ) : null}
-          </div>
+          <ProjectMeta
+            gitBranch={gitStatus?.branch}
+            workspacesLabel={workspacesLabel}
+            activityLabel={activityLabel}
+            overrideCount={overrideCount}
+            onOpenSettings={onOpenSettings}
+          />
         </div>
 
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Show in Finder — no picker, single OS app */}
-          <button
-            type="button"
-            onClick={() => window.api.shell.revealInFinder(project.path).catch(console.error)}
-            aria-label="Show project in Finder"
-            title="Show in Finder"
-            className={[
-              'inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs',
-              'text-text-secondary border border-border-default',
-              'transition-colors duration-150 cursor-pointer',
-              'hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-            ].join(' ')}
-          >
-            <FolderOpen size={12} weight="regular" />
-            Finder
-          </button>
-
-          {/* Open in editor — picker */}
-          <SplitButton<string>
-            options={editors.map((e) => ({
-              value: e.name,
-              label: shortAppLabel(e)
-            }))}
-            value={activeEditor?.name ?? null}
-            onChange={pickEditor}
-            onClick={() => window.api.shell.openInEditor(project.path).catch(console.error)}
-            popoverHeader="Open in"
-            primaryDisabled={editors.length === 0}
-          >
-            <Code size={12} weight="regular" />
-            <span>{activeEditor ? shortAppLabel(activeEditor) : 'Editor'}</span>
-          </SplitButton>
-
-          {/* Open in terminal — picker */}
-          <SplitButton<string>
-            options={terminals.map((t) => ({
-              value: t.name,
-              label: shortAppLabel(t)
-            }))}
-            value={activeTerminal?.name ?? null}
-            onChange={pickTerminal}
-            onClick={() => window.api.shell.openTerminal(project.path).catch(console.error)}
-            popoverHeader="Open in"
-            primaryDisabled={terminals.length === 0}
-          >
-            <Terminal size={12} weight="regular" />
-            <span>{activeTerminal ? shortAppLabel(activeTerminal) : 'Terminal'}</span>
-          </SplitButton>
-
-          <span className="w-px h-5 bg-border-default mx-1" aria-hidden />
-
-          <button
-            type="button"
-            onClick={onNewWorkspace}
-            aria-label="Create new workspace"
-            className={[
-              'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium',
-              'bg-accent/15 border border-accent/30 text-text-primary',
-              'transition-colors duration-150 cursor-pointer',
-              'hover:bg-accent/25',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-            ].join(' ')}
-          >
-            <Plus size={12} weight="bold" />
-            New workspace
-          </button>
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            aria-label="Project settings"
-            title="Project settings"
-            className={[
-              'inline-flex items-center justify-center w-8 h-8 rounded-md',
-              'border border-border-default text-text-secondary',
-              'transition-colors duration-150 cursor-pointer',
-              'hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-            ].join(' ')}
-          >
-            <GearSix size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={openMenu}
-            aria-label="More actions"
-            aria-haspopup="menu"
-            title="More actions"
-            className={[
-              'inline-flex items-center justify-center w-8 h-8 rounded-md',
-              'border border-border-default text-text-secondary',
-              'transition-colors duration-150 cursor-pointer',
-              'hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-            ].join(' ')}
-          >
-            <DotsThree size={16} weight="bold" />
-          </button>
-        </div>
+        <ProjectActions
+          projectPath={project.path}
+          editors={editors}
+          terminals={terminals}
+          activeEditor={activeEditor}
+          activeTerminal={activeTerminal}
+          onPickEditor={pickEditor}
+          onPickTerminal={pickTerminal}
+          onNewWorkspace={onNewWorkspace}
+          onOpenSettings={onOpenSettings}
+          onOpenMenu={openMenu}
+        />
       </div>
 
       {menu && (
