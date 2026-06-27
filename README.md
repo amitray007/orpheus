@@ -1,5 +1,7 @@
 # Orpheus
 
+![Status: Experimental](https://img.shields.io/badge/status-experimental-orange.svg)
+
 A macOS app that wraps the Claude Code CLI in a project and workspace UI.
 
 > [!WARNING]
