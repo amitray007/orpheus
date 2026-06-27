@@ -266,34 +266,33 @@ export function OrpheusStatusSection(): React.JSX.Element {
               {/* Component rows (filtered, two-line) */}
               {snapshot.components.some((c) => !HIDDEN_COMPONENT_NAMES.has(c.name)) && (
                 <div className="flex flex-col gap-1">
-                  {snapshot.components
-                    .filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
-                    .map((c) => {
-                      const ind = componentStatusToIndicator(c.status)
-                      const { primary, subtitle } = parseComponentName(c.name)
-                      return (
-                        <div key={c.id} className="flex items-start gap-2 py-1">
-                          <span
-                            className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${indicatorDotClass(ind)}`}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs text-text-primary truncate leading-tight">
-                              {primary}
+                  {snapshot.components.flatMap((c) => {
+                    if (HIDDEN_COMPONENT_NAMES.has(c.name)) return []
+                    const ind = componentStatusToIndicator(c.status)
+                    const { primary, subtitle } = parseComponentName(c.name)
+                    return [
+                      <div key={c.id} className="flex items-start gap-2 py-1">
+                        <span
+                          className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${indicatorDotClass(ind)}`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-text-primary truncate leading-tight">
+                            {primary}
+                          </p>
+                          {subtitle && (
+                            <p className="text-sm text-text-muted truncate leading-tight">
+                              {subtitle}
                             </p>
-                            {subtitle && (
-                              <p className="text-sm text-text-muted truncate leading-tight">
-                                {subtitle}
-                              </p>
-                            )}
-                          </div>
-                          <span
-                            className={`text-xs flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
-                          >
-                            {componentStatusLabel(c.status)}
-                          </span>
+                          )}
                         </div>
-                      )
-                    })}
+                        <span
+                          className={`text-xs flex-shrink-0 mt-0.5 ${ind === 'none' ? 'text-text-muted' : 'text-text-primary'}`}
+                        >
+                          {componentStatusLabel(c.status)}
+                        </span>
+                      </div>
+                    ]
+                  })}
                 </div>
               )}
 

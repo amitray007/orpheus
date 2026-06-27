@@ -26,9 +26,9 @@ export function modelLabel(modelId: string): string {
 
   // 2. Prefix match — handles date-stamped variants like "claude-opus-4-7-20260416"
   //    by finding the longest known option whose value is a prefix of the incoming ID.
-  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).sort(
-    (a, b) => b.value.length - a.value.length
-  )[0]
+  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).reduce<
+    (typeof CLAUDE_MODEL_OPTIONS)[number] | undefined
+  >((best, o) => (best === undefined || o.value.length > best.value.length ? o : best), undefined)
   if (prefixMatch) return prefixMatch.label
 
   // 3. Structural parse: "claude-<family>-<v1>-<v2>..." → "<Family> <v1>.<v2>"

@@ -357,9 +357,10 @@ export function OrpheusFooterSection(): React.JSX.Element {
     ids.splice(toIdx, 0, dragId)
 
     // Optimistic update
-    const reordered = ids
-      .map((id) => actions.find((a) => a.id === id))
-      .filter(Boolean) as FooterActionDescriptor[]
+    const reordered = ids.flatMap((id) => {
+      const a = actions.find((action) => action.id === id)
+      return a ? [a] : []
+    })
     setActions(reordered)
 
     const sid = scope === 'global' ? null : (projectId ?? null)

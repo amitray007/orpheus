@@ -555,12 +555,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
       const byProject = workspacesByProjectRef.current
+      // Build a flat Map<workspaceId, projectId> for O(1) lookup instead of O(n*m) find-in-loop
+      const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
-        const found = wsList.find((w) => w.id === workspaceId)
-        if (found) {
-          handleSelectWorkspaceRef.current(found.id, projectId)
-          return
-        }
+        for (const w of wsList) wsToProject.set(w.id, projectId)
+      }
+      const projectId = wsToProject.get(workspaceId)
+      if (projectId !== undefined) {
+        handleSelectWorkspaceRef.current(workspaceId, projectId)
       }
     })
   }, [])
@@ -716,7 +718,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed(uiState.sidebarCollapsed)
 
     // Restore expanded project rows from the projects list itself
-    const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
+    const expanded = new Set(projects.flatMap((p) => (p.expandedInSidebar ? [p.id] : [])))
     setExpandedProjectIds(expanded)
     // Sub-rows are gated on workspaces being loaded — kick off fetches so the
     // visual state matches the restored expanded state on the very first render.

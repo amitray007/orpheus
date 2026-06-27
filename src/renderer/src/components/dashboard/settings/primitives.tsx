@@ -534,9 +534,10 @@ export function RuleListEditor({
 
   function commitItem(idx: number): void {
     const trimmed = localItems[idx].trim()
-    const filtered = localItems
-      .map((item, i) => (i === idx ? trimmed : item))
-      .filter((item) => item !== '')
+    const filtered = localItems.flatMap((item, i) => {
+      const v = i === idx ? trimmed : item
+      return v !== '' ? [v] : []
+    })
     setLocalItems(filtered)
     onChange(filtered)
   }

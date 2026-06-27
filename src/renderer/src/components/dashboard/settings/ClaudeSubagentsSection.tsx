@@ -337,10 +337,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.toolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       model: values.model.trim(),
       body: values.body,
@@ -357,10 +357,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.toolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       model: values.model.trim(),
       body: values.body

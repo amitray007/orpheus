@@ -338,10 +338,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       allowedTools: values.allowedToolsRaw.trim()
-        ? values.allowedToolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.allowedToolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       argumentHint: values.argumentHint.trim(),
       body: values.body,
@@ -361,10 +361,10 @@ export function ClaudeSlashCommandsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       allowedTools: values.allowedToolsRaw.trim()
-        ? values.allowedToolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.allowedToolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       argumentHint: values.argumentHint.trim(),
       body: values.body

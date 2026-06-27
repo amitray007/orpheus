@@ -451,10 +451,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
       args:
         values.transport === 'stdio' && values.argsRaw.trim()
-          ? values.argsRaw
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
+          ? values.argsRaw.split(',').flatMap((s) => {
+              const v = s.trim()
+              return v ? [v] : []
+            })
           : undefined,
       env:
         values.transport === 'stdio' && values.envRaw.trim()
@@ -476,10 +476,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
       args:
         values.transport === 'stdio' && values.argsRaw.trim()
-          ? values.argsRaw
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
+          ? values.argsRaw.split(',').flatMap((s) => {
+              const v = s.trim()
+              return v ? [v] : []
+            })
           : undefined,
       env:
         values.transport === 'stdio' && values.envRaw.trim()
