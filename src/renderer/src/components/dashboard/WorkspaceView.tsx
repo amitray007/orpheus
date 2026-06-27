@@ -7,10 +7,10 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
+import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
-import { Moon } from '@phosphor-icons/react'
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -90,13 +90,19 @@ export function WorkspaceView({
   // Mirrors the mapping in orpheusNotify.ts / WorkspaceActivityDetail definitions.
   const activity = workspace.status
 
-  async function handleRestart(): Promise<void> {
-    await window.api.terminal.destroy(workspace.id)
-    // Bumping remountKey re-fires the mount effect below, which calls terminal.mount
-    // with the freshly composed launch params. The main process snapshots the new
-    // launch at that point and clears dirty — the chip disappears via dirtyChanged event.
-    setRemountKey((k) => k + 1)
-  }
+  const handleRestart = useCallback(() => {
+    window.api.terminal
+      .destroy(workspace.id)
+      // Bumping remountKey re-fires the mount effect below, which calls terminal.mount
+      // with the freshly composed launch params. The main process snapshots the new
+      // launch at that point and clears dirty — the chip disappears via dirtyChanged event.
+      .then(() => setRemountKey((k) => k + 1))
+      .catch((e) => console.error('[WorkspaceView] restart failed:', e))
+  }, [workspace.id])
+
+  const handleFocusTerminal = useCallback(() => {
+    void window.api.terminal.focus(workspace.id)
+  }, [workspace.id])
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
@@ -545,23 +551,12 @@ export function WorkspaceView({
               is transparent so the opaque terminal NSView paints through.
               ResizeObserver fires when the footer height changes the container. */}
           <div ref={containerRef} className="flex-1 min-w-0 relative">
-            {active && sleeping && (
-              <button
-                type="button"
-                onClick={() => void window.api.terminal.focus(workspace.id)}
-                title="Click to wake the terminal"
-                className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-surface-overlay/90 border border-border-default rounded-md px-2 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
-              >
-                <Moon size={12} weight="fill" />
-                Asleep
-              </button>
-            )}
-            {active && isClosed && (
-              <div className="absolute inset-0 z-20 flex items-center justify-center bg-surface-overlay/90">
-                <p className="text-sm text-text-secondary">
-                  This workspace is closed to free resources. Select it again to reopen.
-                </p>
-              </div>
+            {active && (
+              <WorkspaceTerminalOverlays
+                sleeping={sleeping}
+                isClosed={isClosed}
+                onFocusTerminal={handleFocusTerminal}
+              />
             )}
           </div>
 
@@ -583,9 +578,7 @@ export function WorkspaceView({
               activity={activity}
               detail={detail}
               onClose={handleCloseDrawer}
-              onRestart={() => {
-                handleRestart().catch((e) => console.error('[WorkspaceView] restart failed:', e))
-              }}
+              onRestart={handleRestart}
             />
           </div>
         )}
