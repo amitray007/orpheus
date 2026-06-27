@@ -132,10 +132,10 @@ function McpServerForm({
   const isStdio = values.transport === 'stdio'
 
   return (
-    <div
+    <form
       className="bg-surface-raised border border-border-default rounded-lg p-4 flex flex-col gap-3"
-      role="form"
       aria-label="MCP server"
+      onSubmit={(e) => e.preventDefault()}
     >
       {/* Row 1: Source + Name + Transport */}
       <div className="flex gap-3">
@@ -315,7 +315,7 @@ function McpServerForm({
           Cancel
         </button>
       </div>
-    </div>
+    </form>
   )
 }
 

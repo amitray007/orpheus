@@ -195,7 +195,7 @@ export function DataTable<R>({
   return (
     <div className="rounded-lg border border-border-default bg-surface-raised overflow-hidden">
       {/* Table wrapper with sticky header support */}
-      <div className="overflow-auto">
+      <div role="table" className="overflow-auto">
         {/* Header */}
         <div
           role="row"

@@ -1,5 +1,6 @@
 import type React from 'react'
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import type { Icon } from '@phosphor-icons/react'
 import {
   Circle,
@@ -135,6 +136,43 @@ interface WorkspaceRowProps {
   onArchive: () => void
   onClose: () => void
   onTogglePin: () => void
+}
+
+// Small component so useFocusOnMount fires when the rename input mounts
+function WorkspaceRenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  onMouseDown,
+  className,
+  ariaLabel
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  onMouseDown: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+  ariaLabel: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      className={className}
+    />
+  )
 }
 
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
@@ -371,9 +409,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             {/* Title area */}
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {renaming ? (
-                <input
-                  autoFocus
-                  aria-label="Rename workspace"
+                <WorkspaceRenameInput
+                  ariaLabel="Rename workspace"
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -603,6 +640,38 @@ interface ProjectRowProps {
   onWorkspaceDragEnd: () => void
 }
 
+// Small component so useFocusOnMount fires when the project rename input mounts
+function ProjectRenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  className
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label="Rename project"
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      className={className}
+    />
+  )
+}
+
 const ProjectRow = memo(function ProjectRow({
   project,
   active,
@@ -716,9 +785,7 @@ const ProjectRow = memo(function ProjectRow({
             avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
           />
           {renaming ? (
-            <input
-              autoFocus
-              aria-label="Rename project"
+            <ProjectRenameInput
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {
@@ -940,7 +1007,7 @@ export function Sidebar({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropPos, setDropPos] = useState<'before' | 'after'>('before')
   const [wsDragId, setWsDragId] = useState<string | null>(null)
-  const [wsDragProjectId, setWsDragProjectId] = useState<string | null>(null)
+  const wsDragProjectIdRef = useRef<string | null>(null)
   const [wsDropTargetId, setWsDropTargetId] = useState<string | null>(null)
   const [wsDropPos, setWsDropPos] = useState<'before' | 'after'>('before')
   // Map from projectId → (Map from claudeSessionId → session title).
@@ -1090,7 +1157,7 @@ export function Sidebar({
       e.dataTransfer.effectAllowed = 'move'
       e.dataTransfer.setData('text/plain', wsId)
       setWsDragId(wsId)
-      setWsDragProjectId(projectId)
+      wsDragProjectIdRef.current = projectId
     },
     []
   )
@@ -1099,7 +1166,7 @@ export function Sidebar({
     (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string): void => {
       if (!wsDragId || wsDragId === wsId) return
       // Cross-project drag: no-op
-      if (wsDragProjectId !== projectId) return
+      if (wsDragProjectIdRef.current !== projectId) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       const rect = e.currentTarget.getBoundingClientRect()
@@ -1107,7 +1174,7 @@ export function Sidebar({
       setWsDropTargetId(wsId)
       setWsDropPos(isAbove ? 'before' : 'after')
     },
-    [wsDragId, wsDragProjectId]
+    [wsDragId]
   )
 
   const onWorkspaceDrop = useCallback(
@@ -1118,9 +1185,9 @@ export function Sidebar({
       workspaces: WorkspaceRecord[]
     ): void => {
       e.preventDefault()
-      if (!wsDragId || wsDragId === targetId || wsDragProjectId !== projectId) {
+      if (!wsDragId || wsDragId === targetId || wsDragProjectIdRef.current !== projectId) {
         setWsDragId(null)
-        setWsDragProjectId(null)
+        wsDragProjectIdRef.current = null
         setWsDropTargetId(null)
         return
       }
@@ -1128,7 +1195,7 @@ export function Sidebar({
       const fromIdx = ids.indexOf(wsDragId)
       if (fromIdx === -1) {
         setWsDragId(null)
-        setWsDragProjectId(null)
+        wsDragProjectIdRef.current = null
         setWsDropTargetId(null)
         return
       }
@@ -1139,15 +1206,15 @@ export function Sidebar({
       ids.splice(toIdx, 0, wsDragId)
       onReorderWorkspaces(projectId, ids)
       setWsDragId(null)
-      setWsDragProjectId(null)
+      wsDragProjectIdRef.current = null
       setWsDropTargetId(null)
     },
-    [wsDragId, wsDragProjectId, wsDropPos, onReorderWorkspaces]
+    [wsDragId, wsDropPos, onReorderWorkspaces]
   )
 
   const onWorkspaceDragEnd = useCallback((): void => {
     setWsDragId(null)
-    setWsDragProjectId(null)
+    wsDragProjectIdRef.current = null
     setWsDropTargetId(null)
   }, [])
 

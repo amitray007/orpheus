@@ -119,9 +119,9 @@ function ActionRow({
 }: ActionRowProps): React.JSX.Element {
   return (
     <div
-      draggable
       role="button"
       tabIndex={0}
+      draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -129,7 +129,7 @@ function ActionRow({
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
-          if (e.key === ' ') e.preventDefault()
+          e.preventDefault()
           onSelect()
         }
       }}

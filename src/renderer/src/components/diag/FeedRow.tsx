@@ -37,18 +37,12 @@ export function FeedRow({ evt, isSelected, onClick }: FeedRowProps): React.JSX.E
   const catLevel = `${evt.category ?? ''}/${evt.level ?? ''}`
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          if (e.key === ' ') e.preventDefault()
-          onClick()
-        }
-      }}
+      style={{ userSelect: 'text' }}
       className={[
-        'flex items-baseline gap-2 px-3 py-0.5 text-xs font-mono leading-5 cursor-default select-text',
+        'flex items-baseline gap-2 px-3 py-0.5 text-xs font-mono leading-5 cursor-default select-text w-full text-left',
         isSelected
           ? 'bg-accent/15 border-l-2 border-accent/30'
           : 'hover:bg-surface-raised border-l-2 border-transparent',
@@ -72,6 +66,6 @@ export function FeedRow({ evt, isSelected, onClick }: FeedRowProps): React.JSX.E
         <span className="flex-1 truncate">{evt.message}</span>
       )}
       {hasTrace && <span className="shrink-0 text-text-muted opacity-50 text-[10px]">trace</span>}
-    </div>
+    </button>
   )
 }

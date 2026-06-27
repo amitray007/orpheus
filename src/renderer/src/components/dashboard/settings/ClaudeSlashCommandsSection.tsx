@@ -121,10 +121,10 @@ function SlashCommandForm({
   const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
 
   return (
-    <div
+    <form
       className="bg-surface-raised border border-border-default rounded-lg p-4 flex flex-col gap-3"
-      role="form"
       aria-label="Slash command"
+      onSubmit={(e) => e.preventDefault()}
     >
       {/* Row 1: Source + Name */}
       <div className="flex gap-3">
@@ -267,7 +267,7 @@ function SlashCommandForm({
           Cancel
         </button>
       </div>
-    </div>
+    </form>
   )
 }
 
