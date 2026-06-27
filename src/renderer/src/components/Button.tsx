@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes } from 'react'
+import { type ButtonHTMLAttributes, type JSX, type Ref } from 'react'
 import { DotmSquare13 } from './ui/dotm-square-13'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'destructive'
@@ -23,10 +23,16 @@ const sizeClasses: Record<ButtonSize, string> = {
   sm: 'px-3 py-1 text-xs'
 }
 
-export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'primary', size = 'md', disabled, loading, children, className = '', ...rest },
-  ref
-) {
+export function Button({
+  ref,
+  variant = 'primary',
+  size = 'md',
+  disabled,
+  loading,
+  children,
+  className = '',
+  ...rest
+}: ButtonProps & { ref?: Ref<HTMLButtonElement> }): JSX.Element {
   const isDisabled = disabled || loading
 
   return (
@@ -62,4 +68,4 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       )}
     </button>
   )
-})
+}
