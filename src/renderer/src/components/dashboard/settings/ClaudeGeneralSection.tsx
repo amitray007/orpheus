@@ -173,6 +173,7 @@ export function ClaudeGeneralSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Fallback model"
               value={settings.fallbackModel}
               onChange={(e) => patch({ fallbackModel: e.target.value })}
               onBlur={(e) => patch({ fallbackModel: e.target.value.trim() })}

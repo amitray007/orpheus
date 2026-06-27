@@ -100,6 +100,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
           <div key={idx} className="flex items-center gap-2">
             <input
               type="text"
+              aria-label="Environment variable name"
               value={row.key}
               onChange={(e) => updateRow(idx, 'key', e.target.value)}
               onBlur={() => commitRow(idx)}
@@ -116,6 +117,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
             <span className="text-xs text-text-muted">=</span>
             <input
               type="text"
+              aria-label="Environment variable value"
               value={row.value}
               onChange={(e) => updateRow(idx, 'value', e.target.value)}
               onBlur={() => commitRow(idx)}
@@ -198,6 +200,7 @@ function ExtraBodyJsonInput({ value, onChange }: ExtraBodyJsonInputProps): React
   return (
     <div className="flex flex-col gap-1.5 w-64">
       <textarea
+        aria-label="Extra body JSON"
         value={local}
         onChange={(e) => {
           setLocal(e.target.value)
@@ -413,6 +416,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="HTTP proxy"
               value={settings.httpProxy}
               onChange={(e) => patch({ httpProxy: e.target.value })}
               onBlur={(e) => patch({ httpProxy: e.target.value.trim() })}
@@ -430,6 +434,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="HTTPS proxy"
               value={settings.httpsProxy}
               onChange={(e) => patch({ httpsProxy: e.target.value })}
               onBlur={(e) => patch({ httpsProxy: e.target.value.trim() })}
@@ -648,6 +653,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Anthropic-Beta headers"
               value={settings.anthropicBetas}
               onChange={(e) => patch({ anthropicBetas: e.target.value })}
               onBlur={(e) => patch({ anthropicBetas: e.target.value.trim() })}

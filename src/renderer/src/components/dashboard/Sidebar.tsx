@@ -373,6 +373,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               {renaming ? (
                 <input
                   autoFocus
+                  aria-label="Rename workspace"
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -717,6 +718,7 @@ const ProjectRow = memo(function ProjectRow({
           {renaming ? (
             <input
               autoFocus
+              aria-label="Rename project"
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {

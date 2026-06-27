@@ -59,6 +59,7 @@ export const PICKER_ICONS: string[] = [
 interface IconPickerProps {
   value: string | null
   onChange: (name: string) => void
+  id?: string
 }
 
 /**
@@ -66,7 +67,7 @@ interface IconPickerProps {
  * Shows the currently selected icon + name on the trigger. Supports text
  * filter via a search input at the top of the popover.
  */
-export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Element {
+export function IconPicker({ value, onChange, id }: IconPickerProps): React.JSX.Element {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [open, setOpen] = useState(false)
@@ -126,7 +127,9 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
     <div className="relative inline-flex w-full">
       <button
         ref={triggerRef}
+        id={id}
         type="button"
+        aria-label="Pick icon"
         onClick={() => (open ? closePicker() : openPicker())}
         className={[
           'w-full inline-flex items-center justify-between gap-2',
@@ -182,6 +185,7 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
             <input
               ref={searchRef}
               type="text"
+              aria-label="Filter icons"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="Filter icons…"

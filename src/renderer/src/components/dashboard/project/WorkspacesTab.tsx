@@ -137,6 +137,7 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
       {renamingId === ws.id ? (
         <input
           autoFocus
+          aria-label="Rename workspace"
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
           onKeyDown={(e) => {
@@ -484,6 +485,7 @@ export function WorkspacesTab({
               />
               <input
                 type="text"
+                aria-label="Search workspaces"
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value)

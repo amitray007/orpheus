@@ -103,6 +103,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
     <div className="flex items-center gap-2">
       <input
         type="password"
+        aria-label="API key"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
@@ -171,6 +172,7 @@ function BaseUrlInput({ value, onSave }: BaseUrlInputProps): React.JSX.Element {
   return (
     <input
       type="url"
+      aria-label="Base URL"
       value={local}
       onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {
@@ -215,6 +217,7 @@ function ProviderTextInput({
   return (
     <input
       type="text"
+      aria-label={placeholder}
       value={local}
       onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {

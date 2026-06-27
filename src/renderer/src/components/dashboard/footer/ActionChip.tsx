@@ -303,6 +303,7 @@ export function ActionChip({
             <input
               ref={idx === 0 ? promptInputRef : null}
               type="text"
+              aria-label={p.label}
               value={promptValues[p.key] ?? ''}
               placeholder={p.placeholder ?? ''}
               onChange={(e) => setPromptValues((prev) => ({ ...prev, [p.key]: e.target.value }))}

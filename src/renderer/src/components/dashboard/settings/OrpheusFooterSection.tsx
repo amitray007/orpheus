@@ -161,6 +161,7 @@ function ActionRow({
       <button
         type="button"
         title="Delete action"
+        aria-label="Delete action"
         onClick={(e) => {
           e.stopPropagation()
           onDelete()

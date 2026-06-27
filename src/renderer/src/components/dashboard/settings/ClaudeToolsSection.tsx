@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type {
@@ -92,6 +92,8 @@ function McpServerForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | null>(null)
+  const sourceId = useId()
+  const transportId = useId()
 
   useEffect(() => {
     firstInputRef.current?.focus()
@@ -139,9 +141,12 @@ function McpServerForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label className={labelClass}>Source</label>
+          <label htmlFor={sourceId} className={labelClass}>
+            Source
+          </label>
           <Select
             ariaLabel="Source"
+            id={sourceId}
             disabled={sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
             onChange={(val) => {
@@ -183,9 +188,12 @@ function McpServerForm({
 
         {/* Transport */}
         <div className="w-28 flex-shrink-0">
-          <label className={labelClass}>Transport</label>
+          <label htmlFor={transportId} className={labelClass}>
+            Transport
+          </label>
           <Select<'stdio' | 'http' | 'sse'>
             ariaLabel="Transport"
+            id={transportId}
             value={values.transport}
             onChange={(v) => set('transport', v)}
             options={[
@@ -858,6 +866,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Shell override"
               value={settings.shellOverride}
               onChange={(e) => patch({ shellOverride: e.target.value })}
               onBlur={(e) => patch({ shellOverride: e.target.value.trim() })}
@@ -875,6 +884,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Shell prefix"
               value={settings.shellPrefix}
               onChange={(e) => patch({ shellPrefix: e.target.value })}
               onBlur={(e) => patch({ shellPrefix: e.target.value.trim() })}

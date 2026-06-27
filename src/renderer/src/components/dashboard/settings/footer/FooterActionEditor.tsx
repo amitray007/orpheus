@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import type {
   FooterActionDescriptor,
@@ -238,6 +238,12 @@ export function FooterActionEditor({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const labelFieldId = useId()
+  const iconFieldId = useId()
+  const typeFieldId = useId()
+  const sendTextId = useId()
+  const renamePromptLabelId = useId()
+  const visibilityFieldId = useId()
 
   // Reset form when action changes
   useEffect(() => {
@@ -403,11 +409,16 @@ export function FooterActionEditor({
         <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
           {/* Label */}
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+            <label
+              htmlFor={labelFieldId}
+              className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+            >
               Label
             </label>
             <input
+              id={labelFieldId}
               type="text"
+              aria-label="Action label"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. Fork, Copy context…"
@@ -423,15 +434,21 @@ export function FooterActionEditor({
 
           {/* Icon */}
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+            <label
+              htmlFor={iconFieldId}
+              className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+            >
               Icon
             </label>
-            <IconPicker value={icon} onChange={setIcon} />
+            <IconPicker id={iconFieldId} value={icon} onChange={setIcon} />
           </div>
 
           {/* Type */}
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+            <label
+              htmlFor={typeFieldId}
+              className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+            >
               Type
             </label>
             <Select
@@ -439,6 +456,7 @@ export function FooterActionEditor({
               value={actionType}
               onChange={(v) => setActionType(v)}
               ariaLabel="Action type"
+              id={typeFieldId}
               className="w-full"
             />
           </div>
@@ -447,11 +465,16 @@ export function FooterActionEditor({
           {actionType === 'sendInput' && (
             <>
               <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+                <label
+                  htmlFor={sendTextId}
+                  className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+                >
                   Text
                 </label>
                 <textarea
+                  id={sendTextId}
                   ref={textareaRef}
+                  aria-label="Action send text"
                   value={sendText}
                   onChange={(e) => setSendText(e.target.value)}
                   placeholder="/copy, @src/file.ts, or any text to send…"
@@ -492,11 +515,16 @@ export function FooterActionEditor({
                 When clicked, a prompt will appear asking the user for the new workspace name.
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+                <label
+                  htmlFor={renamePromptLabelId}
+                  className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+                >
                   Prompt label
                 </label>
                 <input
+                  id={renamePromptLabelId}
                   type="text"
+                  aria-label="Rename prompt label"
                   value={renamePromptLabel}
                   onChange={(e) => setRenamePromptLabel(e.target.value)}
                   placeholder="New name"
@@ -512,6 +540,7 @@ export function FooterActionEditor({
                 </label>
                 <input
                   type="text"
+                  aria-label="Rename prompt default value"
                   value={renamePromptDefault}
                   onChange={(e) => setRenamePromptDefault(e.target.value)}
                   placeholder="{workspaceName}"
@@ -529,6 +558,7 @@ export function FooterActionEditor({
               </label>
               <input
                 type="text"
+                aria-label="Duplicate name suffix"
                 value={dupSuffix}
                 onChange={(e) => setDupSuffix(e.target.value)}
                 placeholder="(copy)"
@@ -539,7 +569,10 @@ export function FooterActionEditor({
 
           {/* Visibility */}
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+            <label
+              htmlFor={visibilityFieldId}
+              className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+            >
               Visible when
             </label>
             <Select
@@ -547,6 +580,7 @@ export function FooterActionEditor({
               value={visibility}
               onChange={(v) => setVisibility(v)}
               ariaLabel="Visible when"
+              id={visibilityFieldId}
               className="w-full"
             />
           </div>

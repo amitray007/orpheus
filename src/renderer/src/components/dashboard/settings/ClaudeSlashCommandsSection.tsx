@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSlashCommand, ClaudeSlashCommandDraft, ProjectRecord } from '@shared/types'
@@ -78,6 +78,7 @@ function SlashCommandForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | null>(null)
+  const sourceId = useId()
 
   useEffect(() => {
     // When the source is fixed (editing existing), focus the name input.
@@ -129,9 +130,12 @@ function SlashCommandForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label className={labelClass}>Source</label>
+          <label htmlFor={sourceId} className={labelClass}>
+            Source
+          </label>
           <Select
             ariaLabel="Source"
+            id={sourceId}
             disabled={sourceFixed}
             autoFocus={!sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}

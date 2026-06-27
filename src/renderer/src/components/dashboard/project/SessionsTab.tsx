@@ -456,6 +456,7 @@ export function SessionsTab({
           />
           <input
             type="text"
+            aria-label="Search prompts"
             value={search}
             onChange={(e) => changeSearch(e.target.value)}
             placeholder="Search prompts"

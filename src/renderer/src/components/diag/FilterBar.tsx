@@ -79,6 +79,7 @@ export function FilterBar({
         <MagnifyingGlass size={12} className="text-text-muted shrink-0" />
         <input
           type="text"
+          aria-label="Search"
           value={filters.search}
           onChange={(e) => onSetSearch(e.target.value)}
           placeholder="search…"

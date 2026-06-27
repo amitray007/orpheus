@@ -306,6 +306,7 @@ export function SettingsView(): React.JSX.Element {
             <input
               ref={searchInputRef}
               type="text"
+              aria-label="Search settings"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search settings…"

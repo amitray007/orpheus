@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
@@ -109,6 +109,7 @@ export interface SelectProps<T extends string> {
   value: T
   onChange: (v: T) => void
   ariaLabel?: string
+  id?: string
   className?: string
   disabled?: boolean
   placeholder?: string
@@ -122,12 +123,14 @@ export function Select<T extends string>({
   value,
   onChange,
   ariaLabel,
+  id,
   className,
   disabled,
   placeholder,
   autoFocus
 }: SelectProps<T>): React.JSX.Element {
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const listboxId = useId()
   useEffect(() => {
     if (autoFocus) triggerRef.current?.focus()
   }, [autoFocus])
@@ -282,10 +285,12 @@ export function Select<T extends string>({
     <div className={['relative inline-flex w-full', className ?? ''].join(' ')}>
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => (open ? closeMenu() : openMenu())}
@@ -330,6 +335,7 @@ export function Select<T extends string>({
           className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
         >
           <div
+            id={listboxId}
             ref={popoverRef}
             role="listbox"
             aria-label={ariaLabel}
@@ -426,13 +432,15 @@ export interface NumberInputProps {
   onChange: (v: number | null) => void
   placeholder?: string
   className?: string
+  ariaLabel?: string
 }
 
 export function NumberInput({
   value,
   onChange,
   placeholder,
-  className
+  className,
+  ariaLabel
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -462,6 +470,7 @@ export function NumberInput({
     <input
       type="text"
       inputMode="numeric"
+      aria-label={ariaLabel}
       value={displayValue}
       onChange={(e) => setLocal(e.target.value)}
       onFocus={() => {
@@ -571,6 +580,7 @@ export function RuleListEditor({
               <input
                 data-rule-input
                 type="text"
+                aria-label="Rule"
                 value={item}
                 onChange={(e) => updateItem(idx, e.target.value)}
                 onBlur={() => commitItem(idx)}
@@ -658,6 +668,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
       />
       {showCustom && (
         <input
+          aria-label="Custom model ID"
           value={customValue}
           onChange={(e) => setCustomValue(e.target.value)}
           onBlur={() => {

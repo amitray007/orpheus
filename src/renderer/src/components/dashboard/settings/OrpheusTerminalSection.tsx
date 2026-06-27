@@ -13,9 +13,16 @@ interface TextInputProps {
   onChange: (v: string) => void
   placeholder?: string
   className?: string
+  ariaLabel?: string
 }
 
-function TextInput({ value, onChange, placeholder, className }: TextInputProps): React.JSX.Element {
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+  className,
+  ariaLabel
+}: TextInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value)
   const [hasFocus, setHasFocus] = useState(false)
 
@@ -41,6 +48,7 @@ function TextInput({ value, onChange, placeholder, className }: TextInputProps):
   return (
     <input
       type="text"
+      aria-label={ariaLabel}
       value={displayValue}
       onChange={(e) => setLocal(e.target.value)}
       onFocus={handleFocus}
@@ -181,6 +189,7 @@ function KeyRecorder({ value, onChange }: KeyRecorderProps): React.JSX.Element {
       )}
       <input
         type="text"
+        aria-label="Keybind trigger"
         value={value}
         onChange={handleTextChange}
         placeholder="e.g. ctrl+a"
@@ -503,6 +512,7 @@ export function OrpheusTerminalSection(): React.JSX.Element {
                 {kbActionSelect === '__raw__' && (
                   <input
                     type="text"
+                    aria-label="Raw keybind action"
                     value={kbRawAction}
                     onChange={(e) => setKbRawAction(e.target.value)}
                     placeholder="e.g. write_scrollback_file:/tmp/buf.txt"

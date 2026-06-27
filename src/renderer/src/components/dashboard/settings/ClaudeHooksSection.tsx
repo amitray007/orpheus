@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeHookEntry, ClaudeHookDraft, ProjectRecord } from '@shared/types'
@@ -101,6 +101,9 @@ function HookForm({
   const [values, setValues] = useState<HookFormValues>(initial)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const sourceId = useId()
+  const eventId = useId()
+  const commandId = useId()
 
   const matcherApplies = MATCHER_EVENTS.has(values.event)
 
@@ -133,9 +136,12 @@ function HookForm({
       <div className="flex gap-3">
         {/* Source */}
         <div className="flex-1 min-w-0">
-          <label className={labelClass}>Source</label>
+          <label htmlFor={sourceId} className={labelClass}>
+            Source
+          </label>
           <Select
             ariaLabel="Source"
+            id={sourceId}
             disabled={sourceFixed}
             value={values.source === 'user' ? 'user' : values.projectId}
             onChange={(val) => {
@@ -156,9 +162,12 @@ function HookForm({
 
         {/* Event */}
         <div className="flex-1 min-w-0">
-          <label className={labelClass}>Event</label>
+          <label htmlFor={eventId} className={labelClass}>
+            Event
+          </label>
           <Select
             ariaLabel="Event"
+            id={eventId}
             value={values.event}
             onChange={(val) => set('event', val)}
             options={HOOK_EVENTS.map((ev) => ({ value: ev, label: ev }))}
@@ -175,6 +184,7 @@ function HookForm({
           </label>
           <input
             type="text"
+            aria-label="Matcher"
             placeholder={matcherApplies ? 'e.g. Bash' : '—'}
             disabled={!matcherApplies}
             value={matcherApplies ? values.matcher : ''}
@@ -186,8 +196,11 @@ function HookForm({
 
       {/* Command */}
       <div>
-        <label className={labelClass}>Command</label>
+        <label htmlFor={commandId} className={labelClass}>
+          Command
+        </label>
         <textarea
+          id={commandId}
           rows={3}
           placeholder="shell command to run…"
           value={values.command}
