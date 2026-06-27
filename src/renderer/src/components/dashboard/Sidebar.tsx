@@ -1,7 +1,6 @@
 import type React from 'react'
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
-import type { Icon } from '@phosphor-icons/react'
 import {
   Circle,
   Kanban,
@@ -27,88 +26,9 @@ import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
 import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
-
-// ---------------------------------------------------------------------------
-// Module-level stable empty maps (avoid new Map() on every render as fallback)
-// ---------------------------------------------------------------------------
-
-const EMPTY_TITLE_MAP = new Map<string, string>()
-const EMPTY_MTIME_MAP = new Map<string, number>()
-
-function formatRelativeTime(epochMs: number | null, now: number): string {
-  if (epochMs === null) return ''
-  const ageMs = now - epochMs
-  const sec = Math.floor(ageMs / 1000)
-  if (sec < 60) return 'now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h`
-  const day = Math.floor(hr / 24)
-  if (day < 7) return `${day}d`
-  return `${Math.floor(day / 7)}w`
-}
-
-// ---------------------------------------------------------------------------
-// Nav primitives
-// ---------------------------------------------------------------------------
-
-interface NavItemProps {
-  Icon: Icon
-  label: string
-  active?: boolean
-  collapsed: boolean
-  flushTop?: boolean
-  onClick?: () => void
-}
-
-function NavItem({
-  Icon,
-  label,
-  active = false,
-  collapsed,
-  flushTop = false,
-  onClick
-}: NavItemProps): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      className={[
-        'w-full flex items-center transition-colors duration-150',
-        flushTop ? 'rounded-b-md' : 'rounded-md',
-        collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2 gap-3',
-        active
-          ? 'bg-accent/15 text-text-primary font-medium'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-      ].join(' ')}
-      onClick={onClick}
-      aria-label={label}
-      aria-current={active ? 'page' : undefined}
-    >
-      <Icon
-        size={20}
-        weight={active ? 'fill' : 'regular'}
-        className={active ? 'text-accent' : ''}
-      />
-      {!collapsed && <span className="text-sm">{label}</span>}
-    </button>
-  )
-}
-
-interface SectionHeaderProps {
-  label: string
-  action?: React.ReactNode
-}
-
-function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element {
-  return (
-    <div className="flex items-center justify-between px-3 mb-1">
-      <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
-      {action}
-    </div>
-  )
-}
+import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
+import { NavItem, SectionHeader } from './SidebarNavItems'
+import { CollapsedProjectList } from './CollapsedProjectList'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -1218,6 +1138,13 @@ export function Sidebar({
     setWsDropTargetId(null)
   }, [])
 
+  // Used by CollapsedProjectList to highlight the currently-active project.
+  const isProjectActive = useCallback(
+    (projectId: string): boolean =>
+      (activeView === 'project' || activeView === 'workspace') && selectedProjectId === projectId,
+    [activeView, selectedProjectId]
+  )
+
   const addProjectButton = (
     <button
       type="button"
@@ -1363,35 +1290,15 @@ export function Sidebar({
               )}
             </>
           ) : (
-            /* Collapsed: show identicons only */
-            <div className="flex flex-col gap-1 items-center overflow-y-auto flex-1 min-h-0 no-scrollbar">
-              <div className="flex justify-center mb-1">{addProjectButton}</div>
-              {!projectsLoading &&
-                projects.map((p) => {
-                  const isActive =
-                    (activeView === 'project' || activeView === 'workspace') &&
-                    selectedProjectId === p.id
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => onSelectProject(p.id)}
-                      title={p.name}
-                      aria-label={p.name}
-                      className={[
-                        'p-1 rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-                        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
-                      ].join(' ')}
-                    >
-                      <Identicon
-                        seed={p.path}
-                        size={22}
-                        avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
-                      />
-                    </button>
-                  )
-                })}
-            </div>
+            <CollapsedProjectList
+              projects={projects}
+              projectsLoading={projectsLoading}
+              fetchGithubAvatars={fetchGithubAvatars}
+              isProjectActive={isProjectActive}
+              addingProject={addingProject}
+              onSelectProject={onSelectProject}
+              onAddProject={onAddProject}
+            />
           )}
         </div>
 
