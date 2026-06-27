@@ -38,7 +38,15 @@ export function FeedRow({ evt, isSelected, onClick }: FeedRowProps): React.JSX.E
 
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.key === ' ') e.preventDefault()
+          onClick()
+        }
+      }}
       className={[
         'flex items-baseline gap-2 px-3 py-0.5 text-xs font-mono leading-5 cursor-default select-text',
         isSelected

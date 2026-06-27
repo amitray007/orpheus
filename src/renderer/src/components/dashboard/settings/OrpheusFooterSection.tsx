@@ -120,11 +120,19 @@ function ActionRow({
   return (
     <div
       draggable
+      role="button"
+      tabIndex={0}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.key === ' ') e.preventDefault()
+          onSelect()
+        }
+      }}
       className={[
         'relative flex items-center gap-2 px-2.5 py-2 rounded cursor-pointer transition-colors duration-100',
         'group',

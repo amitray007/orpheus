@@ -218,7 +218,14 @@ export function DataTable<R>({
                       ? 'none'
                       : undefined
                 }
+                tabIndex={col.sortable ? 0 : undefined}
                 onClick={() => handleSortClick(col)}
+                onKeyDown={(e) => {
+                  if (col.sortable && (e.key === 'Enter' || e.key === ' ')) {
+                    if (e.key === ' ') e.preventDefault()
+                    handleSortClick(col)
+                  }
+                }}
                 className={[
                   'flex items-center gap-1 py-2 px-3',
                   'text-xs uppercase tracking-wider font-medium',
@@ -278,7 +285,14 @@ export function DataTable<R>({
                 <div
                   key={rowKey(row)}
                   role="row"
+                  tabIndex={onRowClick ? 0 : undefined}
                   onClick={() => onRowClick?.(row)}
+                  onKeyDown={(e) => {
+                    if (onRowClick && (e.key === 'Enter' || e.key === ' ')) {
+                      if (e.key === ' ') e.preventDefault()
+                      onRowClick(row)
+                    }
+                  }}
                   style={{ gridTemplateColumns: gridTemplate }}
                   className={[
                     'grid border-b border-border-default/40 last:border-b-0',

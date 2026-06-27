@@ -513,6 +513,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
   }
 
   const groups = groupServers(servers)
+  const disabledMcpSet = new Set(settings.disabledMcpServers)
 
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
@@ -648,7 +649,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
                           </div>
                           <Toggle
                             ariaLabel={`${s.name} enabled`}
-                            value={!settings.disabledMcpServers.includes(s.name)}
+                            value={!disabledMcpSet.has(s.name)}
                             onChange={(enabled) => toggleMcpServer(s.name, enabled)}
                           />
                         </div>
