@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { Icon } from '@phosphor-icons/react'
 import {
@@ -28,32 +28,107 @@ import {
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
 import type { SettingsSearchResult } from './settings/searchMatcher'
+import { SettingsSectionSkeleton } from '../Skeleton'
 
-import { ClaudeGeneralSection } from './settings/ClaudeGeneralSection'
-import { ClaudeDisplaySection } from './settings/ClaudeDisplaySection'
-import { ClaudePermissionsSection } from './settings/ClaudePermissionsSection'
-import { ClaudeAuthSection } from './settings/ClaudeAuthSection'
-import { ClaudeMemorySection } from './settings/ClaudeMemorySection'
-import { ClaudeToolsSection } from './settings/ClaudeToolsSection'
-import { ClaudeSlashCommandsSection } from './settings/ClaudeSlashCommandsSection'
-import { ClaudeSubagentsSection } from './settings/ClaudeSubagentsSection'
-import { ClaudeHooksSection } from './settings/ClaudeHooksSection'
-import { ClaudeDeveloperSection } from './settings/ClaudeDeveloperSection'
-import { ClaudeAboutSection } from './settings/ClaudeAboutSection'
-import { OrpheusAppearanceSection } from './settings/OrpheusAppearanceSection'
-import { OrpheusSidebarSection } from './settings/OrpheusSidebarSection'
-import { OrpheusWindowSection } from './settings/OrpheusWindowSection'
-import { OrpheusNotificationsSection } from './settings/OrpheusNotificationsSection'
-import { OrpheusWorkspacesSection } from './settings/OrpheusWorkspacesSection'
-import { OrpheusUpdatesSection } from './settings/OrpheusUpdatesSection'
-import { OrpheusStatusSection } from './settings/OrpheusStatusSection'
-import { OrpheusDeveloperSection } from './settings/OrpheusDeveloperSection'
-import { OrpheusAboutSection } from './settings/OrpheusAboutSection'
-import { OrpheusFooterSection } from './settings/OrpheusFooterSection'
-import { OrpheusTerminalSection } from './settings/OrpheusTerminalSection'
-import { OrpheusDiagnosticsSection } from './settings/OrpheusDiagnosticsSection'
-import { OrpheusHealthSection } from './settings/OrpheusHealthSection'
-import { OrpheusKeepAwakeSection } from './settings/OrpheusKeepAwakeSection'
+const ClaudeGeneralSection = lazy(() =>
+  import('./settings/ClaudeGeneralSection').then((m) => ({ default: m.ClaudeGeneralSection }))
+)
+const ClaudeDisplaySection = lazy(() =>
+  import('./settings/ClaudeDisplaySection').then((m) => ({ default: m.ClaudeDisplaySection }))
+)
+const ClaudePermissionsSection = lazy(() =>
+  import('./settings/ClaudePermissionsSection').then((m) => ({
+    default: m.ClaudePermissionsSection
+  }))
+)
+const ClaudeAuthSection = lazy(() =>
+  import('./settings/ClaudeAuthSection').then((m) => ({ default: m.ClaudeAuthSection }))
+)
+const ClaudeMemorySection = lazy(() =>
+  import('./settings/ClaudeMemorySection').then((m) => ({ default: m.ClaudeMemorySection }))
+)
+const ClaudeToolsSection = lazy(() =>
+  import('./settings/ClaudeToolsSection').then((m) => ({ default: m.ClaudeToolsSection }))
+)
+const ClaudeSlashCommandsSection = lazy(() =>
+  import('./settings/ClaudeSlashCommandsSection').then((m) => ({
+    default: m.ClaudeSlashCommandsSection
+  }))
+)
+const ClaudeSubagentsSection = lazy(() =>
+  import('./settings/ClaudeSubagentsSection').then((m) => ({ default: m.ClaudeSubagentsSection }))
+)
+const ClaudeHooksSection = lazy(() =>
+  import('./settings/ClaudeHooksSection').then((m) => ({ default: m.ClaudeHooksSection }))
+)
+const ClaudeDeveloperSection = lazy(() =>
+  import('./settings/ClaudeDeveloperSection').then((m) => ({ default: m.ClaudeDeveloperSection }))
+)
+const ClaudeAboutSection = lazy(() =>
+  import('./settings/ClaudeAboutSection').then((m) => ({ default: m.ClaudeAboutSection }))
+)
+const OrpheusAppearanceSection = lazy(() =>
+  import('./settings/OrpheusAppearanceSection').then((m) => ({
+    default: m.OrpheusAppearanceSection
+  }))
+)
+const OrpheusSidebarSection = lazy(() =>
+  import('./settings/OrpheusSidebarSection').then((m) => ({ default: m.OrpheusSidebarSection }))
+)
+const OrpheusTerminalSection = lazy(() =>
+  import('./settings/OrpheusTerminalSection').then((m) => ({ default: m.OrpheusTerminalSection }))
+)
+const OrpheusWindowSection = lazy(() =>
+  import('./settings/OrpheusWindowSection').then((m) => ({ default: m.OrpheusWindowSection }))
+)
+const OrpheusNotificationsSection = lazy(() =>
+  import('./settings/OrpheusNotificationsSection').then((m) => ({
+    default: m.OrpheusNotificationsSection
+  }))
+)
+const OrpheusWorkspacesSection = lazy(() =>
+  import('./settings/OrpheusWorkspacesSection').then((m) => ({
+    default: m.OrpheusWorkspacesSection
+  }))
+)
+const OrpheusKeepAwakeSection = lazy(() =>
+  import('./settings/OrpheusKeepAwakeSection').then((m) => ({ default: m.OrpheusKeepAwakeSection }))
+)
+const OrpheusUpdatesSection = lazy(() =>
+  import('./settings/OrpheusUpdatesSection').then((m) => ({ default: m.OrpheusUpdatesSection }))
+)
+const OrpheusStatusSection = lazy(() =>
+  import('./settings/OrpheusStatusSection').then((m) => ({ default: m.OrpheusStatusSection }))
+)
+const OrpheusFooterSection = lazy(() =>
+  import('./settings/OrpheusFooterSection').then((m) => ({ default: m.OrpheusFooterSection }))
+)
+const OrpheusDeveloperSection = lazy(() =>
+  import('./settings/OrpheusDeveloperSection').then((m) => ({ default: m.OrpheusDeveloperSection }))
+)
+const OrpheusDiagnosticsSection = lazy(() =>
+  import('./settings/OrpheusDiagnosticsSection').then((m) => ({
+    default: m.OrpheusDiagnosticsSection
+  }))
+)
+const OrpheusHealthSection = lazy(() =>
+  import('./settings/OrpheusHealthSection').then((m) => ({ default: m.OrpheusHealthSection }))
+)
+const OrpheusAboutSection = lazy(() =>
+  import('./settings/OrpheusAboutSection').then((m) => ({ default: m.OrpheusAboutSection }))
+)
+
+// ---------------------------------------------------------------------------
+// SectionLoader — Suspense fallback while a section chunk loads
+// ---------------------------------------------------------------------------
+
+function SectionLoader(): React.JSX.Element {
+  return (
+    <div className="min-h-[120px]">
+      <SettingsSectionSkeleton groups={2} rowsPerGroup={2} />
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Section types
@@ -323,7 +398,9 @@ export function SettingsView(): React.JSX.Element {
       </nav>
 
       <div ref={contentRef} className="flex-1 overflow-y-auto px-8 py-6 min-w-0">
-        <ActiveComponent />
+        <Suspense fallback={<SectionLoader />}>
+          <ActiveComponent />
+        </Suspense>
       </div>
     </div>
   )
