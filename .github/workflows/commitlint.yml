@@ -1,0 +1,28 @@
+name: Commitlint
+
+on:
+  pull_request:
+    # Lint contributor PRs (which land on staging); skip the staging -> main
+    # release PR, which aggregates already-checked commits plus merge commits.
+    branches-ignore: [main]
+
+# Cancel in-flight runs on the same PR when a newer commit lands.
+concurrency:
+  group: commitlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commitlint:
+    name: Lint commit messages
+    # Lightweight check — no need for macOS runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is needed so the action can walk from the PR base to
+          # HEAD and lint every commit in the range.
+          fetch-depth: 0
+
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.js

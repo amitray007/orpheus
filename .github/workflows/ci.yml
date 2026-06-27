@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   check:
-    name: typecheck + lint
+    name: typecheck + lint + format
     # typecheck + lint don't need the native xcframework or compiled addons, so
     # we skip the postinstall (--ignore-scripts below). This also decouples CI
     # from the third-party libghostty "storage" releases, which rotate weekly
@@ -37,6 +37,9 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      - name: Format check
+        run: bun run format:check
 
       # No tests in this repo yet. When tests land, add `bun test` (or vitest/
       # playwright equivalents) as another step.
