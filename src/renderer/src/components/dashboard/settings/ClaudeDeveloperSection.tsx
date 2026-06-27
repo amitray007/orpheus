@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, CaretRight, Trash, Plus } from '@phosphor-icons/react'
 import type { ClaudeGlobalSettings, ClaudeLogLevel } from '@shared/types'
@@ -217,7 +217,44 @@ function ExtraBodyJsonInput({ value, onChange }: ExtraBodyJsonInputProps): React
 }
 
 // ---------------------------------------------------------------------------
-// ClaudeDeveloperSection — debug logging, telemetry, experimental flags
+// MonoTextInput — shared mono text input: live-updates on change, trims on blur/enter
+// Used by proxy URL and anthropic-beta header fields.
+// ---------------------------------------------------------------------------
+
+interface MonoTextInputProps {
+  value: string
+  onLiveChange: (v: string) => void
+  onCommit: (v: string) => void
+  placeholder?: string
+  ariaLabel: string
+}
+
+function MonoTextInput({
+  value,
+  onLiveChange,
+  onCommit,
+  placeholder,
+  ariaLabel
+}: MonoTextInputProps): React.JSX.Element {
+  return (
+    <input
+      type="text"
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(e) => onLiveChange(e.target.value)}
+      onBlur={(e) => onCommit(e.target.value.trim())}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+      }}
+      placeholder={placeholder}
+      className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section group components — memo'd so each group only re-renders when its
+// specific settings change. patch is stable (useCallback / []) so memo works.
 // ---------------------------------------------------------------------------
 
 const LOG_LEVEL_OPTIONS: ReadonlyArray<{ value: ClaudeLogLevel; label: string }> = [
@@ -227,9 +264,547 @@ const LOG_LEVEL_OPTIONS: ReadonlyArray<{ value: ClaudeLogLevel; label: string }>
   { value: 'error', label: 'Error' }
 ]
 
+// --- Logging ---
+
+interface LoggingGroupProps {
+  debugLogging: boolean
+  logLevel: ClaudeLogLevel
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const LoggingGroup = memo(function LoggingGroup({
+  debugLogging,
+  logLevel,
+  patch
+}: LoggingGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Logging</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+        <SettingRow
+          label="Debug logging"
+          description="Pass --debug to Claude at launch for verbose output. Applies on next workspace open."
+          mapsTo="--debug"
+        >
+          <Toggle
+            ariaLabel="Debug logging"
+            value={debugLogging}
+            onChange={(v) => patch({ debugLogging: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Log level"
+          description="Minimum severity level for log entries. Only active when Debug logging is enabled."
+          mapsTo="CLAUDE_CODE_DEBUG_LOG_LEVEL"
+        >
+          <SegmentedControl<ClaudeLogLevel>
+            ariaLabel="Log level"
+            options={LOG_LEVEL_OPTIONS}
+            value={logLevel}
+            onChange={(v) => patch({ logLevel: v })}
+          />
+        </SettingRow>
+      </div>
+    </section>
+  )
+})
+
+// --- Privacy ---
+
+interface PrivacyGroupProps {
+  disableTelemetry: boolean
+  disableErrorReporting: boolean
+  disableAutoupdater: boolean
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const PrivacyGroup = memo(function PrivacyGroup({
+  disableTelemetry,
+  disableErrorReporting,
+  disableAutoupdater,
+  patch
+}: PrivacyGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Privacy</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+        <SettingRow
+          label="Disable telemetry"
+          description="Opt out of anonymous usage statistics sent to Anthropic (DISABLE_TELEMETRY=1)."
+          mapsTo="DISABLE_TELEMETRY"
+        >
+          <Toggle
+            ariaLabel="Disable telemetry"
+            value={disableTelemetry}
+            onChange={(v) => patch({ disableTelemetry: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable error reporting"
+          description="Stop sending crash reports and stack traces to Anthropic (DISABLE_ERROR_REPORTING=1)."
+          mapsTo="DISABLE_ERROR_REPORTING"
+        >
+          <Toggle
+            ariaLabel="Disable error reporting"
+            value={disableErrorReporting}
+            onChange={(v) => patch({ disableErrorReporting: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable auto-updater"
+          description="Prevent Orpheus from checking for or applying updates automatically (DISABLE_AUTOUPDATER=1)."
+          mapsTo="DISABLE_AUTOUPDATER"
+        >
+          <Toggle
+            ariaLabel="Disable auto-updater"
+            value={disableAutoupdater}
+            onChange={(v) => patch({ disableAutoupdater: v })}
+          />
+        </SettingRow>
+      </div>
+    </section>
+  )
+})
+
+// --- Experimental features (owns its own open/close UI state) ---
+
+interface ExperimentalGroupProps {
+  experimentalAgentTeams: boolean
+  experimentalForkedSubagents: boolean
+  simpleSystemPrompt: boolean
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const ExperimentalGroup = memo(function ExperimentalGroup({
+  experimentalAgentTeams,
+  experimentalForkedSubagents,
+  simpleSystemPrompt,
+  patch
+}: ExperimentalGroupProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <section className="flex flex-col">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-text-secondary mb-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded self-start"
+      >
+        {open ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+        Experimental features
+      </button>
+      {open && (
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Agent teams"
+            description="Run multiple Claude instances collaborating on the same task in parallel (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1)."
+            mapsTo="CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
+          >
+            <Toggle
+              ariaLabel="Agent teams"
+              value={experimentalAgentTeams}
+              onChange={(v) => patch({ experimentalAgentTeams: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Forked subagents"
+            description="Allow Claude to spawn isolated subagent processes for long-running subtasks (CLAUDE_CODE_FORK_SUBAGENT=1)."
+            mapsTo="CLAUDE_CODE_FORK_SUBAGENT"
+          >
+            <Toggle
+              ariaLabel="Forked subagents"
+              value={experimentalForkedSubagents}
+              onChange={(v) => patch({ experimentalForkedSubagents: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Simple system prompt"
+            description="Use a minimal system prompt without Orpheus-specific injections (settings.json: simpleSystemPrompt)."
+            mapsTo="simpleSystemPrompt"
+          >
+            <Toggle
+              ariaLabel="Simple system prompt"
+              value={simpleSystemPrompt}
+              onChange={(v) => patch({ simpleSystemPrompt: v })}
+            />
+          </SettingRow>
+        </div>
+      )}
+    </section>
+  )
+})
+
+// --- Network ---
+
+interface NetworkGroupProps {
+  httpProxy: string
+  httpsProxy: string
+  apiTimeoutMs: number | null
+  maxRetries: number | null
+  enableFineGrainedToolStreaming: boolean
+  disableNonstreamingFallback: boolean
+  proxyResolvesHosts: boolean
+  enableGatewayModelDiscovery: boolean
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const NetworkGroup = memo(function NetworkGroup({
+  httpProxy,
+  httpsProxy,
+  apiTimeoutMs,
+  maxRetries,
+  enableFineGrainedToolStreaming,
+  disableNonstreamingFallback,
+  proxyResolvesHosts,
+  enableGatewayModelDiscovery,
+  patch
+}: NetworkGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Network</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+        <SettingRow
+          label="HTTP_PROXY"
+          description="HTTP proxy for outbound requests from claude (HTTP_PROXY). Leave empty to use the system default."
+          mapsTo="HTTP_PROXY"
+        >
+          <MonoTextInput
+            ariaLabel="HTTP proxy"
+            value={httpProxy}
+            onLiveChange={(v) => patch({ httpProxy: v })}
+            onCommit={(v) => patch({ httpProxy: v })}
+            placeholder="http://proxy.example.com:8080"
+          />
+        </SettingRow>
+        <SettingRow
+          label="HTTPS_PROXY"
+          description="HTTPS proxy for outbound requests from claude (HTTPS_PROXY). Leave empty to use the system default."
+          mapsTo="HTTPS_PROXY"
+        >
+          <MonoTextInput
+            ariaLabel="HTTPS proxy"
+            value={httpsProxy}
+            onLiveChange={(v) => patch({ httpsProxy: v })}
+            onCommit={(v) => patch({ httpsProxy: v })}
+            placeholder="https://proxy.example.com:8080"
+          />
+        </SettingRow>
+        <SettingRow
+          label="API timeout (ms)"
+          description="Timeout in milliseconds for each API request to Anthropic (API_TIMEOUT_MS). Leave empty to use claude's default."
+          mapsTo="API_TIMEOUT_MS"
+        >
+          <NumberInput
+            value={apiTimeoutMs}
+            onChange={(v) => patch({ apiTimeoutMs: v })}
+            placeholder="default"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Max retries"
+          description="Number of times to retry a failed API request (CLAUDE_CODE_MAX_RETRIES). Leave empty to use claude's default."
+          mapsTo="CLAUDE_CODE_MAX_RETRIES"
+        >
+          <NumberInput
+            value={maxRetries}
+            onChange={(v) => patch({ maxRetries: v })}
+            placeholder="default"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Enable fine-grained tool streaming"
+          description="Stream tool results at a finer granularity for lower perceived latency (CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1)."
+          mapsTo="CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"
+        >
+          <Toggle
+            ariaLabel="Enable fine-grained tool streaming"
+            value={enableFineGrainedToolStreaming}
+            onChange={(v) => patch({ enableFineGrainedToolStreaming: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable nonstreaming fallback"
+          description="Prevent Claude from falling back to non-streaming mode when streaming fails (CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"
+        >
+          <Toggle
+            ariaLabel="Disable nonstreaming fallback"
+            value={disableNonstreamingFallback}
+            onChange={(v) => patch({ disableNonstreamingFallback: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Proxy resolves hosts"
+          description="Delegate hostname resolution to the proxy instead of resolving locally first (CLAUDE_CODE_PROXY_RESOLVES_HOSTS=1)."
+          mapsTo="CLAUDE_CODE_PROXY_RESOLVES_HOSTS"
+        >
+          <Toggle
+            ariaLabel="Proxy resolves hosts"
+            value={proxyResolvesHosts}
+            onChange={(v) => patch({ proxyResolvesHosts: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Enable gateway model discovery"
+          description="Allow Claude to discover available models through the gateway API (CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1)."
+          mapsTo="CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+        >
+          <Toggle
+            ariaLabel="Enable gateway model discovery"
+            value={enableGatewayModelDiscovery}
+            onChange={(v) => patch({ enableGatewayModelDiscovery: v })}
+          />
+        </SettingRow>
+      </div>
+    </section>
+  )
+})
+
+// --- Privacy & background tasks ---
+
+interface BackgroundGroupProps {
+  disableNonessentialTraffic: boolean
+  doNotTrack: boolean
+  disableBackgroundTasks: boolean
+  disableAgentView: boolean
+  autoBackgroundTasks: boolean
+  asyncAgentStallTimeoutMs: number | null
+  enableTasks: boolean
+  disableCron: boolean
+  exitAfterStopDelay: number | null
+  disableFeedbackCommand: boolean
+  disableFeedbackSurvey: boolean
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const BackgroundGroup = memo(function BackgroundGroup({
+  disableNonessentialTraffic,
+  doNotTrack,
+  disableBackgroundTasks,
+  disableAgentView,
+  autoBackgroundTasks,
+  asyncAgentStallTimeoutMs,
+  enableTasks,
+  disableCron,
+  exitAfterStopDelay,
+  disableFeedbackCommand,
+  disableFeedbackSurvey,
+  patch
+}: BackgroundGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Privacy &amp; background tasks</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+        <SettingRow
+          label="Disable nonessential traffic"
+          description="Bundles autoupdater, feedback, error reporting, and telemetry off in one toggle (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+        >
+          <Toggle
+            ariaLabel="Disable nonessential traffic"
+            value={disableNonessentialTraffic}
+            onChange={(v) => patch({ disableNonessentialTraffic: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Honor DO_NOT_TRACK"
+          description="Respect the DO_NOT_TRACK signal to disable analytics and usage tracking (DO_NOT_TRACK=1)."
+          mapsTo="DO_NOT_TRACK"
+        >
+          <Toggle
+            ariaLabel="Honor DO_NOT_TRACK"
+            value={doNotTrack}
+            onChange={(v) => patch({ doNotTrack: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable background tasks"
+          description="Prevent Claude from running background processing tasks between turns (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+        >
+          <Toggle
+            ariaLabel="Disable background tasks"
+            value={disableBackgroundTasks}
+            onChange={(v) => patch({ disableBackgroundTasks: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable agent view"
+          description="Hide the real-time agent activity view during agentic sessions (CLAUDE_CODE_DISABLE_AGENT_VIEW=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_AGENT_VIEW"
+        >
+          <Toggle
+            ariaLabel="Disable agent view"
+            value={disableAgentView}
+            onChange={(v) => patch({ disableAgentView: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Auto background tasks"
+          description="Allow Claude to automatically schedule background tasks without explicit user approval (CLAUDE_AUTO_BACKGROUND_TASKS=1)."
+          mapsTo="CLAUDE_AUTO_BACKGROUND_TASKS"
+        >
+          <Toggle
+            ariaLabel="Auto background tasks"
+            value={autoBackgroundTasks}
+            onChange={(v) => patch({ autoBackgroundTasks: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Async agent stall timeout (ms)"
+          description="Milliseconds before an unresponsive async agent is considered stalled (CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS). Leave empty to use claude's default."
+          mapsTo="CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS"
+        >
+          <NumberInput
+            value={asyncAgentStallTimeoutMs}
+            onChange={(v) => patch({ asyncAgentStallTimeoutMs: v })}
+            placeholder="default"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Enable tasks"
+          description="Enable Claude's task management system for tracking long-running work items (CLAUDE_CODE_ENABLE_TASKS=1)."
+          mapsTo="CLAUDE_CODE_ENABLE_TASKS"
+        >
+          <Toggle
+            ariaLabel="Enable tasks"
+            value={enableTasks}
+            onChange={(v) => patch({ enableTasks: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable cron"
+          description="Prevent Claude from creating or running scheduled (cron) tasks (CLAUDE_CODE_DISABLE_CRON=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_CRON"
+        >
+          <Toggle
+            ariaLabel="Disable cron"
+            value={disableCron}
+            onChange={(v) => patch({ disableCron: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Exit after stop delay (ms)"
+          description="Milliseconds to wait after a stop signal before Claude exits (CLAUDE_CODE_EXIT_AFTER_STOP_DELAY). Leave empty to use claude's default."
+          mapsTo="CLAUDE_CODE_EXIT_AFTER_STOP_DELAY"
+        >
+          <NumberInput
+            value={exitAfterStopDelay}
+            onChange={(v) => patch({ exitAfterStopDelay: v })}
+            placeholder="default"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable feedback command"
+          description="Remove the /feedback slash command from Claude's UI (DISABLE_FEEDBACK_COMMAND=1)."
+          mapsTo="DISABLE_FEEDBACK_COMMAND"
+        >
+          <Toggle
+            ariaLabel="Disable feedback command"
+            value={disableFeedbackCommand}
+            onChange={(v) => patch({ disableFeedbackCommand: v })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Disable feedback survey"
+          description="Prevent the periodic in-session feedback survey prompt from appearing (CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1)."
+          mapsTo="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
+        >
+          <Toggle
+            ariaLabel="Disable feedback survey"
+            value={disableFeedbackSurvey}
+            onChange={(v) => patch({ disableFeedbackSurvey: v })}
+          />
+        </SettingRow>
+      </div>
+    </section>
+  )
+})
+
+// --- Advanced ---
+
+interface AdvancedGroupProps {
+  anthropicBetas: string
+  extraBodyJson: string
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const AdvancedGroup = memo(function AdvancedGroup({
+  anthropicBetas,
+  extraBodyJson,
+  patch
+}: AdvancedGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Advanced</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+        <SettingRow
+          label="Anthropic-Beta headers"
+          description="Comma-separated values for the anthropic-beta header on every request (ANTHROPIC_BETAS). Example: prompt-caching-2024-07-31,messages-2023-12-15."
+          mapsTo="ANTHROPIC_BETAS"
+        >
+          <MonoTextInput
+            ariaLabel="Anthropic-Beta headers"
+            value={anthropicBetas}
+            onLiveChange={(v) => patch({ anthropicBetas: v })}
+            onCommit={(v) => patch({ anthropicBetas: v })}
+            placeholder="prompt-caching-2024-07-31,messages-2023-12-15"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Extra body JSON"
+          description="Raw JSON object merged into every API request body (CLAUDE_CODE_EXTRA_BODY). Must be valid JSON. Validated on save."
+          mapsTo="CLAUDE_CODE_EXTRA_BODY"
+        >
+          <ExtraBodyJsonInput value={extraBodyJson} onChange={(v) => patch({ extraBodyJson: v })} />
+        </SettingRow>
+      </div>
+    </section>
+  )
+})
+
+// --- Custom environment variables ---
+
+interface EnvVarsGroupProps {
+  customEnvVars: Record<string, string>
+  patch: (p: Partial<ClaudeGlobalSettings>) => void
+}
+
+const EnvVarsGroup = memo(function EnvVarsGroup({
+  customEnvVars,
+  patch
+}: EnvVarsGroupProps): React.JSX.Element {
+  return (
+    <section className="flex flex-col">
+      <Eyebrow className="mb-3">Custom environment variables</Eyebrow>
+      <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
+        <p className="text-xs text-text-muted mb-4">
+          Raw key/value pairs merged into the claude launch env. Power-user override — your keys win
+          over any setting above. Validate against the{' '}
+          <a
+            href="https://code.claude.com/docs/en/env-vars"
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent hover:opacity-80 transition-opacity underline underline-offset-2"
+          >
+            claude env-vars docs
+          </a>
+          .
+        </p>
+        <CustomEnvVarsEditor
+          value={customEnvVars}
+          onChange={(next) => patch({ customEnvVars: next })}
+        />
+      </div>
+    </section>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// ClaudeDeveloperSection — debug logging, telemetry, experimental flags
+// ---------------------------------------------------------------------------
+
 export function ClaudeDeveloperSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
-  const [experimentalOpen, setExperimentalOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -244,9 +819,9 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
     }
   }, [])
 
-  function patch(p: Partial<ClaudeGlobalSettings>): void {
-    if (!settings) return
-    setSettings({ ...settings, ...p })
+  // Stable patch: uses functional setState so it doesn't close over `settings`.
+  const patch = useCallback((p: Partial<ClaudeGlobalSettings>): void => {
+    setSettings((s) => (s ? { ...s, ...p } : null))
     window.api.claudeSettings.update(p).catch((err) => {
       console.error('[developer-settings] update failed; refetching', err)
       window.api.claudeSettings
@@ -254,7 +829,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
         .then((s) => setSettings(s))
         .catch(console.error)
     })
-  }
+  }, [])
 
   if (!settings) {
     return (
@@ -280,426 +855,54 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
           power users. Changes save automatically.
         </p>
       </div>
-
-      {/* Logging */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Logging</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="Debug logging"
-            description="Pass --debug to Claude at launch for verbose output. Applies on next workspace open."
-            mapsTo="--debug"
-          >
-            <Toggle
-              ariaLabel="Debug logging"
-              value={settings.debugLogging}
-              onChange={(v) => patch({ debugLogging: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Log level"
-            description="Minimum severity level for log entries. Only active when Debug logging is enabled."
-            mapsTo="CLAUDE_CODE_DEBUG_LOG_LEVEL"
-          >
-            <SegmentedControl<ClaudeLogLevel>
-              ariaLabel="Log level"
-              options={LOG_LEVEL_OPTIONS}
-              value={settings.logLevel}
-              onChange={(v) => patch({ logLevel: v })}
-            />
-          </SettingRow>
-        </div>
-      </section>
-
-      {/* Privacy */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Privacy</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="Disable telemetry"
-            description="Opt out of anonymous usage statistics sent to Anthropic (DISABLE_TELEMETRY=1)."
-            mapsTo="DISABLE_TELEMETRY"
-          >
-            <Toggle
-              ariaLabel="Disable telemetry"
-              value={settings.disableTelemetry}
-              onChange={(v) => patch({ disableTelemetry: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable error reporting"
-            description="Stop sending crash reports and stack traces to Anthropic (DISABLE_ERROR_REPORTING=1)."
-            mapsTo="DISABLE_ERROR_REPORTING"
-          >
-            <Toggle
-              ariaLabel="Disable error reporting"
-              value={settings.disableErrorReporting}
-              onChange={(v) => patch({ disableErrorReporting: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable auto-updater"
-            description="Prevent Orpheus from checking for or applying updates automatically (DISABLE_AUTOUPDATER=1)."
-            mapsTo="DISABLE_AUTOUPDATER"
-          >
-            <Toggle
-              ariaLabel="Disable auto-updater"
-              value={settings.disableAutoupdater}
-              onChange={(v) => patch({ disableAutoupdater: v })}
-            />
-          </SettingRow>
-        </div>
-      </section>
-
-      {/* Experimental features — collapsible */}
-      <section className="flex flex-col">
-        <button
-          type="button"
-          onClick={() => setExperimentalOpen((v) => !v)}
-          className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-text-secondary mb-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded self-start"
-        >
-          {experimentalOpen ? (
-            <CaretDown size={12} weight="bold" />
-          ) : (
-            <CaretRight size={12} weight="bold" />
-          )}
-          Experimental features
-        </button>
-
-        {experimentalOpen && (
-          <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-            <SettingRow
-              label="Agent teams"
-              description="Run multiple Claude instances collaborating on the same task in parallel (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1)."
-              mapsTo="CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
-            >
-              <Toggle
-                ariaLabel="Agent teams"
-                value={settings.experimentalAgentTeams}
-                onChange={(v) => patch({ experimentalAgentTeams: v })}
-              />
-            </SettingRow>
-            <SettingRow
-              label="Forked subagents"
-              description="Allow Claude to spawn isolated subagent processes for long-running subtasks (CLAUDE_CODE_FORK_SUBAGENT=1)."
-              mapsTo="CLAUDE_CODE_FORK_SUBAGENT"
-            >
-              <Toggle
-                ariaLabel="Forked subagents"
-                value={settings.experimentalForkedSubagents}
-                onChange={(v) => patch({ experimentalForkedSubagents: v })}
-              />
-            </SettingRow>
-            <SettingRow
-              label="Simple system prompt"
-              description="Use a minimal system prompt without Orpheus-specific injections (settings.json: simpleSystemPrompt)."
-              mapsTo="simpleSystemPrompt"
-            >
-              <Toggle
-                ariaLabel="Simple system prompt"
-                value={settings.simpleSystemPrompt}
-                onChange={(v) => patch({ simpleSystemPrompt: v })}
-              />
-            </SettingRow>
-          </div>
-        )}
-      </section>
-
-      {/* Network */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Network</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="HTTP_PROXY"
-            description="HTTP proxy for outbound requests from claude (HTTP_PROXY). Leave empty to use the system default."
-            mapsTo="HTTP_PROXY"
-          >
-            <input
-              type="text"
-              aria-label="HTTP proxy"
-              value={settings.httpProxy}
-              onChange={(e) => patch({ httpProxy: e.target.value })}
-              onBlur={(e) => patch({ httpProxy: e.target.value.trim() })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-              }}
-              placeholder="http://proxy.example.com:8080"
-              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
-            />
-          </SettingRow>
-          <SettingRow
-            label="HTTPS_PROXY"
-            description="HTTPS proxy for outbound requests from claude (HTTPS_PROXY). Leave empty to use the system default."
-            mapsTo="HTTPS_PROXY"
-          >
-            <input
-              type="text"
-              aria-label="HTTPS proxy"
-              value={settings.httpsProxy}
-              onChange={(e) => patch({ httpsProxy: e.target.value })}
-              onBlur={(e) => patch({ httpsProxy: e.target.value.trim() })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-              }}
-              placeholder="https://proxy.example.com:8080"
-              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
-            />
-          </SettingRow>
-          <SettingRow
-            label="API timeout (ms)"
-            description="Timeout in milliseconds for each API request to Anthropic (API_TIMEOUT_MS). Leave empty to use claude's default."
-            mapsTo="API_TIMEOUT_MS"
-          >
-            <NumberInput
-              value={settings.apiTimeoutMs}
-              onChange={(v) => patch({ apiTimeoutMs: v })}
-              placeholder="default"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Max retries"
-            description="Number of times to retry a failed API request (CLAUDE_CODE_MAX_RETRIES). Leave empty to use claude's default."
-            mapsTo="CLAUDE_CODE_MAX_RETRIES"
-          >
-            <NumberInput
-              value={settings.maxRetries}
-              onChange={(v) => patch({ maxRetries: v })}
-              placeholder="default"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Enable fine-grained tool streaming"
-            description="Stream tool results at a finer granularity for lower perceived latency (CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1)."
-            mapsTo="CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"
-          >
-            <Toggle
-              ariaLabel="Enable fine-grained tool streaming"
-              value={settings.enableFineGrainedToolStreaming}
-              onChange={(v) => patch({ enableFineGrainedToolStreaming: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable nonstreaming fallback"
-            description="Prevent Claude from falling back to non-streaming mode when streaming fails (CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"
-          >
-            <Toggle
-              ariaLabel="Disable nonstreaming fallback"
-              value={settings.disableNonstreamingFallback}
-              onChange={(v) => patch({ disableNonstreamingFallback: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Proxy resolves hosts"
-            description="Delegate hostname resolution to the proxy instead of resolving locally first (CLAUDE_CODE_PROXY_RESOLVES_HOSTS=1)."
-            mapsTo="CLAUDE_CODE_PROXY_RESOLVES_HOSTS"
-          >
-            <Toggle
-              ariaLabel="Proxy resolves hosts"
-              value={settings.proxyResolvesHosts}
-              onChange={(v) => patch({ proxyResolvesHosts: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Enable gateway model discovery"
-            description="Allow Claude to discover available models through the gateway API (CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1)."
-            mapsTo="CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
-          >
-            <Toggle
-              ariaLabel="Enable gateway model discovery"
-              value={settings.enableGatewayModelDiscovery}
-              onChange={(v) => patch({ enableGatewayModelDiscovery: v })}
-            />
-          </SettingRow>
-        </div>
-      </section>
-
-      {/* Privacy & background tasks */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Privacy &amp; background tasks</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="Disable nonessential traffic"
-            description="Bundles autoupdater, feedback, error reporting, and telemetry off in one toggle (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-          >
-            <Toggle
-              ariaLabel="Disable nonessential traffic"
-              value={settings.disableNonessentialTraffic}
-              onChange={(v) => patch({ disableNonessentialTraffic: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Honor DO_NOT_TRACK"
-            description="Respect the DO_NOT_TRACK signal to disable analytics and usage tracking (DO_NOT_TRACK=1)."
-            mapsTo="DO_NOT_TRACK"
-          >
-            <Toggle
-              ariaLabel="Honor DO_NOT_TRACK"
-              value={settings.doNotTrack}
-              onChange={(v) => patch({ doNotTrack: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable background tasks"
-            description="Prevent Claude from running background processing tasks between turns (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
-          >
-            <Toggle
-              ariaLabel="Disable background tasks"
-              value={settings.disableBackgroundTasks}
-              onChange={(v) => patch({ disableBackgroundTasks: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable agent view"
-            description="Hide the real-time agent activity view during agentic sessions (CLAUDE_CODE_DISABLE_AGENT_VIEW=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_AGENT_VIEW"
-          >
-            <Toggle
-              ariaLabel="Disable agent view"
-              value={settings.disableAgentView}
-              onChange={(v) => patch({ disableAgentView: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Auto background tasks"
-            description="Allow Claude to automatically schedule background tasks without explicit user approval (CLAUDE_AUTO_BACKGROUND_TASKS=1)."
-            mapsTo="CLAUDE_AUTO_BACKGROUND_TASKS"
-          >
-            <Toggle
-              ariaLabel="Auto background tasks"
-              value={settings.autoBackgroundTasks}
-              onChange={(v) => patch({ autoBackgroundTasks: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Async agent stall timeout (ms)"
-            description="Milliseconds before an unresponsive async agent is considered stalled (CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS). Leave empty to use claude's default."
-            mapsTo="CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS"
-          >
-            <NumberInput
-              value={settings.asyncAgentStallTimeoutMs}
-              onChange={(v) => patch({ asyncAgentStallTimeoutMs: v })}
-              placeholder="default"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Enable tasks"
-            description="Enable Claude's task management system for tracking long-running work items (CLAUDE_CODE_ENABLE_TASKS=1)."
-            mapsTo="CLAUDE_CODE_ENABLE_TASKS"
-          >
-            <Toggle
-              ariaLabel="Enable tasks"
-              value={settings.enableTasks}
-              onChange={(v) => patch({ enableTasks: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable cron"
-            description="Prevent Claude from creating or running scheduled (cron) tasks (CLAUDE_CODE_DISABLE_CRON=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_CRON"
-          >
-            <Toggle
-              ariaLabel="Disable cron"
-              value={settings.disableCron}
-              onChange={(v) => patch({ disableCron: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Exit after stop delay (ms)"
-            description="Milliseconds to wait after a stop signal before Claude exits (CLAUDE_CODE_EXIT_AFTER_STOP_DELAY). Leave empty to use claude's default."
-            mapsTo="CLAUDE_CODE_EXIT_AFTER_STOP_DELAY"
-          >
-            <NumberInput
-              value={settings.exitAfterStopDelay}
-              onChange={(v) => patch({ exitAfterStopDelay: v })}
-              placeholder="default"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable feedback command"
-            description="Remove the /feedback slash command from Claude's UI (DISABLE_FEEDBACK_COMMAND=1)."
-            mapsTo="DISABLE_FEEDBACK_COMMAND"
-          >
-            <Toggle
-              ariaLabel="Disable feedback command"
-              value={settings.disableFeedbackCommand}
-              onChange={(v) => patch({ disableFeedbackCommand: v })}
-            />
-          </SettingRow>
-          <SettingRow
-            label="Disable feedback survey"
-            description="Prevent the periodic in-session feedback survey prompt from appearing (CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1)."
-            mapsTo="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
-          >
-            <Toggle
-              ariaLabel="Disable feedback survey"
-              value={settings.disableFeedbackSurvey}
-              onChange={(v) => patch({ disableFeedbackSurvey: v })}
-            />
-          </SettingRow>
-        </div>
-      </section>
-
-      {/* Advanced */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Advanced</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
-          <SettingRow
-            label="Anthropic-Beta headers"
-            description="Comma-separated values for the anthropic-beta header on every request (ANTHROPIC_BETAS). Example: prompt-caching-2024-07-31,messages-2023-12-15."
-            mapsTo="ANTHROPIC_BETAS"
-          >
-            <input
-              type="text"
-              aria-label="Anthropic-Beta headers"
-              value={settings.anthropicBetas}
-              onChange={(e) => patch({ anthropicBetas: e.target.value })}
-              onBlur={(e) => patch({ anthropicBetas: e.target.value.trim() })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-              }}
-              placeholder="prompt-caching-2024-07-31,messages-2023-12-15"
-              className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors duration-150 font-mono cursor-text"
-            />
-          </SettingRow>
-          <SettingRow
-            label="Extra body JSON"
-            description="Raw JSON object merged into every API request body (CLAUDE_CODE_EXTRA_BODY). Must be valid JSON. Validated on save."
-            mapsTo="CLAUDE_CODE_EXTRA_BODY"
-          >
-            <ExtraBodyJsonInput
-              value={settings.extraBodyJson}
-              onChange={(v) => patch({ extraBodyJson: v })}
-            />
-          </SettingRow>
-        </div>
-      </section>
-
-      {/* Custom environment variables */}
-      <section className="flex flex-col">
-        <Eyebrow className="mb-3">Custom environment variables</Eyebrow>
-        <div className="bg-surface-raised border border-border-default rounded-lg px-5 py-4">
-          <p className="text-xs text-text-muted mb-4">
-            Raw key/value pairs merged into the claude launch env. Power-user override — your keys
-            win over any setting above. Validate against the{' '}
-            <a
-              href="https://code.claude.com/docs/en/env-vars"
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent hover:opacity-80 transition-opacity underline underline-offset-2"
-            >
-              claude env-vars docs
-            </a>
-            .
-          </p>
-          <CustomEnvVarsEditor
-            value={settings.customEnvVars}
-            onChange={(next) => patch({ customEnvVars: next })}
-          />
-        </div>
-      </section>
+      <LoggingGroup
+        debugLogging={settings.debugLogging}
+        logLevel={settings.logLevel}
+        patch={patch}
+      />
+      <PrivacyGroup
+        disableTelemetry={settings.disableTelemetry}
+        disableErrorReporting={settings.disableErrorReporting}
+        disableAutoupdater={settings.disableAutoupdater}
+        patch={patch}
+      />
+      <ExperimentalGroup
+        experimentalAgentTeams={settings.experimentalAgentTeams}
+        experimentalForkedSubagents={settings.experimentalForkedSubagents}
+        simpleSystemPrompt={settings.simpleSystemPrompt}
+        patch={patch}
+      />
+      <NetworkGroup
+        httpProxy={settings.httpProxy}
+        httpsProxy={settings.httpsProxy}
+        apiTimeoutMs={settings.apiTimeoutMs}
+        maxRetries={settings.maxRetries}
+        enableFineGrainedToolStreaming={settings.enableFineGrainedToolStreaming}
+        disableNonstreamingFallback={settings.disableNonstreamingFallback}
+        proxyResolvesHosts={settings.proxyResolvesHosts}
+        enableGatewayModelDiscovery={settings.enableGatewayModelDiscovery}
+        patch={patch}
+      />
+      <BackgroundGroup
+        disableNonessentialTraffic={settings.disableNonessentialTraffic}
+        doNotTrack={settings.doNotTrack}
+        disableBackgroundTasks={settings.disableBackgroundTasks}
+        disableAgentView={settings.disableAgentView}
+        autoBackgroundTasks={settings.autoBackgroundTasks}
+        asyncAgentStallTimeoutMs={settings.asyncAgentStallTimeoutMs}
+        enableTasks={settings.enableTasks}
+        disableCron={settings.disableCron}
+        exitAfterStopDelay={settings.exitAfterStopDelay}
+        disableFeedbackCommand={settings.disableFeedbackCommand}
+        disableFeedbackSurvey={settings.disableFeedbackSurvey}
+        patch={patch}
+      />
+      <AdvancedGroup
+        anthropicBetas={settings.anthropicBetas}
+        extraBodyJson={settings.extraBodyJson}
+        patch={patch}
+      />
+      <EnvVarsGroup customEnvVars={settings.customEnvVars} patch={patch} />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import type React from 'react'
 import type {
   AppUiState,
@@ -88,7 +88,8 @@ function ScopeRadio({
 }
 
 // ---------------------------------------------------------------------------
-// Action list row
+// Action list row — div[role=button] intentional: contains nested interactive
+// elements (delete button), so a real <button> would be invalid HTML.
 // ---------------------------------------------------------------------------
 interface ActionRowProps {
   action: FooterActionDescriptor
@@ -104,7 +105,7 @@ interface ActionRowProps {
   onDelete: () => void
 }
 
-function ActionRow({
+const ActionRow = memo(function ActionRow({
   action,
   selected,
   isDragging,
@@ -187,7 +188,209 @@ function ActionRow({
       </button>
     </div>
   )
+})
+
+// ---------------------------------------------------------------------------
+// ScopePicker — scope radios + project dropdown + empty hint
+// ---------------------------------------------------------------------------
+interface ScopePickerProps {
+  scope: FooterActionScope
+  onScopeChange: (v: FooterActionScope) => void
+  projects: ProjectRecord[]
+  projectId: string | null
+  onProjectChange: (id: string) => void
 }
+
+const ScopePicker = memo(function ScopePicker({
+  scope,
+  onScopeChange,
+  projects,
+  projectId,
+  onProjectChange
+}: ScopePickerProps): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2">
+      <Eyebrow>Scope</Eyebrow>
+      <div className="flex items-center gap-4 flex-wrap">
+        <ScopeRadio value="global" current={scope} label="Global" onChange={onScopeChange} />
+        <ScopeRadio
+          value="project"
+          current={scope}
+          label="Project"
+          disabled={projects.length === 0}
+          onChange={onScopeChange}
+        />
+        {scope === 'project' && projects.length > 0 && (
+          <select
+            value={projectId ?? ''}
+            onChange={(e) => onProjectChange(e.target.value)}
+            className="text-xs bg-surface-overlay border border-border-default/60 rounded px-2 py-1 text-text-primary outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            aria-label="Project for scoped actions"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {projects.length === 0 && (
+        <p className="text-sm text-text-muted">Add a project to author project-scoped actions.</p>
+      )}
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// ActionListPane — left pane of the split: loading/empty states, action rows,
+// and the "Add action" footer button.
+// ---------------------------------------------------------------------------
+interface ActionListPaneProps {
+  actionsLoading: boolean
+  actions: FooterActionDescriptor[]
+  selectedId: string | null
+  dragId: string | null
+  dropTargetId: string | null
+  dropPos: 'before' | 'after'
+  onSelect: (id: string) => void
+  onDragStart: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onDragOver: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onDrop: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onDragEnd: () => void
+  onDelete: (id: string) => void
+  onAddAction: () => void
+}
+
+const ActionListPane = memo(function ActionListPane({
+  actionsLoading,
+  actions,
+  selectedId,
+  dragId,
+  dropTargetId,
+  dropPos,
+  onSelect,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onDelete,
+  onAddAction
+}: ActionListPaneProps): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2 lg:w-[45%] flex-shrink-0">
+      <div className="flex items-center justify-between">
+        <Eyebrow>Actions at this scope</Eyebrow>
+      </div>
+
+      <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 min-h-[200px]">
+        {actionsLoading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <span className="text-xs text-text-muted">Loading…</span>
+          </div>
+        ) : actions.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-1 px-4 py-6 text-center">
+            <p className="text-xs text-text-muted">No actions at this scope.</p>
+            <p className="text-sm text-text-muted">
+              Global actions apply everywhere; project and workspace actions are additive.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-0 p-1.5">
+            {actions.map((action) => (
+              <ActionRow
+                key={action.id}
+                action={action}
+                selected={selectedId === action.id}
+                isDragging={dragId === action.id}
+                isDropTarget={dropTargetId === action.id}
+                dropPos={dropPos}
+                onSelect={() => onSelect(action.id)}
+                onDragStart={(e) => onDragStart(e, action.id)}
+                onDragOver={(e) => onDragOver(e, action.id)}
+                onDrop={(e) => onDrop(e, action.id)}
+                onDragEnd={onDragEnd}
+                onDelete={() => onDelete(action.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Add action */}
+        <div className="border-t border-border-default/40 mt-auto px-2.5 py-2">
+          <button
+            type="button"
+            onClick={onAddAction}
+            className="w-full flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors duration-150 px-1 py-1 rounded hover:bg-surface-overlay"
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 11 11"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <line x1="5.5" y1="1" x2="5.5" y2="10" />
+              <line x1="1" y1="5.5" x2="10" y2="5.5" />
+            </svg>
+            Add action
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// EditorPane — right pane of the split: editor or "select an action" hint.
+// ---------------------------------------------------------------------------
+interface EditorPaneProps {
+  showEditor: boolean
+  scope: FooterActionScope
+  scopeId: string | null
+  selectedAction: FooterActionDescriptor | null
+  isCreating: boolean
+  onSave: () => void
+  onCancel: () => void
+  onDelete: (id: string) => void
+}
+
+const EditorPane = memo(function EditorPane({
+  showEditor,
+  scope,
+  scopeId,
+  selectedAction,
+  isCreating,
+  onSave,
+  onCancel,
+  onDelete
+}: EditorPaneProps): React.JSX.Element {
+  return (
+    <div className="flex flex-col flex-1 min-w-0">
+      <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 p-4 min-h-[200px]">
+        {showEditor ? (
+          <FooterActionEditor
+            scope={scope}
+            scopeId={scopeId}
+            action={isCreating ? null : selectedAction}
+            onSave={onSave}
+            onCancel={onCancel}
+            onDelete={onDelete}
+          />
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center gap-1.5 text-center px-4">
+            <p className="text-xs text-text-muted">
+              Select an action to edit, or click{' '}
+              <span className="font-medium text-text-secondary">+ Add action</span>.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Main component
@@ -290,7 +493,7 @@ export function OrpheusFooterSection(): React.JSX.Element {
     }
   }, [scope, projectId, loading])
 
-  function refetchActions(): void {
+  const refetchActions = useCallback((): void => {
     const sid = scope === 'global' ? undefined : (projectId ?? undefined)
     setActionsLoading(true)
     window.api.footerActions
@@ -300,18 +503,21 @@ export function OrpheusFooterSection(): React.JSX.Element {
         setActionsLoading(false)
       })
       .catch(() => setActionsLoading(false))
-  }
+  }, [scope, projectId])
 
-  function toggleFooter(v: boolean): void {
-    if (!uiState) return
-    setUiState({ ...uiState, showWorkspaceFooter: v })
-    window.api.uiState.update({ showWorkspaceFooter: v }).catch((err) => {
-      console.error('[settings] showWorkspaceFooter update failed', err)
-      window.api.uiState.get().then(setUiState).catch(console.error)
-    })
-  }
+  const toggleFooter = useCallback(
+    (v: boolean): void => {
+      if (!uiState) return
+      setUiState({ ...uiState, showWorkspaceFooter: v })
+      window.api.uiState.update({ showWorkspaceFooter: v }).catch((err) => {
+        console.error('[settings] showWorkspaceFooter update failed', err)
+        window.api.uiState.get().then(setUiState).catch(console.error)
+      })
+    },
+    [uiState]
+  )
 
-  async function handleResetDefaults(): Promise<void> {
+  const handleResetDefaults = useCallback(async (): Promise<void> => {
     setResetting(true)
     try {
       await window.api.footerActions.resetDefaults()
@@ -322,111 +528,135 @@ export function OrpheusFooterSection(): React.JSX.Element {
       setResetting(false)
       setShowResetConfirm(false)
     }
-  }
+  }, [refetchActions])
 
   // ---------------------------------------------------------------------------
   // Drag-reorder (mirrors Sidebar.tsx pattern)
   // ---------------------------------------------------------------------------
 
-  function onDragStart(e: React.DragEvent<HTMLDivElement>, id: string): void {
+  const onDragStart = useCallback((e: React.DragEvent<HTMLDivElement>, id: string): void => {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', id)
     setDragId(id)
-  }
+  }, [])
 
-  function onDragOver(e: React.DragEvent<HTMLDivElement>, id: string): void {
-    if (!dragId || dragId === id) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    const rect = e.currentTarget.getBoundingClientRect()
-    const isAbove = e.clientY < rect.top + rect.height / 2
-    setDropTargetId(id)
-    setDropPos(isAbove ? 'before' : 'after')
-  }
+  const onDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, id: string): void => {
+      if (!dragId || dragId === id) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const rect = e.currentTarget.getBoundingClientRect()
+      const isAbove = e.clientY < rect.top + rect.height / 2
+      setDropTargetId(id)
+      setDropPos(isAbove ? 'before' : 'after')
+    },
+    [dragId]
+  )
 
-  function onDrop(e: React.DragEvent<HTMLDivElement>, targetId: string): void {
-    e.preventDefault()
-    if (!dragId || dragId === targetId) {
+  const onDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, targetId: string): void => {
+      e.preventDefault()
+      if (!dragId || dragId === targetId) {
+        setDragId(null)
+        setDropTargetId(null)
+        return
+      }
+      const ids = actions.map((a) => a.id)
+      const fromIdx = ids.indexOf(dragId)
+      if (fromIdx === -1) {
+        setDragId(null)
+        setDropTargetId(null)
+        return
+      }
+      ids.splice(fromIdx, 1)
+      let toIdx = ids.indexOf(targetId)
+      if (toIdx === -1) toIdx = ids.length
+      if (dropPos === 'after') toIdx += 1
+      ids.splice(toIdx, 0, dragId)
+
+      // Optimistic update
+      const reordered = ids.flatMap((id) => {
+        const a = actions.find((action) => action.id === id)
+        return a ? [a] : []
+      })
+      setActions(reordered)
+
+      const sid = scope === 'global' ? null : (projectId ?? null)
+      window.api.footerActions.reorder(scope, sid, ids).catch((err) => {
+        console.error('[settings] reorder failed', err)
+        refetchActions()
+      })
+
       setDragId(null)
       setDropTargetId(null)
-      return
-    }
-    const ids = actions.map((a) => a.id)
-    const fromIdx = ids.indexOf(dragId)
-    if (fromIdx === -1) {
-      setDragId(null)
-      setDropTargetId(null)
-      return
-    }
-    ids.splice(fromIdx, 1)
-    let toIdx = ids.indexOf(targetId)
-    if (toIdx === -1) toIdx = ids.length
-    if (dropPos === 'after') toIdx += 1
-    ids.splice(toIdx, 0, dragId)
+    },
+    [dragId, actions, dropPos, scope, projectId, refetchActions]
+  )
 
-    // Optimistic update
-    const reordered = ids.flatMap((id) => {
-      const a = actions.find((action) => action.id === id)
-      return a ? [a] : []
-    })
-    setActions(reordered)
-
-    const sid = scope === 'global' ? null : (projectId ?? null)
-    window.api.footerActions.reorder(scope, sid, ids).catch((err) => {
-      console.error('[settings] reorder failed', err)
-      refetchActions()
-    })
-
+  const onDragEnd = useCallback((): void => {
     setDragId(null)
     setDropTargetId(null)
-  }
-
-  function onDragEnd(): void {
-    setDragId(null)
-    setDropTargetId(null)
-  }
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Delete (from row hover-button — quick delete without editor)
   // ---------------------------------------------------------------------------
 
-  async function handleRowDelete(id: string): Promise<void> {
-    playSound('pop')
-    try {
-      await window.api.footerActions.remove(id)
-      setActions((prev) => prev.filter((a) => a.id !== id))
-      if (selectedId === id) {
-        setSelectedId(null)
-        setIsCreating(false)
+  const handleOpenDeleteConfirm = useCallback((id: string): void => {
+    setDeletingId(id)
+  }, [])
+
+  const handleRowDelete = useCallback(
+    async (id: string): Promise<void> => {
+      playSound('pop')
+      try {
+        await window.api.footerActions.remove(id)
+        setActions((prev) => prev.filter((a) => a.id !== id))
+        if (selectedId === id) {
+          setSelectedId(null)
+          setIsCreating(false)
+        }
+      } catch (err) {
+        console.error('[settings] delete failed', err)
+      } finally {
+        setDeletingId(null)
       }
-    } catch (err) {
-      console.error('[settings] delete failed', err)
-    } finally {
-      setDeletingId(null)
-    }
-  }
+    },
+    [selectedId]
+  )
 
   // ---------------------------------------------------------------------------
   // Editor callbacks
   // ---------------------------------------------------------------------------
 
-  function handleEditorSave(): void {
+  const handleEditorSave = useCallback((): void => {
     setSelectedId(null)
     setIsCreating(false)
     refetchActions()
-  }
+  }, [refetchActions])
 
-  function handleEditorCancel(): void {
+  const handleEditorCancel = useCallback((): void => {
     playSound('click')
     setSelectedId(null)
     setIsCreating(false)
-  }
+  }, [])
 
-  function handleEditorDelete(id: string): void {
+  const handleEditorDelete = useCallback((id: string): void => {
     setActions((prev) => prev.filter((a) => a.id !== id))
     setSelectedId(null)
     setIsCreating(false)
-  }
+  }, [])
+
+  const handleSelectAction = useCallback((id: string): void => {
+    setSelectedId(id)
+    setIsCreating(false)
+  }, [])
+
+  const handleAddAction = useCallback((): void => {
+    playSound('click')
+    setIsCreating(true)
+    setSelectedId(null)
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Render guards
@@ -499,134 +729,42 @@ export function OrpheusFooterSection(): React.JSX.Element {
         </div>
 
         {/* Scope picker — Global + Project (workspace scope deliberately omitted). */}
-        <div className="flex flex-col gap-2">
-          <Eyebrow>Scope</Eyebrow>
-          <div className="flex items-center gap-4 flex-wrap">
-            <ScopeRadio value="global" current={scope} label="Global" onChange={setScope} />
-            <ScopeRadio
-              value="project"
-              current={scope}
-              label="Project"
-              disabled={projects.length === 0}
-              onChange={setScope}
-            />
-            {scope === 'project' && projects.length > 0 && (
-              <select
-                value={projectId ?? ''}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="text-xs bg-surface-overlay border border-border-default/60 rounded px-2 py-1 text-text-primary outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                aria-label="Project for scoped actions"
-              >
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          {projects.length === 0 && (
-            <p className="text-sm text-text-muted">
-              Add a project to author project-scoped actions.
-            </p>
-          )}
-        </div>
+        <ScopePicker
+          scope={scope}
+          onScopeChange={setScope}
+          projects={projects}
+          projectId={projectId}
+          onProjectChange={setProjectId}
+        />
 
         {/* Split pane */}
         <div className="flex flex-col lg:flex-row gap-4 min-h-[320px]">
-          {/* Left: action list */}
-          <div className="flex flex-col gap-2 lg:w-[45%] flex-shrink-0">
-            <div className="flex items-center justify-between">
-              <Eyebrow>Actions at this scope</Eyebrow>
-            </div>
+          <ActionListPane
+            actionsLoading={actionsLoading}
+            actions={actions}
+            selectedId={selectedId}
+            dragId={dragId}
+            dropTargetId={dropTargetId}
+            dropPos={dropPos}
+            onSelect={handleSelectAction}
+            onDragStart={onDragStart}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+            onDragEnd={onDragEnd}
+            onDelete={handleOpenDeleteConfirm}
+            onAddAction={handleAddAction}
+          />
 
-            <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 min-h-[200px]">
-              {actionsLoading ? (
-                <div className="flex-1 flex items-center justify-center">
-                  <span className="text-xs text-text-muted">Loading…</span>
-                </div>
-              ) : actions.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-1 px-4 py-6 text-center">
-                  <p className="text-xs text-text-muted">No actions at this scope.</p>
-                  <p className="text-sm text-text-muted">
-                    Global actions apply everywhere; project and workspace actions are additive.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-0 p-1.5">
-                  {actions.map((action) => (
-                    <ActionRow
-                      key={action.id}
-                      action={action}
-                      selected={selectedId === action.id}
-                      isDragging={dragId === action.id}
-                      isDropTarget={dropTargetId === action.id}
-                      dropPos={dropPos}
-                      onSelect={() => {
-                        setSelectedId(action.id)
-                        setIsCreating(false)
-                      }}
-                      onDragStart={(e) => onDragStart(e, action.id)}
-                      onDragOver={(e) => onDragOver(e, action.id)}
-                      onDrop={(e) => onDrop(e, action.id)}
-                      onDragEnd={onDragEnd}
-                      onDelete={() => setDeletingId(action.id)}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Add action */}
-              <div className="border-t border-border-default/40 mt-auto px-2.5 py-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    playSound('click')
-                    setIsCreating(true)
-                    setSelectedId(null)
-                  }}
-                  className="w-full flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors duration-150 px-1 py-1 rounded hover:bg-surface-overlay"
-                >
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 11 11"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  >
-                    <line x1="5.5" y1="1" x2="5.5" y2="10" />
-                    <line x1="1" y1="5.5" x2="10" y2="5.5" />
-                  </svg>
-                  Add action
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: editor */}
-          <div className="flex flex-col flex-1 min-w-0">
-            <div className="bg-surface-raised border border-border-default rounded-lg flex flex-col flex-1 p-4 min-h-[200px]">
-              {showEditor ? (
-                <FooterActionEditor
-                  scope={scope}
-                  scopeId={scopeId}
-                  action={isCreating ? null : selectedAction}
-                  onSave={handleEditorSave}
-                  onCancel={handleEditorCancel}
-                  onDelete={handleEditorDelete}
-                />
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                  <p className="text-xs text-text-muted">
-                    Select an action to edit, or click{' '}
-                    <span className="font-medium text-text-secondary">+ Add action</span>.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
+          <EditorPane
+            showEditor={showEditor}
+            scope={scope}
+            scopeId={scopeId}
+            selectedAction={selectedAction}
+            isCreating={isCreating}
+            onSave={handleEditorSave}
+            onCancel={handleEditorCancel}
+            onDelete={handleEditorDelete}
+          />
         </div>
 
         {/* Reset */}
