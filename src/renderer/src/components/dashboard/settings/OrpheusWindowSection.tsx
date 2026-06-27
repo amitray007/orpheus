@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import type { AppUiState } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
@@ -147,6 +147,17 @@ export function OrpheusWindowSection(): React.JSX.Element {
     })
   }
 
+  // patch closes over uiState so its identity changes on every render.
+  // Keep a ref to the latest version so HotkeyInput's onChange stays stable.
+  const patchRef = useRef(patch)
+  useEffect(() => {
+    patchRef.current = patch
+  })
+
+  const handleHotkeyChange = useCallback((accel: string): void => {
+    patchRef.current({ globalHotkey: accel })
+  }, [])
+
   if (error) {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
@@ -253,10 +264,7 @@ export function OrpheusWindowSection(): React.JSX.Element {
             label="Global hotkey"
             description="System-wide keyboard shortcut to bring Orpheus to the front from any app."
           >
-            <HotkeyInput
-              value={uiState.globalHotkey}
-              onChange={(accel) => patch({ globalHotkey: accel })}
-            />
+            <HotkeyInput value={uiState.globalHotkey} onChange={handleHotkeyChange} />
           </SettingRow>
         </div>
       </section>

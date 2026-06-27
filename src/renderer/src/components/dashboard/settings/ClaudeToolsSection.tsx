@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type {
@@ -415,6 +415,15 @@ export function ClaudeToolsSection(): React.JSX.Element {
       .catch(() => {})
   }, [])
 
+  const handleCancelAdd = useCallback((): void => {
+    setAdding(false)
+    addButtonRef.current?.focus()
+  }, [])
+
+  const handleCancelEdit = useCallback((): void => {
+    setEditingServer(null)
+  }, [])
+
   async function reloadServers(): Promise<void> {
     try {
       const s = await window.api.mcp.listServers()
@@ -551,10 +560,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
             initial={defaultAddDraft}
             projects={projects}
             onSave={handleAdd}
-            onCancel={() => {
-              setAdding(false)
-              addButtonRef.current?.focus()
-            }}
+            onCancel={handleCancelAdd}
             addButtonRef={addButtonRef}
           />
         )}
@@ -590,7 +596,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
                             projects={projects}
                             sourceFixed
                             onSave={(values) => handleUpdate(s, values)}
-                            onCancel={() => setEditingServer(null)}
+                            onCancel={handleCancelEdit}
                             addButtonRef={addButtonRef}
                           />
                         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSubagent, ClaudeSubagentDraft, ProjectRecord } from '@shared/types'
@@ -332,6 +332,15 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       .catch(() => {})
   }, [])
 
+  const handleCancelAdd = useCallback((): void => {
+    setAdding(false)
+    addButtonRef.current?.focus()
+  }, [])
+
+  const handleCancelEdit = useCallback((): void => {
+    setEditingPath(null)
+  }, [])
+
   async function handleAdd(values: SubagentFormValues): Promise<void> {
     const draft: ClaudeSubagentDraft = {
       name: values.name.trim(),
@@ -409,10 +418,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
           initial={defaultAddDraft}
           projects={projects}
           onSave={handleAdd}
-          onCancel={() => {
-            setAdding(false)
-            addButtonRef.current?.focus()
-          }}
+          onCancel={handleCancelAdd}
           addButtonRef={addButtonRef}
         />
       )}
@@ -452,7 +458,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                           sourceFixed
                           nameFixed
                           onSave={(values) => handleUpdate(agent, values)}
-                          onCancel={() => setEditingPath(null)}
+                          onCancel={handleCancelEdit}
                           addButtonRef={addButtonRef}
                         />
                       </div>
