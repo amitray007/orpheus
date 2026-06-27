@@ -71,6 +71,7 @@ function NavItem({
 }: NavItemProps): React.JSX.Element {
   return (
     <button
+      type="button"
       className={[
         'w-full flex items-center transition-colors duration-150',
         flushTop ? 'rounded-b-md' : 'rounded-md',
@@ -335,6 +336,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         onContextMenu={handleContextMenu}
       >
         <button
+          type="button"
           onClick={onSelect}
           className={[
             'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
@@ -413,6 +415,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         )}
         {!renaming && hovered && (
           <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation()
               onArchive()
@@ -494,6 +497,7 @@ const PinnedRow = memo(function PinnedRow({
       onContextMenu={handleContextMenu}
     >
       <button
+        type="button"
         onClick={onSelect}
         className="flex items-center gap-2 pl-4 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
         title={workspace.cwd}
@@ -699,6 +703,7 @@ const ProjectRow = memo(function ProjectRow({
       >
         {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
         <button
+          type="button"
           onClick={onSelect}
           className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
           title={project.path}
@@ -738,6 +743,7 @@ const ProjectRow = memo(function ProjectRow({
             {/* Add workspace — visible on hover */}
             {hovered && (
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation()
                   onAddWorkspace()
@@ -752,6 +758,7 @@ const ProjectRow = memo(function ProjectRow({
 
             {/* Expand/collapse chevron */}
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation()
                 onToggleExpand()
@@ -778,6 +785,7 @@ const ProjectRow = memo(function ProjectRow({
       {/* Nested workspace rows */}
       {expanded && workspaces.length === 0 && (
         <button
+          type="button"
           onClick={onAddWorkspace}
           className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           aria-label="Add workspace"
@@ -1141,6 +1149,7 @@ export function Sidebar({
 
   const addProjectButton = (
     <button
+      type="button"
       aria-label="Add project"
       disabled={addingProject}
       className={[
@@ -1294,6 +1303,7 @@ export function Sidebar({
                   return (
                     <button
                       key={p.id}
+                      type="button"
                       onClick={() => onSelectProject(p.id)}
                       title={p.name}
                       aria-label={p.name}

@@ -118,6 +118,7 @@ const WorkspaceCard = memo(function WorkspaceCard({
 
   return (
     <button
+      type="button"
       onClick={onClick}
       className="w-full p-3 rounded-md bg-surface-raised border-2 border-dotted border-border-default/70 hover:bg-surface-overlay hover:border-accent/60 transition-colors duration-100 text-left cursor-pointer flex flex-col gap-1.5"
     >

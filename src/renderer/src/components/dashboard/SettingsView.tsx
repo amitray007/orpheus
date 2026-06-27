@@ -367,6 +367,7 @@ function SearchResults(props: {
         const key = `${r.entry.sectionId}:${r.entry.settingId}`
         return (
           <button
+            type="button"
             key={key}
             onClick={() => props.onSelect(r)}
             className="w-full flex flex-col gap-0.5 px-3 py-2 text-left transition-colors duration-150 cursor-pointer hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40"
@@ -414,6 +415,7 @@ function GroupedNav(props: {
             const SectionIcon = s.icon
             return (
               <button
+                type="button"
                 key={s.id}
                 onClick={() => props.onSelect(s.id)}
                 aria-current={isActive ? 'page' : undefined}

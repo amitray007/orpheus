@@ -115,6 +115,7 @@ export function ClaudePermissionsSection(): React.JSX.Element {
       {/* Permission rules — collapsible */}
       <section className="flex flex-col">
         <button
+          type="button"
           onClick={() => setRulesOpen((v) => !v)}
           className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-text-secondary mb-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded self-start"
         >

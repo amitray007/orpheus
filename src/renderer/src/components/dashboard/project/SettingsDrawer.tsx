@@ -263,6 +263,7 @@ export function SettingsDrawer({
             {hasAnyOverride && (
               <div className="px-4 py-4 mt-2">
                 <button
+                  type="button"
                   onClick={resetAll}
                   className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
                 >

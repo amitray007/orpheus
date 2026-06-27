@@ -78,6 +78,7 @@ export function SegmentedControl<T extends string>({
       {options.map((opt) => (
         <button
           key={opt.value}
+          type="button"
           role="radio"
           aria-checked={value === opt.value}
           onClick={() => onChange(opt.value)}
@@ -392,6 +393,7 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
   // iOS-style switch: 36x20 track with 14x14 knob, no border on off-state.
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={value}
       aria-label={ariaLabel}
@@ -584,6 +586,7 @@ export function RuleListEditor({
                 className="flex-1 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
               />
               <button
+                type="button"
                 onClick={() => removeItem(idx)}
                 className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                 aria-label="Remove rule"
@@ -595,6 +598,7 @@ export function RuleListEditor({
         </div>
       )}
       <button
+        type="button"
         onClick={addItem}
         className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors self-start focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1"
       >

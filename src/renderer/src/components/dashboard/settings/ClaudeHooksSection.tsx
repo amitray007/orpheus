@@ -204,6 +204,7 @@ function HookForm({
 
       <div className="flex items-center gap-2">
         <button
+          type="button"
           onClick={() => {
             handleSave().catch(() => {})
           }}
@@ -213,6 +214,7 @@ function HookForm({
           {saving ? 'Saving…' : 'Save'}
         </button>
         <button
+          type="button"
           onClick={onCancel}
           className="text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer focus:outline-none"
         >

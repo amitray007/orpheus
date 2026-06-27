@@ -118,7 +118,8 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
       above
     })
     // Auto-focus search input on open
-    setTimeout(() => searchRef.current?.focus(), 30)
+    const id = setTimeout(() => searchRef.current?.focus(), 30)
+    return () => clearTimeout(id)
   }, [open])
 
   return (

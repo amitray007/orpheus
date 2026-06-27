@@ -71,6 +71,7 @@ export function ConfirmModal({
             {confirmLabel}
           </Button>
           <button
+            type="button"
             onClick={() => {
               playSound('modal-close')
               onCancel()

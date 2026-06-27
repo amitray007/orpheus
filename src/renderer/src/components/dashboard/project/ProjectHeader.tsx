@@ -249,6 +249,7 @@ export function ProjectHeader({
               <>
                 <span aria-hidden>·</span>
                 <button
+                  type="button"
                   onClick={onOpenSettings}
                   className="text-accent hover:underline cursor-pointer"
                 >

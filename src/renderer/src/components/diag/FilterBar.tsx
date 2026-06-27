@@ -38,6 +38,7 @@ export function FilterBar({
           const active = filters.categories.has(cat)
           return (
             <button
+              type="button"
               key={cat}
               onClick={() => onToggleCategory(cat)}
               className={[
@@ -88,6 +89,7 @@ export function FilterBar({
       {/* Pause / Clear */}
       <div className="flex items-center gap-1 ml-auto">
         <button
+          type="button"
           onClick={onTogglePause}
           className={[
             'flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-mono transition-colors',
@@ -100,6 +102,7 @@ export function FilterBar({
           {paused ? 'resume' : 'pause'}
         </button>
         <button
+          type="button"
           onClick={onClear}
           className="flex items-center gap-1 px-2 py-0.5 rounded border border-border-default text-[11px] font-mono text-text-muted hover:border-border-hover hover:text-text-secondary transition-colors"
         >

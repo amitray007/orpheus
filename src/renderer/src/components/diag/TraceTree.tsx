@@ -35,6 +35,7 @@ export function TraceTree({ traceId, rows, onClose }: TraceTreeProps): React.JSX
         </span>
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={handleCopyJson}
             className="flex items-center gap-1 px-2 py-0.5 rounded border border-border-default text-[11px] font-mono text-text-muted hover:border-border-hover hover:text-text-secondary transition-colors"
           >
@@ -42,6 +43,7 @@ export function TraceTree({ traceId, rows, onClose }: TraceTreeProps): React.JSX
             Copy JSON
           </button>
           <button
+            type="button"
             onClick={onClose}
             className="p-1 rounded hover:bg-surface-overlay text-text-muted hover:text-text-secondary transition-colors"
           >

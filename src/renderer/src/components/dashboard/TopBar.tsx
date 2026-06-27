@@ -764,6 +764,7 @@ export function TopBar({
 
         {/* Sidebar collapse toggle */}
         <button
+          type="button"
           onClick={onToggleCollapsed}
           aria-label="Toggle sidebar"
           title="Toggle sidebar"

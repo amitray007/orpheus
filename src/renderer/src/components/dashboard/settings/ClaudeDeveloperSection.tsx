@@ -81,6 +81,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
           No custom variables. Click + Add to define one.
         </p>
         <button
+          type="button"
           onClick={addRow}
           className="self-start flex items-center gap-1.5 text-xs text-accent hover:opacity-80 transition-opacity"
         >
@@ -129,6 +130,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
               className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
             />
             <button
+              type="button"
               onClick={() => removeRow(idx)}
               className="text-text-muted hover:text-red-400 transition-colors flex-shrink-0"
               aria-label="Remove row"
@@ -139,6 +141,7 @@ function CustomEnvVarsEditor({ value, onChange }: CustomEnvVarsEditorProps): Rea
         )
       })}
       <button
+        type="button"
         onClick={addRow}
         className="self-start flex items-center gap-1.5 text-xs text-accent hover:opacity-80 transition-opacity mt-1"
       >
@@ -348,6 +351,7 @@ export function ClaudeDeveloperSection(): React.JSX.Element {
       {/* Experimental features — collapsible */}
       <section className="flex flex-col">
         <button
+          type="button"
           onClick={() => setExperimentalOpen((v) => !v)}
           className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-text-secondary mb-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded self-start"
         >

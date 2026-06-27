@@ -437,6 +437,7 @@ export function WorkspacesTab({
         align: 'right',
         render: (ws) => (
           <button
+            type="button"
             onClick={(e) => openMenu(e, ws)}
             aria-label="Row actions"
             className={[

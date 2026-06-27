@@ -254,6 +254,7 @@ function OverridesSection({
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
           <span className="text-sm text-amber-200/90 flex-shrink-0">Settings changed</span>
           <button
+            type="button"
             onClick={onRestart}
             className="ml-auto text-sm font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
           >
@@ -265,6 +266,7 @@ function OverridesSection({
       {hasAnyOverride && (
         <div className="px-4 py-4 mt-2">
           <button
+            type="button"
             onClick={resetAll}
             className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1.5 py-1 -mx-1.5"
           >
@@ -356,6 +358,7 @@ export function WorkspaceDrawer({
       <div className="h-8 flex items-center px-2 border-b border-border-default flex-shrink-0">
         <span className="text-sm font-medium text-text-muted px-1.5">Workspace Settings</span>
         <button
+          type="button"
           onClick={onClose}
           className="ml-auto w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           aria-label="Close drawer"

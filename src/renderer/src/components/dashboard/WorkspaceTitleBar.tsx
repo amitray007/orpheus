@@ -371,6 +371,7 @@ export function WorkspaceTitleBar({
 
       <div className="ml-auto flex items-center gap-1">
         <button
+          type="button"
           ref={detailsButtonRef}
           onMouseDown={(e) => e.stopPropagation()}
           onMouseEnter={handleDetailsMouseEnter}
@@ -388,6 +389,7 @@ export function WorkspaceTitleBar({
           <span>Details</span>
         </button>
         <button
+          type="button"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
           title="Workspace Settings"
