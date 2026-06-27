@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes, type JSX, type Ref } from 'react'
+import { type ButtonHTMLAttributes, type Ref } from 'react'
 import { DotmSquare13 } from './ui/dotm-square-13'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'destructive'
@@ -32,7 +32,7 @@ export function Button({
   children,
   className = '',
   ...rest
-}: ButtonProps & { ref?: Ref<HTMLButtonElement> }): JSX.Element {
+}: ButtonProps & { ref?: Ref<HTMLButtonElement> }): React.JSX.Element {
   const isDisabled = disabled || loading
 
   return (
