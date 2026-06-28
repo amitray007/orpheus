@@ -1048,6 +1048,12 @@ export function Sidebar({
     setRenamingWorkspaceId(null)
   }, [])
 
+  // Returns 0 for pinned projects, 1 for unpinned — used to enforce same-tier drag.
+  function projectPinTier(projectId: string): 0 | 1 {
+    const p = projects.find((x) => x.id === projectId)
+    return p?.pinnedAt != null ? 0 : 1
+  }
+
   function onProjectDragStart(e: React.DragEvent<HTMLDivElement>, id: string): void {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', id)
@@ -1056,6 +1062,8 @@ export function Sidebar({
 
   function onProjectDragOver(e: React.DragEvent<HTMLDivElement>, id: string): void {
     if (!dragId || dragId === id) return
+    // Cross-tier drag: no indicator shown
+    if (projectPinTier(dragId) !== projectPinTier(id)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     const rect = e.currentTarget.getBoundingClientRect()
@@ -1067,6 +1075,12 @@ export function Sidebar({
   function onProjectDrop(e: React.DragEvent<HTMLDivElement>, targetId: string): void {
     e.preventDefault()
     if (!dragId || dragId === targetId) {
+      setDragId(null)
+      setDropTargetId(null)
+      return
+    }
+    // Cross-tier drop: no-op
+    if (projectPinTier(dragId) !== projectPinTier(targetId)) {
       setDragId(null)
       setDropTargetId(null)
       return
