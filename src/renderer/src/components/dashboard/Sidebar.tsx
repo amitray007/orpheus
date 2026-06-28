@@ -458,7 +458,7 @@ const PinnedRow = memo(function PinnedRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex items-center gap-2 pl-4 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -476,17 +476,17 @@ const PinnedRow = memo(function PinnedRow({
             />
           )}
         </span>
-        <span className="flex flex-col min-w-0 flex-1">
+        <span className="flex flex-col gap-0.5 min-w-0 flex-1">
           <span
             className={[
-              'text-xs truncate leading-snug',
+              'text-xs truncate leading-tight',
               dn.muted ? 'text-text-muted italic' : ''
             ].join(' ')}
             title={dn.text}
           >
             {dn.text}
           </span>
-          <span className="text-xs text-text-muted truncate leading-none">{project.name}</span>
+          <span className="text-[11px] text-text-muted truncate leading-tight">{project.name}</span>
         </span>
       </button>
       {menu && (
