@@ -52,7 +52,8 @@ import {
   deleteProject,
   renameProject,
   setProjectExpandedInSidebar,
-  reorderProjects
+  reorderProjects,
+  setProjectPinned
 } from './projects'
 import { refreshGithubData } from './githubAvatar'
 import {
@@ -1705,6 +1706,10 @@ handle('projects:setExpandedInSidebar', (_e, { id, expanded }: { id: string; exp
 
 handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
   reorderProjects(orderedIds)
+)
+
+handle('projects:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+  setProjectPinned(id, pinned)
 )
 
 handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))

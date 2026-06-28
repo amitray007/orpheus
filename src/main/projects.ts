@@ -19,6 +19,7 @@ type ProjectRow = {
   last_opened_at: number | null
   expanded_in_sidebar: number
   sort_order: number | null
+  pinned_at: number | null
   // v37
   github_owner: string | null
   github_repo: string | null
@@ -36,6 +37,7 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     lastOpenedAt: row.last_opened_at,
     expandedInSidebar: row.expanded_in_sidebar === 1,
     sortOrder: row.sort_order ?? null,
+    pinnedAt: row.pinned_at ?? null,
     // v37
     githubOwner: row.github_owner ?? null,
     githubRepo: row.github_repo ?? null,
@@ -150,4 +152,14 @@ export function renameProject(id: string, name: string): void {
 export function setProjectExpandedInSidebar(id: string, expanded: boolean): void {
   const db = getDb()
   db.prepare('UPDATE projects SET expanded_in_sidebar = ? WHERE id = ?').run(expanded ? 1 : 0, id)
+}
+
+export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
+  const db = getDb()
+  const pinnedAt = pinned ? Date.now() : null
+  const row = db
+    .prepare('UPDATE projects SET pinned_at = ? WHERE id = ? RETURNING *')
+    .get(pinnedAt, id) as ProjectRow | undefined
+  if (!row) throw new Error(`setProjectPinned: project not found: ${id}`)
+  return rowToRecord(row)
 }
