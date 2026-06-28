@@ -17,7 +17,7 @@ jobs:
     # Lightweight check — no need for macOS runner.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history is needed so the action can walk from the PR base to
           # HEAD and lint every commit in the range.

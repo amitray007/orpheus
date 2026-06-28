@@ -45,7 +45,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -101,7 +101,7 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: amitray007/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
