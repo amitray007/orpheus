@@ -97,7 +97,7 @@ jobs:
       #            → release-please just creates the tag/release with the
       #            version it already baked into the Release PR. No misfire.
       #
-      # Empty-string safety: release-please-action@v4 reads release-as via
+      # Empty-string safety: release-please-action@v5 reads release-as via
       # core.getInput() and checks `if (releaseAs)` before applying it.
       # An empty string is falsy in JS → treated identically to "not set"
       # → always-bump-patch from release-please-config.json takes over.
@@ -155,7 +155,7 @@ jobs:
             echo "release_as=" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: rp
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
