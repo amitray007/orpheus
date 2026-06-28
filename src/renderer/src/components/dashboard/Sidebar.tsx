@@ -10,7 +10,8 @@ import {
   Stack,
   Archive,
   Gear,
-  GitFork
+  GitFork,
+  PushPin
 } from '@phosphor-icons/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -542,6 +543,7 @@ interface ProjectRowProps {
   onArchiveWorkspace: (workspaceId: string) => void
   onCloseWorkspace: (workspaceId: string) => void
   onTogglePinWorkspace: (workspaceId: string) => void
+  onTogglePinProject: () => void
   wsDragId: string | null
   wsDropTargetId: string | null
   wsDropPos: 'before' | 'after'
@@ -624,6 +626,7 @@ const ProjectRow = memo(function ProjectRow({
   onArchiveWorkspace,
   onCloseWorkspace,
   onTogglePinWorkspace,
+  onTogglePinProject,
   wsDragId,
   wsDropTargetId,
   wsDropPos,
@@ -645,17 +648,20 @@ const ProjectRow = memo(function ProjectRow({
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
+    const isPinned = project.pinnedAt !== null
     const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
     if (!rect || rect.width < 200) {
       void window.api.contextMenu
         .show([
+          { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
           { label: 'Rename', action: 'rename' },
           { divider: true },
           { label: 'Remove', action: 'remove' }
         ])
         .then((action) => {
           if (!action) return
-          if (action === 'rename') onBeginRename()
+          if (action === 'togglePin') onTogglePinProject()
+          else if (action === 'rename') onBeginRename()
           else if (action === 'remove') onRequestRemove()
         })
       return
@@ -663,7 +669,9 @@ const ProjectRow = memo(function ProjectRow({
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
+  const isPinned = project.pinnedAt !== null
   const projectMenuItems: ContextMenuItem[] = [
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePinProject },
     { label: 'Rename', onClick: onBeginRename },
     { label: '', divider: true, onClick: () => {} },
     { label: 'Remove', onClick: onRequestRemove }
@@ -699,11 +707,18 @@ const ProjectRow = memo(function ProjectRow({
           title={project.path}
           aria-label={project.name}
         >
-          <Identicon
-            seed={project.path}
-            size={20}
-            avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
-          />
+          <span className="relative flex-shrink-0">
+            <Identicon
+              seed={project.path}
+              size={20}
+              avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
+            />
+            {project.pinnedAt !== null && (
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
+                <PushPin size={6} weight="fill" className="text-accent" />
+              </span>
+            )}
+          </span>
           {renaming ? (
             <ProjectRenameInput
               value={renameValue}
@@ -884,6 +899,7 @@ interface SidebarProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinProject: (projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
   onRefreshPins: () => void
@@ -916,6 +932,7 @@ export function Sidebar({
   onArchiveWorkspace,
   onCloseWorkspace,
   onTogglePinWorkspace,
+  onTogglePinProject,
   onReorderProjects,
   onReorderWorkspaces,
   pinnedItems,
@@ -1274,6 +1291,7 @@ export function Sidebar({
                           onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
                           onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
                           onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
+                          onTogglePinProject={() => onTogglePinProject(p.id)}
                           wsDragId={wsDragId}
                           wsDropTargetId={wsDropTargetId}
                           wsDropPos={wsDropPos}

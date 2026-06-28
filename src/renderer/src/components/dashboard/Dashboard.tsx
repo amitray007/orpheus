@@ -783,6 +783,23 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [fetchWorkspacesForProject, handleSelectWorkspace]
   )
 
+  const handleToggleProjectPin = useCallback(async (projectId: string): Promise<void> => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    // pinnedAt === null means currently unpinned → pin it (pass true)
+    // pinnedAt !== null means currently pinned → unpin it (pass false)
+    const pinned = project?.pinnedAt === null || project?.pinnedAt === undefined
+    try {
+      const updated = await window.api.projects.setPinned(projectId, pinned)
+      // Optimistic patch so the badge flips immediately, then refetch to
+      // get the authoritative pinned-first ordering from the DB.
+      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
+      window.api.projects.list().then(setProjects).catch(console.error)
+    } catch (err) {
+      console.error('[dashboard] project setPinned failed', err)
+      window.api.projects.list().then(setProjects).catch(console.error)
+    }
+  }, [])
+
   const handleToggleWorkspacePin = useCallback(
     async (workspaceId: string, projectId: string): Promise<void> => {
       // Read synchronously from ref — setState updaters are not guaranteed to
@@ -1077,6 +1094,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
           onCloseWorkspace={handleCloseWorkspace}
           onTogglePinWorkspace={handleToggleWorkspacePin}
+          onTogglePinProject={handleToggleProjectPin}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}
           onRefreshPins={refreshPins}

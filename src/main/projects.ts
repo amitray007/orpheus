@@ -59,7 +59,7 @@ export function listProjects(): ProjectRecord[] {
   const rows = db
     .prepare(
       `SELECT * FROM projects
-       ORDER BY sort_order ASC NULLS LAST, added_at DESC`
+       ORDER BY pinned_at IS NULL, sort_order ASC NULLS LAST, added_at DESC`
     )
     .all() as ProjectRow[]
   return rows.map(rowToRecord)
