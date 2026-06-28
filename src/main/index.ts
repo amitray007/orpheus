@@ -1063,7 +1063,9 @@ function isSafeExternalUrl(url: unknown): url is string {
 }
 
 handle('config:openFolder', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate']
+  })
   if (result.canceled) return null
   const chosen = result.filePaths[0]
   console.log('[orpheus] folder selected:', chosen)
@@ -1098,7 +1100,9 @@ handle('projects:list', () => listProjects())
 handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
 
 handle('projects:pickAndAdd', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate']
+  })
   if (result.canceled || !result.filePaths[0]) return null
   const chosen = result.filePaths[0]
   console.log('[orpheus] project folder selected:', chosen)
