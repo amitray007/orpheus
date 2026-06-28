@@ -3920,6 +3920,10 @@ static NSColor* prStateColor(NSString* state) {
 //   Circle         fill     (activity 'ready')
 //   CircleDashed   bold     (activity 'idle')
 //   Diamond        fill     (activity 'attention')
+//   PushPin        fill     (project card pin chip)
+//   Stack          regular  (project card workspace count row)
+//   GithubLogo     regular  (project card repo row)
+//   FolderOpen     regular  (project card path row)
 //
 // PR state mapping (matching PrChip.tsx StateIcon):
 //   merged  → GitMerge  fill
@@ -4308,6 +4312,173 @@ static NSBezierPath* phosphorPath(NSString* name) {
         [path curveToPoint:NSMakePoint(139.3300, 235.3400) controlPoint1:NSMakePoint(123.0106, 241.5436) controlPoint2:NSMakePoint(133.0894, 241.5436)];
         [path lineToPoint:NSMakePoint(235.3800, 139.2800)];
         [path curveToPoint:NSMakePoint(240.0000, 128.0000) controlPoint1:NSMakePoint(238.3620, 136.2862) controlPoint2:NSMakePoint(240.0252, 132.2255)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"PushPin_fill"]) {
+        // Phosphor PushPin weight=fill, 256×256 viewbox, Y-flipped
+        // Source: @phosphor-icons/react dist/defs/PushPin.es.js (fill variant)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(235.3300, 152.0000)];
+        [path lineToPoint:NSMakePoint(181.8600, 98.3500)];
+        [path curveToPoint:NSMakePoint(168.6700, 38.3500) controlPoint1:NSMakePoint(186.4200, 85.6800) controlPoint2:NSMakePoint(188.3100, 64.4600)];
+        [path curveToPoint:NSMakePoint(157.0000, 32.0000) controlPoint1:NSMakePoint(165.8920, 34.6368) controlPoint2:NSMakePoint(161.6266, 32.3159)];
+        [path curveToPoint:NSMakePoint(155.8700, 32.0000) controlPoint1:NSMakePoint(156.6200, 32.0000) controlPoint2:NSMakePoint(156.2500, 32.0000)];
+        [path curveToPoint:NSMakePoint(144.5500, 36.6900) controlPoint1:NSMakePoint(151.6255, 31.9993) controlPoint2:NSMakePoint(147.5504, 33.6877)];
+        [path lineToPoint:NSMakePoint(96.2900, 85.0000)];
+        [path lineToPoint:NSMakePoint(53.6600, 42.3400)];
+        [path curveToPoint:NSMakePoint(42.3400, 42.3400) controlPoint1:NSMakePoint(50.5550, 39.2350) controlPoint2:NSMakePoint(45.4450, 39.2350)];
+        [path curveToPoint:NSMakePoint(42.3400, 53.6600) controlPoint1:NSMakePoint(39.2350, 45.4450) controlPoint2:NSMakePoint(39.2350, 50.5550)];
+        [path lineToPoint:NSMakePoint(85.0000, 96.2900)];
+        [path lineToPoint:NSMakePoint(36.7000, 144.5900)];
+        [path curveToPoint:NSMakePoint(32.0446, 156.7700) controlPoint1:NSMakePoint(33.4908, 147.8032) controlPoint2:NSMakePoint(31.7967, 152.2355)];
+        [path curveToPoint:NSMakePoint(38.0000, 168.3700) controlPoint1:NSMakePoint(32.2925, 161.3046) controlPoint2:NSMakePoint(34.4596, 165.5258)];
+        [path curveToPoint:NSMakePoint(98.4000, 181.5100) controlPoint1:NSMakePoint(63.4200, 188.8800) controlPoint2:NSMakePoint(87.7500, 184.8500)];
+        [path lineToPoint:NSMakePoint(152.0000, 235.3000)];
+        [path curveToPoint:NSMakePoint(163.3150, 239.9876) controlPoint1:NSMakePoint(154.9995, 238.3002) controlPoint2:NSMakePoint(159.0725, 239.9876)];
+        [path curveToPoint:NSMakePoint(174.6300, 235.3000) controlPoint1:NSMakePoint(167.5575, 239.9876) controlPoint2:NSMakePoint(171.6305, 238.3002)];
+        [path lineToPoint:NSMakePoint(235.3200, 174.6200)];
+        [path curveToPoint:NSMakePoint(235.3300, 152.0000) controlPoint1:NSMakePoint(241.5244, 168.4170) controlPoint2:NSMakePoint(241.5289, 158.2085)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"Stack_regular"]) {
+        // Phosphor Stack weight=regular, 256×256 viewbox, Y-flipped
+        // Source: @phosphor-icons/react dist/defs/Stack.es.js (regular variant)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(230.9100, 84.0000)];
+        [path curveToPoint:NSMakePoint(228.0000, 73.0900) controlPoint1:NSMakePoint(233.0952, 80.2078) controlPoint2:NSMakePoint(231.7836, 75.2902)];
+        [path lineToPoint:NSMakePoint(132.0000, 17.0900)];
+        [path curveToPoint:NSMakePoint(123.9400, 17.0900) controlPoint1:NSMakePoint(129.5128, 15.6396) controlPoint2:NSMakePoint(126.4272, 15.6396)];
+        [path lineToPoint:NSMakePoint(27.9400, 73.0900)];
+        [path curveToPoint:NSMakePoint(25.1500, 83.9775) controlPoint1:NSMakePoint(24.2122, 75.3301) controlPoint2:NSMakePoint(22.9590, 80.2207)];
+        [path curveToPoint:NSMakePoint(36.0000, 86.9100) controlPoint1:NSMakePoint(27.3410, 87.7343) controlPoint2:NSMakePoint(32.2148, 89.0516)];
+        [path lineToPoint:NSMakePoint(128.0000, 33.2600)];
+        [path lineToPoint:NSMakePoint(220.0000, 86.9100)];
+        [path curveToPoint:NSMakePoint(230.9100, 84.0000) controlPoint1:NSMakePoint(223.7922, 89.0952) controlPoint2:NSMakePoint(228.7098, 87.7836)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(220.0000, 134.9100)];
+        [path lineToPoint:NSMakePoint(128.0000, 81.2600)];
+        [path lineToPoint:NSMakePoint(36.0000, 134.9100)];
+        [path curveToPoint:NSMakePoint(25.5107, 131.7565) controlPoint1:NSMakePoint(32.2406, 136.7818) controlPoint2:NSMakePoint(27.6147, 135.3910)];
+        [path curveToPoint:NSMakePoint(28.0000, 121.0900) controlPoint1:NSMakePoint(23.4068, 128.1219) controlPoint2:NSMakePoint(24.5046, 123.4178)];
+        [path lineToPoint:NSMakePoint(124.0000, 65.0900)];
+        [path curveToPoint:NSMakePoint(132.0600, 65.0900) controlPoint1:NSMakePoint(126.4872, 63.6396) controlPoint2:NSMakePoint(129.5728, 63.6396)];
+        [path lineToPoint:NSMakePoint(228.0600, 121.0900)];
+        [path curveToPoint:NSMakePoint(232.1206, 128.0530) controlPoint1:NSMakePoint(230.5661, 122.5079) controlPoint2:NSMakePoint(232.1206, 125.1735)];
+        [path curveToPoint:NSMakePoint(228.0598, 135.0158) controlPoint1:NSMakePoint(232.1206, 130.9324) controlPoint2:NSMakePoint(230.5659, 133.5980)];
+        [path curveToPoint:NSMakePoint(220.0000, 134.9100) controlPoint1:NSMakePoint(225.5536, 136.4336) controlPoint2:NSMakePoint(222.4681, 136.3931)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(24.0000, 176.0000)];
+        [path curveToPoint:NSMakePoint(28.0000, 182.9100) controlPoint1:NSMakePoint(24.0065, 178.8481) controlPoint2:NSMakePoint(25.5335, 181.4859)];
+        [path lineToPoint:NSMakePoint(124.0000, 238.9100)];
+        [path curveToPoint:NSMakePoint(132.0600, 238.9100) controlPoint1:NSMakePoint(126.4872, 240.3604) controlPoint2:NSMakePoint(129.5728, 240.3604)];
+        [path lineToPoint:NSMakePoint(228.0600, 182.9100)];
+        [path curveToPoint:NSMakePoint(232.0286, 176.0000) controlPoint1:NSMakePoint(230.5145, 181.4780) controlPoint2:NSMakePoint(232.0286, 178.8417)];
+        [path curveToPoint:NSMakePoint(228.0600, 169.0900) controlPoint1:NSMakePoint(232.0286, 173.1583) controlPoint2:NSMakePoint(230.5145, 170.5220)];
+        [path lineToPoint:NSMakePoint(132.0600, 113.0900)];
+        [path curveToPoint:NSMakePoint(124.0000, 113.0900) controlPoint1:NSMakePoint(129.5728, 111.6396) controlPoint2:NSMakePoint(126.4872, 111.6396)];
+        [path lineToPoint:NSMakePoint(28.0000, 169.0900)];
+        [path curveToPoint:NSMakePoint(24.0000, 176.0000) controlPoint1:NSMakePoint(25.5335, 170.5141) controlPoint2:NSMakePoint(24.0065, 173.1519)];
+        [path closePath];
+        // inner filled diamond shape (the center layer)
+        [path moveToPoint:NSMakePoint(47.8800, 176.0000)];
+        [path lineToPoint:NSMakePoint(128.0000, 129.2600)];
+        [path lineToPoint:NSMakePoint(208.1200, 176.0000)];
+        [path lineToPoint:NSMakePoint(128.0000, 222.7400)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"GithubLogo_regular"]) {
+        // Phosphor GithubLogo weight=regular, 256×256 viewbox, Y-flipped
+        // Source: @phosphor-icons/react dist/defs/GithubLogo.es.js (regular variant)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(208.3000, 180.3200)];
+        [path curveToPoint:NSMakePoint(202.9300, 228.0000) controlPoint1:NSMakePoint(213.2493, 196.2579) controlPoint2:NSMakePoint(211.3004, 213.5622)];
+        [path curveToPoint:NSMakePoint(196.0000, 232.0000) controlPoint1:NSMakePoint(201.5024, 230.4727) controlPoint2:NSMakePoint(198.8552, 232.0006)];
+        [path curveToPoint:NSMakePoint(148.0000, 208.0000) controlPoint1:NSMakePoint(177.1198, 232.0395) controlPoint2:NSMakePoint(159.2965, 223.1279)];
+        [path lineToPoint:NSMakePoint(124.0000, 208.0000)];
+        [path curveToPoint:NSMakePoint(76.0000, 232.0000) controlPoint1:NSMakePoint(112.7035, 223.1279) controlPoint2:NSMakePoint(94.8802, 232.0395)];
+        [path curveToPoint:NSMakePoint(69.0700, 228.0000) controlPoint1:NSMakePoint(73.1448, 232.0006) controlPoint2:NSMakePoint(70.4976, 230.4727)];
+        [path curveToPoint:NSMakePoint(63.6900, 180.3200) controlPoint1:NSMakePoint(60.7010, 213.5621) controlPoint2:NSMakePoint(58.7487, 196.2598)];
+        [path curveToPoint:NSMakePoint(56.0000, 152.0000) controlPoint1:NSMakePoint(58.7476, 171.6934) controlPoint2:NSMakePoint(56.0996, 161.9416)];
+        [path lineToPoint:NSMakePoint(56.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(104.4400, 88.5300) controlPoint1:NSMakePoint(56.0346, 116.1376) controlPoint2:NSMakePoint(76.8362, 92.3172)];
+        [path curveToPoint:NSMakePoint(96.0000, 64.0000) controlPoint1:NSMakePoint(98.9672, 81.5267) controlPoint2:NSMakePoint(95.9949, 72.8881)];
+        [path lineToPoint:NSMakePoint(96.0000, 56.0000)];
+        [path lineToPoint:NSMakePoint(72.0000, 56.0000)];
+        [path curveToPoint:NSMakePoint(48.0000, 80.0000) controlPoint1:NSMakePoint(58.8340, 56.0000) controlPoint2:NSMakePoint(48.0000, 66.8340)];
+        [path curveToPoint:NSMakePoint(8.0000, 120.0000) controlPoint1:NSMakePoint(48.0000, 101.9434) controlPoint2:NSMakePoint(29.9434, 120.0000)];
+        [path curveToPoint:NSMakePoint(0.0000, 112.0000) controlPoint1:NSMakePoint(3.6113, 120.0000) controlPoint2:NSMakePoint(0.0000, 116.3887)];
+        [path curveToPoint:NSMakePoint(8.0000, 104.0000) controlPoint1:NSMakePoint(-0.0000, 107.6113) controlPoint2:NSMakePoint(3.6113, 104.0000)];
+        [path curveToPoint:NSMakePoint(32.0000, 80.0000) controlPoint1:NSMakePoint(21.1660, 104.0000) controlPoint2:NSMakePoint(32.0000, 93.1660)];
+        [path curveToPoint:NSMakePoint(72.0000, 40.0000) controlPoint1:NSMakePoint(32.0000, 58.0566) controlPoint2:NSMakePoint(50.0566, 40.0000)];
+        [path lineToPoint:NSMakePoint(96.0000, 40.0000)];
+        [path lineToPoint:NSMakePoint(96.0000, 24.0000)];
+        [path curveToPoint:NSMakePoint(104.0000, 16.0000) controlPoint1:NSMakePoint(96.0000, 19.6113) controlPoint2:NSMakePoint(99.6113, 16.0000)];
+        [path curveToPoint:NSMakePoint(112.0000, 24.0000) controlPoint1:NSMakePoint(108.3887, 16.0000) controlPoint2:NSMakePoint(112.0000, 19.6113)];
+        [path lineToPoint:NSMakePoint(112.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(136.0000, 88.0000) controlPoint1:NSMakePoint(112.0000, 77.1660) controlPoint2:NSMakePoint(122.8340, 88.0000)];
+        [path curveToPoint:NSMakePoint(160.0000, 64.0000) controlPoint1:NSMakePoint(149.1660, 88.0000) controlPoint2:NSMakePoint(160.0000, 77.1660)];
+        [path lineToPoint:NSMakePoint(160.0000, 24.0000)];
+        [path curveToPoint:NSMakePoint(168.0000, 16.0000) controlPoint1:NSMakePoint(160.0000, 19.6113) controlPoint2:NSMakePoint(163.6113, 16.0000)];
+        [path curveToPoint:NSMakePoint(176.0000, 24.0000) controlPoint1:NSMakePoint(172.3887, 16.0000) controlPoint2:NSMakePoint(176.0000, 19.6113)];
+        [path lineToPoint:NSMakePoint(176.0000, 64.0000)];
+        [path curveToPoint:NSMakePoint(167.5600, 88.5300) controlPoint1:NSMakePoint(176.0051, 72.8881) controlPoint2:NSMakePoint(173.0328, 81.5267)];
+        [path curveToPoint:NSMakePoint(216.0000, 144.0000) controlPoint1:NSMakePoint(195.1638, 92.3172) controlPoint2:NSMakePoint(215.9654, 116.1376)];
+        [path lineToPoint:NSMakePoint(216.0000, 152.0000)];
+        [path curveToPoint:NSMakePoint(208.3000, 180.3200) controlPoint1:NSMakePoint(215.8974, 161.9425) controlPoint2:NSMakePoint(213.2459, 171.6944)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(200.0000, 144.0000)];
+        [path curveToPoint:NSMakePoint(160.0000, 104.0000) controlPoint1:NSMakePoint(200.0000, 122.0566) controlPoint2:NSMakePoint(181.9434, 104.0000)];
+        [path lineToPoint:NSMakePoint(112.0000, 104.0000)];
+        [path curveToPoint:NSMakePoint(72.0000, 144.0000) controlPoint1:NSMakePoint(90.0566, 104.0000) controlPoint2:NSMakePoint(72.0000, 122.0566)];
+        [path lineToPoint:NSMakePoint(72.0000, 152.0000)];
+        [path curveToPoint:NSMakePoint(78.9000, 174.4800) controlPoint1:NSMakePoint(72.0981, 159.9989) controlPoint2:NSMakePoint(74.4936, 167.8035)];
+        [path curveToPoint:NSMakePoint(80.0000, 182.1700) controlPoint1:NSMakePoint(80.5683, 176.6790) controlPoint2:NSMakePoint(80.9849, 179.5915)];
+        [path curveToPoint:NSMakePoint(80.7900, 215.7500) controlPoint1:NSMakePoint(75.7931, 193.0195) controlPoint2:NSMakePoint(76.0775, 205.1103)];
+        [path curveToPoint:NSMakePoint(113.1100, 195.6900) controlPoint1:NSMakePoint(94.0436, 214.3242) controlPoint2:NSMakePoint(105.9503, 206.9341)];
+        [path curveToPoint:NSMakePoint(119.8200, 192.0000) controlPoint1:NSMakePoint(114.5730, 193.4022) controlPoint2:NSMakePoint(117.1044, 192.0101)];
+        [path lineToPoint:NSMakePoint(152.1700, 192.0000)];
+        [path curveToPoint:NSMakePoint(158.9100, 195.6900) controlPoint1:NSMakePoint(154.8962, 191.9999) controlPoint2:NSMakePoint(157.4413, 193.3933)];
+        [path curveToPoint:NSMakePoint(191.2300, 215.7500) controlPoint1:NSMakePoint(166.0686, 206.9351) controlPoint2:NSMakePoint(177.9759, 214.3256)];
+        [path curveToPoint:NSMakePoint(192.0000, 182.1700) controlPoint1:NSMakePoint(195.9360, 205.1076) controlPoint2:NSMakePoint(196.2132, 193.0169)];
+        [path curveToPoint:NSMakePoint(193.0000, 174.5200) controlPoint1:NSMakePoint(191.0186, 179.6176) controlPoint2:NSMakePoint(191.3955, 176.7344)];
+        [path curveToPoint:NSMakePoint(200.0000, 152.0000) controlPoint1:NSMakePoint(197.4501, 167.8435) controlPoint2:NSMakePoint(199.8810, 160.0228)];
+        [path closePath];
+
+    } else if ([name isEqualToString:@"FolderOpen_regular"]) {
+        // Phosphor FolderOpen weight=regular, 256×256 viewbox, Y-flipped
+        // Source: @phosphor-icons/react dist/defs/FolderOpen.es.js (regular variant)
+        path = [NSBezierPath bezierPath];
+        [path moveToPoint:NSMakePoint(245.0000, 145.3600)];
+        [path curveToPoint:NSMakePoint(232.0000, 152.0000) controlPoint1:NSMakePoint(241.9901, 149.5329) controlPoint2:NSMakePoint(237.1451, 152.0075)];
+        [path lineToPoint:NSMakePoint(216.0000, 152.0000)];
+        [path lineToPoint:NSMakePoint(216.0000, 168.0000)];
+        [path curveToPoint:NSMakePoint(200.0000, 184.0000) controlPoint1:NSMakePoint(216.0000, 176.7773) controlPoint2:NSMakePoint(208.7773, 184.0000)];
+        [path lineToPoint:NSMakePoint(130.6700, 184.0000)];
+        [path lineToPoint:NSMakePoint(102.9400, 204.8000)];
+        [path curveToPoint:NSMakePoint(93.3400, 208.0000) controlPoint1:NSMakePoint(100.1662, 206.8678) controlPoint2:NSMakePoint(96.7997, 207.9900)];
+        [path lineToPoint:NSMakePoint(40.0000, 208.0000)];
+        [path curveToPoint:NSMakePoint(24.0000, 192.0000) controlPoint1:NSMakePoint(31.2227, 208.0000) controlPoint2:NSMakePoint(24.0000, 200.7773)];
+        [path lineToPoint:NSMakePoint(24.0000, 48.0000)];
+        [path curveToPoint:NSMakePoint(32.0000, 40.0000) controlPoint1:NSMakePoint(24.0000, 43.6113) controlPoint2:NSMakePoint(27.6113, 40.0000)];
+        [path lineToPoint:NSMakePoint(211.1000, 40.0000)];
+        [path curveToPoint:NSMakePoint(218.6900, 45.4700) controlPoint1:NSMakePoint(214.5347, 39.9997) controlPoint2:NSMakePoint(217.6038, 42.2115)];
+        [path lineToPoint:NSMakePoint(247.1800, 130.9400)];
+        [path curveToPoint:NSMakePoint(245.0000, 145.3600) controlPoint1:NSMakePoint(248.8038, 135.8144) controlPoint2:NSMakePoint(247.9922, 141.1834)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(93.3400, 192.0000)];
+        [path lineToPoint:NSMakePoint(123.2000, 169.6000)];
+        [path curveToPoint:NSMakePoint(128.0000, 168.0000) controlPoint1:NSMakePoint(124.5845, 168.5616) controlPoint2:NSMakePoint(126.2693, 168.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 168.0000)];
+        [path lineToPoint:NSMakePoint(200.0000, 152.0000)];
+        [path lineToPoint:NSMakePoint(69.7700, 152.0000)];
+        [path curveToPoint:NSMakePoint(54.5900, 141.0600) controlPoint1:NSMakePoint(62.9005, 152.0005) controlPoint2:NSMakePoint(56.7625, 147.5769)];
+        [path lineToPoint:NSMakePoint(40.0000, 97.3000)];
+        [path lineToPoint:NSMakePoint(40.0000, 192.0000)];
+        [path closePath];
+        [path moveToPoint:NSMakePoint(205.3400, 56.0000)];
+        [path lineToPoint:NSMakePoint(43.1000, 56.0000)];
+        [path lineToPoint:NSMakePoint(69.7700, 136.0000)];
+        [path lineToPoint:NSMakePoint(232.0000, 136.0000)];
         [path closePath];
     }
     return path;
@@ -4952,6 +5123,276 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 }
 
 // ---------------------------------------------------------------------------
+// buildProjectCard — populates subviews for kind="project". Returns total height.
+//
+// Data keys: name (string), pinned (bool), repo (string|absent), path (string),
+//            workspaceCount (number), workspaces (array of {name, state}).
+//
+// Layout rhythm matches buildHoverCard: sectionPad=9, kCardPadH left/right,
+// icon+text rows share a fixed icon column for visual alignment.
+// ---------------------------------------------------------------------------
+- (CGFloat)buildProjectCard:(NSDictionary*)data {
+    NSColor* primaryColor = themeColorOr(g_popoverTheme.textPrimary,
+        [NSColor colorWithCalibratedRed:0xf4/255.0 green:0xf4/255.0 blue:0xf5/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+    NSColor* mutedColor = themeColorOr(g_popoverTheme.textMuted,
+        [NSColor colorWithCalibratedRed:0x71/255.0 green:0x71/255.0 blue:0x7a/255.0 alpha:1.0]);
+    NSColor* accentColor = themeColorOr(g_popoverTheme.accent,
+        [NSColor colorWithCalibratedRed:0x60/255.0 green:0xa5/255.0 blue:0xfa/255.0 alpha:1.0]);
+    NSColor* cardColor = themeColorOr(
+        g_popoverTheme.card,
+        [NSColor colorWithCalibratedRed:0x16/255.0 green:0x16/255.0 blue:0x1a/255.0 alpha:1.0]);
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
+
+    NSString* name           = dictStr(data, @"name");
+    BOOL      pinned         = dictBool(data, @"pinned");
+    NSString* repo           = dictStr(data, @"repo");
+    NSString* path           = dictStr(data, @"path");
+    int       workspaceCount = dictInt(data, @"workspaceCount");
+    NSArray*  workspaces     = [data[@"workspaces"] isKindOfClass:[NSArray class]]
+                                   ? (NSArray*)data[@"workspaces"] : @[];
+
+    // Icon column constants — same gapX/iconSz as addGitBranchRow at 11px.
+    const CGFloat iconSz    = 11.0;
+    const CGFloat iconGap   = 5.0;
+    const CGFloat iconColW  = iconSz + iconGap;
+    // textX: left edge of text after icon column.
+    const CGFloat textX     = kCardPadH + iconColW;
+    const CGFloat textW     = self.cardWidth - textX - kCardPadH;
+
+    const CGFloat sectionPad = 9.0;
+    const CGFloat rowH       = 11.0 + 2.0 + 2.0;  // font + 2px vPad top + 2px vPad bottom = 15
+    const CGFloat titleH     = 14.0;
+
+    CGFloat y = 0;
+
+    // ---- Section 1: Header ----
+    y += sectionPad; // top pad
+
+    // Title: Geist-Medium 12px, textPrimary, full width (no icon on this row).
+    NSTextField* titleLbl = makeLabel(name.length ? name : @"Project",
+                                      geistFont(@"Geist-Medium", 12.0), primaryColor);
+    // Reserve right margin for pin chip if present (chip ~52px wide + 4px gap).
+    CGFloat titleW = self.cardWidth - 2.0 * kCardPadH;
+    if (pinned) titleW -= 56.0; // leave room for the pin chip
+    titleLbl.frame = NSMakeRect(kCardPadH, y, titleW, titleH);
+    [self addSubview:titleLbl];
+
+    // Pin chip (if pinned) — informational, accent-tinted, non-interactive.
+    // Visually matches the PR chip from addPRChip: but identifier has no "::pr" suffix.
+    if (pinned) {
+        const CGFloat chipFont  = 10.0;
+        const CGFloat chipPadH  = 5.0;
+        const CGFloat chipPadV  = 2.0;
+        const CGFloat pinIconSz = 10.0;
+        const CGFloat pinGap    = 3.0;
+        const CGFloat chipH     = chipFont + 2.0 * chipPadV + 4.0;
+
+        NSTextField* pinTxtMeasure = makeLabel(@"Pinned",
+            geistFont(@"Geist-Regular", chipFont), nil);
+        pinTxtMeasure.frame = NSMakeRect(0, 0, 200.0, chipFont + 2.0);
+        [pinTxtMeasure sizeToFit];
+        CGFloat pinTxtW = ceil(pinTxtMeasure.frame.size.width) + 2.0;
+
+        CGFloat chipW = chipPadH + pinIconSz + pinGap + pinTxtW + chipPadH;
+        CGFloat chipX = self.cardWidth - kCardPadH - chipW;
+        CGFloat chipY = y + (titleH - chipH) / 2.0;
+
+        // Use a plain NSButton so it draws the chip chrome but never fires an action.
+        NSButton* chip = [[NSButton alloc] initWithFrame:NSMakeRect(chipX, chipY, chipW, chipH)];
+        chip.bezelStyle      = NSBezelStyleRegularSquare;
+        chip.bordered        = NO;
+        chip.wantsLayer      = YES;
+        chip.layer.backgroundColor = [accentColor colorWithAlphaComponent:0.12].CGColor;
+        chip.layer.borderColor     = [accentColor colorWithAlphaComponent:0.30].CGColor;
+        chip.layer.borderWidth     = 1.0;
+        chip.layer.cornerRadius    = 4.0;
+        chip.title           = @"";   // custom drawing via subviews
+        chip.target          = nil;   // non-interactive — informational chip only
+        chip.action          = nil;
+        // identifier intentionally omitted (no ::pr suffix) so it can't trigger PR open
+        [self addSubview:chip];
+
+        // PushPin icon inside chip
+        NSImage* pinImg = phosphorIcon(@"PushPin_fill", pinIconSz, accentColor);
+        if (pinImg) {
+            NSImageView* pinIV = [[NSImageView alloc] initWithFrame:
+                NSMakeRect(chipPadH, (chipH - pinIconSz) / 2.0, pinIconSz, pinIconSz)];
+            pinIV.image = pinImg;
+            pinIV.imageScaling = NSImageScaleProportionallyDown;
+            [chip addSubview:pinIV];
+        }
+
+        // "Pinned" text inside chip
+        pinTxtMeasure.textColor = accentColor;
+        pinTxtMeasure.frame = NSMakeRect(chipPadH + pinIconSz + pinGap,
+                                          (chipH - chipFont - 2.0) / 2.0,
+                                          pinTxtW, chipFont + 2.0);
+        [chip addSubview:pinTxtMeasure];
+    }
+
+    y += titleH;
+    y += sectionPad; // bottom pad of header
+
+    // ---- Section 2: Repo (if present) ----
+    if (repo.length > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+        y += sectionPad;
+
+        // Leading GithubLogo icon, matching addGitBranchRow layout.
+        NSImage* ghIcon = phosphorIcon(@"GithubLogo_regular", iconSz, mutedColor);
+        if (ghIcon) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:
+                NSMakeRect(kCardPadH, centerIconY(y, rowH, iconSz), iconSz, iconSz)];
+            iv.image = ghIcon;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        }
+
+        NSTextField* repoLbl = makeLabel(repo, geistFont(@"Geist-Regular", 11.0), secColor);
+        repoLbl.frame = NSMakeRect(textX, y + 2.0, textW, 11.0 + 2.0);
+        [self addSubview:repoLbl];
+        y += rowH;
+
+        y += sectionPad;
+    }
+
+    // ---- Section 3: Path ----
+    {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+        y += sectionPad;
+
+        // Leading FolderOpen icon.
+        NSImage* folderIcon = phosphorIcon(@"FolderOpen_regular", iconSz, mutedColor);
+        if (folderIcon) {
+            // icon sits at the top line of the (possibly wrapping) text block
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:
+                NSMakeRect(kCardPadH, y + 2.0, iconSz, iconSz)];
+            iv.image = folderIcon;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        }
+
+        NSFont*  cwdFont = geistFont(@"Geist-Regular", 11.0);
+        NSString* pathStr = path.length ? path : @"-";
+        CGFloat  pathH   = wrappingHeight(pathStr, cwdFont, textW);
+        if (pathH < 13.0) pathH = 13.0;
+
+        NSTextField* pathLbl = [NSTextField labelWithString:pathStr];
+        pathLbl.font               = cwdFont;
+        pathLbl.textColor          = mutedColor;
+        pathLbl.drawsBackground    = NO;
+        pathLbl.bordered           = NO;
+        pathLbl.editable           = NO;
+        pathLbl.selectable         = NO;
+        pathLbl.cell.wraps         = YES;
+        pathLbl.cell.lineBreakMode = NSLineBreakByCharWrapping;
+        pathLbl.frame = NSMakeRect(textX, y, textW, pathH);
+        [self addSubview:pathLbl];
+        y += pathH;
+
+        y += sectionPad;
+    }
+
+    // ---- Section 4: Workspace count ----
+    {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+        y += sectionPad;
+
+        NSString* countText;
+        if (workspaceCount == 0) {
+            countText = @"No workspaces";
+        } else if (workspaceCount == 1) {
+            countText = @"1 workspace";
+        } else {
+            countText = [NSString stringWithFormat:@"%d workspaces", workspaceCount];
+        }
+
+        // Leading Stack icon.
+        NSImage* stackIcon = phosphorIcon(@"Stack_regular", iconSz, mutedColor);
+        if (stackIcon) {
+            NSImageView* iv = [[NSImageView alloc] initWithFrame:
+                NSMakeRect(kCardPadH, centerIconY(y, rowH, iconSz), iconSz, iconSz)];
+            iv.image = stackIcon;
+            iv.imageScaling = NSImageScaleProportionallyDown;
+            [self addSubview:iv];
+        }
+
+        NSTextField* countLbl = makeLabel(countText, geistFont(@"Geist-Regular", 11.0), secColor);
+        countLbl.frame = NSMakeRect(textX, y + 2.0, textW, 11.0 + 2.0);
+        [self addSubview:countLbl];
+        y += rowH;
+
+        y += sectionPad;
+    }
+
+    // ---- Section 5: Workspace list (up to 8 rows, non-interactive) ----
+    if (workspaces.count > 0) {
+        [self addSubview:makeDivider(y, self.cardWidth)];
+        y += kSepHeight;
+        y += sectionPad;
+
+        // Workspace rows: activity dot (10px) + name, same icon column as above.
+        const CGFloat dotSz  = 10.0;
+        const CGFloat dotGap = 5.0;
+        const CGFloat wsRowH = 16.0;
+        // Dots align at kCardPadH (matching icon column left edge).
+        CGFloat nameX = kCardPadH + dotSz + dotGap;
+        CGFloat nameW = self.cardWidth - nameX - kCardPadH;
+
+        NSUInteger cap = MIN(workspaces.count, (NSUInteger)8);
+        for (NSUInteger i = 0; i < cap; i++) {
+            id item = workspaces[i];
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary* ws = (NSDictionary*)item;
+            NSString* wsName  = dictStr(ws, @"name");
+            NSString* wsState = dictStr(ws, @"state");
+
+            NSRect dotRect = NSMakeRect(kCardPadH,
+                                        centerIconY(y, wsRowH, dotSz),
+                                        dotSz, dotSz);
+            [self addActivityIndicator:wsState accentColor:accentColor atRect:dotRect];
+
+            NSTextField* nameLbl = makeLabel(wsName.length ? wsName : @"New workspace",
+                                             geistFont(@"Geist-Regular", 11.0), secColor);
+            nameLbl.frame = NSMakeRect(nameX, y + (wsRowH - 13.0) / 2.0, nameW, 13.0);
+            [self addSubview:nameLbl];
+
+            y += wsRowH;
+            if (i < cap - 1) y += 2.0; // 2px gap between rows
+        }
+
+        // "+K more" overflow label in muted 10px.
+        if (workspaces.count > (NSUInteger)8) {
+            NSUInteger extra = workspaces.count - 8;
+            const CGFloat moreGap = 4.0;
+            y += moreGap;
+            NSString* moreTxt = [NSString stringWithFormat:@"+%lu more", (unsigned long)extra];
+            const CGFloat moreH = 13.0;
+            NSTextField* moreLbl = makeLabel(moreTxt, geistFont(@"Geist-Regular", 10.0), mutedColor);
+            moreLbl.frame = NSMakeRect(kCardPadH, y, self.cardWidth - 2.0 * kCardPadH, moreH);
+            [self addSubview:moreLbl];
+            y += moreH;
+        }
+
+        y += sectionPad;
+    }
+
+    // Suppress unused-variable warnings for chip styling colors captured from
+    // scope but only conditionally used (when pinned == NO).
+    (void)cardColor;
+    (void)borderColor;
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
 // buildHoverCard — populates subviews for kind="hover". Returns total height.
 // ---------------------------------------------------------------------------
 - (CGFloat)buildHoverCard:(NSDictionary*)data {
@@ -5270,6 +5711,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     CGFloat totalH = 0;
     if ([self.kind isEqualToString:@"hover"]) {
         totalH = [self buildHoverCard:data];
+    } else if ([self.kind isEqualToString:@"project"]) {
+        totalH = [self buildProjectCard:data];
     } else {
         // 'details' and default
         totalH = [self buildDetailsCard:data];
@@ -5305,10 +5748,9 @@ static NSRect computePopoverFrame(NSString* kind,
 
     CGFloat cx, cy;  // CSS top-left origin for the card
 
-    if ([kind isEqualToString:@"hover"]) {
-        // Place to the RIGHT of the anchor row.
+    if ([kind isEqualToString:@"hover"] || [kind isEqualToString:@"project"]) {
+        // Place to the RIGHT of the anchor row/icon, vertically centered.
         cx = ax + aw + kGap;
-        // Vertically center on the anchor row's midpoint.
         cy = ay + (ah / 2.0) - (cardHeight / 2.0);
     } else {
         // 'details' and default: place BELOW the anchor button.
@@ -5432,9 +5874,10 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
     double aw = rectObj.Get("w").As<Napi::Number>().DoubleValue();
     double ah = rectObj.Get("h").As<Napi::Number>().DoubleValue();
 
-    // Card width by kind.
+    // Card width by kind: 'hover' and 'project' → 224px; 'details' → 252px.
     NSString* nsKindLocal = [NSString stringWithUTF8String:kind.c_str()];
-    CGFloat cardWidth = [nsKindLocal isEqualToString:@"hover"] ? 224.0 : 252.0;
+    CGFloat cardWidth = ([nsKindLocal isEqualToString:@"hover"] ||
+                         [nsKindLocal isEqualToString:@"project"]) ? 224.0 : 252.0;
 
     // Use the cached contentView from installBackstop. This is global and always
     // available regardless of whether this workspace has a mounted surface — so

@@ -1,8 +1,13 @@
 import type React from 'react'
-import { memo } from 'react'
-import { Plus } from '@phosphor-icons/react'
-import type { ProjectRecord } from '@shared/types'
+import { memo, useRef } from 'react'
+import { Plus, PushPin } from '@phosphor-icons/react'
+import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
+import { showProjectPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import { getActivitySnapshot } from '@/lib/activityStore'
+import { getTitleSnapshot } from '@/lib/titleStore'
+import { resolveWorkspaceName } from './resolveWorkspaceName'
+import type { WorkspaceActivityDetail } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // Collapsed sidebar — identicon strip shown when the sidebar is narrow
@@ -17,7 +22,123 @@ interface CollapsedProjectListProps {
   addingProject: boolean
   onSelectProject: (id: string) => void
   onAddProject: () => void
+  /** Non-archived workspaces grouped by projectId — used to build the project popover. */
+  workspacesByProject: Record<string, WorkspaceRecord[]>
 }
+
+// Maps WorkspaceActivityDetail to the state union used by the project popover.
+function toPopoverState(
+  detail: WorkspaceActivityDetail | undefined
+): 'working' | 'ready' | 'idle' | 'attention' | 'archived' {
+  if (!detail || detail === 'archived') return 'idle'
+  return detail
+}
+
+// ---------------------------------------------------------------------------
+// ProjectTile — one icon button with native popover hover behavior
+// ---------------------------------------------------------------------------
+
+interface ProjectTileProps {
+  p: ProjectRecord
+  isActive: boolean
+  fetchGithubAvatars: boolean
+  workspaces: WorkspaceRecord[]
+  onSelectProject: (id: string) => void
+  tileClass: string
+}
+
+const ProjectTile = memo(function ProjectTile({
+  p,
+  isActive,
+  fetchGithubAvatars,
+  workspaces,
+  onSelectProject,
+  tileClass
+}: ProjectTileProps): React.JSX.Element {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const popoverId = `proj:${p.id}`
+
+  function clearHoverTimer(): void {
+    if (hoverTimerRef.current !== null) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+  }
+
+  function handleMouseEnter(): void {
+    clearHoverTimer()
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null
+      if (!buttonRef.current) return
+
+      // Snapshot activity and title store at show-time (no hooks in a loop).
+      const activityMap = getActivitySnapshot()
+      const titles = getTitleSnapshot()
+      const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
+      const capped = activeWorkspaces.slice(0, 8)
+
+      showProjectPopover(p.id, buttonRef.current, {
+        name: p.name,
+        pinned: p.pinnedAt != null,
+        repo: p.githubOwner && p.githubRepo ? `${p.githubOwner}/${p.githubRepo}` : undefined,
+        path: p.path,
+        workspaceCount: activeWorkspaces.length,
+        workspaces: capped.map((w) => ({
+          name: resolveWorkspaceName({
+            workspace: w,
+            terminalTitle: titles.get(w.id) ?? null,
+            sessionTitle: null
+          }).text,
+          state: toPopoverState(activityMap.get(w.id))
+        }))
+      })
+
+      // Register native-closed handler: reset timer state when card closes itself.
+      onNativePopoverClosed(popoverId, () => {
+        clearHoverTimer()
+      })
+    }, 150)
+  }
+
+  function handleMouseLeave(): void {
+    clearHoverTimer()
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null
+      hideNativePopover(popoverId)
+    }, 80)
+  }
+
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      onClick={() => onSelectProject(p.id)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      title={p.name}
+      aria-label={p.name}
+      className={[tileClass, isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'].join(' ')}
+    >
+      <span className="relative inline-flex items-center flex-shrink-0">
+        <Identicon
+          seed={p.path}
+          size={22}
+          avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
+        />
+        {p.pinnedAt !== null && (
+          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
+            <PushPin size={6} weight="fill" className="text-accent" />
+          </span>
+        )}
+      </span>
+    </button>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// CollapsedProjectList
+// ---------------------------------------------------------------------------
 
 export const CollapsedProjectList = memo(function CollapsedProjectList({
   projects,
@@ -26,7 +147,8 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
   isProjectActive,
   addingProject,
   onSelectProject,
-  onAddProject
+  onAddProject,
+  workspacesByProject
 }: CollapsedProjectListProps): React.JSX.Element {
   // Every entry in the collapsed rail renders inside an identical fixed-size
   // tile (TILE square, centered content, shrink-0) so heterogeneous content —
@@ -54,23 +176,15 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
       </button>
       {!projectsLoading &&
         projects.map((p) => (
-          <button
+          <ProjectTile
             key={p.id}
-            type="button"
-            onClick={() => onSelectProject(p.id)}
-            title={p.name}
-            aria-label={p.name}
-            className={[
-              TILE,
-              isProjectActive(p.id) ? 'bg-accent/15' : 'hover:bg-surface-overlay'
-            ].join(' ')}
-          >
-            <Identicon
-              seed={p.path}
-              size={22}
-              avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
-            />
-          </button>
+            p={p}
+            isActive={isProjectActive(p.id)}
+            fetchGithubAvatars={fetchGithubAvatars}
+            workspaces={workspacesByProject[p.id] ?? []}
+            onSelectProject={onSelectProject}
+            tileClass={TILE}
+          />
         ))}
     </div>
   )

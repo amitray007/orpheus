@@ -1330,6 +1330,7 @@ export function Sidebar({
               addingProject={addingProject}
               onSelectProject={onSelectProject}
               onAddProject={onAddProject}
+              workspacesByProject={workspacesByProject}
             />
           )}
         </div>
