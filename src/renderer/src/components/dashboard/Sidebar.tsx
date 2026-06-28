@@ -707,7 +707,7 @@ const ProjectRow = memo(function ProjectRow({
           title={project.path}
           aria-label={project.name}
         >
-          <span className="relative flex-shrink-0">
+          <span className="relative inline-flex items-center flex-shrink-0">
             <Identicon
               seed={project.path}
               size={20}
