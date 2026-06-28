@@ -193,6 +193,10 @@ function StatusIcon({ indicator, loading }: StatusIconProps): React.JSX.Element 
 // StatusPopover — sidebar-constrained in-renderer portal popover
 // ---------------------------------------------------------------------------
 
+function handleRefresh(): void {
+  window.api.status.refresh().catch(console.error)
+}
+
 interface StatusPopoverProps {
   snapshot: ClaudeStatusSnapshot
   triggerRef: React.RefObject<HTMLButtonElement | null>
@@ -249,10 +253,6 @@ function StatusPopover({
   function handleOpenPage(): void {
     window.api.status.openPage().catch(console.error)
     onClose()
-  }
-
-  function handleRefresh(): void {
-    window.api.status.refresh().catch(console.error)
   }
 
   const visibleComponents = snapshot.components.filter((c) => !HIDDEN_COMPONENT_NAMES.has(c.name))
@@ -764,6 +764,7 @@ export function TopBar({
 
         {/* Sidebar collapse toggle */}
         <button
+          type="button"
           onClick={onToggleCollapsed}
           aria-label="Toggle sidebar"
           title="Toggle sidebar"

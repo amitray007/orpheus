@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, mem
 import { playSound, setSoundEnabled, setSoundPack } from '../../lib/sound'
 import { logDiag } from '../../lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
-import { Sidebar as SidebarBase, type SidebarActiveView } from './Sidebar'
+import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { ConfirmModal } from '../ConfirmModal'
@@ -13,7 +13,15 @@ import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { clearFooterActionsCache } from './footer/useFooterActions'
-import { clearContextBudgetCache } from './WorkspaceTitleBar'
+import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
+import {
+  DEFAULT_UI_STATE_FALLBACK,
+  viewToSidebarActiveView,
+  mainContainerClassName,
+  nextWorkspaceName,
+  reorderById,
+  reorderWithTail
+} from './dashboard.helpers'
 import type {
   AppUiState,
   PinnedItem,
@@ -89,7 +97,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Tracks workspace ids for which we've already issued an imperative git fetch
   // so a stale-closure read of gitStatusByWorkspaceId can't trigger duplicate
   // IPC calls when the effect re-runs because workspacesPollKey changed.
-  const hasFetchedRef = useRef<Set<string>>(new Set())
+  const hasFetchedRef = useRef<Set<string> | null>(null)
+  if (hasFetchedRef.current === null) hasFetchedRef.current = new Set<string>()
 
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
@@ -100,53 +109,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       .then(setUiState)
       .catch((err) => {
         console.error('[dashboard] failed to load ui state', err)
-        setUiState({
-          sidebarCollapsed: false,
-          lastViewKind: 'sessions',
-          lastProjectId: null,
-          lastWorkspaceId: null,
-          windowX: null,
-          windowY: null,
-          windowWidth: null,
-          windowHeight: null,
-          windowFullscreen: false,
-          restoreGeometry: true,
-          closeHides: true,
-          openAtLastView: true,
-          pinnedSectionVisible: true,
-          workspaceCountInline: true,
-          sidebarWidth: 256,
-          defaultProjectExpanded: false,
-          launchAtLogin: false,
-          globalHotkey: '',
-          archivedWorkspaceLimit: 20,
-          hooksIntegrationEnabled: false,
-          notifyAttention: true,
-          notifyStop: true,
-          notifyAlways: false,
-          notifyRichSummary: true,
-          notifySuppressWhenFocused: false,
-          notifyMaxAttentionRepeats: 5,
-          inProgressWatchdogSec: 120,
-          staleAfterMinutes: 60,
-          autoCloseAfterMinutes: 120,
-          diagError: true,
-          diagLifecycle: false,
-          diagPerf: false,
-          diagAnomaly: false,
-          diagTrace: false,
-          theme: 'midnight',
-          accentColor: null,
-          uiFontScale: 'default',
-          fetchGithubAvatars: true,
-          playInteractionSounds: true,
-          soundPack: 'core',
-          autoCheckUpdates: true,
-          statusPollIntervalSec: 1800,
-          muteStatusNotifications: false,
-          showWorkspaceFooter: true,
-          updatedAt: 0
-        })
+        setUiState(DEFAULT_UI_STATE_FALLBACK)
       })
   }, [])
 
@@ -275,11 +238,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
-  // Derived workspace id — stable across renders when the workspace hasn't actually changed
-  const currentlyViewedWorkspaceId = useMemo(
-    () => (view.kind === 'workspace' ? view.workspaceId : null),
-    [view]
-  )
+  // Derived workspace id
+  const currentlyViewedWorkspaceId = view.kind === 'workspace' ? view.workspaceId : null
 
   useEffect(() => {
     window.api.workspaces.setCurrentlyViewed(currentlyViewedWorkspaceId)
@@ -374,7 +334,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
-      hasFetchedRef.current.delete(workspaceId)
+      hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearContextBudgetCache(workspaceId)
     })
@@ -555,12 +515,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   useEffect(() => {
     return window.api.workspaces.onNavigateTo((workspaceId) => {
       const byProject = workspacesByProjectRef.current
+      // Build a flat Map<workspaceId, projectId> for O(1) lookup instead of O(n*m) find-in-loop
+      const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
-        const found = wsList.find((w) => w.id === workspaceId)
-        if (found) {
-          handleSelectWorkspaceRef.current(found.id, projectId)
-          return
-        }
+        for (const w of wsList) wsToProject.set(w.id, projectId)
+      }
+      const projectId = wsToProject.get(workspaceId)
+      if (projectId !== undefined) {
+        handleSelectWorkspaceRef.current(workspaceId, projectId)
       }
     })
   }, [])
@@ -647,7 +609,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // duplicate IPC calls when workspacesPollKey re-runs.
     // NOTE: we do NOT pre-mark ids as fetched here — we mark them only on
     // success so a cancelled mid-flight fetch retries on re-mount.
-    const missing = workspaces.filter((w) => !hasFetchedRef.current.has(w.id))
+    const missing = workspaces.filter((w) => !hasFetchedRef.current!.has(w.id))
 
     // Git + PR: concurrent per-workspace using Promise.allSettled
     if (missing.length > 0) {
@@ -659,13 +621,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             if (!cancelled) {
               // Mark as fetched only after a successful response so a
               // cancelled mid-flight fetch retries on re-mount.
-              hasFetchedRef.current.add(ws.id)
+              hasFetchedRef.current!.add(ws.id)
               setGitStatus(ws.id, status)
             }
           } catch (err) {
             console.error('[dashboard] git status failed for', ws.id, err)
             if (!cancelled) {
-              hasFetchedRef.current.add(ws.id)
+              hasFetchedRef.current!.add(ws.id)
               setGitStatus(ws.id, null)
             }
           }
@@ -716,7 +678,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed(uiState.sidebarCollapsed)
 
     // Restore expanded project rows from the projects list itself
-    const expanded = new Set(projects.filter((p) => p.expandedInSidebar).map((p) => p.id))
+    const expanded = new Set(projects.flatMap((p) => (p.expandedInSidebar ? [p.id] : [])))
     setExpandedProjectIds(expanded)
     // Sub-rows are gated on workspaces being loaded — kick off fetches so the
     // visual state matches the restored expanded state on the very first render.
@@ -821,6 +783,23 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [fetchWorkspacesForProject, handleSelectWorkspace]
   )
 
+  const handleToggleProjectPin = useCallback(async (projectId: string): Promise<void> => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    // pinnedAt === null means currently unpinned → pin it (pass true)
+    // pinnedAt !== null means currently pinned → unpin it (pass false)
+    const pinned = project?.pinnedAt === null || project?.pinnedAt === undefined
+    try {
+      const updated = await window.api.projects.setPinned(projectId, pinned)
+      // Optimistic patch so the badge flips immediately, then refetch to
+      // get the authoritative pinned-first ordering from the DB.
+      setProjects((arr) => arr.map((p) => (p.id === projectId ? updated : p)))
+      window.api.projects.list().then(setProjects).catch(console.error)
+    } catch (err) {
+      console.error('[dashboard] project setPinned failed', err)
+      window.api.projects.list().then(setProjects).catch(console.error)
+    }
+  }, [])
+
   const handleToggleWorkspacePin = useCallback(
     async (workspaceId: string, projectId: string): Promise<void> => {
       // Read synchronously from ref — setState updaters are not guaranteed to
@@ -854,15 +833,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       if (!projectPath) return
 
       const existing = workspacesByProjectRef.current[projectId] ?? []
-      const usedNumbers = new Set(
-        existing
-          .map((w) => /^Workspace\s+(\d+)$/.exec(w.name)?.[1])
-          .filter((s): s is string => typeof s === 'string')
-          .map((s) => parseInt(s, 10))
-      )
-      let n = 1
-      while (usedNumbers.has(n)) n++
-      const defaultName = `Workspace ${n}`
+      const defaultName = nextWorkspaceName(existing)
 
       const finalPath = projectPath
       try {
@@ -937,7 +908,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
-      hasFetchedRef.current.delete(workspaceId)
+      hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       try {
@@ -1013,7 +984,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(ws.id)
       deleteGitStatus(ws.id)
       deletePr(ws.id)
-      hasFetchedRef.current.delete(ws.id)
+      hasFetchedRef.current!.delete(ws.id)
       clearFooterActionsCache(ws.id)
       clearContextBudgetCache(ws.id)
     }
@@ -1038,10 +1009,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleReorderProjects = useCallback((orderedIds: string[]): void => {
     // Optimistic reorder — update local state immediately using functional updater
-    setProjects((arr) => {
-      const byId = new Map(arr.map((p) => [p.id, p]))
-      return orderedIds.map((id) => byId.get(id)).filter((p): p is ProjectRecord => !!p)
-    })
+    setProjects((arr) => reorderById(arr, orderedIds))
     window.api.projects.reorder(orderedIds).catch((err) => {
       console.error('[dashboard] reorder failed; refetching', err)
       window.api.projects.list().then(setProjects).catch(console.error)
@@ -1050,18 +1018,13 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleReorderWorkspaces = useCallback(
     (projectId: string, orderedIds: string[]): void => {
-      // Optimistic: reorder the local workspacesByProject[projectId] immediately
-      setWorkspacesByProject((prev) => {
-        const list = prev[projectId] ?? []
-        const byId = new Map(list.map((w) => [w.id, w]))
-        const reordered = orderedIds
-          .map((id) => byId.get(id))
-          .filter((w): w is WorkspaceRecord => !!w)
-        // Append any workspaces missing from orderedIds (e.g. archived ones not in the visible group)
-        const seen = new Set(orderedIds)
-        const tail = list.filter((w) => !seen.has(w.id))
-        return { ...prev, [projectId]: [...reordered, ...tail] }
-      })
+      // Optimistic: reorder the local workspacesByProject[projectId] immediately.
+      // reorderWithTail appends workspaces missing from orderedIds (e.g. archived
+      // ones not in the visible drag group) to the tail.
+      setWorkspacesByProject((prev) => ({
+        ...prev,
+        [projectId]: reorderWithTail(prev[projectId] ?? [], orderedIds)
+      }))
       window.api.workspaces.reorder(projectId, orderedIds).catch((err) => {
         console.error('[dashboard] workspace reorder failed; refetching', err)
         fetchWorkspacesForProject(projectId).catch(console.error)
@@ -1092,14 +1055,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       ? (workspacesByProject[view.projectId] ?? []).find((w) => w.id === view.workspaceId)
       : undefined
 
-  const activeView: SidebarActiveView =
-    view.kind === 'workspace'
-      ? 'workspace'
-      : view.kind === 'project'
-        ? 'project'
-        : view.kind === 'settings'
-          ? 'settings'
-          : 'sessions'
+  const activeView = viewToSidebarActiveView(view)
 
   return (
     <div className="flex flex-col h-screen">
@@ -1138,6 +1094,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
           onCloseWorkspace={handleCloseWorkspace}
           onTogglePinWorkspace={handleToggleWorkspacePin}
+          onTogglePinProject={handleToggleProjectPin}
           onReorderProjects={handleReorderProjects}
           onReorderWorkspaces={handleReorderWorkspaces}
           onRefreshPins={refreshPins}
@@ -1147,14 +1104,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           className={
             // Workspace view: terminal always sits above web layer (native z-order),
             // so this container stays transparent to let the NSView paint through.
-            view.kind === 'workspace'
-              ? 'flex-1 overflow-hidden min-h-0'
-              : view.kind === 'settings'
-                ? 'flex-1 overflow-hidden min-h-0 bg-surface-base'
-                : view.kind === 'sessions'
-                  ? // Workspaces kanban: tight padding so the board sits close to the app edges
-                    'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
-                  : 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+            mainContainerClassName(view.kind)
           }
         >
           <MainContent

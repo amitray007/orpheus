@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { CaretDown, Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type { ClaudeSubagent, ClaudeSubagentDraft, ProjectRecord } from '@shared/types'
 import { ConfirmModal } from '../../ConfirmModal'
-import { Select, SectionTitle, Eyebrow } from './primitives'
+import { SectionTitle, Eyebrow } from './primitives'
+import { useEscapeKey } from '../../../lib/useEscapeKey'
+import { SourceSelect } from './shared/SourceSelect'
 
 // ---------------------------------------------------------------------------
 // ClaudeSubagentsSection — full CRUD for ~/.claude/agents/ and project .claude/agents/
@@ -65,7 +67,7 @@ interface SubagentFormProps {
   addButtonRef?: React.RefObject<HTMLButtonElement | null>
 }
 
-function SubagentForm({
+const SubagentForm = memo(function SubagentForm({
   initial,
   projects,
   sourceFixed,
@@ -82,20 +84,14 @@ function SubagentForm({
   useEffect(() => {
     // When the source is fixed (editing existing), jump straight to the name
     // input. Otherwise the Select primitive autofocuses its trigger via
-    // autoFocus={!sourceFixed} below.
+    // autoFocus={!sourceFixed} on SourceSelect below.
     if (sourceFixed) firstInputRef.current?.focus()
   }, [sourceFixed])
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        onCancel()
-        addButtonRef?.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onCancel, addButtonRef])
+  useEscapeKey(() => {
+    onCancel()
+    addButtonRef?.current?.focus()
+  })
 
   function set<K extends keyof SubagentFormValues>(key: K, val: SubagentFormValues[K]): void {
     setValues((prev) => ({ ...prev, [key]: val }))
@@ -118,36 +114,24 @@ function SubagentForm({
   const labelClass = 'block text-xs font-medium text-text-muted mb-1 uppercase tracking-wider'
 
   return (
-    <div
+    <form
       className="bg-surface-raised border border-border-default rounded-lg p-4 flex flex-col gap-3"
-      role="form"
       aria-label="Subagent"
+      onSubmit={(e) => e.preventDefault()}
     >
       {/* Row 1: Source + Name + Model */}
       <div className="flex gap-3">
-        {/* Source */}
-        <div className="flex-1 min-w-0">
-          <label className={labelClass}>Source</label>
-          <Select
-            ariaLabel="Source"
-            disabled={sourceFixed}
-            autoFocus={!sourceFixed}
-            value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(val) => {
-              if (val === 'user') {
-                set('source', 'user')
-                set('projectId', '')
-              } else {
-                set('source', 'project')
-                set('projectId', val)
-              }
-            }}
-            options={[
-              { value: 'user', label: 'User (~/.claude/agents)' },
-              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
-            ]}
-          />
-        </div>
+        <SourceSelect
+          userLabel="User (~/.claude/agents)"
+          value={values.source === 'user' ? 'user' : values.projectId}
+          projects={projects}
+          onChange={(source, projectId) => {
+            set('source', source)
+            set('projectId', projectId)
+          }}
+          disabled={sourceFixed}
+          autoFocus={!sourceFixed}
+        />
 
         {/* Name */}
         <div className="flex-1 min-w-0">
@@ -262,13 +246,153 @@ function SubagentForm({
           Cancel
         </button>
       </div>
+    </form>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// AgentRow — memoized display row (non-editing state)
+// ---------------------------------------------------------------------------
+
+interface AgentRowProps {
+  agent: ClaudeSubagent
+  isExpanded: boolean
+  onToggleExpand: (path: string) => void
+  onEdit: (path: string) => void
+  onDelete: (agent: ClaudeSubagent) => void
+}
+
+const AgentRow = memo(function AgentRow({
+  agent,
+  isExpanded,
+  onToggleExpand,
+  onEdit,
+  onDelete
+}: AgentRowProps): React.JSX.Element {
+  const extraKeys = Object.keys(agent.frontmatter).filter((k) => !PROMOTED_KEYS.has(k))
+
+  return (
+    <div className="group border-b border-border-default/40 last:border-b-0">
+      {/* Row header */}
+      <div className="flex items-start justify-between py-2.5 gap-3">
+        <button
+          type="button"
+          onClick={() => onToggleExpand(agent.path)}
+          className="flex-1 flex items-start justify-between gap-3 text-left cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+          aria-expanded={isExpanded}
+          aria-label={`${agent.name} — ${isExpanded ? 'collapse' : 'expand'}`}
+        >
+          <div className="flex flex-col min-w-0 gap-0.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm text-text-primary font-medium">{agent.name}</span>
+              {agent.model && (
+                <span className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
+                  {agent.model}
+                </span>
+              )}
+              {agent.tools && (
+                <span
+                  className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
+                  title={agent.tools.join(', ')}
+                >
+                  {agent.tools.length} tool{agent.tools.length !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            {agent.description && (
+              <p className="text-xs text-text-muted truncate">{agent.description}</p>
+            )}
+          </div>
+          <CaretDown
+            size={14}
+            className="flex-shrink-0 mt-0.5 text-text-muted transition-transform duration-150"
+            style={{ transform: isExpanded ? 'rotate(180deg)' : 'none' }}
+            aria-hidden="true"
+          />
+        </button>
+
+        {/* Row actions (hover-reveal) */}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
+          <button
+            type="button"
+            aria-label={`Edit ${agent.name}`}
+            onClick={() => onEdit(agent.path)}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            <Pencil size={12} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label={`Delete ${agent.name}`}
+            onClick={() => onDelete(agent)}
+            className="p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            <Trash size={12} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded drawer */}
+      {isExpanded && (
+        <div className="border-t border-border-default/40 ml-0 pl-3 border-l border-border-default/40 mb-2 pt-2 pb-1 flex flex-col gap-2">
+          {agent.description && (
+            <p className="text-xs text-text-secondary leading-relaxed">{agent.description}</p>
+          )}
+          {extraKeys.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              {extraKeys.map((k) => {
+                const v = agent.frontmatter[k]
+                const display = Array.isArray(v) ? v.join(', ') : v
+                return (
+                  <div key={k} className="flex gap-2 text-sm">
+                    <span className="text-text-muted font-mono flex-shrink-0">{k}:</span>
+                    <span className="text-text-secondary break-all">{display}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          <div className="flex flex-col gap-1">
+            <span className="text-xs uppercase tracking-wider text-text-muted">Body</span>
+            {agent.bodyPreview ? (
+              <div className="font-mono whitespace-pre-wrap text-sm text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
+                {agent.bodyPreview}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted italic">(no body content)</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+const defaultAddDraft: SubagentFormValues = {
+  name: '',
+  description: '',
+  toolsRaw: '',
+  model: '',
+  body: '',
+  source: 'user',
+  projectId: ''
+}
+
+function agentToFormValues(agent: ClaudeSubagent): SubagentFormValues {
+  return {
+    name: agent.name,
+    description: agent.description ?? '',
+    toolsRaw: agent.tools ? agent.tools.join(', ') : '',
+    model: agent.model ?? '',
+    body: agent.bodyPreview,
+    source: agent.source,
+    projectId: agent.projectId ?? ''
+  }
+}
 
 export function ClaudeSubagentsSection(): React.JSX.Element {
   const [agents, setAgents] = useState<ClaudeSubagent[]>([])
@@ -306,15 +430,38 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       .catch(() => {})
   }, [])
 
+  const handleCancelAdd = useCallback((): void => {
+    setAdding(false)
+    addButtonRef.current?.focus()
+  }, [])
+
+  const handleCancelEdit = useCallback((): void => {
+    setEditingPath(null)
+  }, [])
+
+  const handleToggleExpand = useCallback((path: string): void => {
+    setExpandedPath((cur) => (cur === path ? null : path))
+  }, [])
+
+  const handleEditStart = useCallback((path: string): void => {
+    setEditingPath(path)
+    setAdding(false)
+    setExpandedPath(null)
+  }, [])
+
+  const handleDeleteRequest = useCallback((agent: ClaudeSubagent): void => {
+    setDeletingAgent(agent)
+  }, [])
+
   async function handleAdd(values: SubagentFormValues): Promise<void> {
     const draft: ClaudeSubagentDraft = {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.toolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       model: values.model.trim(),
       body: values.body,
@@ -331,10 +478,10 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
       name: values.name.trim(),
       description: values.description.trim(),
       tools: values.toolsRaw.trim()
-        ? values.toolsRaw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? values.toolsRaw.split(',').flatMap((s) => {
+            const v = s.trim()
+            return v ? [v] : []
+          })
         : null,
       model: values.model.trim(),
       body: values.body
@@ -348,28 +495,6 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
     await window.api.claudeAgents.deleteSubagent(agent.path)
     await reload()
     setDeletingAgent(null)
-  }
-
-  const defaultAddDraft: SubagentFormValues = {
-    name: '',
-    description: '',
-    toolsRaw: '',
-    model: '',
-    body: '',
-    source: 'user',
-    projectId: ''
-  }
-
-  function agentToFormValues(agent: ClaudeSubagent): SubagentFormValues {
-    return {
-      name: agent.name,
-      description: agent.description ?? '',
-      toolsRaw: agent.tools ? agent.tools.join(', ') : '',
-      model: agent.model ?? '',
-      body: agent.bodyPreview,
-      source: agent.source,
-      projectId: agent.projectId ?? ''
-    }
   }
 
   return (
@@ -405,10 +530,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
           initial={defaultAddDraft}
           projects={projects}
           onSave={handleAdd}
-          onCancel={() => {
-            setAdding(false)
-            addButtonRef.current?.focus()
-          }}
+          onCancel={handleCancelAdd}
           addButtonRef={addButtonRef}
         />
       )}
@@ -433,13 +555,7 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                   {group.label}
                 </div>
                 {group.agents.map((agent) => {
-                  const isEditing = editingPath === agent.path
-                  const isExpanded = expandedPath === agent.path && !isEditing
-                  const extraKeys = Object.keys(agent.frontmatter).filter(
-                    (k) => !PROMOTED_KEYS.has(k)
-                  )
-
-                  if (isEditing) {
+                  if (editingPath === agent.path) {
                     return (
                       <div key={`${group.key}:${agent.path}`} className="mb-2">
                         <SubagentForm
@@ -448,126 +564,21 @@ export function ClaudeSubagentsSection(): React.JSX.Element {
                           sourceFixed
                           nameFixed
                           onSave={(values) => handleUpdate(agent, values)}
-                          onCancel={() => setEditingPath(null)}
+                          onCancel={handleCancelEdit}
                           addButtonRef={addButtonRef}
                         />
                       </div>
                     )
                   }
-
                   return (
-                    <div
+                    <AgentRow
                       key={`${group.key}:${agent.path}`}
-                      className="group border-b border-border-default/40 last:border-b-0"
-                    >
-                      {/* Row header */}
-                      <div className="flex items-start justify-between py-2.5 gap-3">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedPath((cur) => (cur === agent.path ? null : agent.path))
-                          }
-                          className="flex-1 flex items-start justify-between gap-3 text-left cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
-                          aria-expanded={isExpanded}
-                          aria-label={`${agent.name} — ${isExpanded ? 'collapse' : 'expand'}`}
-                        >
-                          <div className="flex flex-col min-w-0 gap-0.5">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm text-text-primary font-medium">
-                                {agent.name}
-                              </span>
-                              {agent.model && (
-                                <span className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0 font-mono">
-                                  {agent.model}
-                                </span>
-                              )}
-                              {agent.tools && (
-                                <span
-                                  className="text-xs text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0"
-                                  title={agent.tools.join(', ')}
-                                >
-                                  {agent.tools.length} tool{agent.tools.length !== 1 ? 's' : ''}
-                                </span>
-                              )}
-                            </div>
-                            {agent.description && (
-                              <p className="text-xs text-text-muted truncate">
-                                {agent.description}
-                              </p>
-                            )}
-                          </div>
-                          <CaretDown
-                            size={14}
-                            className="flex-shrink-0 mt-0.5 text-text-muted transition-transform duration-150"
-                            style={{ transform: isExpanded ? 'rotate(180deg)' : 'none' }}
-                            aria-hidden="true"
-                          />
-                        </button>
-
-                        {/* Row actions (hover-reveal) */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
-                          <button
-                            type="button"
-                            aria-label={`Edit ${agent.name}`}
-                            onClick={() => {
-                              setEditingPath(agent.path)
-                              setAdding(false)
-                              setExpandedPath(null)
-                            }}
-                            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                          >
-                            <Pencil size={12} aria-hidden="true" />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Delete ${agent.name}`}
-                            onClick={() => setDeletingAgent(agent)}
-                            className="p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                          >
-                            <Trash size={12} aria-hidden="true" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Expanded drawer */}
-                      {isExpanded && (
-                        <div className="border-t border-border-default/40 ml-0 pl-3 border-l border-border-default/40 mb-2 pt-2 pb-1 flex flex-col gap-2">
-                          {agent.description && (
-                            <p className="text-xs text-text-secondary leading-relaxed">
-                              {agent.description}
-                            </p>
-                          )}
-                          {extraKeys.length > 0 && (
-                            <div className="flex flex-col gap-0.5">
-                              {extraKeys.map((k) => {
-                                const v = agent.frontmatter[k]
-                                const display = Array.isArray(v) ? v.join(', ') : v
-                                return (
-                                  <div key={k} className="flex gap-2 text-sm">
-                                    <span className="text-text-muted font-mono flex-shrink-0">
-                                      {k}:
-                                    </span>
-                                    <span className="text-text-secondary break-all">{display}</span>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          )}
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs uppercase tracking-wider text-text-muted">
-                              Body
-                            </span>
-                            {agent.bodyPreview ? (
-                              <div className="font-mono whitespace-pre-wrap text-sm text-text-secondary leading-relaxed bg-surface-overlay rounded px-2 py-1.5">
-                                {agent.bodyPreview}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-text-muted italic">(no body content)</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                      agent={agent}
+                      isExpanded={expandedPath === agent.path}
+                      onToggleExpand={handleToggleExpand}
+                      onEdit={handleEditStart}
+                      onDelete={handleDeleteRequest}
+                    />
                   )
                 })}
               </div>

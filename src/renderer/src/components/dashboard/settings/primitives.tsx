@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
@@ -78,6 +78,7 @@ export function SegmentedControl<T extends string>({
       {options.map((opt) => (
         <button
           key={opt.value}
+          type="button"
           role="radio"
           aria-checked={value === opt.value}
           onClick={() => onChange(opt.value)}
@@ -108,6 +109,7 @@ export interface SelectProps<T extends string> {
   value: T
   onChange: (v: T) => void
   ariaLabel?: string
+  id?: string
   className?: string
   disabled?: boolean
   placeholder?: string
@@ -121,12 +123,14 @@ export function Select<T extends string>({
   value,
   onChange,
   ariaLabel,
+  id,
   className,
   disabled,
   placeholder,
   autoFocus
 }: SelectProps<T>): React.JSX.Element {
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const listboxId = useId()
   useEffect(() => {
     if (autoFocus) triggerRef.current?.focus()
   }, [autoFocus])
@@ -281,10 +285,12 @@ export function Select<T extends string>({
     <div className={['relative inline-flex w-full', className ?? ''].join(' ')}>
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => (open ? closeMenu() : openMenu())}
@@ -329,6 +335,7 @@ export function Select<T extends string>({
           className="z-50 bg-surface-overlay border border-border-default rounded-md shadow-lg py-1 overflow-y-auto focus:outline-none"
         >
           <div
+            id={listboxId}
             ref={popoverRef}
             role="listbox"
             aria-label={ariaLabel}
@@ -392,6 +399,7 @@ export function Toggle({ value, onChange, ariaLabel }: ToggleProps): React.JSX.E
   // iOS-style switch: 36x20 track with 14x14 knob, no border on off-state.
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={value}
       aria-label={ariaLabel}
@@ -424,13 +432,15 @@ export interface NumberInputProps {
   onChange: (v: number | null) => void
   placeholder?: string
   className?: string
+  ariaLabel?: string
 }
 
 export function NumberInput({
   value,
   onChange,
   placeholder,
-  className
+  className,
+  ariaLabel
 }: NumberInputProps): React.JSX.Element {
   const [local, setLocal] = useState(value === null ? '' : String(value))
   // Track whether we have focus to avoid overwriting user's in-progress edits
@@ -460,6 +470,7 @@ export function NumberInput({
     <input
       type="text"
       inputMode="numeric"
+      aria-label={ariaLabel}
       value={displayValue}
       onChange={(e) => setLocal(e.target.value)}
       onFocus={() => {
@@ -523,9 +534,10 @@ export function RuleListEditor({
 
   function commitItem(idx: number): void {
     const trimmed = localItems[idx].trim()
-    const filtered = localItems
-      .map((item, i) => (i === idx ? trimmed : item))
-      .filter((item) => item !== '')
+    const filtered = localItems.flatMap((item, i) => {
+      const v = i === idx ? trimmed : item
+      return v !== '' ? [v] : []
+    })
     setLocalItems(filtered)
     onChange(filtered)
   }
@@ -569,6 +581,7 @@ export function RuleListEditor({
               <input
                 data-rule-input
                 type="text"
+                aria-label="Rule"
                 value={item}
                 onChange={(e) => updateItem(idx, e.target.value)}
                 onBlur={() => commitItem(idx)}
@@ -584,6 +597,7 @@ export function RuleListEditor({
                 className="flex-1 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
               />
               <button
+                type="button"
                 onClick={() => removeItem(idx)}
                 className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
                 aria-label="Remove rule"
@@ -595,6 +609,7 @@ export function RuleListEditor({
         </div>
       )}
       <button
+        type="button"
         onClick={addItem}
         className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors self-start focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded px-1"
       >
@@ -654,6 +669,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps): React.JSX.El
       />
       {showCustom && (
         <input
+          aria-label="Custom model ID"
           value={customValue}
           onChange={(e) => setCustomValue(e.target.value)}
           onBlur={() => {

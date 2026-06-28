@@ -5,10 +5,10 @@ import { useMemo } from 'react'
 
 import { DotMatrixBase } from '@/components/ui/dotmatrix-core'
 import { useDotMatrixPhases } from '@/components/ui/dotmatrix-hooks'
-import { rowMajorIndex } from '@/components/ui/dotmatrix-core'
+import { rowMajorIndex } from '@/components/ui/dotmatrix-core-lib'
 import { usePrefersReducedMotion } from '@/components/ui/dotmatrix-hooks'
 import { useSteppedCycle } from '@/components/ui/dotmatrix-hooks'
-import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core'
+import type { DotAnimationResolver, DotMatrixCommonProps } from '@/components/ui/dotmatrix-core-lib'
 
 export type DotmSquare13Props = DotMatrixCommonProps
 

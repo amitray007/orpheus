@@ -20,6 +20,7 @@ export function OrpheusDeveloperSection(): React.JSX.Element {
             description="Open Chromium DevTools in a detached window. Console shows renderer logs. Main process logs go to stderr — visible if you launched Orpheus from the terminal."
           >
             <button
+              type="button"
               onClick={() => {
                 window.api.window.openDevTools().catch((err) => {
                   console.error('[settings] openDevTools failed', err)
@@ -35,6 +36,7 @@ export function OrpheusDeveloperSection(): React.JSX.Element {
             description="Force a renderer reload without restarting Orpheus. Useful after editing local renderer assets in dev mode."
           >
             <button
+              type="button"
               onClick={() => {
                 window.api.window.reload().catch((err) => {
                   console.error('[settings] reload failed', err)

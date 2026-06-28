@@ -1,232 +1,41 @@
 import type Database from 'better-sqlite3'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { getDb } from './db'
-import type { DiagEvent, DiagRow, DiagQuery, DiagCategory, DiagProcess } from '../shared/types'
-import type { DiagLevel } from '../shared/types'
-import { Span, newTraceId, newSpanId } from '../shared/trace'
-import type { TraceContext, TraceRecord } from '../shared/trace'
+import type { DiagEvent, DiagRow, DiagQuery } from '../shared/types'
+import { ringLength, drainRing, getDiagDropped } from './diagCore'
+
+// Re-export the full in-memory event bus API so all callers that currently
+// import from './diagnostics' continue to work without any path changes.
+export {
+  setDiagCategoryFlags,
+  isCategoryEnabled,
+  logDiagMain,
+  ingestDiagEvent,
+  subscribeDiag,
+  subscribeTrace,
+  fanOut,
+  diagSubscribers,
+  traceStore,
+  diag
+} from './diagCore'
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const ROW_CAP = 50_000
 const FLUSH_INTERVAL_MS = 2000
-const RING_CAPACITY = 4000 // bounded; drop-oldest if the flusher falls behind
 const FLUSH_BATCH_MAX = 1000
 
-const ring: DiagEvent[] = []
-let dropped = 0
-let seqCounter = 0
 let timer: ReturnType<typeof setInterval> | null = null
 let insertStmt: Database.Statement | null = null
-
-let categoryFlags = { error: true, lifecycle: false, perf: false, anomaly: false, trace: false }
-
-export function setDiagCategoryFlags(flags: {
-  error: boolean
-  lifecycle: boolean
-  perf: boolean
-  anomaly: boolean
-  trace: boolean
-}): void {
-  categoryFlags = flags
-}
-
-export function isCategoryEnabled(c: DiagCategory): boolean {
-  return categoryFlags[c] === true
-}
-
-function pushRing(evt: DiagEvent): void {
-  if (ring.length >= RING_CAPACITY) {
-    ring.shift()
-    dropped++
-  }
-  ring.push(evt)
-}
-
-const diagSubscribers = new Set<(e: DiagEvent) => void>()
-
-export function logDiagMain(
-  evt: Omit<DiagEvent, 'process' | 'ts'> & { process?: DiagProcess; ts?: number }
-): void {
-  try {
-    if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
-    fanOut({
-      ts: evt.ts ?? Date.now(),
-      process: evt.process ?? 'main',
-      category: evt.category,
-      level: evt.level,
-      event: evt.event,
-      workspaceId: evt.workspaceId ?? null,
-      sessionId: evt.sessionId ?? null,
-      durationMs: evt.durationMs ?? null,
-      message: evt.message,
-      data: evt.data ?? null,
-      traceId: evt.traceId ?? null,
-      spanId: evt.spanId ?? null,
-      parentSpanId: evt.parentSpanId ?? null,
-      name: evt.name ?? null,
-      kind: evt.kind ?? null
-    })
-  } catch {
-    /* diagnostics must never throw into app code */
-  }
-}
-
-export function ingestDiagEvent(evt: DiagEvent): void {
-  try {
-    if (!evt || typeof evt.event !== 'string') return
-    if (!isCategoryEnabled(evt.category) && diagSubscribers.size === 0) return
-    fanOut(evt)
-  } catch {
-    /* swallow */
-  }
-}
-
-// ── Trace context (main owns it via AsyncLocalStorage) ──────────────────────
-const traceStore = new AsyncLocalStorage<TraceContext>()
-
-export function subscribeDiag(fn: (e: DiagEvent) => void): () => void {
-  diagSubscribers.add(fn)
-  return () => diagSubscribers.delete(fn)
-}
-
-export function subscribeTrace(fn: (rec: TraceRecord) => void): () => void {
-  return subscribeDiag((e) => {
-    if (e.category === 'trace') {
-      fn({
-        ts: e.ts,
-        kind: (e.kind as TraceRecord['kind']) ?? 'event',
-        name: e.name ?? e.event,
-        traceId: e.traceId ?? '',
-        spanId: e.spanId ?? '',
-        parentSpanId: e.parentSpanId ?? null,
-        durationMs: e.durationMs ?? null,
-        level: e.level,
-        workspaceId: e.workspaceId ?? null,
-        sessionId: e.sessionId ?? null,
-        data: e.data ?? null
-      })
-    }
-  })
-}
-
-function fanOut(evt: DiagEvent): void {
-  if (isCategoryEnabled(evt.category)) {
-    pushRing(evt)
-  }
-  if (diagSubscribers.size > 0) {
-    // Snapshot before iterating: a subscriber may (un)subscribe during fan-out.
-    const subs = [...diagSubscribers]
-    for (const fn of subs) {
-      try {
-        fn(evt)
-      } catch {
-        /* a bad subscriber must not break emit or other subscribers */
-      }
-    }
-  }
-}
-
-function emitTrace(rec: TraceRecord): void {
-  try {
-    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return
-    fanOut({
-      ts: rec.ts,
-      process: 'main',
-      category: 'trace',
-      level: rec.level,
-      event: rec.name,
-      workspaceId: rec.workspaceId ?? null,
-      sessionId: rec.sessionId ?? null,
-      durationMs: rec.durationMs ?? null,
-      message: undefined,
-      data: rec.data ?? null,
-      traceId: rec.traceId,
-      spanId: rec.spanId,
-      parentSpanId: rec.parentSpanId ?? null,
-      name: rec.name,
-      kind: rec.kind
-    })
-  } catch {
-    /* never throw */
-  }
-}
-
-function startSpan(name: string, attrs?: Record<string, unknown>): Span {
-  const parent = traceStore.getStore()
-  const ctx: TraceContext = {
-    traceId: parent?.traceId ?? newTraceId(),
-    spanId: newSpanId()
-  }
-  return new Span(emitTrace, ctx, name, parent?.spanId ?? null, attrs)
-}
-
-// When the trace category is off, hand callers a Span that emits nothing.
-// Singleton — allocated once at import, never per-call. Its internal `ended`
-// latch is intentional and harmless here: emit is a no-op, so a "stuck" latch
-// has no observable effect — don't "fix" it by re-creating the span per call.
-const NOOP_SPAN = new Span(() => {}, { traceId: 't0', spanId: 's0' }, 'noop', null)
-
-export const diag = {
-  // async unit of work — child spans nest automatically via ALS.
-  async trace<T>(
-    name: string,
-    attrs: Record<string, unknown> | undefined,
-    fn: (s: Span) => Promise<T> | T
-  ): Promise<T> {
-    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0)
-      return fn(NOOP_SPAN) as Promise<T>
-    const span = startSpan(name, attrs)
-    try {
-      return await traceStore.run(span.ctx, () => fn(span))
-    } finally {
-      span.end()
-    }
-  },
-  // sync unit of work.
-  span<T>(name: string, attrs: Record<string, unknown> | undefined, fn: (s: Span) => T): T {
-    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return fn(NOOP_SPAN)
-    const span = startSpan(name, attrs)
-    try {
-      return traceStore.run(span.ctx, () => fn(span))
-    } finally {
-      span.end()
-    }
-  },
-  // point event (no span).
-  event(name: string, attrs?: Record<string, unknown>, level: DiagLevel = 'info'): void {
-    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return
-    const parent = traceStore.getStore()
-    emitTrace({
-      ts: Date.now(),
-      kind: 'event',
-      name,
-      traceId: parent?.traceId ?? newTraceId(),
-      spanId: newSpanId(),
-      parentSpanId: parent?.spanId ?? null,
-      level,
-      workspaceId: typeof attrs?.workspaceId === 'string' ? attrs.workspaceId : null,
-      sessionId: typeof attrs?.sessionId === 'string' ? attrs.sessionId : null,
-      data: attrs ?? null
-    })
-  },
-  currentContext(): TraceContext | undefined {
-    return traceStore.getStore()
-  },
-  // resume a trace under an explicit context (e.g. after parsing an IPC payload).
-  withContext<T>(ctx: TraceContext, fn: () => T): T {
-    return traceStore.run(ctx, fn)
-  }
-}
+let seqCounter = 0
 
 function flush(): void {
-  if (ring.length === 0) return
+  if (ringLength() === 0) return
   let db: Database.Database
   try {
     db = getDb()
   } catch {
     return // DB not ready; keep buffering (bounded)
   }
-  const batch = ring.splice(0, FLUSH_BATCH_MAX)
+  const batch = drainRing(FLUSH_BATCH_MAX)
   try {
     if (!insertStmt) {
       insertStmt = db.prepare(
@@ -351,5 +160,5 @@ function safeParse(s: string): Record<string, unknown> | null {
 }
 
 export function diagDroppedCount(): number {
-  return dropped
+  return getDiagDropped()
 }

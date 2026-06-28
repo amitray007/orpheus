@@ -1,6 +1,6 @@
 import type React from 'react'
-import { useState, useEffect, useRef, memo } from 'react'
-import type { Icon } from '@phosphor-icons/react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   Circle,
   Kanban,
@@ -10,7 +10,8 @@ import {
   Stack,
   Archive,
   Gear,
-  GitFork
+  GitFork,
+  PushPin
 } from '@phosphor-icons/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -26,87 +27,9 @@ import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
 import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
-
-// ---------------------------------------------------------------------------
-// Module-level stable empty maps (avoid new Map() on every render as fallback)
-// ---------------------------------------------------------------------------
-
-const EMPTY_TITLE_MAP = new Map<string, string>()
-const EMPTY_MTIME_MAP = new Map<string, number>()
-
-function formatRelativeTime(epochMs: number | null, now: number): string {
-  if (epochMs === null) return ''
-  const ageMs = now - epochMs
-  const sec = Math.floor(ageMs / 1000)
-  if (sec < 60) return 'now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h`
-  const day = Math.floor(hr / 24)
-  if (day < 7) return `${day}d`
-  return `${Math.floor(day / 7)}w`
-}
-
-// ---------------------------------------------------------------------------
-// Nav primitives
-// ---------------------------------------------------------------------------
-
-interface NavItemProps {
-  Icon: Icon
-  label: string
-  active?: boolean
-  collapsed: boolean
-  flushTop?: boolean
-  onClick?: () => void
-}
-
-function NavItem({
-  Icon,
-  label,
-  active = false,
-  collapsed,
-  flushTop = false,
-  onClick
-}: NavItemProps): React.JSX.Element {
-  return (
-    <button
-      className={[
-        'w-full flex items-center transition-colors duration-150',
-        flushTop ? 'rounded-b-md' : 'rounded-md',
-        collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2 gap-3',
-        active
-          ? 'bg-accent/15 text-text-primary font-medium'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay',
-        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-      ].join(' ')}
-      onClick={onClick}
-      aria-label={label}
-      aria-current={active ? 'page' : undefined}
-    >
-      <Icon
-        size={20}
-        weight={active ? 'fill' : 'regular'}
-        className={active ? 'text-accent' : ''}
-      />
-      {!collapsed && <span className="text-sm">{label}</span>}
-    </button>
-  )
-}
-
-interface SectionHeaderProps {
-  label: string
-  action?: React.ReactNode
-}
-
-function SectionHeader({ label, action }: SectionHeaderProps): React.JSX.Element {
-  return (
-    <div className="flex items-center justify-between px-3 mb-1">
-      <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
-      {action}
-    </div>
-  )
-}
+import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
+import { NavItem, SectionHeader } from './SidebarNavItems'
+import { CollapsedProjectList } from './CollapsedProjectList'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -134,6 +57,43 @@ interface WorkspaceRowProps {
   onArchive: () => void
   onClose: () => void
   onTogglePin: () => void
+}
+
+// Small component so useFocusOnMount fires when the rename input mounts
+function WorkspaceRenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  onMouseDown,
+  className,
+  ariaLabel
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  onMouseDown: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+  ariaLabel: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      className={className}
+    />
+  )
 }
 
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
@@ -335,6 +295,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         onContextMenu={handleContextMenu}
       >
         <button
+          type="button"
           onClick={onSelect}
           className={[
             'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
@@ -369,8 +330,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             {/* Title area */}
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {renaming ? (
-                <input
-                  autoFocus
+                <WorkspaceRenameInput
+                  ariaLabel="Rename workspace"
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -413,6 +374,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         )}
         {!renaming && hovered && (
           <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation()
               onArchive()
@@ -494,8 +456,9 @@ const PinnedRow = memo(function PinnedRow({
       onContextMenu={handleContextMenu}
     >
       <button
+        type="button"
         onClick={onSelect}
-        className="flex items-center gap-2 pl-4 pr-2 h-8 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -513,17 +476,17 @@ const PinnedRow = memo(function PinnedRow({
             />
           )}
         </span>
-        <span className="flex flex-col min-w-0 flex-1">
+        <span className="flex flex-col gap-0.5 min-w-0 flex-1">
           <span
             className={[
-              'text-xs truncate leading-snug',
+              'text-xs truncate leading-tight',
               dn.muted ? 'text-text-muted italic' : ''
             ].join(' ')}
             title={dn.text}
           >
             {dn.text}
           </span>
-          <span className="text-xs text-text-muted truncate leading-none">{project.name}</span>
+          <span className="text-[11px] text-text-muted truncate leading-tight">{project.name}</span>
         </span>
       </button>
       {menu && (
@@ -580,6 +543,7 @@ interface ProjectRowProps {
   onArchiveWorkspace: (workspaceId: string) => void
   onCloseWorkspace: (workspaceId: string) => void
   onTogglePinWorkspace: (workspaceId: string) => void
+  onTogglePinProject: () => void
   wsDragId: string | null
   wsDropTargetId: string | null
   wsDropPos: 'before' | 'after'
@@ -596,6 +560,38 @@ interface ProjectRowProps {
     workspaces: WorkspaceRecord[]
   ) => void
   onWorkspaceDragEnd: () => void
+}
+
+// Small component so useFocusOnMount fires when the project rename input mounts
+function ProjectRenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  className
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label="Rename project"
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      className={className}
+    />
+  )
 }
 
 const ProjectRow = memo(function ProjectRow({
@@ -630,6 +626,7 @@ const ProjectRow = memo(function ProjectRow({
   onArchiveWorkspace,
   onCloseWorkspace,
   onTogglePinWorkspace,
+  onTogglePinProject,
   wsDragId,
   wsDropTargetId,
   wsDropPos,
@@ -651,17 +648,20 @@ const ProjectRow = memo(function ProjectRow({
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
+    const isPinned = project.pinnedAt !== null
     const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
     if (!rect || rect.width < 200) {
       void window.api.contextMenu
         .show([
+          { label: isPinned ? 'Unpin' : 'Pin', action: 'togglePin' },
           { label: 'Rename', action: 'rename' },
           { divider: true },
           { label: 'Remove', action: 'remove' }
         ])
         .then((action) => {
           if (!action) return
-          if (action === 'rename') onBeginRename()
+          if (action === 'togglePin') onTogglePinProject()
+          else if (action === 'rename') onBeginRename()
           else if (action === 'remove') onRequestRemove()
         })
       return
@@ -669,7 +669,9 @@ const ProjectRow = memo(function ProjectRow({
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
+  const isPinned = project.pinnedAt !== null
   const projectMenuItems: ContextMenuItem[] = [
+    { label: isPinned ? 'Unpin' : 'Pin', onClick: onTogglePinProject },
     { label: 'Rename', onClick: onBeginRename },
     { label: '', divider: true, onClick: () => {} },
     { label: 'Remove', onClick: onRequestRemove }
@@ -699,19 +701,26 @@ const ProjectRow = memo(function ProjectRow({
       >
         {/* Main clickable row — navigate to project view. py-2 → ~40px hit target */}
         <button
+          type="button"
           onClick={onSelect}
           className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
           title={project.path}
           aria-label={project.name}
         >
-          <Identicon
-            seed={project.path}
-            size={20}
-            avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
-          />
+          <span className="relative inline-flex items-center flex-shrink-0">
+            <Identicon
+              seed={project.path}
+              size={20}
+              avatarUrl={fetchGithubAvatars ? project.githubAvatarUrl : null}
+            />
+            {project.pinnedAt !== null && (
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-surface-raised border border-border-default flex items-center justify-center pointer-events-none">
+                <PushPin size={6} weight="fill" className="text-accent" />
+              </span>
+            )}
+          </span>
           {renaming ? (
-            <input
-              autoFocus
+            <ProjectRenameInput
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {
@@ -738,6 +747,7 @@ const ProjectRow = memo(function ProjectRow({
             {/* Add workspace — visible on hover */}
             {hovered && (
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation()
                   onAddWorkspace()
@@ -752,6 +762,7 @@ const ProjectRow = memo(function ProjectRow({
 
             {/* Expand/collapse chevron */}
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation()
                 onToggleExpand()
@@ -778,6 +789,7 @@ const ProjectRow = memo(function ProjectRow({
       {/* Nested workspace rows */}
       {expanded && workspaces.length === 0 && (
         <button
+          type="button"
           onClick={onAddWorkspace}
           className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
           aria-label="Add workspace"
@@ -887,6 +899,7 @@ interface SidebarProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinProject: (projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
   onRefreshPins: () => void
@@ -919,6 +932,7 @@ export function Sidebar({
   onArchiveWorkspace,
   onCloseWorkspace,
   onTogglePinWorkspace,
+  onTogglePinProject,
   onReorderProjects,
   onReorderWorkspaces,
   pinnedItems,
@@ -930,7 +944,7 @@ export function Sidebar({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropPos, setDropPos] = useState<'before' | 'after'>('before')
   const [wsDragId, setWsDragId] = useState<string | null>(null)
-  const [wsDragProjectId, setWsDragProjectId] = useState<string | null>(null)
+  const wsDragProjectIdRef = useRef<string | null>(null)
   const [wsDropTargetId, setWsDropTargetId] = useState<string | null>(null)
   const [wsDropPos, setWsDropPos] = useState<'before' | 'after'>('before')
   // Map from projectId → (Map from claudeSessionId → session title).
@@ -950,15 +964,16 @@ export function Sidebar({
   const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const fetchedProjectSessions = useRef<Set<string>>(new Set())
+  const fetchedProjectSessions = useRef<Set<string> | null>(null)
+  if (fetchedProjectSessions.current === null) fetchedProjectSessions.current = new Set<string>()
   const sidebarRef = useRef<HTMLElement>(null)
 
   // Fetch sessions for any visible project that hasn't been loaded yet.
   useEffect(() => {
     const projectIds = projects.map((p) => p.id)
     for (const projectId of projectIds) {
-      if (fetchedProjectSessions.current.has(projectId)) continue
-      fetchedProjectSessions.current.add(projectId)
+      if (fetchedProjectSessions.current!.has(projectId)) continue
+      fetchedProjectSessions.current!.add(projectId)
       window.api.sessions
         .listForProject(projectId, { includeArchived: true })
         .then((sessions: SessionRecord[]) => {
@@ -1012,13 +1027,13 @@ export function Sidebar({
     setRenamingProjectId(null)
   }
 
-  function handleCancelRename(): void {
+  const handleCancelRename = useCallback((): void => {
     setRenamingProjectId(null)
-  }
+  }, [])
 
-  function handleBeginRenameWorkspace(id: string): void {
+  const handleBeginRenameWorkspace = useCallback((id: string): void => {
     setRenamingWorkspaceId(id)
-  }
+  }, [])
 
   function handleFinishRenameWorkspace(
     workspaceId: string,
@@ -1029,8 +1044,14 @@ export function Sidebar({
     setRenamingWorkspaceId(null)
   }
 
-  function handleCancelRenameWorkspace(): void {
+  const handleCancelRenameWorkspace = useCallback((): void => {
     setRenamingWorkspaceId(null)
+  }, [])
+
+  // Returns 0 for pinned projects, 1 for unpinned — used to enforce same-tier drag.
+  function projectPinTier(projectId: string): 0 | 1 {
+    const p = projects.find((x) => x.id === projectId)
+    return p?.pinnedAt != null ? 0 : 1
   }
 
   function onProjectDragStart(e: React.DragEvent<HTMLDivElement>, id: string): void {
@@ -1041,6 +1062,8 @@ export function Sidebar({
 
   function onProjectDragOver(e: React.DragEvent<HTMLDivElement>, id: string): void {
     if (!dragId || dragId === id) return
+    // Cross-tier drag: no indicator shown
+    if (projectPinTier(dragId) !== projectPinTier(id)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     const rect = e.currentTarget.getBoundingClientRect()
@@ -1052,6 +1075,12 @@ export function Sidebar({
   function onProjectDrop(e: React.DragEvent<HTMLDivElement>, targetId: string): void {
     e.preventDefault()
     if (!dragId || dragId === targetId) {
+      setDragId(null)
+      setDropTargetId(null)
+      return
+    }
+    // Cross-tier drop: no-op
+    if (projectPinTier(dragId) !== projectPinTier(targetId)) {
       setDragId(null)
       setDropTargetId(null)
       return
@@ -1074,73 +1103,82 @@ export function Sidebar({
     setDropTargetId(null)
   }
 
-  function onWorkspaceDragStart(
-    e: React.DragEvent<HTMLDivElement>,
-    wsId: string,
-    projectId: string
-  ): void {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', wsId)
-    setWsDragId(wsId)
-    setWsDragProjectId(projectId)
-  }
+  const onWorkspaceDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string): void => {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', wsId)
+      setWsDragId(wsId)
+      wsDragProjectIdRef.current = projectId
+    },
+    []
+  )
 
-  function onWorkspaceDragOver(
-    e: React.DragEvent<HTMLDivElement>,
-    wsId: string,
-    projectId: string
-  ): void {
-    if (!wsDragId || wsDragId === wsId) return
-    // Cross-project drag: no-op
-    if (wsDragProjectId !== projectId) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    const rect = e.currentTarget.getBoundingClientRect()
-    const isAbove = e.clientY < rect.top + rect.height / 2
-    setWsDropTargetId(wsId)
-    setWsDropPos(isAbove ? 'before' : 'after')
-  }
+  const onWorkspaceDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string): void => {
+      if (!wsDragId || wsDragId === wsId) return
+      // Cross-project drag: no-op
+      if (wsDragProjectIdRef.current !== projectId) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const rect = e.currentTarget.getBoundingClientRect()
+      const isAbove = e.clientY < rect.top + rect.height / 2
+      setWsDropTargetId(wsId)
+      setWsDropPos(isAbove ? 'before' : 'after')
+    },
+    [wsDragId]
+  )
 
-  function onWorkspaceDrop(
-    e: React.DragEvent<HTMLDivElement>,
-    targetId: string,
-    projectId: string,
-    workspaces: WorkspaceRecord[]
-  ): void {
-    e.preventDefault()
-    if (!wsDragId || wsDragId === targetId || wsDragProjectId !== projectId) {
+  const onWorkspaceDrop = useCallback(
+    (
+      e: React.DragEvent<HTMLDivElement>,
+      targetId: string,
+      projectId: string,
+      workspaces: WorkspaceRecord[]
+    ): void => {
+      e.preventDefault()
+      if (!wsDragId || wsDragId === targetId || wsDragProjectIdRef.current !== projectId) {
+        setWsDragId(null)
+        wsDragProjectIdRef.current = null
+        setWsDropTargetId(null)
+        return
+      }
+      const ids = workspaces.map((w) => w.id)
+      const fromIdx = ids.indexOf(wsDragId)
+      if (fromIdx === -1) {
+        setWsDragId(null)
+        wsDragProjectIdRef.current = null
+        setWsDropTargetId(null)
+        return
+      }
+      ids.splice(fromIdx, 1)
+      let toIdx = ids.indexOf(targetId)
+      if (toIdx === -1) toIdx = ids.length
+      if (wsDropPos === 'after') toIdx += 1
+      ids.splice(toIdx, 0, wsDragId)
+      onReorderWorkspaces(projectId, ids)
       setWsDragId(null)
-      setWsDragProjectId(null)
+      wsDragProjectIdRef.current = null
       setWsDropTargetId(null)
-      return
-    }
-    const ids = workspaces.map((w) => w.id)
-    const fromIdx = ids.indexOf(wsDragId)
-    if (fromIdx === -1) {
-      setWsDragId(null)
-      setWsDragProjectId(null)
-      setWsDropTargetId(null)
-      return
-    }
-    ids.splice(fromIdx, 1)
-    let toIdx = ids.indexOf(targetId)
-    if (toIdx === -1) toIdx = ids.length
-    if (wsDropPos === 'after') toIdx += 1
-    ids.splice(toIdx, 0, wsDragId)
-    onReorderWorkspaces(projectId, ids)
-    setWsDragId(null)
-    setWsDragProjectId(null)
-    setWsDropTargetId(null)
-  }
+    },
+    [wsDragId, wsDropPos, onReorderWorkspaces]
+  )
 
-  function onWorkspaceDragEnd(): void {
+  const onWorkspaceDragEnd = useCallback((): void => {
     setWsDragId(null)
-    setWsDragProjectId(null)
+    wsDragProjectIdRef.current = null
     setWsDropTargetId(null)
-  }
+  }, [])
+
+  // Used by CollapsedProjectList to highlight the currently-active project.
+  const isProjectActive = useCallback(
+    (projectId: string): boolean =>
+      (activeView === 'project' || activeView === 'workspace') && selectedProjectId === projectId,
+    [activeView, selectedProjectId]
+  )
 
   const addProjectButton = (
     <button
+      type="button"
       aria-label="Add project"
       disabled={addingProject}
       className={[
@@ -1267,6 +1305,7 @@ export function Sidebar({
                           onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
                           onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
                           onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
+                          onTogglePinProject={() => onTogglePinProject(p.id)}
                           wsDragId={wsDragId}
                           wsDropTargetId={wsDropTargetId}
                           wsDropPos={wsDropPos}
@@ -1283,34 +1322,16 @@ export function Sidebar({
               )}
             </>
           ) : (
-            /* Collapsed: show identicons only */
-            <div className="flex flex-col gap-1 items-center overflow-y-auto flex-1 min-h-0 no-scrollbar">
-              <div className="flex justify-center mb-1">{addProjectButton}</div>
-              {!projectsLoading &&
-                projects.map((p) => {
-                  const isActive =
-                    (activeView === 'project' || activeView === 'workspace') &&
-                    selectedProjectId === p.id
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => onSelectProject(p.id)}
-                      title={p.name}
-                      aria-label={p.name}
-                      className={[
-                        'p-1 rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-                        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'
-                      ].join(' ')}
-                    >
-                      <Identicon
-                        seed={p.path}
-                        size={22}
-                        avatarUrl={fetchGithubAvatars ? p.githubAvatarUrl : null}
-                      />
-                    </button>
-                  )
-                })}
-            </div>
+            <CollapsedProjectList
+              projects={projects}
+              projectsLoading={projectsLoading}
+              fetchGithubAvatars={fetchGithubAvatars}
+              isProjectActive={isProjectActive}
+              addingProject={addingProject}
+              onSelectProject={onSelectProject}
+              onAddProject={onAddProject}
+              workspacesByProject={workspacesByProject}
+            />
           )}
         </div>
 

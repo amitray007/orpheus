@@ -123,8 +123,9 @@ export function MainContent({
       nextRecords.set(wsId, workspace)
       const nextIds = keptState.ids[0] === wsId ? keptState.ids : lruPush(keptState.ids, wsId)
       // Drop evicted ids from the record snapshot.
+      const nextIdsSet = new Set(nextIds)
       for (const id of keptState.ids) {
-        if (!nextIds.includes(id)) nextRecords.delete(id)
+        if (!nextIdsSet.has(id)) nextRecords.delete(id)
       }
       renderKeptState = { ids: nextIds, records: nextRecords }
       // Schedule the state update so React commits the new keptState.

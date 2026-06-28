@@ -190,6 +190,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
                       key={c.value}
                       type="button"
                       title={c.label}
+                      aria-label={c.label}
                       onClick={() => {
                         playSound('tick')
                         patch({ accentColor: c.value })
@@ -299,6 +300,7 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
             <button
               type="button"
               role="switch"
+              aria-label="Fetch GitHub avatars"
               aria-checked={uiState.fetchGithubAvatars ?? true}
               onClick={() => patch({ fetchGithubAvatars: !(uiState.fetchGithubAvatars ?? true) })}
               className={[

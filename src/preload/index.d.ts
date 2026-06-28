@@ -128,6 +128,7 @@ declare global {
         rename: (id: string, name: string) => Promise<void>
         setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
         reorder: (orderedIds: string[]) => Promise<void>
+        setPinned: (id: string, pinned: boolean) => Promise<ProjectRecord>
         refreshGithub: (projectId: string) => Promise<void>
         onGithubDataUpdated: (
           cb: (e: {

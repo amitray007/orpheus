@@ -171,6 +171,8 @@ const api = {
       ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded }),
     reorder: (orderedIds: string[]): Promise<void> =>
       ipcRenderer.invoke('projects:reorder', { orderedIds }),
+    setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
+      ipcRenderer.invoke('projects:setPinned', { id, pinned }),
     refreshGithub: (projectId: string): Promise<void> =>
       ipcRenderer.invoke('projects:refreshGithub', projectId),
     onGithubDataUpdated: (

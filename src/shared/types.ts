@@ -93,6 +93,7 @@ export type ProjectRecord = {
   lastOpenedAt: number | null
   expandedInSidebar: boolean
   sortOrder: number | null
+  pinnedAt: number | null
   // v37 — GitHub avatar data; null until first check or when remote isn't GitHub
   githubOwner: string | null
   githubRepo: string | null

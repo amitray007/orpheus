@@ -268,6 +268,7 @@ export function CommitsTab({ cwd }: CommitsTabProps): React.JSX.Element {
             />
             <input
               type="text"
+              aria-label="Search commits"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search commits"

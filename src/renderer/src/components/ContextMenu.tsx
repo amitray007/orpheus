@@ -68,6 +68,7 @@ export function ContextMenu({
           return (
             <button
               key={i}
+              type="button"
               disabled={item.disabled}
               className={[
                 'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100',

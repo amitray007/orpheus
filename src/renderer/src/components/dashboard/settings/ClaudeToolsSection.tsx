@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import { Plus, Pencil, Trash } from '@phosphor-icons/react'
 import type {
@@ -10,6 +10,8 @@ import type {
 import { SettingRow, Toggle, NumberInput, Select, SectionTitle, Eyebrow } from './primitives'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SettingsSectionSkeleton } from '../../Skeleton'
+import { useEscapeKey } from '../../../lib/useEscapeKey'
+import { SourceSelect } from './shared/SourceSelect'
 
 // ---------------------------------------------------------------------------
 // ClaudeToolsSection — MCP servers (full CRUD), bash limits, concurrency, browser integration
@@ -80,7 +82,7 @@ interface McpServerFormProps {
   addButtonRef?: React.RefObject<HTMLButtonElement | null>
 }
 
-function McpServerForm({
+const McpServerForm = memo(function McpServerForm({
   initial,
   projects,
   sourceFixed,
@@ -92,21 +94,16 @@ function McpServerForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | null>(null)
+  const transportId = useId()
 
   useEffect(() => {
     firstInputRef.current?.focus()
   }, [])
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        onCancel()
-        addButtonRef?.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onCancel, addButtonRef])
+  useEscapeKey(() => {
+    onCancel()
+    addButtonRef?.current?.focus()
+  })
 
   function set<K extends keyof McpFormValues>(key: K, val: McpFormValues[K]): void {
     setValues((prev) => ({ ...prev, [key]: val }))
@@ -130,35 +127,23 @@ function McpServerForm({
   const isStdio = values.transport === 'stdio'
 
   return (
-    <div
+    <form
       className="bg-surface-raised border border-border-default rounded-lg p-4 flex flex-col gap-3"
-      role="form"
       aria-label="MCP server"
+      onSubmit={(e) => e.preventDefault()}
     >
       {/* Row 1: Source + Name + Transport */}
       <div className="flex gap-3">
-        {/* Source */}
-        <div className="flex-1 min-w-0">
-          <label className={labelClass}>Source</label>
-          <Select
-            ariaLabel="Source"
-            disabled={sourceFixed}
-            value={values.source === 'user' ? 'user' : values.projectId}
-            onChange={(val) => {
-              if (val === 'user') {
-                set('source', 'user')
-                set('projectId', '')
-              } else {
-                set('source', 'project')
-                set('projectId', val)
-              }
-            }}
-            options={[
-              { value: 'user', label: 'User (~/.claude.json)' },
-              ...projects.map((p) => ({ value: p.id, label: `Project · ${p.name}` }))
-            ]}
-          />
-        </div>
+        <SourceSelect
+          userLabel="User (~/.claude.json)"
+          value={values.source === 'user' ? 'user' : values.projectId}
+          projects={projects}
+          onChange={(source, projectId) => {
+            set('source', source)
+            set('projectId', projectId)
+          }}
+          disabled={sourceFixed}
+        />
 
         {/* Name */}
         <div className="flex-1 min-w-0">
@@ -183,9 +168,12 @@ function McpServerForm({
 
         {/* Transport */}
         <div className="w-28 flex-shrink-0">
-          <label className={labelClass}>Transport</label>
+          <label htmlFor={transportId} className={labelClass}>
+            Transport
+          </label>
           <Select<'stdio' | 'http' | 'sse'>
             ariaLabel="Transport"
+            id={transportId}
             value={values.transport}
             onChange={(v) => set('transport', v)}
             options={[
@@ -307,9 +295,82 @@ function McpServerForm({
           Cancel
         </button>
       </div>
+    </form>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// McpServerRow — memoized display row (non-editing state)
+// ---------------------------------------------------------------------------
+
+interface McpServerRowProps {
+  server: DiscoveredMcpServer
+  enabled: boolean
+  onEdit: (server: DiscoveredMcpServer) => void
+  onDelete: (server: DiscoveredMcpServer) => void
+  onToggleEnabled: (name: string, enabled: boolean) => void
+}
+
+const McpServerRow = memo(function McpServerRow({
+  server,
+  enabled,
+  onEdit,
+  onDelete,
+  onToggleEnabled
+}: McpServerRowProps): React.JSX.Element {
+  return (
+    <div className="group flex items-center justify-between py-2 border-b border-border-default/40 last:border-b-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-sm text-text-primary truncate">{server.name}</span>
+        <span className="text-xs uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
+          {server.transport}
+        </span>
+        {server.command && (
+          <span
+            className="text-xs text-text-muted font-mono truncate max-w-[180px]"
+            title={server.command}
+          >
+            {server.command}
+          </span>
+        )}
+        {server.url && (
+          <span
+            className="text-xs text-text-muted font-mono truncate max-w-[180px]"
+            title={server.url}
+          >
+            {server.url}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Row actions (hover-reveal) */}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            type="button"
+            aria-label={`Edit ${server.name}`}
+            onClick={() => onEdit(server)}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            <Pencil size={12} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label={`Delete ${server.name}`}
+            onClick={() => onDelete(server)}
+            className="p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            <Trash size={12} aria-hidden="true" />
+          </button>
+        </div>
+        <Toggle
+          ariaLabel={`${server.name} enabled`}
+          value={enabled}
+          onChange={(v) => onToggleEnabled(server.name, v)}
+        />
+      </div>
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Helpers to convert form values ↔ draft
@@ -355,6 +416,18 @@ function serverToFormValues(s: DiscoveredMcpServer): McpFormValues {
 // Component
 // ---------------------------------------------------------------------------
 
+const defaultAddDraft: McpFormValues = {
+  name: '',
+  transport: 'stdio',
+  command: '',
+  argsRaw: '',
+  envRaw: '',
+  url: '',
+  source: 'user',
+  projectId: '',
+  showAdvanced: false
+}
+
 export function ClaudeToolsSection(): React.JSX.Element {
   const [settings, setSettings] = useState<ClaudeGlobalSettings | null>(null)
   const [servers, setServers] = useState<DiscoveredMcpServer[]>([])
@@ -395,6 +468,24 @@ export function ClaudeToolsSection(): React.JSX.Element {
       .catch(() => {})
   }, [])
 
+  const handleCancelAdd = useCallback((): void => {
+    setAdding(false)
+    addButtonRef.current?.focus()
+  }, [])
+
+  const handleCancelEdit = useCallback((): void => {
+    setEditingServer(null)
+  }, [])
+
+  const handleEditStart = useCallback((server: DiscoveredMcpServer): void => {
+    setEditingServer(server)
+    setAdding(false)
+  }, [])
+
+  const handleDeleteRequest = useCallback((server: DiscoveredMcpServer): void => {
+    setDeletingServer(server)
+  }, [])
+
   async function reloadServers(): Promise<void> {
     try {
       const s = await window.api.mcp.listServers()
@@ -404,25 +495,31 @@ export function ClaudeToolsSection(): React.JSX.Element {
     }
   }
 
-  function patch(p: Partial<ClaudeGlobalSettings>): void {
-    if (!settings) return
-    setSettings({ ...settings, ...p })
-    window.api.claudeSettings.update(p).catch((err) => {
-      console.error('[tools-settings] update failed; refetching', err)
-      window.api.claudeSettings
-        .get()
-        .then((s) => setSettings(s))
-        .catch(console.error)
-    })
-  }
+  const patch = useCallback(
+    (p: Partial<ClaudeGlobalSettings>): void => {
+      if (!settings) return
+      setSettings({ ...settings, ...p })
+      window.api.claudeSettings.update(p).catch((err) => {
+        console.error('[tools-settings] update failed; refetching', err)
+        window.api.claudeSettings
+          .get()
+          .then((s) => setSettings(s))
+          .catch(console.error)
+      })
+    },
+    [settings]
+  )
 
-  function toggleMcpServer(name: string, enabled: boolean): void {
-    if (!settings) return
-    const disabled = new Set(settings.disabledMcpServers)
-    if (enabled) disabled.delete(name)
-    else disabled.add(name)
-    patch({ disabledMcpServers: Array.from(disabled).sort() })
-  }
+  const toggleMcpServer = useCallback(
+    (name: string, enabled: boolean): void => {
+      if (!settings) return
+      const disabled = new Set(settings.disabledMcpServers)
+      if (enabled) disabled.delete(name)
+      else disabled.add(name)
+      patch({ disabledMcpServers: Array.from(disabled).sort() })
+    },
+    [settings, patch]
+  )
 
   async function handleAdd(values: McpFormValues): Promise<void> {
     const draft: McpServerDraft = {
@@ -431,10 +528,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
       args:
         values.transport === 'stdio' && values.argsRaw.trim()
-          ? values.argsRaw
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
+          ? values.argsRaw.split(',').flatMap((s) => {
+              const v = s.trim()
+              return v ? [v] : []
+            })
           : undefined,
       env:
         values.transport === 'stdio' && values.envRaw.trim()
@@ -456,10 +553,10 @@ export function ClaudeToolsSection(): React.JSX.Element {
       command: values.transport === 'stdio' ? values.command.trim() : undefined,
       args:
         values.transport === 'stdio' && values.argsRaw.trim()
-          ? values.argsRaw
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
+          ? values.argsRaw.split(',').flatMap((s) => {
+              const v = s.trim()
+              return v ? [v] : []
+            })
           : undefined,
       env:
         values.transport === 'stdio' && values.envRaw.trim()
@@ -478,18 +575,6 @@ export function ClaudeToolsSection(): React.JSX.Element {
     setDeletingServer(null)
   }
 
-  const defaultAddDraft: McpFormValues = {
-    name: '',
-    transport: 'stdio',
-    command: '',
-    argsRaw: '',
-    envRaw: '',
-    url: '',
-    source: 'user',
-    projectId: '',
-    showAdvanced: false
-  }
-
   if (!settings) {
     return (
       <div className="flex flex-col gap-6 max-w-2xl">
@@ -505,6 +590,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
   }
 
   const groups = groupServers(servers)
+  const disabledMcpSet = new Set(settings.disabledMcpServers)
 
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
@@ -542,10 +628,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
             initial={defaultAddDraft}
             projects={projects}
             onSave={handleAdd}
-            onCancel={() => {
-              setAdding(false)
-              addButtonRef.current?.focus()
-            }}
+            onCancel={handleCancelAdd}
             addButtonRef={addButtonRef}
           />
         )}
@@ -581,7 +664,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
                             projects={projects}
                             sourceFixed
                             onSave={(values) => handleUpdate(s, values)}
-                            onCancel={() => setEditingServer(null)}
+                            onCancel={handleCancelEdit}
                             addButtonRef={addButtonRef}
                           />
                         </div>
@@ -589,62 +672,14 @@ export function ClaudeToolsSection(): React.JSX.Element {
                     }
 
                     return (
-                      <div
+                      <McpServerRow
                         key={`${group.key}:${s.name}`}
-                        className="group flex items-center justify-between py-2 border-b border-border-default/40 last:border-b-0"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm text-text-primary truncate">{s.name}</span>
-                          <span className="text-xs uppercase tracking-wider text-text-muted bg-surface-overlay border border-border-default rounded px-1.5 py-0.5 flex-shrink-0">
-                            {s.transport}
-                          </span>
-                          {s.command && (
-                            <span
-                              className="text-xs text-text-muted font-mono truncate max-w-[180px]"
-                              title={s.command}
-                            >
-                              {s.command}
-                            </span>
-                          )}
-                          {s.url && (
-                            <span
-                              className="text-xs text-text-muted font-mono truncate max-w-[180px]"
-                              title={s.url}
-                            >
-                              {s.url}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          {/* Row actions (hover-reveal) */}
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              type="button"
-                              aria-label={`Edit ${s.name}`}
-                              onClick={() => {
-                                setEditingServer(s)
-                                setAdding(false)
-                              }}
-                              className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                            >
-                              <Pencil size={12} aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Delete ${s.name}`}
-                              onClick={() => setDeletingServer(s)}
-                              className="p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                            >
-                              <Trash size={12} aria-hidden="true" />
-                            </button>
-                          </div>
-                          <Toggle
-                            ariaLabel={`${s.name} enabled`}
-                            value={!settings.disabledMcpServers.includes(s.name)}
-                            onChange={(enabled) => toggleMcpServer(s.name, enabled)}
-                          />
-                        </div>
-                      </div>
+                        server={s}
+                        enabled={!disabledMcpSet.has(s.name)}
+                        onEdit={handleEditStart}
+                        onDelete={handleDeleteRequest}
+                        onToggleEnabled={toggleMcpServer}
+                      />
                     )
                   })}
                 </div>
@@ -858,6 +893,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Shell override"
               value={settings.shellOverride}
               onChange={(e) => patch({ shellOverride: e.target.value })}
               onBlur={(e) => patch({ shellOverride: e.target.value.trim() })}
@@ -875,6 +911,7 @@ export function ClaudeToolsSection(): React.JSX.Element {
           >
             <input
               type="text"
+              aria-label="Shell prefix"
               value={settings.shellPrefix}
               onChange={(e) => patch({ shellPrefix: e.target.value })}
               onBlur={(e) => patch({ shellPrefix: e.target.value.trim() })}

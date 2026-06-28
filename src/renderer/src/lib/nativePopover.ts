@@ -28,6 +28,18 @@ export type HoverPopoverData = {
   cwd?: string
 }
 
+export type ProjectPopoverData = {
+  name: string
+  pinned: boolean
+  repo?: string // "owner/repo" when GitHub, else omitted
+  path: string
+  workspaceCount: number
+  workspaces: Array<{
+    name: string
+    state: 'working' | 'ready' | 'idle' | 'attention' | 'archived'
+  }>
+}
+
 export type DetailsPopoverData = {
   pr?: { number: number; state: 'open' | 'merged' | 'closed' | 'draft'; check: string }
   prUrl?: string
@@ -230,6 +242,26 @@ export function showDetailsPopover(
       'details',
       anchorRect,
       nativeData as unknown as Record<string, unknown>
+    )
+    .catch(() => {})
+}
+
+export function showProjectPopover(
+  projectId: string,
+  anchorEl: Element,
+  data: ProjectPopoverData
+): void {
+  ensurePopoverActionListener()
+
+  const rect = anchorEl.getBoundingClientRect()
+  const anchorRect = { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
+
+  void window.api.terminal
+    .showPopover(
+      `proj:${projectId}`,
+      'project',
+      anchorRect,
+      data as unknown as Record<string, unknown>
     )
     .catch(() => {})
 }

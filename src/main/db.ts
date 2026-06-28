@@ -2,14 +2,14 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as nodePath from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { logDiagMain } from './diagnostics'
+import { logDiagMain } from './diagCore'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 62
+export const CURRENT_VERSION = 63
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -22,7 +22,8 @@ const SCHEMA_SQL = `
     name TEXT NOT NULL,
     claude_encoded_name TEXT,
     added_at INTEGER NOT NULL,
-    last_opened_at INTEGER
+    last_opened_at INTEGER,
+    pinned_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
@@ -2281,6 +2282,20 @@ export function migrate(db: Database.Database): void {
       /* table may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(62)
+  }
+
+  if (currentVersion < 63) {
+    try {
+      db.exec('ALTER TABLE projects ADD COLUMN pinned_at INTEGER')
+    } catch {
+      /* may exist on fresh install */
+    }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS projects_pinned_idx ON projects(pinned_at)')
+    } catch {
+      /* may exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(63)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()

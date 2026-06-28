@@ -17,6 +17,8 @@
   "scripts": {
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "doctor": "react-doctor",
+    "doctor:ci": "react-doctor --scope changed --no-score --no-color",
     "lint": "eslint --cache .",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
@@ -43,9 +45,7 @@
     "*.{ts,tsx,js,mjs,cjs,jsx,json,yml,yaml,md,css,html}": "prettier --write"
   },
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "@floating-ui/react": "^0.27.19",
     "@phosphor-icons/react": "^2.1.10",
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
@@ -70,6 +70,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "husky": "^9.1.7",
+    "react-doctor": "^0.5.8",
     "lint-staged": "^17.0.5",
     "prettier": "^3.7.4",
     "react": "^19.2.1",

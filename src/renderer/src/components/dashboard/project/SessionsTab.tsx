@@ -1,109 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { MagnifyingGlass, Play, Trash } from '@phosphor-icons/react'
+import { Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
-import { Select } from '../settings/primitives'
 import { DotmSquare13 } from '../../ui/dotm-square-13'
 import { ConfirmModal } from '../../ConfirmModal'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// Full sessions view shows 20 per page; compact embedding (next to workspaces
-// in the project view) shows fewer rows so the panel doesn't grow the page
-// out of comfortable read height.
-const PAGE_SIZE_FULL = 20
-const PAGE_SIZE_COMPACT = 10
-
-const DATE_RANGE_OPTIONS = [
-  { value: 'd1', label: 'Last 24h' },
-  { value: 'd3', label: 'Last 3 days' },
-  { value: 'd7', label: 'Last 7 days' },
-  { value: 'd30', label: 'Last 30 days' },
-  { value: 'd90', label: 'Last 90 days' },
-  { value: 'all', label: 'All time' }
-] as const
-
-type DateRange = (typeof DATE_RANGE_OPTIONS)[number]['value']
-
-function dateRangeToFrom(range: DateRange): number | undefined {
-  if (range === 'all') return undefined
-  const day = 24 * 60 * 60 * 1000
-  if (range === 'd1') return Date.now() - 1 * day
-  if (range === 'd3') return Date.now() - 3 * day
-  if (range === 'd7') return Date.now() - 7 * day
-  if (range === 'd30') return Date.now() - 30 * day
-  if (range === 'd90') return Date.now() - 90 * day
-  return undefined
-}
-
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms
-  const s = Math.floor(diff / 1000)
-  if (s < 60) return 'just now'
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d ago`
-  const mo = Math.floor(d / 30)
-  return `${mo}mo ago`
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function shortModel(model: string | null): string {
-  if (!model) return '—'
-  const m = model.toLowerCase()
-
-  // Detect family first
-  const isOpus = m.includes('opus')
-  const isSonnet = m.includes('sonnet')
-  const isHaiku = m.includes('haiku')
-  if (!isOpus && !isSonnet && !isHaiku) return model
-
-  const family = isOpus ? 'Opus' : isSonnet ? 'Sonnet' : 'Haiku'
-
-  // Extract version numbers from patterns like:
-  //   "claude-opus-4-7"    → "4.7"
-  //   "claude-sonnet-4-6"  → "4.6"
-  //   "claude-haiku-4-5"   → "4.5"
-  //   "opus" / "sonnet"    → "" (alias, add "(latest)" suffix)
-  //
-  // Family aliases (no digits) → show with "(latest)" marker.
-  // Date-stamped IDs like "claude-sonnet-4-6-20260416" → "Sonnet 4.6"
-  const stripped = m
-    .replace(/^claude-/, '')
-    .replace(/(opus|sonnet|haiku)-?/, '')
-    .replace(/-\d{8}$/, '') // strip trailing date stamp (e.g. 20260416)
-    .trim()
-
-  // After stripping the family name, remaining segments are the version
-  // e.g. "4-7" → "4.7"
-  const versionParts = stripped.split('-').filter((p) => /^\d+$/.test(p))
-  if (versionParts.length >= 2) {
-    return `${family} ${versionParts.join('.')}`
-  }
-  if (versionParts.length === 1) {
-    return `${family} ${versionParts[0]}`
-  }
-
-  // Pure alias (e.g. model = "opus", "sonnet", "haiku")
-  return `${family}*`
-}
+import { SessionsFilterBar } from './SessionsFilterBar'
+import {
+  PAGE_SIZE_FULL,
+  PAGE_SIZE_COMPACT,
+  dateRangeToFrom,
+  relativeTime,
+  formatBytes,
+  shortModel,
+  type DateRange,
+  type SortBy
+} from './sessions-tab-helpers'
 
 // ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
-
-type SortBy = 'updatedAt' | 'createdAt' | 'title'
 
 interface SessionsTabProps {
   projectId: string
@@ -117,6 +33,11 @@ interface SessionsTabProps {
    */
   compact?: boolean
 }
+
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const filteredEmptyState = (
+  <p className="text-sm text-text-muted py-6 text-center">No matching sessions.</p>
+)
 
 export function SessionsTab({
   projectId,
@@ -195,6 +116,14 @@ export function SessionsTab({
     }
   }, [projectId, metadataVersion])
 
+  // Keep a ref to onSessionCountChange so the fetch effect can call the latest
+  // version without listing it as a dep (an un-memoized callback from the parent
+  // would otherwise cause a full refetch every render).
+  const onSessionCountChangeRef = useRef(onSessionCountChange)
+  useEffect(() => {
+    onSessionCountChangeRef.current = onSessionCountChange
+  })
+
   // Snapshot the IPC call so a stale request can be ignored once it returns.
   const reqIdRef = useRef(0)
 
@@ -234,7 +163,7 @@ export function SessionsTab({
         setRows(res.rows)
         setTotal(res.total)
         setLoading(false)
-        onSessionCountChange?.(res.total)
+        onSessionCountChangeRef.current?.(res.total)
       })
       .catch((err) => {
         if (reqId !== reqIdRef.current) return
@@ -252,23 +181,28 @@ export function SessionsTab({
     page,
     metadataVersion,
     hasAnySessions,
-    autoWidened,
-    onSessionCountChange
+    autoWidened
   ])
 
   // Filter changes reset to page 1; these go through handlers so we never set
   // state synchronously from an effect.
-  function changeSearch(v: string): void {
+  //
+  // useCallback([]) is safe here — each handler only calls stable useState
+  // setters and has no closure over other state. Stable refs let SessionsFilterBar
+  // (memo'd) skip rerenders when only data-layer state changes.
+  const changeSearch = useCallback((v: string): void => {
     setSearch(v)
     setPage(1)
-  }
-  function changeDateRange(v: DateRange): void {
+  }, [])
+
+  const changeDateRange = useCallback((v: DateRange): void => {
     setDateRange(v)
     setPage(1)
     // User took control of the window — don't auto-widen again, and clear the
     // hint if they re-narrow.
     setAutoWidenedFor(null)
-  }
+  }, [])
+
   function changeSort(by: SortBy, dir: 'asc' | 'desc'): void {
     setSortBy(by)
     setSortDir(dir)
@@ -418,7 +352,7 @@ export function SessionsTab({
       deleteCol,
       resumeCol
     ]
-  }, [resumingId, compact])
+  }, [resumingId, compact, onResumedInWorkspace])
 
   async function confirmDelete(): Promise<void> {
     if (!pendingDelete) return
@@ -439,38 +373,15 @@ export function SessionsTab({
   // as indeterminate (don't hide controls prematurely).
   const noSessionsAtAll = hasAnySessions === false && !loading
 
-  // "No matches" empty state shown inside the DataTable when filters are
-  // active and yield zero results, but sessions do exist.
-  const filteredEmptyState = (
-    <p className="text-sm text-text-muted py-6 text-center">No matching sessions.</p>
-  )
-
   return (
     <div className="flex flex-col gap-3">
       {/* Filter bar — always shown, even when the project has no sessions */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 min-w-0">
-          <MagnifyingGlass
-            size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-          />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => changeSearch(e.target.value)}
-            placeholder="Search prompts"
-            className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-          />
-        </div>
-        <div className="w-44 flex-shrink-0">
-          <Select<DateRange>
-            ariaLabel="Date range"
-            options={DATE_RANGE_OPTIONS as ReadonlyArray<{ value: DateRange; label: string }>}
-            value={dateRange}
-            onChange={changeDateRange}
-          />
-        </div>
-      </div>
+      <SessionsFilterBar
+        search={search}
+        onSearchChange={changeSearch}
+        dateRange={dateRange}
+        onDateRangeChange={changeDateRange}
+      />
 
       {/* Auto-widen hint: shown when the default date window hid everything and
           we fell back to "All time" so the list isn't mysteriously empty. */}

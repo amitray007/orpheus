@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components -- file exports both component and cache-eviction utility by design */
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Cpu, Info } from '@phosphor-icons/react'
@@ -15,20 +14,22 @@ import {
   prToNative
 } from '@/lib/nativePopover'
 import type { DetailsPopoverData } from '@/lib/nativePopover'
+import { contextBudgetCache } from './workspaceTitleBar.helpers'
+import type { ContextBudgetInfo } from './workspaceTitleBar.helpers'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
 // ---------------------------------------------------------------------------
-export function modelLabel(modelId: string): string {
+function modelLabel(modelId: string): string {
   // 1. Exact match in known options
   const known = CLAUDE_MODEL_OPTIONS.find((o) => o.value === modelId)
   if (known) return known.label
 
   // 2. Prefix match — handles date-stamped variants like "claude-opus-4-7-20260416"
   //    by finding the longest known option whose value is a prefix of the incoming ID.
-  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).sort(
-    (a, b) => b.value.length - a.value.length
-  )[0]
+  const prefixMatch = CLAUDE_MODEL_OPTIONS.filter((o) => modelId.startsWith(o.value)).reduce<
+    (typeof CLAUDE_MODEL_OPTIONS)[number] | undefined
+  >((best, o) => (best === undefined || o.value.length > best.value.length ? o : best), undefined)
   if (prefixMatch) return prefixMatch.label
 
   // 3. Structural parse: "claude-<family>-<v1>-<v2>..." → "<Family> <v1>.<v2>"
@@ -48,18 +49,9 @@ export function modelLabel(modelId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Context label helper — formats a token count as a human-readable string.
-// ---------------------------------------------------------------------------
-export function contextLabel(tokens: number): string {
-  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M ctx`
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k ctx`
-  return `${tokens} ctx`
-}
-
-// ---------------------------------------------------------------------------
 // Short token helper — same as contextLabel but without the " ctx" suffix.
 // ---------------------------------------------------------------------------
-export function shortTokens(n: number): string {
+function shortTokens(n: number): string {
   if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`
   return `${n}`
@@ -74,24 +66,6 @@ export function shortTokens(n: number): string {
 // On switch-back the chip renders the stale value immediately (no layout shift
 // or late-appear flash) while the fresh fetch runs in the background.
 // ---------------------------------------------------------------------------
-
-export type ContextBudgetInfo = { contextBudget: number; modelId: string }
-
-// Keyed by `${workspaceId}:${claudeSessionId}` so the cache is automatically
-// invalidated when the session changes (new conversation in same workspace).
-export const contextBudgetCache = new Map<string, ContextBudgetInfo>()
-
-/**
- * Evicts all context-budget cache entries for a workspace that has been
- * archived or removed. Prefix-matches `${workspaceId}:` to cover every
- * session key that belongs to that workspace.
- */
-export function clearContextBudgetCache(workspaceId: string): void {
-  const prefix = `${workspaceId}:`
-  for (const key of contextBudgetCache.keys()) {
-    if (key.startsWith(prefix)) contextBudgetCache.delete(key)
-  }
-}
 
 interface ModelContextChipProps {
   workspaceId: string
@@ -193,13 +167,20 @@ export function WorkspaceTitleBar({
 
   useEffect(() => {
     const workspaceId = workspace.id
+    let cancelled = false
     window.api.workspaces
       .getTitle(workspaceId)
-      .then(setTerminalTitle)
+      .then((t) => {
+        if (!cancelled) setTerminalTitle(t)
+      })
       .catch(() => {})
-    return window.api.workspaces.onTitleChanged((e) => {
+    const unsub = window.api.workspaces.onTitleChanged((e) => {
       if (e.workspaceId === workspaceId) setTerminalTitle(e.title || null)
     })
+    return () => {
+      cancelled = true
+      unsub()
+    }
   }, [workspace.id])
 
   // ── Details popover — hover open/close + async data fetching ────────────────
@@ -371,6 +352,7 @@ export function WorkspaceTitleBar({
 
       <div className="ml-auto flex items-center gap-1">
         <button
+          type="button"
           ref={detailsButtonRef}
           onMouseDown={(e) => e.stopPropagation()}
           onMouseEnter={handleDetailsMouseEnter}
@@ -388,6 +370,7 @@ export function WorkspaceTitleBar({
           <span>Details</span>
         </button>
         <button
+          type="button"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
           title="Workspace Settings"

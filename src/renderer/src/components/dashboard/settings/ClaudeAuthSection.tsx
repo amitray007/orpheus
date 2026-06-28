@@ -29,6 +29,7 @@ function TestConnectionButton({ disabled }: TestConnectionButtonProps): React.JS
   return (
     <div className="flex items-center gap-3">
       <button
+        type="button"
         onClick={() => {
           run().catch(() => {})
         }}
@@ -78,6 +79,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
       <div className="flex items-center gap-2">
         <span className="text-xs font-mono text-text-muted">•••• stored</span>
         <button
+          type="button"
           onClick={() => {
             setValue('')
             setEditing(true)
@@ -87,6 +89,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
           Replace
         </button>
         <button
+          type="button"
           onClick={onClear}
           className="text-xs text-red-400 hover:text-red-300 cursor-pointer transition-colors"
         >
@@ -100,6 +103,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
     <div className="flex items-center gap-2">
       <input
         type="password"
+        aria-label="API key"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
@@ -118,6 +122,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
         className="w-64 px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono cursor-text"
       />
       <button
+        type="button"
         onClick={() => {
           if (value) {
             onSave(value)
@@ -132,6 +137,7 @@ function ApiKeyInput({ hasKey, onSave, onClear }: ApiKeyInputProps): React.JSX.E
       </button>
       {hasKey && (
         <button
+          type="button"
           onClick={() => {
             setEditing(false)
             setValue('')
@@ -166,6 +172,7 @@ function BaseUrlInput({ value, onSave }: BaseUrlInputProps): React.JSX.Element {
   return (
     <input
       type="url"
+      aria-label="Base URL"
       value={local}
       onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {
@@ -210,6 +217,7 @@ function ProviderTextInput({
   return (
     <input
       type="text"
+      aria-label={placeholder}
       value={local}
       onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {
@@ -239,6 +247,17 @@ const PROVIDER_OPTIONS: ReadonlyArray<{ value: ClaudeCloudProvider; label: strin
   { value: 'vertex', label: 'Vertex' },
   { value: 'foundry', label: 'Foundry' }
 ]
+
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const header = (
+  <div>
+    <SectionTitle>Authentication</SectionTitle>
+    <p className="text-xs text-text-muted mt-1">
+      API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
+      database (single-user macOS).
+    </p>
+  </div>
+)
 
 export function ClaudeAuthSection(): React.JSX.Element {
   const [state, setState] = useState<ClaudeAuthState | null>(null)
@@ -271,19 +290,6 @@ export function ClaudeAuthSection(): React.JSX.Element {
         window.api.claudeAuth.get().then(setState).catch(console.error)
       })
   }
-
-  // ---------------------------------------------------------------------------
-  // Render: header section
-  // ---------------------------------------------------------------------------
-  const header = (
-    <div>
-      <SectionTitle>Authentication</SectionTitle>
-      <p className="text-xs text-text-muted mt-1">
-        API key, auth token, base URL, and cloud provider selection. Stored locally in the Orpheus
-        database (single-user macOS).
-      </p>
-    </div>
-  )
 
   if (error) {
     return (
@@ -358,6 +364,7 @@ export function ClaudeAuthSection(): React.JSX.Element {
       {/* Provider-specific config (collapsible) */}
       <section className="flex flex-col">
         <button
+          type="button"
           onClick={() => setProviderOpen((v) => !v)}
           className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-text-secondary mb-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
         >

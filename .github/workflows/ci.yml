@@ -20,7 +20,9 @@ jobs:
     # kept on macOS-14 to match the rest of the toolchain.)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -40,6 +42,17 @@ jobs:
 
       - name: Format check
         run: bun run format:check
+
+      # Advisory react-doctor check: surfaces React anti-patterns introduced by
+      # this PR vs. the base branch. Non-blocking (continue-on-error: true) so it
+      # never fails the job. To enforce, change to `--blocking error` once the
+      # team is comfortable with the signal.
+      - name: React Doctor (advisory — new issues vs base)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+          bun run doctor:ci --base origin/${{ github.base_ref }}
 
       # No tests in this repo yet. When tests land, add `bun test` (or vitest/
       # playwright equivalents) as another step.

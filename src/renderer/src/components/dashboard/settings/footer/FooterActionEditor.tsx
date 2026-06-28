@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useRef, useState } from 'react'
 import type React from 'react'
 import type {
   FooterActionDescriptor,
@@ -119,10 +119,37 @@ function isLiveType(type: ActionType): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// FormField — shared labeled-field wrapper (label + arbitrary control).
+// Eliminates the repeated `div.flex.flex-col.gap-1` + label-class pattern.
+// ---------------------------------------------------------------------------
+
+function FormField({
+  htmlFor,
+  label,
+  children
+}: {
+  htmlFor?: string
+  label: React.ReactNode
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-1">
+      <label
+        htmlFor={htmlFor}
+        className="text-sm font-medium text-text-secondary uppercase tracking-wide"
+      >
+        {label}
+      </label>
+      {children}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Preview chip
 // ---------------------------------------------------------------------------
 
-function PreviewChip({
+const PreviewChip = memo(function PreviewChip({
   label,
   icon,
   type,
@@ -177,7 +204,212 @@ function PreviewChip({
       <span className="truncate max-w-[80px]">{displayLabel}</span>
     </span>
   )
+})
+
+// ---------------------------------------------------------------------------
+// Type-specific config panels
+// ---------------------------------------------------------------------------
+
+interface SendInputConfigProps {
+  sendText: string
+  setSendText: (v: string) => void
+  submit: boolean
+  setSubmit: (v: boolean) => void
+  sendTextId: string
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>
+  insertPlaceholder: (placeholder: string) => void
 }
+
+const SendInputConfig = memo(function SendInputConfig({
+  sendText,
+  setSendText,
+  submit,
+  setSubmit,
+  sendTextId,
+  textareaRef,
+  insertPlaceholder
+}: SendInputConfigProps): React.JSX.Element {
+  return (
+    <>
+      <FormField htmlFor={sendTextId} label="Text">
+        <textarea
+          id={sendTextId}
+          ref={textareaRef}
+          aria-label="Action send text"
+          value={sendText}
+          onChange={(e) => setSendText(e.target.value)}
+          placeholder="/copy, @src/file.ts, or any text to send…"
+          rows={3}
+          className={[
+            'w-full px-3 py-2 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted',
+            'outline-none focus-visible:ring-1 focus-visible:ring-accent/40 resize-none font-mono',
+            sendText.length === 0 ? 'border-red-500/20' : 'border-border-default'
+          ].join(' ')}
+        />
+        {/* Placeholder chips */}
+        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+          <span className="text-xs text-text-muted">Insert:</span>
+          {['{sessionId}', '{workspaceId}', '{cwd}'].map((ph) => (
+            <button
+              key={ph}
+              type="button"
+              onClick={() => insertPlaceholder(ph)}
+              className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-muted hover:text-text-primary hover:border-border-hover transition-colors cursor-pointer"
+            >
+              {ph}
+            </button>
+          ))}
+        </div>
+      </FormField>
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-text-secondary uppercase tracking-wide">
+          Submit immediately
+        </span>
+        <Toggle value={submit} onChange={setSubmit} ariaLabel="Submit immediately" />
+      </div>
+    </>
+  )
+})
+
+interface RenameConfigProps {
+  renamePromptLabel: string
+  setRenamePromptLabel: (v: string) => void
+  renamePromptDefault: string
+  setRenamePromptDefault: (v: string) => void
+  renamePromptLabelId: string
+}
+
+const RenameConfig = memo(function RenameConfig({
+  renamePromptLabel,
+  setRenamePromptLabel,
+  renamePromptDefault,
+  setRenamePromptDefault,
+  renamePromptLabelId
+}: RenameConfigProps): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+        When clicked, a prompt will appear asking the user for the new workspace name.
+      </div>
+      <FormField htmlFor={renamePromptLabelId} label="Prompt label">
+        <input
+          id={renamePromptLabelId}
+          type="text"
+          aria-label="Rename prompt label"
+          value={renamePromptLabel}
+          onChange={(e) => setRenamePromptLabel(e.target.value)}
+          placeholder="New name"
+          className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+        />
+      </FormField>
+      <FormField
+        label={
+          <>
+            Default value{' '}
+            <span className="text-text-muted normal-case tracking-normal">
+              (use &#123;workspaceName&#125; for current name)
+            </span>
+          </>
+        }
+      >
+        <input
+          type="text"
+          aria-label="Rename prompt default value"
+          value={renamePromptDefault}
+          onChange={(e) => setRenamePromptDefault(e.target.value)}
+          placeholder="{workspaceName}"
+          className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
+        />
+      </FormField>
+    </div>
+  )
+})
+
+interface DuplicateConfigProps {
+  dupSuffix: string
+  setDupSuffix: (v: string) => void
+}
+
+const DuplicateConfig = memo(function DuplicateConfig({
+  dupSuffix,
+  setDupSuffix
+}: DuplicateConfigProps): React.JSX.Element {
+  return (
+    <FormField
+      label={
+        <>
+          Name suffix{' '}
+          <span className="text-text-muted normal-case tracking-normal">(optional)</span>
+        </>
+      }
+    >
+      <input
+        type="text"
+        aria-label="Duplicate name suffix"
+        value={dupSuffix}
+        onChange={(e) => setDupSuffix(e.target.value)}
+        placeholder="(copy)"
+        className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+      />
+    </FormField>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Action buttons row
+// ---------------------------------------------------------------------------
+
+interface ActionFormButtonsProps {
+  isCreate: boolean
+  saving: boolean
+  isValid: boolean
+  onDeleteClick: () => void
+  onCancelClick: () => void
+  onSaveClick: () => void
+}
+
+const ActionFormButtons = memo(function ActionFormButtons({
+  isCreate,
+  saving,
+  isValid,
+  onDeleteClick,
+  onCancelClick,
+  onSaveClick
+}: ActionFormButtonsProps): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-2 pt-2 border-t border-border-default/40 flex-shrink-0">
+      {!isCreate && (
+        <button
+          type="button"
+          onClick={onDeleteClick}
+          className="text-xs text-red-400 hover:text-red-300 transition-colors duration-150 px-2 py-1.5 rounded hover:bg-red-500/10 cursor-pointer mr-auto"
+        >
+          Delete
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onCancelClick}
+        className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150 px-3 py-1.5 rounded hover:bg-surface-overlay cursor-pointer"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        disabled={saving || !isValid}
+        onClick={onSaveClick}
+        className={[
+          'text-xs font-medium px-3 py-1.5 rounded transition-colors duration-150',
+          saving || !isValid
+            ? 'bg-accent/30 text-text-muted cursor-not-allowed'
+            : 'bg-accent text-white hover:bg-accent/90 cursor-pointer'
+        ].join(' ')}
+      >
+        {saving ? 'Saving…' : isCreate ? 'Add action' : 'Save'}
+      </button>
+    </div>
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Main editor component
@@ -238,6 +470,12 @@ export function FooterActionEditor({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const labelFieldId = useId()
+  const iconFieldId = useId()
+  const typeFieldId = useId()
+  const sendTextId = useId()
+  const renamePromptLabelId = useId()
+  const visibilityFieldId = useId()
 
   // Reset form when action changes
   useEffect(() => {
@@ -270,7 +508,7 @@ export function FooterActionEditor({
   const isValid =
     labelTrimmed.length > 0 && (actionType !== 'sendInput' || sendText.trim().length > 0)
 
-  function buildDraft(): FooterActionDraft {
+  const buildDraft = useCallback((): FooterActionDraft => {
     const baseActionId = actionIdForType(actionType)
     let params: Record<string, unknown> = {}
     let prompts: PromptDescriptor[] | undefined
@@ -305,9 +543,20 @@ export function FooterActionEditor({
       ...(action !== null ? { position: action.position } : {}),
       ...(prompts ? { prompts } : {})
     }
-  }
+  }, [
+    actionType,
+    sendText,
+    submit,
+    renamePromptLabel,
+    renamePromptDefault,
+    dupSuffix,
+    labelTrimmed,
+    icon,
+    visibility,
+    action
+  ])
 
-  async function handleSave(): Promise<void> {
+  const handleSave = useCallback(async (): Promise<void> => {
     if (!isValid) {
       playSound('error')
       setError(
@@ -336,7 +585,7 @@ export function FooterActionEditor({
     } finally {
       setSaving(false)
     }
-  }
+  }, [isValid, labelTrimmed, buildDraft, isCreate, scope, scopeId, action, onSave])
 
   async function handleDelete(): Promise<void> {
     if (!action) return
@@ -373,6 +622,21 @@ export function FooterActionEditor({
     [sendText]
   )
 
+  // Stable handlers passed to the memoized ActionFormButtons child
+  const handleDeleteClick = useCallback(() => {
+    playSound('click')
+    setShowDeleteConfirm(true)
+  }, [])
+
+  const handleCancelClick = useCallback(() => {
+    playSound('click')
+    onCancel()
+  }, [onCancel])
+
+  const handleSaveClick = useCallback(() => {
+    handleSave().catch((e) => console.error('[FooterActionEditor] save failed', e))
+  }, [handleSave])
+
   const scopeLabel = scope === 'global' ? 'global' : 'project'
 
   return (
@@ -402,12 +666,11 @@ export function FooterActionEditor({
         {/* Form fields */}
         <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
           {/* Label */}
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-              Label
-            </label>
+          <FormField htmlFor={labelFieldId} label="Label">
             <input
+              id={labelFieldId}
               type="text"
+              aria-label="Action label"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. Fork, Copy context…"
@@ -419,137 +682,63 @@ export function FooterActionEditor({
                   : 'border-border-default'
               ].join(' ')}
             />
-          </div>
+          </FormField>
 
           {/* Icon */}
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-              Icon
-            </label>
-            <IconPicker value={icon} onChange={setIcon} />
-          </div>
+          <FormField htmlFor={iconFieldId} label="Icon">
+            <IconPicker id={iconFieldId} value={icon} onChange={setIcon} />
+          </FormField>
 
           {/* Type */}
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-              Type
-            </label>
+          <FormField htmlFor={typeFieldId} label="Type">
             <Select
               options={ACTION_TYPE_OPTIONS}
               value={actionType}
               onChange={(v) => setActionType(v)}
               ariaLabel="Action type"
+              id={typeFieldId}
               className="w-full"
             />
-          </div>
+          </FormField>
 
           {/* Per-type conditional fields */}
           {actionType === 'sendInput' && (
-            <>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                  Text
-                </label>
-                <textarea
-                  ref={textareaRef}
-                  value={sendText}
-                  onChange={(e) => setSendText(e.target.value)}
-                  placeholder="/copy, @src/file.ts, or any text to send…"
-                  rows={3}
-                  className={[
-                    'w-full px-3 py-2 rounded-md text-xs bg-surface-raised border text-text-primary placeholder-text-muted',
-                    'outline-none focus-visible:ring-1 focus-visible:ring-accent/40 resize-none font-mono',
-                    sendText.length === 0 ? 'border-red-500/20' : 'border-border-default'
-                  ].join(' ')}
-                />
-                {/* Placeholder chips */}
-                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                  <span className="text-xs text-text-muted">Insert:</span>
-                  {['{sessionId}', '{workspaceId}', '{cwd}'].map((ph) => (
-                    <button
-                      key={ph}
-                      type="button"
-                      onClick={() => insertPlaceholder(ph)}
-                      className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-overlay border border-border-default text-text-muted hover:text-text-primary hover:border-border-hover transition-colors cursor-pointer"
-                    >
-                      {ph}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                  Submit immediately
-                </span>
-                <Toggle value={submit} onChange={setSubmit} ariaLabel="Submit immediately" />
-              </div>
-            </>
+            <SendInputConfig
+              sendText={sendText}
+              setSendText={setSendText}
+              submit={submit}
+              setSubmit={setSubmit}
+              sendTextId={sendTextId}
+              textareaRef={textareaRef}
+              insertPlaceholder={insertPlaceholder}
+            />
           )}
 
           {actionType === 'rename' && (
-            <div className="flex flex-col gap-2">
-              <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
-                When clicked, a prompt will appear asking the user for the new workspace name.
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                  Prompt label
-                </label>
-                <input
-                  type="text"
-                  value={renamePromptLabel}
-                  onChange={(e) => setRenamePromptLabel(e.target.value)}
-                  placeholder="New name"
-                  className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                  Default value{' '}
-                  <span className="text-text-muted normal-case tracking-normal">
-                    (use &#123;workspaceName&#125; for current name)
-                  </span>
-                </label>
-                <input
-                  type="text"
-                  value={renamePromptDefault}
-                  onChange={(e) => setRenamePromptDefault(e.target.value)}
-                  placeholder="{workspaceName}"
-                  className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 font-mono"
-                />
-              </div>
-            </div>
+            <RenameConfig
+              renamePromptLabel={renamePromptLabel}
+              setRenamePromptLabel={setRenamePromptLabel}
+              renamePromptDefault={renamePromptDefault}
+              setRenamePromptDefault={setRenamePromptDefault}
+              renamePromptLabelId={renamePromptLabelId}
+            />
           )}
 
           {actionType === 'duplicate' && (
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                Name suffix{' '}
-                <span className="text-text-muted normal-case tracking-normal">(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={dupSuffix}
-                onChange={(e) => setDupSuffix(e.target.value)}
-                placeholder="(copy)"
-                className="w-full px-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-              />
-            </div>
+            <DuplicateConfig dupSuffix={dupSuffix} setDupSuffix={setDupSuffix} />
           )}
 
           {/* Visibility */}
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text-secondary uppercase tracking-wide">
-              Visible when
-            </label>
+          <FormField htmlFor={visibilityFieldId} label="Visible when">
             <Select
               options={VISIBILITY_OPTIONS}
               value={visibility}
               onChange={(v) => setVisibility(v)}
               ariaLabel="Visible when"
+              id={visibilityFieldId}
               className="w-full"
             />
-          </div>
+          </FormField>
 
           {/* Live preview */}
           <div className="flex flex-col gap-1.5">
@@ -573,45 +762,14 @@ export function FooterActionEditor({
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-2 pt-2 border-t border-border-default/40 flex-shrink-0">
-          {!isCreate && (
-            <button
-              type="button"
-              onClick={() => {
-                playSound('click')
-                setShowDeleteConfirm(true)
-              }}
-              className="text-xs text-red-400 hover:text-red-300 transition-colors duration-150 px-2 py-1.5 rounded hover:bg-red-500/10 cursor-pointer mr-auto"
-            >
-              Delete
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              playSound('click')
-              onCancel()
-            }}
-            className="text-xs text-text-muted hover:text-text-primary transition-colors duration-150 px-3 py-1.5 rounded hover:bg-surface-overlay cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={saving || !isValid}
-            onClick={() => {
-              handleSave().catch((e) => console.error('[FooterActionEditor] save failed', e))
-            }}
-            className={[
-              'text-xs font-medium px-3 py-1.5 rounded transition-colors duration-150',
-              saving || !isValid
-                ? 'bg-accent/30 text-text-muted cursor-not-allowed'
-                : 'bg-accent text-white hover:bg-accent/90 cursor-pointer'
-            ].join(' ')}
-          >
-            {saving ? 'Saving…' : isCreate ? 'Add action' : 'Save'}
-          </button>
-        </div>
+        <ActionFormButtons
+          isCreate={isCreate}
+          saving={saving}
+          isValid={isValid}
+          onDeleteClick={handleDeleteClick}
+          onCancelClick={handleCancelClick}
+          onSaveClick={handleSaveClick}
+        />
       </div>
     </>
   )

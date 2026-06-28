@@ -56,10 +56,10 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
     // Inline flow sequence: [a, b, c]
     if (value.startsWith('[') && value.endsWith(']')) {
       const inner = value.slice(1, -1)
-      result[key] = inner
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
+      result[key] = inner.split(',').flatMap((s) => {
+        const v = s.trim()
+        return v ? [v] : []
+      })
       i++
       continue
     }
@@ -169,8 +169,11 @@ function listMdFiles(dir: string): string[] {
   try {
     return fs
       .readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('.'))
-      .map((e) => nodePath.join(dir, e.name))
+      .flatMap((e) =>
+        e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('.')
+          ? [nodePath.join(dir, e.name)]
+          : []
+      )
       .sort((a, b) => nodePath.basename(a).localeCompare(nodePath.basename(b)))
   } catch {
     return []

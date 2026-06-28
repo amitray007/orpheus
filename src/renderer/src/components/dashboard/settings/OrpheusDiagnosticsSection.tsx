@@ -4,6 +4,17 @@ import type { AppUiState } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 
+// Constant JSX — no component scope references; hoisted to avoid rebuilding each render.
+const header = (
+  <div>
+    <SectionTitle>Diagnostics</SectionTitle>
+    <p className="text-xs text-text-muted mt-1">
+      Local-only event log for debugging. Data stays on this machine and is pruned after 7 days.
+      Query it with <code className="text-text-secondary">bun run diag</code>.
+    </p>
+  </div>
+)
+
 export function OrpheusDiagnosticsSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -44,16 +55,6 @@ export function OrpheusDiagnosticsSection(): React.JSX.Element {
         .catch(console.error)
     })
   }
-
-  const header = (
-    <div>
-      <SectionTitle>Diagnostics</SectionTitle>
-      <p className="text-xs text-text-muted mt-1">
-        Local-only event log for debugging. Data stays on this machine and is pruned after 7 days.
-        Query it with <code className="text-text-secondary">bun run diag</code>.
-      </p>
-    </div>
-  )
 
   if (error) {
     return (

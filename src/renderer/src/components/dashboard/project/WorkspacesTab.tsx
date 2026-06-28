@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
+import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   DotsThree,
   MagnifyingGlass,
@@ -57,6 +58,14 @@ function statusToGroup(ws: WorkspaceRecord): ActivityFilterKey {
   return 'waiting'
 }
 
+function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
+  if (a === null || a === undefined) return 1
+  if (b === null || b === undefined) return -1
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms
   const s = Math.floor(diff / 1000)
@@ -86,6 +95,38 @@ interface WorkspacesTabProps {
   onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onToggleWorkspacePin: (workspaceId: string, projectId: string) => void | Promise<void>
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
+}
+
+// Small component so useFocusOnMount fires when the rename input mounts
+function WorkspaceRenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  className
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label="Rename workspace"
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      className={className}
+    />
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +176,7 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
         )}
       </span>
       {renamingId === ws.id ? (
-        <input
-          autoFocus
+        <WorkspaceRenameInput
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
           onKeyDown={(e) => {
@@ -160,6 +200,165 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
       )}
     </span>
   )
+})
+
+// ---------------------------------------------------------------------------
+// WorkspacesFilterBar — search input + activity filter. Memo'd: only re-renders
+// when search text, the active filter value, or either handler reference changes.
+// ---------------------------------------------------------------------------
+
+const WorkspacesFilterBar = memo(function WorkspacesFilterBar({
+  search,
+  activityFilter,
+  onSearchChange,
+  onFilterChange
+}: {
+  search: string
+  activityFilter: ActivityFilterKey
+  onSearchChange: (value: string) => void
+  onFilterChange: (value: ActivityFilterKey) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="relative flex-1 min-w-0">
+        <MagnifyingGlass
+          size={12}
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+        />
+        <input
+          type="text"
+          aria-label="Search workspaces"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search workspaces"
+          className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
+        />
+      </div>
+      <div className="w-44 flex-shrink-0">
+        <Select<ActivityFilterKey>
+          ariaLabel="Activity filter"
+          options={FILTER_OPTIONS}
+          value={activityFilter}
+          onChange={onFilterChange}
+        />
+      </div>
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// BranchCell — git branch display for a workspace row. Memo'd since `gs` only
+// changes when the background git-status fetch for that workspace completes.
+// ---------------------------------------------------------------------------
+
+const BranchCell = memo(function BranchCell({
+  gs
+}: {
+  gs: GitStatus | null | undefined
+}): React.JSX.Element {
+  if (!gs?.branch) return <span className="text-text-muted">—</span>
+  return (
+    <span className="inline-flex items-center gap-1 text-xs min-w-0" title={`Branch: ${gs.branch}`}>
+      <GitMerge size={11} className="flex-shrink-0 text-text-muted" />
+      <span className="font-mono truncate">{gs.branch}</span>
+    </span>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// MessageCountCell — message count display. Memo'd: value is a primitive.
+// ---------------------------------------------------------------------------
+
+const MessageCountCell = memo(function MessageCountCell({
+  count
+}: {
+  count: number | null
+}): React.JSX.Element {
+  return (
+    <span className="text-text-muted text-xs tabular-nums">
+      {typeof count === 'number' ? count : '—'}
+    </span>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// LastOpenedCell — relative-time display. Memo'd: value is a primitive.
+// ---------------------------------------------------------------------------
+
+const LastOpenedCell = memo(function LastOpenedCell({
+  lastOpenedAt
+}: {
+  lastOpenedAt: number | null
+}): React.JSX.Element {
+  return (
+    <span className="text-text-muted text-xs whitespace-nowrap">
+      {lastOpenedAt ? relativeTime(lastOpenedAt) : 'never'}
+    </span>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// WorkspaceActionsButton — the row-level DotsThree menu trigger.
+// ---------------------------------------------------------------------------
+
+const WorkspaceActionsButton = memo(function WorkspaceActionsButton({
+  onClick
+}: {
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Row actions"
+      className={[
+        'inline-flex items-center justify-center w-8 h-8 rounded-md',
+        'text-text-muted transition-colors duration-150 cursor-pointer',
+        'hover:text-text-primary hover:bg-surface-overlay',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+      ].join(' ')}
+    >
+      <DotsThree size={18} weight="bold" />
+    </button>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// WorkspacesEmptyState — DataTable empty-state content. Memo'd since all props
+// are primitives or a stable callback.
+// ---------------------------------------------------------------------------
+
+const WorkspacesEmptyState = memo(function WorkspacesEmptyState({
+  hasWorkspaces,
+  filteredToEmpty,
+  onClearFilter
+}: {
+  hasWorkspaces: boolean
+  filteredToEmpty: boolean
+  onClearFilter: () => void
+}): React.JSX.Element {
+  if (!hasWorkspaces) {
+    return (
+      <p className="text-sm text-text-muted text-center">
+        No workspaces yet. Use + New workspace to start one.
+      </p>
+    )
+  }
+  if (filteredToEmpty) {
+    return (
+      <p className="text-sm text-text-muted text-center">
+        No workspaces match this filter.{' '}
+        <button
+          type="button"
+          onClick={onClearFilter}
+          className="text-accent hover:underline cursor-pointer"
+        >
+          Show all
+        </button>
+      </p>
+    )
+  }
+  return <p className="text-sm text-text-muted text-center">No matching workspaces.</p>
 })
 
 export function WorkspacesTab({
@@ -280,13 +479,32 @@ export function WorkspacesTab({
     setRenameValue(ws.name)
   }
 
-  function commitRename(ws: WorkspaceRecord): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== ws.name) {
-      onRenameWorkspace(ws.id, projectId, trimmed)
-    }
-    setRenamingId(null)
-  }
+  const commitRename = useCallback(
+    (ws: WorkspaceRecord): void => {
+      const trimmed = renameValue.trim()
+      if (trimmed && trimmed !== ws.name) {
+        onRenameWorkspace(ws.id, projectId, trimmed)
+      }
+      setRenamingId(null)
+    },
+    [renameValue, onRenameWorkspace, projectId]
+  )
+
+  // Stable handlers passed to memoized children (WorkspacesFilterBar, WorkspacesEmptyState).
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value)
+    setActivePage(1)
+  }, [])
+
+  const handleFilterChange = useCallback((value: ActivityFilterKey) => {
+    setActivityFilter(value)
+    setActivePage(1)
+  }, [])
+
+  const handleClearFilter = useCallback(() => {
+    setActivityFilter('all')
+    setActivePage(1)
+  }, [])
 
   const menuItems: ContextMenuItem[] = useMemo(() => {
     if (!menu) return []
@@ -309,14 +527,6 @@ export function WorkspacesTab({
       }
     ]
   }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin])
-
-  function nullsLastCmp<T>(a: T | null | undefined, b: T | null | undefined): number {
-    if (a === null || a === undefined) return 1
-    if (b === null || b === undefined) return -1
-    if (a < b) return -1
-    if (a > b) return 1
-    return 0
-  }
 
   // Filter active workspaces by activity group and search term.
   const filtered = useMemo(() => {
@@ -389,19 +599,7 @@ export function WorkspacesTab({
         key: 'branch',
         label: 'Branch',
         width: '140px',
-        render: (ws) => {
-          const gs = gitByWs[ws.id]
-          if (!gs?.branch) return <span className="text-text-muted">—</span>
-          return (
-            <span
-              className="inline-flex items-center gap-1 text-xs min-w-0"
-              title={`Branch: ${gs.branch}`}
-            >
-              <GitMerge size={11} className="flex-shrink-0 text-text-muted" />
-              <span className="font-mono truncate">{gs.branch}</span>
-            </span>
-          )
-        }
+        render: (ws) => <BranchCell gs={gitByWs[ws.id]} />
       },
       {
         key: 'messages',
@@ -409,25 +607,14 @@ export function WorkspacesTab({
         width: '70px',
         align: 'right',
         sortable: true,
-        render: (ws) => {
-          const n = messageCountForWorkspace(ws)
-          return (
-            <span className="text-text-muted text-xs tabular-nums">
-              {typeof n === 'number' ? n : '—'}
-            </span>
-          )
-        }
+        render: (ws) => <MessageCountCell count={messageCountForWorkspace(ws)} />
       },
       {
         key: 'lastOpenedAt',
         label: 'Last opened',
         width: '140px',
         sortable: true,
-        render: (ws) => (
-          <span className="text-text-muted text-xs whitespace-nowrap">
-            {ws.lastOpenedAt ? relativeTime(ws.lastOpenedAt) : 'never'}
-          </span>
-        )
+        render: (ws) => <LastOpenedCell lastOpenedAt={ws.lastOpenedAt} />
       },
       {
         key: 'menu',
@@ -435,23 +622,10 @@ export function WorkspacesTab({
         width: '52px',
         cellPadded: false,
         align: 'right',
-        render: (ws) => (
-          <button
-            onClick={(e) => openMenu(e, ws)}
-            aria-label="Row actions"
-            className={[
-              'inline-flex items-center justify-center w-8 h-8 rounded-md',
-              'text-text-muted transition-colors duration-150 cursor-pointer',
-              'hover:text-text-primary hover:bg-surface-overlay',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
-            ].join(' ')}
-          >
-            <DotsThree size={18} weight="bold" />
-          </button>
-        )
+        render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [gitByWs, renamingId, renameValue, sessionStats]
+    [gitByWs, renamingId, renameValue, sessionStats, commitRename]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.
@@ -475,35 +649,12 @@ export function WorkspacesTab({
           </Eyebrow>
 
           {/* Filter bar — always present so search + filter stay available, even when empty */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 min-w-0">
-              <MagnifyingGlass
-                size={12}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-              />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setActivePage(1)
-                }}
-                placeholder="Search workspaces"
-                className="w-full pl-7 pr-3 py-1.5 rounded-md text-xs bg-surface-raised border border-border-default text-text-primary placeholder-text-muted outline-none focus-visible:ring-1 focus-visible:ring-accent/40 focus-visible:border-accent/40 transition-colors"
-              />
-            </div>
-            <div className="w-44 flex-shrink-0">
-              <Select<ActivityFilterKey>
-                ariaLabel="Activity filter"
-                options={FILTER_OPTIONS}
-                value={activityFilter}
-                onChange={(v) => {
-                  setActivityFilter(v)
-                  setActivePage(1)
-                }}
-              />
-            </div>
-          </div>
+          <WorkspacesFilterBar
+            search={search}
+            activityFilter={activityFilter}
+            onSearchChange={handleSearchChange}
+            onFilterChange={handleFilterChange}
+          />
 
           <DataTable<WorkspaceRecord>
             columns={activeColumns}
@@ -511,27 +662,11 @@ export function WorkspacesTab({
             rowKey={(ws) => ws.id}
             loading={loading}
             emptyState={
-              !hasWorkspaces ? (
-                <p className="text-sm text-text-muted text-center">
-                  No workspaces yet. Use + New workspace to start one.
-                </p>
-              ) : filteredToEmpty ? (
-                <p className="text-sm text-text-muted text-center">
-                  No workspaces match this filter.{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActivityFilter('all')
-                      setActivePage(1)
-                    }}
-                    className="text-accent hover:underline cursor-pointer"
-                  >
-                    Show all
-                  </button>
-                </p>
-              ) : (
-                <p className="text-sm text-text-muted text-center">No matching workspaces.</p>
-              )
+              <WorkspacesEmptyState
+                hasWorkspaces={hasWorkspaces}
+                filteredToEmpty={filteredToEmpty}
+                onClearFilter={handleClearFilter}
+              />
             }
             sortBy={activeSortBy}
             sortDir={activeSortDir}

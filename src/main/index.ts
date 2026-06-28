@@ -52,7 +52,8 @@ import {
   deleteProject,
   renameProject,
   setProjectExpandedInSidebar,
-  reorderProjects
+  reorderProjects,
+  setProjectPinned
 } from './projects'
 import { refreshGithubData } from './githubAvatar'
 import {
@@ -1063,7 +1064,9 @@ function isSafeExternalUrl(url: unknown): url is string {
 }
 
 handle('config:openFolder', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate']
+  })
   if (result.canceled) return null
   const chosen = result.filePaths[0]
   console.log('[orpheus] folder selected:', chosen)
@@ -1098,7 +1101,9 @@ handle('projects:list', () => listProjects())
 handle('projects:add', (_e, { path }: { path: string }) => addProject(path))
 
 handle('projects:pickAndAdd', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate']
+  })
   if (result.canceled || !result.filePaths[0]) return null
   const chosen = result.filePaths[0]
   console.log('[orpheus] project folder selected:', chosen)
@@ -1701,6 +1706,10 @@ handle('projects:setExpandedInSidebar', (_e, { id, expanded }: { id: string; exp
 
 handle('projects:reorder', (_e, { orderedIds }: { orderedIds: string[] }) =>
   reorderProjects(orderedIds)
+)
+
+handle('projects:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
+  setProjectPinned(id, pinned)
 )
 
 handle('projects:refreshGithub', (_e, projectId: string) => refreshGithubData(projectId))
