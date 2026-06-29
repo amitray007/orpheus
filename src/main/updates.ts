@@ -234,6 +234,7 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
             lastChecked: result.checkedAt
           })
         }
+        broadcast('updates:checkResult', result)
         resolve(result)
       })
     )
@@ -322,8 +323,7 @@ function isAutoCheckEnabled(): boolean {
 async function runAutoCheck(): Promise<void> {
   if (!isAutoCheckEnabled()) return
   try {
-    const result = await checkForUpdates()
-    broadcast('updates:checkResult', result)
+    await checkForUpdates()
   } catch (err) {
     console.warn('[updates] auto-check failed:', err)
   }
