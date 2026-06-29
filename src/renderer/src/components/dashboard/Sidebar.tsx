@@ -11,7 +11,8 @@ import {
   Archive,
   Gear,
   GitFork,
-  PushPin
+  PushPin,
+  ArrowFatLineUp
 } from '@phosphor-icons/react'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
@@ -884,6 +885,9 @@ interface SidebarProps {
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'sessions') => void
   onSelectSettings: () => void
+  onOpenUpdates: () => void
+  updateAvailable: boolean
+  updateLatest: string | null
   onAddProject: () => void
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
@@ -921,6 +925,9 @@ export function Sidebar({
   onSelectProject,
   onSelectNav,
   onSelectSettings,
+  onOpenUpdates,
+  updateAvailable,
+  updateLatest,
   onAddProject,
   addingProject = false,
   onToggleProjectExpand,
@@ -1193,6 +1200,10 @@ export function Sidebar({
     </button>
   )
 
+  const updateTitle = updateLatest
+    ? `Update available — v${updateLatest.startsWith('v') ? updateLatest.slice(1) : updateLatest}`
+    : 'Update available'
+
   return (
     <SidebarBoundsContext.Provider value={sidebarRef}>
       <aside
@@ -1335,14 +1346,64 @@ export function Sidebar({
           )}
         </div>
 
-        {/* Bottom: Settings */}
-        <NavItem
-          Icon={Gear}
-          label="Settings"
-          active={activeView === 'settings'}
-          collapsed={collapsed}
-          onClick={onSelectSettings}
-        />
+        {/* Bottom: Settings (+ update indicator when a newer build is available) */}
+        {!updateAvailable ? (
+          <NavItem
+            Icon={Gear}
+            label="Settings"
+            active={activeView === 'settings'}
+            collapsed={collapsed}
+            onClick={onSelectSettings}
+          />
+        ) : collapsed ? (
+          <div className="flex flex-col gap-1">
+            <NavItem
+              Icon={Gear}
+              label="Settings"
+              active={activeView === 'settings'}
+              collapsed={collapsed}
+              onClick={onSelectSettings}
+            />
+            <button
+              type="button"
+              className={[
+                'w-full flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
+                'text-accent bg-transparent hover:bg-accent/15',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+              ].join(' ')}
+              onClick={onOpenUpdates}
+              title={updateTitle}
+              aria-label="Update available — open Updates settings"
+            >
+              <ArrowFatLineUp size={20} weight="bold" />
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-6 gap-1">
+            <div className="col-span-5">
+              <NavItem
+                Icon={Gear}
+                label="Settings"
+                active={activeView === 'settings'}
+                collapsed={collapsed}
+                onClick={onSelectSettings}
+              />
+            </div>
+            <button
+              type="button"
+              className={[
+                'col-span-1 flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
+                'text-accent bg-transparent hover:bg-accent/15',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+              ].join(' ')}
+              onClick={onOpenUpdates}
+              title={updateTitle}
+              aria-label="Update available — open Updates settings"
+            >
+              <ArrowFatLineUp size={20} weight="bold" />
+            </button>
+          </div>
+        )}
       </aside>
     </SidebarBoundsContext.Provider>
   )

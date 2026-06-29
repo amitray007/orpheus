@@ -12,6 +12,7 @@ import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
+import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
@@ -712,8 +713,20 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  const { available: updateAvailable, latest: updateLatest } = useUpdateAvailable()
+
   const handleSelectSettings = useCallback((): void => {
     setView({ kind: 'settings' })
+    setSelectedProjectId(null)
+    setSelectedWorkspaceId(null)
+    // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
+    window.api.uiState
+      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+      .catch(console.error)
+  }, [])
+
+  const handleOpenUpdates = useCallback((): void => {
+    setView({ kind: 'settings', section: 'orpheus-updates' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
@@ -1083,6 +1096,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           onSelectProject={handleSelectProject}
           onSelectNav={handleSelectNav}
           onSelectSettings={handleSelectSettings}
+          onOpenUpdates={handleOpenUpdates}
+          updateAvailable={updateAvailable}
+          updateLatest={updateLatest}
           onAddProject={handleAddProject}
           addingProject={addingProject}
           onToggleProjectExpand={handleToggleProjectExpand}

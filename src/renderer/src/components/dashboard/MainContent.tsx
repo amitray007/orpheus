@@ -3,11 +3,12 @@ import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
 import { Eyebrow } from './settings/primitives'
-
-const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
+import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getPrSnapshot } from '@/lib/prStore'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+
+const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
 
 // ---------------------------------------------------------------------------
 // LRU keep-alive list — up to N workspace IDs remain mounted simultaneously.
@@ -46,7 +47,7 @@ export type View =
   | { kind: 'project'; projectId: string }
   | { kind: 'sessions' }
   | { kind: 'workspace'; workspaceId: string; projectId: string }
-  | { kind: 'settings' }
+  | { kind: 'settings'; section?: SettingsSectionId }
 
 // ---------------------------------------------------------------------------
 // MainContent
@@ -138,7 +139,7 @@ export function MainContent({
   if (view.kind === 'settings') {
     return (
       <Suspense fallback={null}>
-        <SettingsView />
+        <SettingsView section={view.section} />
       </Suspense>
     )
   }
