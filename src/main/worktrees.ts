@@ -138,21 +138,54 @@ export function withRepoLock<T>(repoRoot: string, fn: () => Promise<T>): Promise
 /**
  * Given any path inside a git repo, return the main worktree root (absolute).
  * Throws NotAGitRepoError if `cwd` is not inside a git repository.
+ *
+ * Strategy:
+ *   1. Ask git for `--git-common-dir` (absolute). This is the shared .git dir
+ *      shared by all worktrees, so it always points back to the main repo even
+ *      when called from a linked worktree.
+ *   2. If commonDir ends with "/.git", the main root is its parent (normal case).
+ *   3. Otherwise (bare repo), run `--show-toplevel` from the commonDir itself.
+ *      If that succeeds and is non-empty, use it; else fall back to
+ *      `dirname(commonDir)`.
+ *
+ * We deliberately do NOT use `--show-toplevel` from the original `cwd` because
+ * inside a linked worktree it returns that worktree's root, not the main repo root.
  */
 export async function resolveMainWorktree(cwd: string): Promise<string> {
+  let gitCommonDir: string
   try {
     const { stdout } = await execFile(
       'git',
       ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
       { timeout: 5000 }
     )
-    // stdout is e.g. "/repo/.git\n"
-    const gitCommonDir = stdout.trim()
-    // The main worktree root is dirname of the .git common dir
-    return path.dirname(gitCommonDir)
+    gitCommonDir = stdout.trim()
   } catch {
     throw new NotAGitRepoError(cwd)
   }
+
+  // Normal case: commonDir is /repo/.git → main root is /repo
+  if (gitCommonDir.endsWith('/.git') || gitCommonDir === '.git') {
+    return path.dirname(gitCommonDir)
+  }
+
+  // Bare repo or unusual layout: try --show-toplevel from the commonDir itself
+  try {
+    const { stdout: toplevel } = await execFile(
+      'git',
+      ['-C', gitCommonDir, 'rev-parse', '--show-toplevel'],
+      { timeout: 5000 }
+    )
+    const resolved = toplevel.trim()
+    if (resolved.length > 0) {
+      return resolved
+    }
+  } catch {
+    // Bare repos have no working tree; --show-toplevel fails — fall through
+  }
+
+  // Last resort: parent of the common dir
+  return path.dirname(gitCommonDir)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,23 +234,23 @@ export async function branchExists(repoRoot: string, branch: string): Promise<bo
 /**
  * Parse `git worktree list --porcelain` and return all worktree working-tree
  * paths (absolute), including the main worktree.
+ *
+ * Throws on git command failure so callers (e.g. createWorktree's collision
+ * check) surface a corrupted-repo error rather than silently returning an
+ * empty list that could allow a path collision.
  */
 export async function listWorktreePaths(repoRoot: string): Promise<string[]> {
-  try {
-    const { stdout } = await execFile('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
-      timeout: 5000
-    })
-    const paths: string[] = []
-    for (const line of stdout.split('\n')) {
-      const match = line.match(/^worktree (.+)$/)
-      if (match) {
-        paths.push(match[1].trim())
-      }
+  const { stdout } = await execFile('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
+    timeout: 5000
+  })
+  const paths: string[] = []
+  for (const line of stdout.split('\n')) {
+    const match = line.match(/^worktree (.+)$/)
+    if (match) {
+      paths.push(match[1].trim())
     }
-    return paths
-  } catch {
-    return []
   }
+  return paths
 }
 
 // ---------------------------------------------------------------------------
