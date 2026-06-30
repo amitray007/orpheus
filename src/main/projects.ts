@@ -135,6 +135,13 @@ export function openProject(id: string): ProjectRecord {
   return rowToRecord(row)
 }
 
+/** Fetch a single project by id without touching last_opened_at. */
+export function getProject(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row ? rowToRecord(row) : null
+}
+
 export function deleteProject(id: string): void {
   const db = getDb()
   // ON DELETE CASCADE in the schema removes associated workspaces and sessions.

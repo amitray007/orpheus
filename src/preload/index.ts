@@ -11,6 +11,7 @@ import type {
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
+  CreateWorktreeParams,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -60,7 +61,9 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 const api = {
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths')
+    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths'),
+    offeredModes: (projectId: string): Promise<{ local: boolean; worktree: boolean }> =>
+      ipcRenderer.invoke('app:offeredModes', { projectId })
   },
   window: {
     openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
@@ -226,6 +229,8 @@ const api = {
       ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
     create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:create', args),
+    createWorktree: (projectId: string, params: CreateWorktreeParams): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:createWorktree', { projectId, params }),
     open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),

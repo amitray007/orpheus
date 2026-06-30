@@ -125,6 +125,10 @@ export type WorkspaceRecord = {
   worktreeBranch: string | null
 }
 
+/** Params for creating a worktree-backed workspace (v64). When `branch` is
+ *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
+export type CreateWorktreeParams = { name: string; branch?: string }
+
 // For Pinned section: a pinned workspace with its project for context
 export type PinnedItem = {
   workspace: WorkspaceRecord

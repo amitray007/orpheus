@@ -9,6 +9,7 @@ import type {
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
+  CreateWorktreeParams,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -60,6 +61,7 @@ declare global {
       app: {
         getVersion: () => Promise<string>
         getPaths: () => Promise<{ userData: string; logs: string }>
+        offeredModes: (projectId: string) => Promise<{ local: boolean; worktree: boolean }>
       }
       window: {
         openDevTools: () => Promise<void>
@@ -161,6 +163,10 @@ declare global {
           options?: { scope?: 'active' | 'archived' | 'all' }
         ) => Promise<WorkspaceRecord[]>
         create: (args: { projectId: string; name: string; cwd: string }) => Promise<WorkspaceRecord>
+        createWorktree: (
+          projectId: string,
+          params: CreateWorktreeParams
+        ) => Promise<WorkspaceRecord>
         open: (id: string) => Promise<WorkspaceRecord>
         setPinned: (id: string, pinned: boolean) => Promise<WorkspaceRecord>
         archive: (id: string) => Promise<void>

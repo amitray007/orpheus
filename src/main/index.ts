@@ -32,7 +32,7 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
+import type { DoctorResult, GitStatus, HealthReport, CreateWorktreeParams } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -49,12 +49,24 @@ import {
   listProjects,
   addProject,
   openProject,
+  getProject,
   deleteProject,
   renameProject,
   setProjectExpandedInSidebar,
   reorderProjects,
   setProjectPinned
 } from './projects'
+import {
+  resolveMainWorktree,
+  withRepoLock,
+  createWorktree,
+  removeWorktree,
+  worktreeSlug,
+  readWorktreeBaseRef,
+  branchExists,
+  NotAGitRepoError
+} from './worktrees'
+import { resolveOfferedModes } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
@@ -1080,6 +1092,29 @@ handle('app:getPaths', () => ({
   logs: app.getPath('logs')
 }))
 
+// Which workspace-creation modes the UI should offer for this project. Computes
+// is-git-repo authoritatively (resolveMainWorktree throws NotAGitRepoError for a
+// non-git cwd) and narrows the resolver result to the bare {local, worktree} the
+// renderer needs. Non-NotAGitRepo errors propagate.
+handle('app:offeredModes', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`app:offeredModes: project not found: ${projectId}`)
+
+  let isGit = true
+  try {
+    await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      isGit = false
+    } else {
+      throw err
+    }
+  }
+
+  const modes = await resolveOfferedModes(project.path, isGit)
+  return { local: modes.local, worktree: modes.worktree }
+})
+
 handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
@@ -1148,6 +1183,80 @@ handle(
 
 handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
   createWorkspace(args)
+)
+
+// Create a worktree-backed workspace. Async + git-first transaction order:
+// resolve repo root → authoritatively enforce the offered-modes config →
+// (under the per-repo mutex) decide new-vs-existing branch → create the git
+// worktree → insert the DB row, rolling the worktree back if the insert fails.
+// Nothing is persisted until the worktree exists, and a failed insert leaves no
+// orphaned worktree behind.
+handle(
+  'workspaces:createWorktree',
+  async (_e, { projectId, params }: { projectId: string; params: CreateWorktreeParams }) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
+
+    // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
+    // worktree workspaces are impossible there, so reject with a clear message.
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch (err) {
+      if (err instanceof NotAGitRepoError) {
+        throw new Error(
+          `Cannot create a worktree workspace: ${project.path} is not a git repository`
+        )
+      }
+      throw err
+    }
+
+    // Authoritative enforcement (spec §7.2): re-read the offered modes in the
+    // main process and reject if worktree creation is disabled by config. The
+    // UI gate is advisory; this is the real gate.
+    const modes = await resolveOfferedModes(project.path, true)
+    if (!modes.worktree) {
+      throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
+    }
+
+    const slug = worktreeSlug(params.name)
+    const branch = params.branch?.trim() || `worktree-${slug}`
+
+    return withRepoLock(repoRoot, async () => {
+      const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
+      const baseRef = await readWorktreeBaseRef()
+
+      // If createWorktree throws, propagate — no DB row has been inserted yet.
+      const { path: worktreePath, branch: finalBranch } = await createWorktree({
+        repoRoot,
+        slug,
+        branch,
+        mode,
+        baseRef
+      })
+
+      try {
+        // createWorkspace broadcasts workspaces:created internally (same as the
+        // normal create path), so no separate broadcast is needed here.
+        return createWorkspace({
+          projectId,
+          name: params.name,
+          cwd: worktreePath,
+          worktreeParentCwd: repoRoot,
+          worktreeBranch: finalBranch
+        })
+      } catch (rowErr) {
+        // Roll back the freshly created worktree so a failed insert can't leak a
+        // dangling worktree. Force-remove since it's brand new (no user changes).
+        try {
+          await removeWorktree({ path: worktreePath, force: true })
+        } catch {
+          // Best-effort rollback; surface the original insert error regardless.
+        }
+        throw rowErr
+      }
+    })
+  }
 )
 
 handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
