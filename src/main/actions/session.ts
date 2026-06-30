@@ -27,6 +27,7 @@ import type {
   SessionLastTurn
 } from '../../shared/types'
 import { getClaudeGlobalSettings } from '../claudeSettings'
+import { encodePathToClaudeDir } from '../claudeProjectDir'
 import { getWorkspace } from '../workspaces'
 import { getPricing } from '../pricing'
 
@@ -82,7 +83,7 @@ export function evictAccumulator(workspaceId: string): void {
 // ---------------------------------------------------------------------------
 
 function getJsonlPath(cwd: string, sessionId: string): string {
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = encodePathToClaudeDir(cwd)
   return nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
 }
 

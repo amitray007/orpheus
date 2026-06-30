@@ -17,6 +17,7 @@ import { WebContents } from 'electron'
 import { invoke } from './registry'
 import { invalidateSessionCache, resolveJsonlPath } from './session'
 import { getWorkspace } from '../workspaces'
+import { encodePathToClaudeDir } from '../claudeProjectDir'
 import * as os from 'node:os'
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ function startSessionSubscription(
   function getParentDir(wid: string): string | null {
     const ws = getWorkspace(wid)
     if (!ws) return null
-    const encoded = ws.cwd.replace(/\//g, '-')
+    const encoded = encodePathToClaudeDir(ws.cwd)
     return nodePath.join(os.homedir(), '.claude', 'projects', encoded)
   }
 
