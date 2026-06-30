@@ -73,7 +73,7 @@ import {
   NotAGitRepoError,
   reconcileWorktree
 } from './worktrees'
-import { resolveOfferedModes } from './orpheusConfig'
+import { resolveOfferedModes, resolveWorkspacesConfig, writeProjectOverride } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
@@ -1611,6 +1611,32 @@ handle(
     const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
     recomputeDirty()
     return result
+  }
+)
+
+// ---------------------------------------------------------------------------
+// Orpheus project config IPC (.orpheus/config.yml)
+// ---------------------------------------------------------------------------
+
+handle('orpheusConfig:get', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`orpheusConfig:get: project not found: ${projectId}`)
+  return resolveWorkspacesConfig(project.path)
+})
+
+handle(
+  'orpheusConfig:setOverride',
+  async (
+    _e,
+    {
+      projectId,
+      patch
+    }: { projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }
+  ) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
+    await writeProjectOverride(project.path, patch)
+    return resolveWorkspacesConfig(project.path)
   }
 )
 

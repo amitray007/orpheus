@@ -399,6 +399,15 @@ const api = {
     ): Promise<ClaudeWorkspaceSettings> =>
       ipcRenderer.invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
   },
+  orpheusConfig: {
+    get: (projectId: string): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      ipcRenderer.invoke('orpheusConfig:get', { projectId }),
+    setOverride: (
+      projectId: string,
+      patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
+    ): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      ipcRenderer.invoke('orpheusConfig:setOverride', { projectId, patch })
+  },
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
     update: (patch: AppUiStatePatch): Promise<AppUiState> =>

@@ -251,6 +251,13 @@ declare global {
           patch: ClaudeWorkspaceSettingsOverrides
         ) => Promise<ClaudeWorkspaceSettings>
       }
+      orpheusConfig: {
+        get: (projectId: string) => Promise<{ allowLocal: boolean; allowWorktree: boolean }>
+        setOverride: (
+          projectId: string,
+          patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
+        ) => Promise<{ allowLocal: boolean; allowWorktree: boolean }>
+      }
       uiState: {
         get: () => Promise<AppUiState>
         update: (patch: AppUiStatePatch) => Promise<AppUiState>
