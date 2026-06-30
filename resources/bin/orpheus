@@ -17,7 +17,7 @@
 #       bin/
 #         orpheus           ← this script
 #       cli/
-#         cli.js            ← bundled CLI
+#         cli.cjs            ← bundled CLI
 #
 # Layout (dev, after bun run build:dev installs Orpheus Dev.app):
 #   Contents/
@@ -30,12 +30,12 @@
 #       bin/
 #         orpheus           ← this script
 #       cli/
-#         cli.js            ← bundled CLI
+#         cli.cjs            ← bundled CLI
 #
 # NODE_PATH for better-sqlite3
 # ----------------------------
 # The CLI bundle externalizes better-sqlite3 so the native .node addon can be
-# loaded at runtime. However, cli.js lives at Resources/cli/cli.js — it has no
+# loaded at runtime. However, cli.cjs lives at Resources/cli/cli.cjs — it has no
 # node_modules ancestor containing better-sqlite3. We must point Node at the
 # unpacked location via NODE_PATH before exec'ing the bundle.
 #
@@ -58,8 +58,8 @@ RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
 # The MacOS dir is a sibling of Resources/.
 MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
 
-# The bundled CLI lives at Resources/cli/cli.js.
-CLI_BUNDLE="$RESOURCES_DIR/cli/cli.js"
+# The bundled CLI lives at Resources/cli/cli.cjs.
+CLI_BUNDLE="$RESOURCES_DIR/cli/cli.cjs"
 
 # Locate the native module directory and set NODE_PATH.
 # Primary: Resources/app.asar.unpacked/node_modules (standard electron-builder asarUnpack layout)

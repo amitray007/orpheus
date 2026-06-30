@@ -33,9 +33,9 @@ extraResources:
   - from: resources/bin/orpheus
     to: bin/orpheus
   # Bundled Orpheus CLI — single CJS bundle with better-sqlite3 externalised.
-  # Lives at Contents/Resources/cli/cli.js; executed by the bin/orpheus shim.
-  - from: packages/orpheus-cli/dist/cli.js
-    to: cli/cli.js
+  # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
+  - from: packages/orpheus-cli/dist/cli.cjs
+    to: cli/cli.cjs
   # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
   # so registerPopoverFonts() can resolve them via process.resourcesPath.
   - from: node_modules/geist/dist/fonts/geist-sans

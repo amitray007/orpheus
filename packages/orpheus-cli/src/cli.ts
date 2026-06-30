@@ -466,3 +466,17 @@ export async function main(argv: string[]): Promise<void> {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Entry point invocation
+// ---------------------------------------------------------------------------
+// This bundle is only ever executed as the CLI entry point (never imported as a
+// library — src/index.ts is the lib barrel). Call main unconditionally so it
+// runs when the CJS bundle is executed via:
+//   exec "$ELECTRON_BIN" "$CLI_BUNDLE" "$@"   (with ELECTRON_RUN_AS_NODE=1)
+// Under ELECTRON_RUN_AS_NODE, argv is [electronBin, bundlePath, ...userArgs],
+// so process.argv.slice(2) correctly strips the runtime prefix.
+main(process.argv.slice(2)).catch((err) => {
+  process.stderr.write(`orpheus: fatal: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.exit(1)
+})
