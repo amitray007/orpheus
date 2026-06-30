@@ -13,7 +13,7 @@
  * The waitingFor reason is similarly sourced from the live file when available.
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import { getLiveStatus } from '../reads/session-status.js'
 import { printResult, printKeyValue, printError, printNotFoundError } from '../output.js'

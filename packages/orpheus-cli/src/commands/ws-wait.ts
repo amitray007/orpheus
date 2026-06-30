@@ -49,7 +49,7 @@
  * and exiting with code 13 directly).
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { subscribe, AppNotRunningError } from '../socket-client.js'
 import { printLines, printResult, printError } from '../output.js'
 

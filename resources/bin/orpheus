@@ -97,4 +97,7 @@ if [ ! -f "$CLI_BUNDLE" ]; then
   exit 1
 fi
 
-exec ELECTRON_RUN_AS_NODE=1 "$ELECTRON_BIN" "$CLI_BUNDLE" "$@"
+# Run the CLI bundle under Electron's bundled Node runtime. The env var must be
+# exported before exec — `exec VAR=val cmd` would try to exec "VAR=val" itself.
+export ELECTRON_RUN_AS_NODE=1
+exec "$ELECTRON_BIN" "$CLI_BUNDLE" "$@"

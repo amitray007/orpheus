@@ -73,8 +73,19 @@ import {
   printResult,
   printKeyValue
 } from './output.js'
-// Command implementations — each module calls registerCommand() as a side-effect.
-// Stubs below are omitted for commands that have real implementations here.
+import { registerCommand, getCommand, hasCommand } from './registry.js'
+import type { ParsedFlags, CommandContext, FlagDeclarations } from './registry.js'
+// Re-export types so existing importers of cli.ts continue to work.
+export type {
+  ParsedFlags,
+  CommandContext,
+  FlagDeclarations,
+  CommandDescriptor
+} from './registry.js'
+// Command implementations — each module imports from registry.ts (a leaf) and
+// calls registerCommand() as an ESM side-effect. Importing registry.ts first
+// here ensures the Map is initialized, but even without this explicit ordering
+// the leaf module guarantees the Map is ready before any registerCommand call.
 import './commands/ws-new.js'
 import './commands/ws-lifecycle.js'
 import './commands/ws-read.js'
@@ -83,58 +94,6 @@ import './commands/ws-status.js'
 import './commands/ws-wait.js'
 import './commands/ws-send.js'
 import './commands/project.js'
-
-// ---------------------------------------------------------------------------
-// Command registry types
-// ---------------------------------------------------------------------------
-
-/** Shape of parsed flags. Values are string (single or last-wins) or boolean. */
-export type ParsedFlags = Record<string, string | boolean | string[]> & {
-  _unknown?: string[]
-}
-
-/** Context passed to every command handler. */
-export type CommandContext = {
-  /** Positional arguments that follow the command path. */
-  positionals: string[]
-  /** All flags (global + per-command), merged. */
-  flags: ParsedFlags
-  /** Value of --project (convenience alias for flags.project as string). */
-  project: string | undefined
-  /** True if --json was passed. */
-  jsonMode: boolean
-}
-
-/** Flag declaration for a command: name → 'boolean' | 'string'. */
-export type FlagDeclarations = Record<string, 'boolean' | 'string'>
-
-export type CommandDescriptor = {
-  /**
-   * Per-command flag declarations. These are merged with the global flags
-   * before the handler is called so the handler sees everything in ctx.flags.
-   */
-  flags?: FlagDeclarations
-  /** Whether this is a read-only command (bypasses auto-launch). */
-  isRead?: boolean
-  handler: (ctx: CommandContext) => Promise<void>
-}
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
-
-const registry = new Map<string, CommandDescriptor>()
-
-/**
- * Register a command handler.
- * Name is the full command path joined with spaces, e.g. 'ws new', 'project ls'.
- * Single-word commands like 'whoami' are also valid.
- *
- * Later units (U7–U13) call this to add their handlers.
- */
-export function registerCommand(name: string, descriptor: CommandDescriptor): void {
-  registry.set(name, descriptor)
-}
 
 // ---------------------------------------------------------------------------
 // Arg parser
@@ -233,7 +192,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
 
   for (let len = Math.min(args.length, 3); len >= 1; len--) {
     const candidate = args.slice(0, len).join(' ')
-    if (registry.has(candidate)) {
+    if (hasCommand(candidate)) {
       commandPath = candidate
       positionals = args.slice(len)
       break
@@ -256,7 +215,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
 function fullParse(argv: string[]): ParseResult {
   // Pass 1: global flags only, to find the command
   const pass1 = parseArgv(argv, {})
-  const cmd = pass1.commandPath != null ? registry.get(pass1.commandPath) : undefined
+  const cmd = pass1.commandPath != null ? getCommand(pass1.commandPath) : undefined
   const perCmdFlags = cmd?.flags ?? {}
   // Pass 2: with per-command flags added
   return parseArgv(argv, perCmdFlags)
@@ -465,7 +424,7 @@ export async function main(argv: string[]): Promise<void> {
     return
   }
 
-  const descriptor = registry.get(parsed.commandPath)!
+  const descriptor = getCommand(parsed.commandPath)!
   const ctx: CommandContext = {
     positionals: parsed.positionals,
     flags: parsed.flags,

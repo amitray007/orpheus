@@ -47,7 +47,7 @@
  * loop in cli.ts so `ws send` works even when the app is not yet running.
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 

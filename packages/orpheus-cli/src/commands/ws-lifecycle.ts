@@ -38,7 +38,7 @@
  * Server errors (CommandError) are surfaced via printError.
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 import type { WorkspaceRecord } from '../reads/db.js'

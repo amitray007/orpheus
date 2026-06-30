@@ -14,7 +14,7 @@
  */
 
 import * as fs from 'node:fs'
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import {
   printResult,

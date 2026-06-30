@@ -24,7 +24,7 @@
  *       grandchild  [idle]
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import { resolveContext, noProjectMessage } from '../context.js'
 import { getLiveStatus } from '../reads/session-status.js'

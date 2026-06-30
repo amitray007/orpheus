@@ -34,7 +34,7 @@
  * standard auto-launch + retry loop in cli.ts.
  */
 
-import { registerCommand } from '../cli.js'
+import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
 import { resolveContext, noProjectMessage } from '../context.js'
 import { sendCommand } from '../socket-client.js'
