@@ -73,6 +73,12 @@ import {
   printResult,
   printKeyValue
 } from './output.js'
+// Command implementations — each module calls registerCommand() as a side-effect.
+// Stubs below are omitted for commands that have real implementations here.
+import './commands/ws-read.js'
+import './commands/ws-ls.js'
+import './commands/ws-status.js'
+import './commands/project.js'
 
 // ---------------------------------------------------------------------------
 // Command registry types
@@ -374,15 +380,13 @@ registerCommand('ws archive', makeStub('U7'))
 registerCommand('ws close', makeStub('U7'))
 registerCommand('ws reopen', makeStub('U7'))
 registerCommand('ws rename', makeStub('U7'))
-registerCommand('ws ls', makeStub('U8'))
-registerCommand('ws status', makeStub('U9'))
-registerCommand('ws read', makeStub('U10'))
+// 'ws ls' is registered by src/commands/ws-ls.ts (imported at top of file)
+// 'ws status' is registered by src/commands/ws-status.ts (imported at top of file)
+// 'ws read' is registered by src/commands/ws-read.ts (imported at top of file)
 registerCommand('ws wait', makeStub('U11'))
 registerCommand('ws send', makeStub('U12'))
 
-// project commands (U13 or nearby unit)
-registerCommand('project ls', makeStub('U13'))
-registerCommand('project show', makeStub('U13'))
+// 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)
 
 // ---------------------------------------------------------------------------
 // Usage / help
