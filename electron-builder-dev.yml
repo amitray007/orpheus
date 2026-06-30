@@ -13,6 +13,13 @@ files:
 asarUnpack:
   - resources/**
   - '**/*.node'
+  # better-sqlite3 + its runtime deps must be fully unpacked so the CLI bundle
+  # (Resources/cli/cli.cjs, loaded via the shim's NODE_PATH) can resolve them —
+  # better-sqlite3 does a dynamic require('bindings'), which is otherwise left
+  # packed inside app.asar and unreachable.
+  - node_modules/better-sqlite3/**
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
 extraResources:
   - from: packages/ghostty-surface/build/Release/ghostty_native.node
     to: packages/ghostty-surface/ghostty_native.node

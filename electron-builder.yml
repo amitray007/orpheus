@@ -19,6 +19,13 @@ asarUnpack:
   # electron-builder extracts anything matching these globs to app.asar.unpacked/
   - resources/**
   - '**/*.node'
+  # better-sqlite3 + its runtime deps must be fully unpacked so the CLI bundle
+  # (Resources/cli/cli.cjs, loaded via the shim's NODE_PATH) can resolve them —
+  # better-sqlite3 does a dynamic require('bindings'), which is otherwise left
+  # packed inside app.asar and unreachable.
+  - node_modules/better-sqlite3/**
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.
