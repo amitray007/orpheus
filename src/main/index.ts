@@ -2540,7 +2540,42 @@ if (!app.requestSingleInstanceLock()) {
             },
             teardownWorkspaceResources,
             performClose: (workspaceId) => performClose(workspaceId),
-            requestOpenWorkspace
+            requestOpenWorkspace,
+            openAndSeed: async (workspaceId: string, taskText: string): Promise<string | null> => {
+              // Ask the renderer to open + mount the workspace via the normal nav path.
+              requestOpenWorkspace(workspaceId)
+              // Poll canInject with a bounded timeout (10 s). canInject returns true
+              // only when the workspace status is 'idle' or 'awaiting_input', which
+              // happens once the terminal surface is mounted and claude is ready.
+              const POLL_INTERVAL_MS = 300
+              const TIMEOUT_MS = 10_000
+              const deadline = Date.now() + TIMEOUT_MS
+              let injectable = false
+              while (Date.now() < deadline) {
+                if (terminalActions.canInject(workspaceId)) {
+                  injectable = true
+                  break
+                }
+                await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+              }
+              if (!injectable) {
+                return (
+                  'seed-timeout: workspace was created but the task could not be injected ' +
+                  '— the surface did not become injectable within 10 s. ' +
+                  'Open the workspace manually and paste the task text.'
+                )
+              }
+              const addon = loadTerminalAddon()
+              const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
+              if (!inputResult.ok) {
+                return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
+              }
+              const submitResult = terminalActions.submit(addon, workspaceId)
+              if (!submitResult.ok) {
+                return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
+              }
+              return null
+            }
           }
           commandServer = startCommandServer(cmdDeps)
         } catch (err) {

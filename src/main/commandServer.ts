@@ -9,9 +9,13 @@ import {
   getWorkspace,
   archiveWorkspace,
   reopenWorkspace,
-  renameWorkspace
+  renameWorkspace,
+  listChildWorkspaces,
+  getWorkspaceLineage
 } from './workspaces'
-import type { WorkspaceRecord } from '../shared/types'
+import { getClaudeGlobalSettings } from './claudeSettings'
+import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
+import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -37,6 +41,15 @@ export type CommandServerDeps = {
    * given workspace via the normal handleSelectWorkspace path. Used by U8/U12.
    */
   requestOpenWorkspace: (workspaceId: string) => void
+  /**
+   * Open a workspace in the GUI and inject a seed task once the surface is
+   * injectable. Implemented in index.ts using requestOpenWorkspace + a bounded
+   * poll on canInject + terminalActions.sendInput/submit. Returns a warning
+   * string if the surface failed to become injectable within the timeout, null
+   * on success. The workspace is always created regardless; only the injection
+   * may be skipped.
+   */
+  openAndSeed: (workspaceId: string, taskText: string) => Promise<string | null>
 }
 
 // ---------------------------------------------------------------------------
@@ -64,23 +77,126 @@ type DispatchFn = (
 function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> {
   return {
     // Create a new workspace inside a project.
-    'workspace.create': (args) => {
+    // Args:
+    //   projectId (required) — the project to create the workspace under
+    //   cwd (required)       — working directory for the workspace
+    //   name?                — workspace name; defaults to 'New workspace'
+    //   fork? (boolean)      — if true, inherit parent session history via --fork-session
+    //   parentWorkspaceId?   — explicit parent id; falls back to context.workspaceId
+    //   model?               — workspace-level model override
+    //   permissionMode?      — workspace-level permission mode override
+    //   effort?              — workspace-level effort override
+    //   task?                — seed text to inject after opening the workspace in the GUI
+    'workspace.create': async (args, context, innerDeps) => {
       if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
       if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
       const projectExists = getDb()
         .prepare('SELECT id FROM projects WHERE id = ?')
         .get(args.projectId)
       if (!projectExists) throw new Error(`project not found: ${args.projectId}`)
-      const name = typeof args.name === 'string' ? args.name : 'New workspace'
-      return createWorkspace({
+
+      // Determine parent workspace id: explicit arg > caller's context workspace
+      const parentId: string | null =
+        typeof args.parentWorkspaceId === 'string'
+          ? args.parentWorkspaceId
+          : (context?.workspaceId ?? null)
+
+      // GUARDRAIL CHECK — only when there is an explicit parent
+      if (parentId != null) {
+        const globalSettings = getClaudeGlobalSettings()
+        const maxChildren = globalSettings.maxWorkspaceChildren ?? 10
+        const maxDepth = globalSettings.maxWorkspaceDepth ?? 3
+
+        // Children check: how many non-archived children does the parent already have?
+        const existingChildren = listChildWorkspaces(parentId)
+        if (existingChildren.length >= maxChildren) {
+          throw new Error(
+            `Max children (${maxChildren}) reached for this workspace. Don't spawn more workspaces — ` +
+              `use subagents (Agent tool) or teammates within an existing workspace instead, ` +
+              `or archive finished workers to free slots.`
+          )
+        }
+
+        // Depth check: how deep in the lineage would the new workspace be?
+        // getWorkspaceLineage returns root→parent chain (inclusive of parent).
+        // The new workspace would be at depth lineage.length + 1.
+        const lineage = getWorkspaceLineage(parentId)
+        const newDepth = lineage.length + 1
+        if (newDepth > maxDepth) {
+          throw new Error(
+            `Max workspace depth (${maxDepth}) would be exceeded. Don't nest workspaces further — ` +
+              `use subagents (Agent tool) or teammates within an existing workspace instead.`
+          )
+        }
+      }
+
+      // Fork support: look up parent's claudeSessionId when --fork is requested
+      let forkedFromSessionId: string | null = null
+      if (args.fork === true) {
+        if (parentId == null) {
+          throw new Error(
+            '--fork requires a parent workspace. Run from inside a workspace (ORPHEUS_WORKSPACE_ID) or pass --parent.'
+          )
+        }
+        const parentWs = getWorkspace(parentId)
+        if (parentWs == null) {
+          throw new Error(`parent workspace not found: ${parentId}`)
+        }
+        if (parentWs.claudeSessionId == null) {
+          throw new Error(
+            `parent workspace ${parentId} has no claude session yet — cannot fork before a session is established`
+          )
+        }
+        forkedFromSessionId = parentWs.claudeSessionId
+      }
+
+      const name = typeof args.name === 'string' && args.name !== '' ? args.name : 'New workspace'
+      const ws = createWorkspace({
         projectId: args.projectId,
         name,
         cwd: args.cwd,
-        forkedFromSessionId:
-          typeof args.forkedFromSessionId === 'string' ? args.forkedFromSessionId : null,
-        parentWorkspaceId:
-          typeof args.parentWorkspaceId === 'string' ? args.parentWorkspaceId : null
+        forkedFromSessionId,
+        parentWorkspaceId: parentId
       })
+
+      // Apply workspace-level settings overrides (model / permissionMode / effort)
+      // These are stored in claude_workspace_settings and picked up by composeClaudeLaunch.
+      const settingsOverride: {
+        model?: string
+        permissionMode?: ClaudePermissionMode
+        effort?: ClaudeEffort
+      } = {}
+      if (typeof args.model === 'string' && args.model !== '') {
+        settingsOverride.model = args.model
+      }
+      const VALID_PERMISSION_MODES: ClaudePermissionMode[] = [
+        'default',
+        'acceptEdits',
+        'plan',
+        'bypassPermissions'
+      ]
+      if (
+        typeof args.permissionMode === 'string' &&
+        VALID_PERMISSION_MODES.includes(args.permissionMode as ClaudePermissionMode)
+      ) {
+        settingsOverride.permissionMode = args.permissionMode as ClaudePermissionMode
+      }
+      const VALID_EFFORTS: ClaudeEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+      if (typeof args.effort === 'string' && VALID_EFFORTS.includes(args.effort as ClaudeEffort)) {
+        settingsOverride.effort = args.effort as ClaudeEffort
+      }
+      if (Object.keys(settingsOverride).length > 0) {
+        updateClaudeWorkspaceSettings(ws.id, settingsOverride)
+      }
+
+      // Seed task: open the workspace in the GUI and inject the task text once injectable.
+      let seedWarning: string | null = null
+      const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
+      if (taskText != null) {
+        seedWarning = await innerDeps.openAndSeed(ws.id, taskText)
+      }
+
+      return { workspace: ws, seedWarning }
     },
 
     // Archive (permanently delete) a workspace — mirrors the workspaces:archive IPC

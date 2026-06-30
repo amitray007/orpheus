@@ -75,6 +75,7 @@ import {
 } from './output.js'
 // Command implementations — each module calls registerCommand() as a side-effect.
 // Stubs below are omitted for commands that have real implementations here.
+import './commands/ws-new.js'
 import './commands/ws-read.js'
 import './commands/ws-ls.js'
 import './commands/ws-status.js'
@@ -374,7 +375,7 @@ function makeStub(unit: string): CommandDescriptor {
 }
 
 // ws commands (U7-U10, U11 for ws wait)
-registerCommand('ws new', makeStub('U7'))
+// 'ws new' is registered by src/commands/ws-new.ts (imported at top of file)
 registerCommand('ws open', makeStub('U7'))
 registerCommand('ws archive', makeStub('U7'))
 registerCommand('ws close', makeStub('U7'))
