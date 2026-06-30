@@ -6,6 +6,7 @@ import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { listWorktreePaths, NotAGitRepoError, resolveMainWorktree } from './worktrees'
 import type {
   ProjectRecord,
   SessionRecord,
@@ -463,6 +464,53 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
+ * Encode an absolute path to Claude Code's directory-name format.
+ *
+ * Claude replaces BOTH '/' and '.' with '-' — verified against on-disk layout
+ * where e.g. '/Users/maverick/.claude/projects' encodes to
+ * '-Users-maverick--claude-projects' (the dot in '.claude' becomes a dash).
+ *
+ * This mirrors the transform used in projects.ts for the project root path
+ * (which works with '/'-only replace because normal project cwds lack dots
+ * in path components — worktree paths through '.claude/worktrees/' do not).
+ */
+function encodePathToClaudeDir(absolutePath: string): string {
+  return absolutePath.replace(/[/.]/g, '-')
+}
+
+/**
+ * Return the list of Claude-encoded directory names for all linked worktrees
+ * of the repo that owns `projectCwd`, excluding the main repo root itself
+ * (which is already covered by the project's own claudeEncodedName).
+ *
+ * If `projectCwd` is not inside a git repo, returns [].
+ */
+export async function worktreeEncodedDirs(projectCwd: string): Promise<string[]> {
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(projectCwd)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) return []
+    throw err
+  }
+
+  let allPaths: string[]
+  try {
+    allPaths = await listWorktreePaths(repoRoot)
+  } catch {
+    return []
+  }
+
+  const result: string[] = []
+  for (const wPath of allPaths) {
+    // Exclude the main repo root — it's already covered by project.claudeEncodedName.
+    if (wPath === repoRoot) continue
+    result.push(encodePathToClaudeDir(wPath))
+  }
+  return result
+}
+
+/**
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
  * not yet in the sessions table.
  *
@@ -645,17 +693,21 @@ async function upsertSessionFilesForProject(projectId: string, dir: string): Pro
 }
 
 /**
- * Scans the Claude Code project directory for .jsonl session files and
- * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
- * Wrapped in a transaction by the caller (addProject).
+ * Scans the Claude Code project directory (and all linked worktree encoded
+ * dirs) for .jsonl session files and inserts them into the sessions table
+ * (INSERT OR IGNORE — idempotent). Wrapped in a transaction by the caller (addProject).
  */
 export async function importSessionsForProject(project: ProjectRecord): Promise<SessionRecord[]> {
   if (!project.claudeEncodedName) return []
 
-  const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
-  if (!fs.existsSync(dir)) return []
+  const worktreeDirs = await worktreeEncodedDirs(project.path)
+  const encodedDirs = [project.claudeEncodedName, ...worktreeDirs]
 
-  await upsertSessionFilesForProject(project.id, dir)
+  for (const encodedDir of encodedDirs) {
+    const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
+    if (!fs.existsSync(dir)) continue
+    await upsertSessionFilesForProject(project.id, dir)
+  }
 
   return listSessionsForProject(project.id)
 }
@@ -694,15 +746,21 @@ export async function refreshSessionMetadata(projectId: string): Promise<void> {
 async function _refreshSessionMetadata(projectId: string): Promise<void> {
   const db = getDb()
 
-  // Pull the claudeEncodedName for this project so we can scan for new files.
+  // Pull the claudeEncodedName and path for this project so we can scan for
+  // new files across the project dir and all linked worktree encoded dirs.
   const projectRow = db
-    .prepare('SELECT claude_encoded_name FROM projects WHERE id = ?')
-    .get(projectId) as { claude_encoded_name: string | null } | undefined
+    .prepare('SELECT claude_encoded_name, path FROM projects WHERE id = ?')
+    .get(projectId) as { claude_encoded_name: string | null; path: string } | undefined
 
   if (projectRow?.claude_encoded_name) {
-    const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
-    if (fs.existsSync(dir)) {
-      await upsertSessionFilesForProject(projectId, dir)
+    const worktreeDirs = await worktreeEncodedDirs(projectRow.path)
+    const encodedDirs = [projectRow.claude_encoded_name, ...worktreeDirs]
+
+    for (const encodedDir of encodedDirs) {
+      const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
+      if (fs.existsSync(dir)) {
+        await upsertSessionFilesForProject(projectId, dir)
+      }
     }
   }
 
