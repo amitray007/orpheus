@@ -2362,214 +2362,232 @@ handle('keepAwake:startTimer', (_e, minutes: number) => startKeepAwakeTimer(minu
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
-app.whenReady().then(() => {
-  // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
-  // This is a no-op after the first call (getUserShellPath caches internally).
-  void diag
-    .trace('startup.shell_path', {}, async () => {
-      const resolvedPath = await getUserShellPath()
-      if (!resolvedPath) {
-        logDiagMain({
-          category: 'anomaly',
-          level: 'warn',
-          event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
-        })
-      }
-    })
-    .catch(() => {
-      /* swallow — getUserShellPath already logs errors internally */
-    })
 
-  electronApp.setAppUserModelId(APP_ID)
-
-  // Event-loop delay monitor — logs p99 and max lag every 10s so we have
-  // data on whether a future utilityProcess migration is worth the cost.
-  // All output is [perf]-tagged for easy grep/removal later.
-  {
-    const eld = monitorEventLoopDelay({ resolution: 10 })
-    eld.enable()
-    setInterval(() => {
-      console.log(
-        '[perf] eventloop p99=%dms max=%dms',
-        Math.round(eld.percentile(99) / 1e6),
-        Math.round(eld.max / 1e6)
-      )
-      eld.reset()
-    }, 10_000).unref()
-  }
-
-  // Initialize / migrate the SQLite database early, before any IPC can fire.
-  getDb()
-  startDiagnostics()
-  syncDiagFlags()
-
-  // Boot Quick Actions registry — registers all action descriptors so they're
-  // available before any IPC can invoke them.
-  bootActions()
-
-  // Seed default footer actions on first install (idempotent: no-op if rows exist).
-  try {
-    seedDefaultFooterActions()
-  } catch (err) {
-    console.error('[footerActions] failed to seed defaults:', err)
-  }
-
-  // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
-  refreshFromModelsDev().catch(() => {})
-
-  // Clear stale in_progress / attention statuses left over from a prior
-  // session (crash, hard quit). Without this, the WorkspaceView would show a
-  // forever-spinning "thinking" indicator until a fresh activity event lands.
-  try {
-    const cleared = resetTransientStatusesOnStartup()
-    if (cleared > 0) {
-      console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
-    }
-  } catch (err) {
-    console.error('[startup] failed to clear stale activity statuses:', err)
-  }
-
-  // Seed the in-memory workspaceTitles map from the DB so the sidebar /
-  // workspace header can show the last observed prompt title immediately on
-  // launch — without waiting for Claude to re-emit an OSC title.
-  try {
-    for (const { id, title } of getAllWorkspaceLastTitles()) {
-      workspaceTitles.set(id, title)
-    }
-  } catch (err) {
-    console.error('[startup] failed to seed workspaceTitles from DB:', err)
-  }
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
+// Single-instance lock — acquired before any heavy init so a second launch
+// exits cleanly without starting the command server, DB writers, etc.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  // Register second-instance handler BEFORE whenReady so it is in place by
+  // the time a racing second launch fires the event on us.
+  app.on('second-instance', () => {
+    // The CLI (or user) re-launched while the app is already running.
+    // Surface the existing main window instead of starting a new instance.
+    const win = getMainWindow()
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
   })
 
-  createWindow()
-
-  // Kick the active terminal on system wake events so the CVDisplayLink
-  // restarts after display sleep / screen lock / user-switch.
-  powerMonitor.on('resume', kickActiveTerminal)
-  powerMonitor.on('unlock-screen', kickActiveTerminal)
-  if (process.platform === 'darwin') {
-    powerMonitor.on('user-did-become-active', kickActiveTerminal)
-  }
-
-  // Apply OS-level settings after the window exists (hotkey callback needs it)
-  try {
-    const state = getAppUiState()
-    applyLaunchAtLogin(state.launchAtLogin)
-    applyGlobalHotkey(state.globalHotkey)
-  } catch (err) {
-    console.error('[startup] failed to apply launch/hotkey settings:', err)
-  }
-
-  // Start the update auto-check loop (30s initial delay, then every 6h).
-  // Gated internally on the autoCheckUpdates setting.
-  startAutoCheckLoop()
-
-  // Start the Claude service-status poller (3s initial delay, then per user setting).
-  // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
-  startStatusPoller()
-
-  // Defer notify server + hook reconcile until after the first frame — keeps
-  // createWindow() hot so the UI appears faster on launch.
-  setImmediate(() => {
-    // Wire up the activity batch channel regardless of hook integration state —
-    // the batch listener is always needed for file-based status updates.
-    onActivityBatch((updates) => {
-      const win = getMainWindow()
-      if (!win) return
-      win.webContents.send('workspace:activityBatch', updates)
-      // Push canInject state for each workspace that changed activity so the
-      // renderer chips don't need to poll terminal:canInject every second.
-      // Use the authoritative terminalActions.canInject() so 'attention' and
-      // any future status additions are handled identically to the IPC handler.
-      for (const { workspaceId } of updates) {
-        if (!win.webContents.isDestroyed()) {
-          win.webContents.send('terminal:canInjectChanged', {
-            workspaceId,
-            canInject: terminalActions.canInject(workspaceId)
+  app.whenReady().then(() => {
+    // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
+    // This is a no-op after the first call (getUserShellPath caches internally).
+    void diag
+      .trace('startup.shell_path', {}, async () => {
+        const resolvedPath = await getUserShellPath()
+        if (!resolvedPath) {
+          logDiagMain({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
           })
         }
+      })
+      .catch(() => {
+        /* swallow — getUserShellPath already logs errors internally */
+      })
+
+    electronApp.setAppUserModelId(APP_ID)
+
+    // Event-loop delay monitor — logs p99 and max lag every 10s so we have
+    // data on whether a future utilityProcess migration is worth the cost.
+    // All output is [perf]-tagged for easy grep/removal later.
+    {
+      const eld = monitorEventLoopDelay({ resolution: 10 })
+      eld.enable()
+      setInterval(() => {
+        console.log(
+          '[perf] eventloop p99=%dms max=%dms',
+          Math.round(eld.percentile(99) / 1e6),
+          Math.round(eld.max / 1e6)
+        )
+        eld.reset()
+      }, 10_000).unref()
+    }
+
+    // Initialize / migrate the SQLite database early, before any IPC can fire.
+    getDb()
+    startDiagnostics()
+    syncDiagFlags()
+
+    // Boot Quick Actions registry — registers all action descriptors so they're
+    // available before any IPC can invoke them.
+    bootActions()
+
+    // Seed default footer actions on first install (idempotent: no-op if rows exist).
+    try {
+      seedDefaultFooterActions()
+    } catch (err) {
+      console.error('[footerActions] failed to seed defaults:', err)
+    }
+
+    // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
+    refreshFromModelsDev().catch(() => {})
+
+    // Clear stale in_progress / attention statuses left over from a prior
+    // session (crash, hard quit). Without this, the WorkspaceView would show a
+    // forever-spinning "thinking" indicator until a fresh activity event lands.
+    try {
+      const cleared = resetTransientStatusesOnStartup()
+      if (cleared > 0) {
+        console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
       }
+    } catch (err) {
+      console.error('[startup] failed to clear stale activity statuses:', err)
+    }
+
+    // Seed the in-memory workspaceTitles map from the DB so the sidebar /
+    // workspace header can show the last observed prompt title immediately on
+    // launch — without waiting for Claude to re-emit an OSC title.
+    try {
+      for (const { id, title } of getAllWorkspaceLastTitles()) {
+        workspaceTitles.set(id, title)
+      }
+    } catch (err) {
+      console.error('[startup] failed to seed workspaceTitles from DB:', err)
+    }
+
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
     })
 
-    // Declarative hook reconcile: enabled → start server + install hooks;
-    // disabled (default) → remove any previously-installed managed hooks and
-    // do NOT start the socket server.
-    reconcileHooks()
+    createWindow()
 
-    // Start the command server unconditionally — the CLI shouldn't depend on
-    // hooks being enabled. Provides a request/response channel for CLI workspace
-    // actions (create, archive, close, reopen, rename, whoami.resolve).
-    if (!commandServer) {
-      try {
-        const cmdDeps: CommandServerDeps = {
-          destroySurface: (workspaceId) => {
-            if (terminalAddon) {
-              try {
-                terminalAddon.destroy(workspaceId)
-              } catch {
-                // Surface not mounted or already destroyed — ignore.
-              }
-            }
-          },
-          teardownWorkspaceResources,
-          performClose: (workspaceId) => performClose(workspaceId)
+    // Kick the active terminal on system wake events so the CVDisplayLink
+    // restarts after display sleep / screen lock / user-switch.
+    powerMonitor.on('resume', kickActiveTerminal)
+    powerMonitor.on('unlock-screen', kickActiveTerminal)
+    if (process.platform === 'darwin') {
+      powerMonitor.on('user-did-become-active', kickActiveTerminal)
+    }
+
+    // Apply OS-level settings after the window exists (hotkey callback needs it)
+    try {
+      const state = getAppUiState()
+      applyLaunchAtLogin(state.launchAtLogin)
+      applyGlobalHotkey(state.globalHotkey)
+    } catch (err) {
+      console.error('[startup] failed to apply launch/hotkey settings:', err)
+    }
+
+    // Start the update auto-check loop (30s initial delay, then every 6h).
+    // Gated internally on the autoCheckUpdates setting.
+    startAutoCheckLoop()
+
+    // Start the Claude service-status poller (3s initial delay, then per user setting).
+    // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
+    startStatusPoller()
+
+    // Defer notify server + hook reconcile until after the first frame — keeps
+    // createWindow() hot so the UI appears faster on launch.
+    setImmediate(() => {
+      // Wire up the activity batch channel regardless of hook integration state —
+      // the batch listener is always needed for file-based status updates.
+      onActivityBatch((updates) => {
+        const win = getMainWindow()
+        if (!win) return
+        win.webContents.send('workspace:activityBatch', updates)
+        // Push canInject state for each workspace that changed activity so the
+        // renderer chips don't need to poll terminal:canInject every second.
+        // Use the authoritative terminalActions.canInject() so 'attention' and
+        // any future status additions are handled identically to the IPC handler.
+        for (const { workspaceId } of updates) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send('terminal:canInjectChanged', {
+              workspaceId,
+              canInject: terminalActions.canInject(workspaceId)
+            })
+          }
         }
-        commandServer = startCommandServer(cmdDeps)
-      } catch (err) {
-        console.error('[commandServer] failed to start:', err)
-      }
-    }
+      })
 
-    setAutoCloseHandler((workspaceId) => {
-      performClose(workspaceId)
+      // Declarative hook reconcile: enabled → start server + install hooks;
+      // disabled (default) → remove any previously-installed managed hooks and
+      // do NOT start the socket server.
+      reconcileHooks()
+
+      // Start the command server unconditionally — the CLI shouldn't depend on
+      // hooks being enabled. Provides a request/response channel for CLI workspace
+      // actions (create, archive, close, reopen, rename, whoami.resolve).
+      if (!commandServer) {
+        try {
+          const cmdDeps: CommandServerDeps = {
+            destroySurface: (workspaceId) => {
+              if (terminalAddon) {
+                try {
+                  terminalAddon.destroy(workspaceId)
+                } catch {
+                  // Surface not mounted or already destroyed — ignore.
+                }
+              }
+            },
+            teardownWorkspaceResources,
+            performClose: (workspaceId) => performClose(workspaceId)
+          }
+          commandServer = startCommandServer(cmdDeps)
+        } catch (err) {
+          console.error('[commandServer] failed to start:', err)
+        }
+      }
+
+      setAutoCloseHandler((workspaceId) => {
+        performClose(workspaceId)
+      })
+
+      // Pre-load the native terminal addon during idle time so the first
+      // terminal:mount call doesn't pay the dlopen stall (50–300ms).
+      // loadTerminalAddon() is idempotent — if already loaded it returns early.
+      try {
+        loadTerminalAddon()
+      } catch {
+        // Failure is non-fatal here; terminal:mount will surface the error when needed.
+      }
+
+      // Start shadow-mode session state service (Phase 1 — observes and logs only)
+      try {
+        sessionStateService = startSessionStateService()
+      } catch (err) {
+        console.error('[sessionState] failed to start:', err)
+      }
+
+      try {
+        powerAwakeCleanup = startPowerAwake(getMainWindow)
+      } catch (err) {
+        console.error('[powerAwake] failed to start:', err)
+      }
     })
 
-    // Pre-load the native terminal addon during idle time so the first
-    // terminal:mount call doesn't pay the dlopen stall (50–300ms).
-    // loadTerminalAddon() is idempotent — if already loaded it returns early.
-    try {
-      loadTerminalAddon()
-    } catch {
-      // Failure is non-fatal here; terminal:mount will surface the error when needed.
-    }
-
-    // Start shadow-mode session state service (Phase 1 — observes and logs only)
-    try {
-      sessionStateService = startSessionStateService()
-    } catch (err) {
-      console.error('[sessionState] failed to start:', err)
-    }
-
-    try {
-      powerAwakeCleanup = startPowerAwake(getMainWindow)
-    } catch (err) {
-      console.error('[powerAwake] failed to start:', err)
-    }
+    app.on('activate', function () {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      else kickActiveTerminal()
+    })
   })
 
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    else kickActiveTerminal()
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
+    notifyServer?.close()
+    commandServer?.close()
+    sessionStateService?.stop()
+    powerAwakeCleanup?.()
+    stopStatusPoller()
+    stopAutoCheckLoop()
+    stopAllGitWatches()
+    stopDiagnostics()
   })
-})
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll()
-  notifyServer?.close()
-  commandServer?.close()
-  sessionStateService?.stop()
-  powerAwakeCleanup?.()
-  stopStatusPoller()
-  stopAutoCheckLoop()
-  stopAllGitWatches()
-  stopDiagnostics()
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit()
+    }
+  })
+} // end single-instance else block
