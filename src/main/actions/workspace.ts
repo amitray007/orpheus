@@ -73,9 +73,11 @@ export async function handleArchive(
     return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
   }
   const force = params['force'] === true
-  // Destroy the libghostty surface first. Silently no-ops when the terminal
-  // was never mounted (the addon ref may not even be loaded yet).
-  destroyAddonSurface(workspaceId)
+  // Run archiveWorkspace FIRST. For worktree-backed workspaces with a dirty
+  // worktree and force=false it returns { archived: false, wasDirty: true }
+  // without deleting the DB row — in that case we must NOT destroy the surface
+  // so the workspace terminal stays alive for the user to see the dirty confirm.
+  //
   // archiveWorkspace broadcasts workspaces:archived after the DELETE so
   // the renderer removes the row from state and navigates away if needed.
   // For worktree-backed workspaces it removes the git worktree first;
@@ -85,6 +87,9 @@ export async function handleArchive(
   if (!result.archived) {
     return { ok: false, code: 'invalid', error: 'worktree_dirty' }
   }
+  // Archive succeeded: destroy the surface now that the DB row is gone.
+  // Silently no-ops when the terminal was never mounted.
+  destroyAddonSurface(workspaceId)
   return { ok: true, value: { wasDirty: false } }
 }
 

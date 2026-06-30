@@ -1279,21 +1279,24 @@ handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolea
 handle('workspaces:archive', async (_e, { id, force = false }: { id: string; force?: boolean }) => {
   // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
-  // Destroy the libghostty surface so the NSView is freed before the DB row
-  // disappears. Silently no-ops when the terminal was never mounted.
+  // Run archiveWorkspace FIRST. For worktree-backed workspaces with a dirty
+  // worktree and force=false it returns { archived: false, wasDirty: true }
+  // without touching the DB row — in that case we must NOT destroy the surface
+  // so the workspace terminal stays alive for the user.
+  const result = await archiveWorkspace(id, force)
+  if (!result.archived) {
+    // Dirty worktree without force — row and surface are intact; caller should
+    // show a confirm dialog and re-invoke with force:true.
+    return result
+  }
+  // Archive succeeded: destroy the libghostty surface now that the DB row is
+  // gone. Silently no-ops when the terminal was never mounted.
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
     } catch {
       // Surface not mounted or already destroyed — ignore.
     }
-  }
-  const result = await archiveWorkspace(id, force)
-  if (!result.archived) {
-    // Dirty worktree without force — surface was already destroyed above so
-    // re-attach is not needed; caller should show a confirm and re-invoke with
-    // force:true. Return the wasDirty signal without doing teardown.
-    return result
   }
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
