@@ -103,6 +103,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
+  // Whether the "Also delete worktrees" checkbox is checked in the remove dialog.
+  const [deleteWorktreesChecked, setDeleteWorktreesChecked] = useState(false)
+  // Worktree count for the current removeConfirmTarget (null = not yet probed).
+  const [removeTargetWorktreeCount, setRemoveTargetWorktreeCount] = useState<number>(0)
+  // Pending dirty-escalation state: how many dirty worktrees blocked the first attempt.
+  const [pendingDirtyWorktreeRemove, setPendingDirtyWorktreeRemove] = useState<{
+    project: ProjectRecord
+    dirtyCount: number
+  } | null>(null)
 
   // Worktree archive confirm dialog state.
   // pendingWorktreeArchive holds the workspace + projectId awaiting user confirmation.
@@ -1038,7 +1047,47 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleRequestRemoveProject = useCallback((project: ProjectRecord): void => {
     setRemoveConfirmTarget(project)
+    setDeleteWorktreesChecked(false)
+    setRemoveTargetWorktreeCount(0)
+    // Probe how many worktree workspaces this project has so the checkbox can be shown.
+    window.api.projects
+      .worktreeSummary(project.id)
+      .then((summary) => setRemoveTargetWorktreeCount(summary.count))
+      .catch((err) => console.error('[dashboard] worktreeSummary failed', err))
   }, [])
+
+  // Shared post-remove cleanup after a project delete succeeds.
+  const finishProjectRemove = useCallback(
+    (target: ProjectRecord): void => {
+      const projectWorkspaces = workspacesByProjectRef.current[target.id] ?? []
+      playSound('delete')
+      // Drop cached data for all removed workspaces from all stores.
+      for (const ws of projectWorkspaces) {
+        deleteActivity(ws.id)
+        deleteActivityTime(ws.id)
+        deleteTitle(ws.id)
+        deleteGitStatus(ws.id)
+        deletePr(ws.id)
+        hasFetchedRef.current!.delete(ws.id)
+        clearFooterActionsCache(ws.id)
+        clearContextBudgetCache(ws.id)
+      }
+      setProjects((arr) => arr.filter((p) => p.id !== target.id))
+      setExpandedProjectIds((prev) => {
+        const next = new Set(prev)
+        next.delete(target.id)
+        return next
+      })
+      // Read selectedProjectId via ref to avoid capturing it in closure
+      if (selectedProjectIdRef.current === target.id) {
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'sessions' })
+      }
+      refreshPins()
+    },
+    [refreshPins]
+  )
 
   const handleConfirmRemove = useCallback(async (): Promise<void> => {
     if (!removeConfirmTarget) return
@@ -1058,37 +1107,43 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       // Yield to the event loop between each destroy so AppKit can drain between frees.
       await new Promise<void>((r) => setTimeout(r, 0))
     }
-    await window.api.projects.remove(target.id)
-    playSound('delete')
-    setRemoveConfirmTarget(null)
-    // Drop cached data for all removed workspaces from all stores.
-    for (const ws of projectWorkspaces) {
-      deleteActivity(ws.id)
-      deleteActivityTime(ws.id)
-      deleteTitle(ws.id)
-      deleteGitStatus(ws.id)
-      deletePr(ws.id)
-      hasFetchedRef.current!.delete(ws.id)
-      clearFooterActionsCache(ws.id)
-      clearContextBudgetCache(ws.id)
-    }
-    setProjects((arr) => arr.filter((p) => p.id !== target.id))
-    setExpandedProjectIds((prev) => {
-      const next = new Set(prev)
-      next.delete(target.id)
-      return next
+    const result = await window.api.projects.remove(target.id, {
+      deleteWorktrees: deleteWorktreesChecked
     })
-    // Read selectedProjectId via ref to avoid capturing it in closure
-    if (selectedProjectIdRef.current === target.id) {
-      setSelectedProjectId(null)
-      setSelectedWorkspaceId(null)
-      setView({ kind: 'sessions' })
+    setRemoveConfirmTarget(null)
+    if (!result.deleted && result.dirtyWorktrees > 0) {
+      // Escalate: some worktrees are dirty — ask for force confirmation.
+      setPendingDirtyWorktreeRemove({ project: target, dirtyCount: result.dirtyWorktrees })
+      return
     }
-    refreshPins()
-  }, [removeConfirmTarget, refreshPins])
+    finishProjectRemove(target)
+  }, [removeConfirmTarget, deleteWorktreesChecked, finishProjectRemove])
+
+  const handleConfirmDirtyWorktreeRemove = useCallback(async (): Promise<void> => {
+    if (!pendingDirtyWorktreeRemove) return
+    const { project } = pendingDirtyWorktreeRemove
+    setPendingDirtyWorktreeRemove(null)
+    const projectWorkspaces = workspacesByProjectRef.current[project.id] ?? []
+    for (const ws of projectWorkspaces) {
+      await window.api.terminal
+        .destroy(ws.id)
+        .catch((e) =>
+          console.error(
+            '[dashboard] terminal.destroy before force project remove failed:',
+            ws.id,
+            e
+          )
+        )
+      await new Promise<void>((r) => setTimeout(r, 0))
+    }
+    await window.api.projects.remove(project.id, { deleteWorktrees: true, force: true })
+    finishProjectRemove(project)
+  }, [pendingDirtyWorktreeRemove, finishProjectRemove])
 
   const handleCancelRemove = useCallback((): void => {
     setRemoveConfirmTarget(null)
+    setDeleteWorktreesChecked(false)
+    setRemoveTargetWorktreeCount(0)
   }, [])
 
   const handleReorderProjects = useCallback((orderedIds: string[]): void => {
@@ -1228,12 +1283,45 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
               <p className="text-text-muted">
                 Files on disk are untouched. You can re-add the folder later.
               </p>
+              {removeTargetWorktreeCount > 0 && (
+                <label className="mt-3 flex items-center gap-2 cursor-pointer select-none text-sm text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={deleteWorktreesChecked}
+                    onChange={(e) => setDeleteWorktreesChecked(e.target.checked)}
+                    className="cursor-pointer"
+                  />
+                  Also delete worktrees (branches are kept)
+                </label>
+              )}
             </>
           }
           confirmLabel="Remove"
           destructive
           onConfirm={handleConfirmRemove}
           onCancel={handleCancelRemove}
+        />
+      )}
+
+      {pendingDirtyWorktreeRemove && (
+        <ConfirmModal
+          title="Remove worktrees with uncommitted changes?"
+          body={
+            <>
+              <p className="mb-2">
+                {pendingDirtyWorktreeRemove.dirtyCount}{' '}
+                {pendingDirtyWorktreeRemove.dirtyCount === 1 ? 'worktree has' : 'worktrees have'}{' '}
+                uncommitted changes.
+              </p>
+              <p className="text-text-muted">
+                Uncommitted changes will be lost. Branches are kept.
+              </p>
+            </>
+          }
+          confirmLabel="Delete anyway"
+          destructive
+          onConfirm={handleConfirmDirtyWorktreeRemove}
+          onCancel={() => setPendingDirtyWorktreeRemove(null)}
         />
       )}
 

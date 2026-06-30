@@ -167,7 +167,17 @@ const api = {
     add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
     pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
     open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('projects:remove', { id }),
+    remove: (
+      id: string,
+      opts: { deleteWorktrees?: boolean; force?: boolean } = {}
+    ): Promise<{ deleted: boolean; dirtyWorktrees: number }> =>
+      ipcRenderer.invoke('projects:remove', {
+        id,
+        deleteWorktrees: opts.deleteWorktrees ?? false,
+        force: opts.force ?? false
+      }),
+    worktreeSummary: (projectId: string): Promise<{ count: number }> =>
+      ipcRenderer.invoke('projects:worktreeSummary', { projectId }),
     rename: (id: string, name: string): Promise<void> =>
       ipcRenderer.invoke('projects:rename', { id, name }),
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>

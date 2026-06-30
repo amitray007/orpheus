@@ -101,7 +101,9 @@ import {
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup,
   setWorkspaceCwd,
-  convertWorktreeToLocal
+  convertWorktreeToLocal,
+  countWorktreeWorkspaces,
+  listWorktreeWorkspaces
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -1158,24 +1160,58 @@ handle('projects:pickAndAdd', async () => {
 
 handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-handle('projects:remove', (_e, { id }: { id: string }) => {
-  // Enumerate workspaces before the cascade-delete removes the rows so we can
-  // tear down each one's in-memory state and native surface. The renderer
-  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
-  // self-sufficient even when called directly (double-cleanup is safe — all
-  // teardown operations are idempotent).
-  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
-  for (const ws of workspacesToRemove) {
-    if (terminalAddon) {
-      try {
-        terminalAddon.destroy(ws.id)
-      } catch {
-        // Surface not mounted or already destroyed — ignore.
+handle(
+  'projects:remove',
+  async (
+    _e,
+    {
+      id,
+      deleteWorktrees = false,
+      force = false
+    }: { id: string; deleteWorktrees?: boolean; force?: boolean }
+  ): Promise<{ deleted: boolean; dirtyWorktrees: number }> => {
+    // Optional worktree teardown before cascade-delete.
+    // Must happen before deleteProject() so we still have workspace rows to query.
+    if (deleteWorktrees) {
+      const worktreeWorkspaces = listWorktreeWorkspaces(id)
+      let dirtyCount = 0
+      for (const ws of worktreeWorkspaces) {
+        const result = await withRepoLock(ws.worktreeParentCwd, () =>
+          removeWorktree({ path: ws.cwd, force })
+        )
+        if (!result.removed && result.wasDirty) {
+          dirtyCount++
+        }
+      }
+      // If any worktrees are dirty and we're not forcing, block the delete.
+      if (dirtyCount > 0 && !force) {
+        return { deleted: false, dirtyWorktrees: dirtyCount }
       }
     }
-    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+
+    // Enumerate workspaces before the cascade-delete removes the rows so we can
+    // tear down each one's in-memory state and native surface. The renderer
+    // pre-destroys surfaces via terminal:destroy, but projects:remove must be
+    // self-sufficient even when called directly (double-cleanup is safe — all
+    // teardown operations are idempotent).
+    const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
+    for (const ws of workspacesToRemove) {
+      if (terminalAddon) {
+        try {
+          terminalAddon.destroy(ws.id)
+        } catch {
+          // Surface not mounted or already destroyed — ignore.
+        }
+      }
+      teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+    }
+    deleteProject(id)
+    return { deleted: true, dirtyWorktrees: 0 }
   }
-  deleteProject(id)
+)
+
+handle('projects:worktreeSummary', (_e, { projectId }: { projectId: string }) => {
+  return { count: countWorktreeWorkspaces(projectId) }
 })
 
 handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>

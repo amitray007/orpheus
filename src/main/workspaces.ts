@@ -429,6 +429,42 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
 }
 
 // ---------------------------------------------------------------------------
+// Worktree workspace queries (v64+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count the number of worktree-backed workspaces for a project.
+ * Used pre-delete to decide whether to show the "Also delete worktrees" checkbox.
+ */
+export function countWorktreeWorkspaces(projectId: string): number {
+  const db = getDb()
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS cnt FROM workspaces WHERE project_id = ? AND worktree_parent_cwd IS NOT NULL'
+    )
+    .get(projectId) as { cnt: number } | undefined
+  return row?.cnt ?? 0
+}
+
+/**
+ * Return the cwd + worktreeParentCwd for all worktree-backed workspaces of a
+ * project. Used by the project-delete IPC handler to enumerate worktrees that
+ * need teardown before the cascade-delete.
+ */
+export function listWorktreeWorkspaces(
+  projectId: string
+): Array<{ id: string; cwd: string; worktreeParentCwd: string }> {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT id, cwd, worktree_parent_cwd FROM workspaces
+       WHERE project_id = ? AND worktree_parent_cwd IS NOT NULL`
+    )
+    .all(projectId) as Array<{ id: string; cwd: string; worktree_parent_cwd: string }>
+  return rows.map((r) => ({ id: r.id, cwd: r.cwd, worktreeParentCwd: r.worktree_parent_cwd }))
+}
+
+// ---------------------------------------------------------------------------
 // Worktree cwd update (v64+)
 // ---------------------------------------------------------------------------
 

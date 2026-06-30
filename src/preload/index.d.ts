@@ -127,7 +127,11 @@ declare global {
         add: (path: string) => Promise<ProjectRecord>
         pickAndAdd: () => Promise<ProjectRecord | null>
         open: (id: string) => Promise<ProjectRecord>
-        remove: (id: string) => Promise<void>
+        remove: (
+          id: string,
+          opts?: { deleteWorktrees?: boolean; force?: boolean }
+        ) => Promise<{ deleted: boolean; dirtyWorktrees: number }>
+        worktreeSummary: (projectId: string) => Promise<{ count: number }>
         rename: (id: string, name: string) => Promise<void>
         setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
         reorder: (orderedIds: string[]) => Promise<void>
