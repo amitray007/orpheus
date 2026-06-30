@@ -76,6 +76,7 @@ import {
 // Command implementations — each module calls registerCommand() as a side-effect.
 // Stubs below are omitted for commands that have real implementations here.
 import './commands/ws-new.js'
+import './commands/ws-lifecycle.js'
 import './commands/ws-read.js'
 import './commands/ws-ls.js'
 import './commands/ws-status.js'
@@ -375,15 +376,15 @@ function makeStub(unit: string): CommandDescriptor {
 }
 
 // ws commands (U7-U10, U11 for ws wait)
-// 'ws new' is registered by src/commands/ws-new.ts (imported at top of file)
-registerCommand('ws open', makeStub('U7'))
-registerCommand('ws archive', makeStub('U7'))
-registerCommand('ws close', makeStub('U7'))
-registerCommand('ws reopen', makeStub('U7'))
-registerCommand('ws rename', makeStub('U7'))
-// 'ws ls' is registered by src/commands/ws-ls.ts (imported at top of file)
-// 'ws status' is registered by src/commands/ws-status.ts (imported at top of file)
-// 'ws read' is registered by src/commands/ws-read.ts (imported at top of file)
+// 'ws new'     is registered by src/commands/ws-new.ts (imported at top of file)
+// 'ws open'    is registered by src/commands/ws-lifecycle.ts (imported at top of file)
+// 'ws archive' is registered by src/commands/ws-lifecycle.ts (imported at top of file)
+// 'ws close'   is registered by src/commands/ws-lifecycle.ts (imported at top of file)
+// 'ws reopen'  is registered by src/commands/ws-lifecycle.ts (imported at top of file)
+// 'ws rename'  is registered by src/commands/ws-lifecycle.ts (imported at top of file)
+// 'ws ls'      is registered by src/commands/ws-ls.ts (imported at top of file)
+// 'ws status'  is registered by src/commands/ws-status.ts (imported at top of file)
+// 'ws read'    is registered by src/commands/ws-read.ts (imported at top of file)
 registerCommand('ws wait', makeStub('U11'))
 registerCommand('ws send', makeStub('U12'))
 

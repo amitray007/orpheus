@@ -7,7 +7,6 @@ import { getDb } from './db'
 import {
   createWorkspace,
   getWorkspace,
-  archiveWorkspace,
   reopenWorkspace,
   renameWorkspace,
   listChildWorkspaces,
@@ -15,6 +14,7 @@ import {
 } from './workspaces'
 import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
+import { getProjectById } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,11 @@ export type CommandServerDeps = {
    * Mirrors performClose in index.ts.
    */
   performClose: (workspaceId: string) => WorkspaceRecord | undefined
+  /**
+   * Destroy surface + teardown + DB archiveWorkspace in one shot.
+   * Mirrors performArchive in index.ts.
+   */
+  performArchive: (workspaceId: string) => void
   /**
    * Send 'workspace:requestOpen' to the renderer so it opens and mounts the
    * given workspace via the normal handleSelectWorkspace path. Used by U8/U12.
@@ -200,26 +205,59 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     },
 
     // Archive (permanently delete) a workspace — mirrors the workspaces:archive IPC
-    // handler in index.ts, including the same surface teardown sequence.
-    'workspace.archive': (args) => {
+    // handler in index.ts via the shared performArchive dep.
+    // With recursive:true, archives the entire subtree (children-before-parent) so
+    // teardown ordering is safe and no workspace is left with a missing parent.
+    'workspace.archive': (args, context) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
-      const ws = getWorkspace(args.id)
-      // Destroy the libghostty NSView before the DB row disappears (same as GUI path).
-      try {
-        deps.destroySurface(args.id)
-      } catch {
-        // Surface not mounted or already destroyed — ignore.
+      const recursive = args.recursive === true
+
+      if (recursive) {
+        // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
+        // Self-action guard: refuse if the caller's own workspace is within the subtree.
+        const subtreeIds: string[] = []
+        const queue: string[] = [args.id]
+        while (queue.length > 0) {
+          const current = queue.shift()!
+          subtreeIds.push(current)
+          const children = listChildWorkspaces(current)
+          for (const child of children) {
+            queue.push(child.id)
+          }
+        }
+
+        if (context?.workspaceId != null && subtreeIds.includes(context.workspaceId)) {
+          throw new Error(
+            `cannot archive your own workspace (id=${context.workspaceId}): it is within the requested subtree`
+          )
+        }
+
+        // Archive leaves-up: reverse the BFS order so children come before parents.
+        for (let i = subtreeIds.length - 1; i >= 0; i--) {
+          deps.performArchive(subtreeIds[i]!)
+        }
+
+        return { archived: true, count: subtreeIds.length }
       }
-      archiveWorkspace(args.id)
-      // Evict all per-workspace in-memory state, matching GUI archive teardown.
-      deps.teardownWorkspaceResources(args.id, ws?.cwd ?? null)
+
+      // Non-recursive (single) archive.
+      // Self-action guard: refuse if caller is archiving their own workspace.
+      if (context?.workspaceId != null && args.id === context.workspaceId) {
+        throw new Error(`cannot archive your own workspace (id=${args.id})`)
+      }
+
+      deps.performArchive(args.id)
       return { archived: true }
     },
 
     // Close a workspace (sets closed_at). The CLI caller is headless and
     // deliberately closing — no busy-status guard (unlike the GUI handler).
-    'workspace.close': (args) => {
+    // Self-action guard: refuse if the caller's own workspace is being closed.
+    'workspace.close': (args, context) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (context?.workspaceId != null && args.id === context.workspaceId) {
+        throw new Error(`cannot close your own workspace (id=${args.id})`)
+      }
       const workspace = deps.performClose(args.id)
       return { workspace: workspace ?? null }
     },
@@ -257,9 +295,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       }
       const ws = getWorkspace(workspaceId)
       if (!ws) throw new Error(`workspace not found: ${workspaceId}`)
-      const project = getDb()
-        .prepare('SELECT id, name, path FROM projects WHERE id = ?')
-        .get(ws.projectId) as { id: string; name: string; path: string } | undefined
+      const project = getProjectById(ws.projectId)
       return {
         workspaceId,
         projectId: ws.projectId,

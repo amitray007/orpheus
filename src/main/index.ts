@@ -588,6 +588,21 @@ function performClose(id: string): WorkspaceRecord | undefined {
   return closeWorkspace(id, lastTitle)
 }
 
+function performArchive(id: string): void {
+  const ws = getWorkspace(id)
+  // Destroy the libghostty surface before the DB row disappears.
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  archiveWorkspace(id)
+  // Evict all per-workspace in-memory state, matching GUI archive teardown.
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
+}
+
 function recomputeDirty(): void {
   if (launchSnapshots.size === 0) return
   // Fetch global settings once — shared across all workspaces in the loop.
@@ -1167,21 +1182,7 @@ handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolea
 )
 
 handle('workspaces:archive', (_e, { id }: { id: string }) => {
-  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
-  const ws = getWorkspace(id)
-  // Destroy the libghostty surface so the NSView is freed before the DB row
-  // disappears. Silently no-ops when the terminal was never mounted.
-  if (terminalAddon) {
-    try {
-      terminalAddon.destroy(id)
-    } catch {
-      // Surface not mounted or already destroyed — ignore.
-    }
-  }
-  archiveWorkspace(id)
-  // Evict all per-workspace in-memory state via the unified teardown so
-  // archived workspaces don't leak into any runtime cache.
-  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  performArchive(id)
 })
 
 handle('workspace:close', (_e, { id }: { id: string }) => {
@@ -2540,6 +2541,7 @@ if (!app.requestSingleInstanceLock()) {
             },
             teardownWorkspaceResources,
             performClose: (workspaceId) => performClose(workspaceId),
+            performArchive: (workspaceId) => performArchive(workspaceId),
             requestOpenWorkspace,
             openAndSeed: async (workspaceId: string, taskText: string): Promise<string | null> => {
               // Ask the renderer to open + mount the workspace via the normal nav path.
