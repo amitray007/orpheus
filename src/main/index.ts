@@ -32,7 +32,13 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult, GitStatus, HealthReport, CreateWorktreeParams } from '../shared/types'
+import type {
+  DoctorResult,
+  GitStatus,
+  HealthReport,
+  CreateWorktreeParams,
+  TerminalMountResult
+} from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -64,7 +70,8 @@ import {
   worktreeSlug,
   readWorktreeBaseRef,
   branchExists,
-  NotAGitRepoError
+  NotAGitRepoError,
+  reconcileWorktree
 } from './worktrees'
 import { resolveOfferedModes } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
@@ -92,7 +99,8 @@ import {
   listAllPinned,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
-  resetTransientStatusesOnStartup
+  resetTransientStatusesOnStartup,
+  setWorkspaceCwd
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -1962,7 +1970,7 @@ handle(
       scaleFactor,
       cwd
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): Promise<{ workspaceId: string; created: boolean }> => {
+  ): Promise<TerminalMountResult> => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
@@ -1974,6 +1982,55 @@ handle(
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
+
+    // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
+    // For worktree-backed workspaces, reconcile the worktree state BEFORE any
+    // native surface operation. This detects and heals stale/missing worktrees.
+    //
+    // We show the loading overlay FIRST (before the potentially multi-second
+    // git operations) so the user never sees a blank pane.
+    //
+    // reconcileWorktree NEVER throws — it returns { ok: false } on all error
+    // paths. If reconcile fails, we return the error without mounting and
+    // without touching the surface, leaving it retryable.
+    let reconcileNotice: string | undefined
+    let effectiveCwd = cwd
+    if (ws?.worktreeParentCwd != null && ws.worktreeBranch != null) {
+      showLoadingOverlay(workspaceId, { title: 'Preparing worktree…' })
+      let r: Awaited<ReturnType<typeof reconcileWorktree>>
+      try {
+        r = await reconcileWorktree({
+          cwd: ws.cwd,
+          worktreeParentCwd: ws.worktreeParentCwd,
+          worktreeBranch: ws.worktreeBranch
+        })
+      } catch (err) {
+        // reconcileWorktree guarantees no throws, but guard anyway so a bug
+        // there cannot propagate to an unrecoverable blank surface.
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: {
+            kind: 'parentGone',
+            message: `Worktree reconcile threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`
+          }
+        }
+      }
+      if (!r.ok) {
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: { kind: r.kind, message: r.message, conflictPath: r.conflictPath }
+        }
+      }
+      // Reconcile succeeded. Use the reconciled path as mount cwd; if the
+      // worktree was recreated at a suffixed path (slug-2), persist the new cwd.
+      if (r.path !== ws.cwd) {
+        setWorkspaceCwd(workspaceId, r.path)
+      }
+      effectiveCwd = r.path
+      reconcileNotice = r.notice
+    }
 
     // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
     // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
@@ -2022,7 +2079,7 @@ handle(
           workspaceId,
           rect,
           scaleFactor,
-          cwd,
+          cwd: effectiveCwd,
           command,
           env: surfaceEnv
         })
@@ -2107,11 +2164,11 @@ handle(
 
     // Start (or re-join) the fs.watch watcher for this workspace's git repo so
     // status is pushed on change instead of polled every 30s.
-    if (cwd) {
-      startGitWatch(workspaceId, cwd, e.sender)
+    if (effectiveCwd) {
+      startGitWatch(workspaceId, effectiveCwd, e.sender)
     }
 
-    return result
+    return reconcileNotice != null ? { ...result, notice: reconcileNotice } : result
   }
 )
 

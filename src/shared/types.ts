@@ -129,6 +129,28 @@ export type WorkspaceRecord = {
  *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
 export type CreateWorktreeParams = { name: string; branch?: string }
 
+/**
+ * Return type of `terminal:mount`.
+ *
+ * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a
+ * worktree was recreated with a new branch the optional `notice` carries a
+ * one-time human-readable message the renderer should surface.
+ *
+ * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
+ * cannot proceed (bad state that needs user intervention). The surface is NOT
+ * mounted; the renderer should show an error card instead.
+ */
+export type TerminalMountResult =
+  | { workspaceId: string; created: boolean; notice?: string }
+  | {
+      workspaceId: string
+      worktreeError: {
+        kind: 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
+        message: string
+        conflictPath?: string
+      }
+    }
+
 // For Pinned section: a pinned workspace with its project for context
 export type PinnedItem = {
   workspace: WorkspaceRecord

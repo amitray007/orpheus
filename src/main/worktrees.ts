@@ -423,8 +423,210 @@ export async function removeWorktree(opts: RemoveWorktreeOpts): Promise<RemoveWo
 }
 
 // ---------------------------------------------------------------------------
+// reconcileWorktree
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured result returned by reconcileWorktree.
+ *
+ * ok:true  → worktree is ready; use `path` as the mount cwd.
+ * ok:false → mount must NOT proceed; show the error card with `kind` + `message`.
+ */
+export type ReconcileResult =
+  | { ok: true; path: string; notice?: string }
+  | {
+      ok: false
+      kind: 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
+      message: string
+      conflictPath?: string
+    }
+
+/**
+ * Heal a worktree-backed workspace before mount.
+ *
+ * Runs the full state machine under the per-repo lock so concurrent mounts
+ * cannot race on `git worktree add` for the same path.
+ *
+ * NEVER throws past its return boundary — all error branches return
+ * { ok: false, … } instead of throwing, so a reconcile failure never leaves
+ * the terminal surface permanently blank / un-retryable.
+ *
+ * State machine (spec §5):
+ *   1. parent not a git repo → { ok:false, kind:'parentGone' }
+ *   2. registered && dirExists → { ok:true, path }
+ *   3. registered && !dirExists (stale) → prune, then recreate (step 5)
+ *   4. !registered && dirExists && not a valid worktree → { ok:false, kind:'corruptDir' }
+ *      (never clobber user data)
+ *   5. recreate: if branch survives → createWorktree(existing); catch
+ *      BranchCheckedOutElsewhere → { ok:false, kind:'checkedOutElsewhere' }.
+ *      If branch gone → createWorktree(new) + notice → { ok:true, path, notice }.
+ */
+export async function reconcileWorktree(ws: {
+  cwd: string
+  worktreeParentCwd: string
+  worktreeBranch: string
+}): Promise<ReconcileResult> {
+  const repoRoot = ws.worktreeParentCwd
+
+  return withRepoLock(repoRoot, async () => {
+    // ── Step 1: verify the parent is still a git repo ────────────────────
+    try {
+      await resolveMainWorktree(repoRoot)
+    } catch {
+      return {
+        ok: false,
+        kind: 'parentGone',
+        message: `Parent repository is missing or has moved: ${repoRoot}`
+      }
+    }
+
+    // ── Step 2/3: check registration and dir existence ───────────────────
+    let knownPaths: string[]
+    try {
+      knownPaths = await listWorktreePaths(repoRoot)
+    } catch {
+      // If we can't list worktrees the repo may be corrupt; treat as parentGone
+      return {
+        ok: false,
+        kind: 'parentGone',
+        message: `Could not list worktrees for ${repoRoot} — repository may be corrupt`
+      }
+    }
+
+    const registered = knownPaths.includes(ws.cwd)
+
+    let dirExists: boolean
+    try {
+      await fs.access(ws.cwd)
+      dirExists = true
+    } catch {
+      dirExists = false
+    }
+
+    // ── State 2: registered && dir present → healthy ──────────────────────
+    if (registered && dirExists) {
+      return { ok: true, path: ws.cwd }
+    }
+
+    // ── State 3: registered but dir missing → prune then fall through ─────
+    if (registered && !dirExists) {
+      try {
+        await execFile('git', ['-C', repoRoot, 'worktree', 'prune'], { timeout: 10000 })
+      } catch {
+        // prune errors are non-fatal; continue to recreate
+      }
+      // Fall through to recreate (state 5)
+    }
+
+    // ── State 4: not registered && dir exists but not a valid worktree ────
+    if (!registered && dirExists) {
+      const isValidWorktree = await isLinkedWorktreeDir(ws.cwd, repoRoot)
+      if (!isValidWorktree) {
+        return {
+          ok: false,
+          kind: 'corruptDir',
+          message: `A non-worktree directory already exists at ${ws.cwd} — will not overwrite`
+        }
+      }
+      // It IS a valid worktree dir but not registered → treat as stale,
+      // prune and re-add below (git worktree prune will clean stale metadata).
+      try {
+        await execFile('git', ['-C', repoRoot, 'worktree', 'prune'], { timeout: 10000 })
+      } catch {
+        // non-fatal
+      }
+    }
+
+    // ── State 5: recreate (gone / after prune) ───────────────────────────
+    const slug = path.basename(ws.cwd)
+    const branchSurvives = await branchExists(repoRoot, ws.worktreeBranch)
+
+    if (branchSurvives) {
+      try {
+        const result = await createWorktree({
+          repoRoot,
+          slug,
+          branch: ws.worktreeBranch,
+          mode: 'existing',
+          baseRef: 'fresh' // ignored for mode:'existing'
+        })
+        return { ok: true, path: result.path }
+      } catch (err) {
+        if (err instanceof BranchCheckedOutElsewhereError) {
+          return {
+            ok: false,
+            kind: 'checkedOutElsewhere',
+            conflictPath: err.conflictingPath,
+            message: `Branch '${ws.worktreeBranch}' is already checked out at '${err.conflictingPath}'`
+          }
+        }
+        // Other createWorktree error — surface as parentGone (repo-level problem)
+        return {
+          ok: false,
+          kind: 'parentGone',
+          message: `Failed to recreate worktree: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+    } else {
+      // Branch is gone — recreate fresh with the same branch name
+      try {
+        const result = await createWorktree({
+          repoRoot,
+          slug,
+          branch: ws.worktreeBranch,
+          mode: 'new',
+          baseRef: 'fresh'
+        })
+        const notice = `Original branch \`${ws.worktreeBranch}\` no longer existed — started fresh`
+        return { ok: true, path: result.path, notice }
+      } catch (err) {
+        if (err instanceof BranchCheckedOutElsewhereError) {
+          return {
+            ok: false,
+            kind: 'checkedOutElsewhere',
+            conflictPath: err.conflictingPath,
+            message: `Branch '${ws.worktreeBranch}' is already checked out at '${err.conflictingPath}'`
+          }
+        }
+        return {
+          ok: false,
+          kind: 'parentGone',
+          message: `Failed to recreate worktree: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns true if `dir` looks like a valid linked git worktree.
+ *
+ * A linked worktree has a `.git` FILE (not directory) whose content starts
+ * with `gitdir: `. We verify this heuristic — enough to distinguish a user's
+ * regular directory from a real worktree without running git commands that
+ * might fail on a partially torn-down worktree.
+ */
+async function isLinkedWorktreeDir(dir: string, repoRoot: string): Promise<boolean> {
+  const gitFilePath = path.join(dir, '.git')
+  try {
+    const stat = await fs.stat(gitFilePath)
+    if (!stat.isFile()) return false
+    const content = await fs.readFile(gitFilePath, 'utf8')
+    if (!content.startsWith('gitdir: ')) return false
+    // Verify the gitdir line points back into the repo's .git/worktrees dir
+    const gitdirValue = content.slice('gitdir: '.length).split('\n')[0].trim()
+    const resolvedGitdir = path.resolve(dir, gitdirValue)
+    // The repoRoot's .git/worktrees directory
+    const expectedPrefix = path.join(repoRoot, '.git', 'worktrees')
+    return resolvedGitdir.startsWith(expectedPrefix)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Parse a git worktree add error into a typed WorktreeError.

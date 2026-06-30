@@ -207,6 +207,12 @@ export function WorkspaceView({
       )
       try {
         const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
+        if ('worktreeError' in result) {
+          // Worktree reconcile failed — surface not mounted. Task 6 will render
+          // the error card; for now just log so the pane isn't silently blank.
+          console.warn('[WorkspaceView] worktree reconcile error:', result.worktreeError)
+          return
+        }
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
         // immediately so the surface doesn't draw while inactive.
@@ -486,6 +492,14 @@ export function WorkspaceView({
               workspaceId,
               durationMs: Math.round(performance.now() - t0)
             })
+            if ('worktreeError' in result) {
+              // Worktree reconcile failed — surface not mounted; Task 6 renders error card.
+              console.warn(
+                '[WorkspaceView] worktree reconcile error (re-mount):',
+                result.worktreeError
+              )
+              return
+            }
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
             // immediately so the surface doesn't draw while inactive.

@@ -399,6 +399,20 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
 }
 
 // ---------------------------------------------------------------------------
+// Worktree cwd update (v64+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the cwd of a workspace row. Used by reconcileWorktree when the
+ * recreated worktree lands at a suffixed path (e.g. `slug-2`) different from
+ * the stored cwd.
+ */
+export function setWorkspaceCwd(id: string, cwd: string): void {
+  const db = getDb()
+  db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
+}
+
+// ---------------------------------------------------------------------------
 // Claude session tracking (v26)
 // ---------------------------------------------------------------------------
 

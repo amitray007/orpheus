@@ -10,6 +10,7 @@ import type {
   WorkspaceStatus,
   WorkspaceActivityDetail,
   CreateWorktreeParams,
+  TerminalMountResult,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -76,7 +77,7 @@ declare global {
           rect: TerminalRect,
           scaleFactor: number,
           cwd?: string
-        ) => Promise<{ workspaceId: string; created: boolean }>
+        ) => Promise<TerminalMountResult>
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
