@@ -18,6 +18,16 @@ import type { ActionResult, WorkspaceForkParams } from '../../shared/types'
 import { createWorkspace, getWorkspace, archiveWorkspace, renameWorkspace } from '../workspaces'
 import { getWorkspaceActivity, computeDetail } from '../orpheusNotify'
 import { destroyAddonSurface } from './addonSurface'
+import {
+  resolveMainWorktree,
+  createWorktree,
+  removeWorktree,
+  withRepoLock,
+  worktreeSlug,
+  readWorktreeBaseRef,
+  branchExists,
+  NotAGitRepoError
+} from '../worktrees'
 
 // ---------------------------------------------------------------------------
 // workspace.fork
@@ -27,7 +37,7 @@ export async function handleFork(
   params: Record<string, unknown>,
   workspaceId: string
 ): Promise<ActionResult<{ workspaceId: string }>> {
-  const { name } = params as WorkspaceForkParams
+  const { name, worktree: wantWorktree } = params as WorkspaceForkParams
 
   const parent = getWorkspace(workspaceId)
   if (!parent) {
@@ -47,13 +57,82 @@ export async function handleFork(
 
   const newName = name ?? (parent.name ? `${parent.name} (fork)` : 'Forked workspace')
 
+  // Resolve the main repo root. This maps a worktree-workspace parent back to
+  // the MAIN repo root so worktrees never nest and no two workspaces squat the
+  // same worktree dir. For a plain (non-worktree) parent, resolveMainWorktree
+  // returns the same cwd — behaviour is unchanged.
+  let repoRoot: string | null = null
+  try {
+    repoRoot = await resolveMainWorktree(parent.cwd)
+  } catch (err) {
+    if (!(err instanceof NotAGitRepoError)) throw err
+    // Non-git parent: repoRoot stays null (handled per path below)
+  }
+
+  if (wantWorktree === true) {
+    // worktree:true on a non-git parent is impossible — reject clearly.
+    if (repoRoot === null) {
+      return {
+        ok: false,
+        code: 'invalid',
+        error: `Cannot create a worktree fork: parent directory is not a git repository (${parent.cwd})`
+      }
+    }
+
+    // Git-first + withRepoLock + rollback (mirrors workspaces:createWorktree).
+    const slug = worktreeSlug(newName)
+    const branch = `worktree-${slug}`
+
+    return withRepoLock(repoRoot, async () => {
+      const mode = (await branchExists(repoRoot!, branch)) ? 'existing' : 'new'
+      const baseRef = await readWorktreeBaseRef()
+
+      // Create the worktree first. If this throws, no DB row has been inserted.
+      const { path: worktreePath, branch: finalBranch } = await createWorktree({
+        repoRoot: repoRoot!,
+        slug,
+        branch,
+        mode,
+        baseRef
+      })
+
+      try {
+        // Plan A: pass forkedFromSessionId atomically so the renderer sees the
+        // correct forked_from_session_id immediately on the workspaces:created broadcast.
+        const newWorkspace = createWorkspace({
+          projectId: parent.projectId,
+          name: newName,
+          cwd: worktreePath,
+          worktreeParentCwd: repoRoot!,
+          worktreeBranch: finalBranch,
+          forkedFromSessionId: parent.claudeSessionId
+        })
+        return { ok: true, value: { workspaceId: newWorkspace.id } }
+      } catch (rowErr) {
+        // Roll back the freshly created worktree so a failed insert can't leak
+        // a dangling worktree. Force-remove: it's brand new, no user changes.
+        try {
+          await removeWorktree({ path: worktreePath, force: true })
+        } catch {
+          // Best-effort rollback; surface the original insert error.
+        }
+        throw rowErr
+      }
+    })
+  }
+
+  // worktree:false (or absent) — plain fork.
+  // Use repoRoot (main repo root) if git, else fall back to parent.cwd.
+  // This prevents squatting the worktree dir when the parent IS a worktree.
+  const targetCwd = repoRoot ?? parent.cwd
+
   // Plan A: pass forkedFromSessionId into createWorkspace so the INSERT and
   // the broadcastWorkspaceCreated happen atomically — renderer sees the correct
   // forked_from_session_id immediately without a second UPDATE race.
   const newWorkspace = createWorkspace({
     projectId: parent.projectId,
     name: newName,
-    cwd: parent.cwd,
+    cwd: targetCwd,
     forkedFromSessionId: parent.claudeSessionId
   })
 
@@ -137,12 +216,24 @@ export async function handleDuplicate(
     name = parent.name ? `${parent.name} (copy)` : 'Duplicate workspace'
   }
 
+  // When the parent is a worktree workspace, target the main repo root for the
+  // new plain workspace's cwd — never the worktree dir (squat prevention).
+  // For a plain parent, resolveMainWorktree returns the same cwd — unchanged.
+  // For a non-git parent, fall back to parent.cwd (current behaviour).
+  let targetCwd = parent.cwd
+  try {
+    targetCwd = await resolveMainWorktree(parent.cwd)
+  } catch (err) {
+    if (!(err instanceof NotAGitRepoError)) throw err
+    // Non-git parent: keep parent.cwd as the target (no change to existing behaviour)
+  }
+
   // Fresh workspace — createWorkspace already assigns a new UUID session ID.
   // No forked_from_session_id needed.
   const newWorkspace = createWorkspace({
     projectId: parent.projectId,
     name,
-    cwd: parent.cwd
+    cwd: targetCwd
   })
 
   return { ok: true, value: { workspaceId: newWorkspace.id } }
