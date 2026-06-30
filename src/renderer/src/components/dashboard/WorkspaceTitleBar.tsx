@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Cpu, Info } from '@phosphor-icons/react'
+import {
+  Terminal as TerminalIcon,
+  Gear,
+  ArrowBendUpLeft,
+  Cpu,
+  Info,
+  GitBranch
+} from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
@@ -196,10 +203,15 @@ export function WorkspaceTitleBar({
     if (!detailsButtonRef.current) return
 
     // Build initial data with whatever is synchronously available.
+    // For worktree workspaces, enrich the cwd line with the parent repo path
+    // so the Details popover surfaces both the worktree location and its parent.
+    const cwdDisplay = workspace.worktreeParentCwd
+      ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
+      : workspace.cwd
     const initialData: DetailsPopoverData = {
       pr: prToNative(pr ?? null),
       git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
-      cwd: workspace.cwd,
+      cwd: cwdDisplay,
       contextLoading: true,
       costLoading: true
     }
@@ -344,6 +356,17 @@ export function WorkspaceTitleBar({
         >
           <ArrowBendUpLeft size={9} className="flex-shrink-0" />
           {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
+        </span>
+      )}
+
+      {/* Worktree chip — shown when this workspace is a git worktree */}
+      {workspace.worktreeParentCwd && (
+        <span
+          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-text-muted bg-surface-overlay/50 border border-border-default/40"
+          title={`Worktree branch: ${workspace.worktreeBranch ?? 'unknown'}\nParent repo: ${workspace.worktreeParentCwd}`}
+        >
+          <GitBranch size={9} className="flex-shrink-0" />
+          {`Worktree · ${workspace.worktreeBranch ?? 'worktree'}`}
         </span>
       )}
 

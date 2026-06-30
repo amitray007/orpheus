@@ -14,6 +14,7 @@ import {
   PushPin,
   ArrowFatLineUp
 } from '@phosphor-icons/react'
+import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
@@ -224,6 +225,12 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
       if (!rowRef.current || !cardAllowed) return
+      // For worktree workspaces, annotate cwd with the parent repo path so
+      // the hover popover surfaces the worktree context alongside the cwd.
+      const popoverCwd =
+        workspace.worktreeParentCwd && workspace.worktreeBranch
+          ? `${workspace.cwd} (${workspace.worktreeBranch})`
+          : workspace.cwd
       showHoverPopover(
         workspace.id,
         rowRef.current,
@@ -232,7 +239,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         dn.text,
         activity,
         relativeTime,
-        workspace.cwd
+        popoverCwd
       )
     }, 120)
   }
@@ -365,6 +372,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
                   aria-label="forked workspace"
                 />
               )}
+              {/* Worktree badge — after fork badge */}
+              {!renaming && <WorktreeBadge workspace={workspace} />}
             </span>
           </span>
         </button>
@@ -480,14 +489,17 @@ const PinnedRow = memo(function PinnedRow({
           )}
         </span>
         <span className="flex flex-col gap-0.5 min-w-0 flex-1">
-          <span
-            className={[
-              'text-xs truncate leading-tight',
-              dn.muted ? 'text-text-muted italic' : ''
-            ].join(' ')}
-            title={dn.text}
-          >
-            {dn.text}
+          <span className="flex items-center gap-1 min-w-0">
+            <span
+              className={[
+                'text-xs truncate leading-tight',
+                dn.muted ? 'text-text-muted italic' : ''
+              ].join(' ')}
+              title={dn.text}
+            >
+              {dn.text}
+            </span>
+            <WorktreeBadge workspace={workspace} />
           </span>
           <span className="text-[11px] text-text-muted truncate leading-tight">{project.name}</span>
         </span>

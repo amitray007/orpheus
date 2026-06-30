@@ -84,14 +84,23 @@ const ProjectTile = memo(function ProjectTile({
         repo: p.githubOwner && p.githubRepo ? `${p.githubOwner}/${p.githubRepo}` : undefined,
         path: p.path,
         workspaceCount: activeWorkspaces.length,
-        workspaces: capped.map((w) => ({
-          name: resolveWorkspaceName({
+        workspaces: capped.map((w) => {
+          const displayName = resolveWorkspaceName({
             workspace: w,
             terminalTitle: titles.get(w.id) ?? null,
             sessionTitle: null
-          }).text,
-          state: toPopoverState(activityMap.get(w.id))
-        }))
+          }).text
+          // Append branch annotation for worktree workspaces so the project
+          // popover workspace list distinguishes them from plain workspaces.
+          const name =
+            w.worktreeParentCwd && w.worktreeBranch
+              ? `${displayName} · ${w.worktreeBranch}`
+              : displayName
+          return {
+            name,
+            state: toPopoverState(activityMap.get(w.id))
+          }
+        })
       })
 
       // Register native-closed handler: reset timer state when card closes itself.
