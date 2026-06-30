@@ -24,6 +24,8 @@ type WorkspaceRow = {
   last_title: string | null
   // v43: fork session support (Plan A)
   forked_from_session_id: string | null
+  // v64: parent workspace lineage
+  parent_workspace_id: string | null
 }
 
 type ProjectRow = {
@@ -59,7 +61,8 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
     forkedFromSessionId: row.forked_from_session_id ?? null,
-    lastTitle: row.last_title ?? null
+    lastTitle: row.last_title ?? null,
+    parentWorkspaceId: row.parent_workspace_id ?? null
   }
 }
 
@@ -137,7 +140,8 @@ export function createWorkspace({
   projectId,
   name,
   cwd,
-  forkedFromSessionId = null
+  forkedFromSessionId = null,
+  parentWorkspaceId = null
 }: {
   projectId: string
   name: string
@@ -146,6 +150,9 @@ export function createWorkspace({
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
    *  where the renderer receives workspaces:created with a null field. */
   forkedFromSessionId?: string | null
+  /** When creating a child workspace, pass the parent workspace ID to establish
+   *  lineage for depth/children guardrails (v64). */
+  parentWorkspaceId?: string | null
 }): WorkspaceRecord {
   const db = getDb()
   const id = crypto.randomUUID()
@@ -170,8 +177,8 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
@@ -181,7 +188,8 @@ export function createWorkspace({
       createdAt,
       claudeSessionId,
       sortOrder,
-      forkedFromSessionId ?? null
+      forkedFromSessionId ?? null,
+      parentWorkspaceId ?? null
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)
@@ -445,4 +453,55 @@ export function listAllPinned(): PinnedItem[] {
       github_checked_at: null
     })
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace lineage (v64)
+// ---------------------------------------------------------------------------
+
+/**
+ * List all direct children of the given workspace (workspaces whose
+ * parent_workspace_id === parentId). Excludes archived workspaces.
+ */
+export function listChildWorkspaces(parentId: string): WorkspaceRecord[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT * FROM workspaces
+       WHERE parent_workspace_id = ? AND archived_at IS NULL
+       ORDER BY sort_order ASC NULLS LAST, created_at DESC`
+    )
+    .all(parentId) as WorkspaceRow[]
+  return rows.map(rowToWorkspaceRecord)
+}
+
+/**
+ * Return the root-to-node ancestry path for the given workspace by walking
+ * parent_workspace_id upward. The returned array is ordered from the root
+ * ancestor down to (and including) the workspace itself.
+ *
+ * A visited set guards against cycles in malformed data — if a cycle is
+ * detected the walk stops and the partial path is returned.
+ */
+export function getWorkspaceLineage(id: string): WorkspaceRecord[] {
+  const db = getDb()
+  const visited = new Set<string>()
+  const path: WorkspaceRecord[] = []
+
+  let currentId: string | null = id
+  while (currentId !== null) {
+    if (visited.has(currentId)) {
+      // Cycle detected — stop the walk
+      break
+    }
+    visited.add(currentId)
+    const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(currentId) as
+      | WorkspaceRow
+      | undefined
+    if (!row) break
+    path.unshift(rowToWorkspaceRecord(row))
+    currentId = row.parent_workspace_id ?? null
+  }
+
+  return path
 }
