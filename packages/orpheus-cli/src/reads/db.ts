@@ -4,18 +4,22 @@
  * Opens the app's SQLite database in read-only mode. The app uses WAL mode,
  * so concurrent readers are safe while the app holds the write lock.
  *
- * IMPORTANT: This module defines local copies of ProjectRecord and
- * WorkspaceRecord rather than importing from src/shared/types.ts. The CLI
- * package's tsconfig sets rootDir = "src" (packages/orpheus-cli/src), so
- * importing from ../../../../src/shared/types would escape the rootDir and
- * fail typechecking. The local types are structurally identical — kept in
- * sync manually when the shared types evolve.
+ * WorkspaceRecord, ProjectRecord, and WorkspaceStatus are imported from
+ * src/shared/types.ts via the @shared/* path alias defined in tsconfig.json.
+ * The alias resolves to ../../src/shared/* (relative to packages/orpheus-cli/)
+ * for both tsc (via paths) and esbuild (via --alias flag in build:cli). The
+ * import is type-only, so it fully erases at runtime with no bundle impact.
  */
 
 import * as fs from 'node:fs'
 import Database from 'better-sqlite3'
 import { getSqlitePath } from '../paths.js'
 import type { ContextDb, ProjectRow, WorkspaceRow } from '../context.js'
+import type { WorkspaceRecord, ProjectRecord, WorkspaceStatus } from '@shared/types'
+
+// Re-export the shared types so callers that previously imported them from
+// this module continue to work without changes.
+export type { WorkspaceRecord, ProjectRecord, WorkspaceStatus }
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -26,51 +30,6 @@ export class OrpheusDataNotFoundError extends Error {
     super(`no Orpheus data found at ${path} (is the app installed / has it run?)`)
     this.name = 'OrpheusDataNotFoundError'
   }
-}
-
-// ---------------------------------------------------------------------------
-// Local record types (structurally identical to src/shared/types.ts)
-//
-// Keep in sync with WorkspaceRecord and ProjectRecord in src/shared/types.ts.
-// We can't import directly because the shared file is outside this package's
-// rootDir; see module-level comment.
-// ---------------------------------------------------------------------------
-
-export type WorkspaceStatus = 'in_progress' | 'awaiting_input' | 'attention' | 'idle' | 'archived'
-
-export type WorkspaceRecord = {
-  id: string
-  projectId: string
-  name: string
-  nameIsAuto: boolean
-  cwd: string
-  pinnedAt: number | null
-  createdAt: number
-  lastOpenedAt: number | null
-  archivedAt: number | null
-  closedAt: number | null
-  sortOrder: number | null
-  status: WorkspaceStatus
-  claudeSessionId: string | null
-  forkedFromSessionId: string | null
-  lastTitle: string | null
-  parentWorkspaceId: string | null
-}
-
-export type ProjectRecord = {
-  id: string
-  path: string
-  name: string
-  claudeEncodedName: string | null
-  addedAt: number
-  lastOpenedAt: number | null
-  expandedInSidebar: boolean
-  sortOrder: number | null
-  pinnedAt: number | null
-  githubOwner: string | null
-  githubRepo: string | null
-  githubAvatarUrl: string | null
-  githubCheckedAt: number | null
 }
 
 // ---------------------------------------------------------------------------

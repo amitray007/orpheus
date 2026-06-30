@@ -1,0 +1,60 @@
+#!/bin/bash
+# Orpheus CLI shim — runs the bundled CLI under Electron-as-Node.
+#
+# This script ships at Contents/Resources/bin/orpheus and is prepended to
+# PATH in every workspace terminal (ORPHEUS_USER_PATH injection). It resolves
+# the Electron binary and the CLI bundle relative to its own location so the
+# paths are correct in both packaged and dev builds.
+#
+# Layout (packaged):
+#   Contents/
+#     MacOS/
+#       Orpheus             ← Electron binary
+#     Resources/
+#       bin/
+#         orpheus           ← this script
+#       cli/
+#         cli.js            ← bundled CLI
+#
+# Layout (dev, after bun run build:dev installs Orpheus Dev.app):
+#   Contents/
+#     MacOS/
+#       Orpheus Dev         ← Electron binary
+#     Resources/
+#       bin/
+#         orpheus           ← this script
+#       cli/
+#         cli.js            ← bundled CLI
+
+set -eu
+
+# Resolve the directory containing this script, following symlinks.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# The Resources dir is one level up from bin/.
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+
+# The MacOS dir is a sibling of Resources/.
+MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
+
+# The bundled CLI lives at Resources/cli/cli.js.
+CLI_BUNDLE="$RESOURCES_DIR/cli/cli.js"
+
+# Find the Electron binary: prefer "Orpheus Dev" (dev build), fall back to "Orpheus".
+if [ -x "$MACOS_DIR/Orpheus Dev" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus Dev"
+elif [ -x "$MACOS_DIR/Orpheus" ]; then
+  ELECTRON_BIN="$MACOS_DIR/Orpheus"
+else
+  echo "orpheus: error: cannot find Electron binary in $MACOS_DIR" >&2
+  echo "  Expected 'Orpheus Dev' or 'Orpheus' — is the app bundle intact?" >&2
+  exit 1
+fi
+
+if [ ! -f "$CLI_BUNDLE" ]; then
+  echo "orpheus: error: CLI bundle not found at $CLI_BUNDLE" >&2
+  echo "  Run 'bun run build:cli' to build the bundle." >&2
+  exit 1
+fi
+
+exec ELECTRON_RUN_AS_NODE=1 "$ELECTRON_BIN" "$CLI_BUNDLE" "$@"

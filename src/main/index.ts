@@ -1894,7 +1894,13 @@ handle(
         buildResult = diag.span(
           'launch.compose',
           { workspaceId, projectId: projectId ?? null },
-          () => buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
+          () =>
+            buildMountEnv(
+              workspaceId,
+              projectId,
+              notifyServer?.sockPath,
+              commandServer ?? undefined
+            )
         )
       } catch (err) {
         logDiagMain({

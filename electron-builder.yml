@@ -45,6 +45,14 @@ extraResources:
   # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
   - from: resources/bin/orpheus-notify
     to: bin/orpheus-notify
+  # Orpheus CLI shim — runs the bundled CLI via Electron-as-Node.
+  # Lives at Contents/Resources/bin/orpheus; prepended to PATH in workspace terminals.
+  - from: resources/bin/orpheus
+    to: bin/orpheus
+  # Bundled Orpheus CLI — single CJS bundle with better-sqlite3 externalised.
+  # Lives at Contents/Resources/cli/cli.js; executed by the bin/orpheus shim.
+  - from: packages/orpheus-cli/dist/cli.js
+    to: cli/cli.js
   # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
   # so registerPopoverFonts() can resolve them via process.resourcesPath.
   - from: node_modules/geist/dist/fonts/geist-sans
