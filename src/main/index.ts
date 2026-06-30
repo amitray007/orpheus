@@ -100,7 +100,8 @@ import {
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup,
-  setWorkspaceCwd
+  setWorkspaceCwd,
+  convertWorktreeToLocal
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -1308,6 +1309,11 @@ handle('workspace:reopen', (_e, { id }: { id: string }) => {
 handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
+
+// Convert a worktree-backed workspace to a plain local workspace (non-destructive:
+// does NOT delete the branch or worktree directory). Sets cwd = worktreeParentCwd
+// and nulls the worktree fields, then broadcasts workspaces:changed.
+handle('workspaces:convertToLocal', (_e, { id }: { id: string }) => convertWorktreeToLocal(id))
 
 handle(
   'workspaces:reorder',

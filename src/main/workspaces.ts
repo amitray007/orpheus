@@ -412,6 +412,36 @@ export function setWorkspaceCwd(id: string, cwd: string): void {
   db.prepare('UPDATE workspaces SET cwd = ? WHERE id = ?').run(cwd, id)
 }
 
+/**
+ * Convert a worktree-backed workspace into a plain local workspace.
+ *
+ * Sets cwd to the old worktreeParentCwd (the main repo root) and nulls out
+ * both worktree fields. Does NOT delete the branch or the worktree directory —
+ * that is left to the user. Broadcasts workspaces:changed so the renderer
+ * picks up the mutation immediately.
+ */
+export function convertWorktreeToLocal(id: string): WorkspaceRecord {
+  const db = getDb()
+  // Read current row to get worktreeParentCwd before we overwrite it.
+  const current = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as
+    | WorkspaceRow
+    | undefined
+  if (!current) throw new Error(`convertWorktreeToLocal: workspace not found: ${id}`)
+  if (!current.worktree_parent_cwd) {
+    throw new Error(`convertWorktreeToLocal: workspace ${id} is not a worktree workspace`)
+  }
+  const parentCwd = current.worktree_parent_cwd
+  const row = db
+    .prepare(
+      'UPDATE workspaces SET cwd = ?, worktree_parent_cwd = NULL, worktree_branch = NULL WHERE id = ? RETURNING *'
+    )
+    .get(parentCwd, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`convertWorktreeToLocal: UPDATE returned nothing for id: ${id}`)
+  const record = rowToWorkspaceRecord(row)
+  broadcastWorkspaceChanged(record)
+  return record
+}
+
 // ---------------------------------------------------------------------------
 // Claude session tracking (v26)
 // ---------------------------------------------------------------------------

@@ -8,6 +8,8 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
+import { WorktreeErrorCard } from './WorktreeErrorCard'
+import type { WorktreeError } from './WorktreeErrorCard'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
@@ -59,6 +61,11 @@ export function WorkspaceView({
   const [remountKey, setRemountKey] = useState(0)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
+  // Worktree reconcile error — set when terminal:mount returns worktreeError.
+  // While non-null the terminal surface is not mounted; WorktreeErrorCard is shown instead.
+  const [worktreeError, setWorktreeError] = useState<WorktreeError | null>(null)
+  // One-time notice from a successful mount (e.g. "started fresh on branch X").
+  const [notice, setNotice] = useState<string | null>(null)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -105,6 +112,48 @@ export function WorkspaceView({
   }, [workspace.id])
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
+
+  // --- Worktree error card callbacks ---
+
+  /** Retry mount after a worktree reconcile error by bumping the remount key. */
+  const handleWorktreeRetry = useCallback(() => {
+    setWorktreeError(null)
+    setRemountKey((k) => k + 1)
+  }, [])
+
+  /** Reveal the conflict path (or worktree parent) in Finder. */
+  const handleWorktreeOpenLocation = useCallback((p: string) => {
+    void window.api.shell.revealInFinder(p).catch((e) => {
+      console.error('[WorkspaceView] revealInFinder failed:', e)
+    })
+  }, [])
+
+  /**
+   * Convert a worktree workspace to a local workspace (non-destructive), then
+   * re-mount at the repo root. The IPC updates the DB row and broadcasts
+   * workspaces:changed so the sidebar and Dashboard reflect the new record; the
+   * parent component updates `workspace.cwd` via that event before re-render, but
+   * because we bump remountKey immediately the mount effect picks up the fresh cwd
+   * from the latest workspace prop the next render delivers.
+   */
+  const handleWorktreeConvertToLocal = useCallback(() => {
+    void window.api.workspaces
+      .convertToLocal(workspace.id)
+      .then(() => {
+        setWorktreeError(null)
+        setRemountKey((k) => k + 1)
+      })
+      .catch((e) => {
+        console.error('[WorkspaceView] convertToLocal failed:', e)
+      })
+  }, [workspace.id])
+
+  // Auto-dismiss the one-time notice after 6 seconds.
+  useEffect(() => {
+    if (!notice) return
+    const id = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(id)
+  }, [notice])
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -208,10 +257,16 @@ export function WorkspaceView({
       try {
         const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
         if ('worktreeError' in result) {
-          // Worktree reconcile failed — surface not mounted. Task 6 will render
-          // the error card; for now just log so the pane isn't silently blank.
+          // Worktree reconcile failed — surface not mounted; show the error card.
           console.warn('[WorkspaceView] worktree reconcile error:', result.worktreeError)
+          setWorktreeError(result.worktreeError)
           return
+        }
+        // Success path — clear any prior reconcile error.
+        setWorktreeError(null)
+        // Surface a one-time notice if the backend emitted one (e.g. "started fresh on branch X").
+        if (result.notice) {
+          setNotice(result.notice)
         }
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
@@ -493,12 +548,19 @@ export function WorkspaceView({
               durationMs: Math.round(performance.now() - t0)
             })
             if ('worktreeError' in result) {
-              // Worktree reconcile failed — surface not mounted; Task 6 renders error card.
+              // Worktree reconcile failed — surface not mounted; show the error card.
               console.warn(
                 '[WorkspaceView] worktree reconcile error (re-mount):',
                 result.worktreeError
               )
+              setWorktreeError(result.worktreeError)
               return
+            }
+            // Success path — clear any prior reconcile error.
+            setWorktreeError(null)
+            // Surface a one-time notice if the backend emitted one.
+            if (result.notice) {
+              setNotice(result.notice)
             }
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
@@ -571,6 +633,26 @@ export function WorkspaceView({
                 isClosed={isClosed}
                 onFocusTerminal={handleFocusTerminal}
               />
+            )}
+            {/* Worktree reconcile error card — shown instead of the terminal surface
+                when terminal:mount returns a worktreeError. Only rendered for the
+                active view so inactive (keep-alive) views don't render it unnecessarily. */}
+            {active && worktreeError && (
+              <WorktreeErrorCard
+                error={worktreeError}
+                worktreeParentCwd={workspace.worktreeParentCwd}
+                onRetry={handleWorktreeRetry}
+                onOpenLocation={handleWorktreeOpenLocation}
+                onConvertToLocal={handleWorktreeConvertToLocal}
+              />
+            )}
+            {/* One-time notice banner (e.g. "started fresh on branch X") — shown
+                briefly after a successful mount and auto-dismissed after 6 s. */}
+            {active && notice && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 max-w-sm w-auto px-4 py-2.5 rounded-lg bg-surface-overlay/95 border border-border-default shadow-lg flex items-center gap-2.5 pointer-events-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+                <span className="text-xs text-text-secondary leading-snug">{notice}</span>
+              </div>
             )}
           </div>
 

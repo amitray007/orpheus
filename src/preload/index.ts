@@ -334,7 +334,9 @@ const api = {
         cb(payload)
       ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
       return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
-    }
+    },
+    convertToLocal: (id: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:convertToLocal', { id })
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
