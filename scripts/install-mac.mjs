@@ -4,9 +4,10 @@
  *
  * Usage:
  *   node scripts/install-mac.mjs --dev     # dev  (dist-dev/ -> /Applications/Orpheus Dev.app)
+ *   node scripts/install-mac.mjs --wt      # wt   (dist-wt/  -> /Applications/Orpheus WT.app)
  *   ORPHEUS_ALLOW_PROD_INSTALL=1 node scripts/install-mac.mjs   # prod (dist/ -> /Applications/Orpheus.app)
  *
- * Local development installs the DEV variant only. The production variant lives
+ * Local development installs the DEV or WT variant only. The production variant lives
  * exclusively in /Applications/Orpheus.app and is owned by the Homebrew cask /
  * CI release pipeline — never by a local build. Installing prod locally would
  * clobber that managed copy, so it is locked behind ORPHEUS_ALLOW_PROD_INSTALL=1
@@ -23,11 +24,12 @@ if (process.platform !== 'darwin') {
 }
 
 const isDev = process.argv.includes('--dev')
+const isWt = process.argv.includes('--wt')
 
 // Guard: prod local-install is opt-in only. Without the flag, refuse rather than
-// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev installs are
-// always allowed — they target the isolated /Applications/Orpheus Dev.app.
-if (!isDev && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
+// overwrite the Homebrew/CI-managed /Applications/Orpheus.app. Dev and WT installs are
+// always allowed — they target isolated app variants.
+if (!isDev && !isWt && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   console.error(
     '[install-mac] refusing to install the PRODUCTION bundle locally.\n' +
       '  Production Orpheus.app is managed by Homebrew / CI — a local build must not clobber it.\n' +
@@ -36,9 +38,9 @@ if (!isDev && process.env.ORPHEUS_ALLOW_PROD_INSTALL !== '1') {
   )
   process.exit(1)
 }
-const tag = isDev ? '[install-mac-dev]' : '[install-mac]'
+const tag = isWt ? '[install-mac-wt]' : isDev ? '[install-mac-dev]' : '[install-mac]'
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const distDir = resolve(projectRoot, isDev ? 'dist-dev' : 'dist')
+const distDir = resolve(projectRoot, isWt ? 'dist-wt' : isDev ? 'dist-dev' : 'dist')
 
 // Tell Spotlight to skip dist/ so the build-output .app doesn't appear
 // alongside the real one in /Applications when searching.
