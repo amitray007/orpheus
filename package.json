@@ -52,7 +52,8 @@
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
     "geist": "^1.7.0",
-    "minidenticons": "^4.2.1"
+    "minidenticons": "^4.2.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
