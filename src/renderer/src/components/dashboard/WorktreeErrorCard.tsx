@@ -22,6 +22,8 @@ interface WorktreeErrorCardProps {
   onRetry: () => void
   onOpenLocation: (p: string) => void
   onConvertToLocal: () => void
+  /** True while the convertToLocal IPC is in-flight — disables the button to prevent double-conversion. */
+  converting?: boolean
 }
 
 /**
@@ -33,7 +35,8 @@ export const WorktreeErrorCard = memo(function WorktreeErrorCard({
   worktreeParentCwd,
   onRetry,
   onOpenLocation,
-  onConvertToLocal
+  onConvertToLocal,
+  converting = false
 }: WorktreeErrorCardProps): React.JSX.Element {
   const revealPath = error.conflictPath ?? worktreeParentCwd
 
@@ -94,10 +97,11 @@ export const WorktreeErrorCard = memo(function WorktreeErrorCard({
           <button
             type="button"
             onClick={onConvertToLocal}
-            className="w-full flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border border-border-default bg-surface-base hover:bg-surface-overlay text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            disabled={converting}
+            className="w-full flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border border-border-default bg-surface-base hover:bg-surface-overlay text-text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
           >
             <ArrowCounterClockwise size={14} weight="regular" />
-            Convert to local workspace
+            {converting ? 'Converting…' : 'Convert to local workspace'}
           </button>
         </div>
       </div>
