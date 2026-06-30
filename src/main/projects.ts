@@ -5,6 +5,7 @@ import { createWorkspace } from './workspaces'
 import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -92,7 +93,7 @@ export function addProject(path: string): ProjectRecord {
   const id = crypto.randomUUID()
   const name = nodePath.basename(path)
   // Encode absolute path to Claude Code's directory-name format: replace / with -
-  const claudeEncodedName = path.replace(/\//g, '-')
+  const claudeEncodedName = encodePathToClaudeDir(path)
   const addedAt = Date.now()
 
   // Insert project + default workspace atomically.

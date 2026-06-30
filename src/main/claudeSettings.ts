@@ -15,6 +15,7 @@ import type {
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -25,11 +26,11 @@ import { getWorkspace } from './workspaces'
 const sessionJsonlExistsCache = new Map<string, true>()
 
 // Returns true if claude's transcript file for this session already exists on
-// disk. The path follows claude's encoding: slashes in the cwd become dashes.
+// disk. The path follows claude's encoding: slashes AND dots become dashes.
 function sessionJsonlExists(cwd: string, sessionId: string): boolean {
   const key = `${cwd}:${sessionId}`
   if (sessionJsonlExistsCache.has(key)) return true
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = encodePathToClaudeDir(cwd)
   const path = nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
   try {
     const exists = fs.statSync(path).isFile()

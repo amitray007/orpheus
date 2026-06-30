@@ -6,6 +6,7 @@ import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 import {
   branchExists,
   createWorktree,
@@ -471,21 +472,6 @@ function extractFromTail(text: string): TailExtracted {
 // Called between files (or small batches) inside async loops.
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
-}
-
-/**
- * Encode an absolute path to Claude Code's directory-name format.
- *
- * Claude replaces BOTH '/' and '.' with '-' — verified against on-disk layout
- * where e.g. '/Users/maverick/.claude/projects' encodes to
- * '-Users-maverick--claude-projects' (the dot in '.claude' becomes a dash).
- *
- * This mirrors the transform used in projects.ts for the project root path
- * (which works with '/'-only replace because normal project cwds lack dots
- * in path components — worktree paths through '.claude/worktrees/' do not).
- */
-function encodePathToClaudeDir(absolutePath: string): string {
-  return absolutePath.replace(/[/.]/g, '-')
 }
 
 /**
@@ -1224,6 +1210,24 @@ export async function createWorktreeResumingSession(
     }
     throw err
   }
+
+  // Prefer the branch name stored on an existing (or archived) workspace whose
+  // cwd matches the worktree directory.  The worktree cwd is reconstructed as
+  // <repoRoot>/.claude/worktrees/<slug> and its correct branch may differ from
+  // the slug (e.g. a branch named "feature/foo" becomes slug "feature-foo").
+  const slugFromPath = worktreeSlug(branch)
+  const expectedWorktreePath = nodePath.join(repoRoot, '.claude', 'worktrees', slugFromPath)
+  const storedRow = getDb()
+    .prepare<
+      [string, string],
+      { worktree_branch: string | null }
+    >('SELECT worktree_branch FROM workspaces WHERE project_id = ? AND cwd = ? LIMIT 1')
+    .get(projectId, expectedWorktreePath)
+  const storedBranch = storedRow?.worktree_branch ?? null
+  // Use the stored branch when available; it is the authoritative git branch
+  // name (e.g. "feature/foo").  Fall back to slug-derived name for the
+  // auto-generated "worktree-<slug>" case where slug == branch.
+  branch = storedBranch ?? branch
 
   const slug = worktreeSlug(branch)
 
