@@ -236,7 +236,14 @@ const api = {
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
     // "Archive" is a hard delete in v34+. The IPC name + label stay for
     // user-facing continuity even though there's no soft-archive anymore.
-    archive: (id: string): Promise<void> => ipcRenderer.invoke('workspaces:archive', { id }),
+    // For worktree-backed workspaces, pass force:true to override a dirty check.
+    // Returns { archived, wasDirty } — if wasDirty:true and archived:false,
+    // the caller should confirm and re-invoke with force:true.
+    archive: (
+      id: string,
+      opts: { force?: boolean } = {}
+    ): Promise<{ archived: boolean; wasDirty: boolean }> =>
+      ipcRenderer.invoke('workspaces:archive', { id, force: opts.force ?? false }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:rename', { id, name }),
     reorder: (projectId: string, orderedIds: string[]): Promise<void> =>

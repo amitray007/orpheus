@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
+import { removeWorktree, withRepoLock } from './worktrees'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -266,13 +267,41 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
  * Kept named archiveWorkspace because the IPC channel + UI action names
  * are still "Archive" from the user's vocabulary perspective. Internally
  * it's just deletion.
+ *
+ * For worktree-backed workspaces (`worktreeParentCwd != null`), the git
+ * worktree is removed BEFORE the row is deleted. If the worktree is dirty
+ * and `force` is false, the function returns early with `{ archived: false,
+ * wasDirty: true }` and the row is NOT deleted — caller must re-invoke with
+ * force:true after user confirmation. The branch is never deleted.
+ *
+ * Returns `{ archived: true, wasDirty: false }` on success, or
+ * `{ archived: false, wasDirty: true }` when blocked by an unforced dirty
+ * worktree.
  */
-export function archiveWorkspace(id: string): void {
+export async function archiveWorkspace(
+  id: string,
+  force: boolean = false
+): Promise<{ archived: boolean; wasDirty: boolean }> {
   const db = getDb()
-  // Fetch the workspace record first so we have the projectId for the broadcast.
-  const ws = db.prepare('SELECT id, project_id FROM workspaces WHERE id = ?').get(id) as
-    | { id: string; project_id: string }
+  // Fetch the full workspace record so we have worktreeParentCwd + cwd.
+  const ws = db
+    .prepare('SELECT id, project_id, cwd, worktree_parent_cwd FROM workspaces WHERE id = ?')
+    .get(id) as
+    | { id: string; project_id: string; cwd: string; worktree_parent_cwd: string | null }
     | undefined
+
+  // Worktree teardown: must happen before the row DELETE.
+  if (ws?.worktree_parent_cwd) {
+    const r = await withRepoLock(ws.worktree_parent_cwd, () =>
+      removeWorktree({ path: ws.cwd, force })
+    )
+    if (!r.removed && r.wasDirty && !force) {
+      // Dirty worktree, no force — block the delete and let the caller escalate.
+      return { archived: false, wasDirty: true }
+    }
+    // Either removed cleanly or forced (r.removed === true). Proceed to delete.
+  }
+
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
   // Evict the settings cache entry so a stale value can't be served after the
   // row is gone.
@@ -282,6 +311,7 @@ export function archiveWorkspace(id: string): void {
   if (ws) {
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
+  return { archived: true, wasDirty: false }
 }
 
 export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {

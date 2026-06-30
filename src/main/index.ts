@@ -584,6 +584,8 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
 }
 
 function performClose(id: string): WorkspaceRecord | undefined {
+  // NOTE: close keeps the worktree on disk (reconciled on next open); only
+  // archive/project-delete tears it down. Do NOT add worktree removal here.
   const ws = getWorkspace(id)
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
@@ -1274,7 +1276,7 @@ handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolea
   setWorkspacePinned(id, pinned)
 )
 
-handle('workspaces:archive', (_e, { id }: { id: string }) => {
+handle('workspaces:archive', async (_e, { id, force = false }: { id: string; force?: boolean }) => {
   // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
   // Destroy the libghostty surface so the NSView is freed before the DB row
@@ -1286,10 +1288,17 @@ handle('workspaces:archive', (_e, { id }: { id: string }) => {
       // Surface not mounted or already destroyed — ignore.
     }
   }
-  archiveWorkspace(id)
+  const result = await archiveWorkspace(id, force)
+  if (!result.archived) {
+    // Dirty worktree without force — surface was already destroyed above so
+    // re-attach is not needed; caller should show a confirm and re-invoke with
+    // force:true. Return the wasDirty signal without doing teardown.
+    return result
+  }
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
+  return result
 })
 
 handle('workspace:close', (_e, { id }: { id: string }) => {

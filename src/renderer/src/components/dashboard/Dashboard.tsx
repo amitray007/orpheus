@@ -104,6 +104,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Remove confirm dialog
   const [removeConfirmTarget, setRemoveConfirmTarget] = useState<ProjectRecord | null>(null)
 
+  // Worktree archive confirm dialog state.
+  // pendingWorktreeArchive holds the workspace + projectId awaiting user confirmation.
+  // When dirty is true the user must explicitly confirm force-removal.
+  const [pendingWorktreeArchive, setPendingWorktreeArchive] = useState<{
+    workspace: WorkspaceRecord
+    projectId: string
+    dirty: boolean
+  } | null>(null)
+
   useEffect(() => {
     window.api.uiState
       .get()
@@ -909,6 +918,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const handleArchiveWorkspaceFromSidebar = useCallback(
     async (workspaceId: string, projectId: string): Promise<void> => {
+      // Look up the workspace record to detect whether it is worktree-backed.
+      const ws = (workspacesByProjectRef.current[projectId] ?? []).find((w) => w.id === workspaceId)
+
+      // Worktree-backed workspace: always show a confirm before removing
+      // (the branch is kept but the working directory disappears).
+      // Show the light confirm first; if the backend detects uncommitted
+      // changes (wasDirty:true) the confirm escalates to the dirty variant.
+      if (ws?.worktreeParentCwd) {
+        // Show the light "branch is kept" confirm upfront. dirty:false means
+        // we haven't probed yet — handleConfirmWorktreeArchive will probe.
+        setPendingWorktreeArchive({ workspace: ws, projectId, dirty: false })
+        return
+      }
+
+      // Non-worktree workspace: original behaviour.
       // Destroy the terminal surface before archiving so the shell process is cleaned up.
       // Don't block on failure — the DB archive can proceed regardless.
       window.api.terminal
@@ -943,6 +967,53 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     },
     [fetchWorkspacesForProject, refreshPins]
   )
+
+  // Shared post-archive cleanup for worktree workspaces.
+  const finishWorktreeArchive = useCallback(
+    async (workspaceId: string, projectId: string): Promise<void> => {
+      deleteActivity(workspaceId)
+      deleteActivityTime(workspaceId)
+      deleteTitle(workspaceId)
+      deleteGitStatus(workspaceId)
+      deletePr(workspaceId)
+      hasFetchedRef.current!.delete(workspaceId)
+      clearFooterActionsCache(workspaceId)
+      clearContextBudgetCache(workspaceId)
+      playSound('archive')
+      await fetchWorkspacesForProject(projectId)
+      if (selectedWorkspaceIdRef.current === workspaceId) {
+        setSelectedWorkspaceId(null)
+        setView({ kind: 'project', projectId })
+      }
+      refreshPins()
+    },
+    [fetchWorkspacesForProject, refreshPins]
+  )
+
+  // Confirm handler for worktree archive (both clean and dirty cases).
+  // When dirty:false this is the first confirm (probe with force:false).
+  // When dirty:true this is the escalation confirm (force:true).
+  const handleConfirmWorktreeArchive = useCallback(async (): Promise<void> => {
+    if (!pendingWorktreeArchive) return
+    const { workspace, projectId, dirty } = pendingWorktreeArchive
+    setPendingWorktreeArchive(null)
+
+    const result = await window.api.workspaces.archive(workspace.id, { force: dirty })
+    if (result.wasDirty && !dirty) {
+      // Backend says the worktree is dirty — escalate to the dirty confirm.
+      setPendingWorktreeArchive({ workspace, projectId, dirty: true })
+      return
+    }
+    if (!result.archived) {
+      console.error('[dashboard] worktree archive failed', result)
+      return
+    }
+    await finishWorktreeArchive(workspace.id, projectId)
+  }, [pendingWorktreeArchive, finishWorktreeArchive])
+
+  const handleCancelWorktreeArchive = useCallback((): void => {
+    setPendingWorktreeArchive(null)
+  }, [])
 
   const handleCloseWorkspace = useCallback((workspaceId: string): void => {
     void window.api.workspaces.close(workspaceId).catch(console.error)
@@ -1163,6 +1234,52 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           destructive
           onConfirm={handleConfirmRemove}
           onCancel={handleCancelRemove}
+        />
+      )}
+
+      {pendingWorktreeArchive && !pendingWorktreeArchive.dirty && (
+        <ConfirmModal
+          title="Remove worktree?"
+          body={
+            <>
+              <p className="mb-2">
+                Remove worktree{' '}
+                <code className="font-mono text-text-primary">
+                  {pendingWorktreeArchive.workspace.worktreeBranch}
+                </code>
+                ?
+              </p>
+              <p className="text-text-muted">The branch is kept.</p>
+            </>
+          }
+          confirmLabel="Remove"
+          destructive
+          onConfirm={handleConfirmWorktreeArchive}
+          onCancel={handleCancelWorktreeArchive}
+        />
+      )}
+
+      {pendingWorktreeArchive?.dirty && (
+        <ConfirmModal
+          title="Remove worktree?"
+          body={
+            <>
+              <p className="mb-2">
+                Remove worktree{' '}
+                <code className="font-mono text-text-primary">
+                  {pendingWorktreeArchive.workspace.worktreeBranch}
+                </code>
+                ? It has uncommitted changes.
+              </p>
+              <p className="text-text-muted">
+                Uncommitted changes will be lost. The branch is kept.
+              </p>
+            </>
+          }
+          confirmLabel="Remove anyway"
+          destructive
+          onConfirm={handleConfirmWorktreeArchive}
+          onCancel={handleCancelWorktreeArchive}
         />
       )}
     </div>

@@ -65,20 +65,27 @@ export async function handleFork(
 // ---------------------------------------------------------------------------
 
 export async function handleArchive(
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
   workspaceId: string
-): Promise<ActionResult<void>> {
+): Promise<ActionResult<{ wasDirty: boolean }>> {
   const ws = getWorkspace(workspaceId)
   if (!ws) {
     return { ok: false, code: 'not_found', error: `Workspace not found: ${workspaceId}` }
   }
+  const force = params['force'] === true
   // Destroy the libghostty surface first. Silently no-ops when the terminal
   // was never mounted (the addon ref may not even be loaded yet).
   destroyAddonSurface(workspaceId)
-  // archiveWorkspace now broadcasts workspaces:archived after the DELETE so
+  // archiveWorkspace broadcasts workspaces:archived after the DELETE so
   // the renderer removes the row from state and navigates away if needed.
-  archiveWorkspace(workspaceId)
-  return { ok: true }
+  // For worktree-backed workspaces it removes the git worktree first;
+  // if dirty and !force it returns { archived: false, wasDirty: true }
+  // without deleting the row — caller must re-invoke with force:true.
+  const result = await archiveWorkspace(workspaceId, force)
+  if (!result.archived) {
+    return { ok: false, code: 'invalid', error: 'worktree_dirty' }
+  }
+  return { ok: true, value: { wasDirty: false } }
 }
 
 // ---------------------------------------------------------------------------

@@ -170,7 +170,10 @@ declare global {
         ) => Promise<WorkspaceRecord>
         open: (id: string) => Promise<WorkspaceRecord>
         setPinned: (id: string, pinned: boolean) => Promise<WorkspaceRecord>
-        archive: (id: string) => Promise<void>
+        archive: (
+          id: string,
+          opts?: { force?: boolean }
+        ) => Promise<{ archived: boolean; wasDirty: boolean }>
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
         reorder: (projectId: string, orderedIds: string[]) => Promise<void>
         isDirty: (id: string) => Promise<boolean>
