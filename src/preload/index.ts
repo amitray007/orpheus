@@ -225,6 +225,8 @@ const api = {
       ipcRenderer.invoke('sessions:listForProjectPaged', req),
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+    resumeInWorktreeWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('sessions:resumeInWorktreeWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
       ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),

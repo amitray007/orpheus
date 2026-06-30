@@ -81,6 +81,7 @@ import {
   listAllSessions,
   setSessionStatus,
   createWorkspaceResumingSession,
+  createWorktreeResumingSession,
   refreshSessionMetadata,
   deleteSession,
   getContextBudget
@@ -1419,6 +1420,12 @@ handle(
   'sessions:resumeInNewWorkspace',
   (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
     createWorkspaceResumingSession(projectId, sessionId)
+)
+
+handle(
+  'sessions:resumeInWorktreeWorkspace',
+  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
+    createWorktreeResumingSession(projectId, sessionId)
 )
 
 handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {

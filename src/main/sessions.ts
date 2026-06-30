@@ -6,7 +6,17 @@ import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
-import { listWorktreePaths, NotAGitRepoError, resolveMainWorktree } from './worktrees'
+import {
+  branchExists,
+  createWorktree,
+  listWorktreePaths,
+  NotAGitRepoError,
+  readWorktreeBaseRef,
+  removeWorktree,
+  resolveMainWorktree,
+  withRepoLock,
+  worktreeSlug
+} from './worktrees'
 import type {
   ProjectRecord,
   SessionRecord,
@@ -1150,6 +1160,112 @@ export function createWorkspaceResumingSession(
     throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
   }
   return refreshed
+}
+
+/**
+ * Creates a worktree-backed workspace pre-wired with `claude_session_id = sessionId`
+ * so that the first terminal mount will launch claude with `--resume <sessionId>`.
+ *
+ * The worktree branch is derived from the session's jsonl_path: if the encoded
+ * dir contains `--claude-worktrees-`, the slug that follows is used as the
+ * branch name. If the branch already exists in the repo, git worktree checks it
+ * out; otherwise a fresh branch is created from the default base ref.
+ *
+ * Falls back to `createWorkspaceResumingSession` (plain workspace) if the
+ * session has no worktree origin or the project is not a git repo.
+ */
+export async function createWorktreeResumingSession(
+  projectId: string,
+  sessionId: string
+): Promise<WorkspaceRecord> {
+  const db = getDb()
+
+  const project = db.prepare('SELECT id, path, name FROM projects WHERE id = ?').get(projectId) as
+    | ProjectPathRow
+    | undefined
+  if (!project) throw new Error(`Project not found: ${projectId}`)
+
+  const sessionRow = db
+    .prepare('SELECT title, jsonl_path FROM sessions WHERE id = ?')
+    .get(sessionId) as { title: string | null; jsonl_path: string | null } | undefined
+
+  const shortId = sessionId.slice(0, 8)
+  const rawTitle = sessionRow?.title
+  const workspaceName = rawTitle
+    ? rawTitle.length > 40
+      ? rawTitle.slice(0, 40) + '…'
+      : rawTitle
+    : `Resume ${shortId}`
+
+  // Extract the worktree slug from the jsonl_path encoded dir segment.
+  // A worktree path encodes as: …--claude-worktrees-<slug>/<sessionId>.jsonl
+  const WORKTREE_MARKER = '--claude-worktrees-'
+  let branch: string | null = null
+  if (sessionRow?.jsonl_path) {
+    const encodedDir = nodePath.basename(nodePath.dirname(sessionRow.jsonl_path))
+    const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)
+    if (markerIdx !== -1) {
+      branch = encodedDir.slice(markerIdx + WORKTREE_MARKER.length)
+    }
+  }
+
+  // No worktree origin detected — fall back to a plain resume workspace.
+  if (!branch) {
+    return createWorkspaceResumingSession(projectId, sessionId)
+  }
+
+  // Resolve the repo root — non-git projects throw NotAGitRepoError.
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      return createWorkspaceResumingSession(projectId, sessionId)
+    }
+    throw err
+  }
+
+  const slug = worktreeSlug(branch)
+
+  return withRepoLock(repoRoot, async () => {
+    const mode = (await branchExists(repoRoot, branch!)) ? 'existing' : 'new'
+    const baseRef = await readWorktreeBaseRef()
+
+    const { path: worktreePath, branch: finalBranch } = await createWorktree({
+      repoRoot,
+      slug,
+      branch: branch!,
+      mode,
+      baseRef
+    })
+
+    let ws: WorkspaceRecord
+    try {
+      ws = createWorkspace({
+        projectId,
+        name: workspaceName,
+        cwd: worktreePath,
+        worktreeParentCwd: repoRoot,
+        worktreeBranch: finalBranch
+      })
+    } catch (rowErr) {
+      try {
+        await removeWorktree({ path: worktreePath, force: true })
+      } catch {
+        // best-effort rollback
+      }
+      throw rowErr
+    }
+
+    // Override the pre-seeded claudeSessionId with the session being resumed.
+    setWorkspaceClaudeSessionId(ws.id, sessionId)
+
+    const refreshed = getWorkspace(ws.id)
+    if (!refreshed) {
+      throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
+    }
+    return refreshed
+  })
 }
 
 // ---------------------------------------------------------------------------

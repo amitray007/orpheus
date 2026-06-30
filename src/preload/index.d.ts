@@ -156,6 +156,10 @@ declare global {
         setStatus: (id: string, status: SessionStatus) => Promise<void>
         listForProjectPaged: (req: SessionsPagedRequest) => Promise<SessionsPagedResult>
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
+        resumeInWorktreeWorkspace: (
+          sessionId: string,
+          projectId: string
+        ) => Promise<WorkspaceRecord>
         refreshMetadata: (projectId: string) => Promise<void>
         delete: (id: string) => Promise<void>
         getContextBudget: (
