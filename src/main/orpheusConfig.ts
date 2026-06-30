@@ -146,7 +146,12 @@ export async function writeProjectOverride(
     }
   }
 
-  const doc = docText ? parseDocument(docText) : parseDocument(TEMPLATE)
+  const doc = (() => {
+    if (!docText) return parseDocument(TEMPLATE)
+    const parsed = parseDocument(docText)
+    if (parsed.errors.length > 0) return parseDocument(TEMPLATE)
+    return parsed
+  })()
 
   for (const [key, value] of Object.entries(patch) as [keyof WorkspacesConfig, boolean][]) {
     doc.setIn(['workspaces', key], value)
