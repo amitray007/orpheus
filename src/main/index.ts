@@ -228,6 +228,8 @@ import {
   startKeepAwakeTimer
 } from './powerAwake'
 import type { KeepAwakeBaseMode } from '../shared/types'
+import { startCommandServer } from './commandServer'
+import type { CommandServerDeps } from './commandServer'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -242,6 +244,7 @@ const dirtyWorkspaces = new Set<string>()
 const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
+let commandServer: { sockPath: string; token: string; close: () => void } | null = null
 let sessionStateService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
 
@@ -2496,6 +2499,30 @@ app.whenReady().then(() => {
     // do NOT start the socket server.
     reconcileHooks()
 
+    // Start the command server unconditionally — the CLI shouldn't depend on
+    // hooks being enabled. Provides a request/response channel for CLI workspace
+    // actions (create, archive, close, reopen, rename, whoami.resolve).
+    if (!commandServer) {
+      try {
+        const cmdDeps: CommandServerDeps = {
+          destroySurface: (workspaceId) => {
+            if (terminalAddon) {
+              try {
+                terminalAddon.destroy(workspaceId)
+              } catch {
+                // Surface not mounted or already destroyed — ignore.
+              }
+            }
+          },
+          teardownWorkspaceResources,
+          performClose: (workspaceId) => performClose(workspaceId)
+        }
+        commandServer = startCommandServer(cmdDeps)
+      } catch (err) {
+        console.error('[commandServer] failed to start:', err)
+      }
+    }
+
     setAutoCloseHandler((workspaceId) => {
       performClose(workspaceId)
     })
@@ -2532,6 +2559,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   notifyServer?.close()
+  commandServer?.close()
   sessionStateService?.stop()
   powerAwakeCleanup?.()
   stopStatusPoller()

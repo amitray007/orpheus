@@ -15,3 +15,13 @@ export {
   type ProjectRow,
   type WorkspaceRow
 } from './context.js'
+export {
+  openDb,
+  OrpheusDb,
+  OrpheusDataNotFoundError,
+  type WorkspaceRecord,
+  type ProjectRecord,
+  type WorkspaceStatus,
+  type WorkspaceTreeNode,
+  type ListWorkspacesOpts
+} from './reads/db.js'
