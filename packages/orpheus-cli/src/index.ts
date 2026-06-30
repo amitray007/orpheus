@@ -25,3 +25,10 @@ export {
   type WorkspaceTreeNode,
   type ListWorkspacesOpts
 } from './reads/db.js'
+export {
+  sendCommand,
+  subscribe,
+  resolveToken,
+  AppNotRunningError,
+  CommandError
+} from './socket-client.js'
