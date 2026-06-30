@@ -80,6 +80,7 @@ import './commands/ws-lifecycle.js'
 import './commands/ws-read.js'
 import './commands/ws-ls.js'
 import './commands/ws-status.js'
+import './commands/ws-wait.js'
 import './commands/project.js'
 
 // ---------------------------------------------------------------------------
@@ -385,7 +386,7 @@ function makeStub(unit: string): CommandDescriptor {
 // 'ws ls'      is registered by src/commands/ws-ls.ts (imported at top of file)
 // 'ws status'  is registered by src/commands/ws-status.ts (imported at top of file)
 // 'ws read'    is registered by src/commands/ws-read.ts (imported at top of file)
-registerCommand('ws wait', makeStub('U11'))
+// 'ws wait' is registered by src/commands/ws-wait.ts (imported at top of file)
 registerCommand('ws send', makeStub('U12'))
 
 // 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)

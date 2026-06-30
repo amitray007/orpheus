@@ -16,6 +16,8 @@ import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProjectById } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
+import { onWorkspaceStatusChange } from './orpheusNotify'
+import { getWorkspaceFileInfo } from './sessionState'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -355,6 +357,239 @@ export function startCommandServer(deps: CommandServerDeps): {
   let listening = false
 
   const server = http.createServer((req, res) => {
+    // --------------------------------------------------------------------------
+    // POST /subscribe — long-lived streaming subscription endpoint (U11)
+    // --------------------------------------------------------------------------
+    if (req.method === 'POST' && req.url === '/subscribe') {
+      // --- Token authentication (same as /cmd) ---
+      const incomingToken = req.headers['x-orpheus-token']
+      if (typeof incomingToken !== 'string') {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+        return
+      }
+      const incomingBuf = Buffer.from(incomingToken, 'utf-8')
+      const expectedBuf = Buffer.from(token, 'utf-8')
+      const tokenValid =
+        incomingBuf.length === expectedBuf.length &&
+        crypto.timingSafeEqual(incomingBuf, expectedBuf)
+      if (!tokenValid) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+        return
+      }
+
+      // --- Read body ---
+      const subChunks: Buffer[] = []
+      let subAccumulated = 0
+      let subOversized = false
+
+      req.on('data', (chunk: Buffer) => {
+        if (subOversized) return
+        subAccumulated += chunk.length
+        if (subAccumulated > BODY_SIZE_LIMIT) {
+          subOversized = true
+          req.destroy()
+          return
+        }
+        subChunks.push(chunk)
+      })
+
+      req.on('end', () => {
+        if (subOversized) return
+
+        let body: { workspaceIds?: unknown; timeoutMs?: unknown }
+        try {
+          body = JSON.parse(Buffer.concat(subChunks).toString('utf-8')) as {
+            workspaceIds?: unknown
+            timeoutMs?: unknown
+          }
+        } catch {
+          if (!res.writableEnded) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
+          }
+          return
+        }
+
+        const workspaceIds = Array.isArray(body.workspaceIds)
+          ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
+          : []
+
+        if (workspaceIds.length === 0) {
+          if (!res.writableEnded) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(
+              JSON.stringify({ ok: false, error: 'workspaceIds must be a non-empty string[]' })
+            )
+          }
+          return
+        }
+
+        // Server-side max timeout: 1 hour cap. Caller's timeoutMs is respected up to this.
+        const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
+        const requestedTimeout =
+          typeof body.timeoutMs === 'number' && body.timeoutMs > 0
+            ? body.timeoutMs
+            : SERVER_MAX_TIMEOUT_MS
+        const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+
+        // Start streaming response — keep connection open
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson',
+          'Transfer-Encoding': 'chunked',
+          'Cache-Control': 'no-cache'
+        })
+
+        // Track which workspace ids have resolved to a terminal reason
+        const resolved = new Map<string, string>() // workspaceId → reason
+
+        // Derive terminal exit reason for a workspace from its live session file info.
+        // Returns '' (empty string) when the workspace is still busy (not yet terminal).
+        function deriveReason(workspaceId: string): string {
+          const info = getWorkspaceFileInfo(workspaceId)
+          const fileStatus = info.status
+          const waitingFor = info.waitingFor ?? ''
+
+          if (fileStatus === 'unknown') {
+            // Session file gone or process dead → died
+            return 'died'
+          }
+          if (fileStatus === 'idle') {
+            return 'done'
+          }
+          if (fileStatus === 'waiting') {
+            if (waitingFor.toLowerCase().includes('permission')) {
+              return 'blocked-permission'
+            }
+            return 'blocked-input'
+          }
+          // fileStatus === 'busy' — still running; not yet terminal
+          return ''
+        }
+
+        function isTerminalReason(reason: string): boolean {
+          return (
+            reason === 'done' ||
+            reason === 'blocked-permission' ||
+            reason === 'blocked-input' ||
+            reason === 'died'
+          )
+        }
+
+        function writeFrame(frame: Record<string, unknown>): void {
+          if (!res.writableEnded) {
+            try {
+              res.write(JSON.stringify(frame) + '\n')
+            } catch {
+              /* client disconnected */
+            }
+          }
+        }
+
+        function checkAllResolved(): boolean {
+          return workspaceIds.every((id) => resolved.has(id))
+        }
+
+        // Cleanup state — must be called on EVERY exit path to prevent observer leaks
+        let unsubscribe: (() => void) | null = null
+        let timeoutHandle: NodeJS.Timeout | null = null
+        let cleanedUp = false
+
+        function cleanup(): void {
+          if (cleanedUp) return
+          cleanedUp = true
+          if (timeoutHandle != null) {
+            clearTimeout(timeoutHandle)
+            timeoutHandle = null
+          }
+          // Unregister the status observer — CRITICAL leak prevention
+          if (unsubscribe != null) {
+            unsubscribe()
+            unsubscribe = null
+          }
+          if (!res.writableEnded) {
+            try {
+              res.end()
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        // Register status change observer for the requested workspace ids.
+        // onWorkspaceStatusChange returns the unsubscribe function.
+        // We derive the reason from getWorkspaceFileInfo, so the old/new status
+        // args are unused — omit them (a narrower callback is assignable).
+        unsubscribe = onWorkspaceStatusChange((workspaceId) => {
+          if (!workspaceIds.includes(workspaceId)) return
+          if (resolved.has(workspaceId)) return
+
+          const reason = deriveReason(workspaceId)
+          if (!isTerminalReason(reason)) return // still busy, not yet terminal
+
+          resolved.set(workspaceId, reason)
+          const info = getWorkspaceFileInfo(workspaceId)
+          writeFrame({ id: workspaceId, reason, status: info.status })
+
+          if (checkAllResolved()) {
+            cleanup()
+          }
+        })
+
+        // Initial check: emit immediately for any workspace already in a terminal state.
+        // This handles the case where a workspace was already idle/waiting before subscribe.
+        for (const workspaceId of workspaceIds) {
+          if (resolved.has(workspaceId)) continue
+          const reason = deriveReason(workspaceId)
+          if (isTerminalReason(reason)) {
+            resolved.set(workspaceId, reason)
+            const info = getWorkspaceFileInfo(workspaceId)
+            writeFrame({ id: workspaceId, reason, status: info.status })
+          }
+        }
+
+        if (checkAllResolved()) {
+          cleanup()
+          return
+        }
+
+        // Arm server-side timeout — fires if not all ids resolve within effectiveTimeoutMs.
+        timeoutHandle = setTimeout(() => {
+          timeoutHandle = null
+          // Emit timeout frames for any still-unresolved ids
+          for (const workspaceId of workspaceIds) {
+            if (!resolved.has(workspaceId)) {
+              resolved.set(workspaceId, 'timeout')
+              writeFrame({ id: workspaceId, reason: 'timeout', status: 'unknown' })
+            }
+          }
+          cleanup()
+        }, effectiveTimeoutMs)
+
+        // Client disconnect cleanup — CRITICAL: unsubscribe must fire here too
+        req.on('close', () => {
+          cleanup()
+        })
+
+        req.on('error', () => {
+          cleanup()
+        })
+      })
+
+      req.on('error', () => {
+        if (!res.writableEnded) {
+          try {
+            res.end()
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+
+      return
+    }
+
     // Only accept POST /cmd — anything else gets a 404.
     if (req.method !== 'POST' || req.url !== '/cmd') {
       res.writeHead(404, { 'Content-Type': 'application/json' })
