@@ -355,6 +355,10 @@ const api = {
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:convertToLocal', { id })
   },
+  worktrees: {
+    branchExists: (projectId: string, branch: string): Promise<boolean> =>
+      ipcRenderer.invoke('worktrees:branchExists', { projectId, branch })
+  },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
   },

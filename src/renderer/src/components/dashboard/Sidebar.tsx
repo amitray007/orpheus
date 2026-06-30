@@ -31,6 +31,8 @@ import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/li
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
 import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
+import { NewWorkspaceMenu } from './NewWorkspaceMenu'
+import { nextWorkspaceName } from './dashboard.helpers'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -747,18 +749,21 @@ const ProjectRow = memo(function ProjectRow({
           <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
             {/* Add workspace — visible on hover */}
             {hovered && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onAddWorkspace()
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                title="New workspace"
-                aria-label="New workspace"
+              <NewWorkspaceMenu
+                projectId={project.id}
+                defaultName={nextWorkspaceName(workspaces)}
+                onCreateLocal={() => onAddWorkspace()}
+                onCreated={(ws) => onSelectWorkspace(ws.id)}
               >
-                <Plus size={14} weight="bold" />
-              </button>
+                <button
+                  type="button"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                  title="New workspace"
+                  aria-label="New workspace"
+                >
+                  <Plus size={14} weight="bold" />
+                </button>
+              </NewWorkspaceMenu>
             )}
 
             {/* Expand/collapse chevron */}
@@ -789,15 +794,21 @@ const ProjectRow = memo(function ProjectRow({
 
       {/* Nested workspace rows */}
       {expanded && workspaces.length === 0 && (
-        <button
-          type="button"
-          onClick={onAddWorkspace}
-          className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          aria-label="Add workspace"
+        <NewWorkspaceMenu
+          projectId={project.id}
+          defaultName={nextWorkspaceName(workspaces)}
+          onCreateLocal={() => onAddWorkspace()}
+          onCreated={(ws) => onSelectWorkspace(ws.id)}
         >
-          <Plus size={12} />
-          <span>Add workspace</span>
-        </button>
+          <button
+            type="button"
+            className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            aria-label="Add workspace"
+          >
+            <Plus size={12} />
+            <span>Add workspace</span>
+          </button>
+        </NewWorkspaceMenu>
       )}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">

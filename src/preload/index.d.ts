@@ -214,6 +214,9 @@ declare global {
         onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void) => () => void
         convertToLocal: (id: string) => Promise<WorkspaceRecord>
       }
+      worktrees: {
+        branchExists: (projectId: string, branch: string) => Promise<boolean>
+      }
       pins: {
         listAll: () => Promise<PinnedItem[]>
       }

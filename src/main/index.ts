@@ -1306,6 +1306,22 @@ handle(
   }
 )
 
+// Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
+handle(
+  'worktrees:branchExists',
+  async (_e, { projectId, branch }: { projectId: string; branch: string }) => {
+    const project = getProject(projectId)
+    if (!project) return false
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch {
+      return false
+    }
+    return branchExists(repoRoot, branch)
+  }
+)
+
 handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
 
 handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
