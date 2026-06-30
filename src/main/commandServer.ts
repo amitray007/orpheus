@@ -57,6 +57,17 @@ export type CommandServerDeps = {
    * may be skipped.
    */
   openAndSeed: (workspaceId: string, taskText: string) => Promise<string | null>
+  /**
+   * Send text, a named key, and/or submit to a running workspace. If the
+   * workspace surface is not yet injectable, opens it (requestOpenWorkspace)
+   * and polls canInject up to a bounded timeout (10 s) before injecting.
+   * Returns { ok: true } on success or { ok: false, error: string } on failure
+   * (surface not ready, timeout, send error).
+   */
+  sendToWorkspace: (
+    workspaceId: string,
+    payload: { text?: string; submit?: boolean; key?: string }
+  ) => Promise<{ ok: boolean; error?: string }>
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +296,32 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       deps.requestOpenWorkspace(args.id)
       return { requested: true }
+    },
+
+    // Send text / key / submit to a running workspace surface.
+    // Args:
+    //   id     (required) — workspace to send to
+    //   text?  (string)   — UTF-8 text to write into the PTY
+    //   submit?(boolean)  — if true, send Return after text (or alone if no text)
+    //   key?   (string)   — named key to send ('enter','escape','up','down','tab', etc.)
+    //                       When both text and key are present: text is sent first, then key.
+    //                       When both text and submit are present: text is sent, then Return.
+    //                       key and submit together: key is sent, then Return.
+    // If the surface is not yet injectable, requestOpenWorkspace is called and
+    // the dep polls canInject for up to 10 s before injecting.
+    'workspace.send': async (args, _context, innerDeps) => {
+      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      const text = typeof args.text === 'string' && args.text !== '' ? args.text : undefined
+      const submit = args.submit === true
+      const key = typeof args.key === 'string' && args.key !== '' ? args.key : undefined
+      if (text == null && key == null && !submit) {
+        throw new Error('at least one of args.text, args.key, or args.submit is required')
+      }
+      const result = await innerDeps.sendToWorkspace(args.id, { text, submit, key })
+      if (!result.ok) {
+        throw new Error(result.error ?? 'send failed')
+      }
+      return { ok: true }
     },
 
     // Return identity context for the given workspaceId so the CLI can display

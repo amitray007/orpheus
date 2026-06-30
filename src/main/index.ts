@@ -2205,6 +2205,39 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
 })
 
 // ---------------------------------------------------------------------------
+// resolveNamedKey — map CLI key names to TerminalSendKeyDescriptor
+//
+// Maps common human-readable key names (used by `ws send --key`) to the
+// macOS virtual key codes that TerminalSendKeyDescriptor expects.
+// kVK constants from <Carbon/Carbon.h>.
+// ---------------------------------------------------------------------------
+
+const NAMED_KEY_MAP: Record<string, TerminalSendKeyDescriptor> = {
+  // Return / Enter
+  enter: { keycode: 0x24, mods: 0 },
+  return: { keycode: 0x24, mods: 0 },
+  // Escape
+  escape: { keycode: 0x35, mods: 0 },
+  esc: { keycode: 0x35, mods: 0 },
+  // Arrows
+  up: { keycode: 0x7e, mods: 0 },
+  down: { keycode: 0x7d, mods: 0 },
+  left: { keycode: 0x7b, mods: 0 },
+  right: { keycode: 0x7c, mods: 0 },
+  // Tab
+  tab: { keycode: 0x30, mods: 0 },
+  // Backspace / Delete
+  backspace: { keycode: 0x33, mods: 0 },
+  delete: { keycode: 0x33, mods: 0 },
+  // Space
+  space: { keycode: 0x31, mods: 0 }
+}
+
+function resolveNamedKey(name: string): TerminalSendKeyDescriptor | null {
+  return NAMED_KEY_MAP[name.toLowerCase()] ?? null
+}
+
+// ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
@@ -2577,6 +2610,70 @@ if (!app.requestSingleInstanceLock()) {
                 return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
               }
               return null
+            },
+            sendToWorkspace: async (
+              workspaceId: string,
+              payload: { text?: string; submit?: boolean; key?: string }
+            ): Promise<{ ok: boolean; error?: string }> => {
+              // Check if the surface is already injectable; if not, open it and wait.
+              const POLL_INTERVAL_MS = 300
+              const TIMEOUT_MS = 10_000
+              if (!terminalActions.canInject(workspaceId)) {
+                requestOpenWorkspace(workspaceId)
+                const deadline = Date.now() + TIMEOUT_MS
+                let injectable = false
+                while (Date.now() < deadline) {
+                  if (terminalActions.canInject(workspaceId)) {
+                    injectable = true
+                    break
+                  }
+                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+                }
+                if (!injectable) {
+                  return {
+                    ok: false,
+                    error:
+                      'workspace not ready: the surface did not become injectable within 10 s. ' +
+                      'The workspace may be busy or not yet mounted. Try again shortly.'
+                  }
+                }
+              }
+              const addon = loadTerminalAddon()
+              // Send text first (if provided).
+              if (payload.text != null && payload.text !== '') {
+                const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
+                if (!inputResult.ok) {
+                  return {
+                    ok: false,
+                    error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+                  }
+                }
+              }
+              // Send named key (if provided) — after text.
+              if (payload.key != null && payload.key !== '') {
+                const keyDescriptor = resolveNamedKey(payload.key)
+                if (keyDescriptor == null) {
+                  return { ok: false, error: `unknown key name: "${payload.key}"` }
+                }
+                const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
+                if (!keysResult.ok) {
+                  return {
+                    ok: false,
+                    error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                  }
+                }
+              }
+              // Submit (Return) last — after text and key.
+              if (payload.submit === true) {
+                const submitResult = terminalActions.submit(addon, workspaceId)
+                if (!submitResult.ok) {
+                  return {
+                    ok: false,
+                    error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                  }
+                }
+              }
+              return { ok: true }
             }
           }
           commandServer = startCommandServer(cmdDeps)

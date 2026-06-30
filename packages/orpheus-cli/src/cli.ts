@@ -81,6 +81,7 @@ import './commands/ws-read.js'
 import './commands/ws-ls.js'
 import './commands/ws-status.js'
 import './commands/ws-wait.js'
+import './commands/ws-send.js'
 import './commands/project.js'
 
 // ---------------------------------------------------------------------------
@@ -367,16 +368,10 @@ registerCommand('whoami', {
   handler: handleWhoami
 })
 
-// Stub for later units — each generates a "not yet implemented (Uxx)" error.
-function makeStub(unit: string): CommandDescriptor {
-  return {
-    handler: async (): Promise<void> => {
-      throw new Error(`not yet implemented (${unit})`)
-    }
-  }
-}
-
-// ws commands (U7-U10, U11 for ws wait)
+// All commands are now implemented in their own modules (imported at the top of
+// this file). Each module calls registerCommand() as an ESM side-effect.
+//
+// ws commands (U7-U10, U11 for ws wait, U12 for ws send)
 // 'ws new'     is registered by src/commands/ws-new.ts (imported at top of file)
 // 'ws open'    is registered by src/commands/ws-lifecycle.ts (imported at top of file)
 // 'ws archive' is registered by src/commands/ws-lifecycle.ts (imported at top of file)
@@ -386,8 +381,8 @@ function makeStub(unit: string): CommandDescriptor {
 // 'ws ls'      is registered by src/commands/ws-ls.ts (imported at top of file)
 // 'ws status'  is registered by src/commands/ws-status.ts (imported at top of file)
 // 'ws read'    is registered by src/commands/ws-read.ts (imported at top of file)
-// 'ws wait' is registered by src/commands/ws-wait.ts (imported at top of file)
-registerCommand('ws send', makeStub('U12'))
+// 'ws wait'    is registered by src/commands/ws-wait.ts (imported at top of file)
+// 'ws send'    is registered by src/commands/ws-send.ts (imported at top of file)
 
 // 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)
 
