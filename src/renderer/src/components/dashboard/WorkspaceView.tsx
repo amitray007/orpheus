@@ -502,6 +502,12 @@ export function WorkspaceView({
     if (!effectStateRef.current) return
     if (isClosed) return
 
+    // Clear any stale worktree error before attempting re-mount so the user sees
+    // a clean loading state instead of a stale error card flashing during a now-
+    // succeeding reconcile.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional pre-mount reset, not a cascading update; cleared once before the rAF that initiates the IPC
+    setWorktreeError(null)
+
     let rafId: number | null = null
     rafId = requestAnimationFrame(() => {
       rafId = null

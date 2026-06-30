@@ -92,7 +92,7 @@ export function addProject(path: string): ProjectRecord {
 
   const id = crypto.randomUUID()
   const name = nodePath.basename(path)
-  // Encode absolute path to Claude Code's directory-name format: replace / with -
+  // Encode absolute path to Claude Code's directory-name format: slashes and dots -> dashes (see claudeProjectDir.ts).
   const claudeEncodedName = encodePathToClaudeDir(path)
   const addedAt = Date.now()
 

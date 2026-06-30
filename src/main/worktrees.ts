@@ -212,6 +212,31 @@ export async function readWorktreeBaseRef(): Promise<'fresh' | 'head'> {
 }
 
 // ---------------------------------------------------------------------------
+// isWorktreeDirty
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if a worktree directory has uncommitted changes (modified or
+ * untracked files). Treats a missing or invalid directory as NOT dirty so it
+ * can be cleaned up without blocking.
+ *
+ * Runs `git -C <path> status --porcelain` and returns true if output is
+ * non-empty.
+ */
+export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFile('git', ['-C', worktreePath, 'status', '--porcelain'], {
+      timeout: 10000
+    })
+    return stdout.trim().length > 0
+  } catch {
+    // Missing dir, not a git repo, or other error — treat as clean so removal
+    // can proceed (the directory is gone or already invalid).
+    return false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // branchExists + listWorktreePaths
 // ---------------------------------------------------------------------------
 
@@ -322,6 +347,17 @@ export interface CreateWorktreeResult {
 export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWorktreeResult> {
   const { repoRoot, slug, branch, mode, baseRef } = opts
 
+  // Guard against git option injection: reject empty or dash-prefixed branch names.
+  if (!branch || branch.length === 0) {
+    throw new WorktreeError('WorktreeError', 'Branch name must not be empty')
+  }
+  if (branch.startsWith('-')) {
+    throw new WorktreeError(
+      'WorktreeError',
+      `Invalid branch name '${branch}': branch names must not start with '-'`
+    )
+  }
+
   await ensureWorktreesGitignored(repoRoot)
 
   // Determine a free path
@@ -355,7 +391,7 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWo
     try {
       await execFile(
         'git',
-        ['-C', repoRoot, 'worktree', 'add', '-b', branch, worktreePath, baseRefString],
+        ['-C', repoRoot, 'worktree', 'add', '-b', branch, '--', worktreePath, baseRefString],
         { timeout: 30000 }
       )
     } catch (err) {
@@ -364,7 +400,7 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWo
   } else {
     // existing: check out an existing branch
     try {
-      await execFile('git', ['-C', repoRoot, 'worktree', 'add', worktreePath, branch], {
+      await execFile('git', ['-C', repoRoot, 'worktree', 'add', '--', worktreePath, branch], {
         timeout: 30000
       })
     } catch (err) {
@@ -382,6 +418,8 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<CreateWo
 export interface RemoveWorktreeOpts {
   path: string
   force: boolean
+  /** Optional repo root for a stable git cwd. If omitted, resolved via resolveMainWorktree. */
+  repoRoot?: string
 }
 
 export interface RemoveWorktreeResult {
@@ -396,12 +434,33 @@ export interface RemoveWorktreeResult {
  * { removed: false, wasDirty: true } WITHOUT throwing.
  *
  * When force===true, passes --force to git worktree remove.
+ *
+ * Runs git from a stable cwd (repoRoot if supplied, else resolved from the
+ * worktree path) so that a deleted parent directory does not cause git to
+ * fail before it can process the remove command.
+ *
+ * Treats "not a working tree", ENOENT, and missing-dir as idempotent success
+ * so an already-gone worktree never blocks archive.
  */
 export async function removeWorktree(opts: RemoveWorktreeOpts): Promise<RemoveWorktreeResult> {
   const { path: worktreePath, force } = opts
 
-  // Run from a stable cwd (parent of the worktree path)
-  const cwd = path.dirname(worktreePath)
+  // Resolve a stable cwd (main repo root) for the git command. If the
+  // worktree's parent dir was deleted, running git from that dir would throw
+  // before the remove command runs. Fall back to path.dirname only if
+  // resolveMainWorktree fails (e.g. repo entirely gone — in that case git
+  // will emit "not a working tree" which we treat as idempotent below).
+  let cwd: string
+  if (opts.repoRoot) {
+    cwd = opts.repoRoot
+  } else {
+    try {
+      cwd = await resolveMainWorktree(worktreePath)
+    } catch {
+      // Repo root unresolvable — use dirname as best-effort fallback.
+      cwd = path.dirname(worktreePath)
+    }
+  }
 
   const args = ['worktree', 'remove', worktreePath]
   if (force) args.push('--force')
@@ -411,11 +470,20 @@ export async function removeWorktree(opts: RemoveWorktreeOpts): Promise<RemoveWo
     return { removed: true, wasDirty: false }
   } catch (err) {
     const stderr = getStderr(err)
+    // Dirty worktree without force → caller decides.
     if (
       !force &&
       (stderr.includes('contains modified or untracked files') || stderr.includes('is dirty'))
     ) {
       return { removed: false, wasDirty: true }
+    }
+    // Already gone / not registered → idempotent success.
+    if (
+      stderr.includes('is not a working tree') ||
+      stderr.includes('No such file or directory') ||
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return { removed: true, wasDirty: false }
     }
     // Re-throw other errors
     throw new WorktreeError('WorktreeError', `git worktree remove failed: ${stderr}`)

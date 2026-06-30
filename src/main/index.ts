@@ -67,6 +67,7 @@ import {
   withRepoLock,
   createWorktree,
   removeWorktree,
+  isWorktreeDirty,
   worktreeSlug,
   readWorktreeBaseRef,
   branchExists,
@@ -1175,18 +1176,37 @@ handle(
     // Must happen before deleteProject() so we still have workspace rows to query.
     if (deleteWorktrees) {
       const worktreeWorkspaces = listWorktreeWorkspaces(id)
-      let dirtyCount = 0
-      for (const ws of worktreeWorkspaces) {
-        const result = await withRepoLock(ws.worktreeParentCwd, () =>
-          removeWorktree({ path: ws.cwd, force })
-        )
-        if (!result.removed && result.wasDirty) {
-          dirtyCount++
+
+      // ── Phase 1 (pre-check, NO removal): count dirty worktrees ───────────
+      // Check dirtiness WITHOUT removing anything. If any are dirty and the
+      // caller hasn't set force, return early having removed NOTHING — so the
+      // user can cancel the confirmation without losing clean worktrees.
+      if (!force) {
+        let dirtyCount = 0
+        for (const ws of worktreeWorkspaces) {
+          const dirty = await isWorktreeDirty(ws.cwd)
+          if (dirty) dirtyCount++
+        }
+        if (dirtyCount > 0) {
+          return { deleted: false, dirtyWorktrees: dirtyCount }
         }
       }
-      // If any worktrees are dirty and we're not forcing, block the delete.
-      if (dirtyCount > 0 && !force) {
-        return { deleted: false, dirtyWorktrees: dirtyCount }
+
+      // ── Phase 2 (removal): only reached when dirtyCount===0 or force ─────
+      // Remove each worktree best-effort; log non-fatal errors and continue so
+      // a single failure does not leave the project permanently undeletable.
+      for (const ws of worktreeWorkspaces) {
+        try {
+          await withRepoLock(ws.worktreeParentCwd, () =>
+            removeWorktree({ path: ws.cwd, force, repoRoot: ws.worktreeParentCwd })
+          )
+        } catch (err) {
+          console.warn(
+            `[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`,
+            err instanceof Error ? err.message : String(err)
+          )
+          // Continue — best-effort removal; don't abort the whole delete.
+        }
       }
     }
 

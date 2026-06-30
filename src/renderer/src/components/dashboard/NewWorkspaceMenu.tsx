@@ -80,6 +80,14 @@ function BranchField({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeCheckRef = useRef(0)
 
+  // Clear any pending debounce timer on unmount to prevent a stale IPC call
+  // firing after Escape/close, which could collide with a fresh remount's token.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
   const checkBranch = useCallback(
     (value: string): void => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -268,21 +276,42 @@ export function NewWorkspaceMenu({
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Fetch offered modes (async IPC call), populating the cache.
+  // Single-fire auto-create: if only one mode is available, collapse immediately
+  // in the .then() resolve handler — never in a reactive effect — so the local-only
+  // path runs exactly once per fetch regardless of onCreateLocal identity changes.
   const fetchModes = useCallback((): void => {
     window.api.app
       .offeredModes(projectId)
       .then((m) => {
         modesCache.set(projectId, m)
         setModes(m)
+        // Collapse immediately in the resolve handler (single-fire, no re-run risk).
+        // Only collapse when the picker is open (view check via functional update pattern
+        // is not available here, but the menu is guaranteed open since fetchModes is only
+        // called from handleTriggerClick when transitioning to 'picker').
+        if (!m.local && !m.worktree) return // both unavailable — leave picker visible
+        if (m.local && m.worktree) return // both offered — keep picker open
+        if (m.worktree) {
+          setView('branch')
+        } else {
+          // local-only: auto-create once, right here in the resolve handler.
+          setView('closed')
+          onCreateLocal()
+        }
       })
       .catch(() => {
         const fallback = { local: true, worktree: false }
         modesCache.set(projectId, fallback)
         setModes(fallback)
+        // On error, fallback is local-only — auto-create once.
+        setView('closed')
+        onCreateLocal()
       })
-  }, [projectId])
+  }, [projectId, onCreateLocal])
 
   // When modes load while the picker is shown, collapse to the appropriate action.
+  // Note: auto-create (local-only path) is handled directly in fetchModes above.
+  // This effect only handles the worktree-only collapse (no double-create risk).
   useEffect(() => {
     if (view !== 'picker' || modes === null) return
     // Both offered → keep picker open; otherwise collapse.
@@ -290,11 +319,9 @@ export function NewWorkspaceMenu({
     if (modes.worktree) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- triggered by async offeredModes resolve, not a cascading sync call
       setView('branch')
-    } else {
-      setView('closed')
-      onCreateLocal()
     }
-  }, [modes, view, onCreateLocal])
+    // local-only case is handled in fetchModes .then() — do NOT call onCreateLocal here.
+  }, [modes, view])
 
   function captureAnchor(): AnchorPos | null {
     if (!wrapperRef.current) return null
