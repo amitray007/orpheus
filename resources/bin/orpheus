@@ -11,6 +11,9 @@
 #     MacOS/
 #       Orpheus             ← Electron binary
 #     Resources/
+#       app.asar.unpacked/
+#         node_modules/
+#           better-sqlite3/ ← native module (unpacked from asar by electron-builder)
 #       bin/
 #         orpheus           ← this script
 #       cli/
@@ -21,10 +24,28 @@
 #     MacOS/
 #       Orpheus Dev         ← Electron binary
 #     Resources/
+#       app.asar.unpacked/
+#         node_modules/
+#           better-sqlite3/ ← native module (same layout as prod)
 #       bin/
 #         orpheus           ← this script
 #       cli/
 #         cli.js            ← bundled CLI
+#
+# NODE_PATH for better-sqlite3
+# ----------------------------
+# The CLI bundle externalizes better-sqlite3 so the native .node addon can be
+# loaded at runtime. However, cli.js lives at Resources/cli/cli.js — it has no
+# node_modules ancestor containing better-sqlite3. We must point Node at the
+# unpacked location via NODE_PATH before exec'ing the bundle.
+#
+# electron-builder's asarUnpack extracts native modules (matching '**/*.node')
+# to Resources/app.asar.unpacked/. The canonical location is therefore:
+#   Resources/app.asar.unpacked/node_modules/
+#
+# We try that path first, then fall back to a sibling Resources/node_modules/
+# in case a future layout change moves things. NODE_PATH is additive — we
+# prepend so our path is searched first, with any existing NODE_PATH appended.
 
 set -eu
 
@@ -39,6 +60,25 @@ MACOS_DIR="$(dirname "$RESOURCES_DIR")/MacOS"
 
 # The bundled CLI lives at Resources/cli/cli.js.
 CLI_BUNDLE="$RESOURCES_DIR/cli/cli.js"
+
+# Locate the native module directory and set NODE_PATH.
+# Primary: Resources/app.asar.unpacked/node_modules (standard electron-builder asarUnpack layout)
+# Fallback: Resources/node_modules (non-asar dev layout, future-proofing)
+UNPACKED_NM="$RESOURCES_DIR/app.asar.unpacked/node_modules"
+SIBLING_NM="$RESOURCES_DIR/node_modules"
+
+if [ -d "$UNPACKED_NM" ]; then
+  ORPHEUS_NODE_PATH="$UNPACKED_NM"
+elif [ -d "$SIBLING_NM" ]; then
+  ORPHEUS_NODE_PATH="$SIBLING_NM"
+else
+  ORPHEUS_NODE_PATH=""
+fi
+
+# Prepend to existing NODE_PATH (may be unset — guard with :- default).
+if [ -n "$ORPHEUS_NODE_PATH" ]; then
+  export NODE_PATH="$ORPHEUS_NODE_PATH${NODE_PATH:+:${NODE_PATH}}"
+fi
 
 # Find the Electron binary: prefer "Orpheus Dev" (dev build), fall back to "Orpheus".
 if [ -x "$MACOS_DIR/Orpheus Dev" ]; then

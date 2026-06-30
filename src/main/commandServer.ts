@@ -119,6 +119,28 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
           ? args.parentWorkspaceId
           : (context?.workspaceId ?? null)
 
+      // CROSS-PROJECT VALIDATION — explicit parentWorkspaceId must belong to the same project.
+      // A crafted parent from a different project could bypass depth/children caps (the
+      // lineage and children queries are project-unaware). context.workspaceId is trusted
+      // as the real caller; only an explicitly supplied parentWorkspaceId is validated.
+      if (
+        typeof args.parentWorkspaceId === 'string' &&
+        args.parentWorkspaceId !== context?.workspaceId
+      ) {
+        const parentRow = getDb()
+          .prepare('SELECT id, project_id FROM workspaces WHERE id = ? AND archived_at IS NULL')
+          .get(args.parentWorkspaceId) as { id: string; project_id: string } | undefined
+        if (!parentRow) {
+          throw new Error(`parent workspace not found or archived: ${args.parentWorkspaceId}`)
+        }
+        if (parentRow.project_id !== args.projectId) {
+          throw new Error(
+            `parent workspace ${args.parentWorkspaceId} belongs to a different project — ` +
+              `cross-project parenting is not allowed`
+          )
+        }
+      }
+
       // GUARDRAIL CHECK — only when there is an explicit parent
       if (parentId != null) {
         const globalSettings = getClaudeGlobalSettings()
@@ -228,14 +250,20 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       if (recursive) {
         // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
         // Self-action guard: refuse if the caller's own workspace is within the subtree.
+        // visited Set prevents infinite loops from corrupted parent_workspace_id cycles.
         const subtreeIds: string[] = []
+        const visited = new Set<string>()
         const queue: string[] = [args.id]
         while (queue.length > 0) {
           const current = queue.shift()!
+          if (visited.has(current)) continue // cycle guard
+          visited.add(current)
           subtreeIds.push(current)
           const children = listChildWorkspaces(current)
           for (const child of children) {
-            queue.push(child.id)
+            if (!visited.has(child.id)) {
+              queue.push(child.id)
+            }
           }
         }
 
@@ -346,6 +374,15 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
 }
 
 // ---------------------------------------------------------------------------
+// Subscription cap — prevents unbounded open /subscribe connections.
+// ---------------------------------------------------------------------------
+
+/** Maximum concurrent /subscribe connections allowed. */
+const MAX_CONCURRENT_SUBSCRIPTIONS = 32
+/** Current count of active /subscribe connections. */
+let activeSubscriptionCount = 0
+
+// ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
 
@@ -416,6 +453,19 @@ export function startCommandServer(deps: CommandServerDeps): {
         return
       }
 
+      // --- Concurrent subscription cap ---
+      if (activeSubscriptionCount >= MAX_CONCURRENT_SUBSCRIPTIONS) {
+        res.writeHead(429, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: `too many concurrent subscriptions (max ${MAX_CONCURRENT_SUBSCRIPTIONS})`
+          })
+        )
+        return
+      }
+      activeSubscriptionCount++
+
       // --- Read body ---
       const subChunks: Buffer[] = []
       let subAccumulated = 0
@@ -463,12 +513,16 @@ export function startCommandServer(deps: CommandServerDeps): {
           return
         }
 
-        // Server-side max timeout: 1 hour cap. Caller's timeoutMs is respected up to this.
+        // Server-side timeout policy:
+        //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
+        //   - Explicit caller value: respected up to 1 hour hard cap
+        //   - 1 hour cap still accessible for callers that explicitly opt in
         const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
+        const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
         const requestedTimeout =
           typeof body.timeoutMs === 'number' && body.timeoutMs > 0
             ? body.timeoutMs
-            : SERVER_MAX_TIMEOUT_MS
+            : SERVER_DEFAULT_TIMEOUT_MS
         const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
 
         // Start streaming response — keep connection open
@@ -481,16 +535,39 @@ export function startCommandServer(deps: CommandServerDeps): {
         // Track which workspace ids have resolved to a terminal reason
         const resolved = new Map<string, string>() // workspaceId → reason
 
+        // Track workspaces that have been observed alive at least once (busy/idle/waiting).
+        // Used to distinguish "not yet started" (grace period) from "truly died": a workspace
+        // is only mapped to 'died' when it transitions from a known-alive state to unknown.
+        // This prevents ws-wait from falsely dying for a just-created workspace whose session
+        // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
+        const everSeenAlive = new Set<string>()
+
         // Derive terminal exit reason for a workspace from its live session file info.
         // Returns '' (empty string) when the workspace is still busy (not yet terminal).
-        function deriveReason(workspaceId: string): string {
+        //
+        // STARTUP GRACE: 'unknown' is only terminal ('died') when everSeenAlive contains
+        // the workspace id — meaning it was previously observed alive and then disappeared.
+        // If the workspace has never been seen alive, 'unknown' is treated as non-terminal
+        // (the session file simply hasn't been written yet). The subscription timeout is the
+        // backstop for a workspace that never starts.
+        function deriveReason(workspaceId: string, fromTransition: boolean): string {
           const info = getWorkspaceFileInfo(workspaceId)
           const fileStatus = info.status
           const waitingFor = info.waitingFor ?? ''
 
+          if (fileStatus === 'busy' || fileStatus === 'idle' || fileStatus === 'waiting') {
+            everSeenAlive.add(workspaceId)
+          }
+
           if (fileStatus === 'unknown') {
-            // Session file gone or process dead → died
-            return 'died'
+            // Only treat 'unknown' as terminal ('died') if:
+            //   (a) called from a status-change transition (the workspace was live and disappeared), OR
+            //   (b) the workspace was previously seen alive (everSeenAlive) — session file gone/dead-pid.
+            // Otherwise (initial check, workspace not yet started) → non-terminal, keep waiting.
+            if (fromTransition || everSeenAlive.has(workspaceId)) {
+              return 'died'
+            }
+            return '' // startup grace — not yet terminal
           }
           if (fileStatus === 'idle') {
             return 'done'
@@ -536,6 +613,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         function cleanup(): void {
           if (cleanedUp) return
           cleanedUp = true
+          activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
           if (timeoutHandle != null) {
             clearTimeout(timeoutHandle)
             timeoutHandle = null
@@ -562,7 +640,9 @@ export function startCommandServer(deps: CommandServerDeps): {
           if (!workspaceIds.includes(workspaceId)) return
           if (resolved.has(workspaceId)) return
 
-          const reason = deriveReason(workspaceId)
+          // fromTransition=true: this is a real status-change event, so 'unknown'
+          // means the workspace was alive and its session file just disappeared → 'died'.
+          const reason = deriveReason(workspaceId, true)
           if (!isTerminalReason(reason)) return // still busy, not yet terminal
 
           resolved.set(workspaceId, reason)
@@ -576,9 +656,11 @@ export function startCommandServer(deps: CommandServerDeps): {
 
         // Initial check: emit immediately for any workspace already in a terminal state.
         // This handles the case where a workspace was already idle/waiting before subscribe.
+        // fromTransition=false: use startup grace — 'unknown' here means the session file
+        // hasn't been written yet (workspace just created), not that the process died.
         for (const workspaceId of workspaceIds) {
           if (resolved.has(workspaceId)) continue
-          const reason = deriveReason(workspaceId)
+          const reason = deriveReason(workspaceId, false)
           if (isTerminalReason(reason)) {
             resolved.set(workspaceId, reason)
             const info = getWorkspaceFileInfo(workspaceId)

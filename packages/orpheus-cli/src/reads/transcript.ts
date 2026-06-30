@@ -76,9 +76,15 @@ export function resolveTranscriptPath(
 ): string | null {
   if (workspace.claudeSessionId == null) return null
 
-  // claudeEncodedName is stored in the DB; fall back to deriving it from the
-  // project path (replace all '/' with '-', strip leading '-').
-  const encoded = project.claudeEncodedName ?? project.path.replaceAll('/', '-').replace(/^-/, '')
+  // Prefer the DB-stored claudeEncodedName — it is the authoritative encoded name
+  // written by the app when the project was registered (src/main/projects.ts:
+  //   const claudeEncodedName = path.replace(/\//g, '-')
+  // i.e. replace '/' with '-', no leading-dash strip).
+  // Only fall back to deriving if the DB value is null (pre-migration rows).
+  // When deriving, match the app's exact encoding: replace '/' with '-', do NOT
+  // strip the leading '-' — an absolute path like /Users/foo starts with '/'
+  // which becomes a leading '-', and claude uses that verbatim as the dir name.
+  const encoded = project.claudeEncodedName ?? project.path.replace(/\//g, '-')
 
   if (!encoded) return null
 

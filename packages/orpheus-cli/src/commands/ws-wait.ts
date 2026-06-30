@@ -254,10 +254,12 @@ registerCommand('ws wait', {
 
     // Fill any ids that never received a frame (should not happen normally but
     // guards against unexpected server closes or filtered frames).
+    // Only set for UNRESOLVED ids — never overwrite an already-terminal result.
     for (const id of workspaceIds) {
       if (!results.has(id)) {
         results.set(id, clientTimedOut ? 'timeout' : 'died')
       }
+      // ids that already have a result are left unchanged regardless of clientTimedOut.
     }
 
     // Compute aggregate reason and exit code

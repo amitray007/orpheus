@@ -22,6 +22,18 @@
  *   waitingFor    — e.g. 'permission prompt' | 'input needed' (present when waiting)
  *   statusUpdatedAt — unix ms timestamp of last status write
  *
+ * STATUS VOCABULARY NORMALIZATION
+ * --------------------------------
+ * Claude's session file uses raw vocabulary: busy / idle / waiting.
+ * The DB column and rest of the Orpheus codebase uses mapped vocabulary:
+ *   busy    → in_progress
+ *   idle    → awaiting_input   (freshly idle; app uses idle when stale, but CLI can't know)
+ *   waiting → attention
+ *
+ * getLiveStatus returns already-mapped vocabulary so `ws ls` / `ws status` display
+ * the same strings whether the app is live or offline. This matches the mapping
+ * applied by sessionState.ts / orpheusNotify.ts setStatusFromFile.
+ *
  * MATCHING STRATEGY
  * -----------------
  * To find the live status for a workspace, we scan all *.json files in the
@@ -57,11 +69,30 @@ function isAlive(pid: number): boolean {
 }
 
 /**
+ * Map a raw claude session-file status to the Orpheus DB vocabulary.
+ *
+ * Matches the mapping applied by sessionState.ts setStatusFromFile:
+ *   busy    → in_progress
+ *   idle    → awaiting_input  (CLI cannot know stale threshold, so always awaiting_input)
+ *   waiting → attention
+ */
+function mapFileStatus(raw: string): string {
+  if (raw === 'busy') return 'in_progress'
+  if (raw === 'idle') return 'awaiting_input'
+  if (raw === 'waiting') return 'attention'
+  return raw // unknown raw value — pass through unchanged
+}
+
+/**
  * Scan ~/.claude/sessions/ for a session whose sessionId matches the given
  * claudeSessionId and whose process is still alive.
  *
- * Returns the matching file's status and optional waitingFor field, or null
- * if no matching live session is found.
+ * Returns the matching file's status (mapped to Orpheus vocabulary) and
+ * optional waitingFor field, or null if no matching live session is found.
+ *
+ * The returned status uses Orpheus DB vocabulary (in_progress / awaiting_input /
+ * attention) rather than raw claude vocabulary (busy / idle / waiting), so callers
+ * get consistent strings whether the app is live or offline.
  *
  * This is a FRESHNESS OVERLAY over the DB status column. Callers must fall
  * back to the DB value when this returns null (app not running, session not
@@ -89,9 +120,10 @@ export function getLiveStatus(
       if (typeof parsed.pid !== 'number') continue
       if (!isAlive(parsed.pid)) continue
 
-      // Matched: return what we have (status may be absent while starting)
+      // Matched: return what we have (status may be absent while starting).
+      // Map raw claude status to Orpheus vocabulary for consistency with DB values.
       const result: { status?: string; waitingFor?: string } = {}
-      if (typeof parsed.status === 'string') result.status = parsed.status
+      if (typeof parsed.status === 'string') result.status = mapFileStatus(parsed.status)
       if (typeof parsed.waitingFor === 'string') result.waitingFor = parsed.waitingFor
       return result
     } catch {

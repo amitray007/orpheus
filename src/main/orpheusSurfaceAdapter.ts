@@ -100,10 +100,12 @@ export function buildMountEnv(
 
   const ghosttyConfigPath = writeGhosttyConfigFile()
 
-  // Only inject hook-plumbing env vars when hooks integration is enabled.
-  // When disabled, ORPHEUS_NOTIFY is absent so the managed hook command's
-  // guard (`[ -n "$ORPHEUS_NOTIFY" ]`) short-circuits to a no-op, and
-  // ORPHEUS_WORKSPACE_ID is not needed (consumed only by the hook shim).
+  // Only inject ORPHEUS_NOTIFY (hook plumbing) when hooks integration is enabled.
+  // ORPHEUS_WORKSPACE_ID is injected UNCONDITIONALLY because it is now load-bearing
+  // for the CLI (spawn guardrails use parentId from context.workspaceId, self-archive
+  // guard compares args.id === context.workspaceId). Gating it on hooksEnabled was a
+  // bug: hooks default OFF, so ORPHEUS_WORKSPACE_ID was always absent, disabling the
+  // `if (parentId != null)` cap checks and making the self-action guard always false.
   const hooksEnabled = getAppUiState().hooksIntegrationEnabled
 
   // Resolve the Resources/bin dir so we can prepend it to PATH.
@@ -118,7 +120,7 @@ export function buildMountEnv(
     ...authEnv, // auth env wins on conflict
     ...(launch.flags ? { ORPHEUS_CLAUDE_FLAGS: launch.flags } : {}),
     ...(launch.settingsJson ? { ORPHEUS_CLAUDE_SETTINGS_JSON: launch.settingsJson } : {}),
-    ...(hooksEnabled ? { ORPHEUS_WORKSPACE_ID: workspaceId } : {}),
+    ORPHEUS_WORKSPACE_ID: workspaceId, // always present — load-bearing for CLI guardrails
     ...(sockPath ? { ORPHEUS_SOCK: sockPath } : {}),
     ...(hooksEnabled ? { ORPHEUS_NOTIFY: shimPath() } : {}),
     ...(cachedUserPath ? { ORPHEUS_USER_PATH: cachedUserPath } : {}),

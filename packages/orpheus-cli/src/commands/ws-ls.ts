@@ -104,9 +104,9 @@ registerCommand('ws ls', {
         }
 
         // Filter by status if requested (prune non-matching leaves, keep parents)
-        // For simplicity: if a status filter is active, flatten instead of pruning.
-        if (statusFilter != null) {
-          // Fall back to flat list with a note
+        // For simplicity: if a status filter is active in human mode, print a note.
+        // In JSON mode we suppress the note to keep output parseable.
+        if (statusFilter != null && !ctx.jsonMode) {
           printLines('Note: --status filter is not applied in --tree mode; showing full tree.')
         }
 
