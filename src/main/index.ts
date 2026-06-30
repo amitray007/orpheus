@@ -2149,6 +2149,13 @@ handle(
         }, 10000)
         overlayFallbackTimers.set(workspaceId, t)
       }
+    } else {
+      // Surface already existed (re-attach). If a worktree workspace showed the
+      // "Preparing worktree…" overlay before reconcile, clear it now — claude is
+      // already running and no boot sequence is pending.
+      // hideLoadingOverlay is a safe no-op when no overlay is active, so this
+      // is unconditional and handles the non-worktree re-mount path too.
+      hideLoadingOverlay(workspaceId)
     }
 
     // Snapshot the composed launch so we can detect settings drift later.
