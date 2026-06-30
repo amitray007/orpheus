@@ -291,6 +291,13 @@ function getMainWindow(): BrowserWindow | null {
   return mainWindowRef
 }
 
+// Ask the renderer to open (and mount) the given workspace via the normal
+// handleSelectWorkspace path. Mirrors the pattern used by other main→renderer
+// signals (e.g. workspace:activityBatch, workspace:navigateTo).
+function requestOpenWorkspace(workspaceId: string): void {
+  getMainWindow()?.webContents.send('workspace:requestOpen', { workspaceId })
+}
+
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
 const workspaceTitles = new Map<string, string>()
 
@@ -2532,7 +2539,8 @@ if (!app.requestSingleInstanceLock()) {
               }
             },
             teardownWorkspaceResources,
-            performClose: (workspaceId) => performClose(workspaceId)
+            performClose: (workspaceId) => performClose(workspaceId),
+            requestOpenWorkspace
           }
           commandServer = startCommandServer(cmdDeps)
         } catch (err) {

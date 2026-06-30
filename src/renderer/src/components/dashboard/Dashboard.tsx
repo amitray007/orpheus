@@ -528,6 +528,26 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  // onWorkspaceRequestOpen: main → renderer signal so the command server can ask
+  // the renderer to open (and mount) a workspace — the entry point for U8/U12.
+  // Uses the same zero-dep ref pattern as onNavigateTo so it never re-subscribes.
+  useEffect(() => {
+    return window.api.workspaces.onWorkspaceRequestOpen((workspaceId) => {
+      const byProject = workspacesByProjectRef.current
+      const wsToProject = new Map<string, string>()
+      for (const [projectId, wsList] of Object.entries(byProject)) {
+        for (const w of wsList) wsToProject.set(w.id, projectId)
+      }
+      const projectId = wsToProject.get(workspaceId)
+      if (projectId !== undefined) {
+        handleSelectWorkspaceRef.current(workspaceId, projectId)
+      }
+      // If the workspace isn't in the loaded list yet (e.g. newly created by the
+      // CLI before the renderer has fetched), we don't crash — the workspace will
+      // become visible on the next workspaces:created broadcast or the next fetch.
+    })
+  }, [])
+
   useEffect(() => {
     window.api.projects
       .list()

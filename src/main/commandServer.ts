@@ -32,6 +32,11 @@ export type CommandServerDeps = {
    * Mirrors performClose in index.ts.
    */
   performClose: (workspaceId: string) => WorkspaceRecord | undefined
+  /**
+   * Send 'workspace:requestOpen' to the renderer so it opens and mounts the
+   * given workspace via the normal handleSelectWorkspace path. Used by U8/U12.
+   */
+  requestOpenWorkspace: (workspaceId: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +120,15 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       if (typeof args.name !== 'string') throw new Error('args.name is required')
       return renameWorkspace(args.id, args.name)
+    },
+
+    // Ask the renderer to open (and mount) a workspace via the normal
+    // handleSelectWorkspace path. Used by U8 (ws new --task) and U12 (ws send
+    // to an unmounted workspace) after this plumbing lands in U14.
+    'workspace.open': (args) => {
+      if (typeof args.id !== 'string') throw new Error('args.id is required')
+      deps.requestOpenWorkspace(args.id)
+      return { requested: true }
     },
 
     // Return identity context for the given workspaceId so the CLI can display
