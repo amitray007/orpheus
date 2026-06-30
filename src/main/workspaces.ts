@@ -24,6 +24,9 @@ type WorkspaceRow = {
   last_title: string | null
   // v43: fork session support (Plan A)
   forked_from_session_id: string | null
+  // v64: worktree-native workspaces
+  worktree_parent_cwd: string | null
+  worktree_branch: string | null
 }
 
 type ProjectRow = {
@@ -59,7 +62,9 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     sortOrder: row.sort_order ?? null,
     claudeSessionId: row.claude_session_id ?? null,
     forkedFromSessionId: row.forked_from_session_id ?? null,
-    lastTitle: row.last_title ?? null
+    lastTitle: row.last_title ?? null,
+    worktreeParentCwd: row.worktree_parent_cwd ?? null,
+    worktreeBranch: row.worktree_branch ?? null
   }
 }
 
@@ -137,7 +142,9 @@ export function createWorkspace({
   projectId,
   name,
   cwd,
-  forkedFromSessionId = null
+  forkedFromSessionId = null,
+  worktreeParentCwd = null,
+  worktreeBranch = null
 }: {
   projectId: string
   name: string
@@ -146,6 +153,10 @@ export function createWorkspace({
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
    *  where the renderer receives workspaces:created with a null field. */
   forkedFromSessionId?: string | null
+  /** Repo root this worktree branches from; null for a plain workspace (v64). */
+  worktreeParentCwd?: string | null
+  /** Branch checked out in this worktree; null for a plain workspace (v64). */
+  worktreeBranch?: string | null
 }): WorkspaceRecord {
   const db = getDb()
   const id = crypto.randomUUID()
@@ -170,8 +181,8 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, worktree_parent_cwd, worktree_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
@@ -181,7 +192,9 @@ export function createWorkspace({
       createdAt,
       claudeSessionId,
       sortOrder,
-      forkedFromSessionId ?? null
+      forkedFromSessionId ?? null,
+      worktreeParentCwd ?? null,
+      worktreeBranch ?? null
     ) as WorkspaceRow | undefined
   if (!row) throw new Error(`createWorkspace: INSERT RETURNING returned nothing`)
   const workspace = rowToWorkspaceRecord(row)

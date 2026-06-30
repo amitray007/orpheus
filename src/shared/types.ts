@@ -119,6 +119,10 @@ export type WorkspaceRecord = {
   forkedFromSessionId: string | null
   /** Last terminal title seen before the workspace was closed (v58). */
   lastTitle: string | null
+  /** Repo root this worktree branches from; null for a plain workspace (v64). */
+  worktreeParentCwd: string | null
+  /** Branch checked out in this worktree; null for a plain workspace (v64). */
+  worktreeBranch: string | null
 }
 
 // For Pinned section: a pinned workspace with its project for context
