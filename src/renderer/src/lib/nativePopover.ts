@@ -231,6 +231,14 @@ export function showHoverPopover(
   relativeTime: string,
   cwd: string
 ): void {
+  // A live confirm modal must never be clobbered by a hover popover — e.g. an
+  // archive action triggered from a sidebar row opens a confirm modal while
+  // the cursor is still over that row; the next hover tick would otherwise
+  // fire this and tear down the modal (see addon.mm ShowPopover's exclusivity
+  // guard, which also no-ops this at the native layer — this is the
+  // belt-and-suspenders renderer-side skip so the IPC isn't even sent).
+  if (isModalOpen()) return
+
   ensurePopoverActionListener()
 
   if (pr?.url) {
@@ -264,6 +272,9 @@ export function showDetailsPopover(
   data: DetailsPopoverData,
   pr: GhPullRequest | null | undefined
 ): void {
+  // See showHoverPopover — same modal-exclusivity rationale.
+  if (isModalOpen()) return
+
   ensurePopoverActionListener()
 
   if (pr?.url) {
@@ -296,6 +307,9 @@ export function showProjectPopover(
   anchorEl: Element,
   data: ProjectPopoverData
 ): void {
+  // See showHoverPopover — same modal-exclusivity rationale.
+  if (isModalOpen()) return
+
   ensurePopoverActionListener()
 
   const rect = anchorEl.getBoundingClientRect()
@@ -339,6 +353,19 @@ export function hideNativePopover(workspaceId: string): void {
 // right after calling showConfirmModal and pass it to hideNativePopover.
 export function getActiveModalWorkspaceId(): string | null {
   return activeModalWorkspaceId
+}
+
+// True while a native confirm modal is open. Belt-and-suspenders alongside
+// the native exclusivity guard in addon.mm's ShowPopover (which refuses to
+// replace an active 'confirm' popover with a hover/details/project one): this
+// lets the renderer skip the IPC round-trip entirely for hover/details/
+// project requests while a modal is up, rather than relying solely on the
+// native no-op. Without either guard, a sidebar-row hover (cursor still over
+// the row that triggered e.g. an archive confirm) would fire showHoverPopover
+// and clobber the open modal, making it vanish and resolve as a spurious
+// cancel.
+export function isModalOpen(): boolean {
+  return activeModalWorkspaceId != null
 }
 
 export function showConfirmModal(data: ConfirmModalData): Promise<ConfirmModalResult> {

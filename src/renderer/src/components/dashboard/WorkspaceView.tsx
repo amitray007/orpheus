@@ -222,7 +222,11 @@ export function WorkspaceView({
           handleWorktreeRetry()
           break
         case 'openLocation':
+          // Doesn't remount (worktreeError stays set, no re-mount effect fires
+          // to re-focus) — re-assert focus now that the modal is closed so the
+          // (still error-carded) workspace doesn't end up out of focus.
           if (revealPath) handleWorktreeOpenLocation(revealPath)
+          handleFocusTerminal()
           break
         case 'convertToLocal':
           handleWorktreeConvertToLocal()
@@ -230,6 +234,10 @@ export function WorkspaceView({
         default:
           // Escape/backdrop cancel — leave worktreeError set; the user can
           // re-trigger by navigating away and back, which re-fires this effect.
+          // No remount follows this path, so re-assert focus on this (still
+          // active, still error-carded) workspace's terminal ourselves —
+          // otherwise the modal's stolen first responder is never returned.
+          handleFocusTerminal()
           break
       }
     })
@@ -253,7 +261,7 @@ export function WorkspaceView({
         hideNativePopover(modalWorkspaceId)
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree* callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree*/handleFocusTerminal callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
   }, [active, worktreeError, workspace.worktreeParentCwd])
 
   // Auto-dismiss the one-time notice after 6 seconds.

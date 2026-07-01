@@ -91,6 +91,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const runWorktreeArchiveFlowRef = useRef<
     (workspace: WorkspaceRecord, projectId: string) => Promise<void>
   >(async () => {})
+  // De-races the archive navigation double-fire: finishWorktreeArchive (called
+  // by the local runWorktreeArchiveFlow, awaited right after the archive IPC
+  // resolves) and the workspaces:archived broadcast listener (below, fired for
+  // ALL windows including this one) both used to navigate for the same
+  // just-archived workspace — finishWorktreeArchive would land the UI in one
+  // place, then the broadcast handler would immediately re-navigate (a second,
+  // often redundant or stale transition). finishWorktreeArchive is the single
+  // owner of post-archive navigation for workspaces it archives locally; it
+  // stamps the workspaceId in here right before navigating, and the broadcast
+  // listener skips its own navigation (but still does cache cleanup) for any
+  // id found here.
+  const locallyArchivedWorkspaceIdsRef = useRef<Set<string>>(new Set())
   // Keep refs in sync with state synchronously after every commit so event
   // handlers with [] deps can read the current value without becoming stale.
   // useLayoutEffect (rather than render-time assignment) satisfies the
@@ -304,8 +316,20 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         const next = list.filter((w) => w.id !== workspaceId)
         return { ...prev, [projectId]: next }
       })
+      // De-race: if this client's own archive flow (finishWorktreeArchive /
+      // handleArchiveWorkspaceFromSidebar) already owns navigation for this
+      // workspaceId, skip navigating again here — this broadcast fires for
+      // ALL windows (including the one that initiated the archive), so
+      // without this guard the local flow's navigation and this listener's
+      // navigation would both fire for the same archive, landing the UI in
+      // two places in quick succession. Still fall through to cache cleanup
+      // below (idempotent) and consume the stamp so it doesn't leak.
+      const wasLocallyOwned = locallyArchivedWorkspaceIdsRef.current.has(workspaceId)
+      if (wasLocallyOwned) {
+        locallyArchivedWorkspaceIdsRef.current.delete(workspaceId)
+      }
       // If this was the active workspace, navigate to a fallback.
-      if (selectedWorkspaceIdRef.current === workspaceId) {
+      if (!wasLocallyOwned && selectedWorkspaceIdRef.current === workspaceId) {
         setWorkspacesByProject((prev) => {
           const remaining = (prev[projectId] ?? []).filter((w) => w.id !== workspaceId)
           if (remaining.length > 0) {
@@ -964,9 +988,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [fetchWorkspacesForProject, refreshPins]
   )
 
-  // Shared post-archive cleanup for worktree workspaces.
+  // Shared post-archive cleanup for worktree workspaces. Sole owner of
+  // post-archive navigation for workspaces archived via this (local) flow —
+  // see locallyArchivedWorkspaceIdsRef for why the workspaces:archived
+  // broadcast listener must NOT also navigate for the same id.
   const finishWorktreeArchive = useCallback(
     async (workspaceId: string, projectId: string): Promise<void> => {
+      // Stamp BEFORE navigating so the broadcast listener (which may fire
+      // before or after this local completion, depending on IPC scheduling)
+      // sees the id and skips its own navigation regardless of ordering.
+      locallyArchivedWorkspaceIdsRef.current.add(workspaceId)
       deleteActivity(workspaceId)
       deleteActivityTime(workspaceId)
       deleteTitle(workspaceId)
@@ -977,9 +1008,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       clearContextBudgetCache(workspaceId)
       playSound('archive')
       await fetchWorkspacesForProject(projectId)
-      if (selectedWorkspaceIdRef.current === workspaceId) {
+      const wasSelected = selectedWorkspaceIdRef.current === workspaceId
+      if (wasSelected) {
         setSelectedWorkspaceId(null)
         setView({ kind: 'project', projectId })
+      } else if (selectedWorkspaceIdRef.current) {
+        // A different workspace remained active throughout (the archived one
+        // was a background sidebar row) — the confirm modal still stole first
+        // responder from it, so re-assert focus now that the modal is closed.
+        void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
       }
       refreshPins()
     },
@@ -994,6 +1031,16 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // libghostty terminal surface.
   const runWorktreeArchiveFlow = useCallback(
     async (workspace: WorkspaceRecord, projectId: string): Promise<void> => {
+      // Cancel/error paths below don't run finishWorktreeArchive (which owns
+      // the success-path focus re-assert), so each one re-asserts focus itself
+      // if a workspace is still selected/visible — the modal stole first
+      // responder from it regardless of how the flow ends.
+      const refocusIfSelected = (): void => {
+        if (selectedWorkspaceIdRef.current) {
+          void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+        }
+      }
+
       const clean = await showConfirmModal({
         title: 'Remove worktree?',
         body: `Remove worktree ${workspace.worktreeBranch ?? ''}? The branch is kept.`,
@@ -1002,7 +1049,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           { id: 'confirm', label: 'Remove worktree', style: 'danger' }
         ]
       })
-      if (clean.buttonId !== 'confirm') return
+      if (clean.buttonId !== 'confirm') {
+        refocusIfSelected()
+        return
+      }
 
       const result = await window.api.workspaces.archive(workspace.id, { force: false })
       if (result.wasDirty) {
@@ -1015,10 +1065,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             { id: 'force', label: 'Remove anyway', style: 'danger' }
           ]
         })
-        if (dirty.buttonId !== 'force') return
+        if (dirty.buttonId !== 'force') {
+          refocusIfSelected()
+          return
+        }
         const forced = await window.api.workspaces.archive(workspace.id, { force: true })
         if (!forced.archived) {
           console.error('[dashboard] worktree archive failed', forced)
+          refocusIfSelected()
           return
         }
         await finishWorktreeArchive(workspace.id, projectId)
@@ -1026,6 +1080,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
       if (!result.archived) {
         console.error('[dashboard] worktree archive failed', result)
+        refocusIfSelected()
         return
       }
       await finishWorktreeArchive(workspace.id, projectId)
@@ -1084,6 +1139,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         setSelectedProjectId(null)
         setSelectedWorkspaceId(null)
         setView({ kind: 'sessions' })
+      } else if (selectedWorkspaceIdRef.current) {
+        // The removed project wasn't the one in view — a different workspace
+        // stayed selected/visible throughout, but the confirm modal(s) still
+        // stole first responder from it. Re-assert focus now that they're closed.
+        void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
       }
       refreshPins()
     },
@@ -1138,7 +1198,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
               }
             : undefined
       })
-      if (first.buttonId !== 'confirm') return
+      if (first.buttonId !== 'confirm') {
+        // Cancelled — the modal still stole first responder from whatever
+        // workspace terminal was active; re-assert focus now that it's closed.
+        if (selectedWorkspaceIdRef.current) {
+          void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+        }
+        return
+      }
 
       await destroyProjectWorkspaceSurfaces(project.id, 'project remove failed')
       const result = await window.api.projects.remove(project.id, {
@@ -1155,7 +1222,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             { id: 'force', label: 'Delete anyway', style: 'danger' }
           ]
         })
-        if (escalate.buttonId !== 'force') return
+        if (escalate.buttonId !== 'force') {
+          if (selectedWorkspaceIdRef.current) {
+            void window.api.terminal.focus(selectedWorkspaceIdRef.current).catch(() => {})
+          }
+          return
+        }
         await destroyProjectWorkspaceSurfaces(project.id, 'force project remove failed')
         await window.api.projects.remove(project.id, { deleteWorktrees: true, force: true })
         finishProjectRemove(project)

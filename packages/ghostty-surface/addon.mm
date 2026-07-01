@@ -1398,6 +1398,15 @@ static std::string g_activePopoverWorkspaceId;
 // request — installBackstop is called once at ready-to-show).
 static NSView* __strong g_popoverHostContentView = nil;
 
+// First responder saved just before a 'confirm' modal steals it (ShowPopover),
+// restored when the modal tears down (HidePopover) so a modal that closes
+// WITHOUT the renderer explicitly re-focusing a terminal (e.g. Escape with no
+// follow-up action) doesn't leave the window's first responder pointing at a
+// deallocated popover card. __weak so a responder that's destroyed out from
+// under us (surface teardown, workspace archive) simply goes nil instead of
+// being kept alive or dangling — restoring to nil is a safe no-op.
+static NSResponder* __weak g_modalPreviousFirstResponder = nil;
+
 // ---------------------------------------------------------------------------
 // Loading overlay theme — colors pushed from main process (resolved from the
 // active app theme: midnight / daylight / eclipse). The native side stays
@@ -6181,6 +6190,25 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSView* contentView = cachedContentView;
 
+        // Modal exclusivity: a live 'confirm' modal must never be replaced by
+        // a hover/details/project popover. Without this, triggering an action
+        // from a sidebar row (e.g. archive) opens a confirm modal while the
+        // cursor is still over the sidebar — the next hover tick fires
+        // showHoverPopover, which (pre-fix) unconditionally tore down the
+        // active popover here and made the confirm modal vanish, resolving it
+        // as a spurious cancel. A NEW 'confirm' request is still allowed to
+        // replace an OLD confirm (that path fires the synthetic cancel below
+        // and proceeds) — this guard only blocks non-confirm kinds from
+        // clobbering an open confirm modal.
+        if (g_activePopover != nil &&
+            [g_activePopover.kind isEqualToString:@"confirm"] &&
+            ![nsKind isEqualToString:@"confirm"]) {
+            NSLog(@"[ghostty-surface] showPopover kind=%@ ignored — confirm modal is active "
+                  @"(workspaceId=%s would-be-replaced-by=%s)",
+                  nsKind, g_activePopoverWorkspaceId.c_str(), workspaceId.c_str());
+            return;
+        }
+
         // Destroy any pre-existing global popover (+ its backdrop, if any)
         // before creating a new one. If the popover being torn down was a
         // 'confirm' modal, its JS-side Promise is still pending — fire a
@@ -6282,7 +6310,14 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         // resign) — defense-in-depth: log it so a dead-Escape report is
         // diagnosable, and fall back to the card's own mouseDown: (below)
         // re-asserting first responder on the first click.
+        //
+        // Save whatever was first responder BEFORE we steal it, so HidePopover
+        // can restore it when the modal closes without the renderer explicitly
+        // re-focusing a terminal (belt-and-suspenders — the renderer's own
+        // terminal.focus() re-assert is the primary fix; this covers Escape/
+        // backdrop-cancel paths that don't run a follow-up action).
         if (isConfirm && contentView.window) {
+            g_modalPreviousFirstResponder = contentView.window.firstResponder;
             BOOL becameFirstResponder = [contentView.window makeFirstResponder:pv];
             if (!becameFirstResponder) {
                 NSLog(@"[ghostty-surface] showPopover workspaceId=%s: makeFirstResponder FAILED "
@@ -6438,6 +6473,27 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
             [backdrop.layer addAnimation:backdropFade forKey:@"fadeOut"];
             backdrop.alphaValue = 0.0;
             [CATransaction commit];
+        }
+
+        // Belt-and-suspenders first-responder restore: the renderer's own
+        // terminal.focus() re-assert (called by callers after their modal
+        // await resolves) is the primary fix for focus-after-modal. This
+        // covers the case where the modal closes WITHOUT a renderer-side
+        // follow-up re-focus call (e.g. Escape/backdrop-cancel with no
+        // action to run) — without it, first responder would stay pinned to
+        // the now-removed popover card (or whatever AppKit fell back to),
+        // leaving the terminal unable to receive keystrokes until clicked.
+        // g_modalPreviousFirstResponder is __weak, so if the previously
+        // focused responder (e.g. a terminal surface) was itself torn down
+        // in the meantime (archive/teardown), this naturally reads nil and
+        // we skip the restore — no dangling-pointer risk.
+        if (wasConfirm) {
+            NSResponder* prev = g_modalPreviousFirstResponder;
+            if (prev && pv.window && [prev isKindOfClass:[NSView class]] &&
+                ((NSView*)prev).window == pv.window) {
+                [pv.window makeFirstResponder:prev];
+            }
+            g_modalPreviousFirstResponder = nil;
         }
     });
 
