@@ -70,6 +70,15 @@ main calls `commitOverlayRegistration()` (addon diffs subviews; exactly one new
 subview = the overlay; store a weak reference). One-time, at `ready-to-show`,
 right after `installBackstop`.
 
+Registration failure is observable, never silent: `commitOverlayRegistration()`
+returns a success flag (diff must be exactly one new subview), and the addon
+exposes an `isOverlayRegistered()` query. On registration failure — or if the
+weak reference later dies — `overlayLayer.ts` marks itself unavailable and
+`overlay:show` rejects immediately; callers keep routing to the still-present
+chassis path. The overlay view is never made visible (and never focused) while
+the ordering invariant is unenforceable — otherwise a modal could sit invisible
+beneath the terminal while holding keyboard focus.
+
 From then on the addon enforces one invariant in one place: **on every terminal
 attach/re-attach** (`reconcileSurface` / mount paths), the terminal view is
 inserted `positioned:NSWindowBelow relativeTo:overlayView`. If the overlay
@@ -83,13 +92,18 @@ preserves chassis behavior until each surface migrates.
 Single owner of the overlay layer (mirrors the `nativePopover.ts` flow pattern):
 
 - Creates the `WebContentsView` at `ready-to-show`:
-  `webPreferences: { preload: overlayPreload, transparent: true }`, plus
-  `view.setBackgroundColor('#00000000')`; loads the overlay renderer entry;
+  `webPreferences: { preload: overlayPreload, transparent: true, backgroundThrottling: false }`,
+  plus `view.setBackgroundColor('#00000000')`; loads the overlay renderer entry;
   starts hidden (`setVisible(false)`); registers with the addon (above).
+  `backgroundThrottling: false` is load-bearing, not an optimization: Chromium
+  pauses rAF for hidden web contents, so without it the double-rAF paint ack
+  below never fires and every open stalls. The main window already sets the
+  same flag (`src/main/index.ts`) for the same reason.
 - API surface (exposed to the main renderer via IPC, like the popover IPC today):
   - `overlay:show(descriptor)` — see lifecycle below
   - `overlay:update(id, props)`
-  - `overlay:hide(id)` — hides the view, restores terminal focus
+  - `overlay:hide(id)` — hides the view, restores the first responder saved at
+    show time (see Close below)
   - `overlay:event` (overlay renderer → main → forwarded to main renderer)
 - Crash recovery: on `render-process-gone` of the overlay webContents —
   `setVisible(false)`, notify the main renderer (so it can resolve/reject any
@@ -124,9 +138,16 @@ type OverlayDescriptor = {
     | { mode: 'anchored'; anchorRect: Rect; preferredSide?: 'top'|'bottom'|'left'|'right' }
     | { mode: 'centered' }        // full-window bounds + scrim
   props: unknown                  // serializable, kind-specific
-  interactive: boolean            // false = never steals focus (tooltips)
+  acceptsClicks: boolean          // false = display-only (tooltips)
+  takesFocus: boolean             // true ONLY for confirm/palette-class overlays
 }
 ```
+
+`acceptsClicks` and `takesFocus` are deliberately separate policies, mirroring
+the chassis: today only `confirm` modals become first responder, while
+hover/details/project cards are clickable (PR chips, buttons) WITHOUT ever
+stealing keyboard focus from the terminal. Collapsing both into one flag would
+regress hover cards into keystroke thieves.
 
 ## Data flow
 
@@ -136,13 +157,32 @@ type OverlayDescriptor = {
    `overlay:show(descriptor)`.
 2. Main process forwards the descriptor to the overlay renderer.
 3. Overlay renderer renders the component, waits for paint (double-rAF), then
-   sends `ackPainted`.
+   sends `ackPainted`. The overlay root wraps every `kind` in an error boundary
+   that still acks (rendering a minimal error card) — a component that throws
+   must not strand the caller.
 4. Main process computes bounds (anchored: card rect + shadow margin, clamped
    to window; centered: full window), calls `setBounds`, then
-   `setVisible(true)`, and if `interactive` calls `overlayContents.focus()`.
+   `setVisible(true)`. It saves the current first responder, and only if
+   `takesFocus` calls `overlayContents.focus()` — hover/details/project cards
+   never take keyboard focus (the chassis's actual policy).
+
+`overlay:show` is total: main arms a per-show timeout (~500 ms); on expiry (or
+a show racing a post-crash reload) the promise rejects and the view stays
+hidden — mirroring `showConfirmModal`'s existing resolve-as-cancel-on-failure
+contract. Entrance/exit match the chassis's fades (~120 ms in, ~100 ms out) via
+CSS transitions in the overlay renderer; the hide path plays the exit
+transition (renderer signals `exited`, bounded by a 150 ms cap) before
+`setVisible(false)`.
 
 Total cost: one IPC round trip + one paint (~1–2 frames). The view and its
 renderer process are pre-warmed at startup; nothing is spawned at open time.
+
+Content growth after first paint is never clipped: the overlay renderer
+attaches a `ResizeObserver` to the card root and reports size changes over the
+event channel; main re-clamps and calls `setBounds` on every report. This is
+required from day one: the details popover already loads cost/context/git info
+asynchronously (today's chassis patches it in via `updateDetailsPopover`), and
+phase-3 rich UI (autocomplete, expanding sections) grows after first paint.
 
 ### Bounds policy = input-routing policy (no pass-through hacks)
 
@@ -152,16 +192,44 @@ renderer process are pre-warmed at startup; nothing is spawned at open time.
   captures all input.
 - **One interactive overlay at a time** (the chassis's exclusivity rule, now
   structural). Toasts/banners stay in the main web layer in non-terminal regions.
-- Outside-click dismissal for anchored overlays: the main renderer already owns
-  outside-click detection for native popovers today; the same mechanism calls
-  `overlay:hide`.
+  During migration (phases 2–3) exclusivity must span BOTH systems: a single
+  token owned by main (`overlayLayer.ts`), consulted by `overlay:show` AND the
+  existing `terminal:showPopover` IPC handler — while an interactive overlay is
+  visible, main rejects native popover show requests (and vice versa). This
+  replaces the renderer-side `isModalOpen()` guard, which only tracks native
+  modals and would let a native hover card open on top of a React confirm.
+- Outside-click dismissal for anchored overlays is driven from main, because
+  clicks landing on the terminal NSView never reach the main renderer's DOM
+  (the terminal sits above the main web layer): the addon emits an
+  outside-pointer-down callback for terminal-region mousedowns while an
+  anchored overlay is visible, and main calls `overlay:hide`; clicks in the
+  main web layer dismiss via a renderer `pointerdown` listener that also calls
+  `overlay:hide`. (Note: today's chassis dismisses via native tracking areas
+  and backdrop mousedown in `addon.mm`, not renderer outside-click detection —
+  there is no existing renderer mechanism to reuse.)
+- Hover-card lifecycle bridges the two web contexts explicitly: the overlay
+  card reports `mouseenter`/`mouseleave` over the event channel, and the main
+  renderer cancels/re-arms its close timer accordingly — mirroring the native
+  card's `pointerInCard` tracking-area bridge (which is what lets the pointer
+  cross the gap from a sidebar row into the card today). Chassis timings are
+  preserved: 120 ms open, 80 ms close.
 
 ### Close
 
-`setVisible(false)` → main restores terminal focus via the existing
-`terminal:focus` path (the chassis's proven first-responder restore pattern,
-reused verbatim; see `Dashboard.tsx` cancel/close paths and
-`addon.mm` first-responder save/restore).
+Exit transition plays (150 ms cap) → `setVisible(false)` → main restores the
+first responder **saved at show time** — not unconditionally the terminal —
+falling back to `terminal:focus` only when the saved responder is gone. This is
+the chassis's actual save/restore pattern (`addon.mm`
+`g_modalPreviousFirstResponder`): restoring the terminal unconditionally would
+yank focus away from a main-layer input the user was typing in when the
+overlay opened.
+
+Escape handling is owned by the overlay renderer for every `kind`: a global
+`keydown` listener in the overlay root maps Escape to the kind's cancel/dismiss
+event (sent over the event channel like any other event), so the behavior is
+uniform across confirm/card/palette rather than re-implemented per component.
+This applies only when the overlay `takesFocus`; for non-focused overlays the
+main renderer keeps its existing Escape handling.
 
 ## Why the historical failure modes do not apply
 
@@ -169,7 +237,8 @@ reused verbatim; see `Dashboard.tsx` cancel/close paths and
   and by focus leaving the terminal without restore. Here neither layer ever
   moves; focus restore reuses the shipped pattern.
 - **Alpha-blend cost:** the main window stays opaque; the overlay view is hidden
-  when idle (zero compositor cost) and popover-sized when small.
+  when idle (negligible cost — a static hidden DOM requests no frames even with
+  throttling disabled) and popover-sized when small.
 - **Desktop bleed:** impossible — backstop and opaque window unchanged.
 - **Input misrouting:** no hit-test swizzles; routing is pure NSView geometry.
   The terminal's `nonWebContentView` hook is unaffected (it only applies to
