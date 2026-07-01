@@ -2719,7 +2719,69 @@ static Napi::Value IsOverlayRegistered(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), isOverlayRegistered());
 }
 
-// reassertOverlayOrder — enforce "terminal(s) below overlay" by moving the
+// topmostMainWebContentsView — find the highest-index (topmost-in-z-order)
+// subview of contentView that is a Chromium WebContentsViewCocoa AND is not
+// the registered overlay view itself. This is "the main window's web layer":
+// it's opaque, so anything ordered below it is invisible. Class-name match
+// mirrors installWebContentsRoutingSwizzles's "WebContentsView" substring
+// check above. Returns nil if contentView is nil or no such view is found.
+static NSView* topmostMainWebContentsView(NSView* contentView) {
+    if (!contentView) return nil;
+    NSView* overlayView = g_overlayView;
+    NSView* mainWCV = nil;
+    NSArray<NSView*>* subviews = contentView.subviews;
+    for (NSView* sub in subviews) {
+        if (sub == overlayView) continue;
+        NSString* cls = NSStringFromClass([sub class]);
+        if ([cls containsString:@"WebContentsView"]) {
+            mainWCV = sub;  // keep overwriting — last match is topmost (highest index)
+        }
+    }
+    return mainWCV;
+}
+
+// overlayIsAboveMainWCV — true iff the overlay is registered AND ordered
+// above the main WebContentsView in contentView.subviews (i.e. the overlay
+// can actually render — "healthy"). False when unregistered OR sunk below the
+// main web layer ("degraded" — overlay is occluded by the opaque main WCV).
+static BOOL overlayIsAboveMainWCV(NSView* contentView, NSView* mainWCV) {
+    if (!isOverlayRegistered() || !mainWCV) return NO;
+    NSView* overlayView = g_overlayView;
+    NSArray<NSView*>* subviews = contentView.subviews;
+    NSUInteger overlayIndex = [subviews indexOfObject:overlayView];
+    NSUInteger mainWCVIndex = [subviews indexOfObject:mainWCV];
+    if (overlayIndex == NSNotFound || mainWCVIndex == NSNotFound) return NO;
+    return overlayIndex > mainWCVIndex;
+}
+
+// dumpContentViewStack — unconditional diagnostic NSLog of every contentView
+// subview in z-order (index 0 = bottom), one line each, so overlay/terminal/
+// main-WCV ordering bugs are diagnosable from Console.app without attaching a
+// debugger. Called at the top of reassertOverlayOrder() on every invocation;
+// that function only runs on shows/reconciles, so volume is low.
+static void dumpContentViewStack(NSView* contentView) {
+    if (!contentView) return;
+    NSView* overlayView = g_overlayView;
+    NSArray<NSView*>* subviews = contentView.subviews;
+    NSLog(@"[ghostty-surface] stack[%lu]: dumping contentView subview order", (unsigned long)subviews.count);
+    for (NSUInteger i = 0; i < subviews.count; i++) {
+        NSView* sub = subviews[i];
+        NSMutableArray<NSString*>* markers = [NSMutableArray array];
+        if (sub == overlayView) [markers addObject:@"OVERLAY"];
+        for (auto& kv : g_surfaces) {
+            if (kv.second.view == sub) {
+                [markers addObject:[NSString stringWithFormat:@"TERMINAL(workspaceId=%s)", kv.first.c_str()]];
+                break;
+            }
+        }
+        if ([sub isKindOfClass:[OrpheusBackstopView class]]) [markers addObject:@"BACKSTOP"];
+        NSLog(@"[ghostty-surface] stack[%lu]: index=%lu class=%@ ptr=%p frame=%@ %@",
+              (unsigned long)subviews.count, (unsigned long)i, NSStringFromClass([sub class]), sub,
+              NSStringFromRect(sub.frame), markers.count ? [markers componentsJoinedByString:@" "] : @"");
+    }
+}
+
+// reassertOverlayOrder — enforce "terminal(s) never occluded" by moving the
 // TERMINAL views, never the overlay view itself.
 //
 // WHY: the overlay view is a Chromium-managed WebContentsViewCocoa (attached
@@ -2735,58 +2797,104 @@ static Napi::Value IsOverlayRegistered(const Napi::CallbackInfo& info) {
 //
 // FIX: OrpheusGhosttyView (the terminal surface) tolerates detach/re-attach
 // by design — reconcileSurface does exactly that on every hide/show. So
-// instead of moving the overlay, walk contentView.subviews and for every
-// terminal view ordered ABOVE the overlay, remove + re-add THAT view
-// `positioned:NSWindowBelow relativeTo:overlayView`. This never calls any
-// ghostty surface lifecycle function (no occlusion/focus toggling), only the
-// AppKit subview move, and addSubview preserves the view's frame — so no
-// visible flicker or state loss. The backstop view stays at index 0
-// regardless: NSWindowBelow relativeTo:overlayView only sinks the terminal to
-// just beneath the overlay, not beneath the backstop.
+// instead of moving the overlay, walk contentView.subviews and move offending
+// TERMINAL views only. This never calls any ghostty surface lifecycle
+// function (no occlusion/focus toggling), only the AppKit subview move, and
+// addSubview preserves the view's frame — so no visible flicker or state
+// loss. The backstop view stays at index 0 regardless.
+//
+// SAFETY NET (R7): the overlay can itself end up sunk below the main
+// window's WebContentsView (opaque — anything below it is invisible). If we
+// blindly kept sinking the terminal to `NSWindowBelow relativeTo:overlayView`
+// in that state, the terminal would ALSO end up below the opaque main web
+// layer — i.e. a black terminal rect, which must be impossible. So the
+// ordering target depends on whether the overlay is currently healthy
+// (above the main WCV) or degraded (sunk below it):
+//   - healthy:  terminal(s) above the overlay get sunk to just below the
+//               overlay (pre-existing behavior).
+//   - degraded: terminal(s) below the main WCV get raised to just above the
+//               main WCV — restoring the pre-overlay-era visual (terminal
+//               visible above the main web layer). The overlay won't be
+//               visible in this state regardless of where the terminal is,
+//               so this trades "overlay renders" for "terminal is never
+//               black," which is the correct trade.
 //
 // Cheap no-op when the order is already correct (index comparison only; no
 // AppKit calls in the common case). Self-heal for native subview reshuffles
 // that historically happen around DevTools/fullscreen transitions and any
 // other undocumented reordering Electron performs on contentView's children.
 static void reassertOverlayOrder(void) {
+    NSView* contentView = g_overlayContentView;
+    dumpContentViewStack(contentView);
+
     if (!isOverlayRegistered()) return;
     NSView* overlayView = g_overlayView;
-    NSView* contentView = g_overlayContentView;
+    if (!contentView) return;
 
-    NSArray<NSView*>* subviews = contentView.subviews;
-    NSUInteger overlayIndex = [subviews indexOfObject:overlayView];
-    if (overlayIndex == NSNotFound) return;  // shouldn't happen given the guard above
+    NSView* mainWCV = topmostMainWebContentsView(contentView);
+    BOOL healthy = overlayIsAboveMainWCV(contentView, mainWCV);
 
-    if (overlayIndex == subviews.count - 1) return;  // already topmost — no-op
+    if (healthy) {
+        NSArray<NSView*>* subviews = contentView.subviews;
+        NSUInteger overlayIndex = [subviews indexOfObject:overlayView];
+        if (overlayIndex == NSNotFound) return;  // shouldn't happen given the guard above
+        if (overlayIndex == subviews.count - 1) return;  // already topmost — no-op
 
-    // Overlay isn't topmost: one or more terminal views are ordered above it.
-    // Move each offending terminal below the overlay instead of touching the
-    // overlay view. Re-snapshot subviews/overlayIndex after each move since
-    // the array mutates as we go.
-    for (auto& kv : g_surfaces) {
-        NSView* termView = kv.second.view;
-        if (!termView || termView.superview != contentView) continue;
+        // Overlay isn't topmost: one or more terminal views are ordered above
+        // it. Move each offending terminal below the overlay instead of
+        // touching the overlay view. Re-snapshot subviews/overlayIndex after
+        // each move since the array mutates as we go.
+        for (auto& kv : g_surfaces) {
+            NSView* termView = kv.second.view;
+            if (!termView || termView.superview != contentView) continue;
 
-        NSArray<NSView*>* current = contentView.subviews;
-        NSUInteger termIndex = [current indexOfObject:termView];
-        NSUInteger curOverlayIndex = [current indexOfObject:overlayView];
-        if (termIndex == NSNotFound || curOverlayIndex == NSNotFound) continue;
-        if (termIndex < curOverlayIndex) continue;  // already below — fine
+            NSArray<NSView*>* current = contentView.subviews;
+            NSUInteger termIndex = [current indexOfObject:termView];
+            NSUInteger curOverlayIndex = [current indexOfObject:overlayView];
+            if (termIndex == NSNotFound || curOverlayIndex == NSNotFound) continue;
+            if (termIndex < curOverlayIndex) continue;  // already below — fine
 
-        // removeFromSuperview resigns first responder if termView (or a
-        // descendant) currently holds it — capture that before the move so
-        // keyboard focus can be restored after re-attach, otherwise a
-        // focused terminal silently stops receiving keystrokes.
-        NSWindow* win = termView.window;
-        BOOL wasFirstResponder = (win != nil && win.firstResponder == termView);
+            // removeFromSuperview resigns first responder if termView (or a
+            // descendant) currently holds it — capture that before the move so
+            // keyboard focus can be restored after re-attach, otherwise a
+            // focused terminal silently stops receiving keystrokes.
+            NSWindow* win = termView.window;
+            BOOL wasFirstResponder = (win != nil && win.firstResponder == termView);
 
-        [termView removeFromSuperview];
-        [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
-        if (wasFirstResponder && !g_overlayFocusSuppressed && win) {
-            [win makeFirstResponder:termView];
+            [termView removeFromSuperview];
+            [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
+            if (wasFirstResponder && !g_overlayFocusSuppressed && win) {
+                [win makeFirstResponder:termView];
+            }
+            NSLog(@"[ghostty-surface] reassertOverlayOrder: moved terminal view (workspaceId=%s) below overlay (was index=%lu, overlay index=%lu)",
+                  kv.first.c_str(), (unsigned long)termIndex, (unsigned long)curOverlayIndex);
         }
-        NSLog(@"[ghostty-surface] reassertOverlayOrder: moved terminal view (workspaceId=%s) below overlay (was index=%lu, overlay index=%lu)",
-              kv.first.c_str(), (unsigned long)termIndex, (unsigned long)curOverlayIndex);
+    } else {
+        if (!mainWCV) return;  // no main web layer found — nothing to guard against
+        NSLog(@"[ghostty-surface] reassertOverlayOrder: DEGRADED — overlay sunk below main web view; "
+              @"raising terminal above main WCV");
+
+        for (auto& kv : g_surfaces) {
+            NSView* termView = kv.second.view;
+            if (!termView || termView.superview != contentView) continue;
+
+            NSArray<NSView*>* current = contentView.subviews;
+            NSUInteger termIndex = [current indexOfObject:termView];
+            NSUInteger mainWCVIndex = [current indexOfObject:mainWCV];
+            if (termIndex == NSNotFound || mainWCVIndex == NSNotFound) continue;
+            if (termIndex > mainWCVIndex) continue;  // already above — fine
+
+            NSWindow* win = termView.window;
+            BOOL wasFirstResponder = (win != nil && win.firstResponder == termView);
+
+            [termView removeFromSuperview];
+            [contentView addSubview:termView positioned:NSWindowAbove relativeTo:mainWCV];
+            if (wasFirstResponder && !g_overlayFocusSuppressed && win) {
+                [win makeFirstResponder:termView];
+            }
+            NSLog(@"[ghostty-surface] reassertOverlayOrder: raised terminal view (workspaceId=%s) above main WCV (was index=%lu, main WCV index=%lu)",
+                  kv.first.c_str(), (unsigned long)termIndex, (unsigned long)mainWCVIndex);
+        }
     }
 }
 
@@ -2919,16 +3027,29 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             if (contentView) {
                 (void)ensureBackstopView(contentView);
                 // Overlay invariant (R5): when the overlay is registered for THIS
-                // contentView, the terminal must attach BELOW it, not above.
-                // relativeTo:overlayView is only safe because isOverlayRegistered()
-                // already confirmed overlayView.superview == contentView — a
-                // relativeTo: view that ISN'T currently a sibling silently sinks
-                // the new subview to the bottom instead of erroring, so this
-                // ordering check is load-bearing, not defensive fluff.
-                if (isOverlayRegistered() && g_overlayContentView == contentView) {
+                // contentView AND healthy (above the main WCV), the terminal must
+                // attach BELOW it, not above. relativeTo:overlayView is only safe
+                // because isOverlayRegistered() already confirmed
+                // overlayView.superview == contentView — a relativeTo: view that
+                // ISN'T currently a sibling silently sinks the new subview to the
+                // bottom instead of erroring, so this ordering check is
+                // load-bearing, not defensive fluff.
+                //
+                // SAFETY NET (R7): if the overlay is registered but DEGRADED
+                // (sunk below the opaque main WebContentsView), attaching below
+                // it would also bury the terminal below the main web layer —
+                // a black terminal rect. Fall through to the same top-of-stack
+                // attach used when there's no overlay at all.
+                NSView* mainWCV = topmostMainWebContentsView(contentView);
+                if (isOverlayRegistered() && g_overlayContentView == contentView &&
+                    overlayIsAboveMainWCV(contentView, mainWCV)) {
                     NSView* overlayView = g_overlayView;
                     [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:overlayView];
                 } else {
+                    if (isOverlayRegistered() && g_overlayContentView == contentView) {
+                        NSLog(@"[ghostty-surface] reconcileSurface: DEGRADED — overlay sunk below main web view; "
+                              @"attaching terminal at top instead of below overlay");
+                    }
                     [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
                 }
             }
@@ -3236,15 +3357,30 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
     // Terminal always parks above the web layer; popovers are native siblings above
     // it. Overlay invariant (R5): when the overlay is registered for THIS
-    // contentView, the terminal attaches BELOW it instead — relativeTo:overlayView
-    // is only safe here because isOverlayRegistered() already confirmed
-    // overlayView.superview == contentView (a relativeTo: view that isn't
-    // currently a sibling silently sinks the new subview to the bottom).
-    if (isOverlayRegistered() && g_overlayContentView == contentView) {
-        NSView* overlayView = g_overlayView;
-        [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
-    } else {
-        [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+    // contentView AND healthy (above the main WCV), the terminal attaches BELOW
+    // it instead — relativeTo:overlayView is only safe here because
+    // isOverlayRegistered() already confirmed overlayView.superview ==
+    // contentView (a relativeTo: view that isn't currently a sibling silently
+    // sinks the new subview to the bottom).
+    //
+    // SAFETY NET (R7): if the overlay is registered but DEGRADED (sunk below
+    // the opaque main WebContentsView), attaching below it would also bury the
+    // terminal below the main web layer — a black terminal rect. Fall through
+    // to the same top-of-stack attach used when there's no overlay at all.
+    {
+        NSView* mainWCV = topmostMainWebContentsView(contentView);
+        if (isOverlayRegistered() && g_overlayContentView == contentView &&
+            overlayIsAboveMainWCV(contentView, mainWCV)) {
+            NSView* overlayView = g_overlayView;
+            [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
+        } else {
+            if (isOverlayRegistered() && g_overlayContentView == contentView) {
+                NSLog(@"[ghostty-surface] mount workspaceId=%s: DEGRADED — overlay sunk below main web view; "
+                      @"attaching terminal at top instead of below overlay",
+                      workspaceId.c_str());
+            }
+            [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+        }
     }
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
