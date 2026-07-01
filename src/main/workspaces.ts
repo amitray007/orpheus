@@ -102,6 +102,53 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace name sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Max length (in characters) for a user-supplied workspace name. Names longer
+ * than this are truncated with a trailing ellipsis ('…'). Chosen to keep
+ * `ws ls` table rendering (and the sidebar) sane against a hostile/careless
+ * caller passing a 300+ char name — 200 chars is comfortably longer than any
+ * legitimate workspace name while still bounding worst-case column width.
+ */
+const WORKSPACE_NAME_MAX_LENGTH = 200
+
+/**
+ * Sanitize a user-supplied workspace name so it can never blow out table
+ * rendering (`ws ls`) or the sidebar:
+ *   - CRLF/LF/tab (and other control chars) are replaced with a space so a
+ *     pasted multi-line string collapses to one line.
+ *   - Runs of whitespace are collapsed to a single space.
+ *   - Leading/trailing whitespace is trimmed.
+ *   - The result is capped to WORKSPACE_NAME_MAX_LENGTH chars, truncated with
+ *     a trailing '…' when longer.
+ * Throws if the sanitized result is empty (name was blank/whitespace-only)
+ * so callers get a clear error instead of silently storing an empty name.
+ */
+function sanitizeWorkspaceName(name: string): string {
+  // C0 control chars (U+0000-U+001F) + DEL (U+007F), built via fromCharCode
+  // rather than a literal \x00-\x1f regex escape to keep this ASCII-clean.
+  const CONTROL_CHARS_RE = new RegExp(
+    `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]+`,
+    'g'
+  )
+  // Replace CR/LF/tab and other C0 control chars + DEL with a space so a
+  // pasted multi-line / control-char-laden string collapses to plain text.
+  const noControlChars = name.replace(CONTROL_CHARS_RE, ' ')
+  // Collapse runs of whitespace (including the spaces just introduced) to one.
+  const collapsed = noControlChars.replace(/\s+/g, ' ')
+  const trimmed = collapsed.trim()
+  if (trimmed === '') {
+    throw new Error('name cannot be empty')
+  }
+  if (trimmed.length > WORKSPACE_NAME_MAX_LENGTH) {
+    return trimmed.slice(0, WORKSPACE_NAME_MAX_LENGTH - 1) + '…'
+  }
+  return trimmed
+}
+
+// ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------
 
@@ -157,6 +204,7 @@ export function createWorkspace({
   const db = getDb()
   const id = crypto.randomUUID()
   const createdAt = Date.now()
+  const sanitizedName = sanitizeWorkspaceName(name)
 
   // Pre-generate the claude session UUID at workspace creation so that the
   // very first launch can pass --session-id <uuid> to claude (deterministic).
@@ -183,7 +231,7 @@ export function createWorkspace({
     .get(
       id,
       projectId,
-      name,
+      sanitizedName,
       cwd,
       createdAt,
       claudeSessionId,
@@ -234,7 +282,7 @@ export function openWorkspace(id: string): WorkspaceRecord {
   const row = db
     .prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ? RETURNING *')
     .get(Date.now(), id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`openWorkspace: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -244,7 +292,7 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
   const row = db
     .prepare('UPDATE workspaces SET pinned_at = ? WHERE id = ? RETURNING *')
     .get(pinnedAt, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`setWorkspacePinned: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -305,10 +353,15 @@ export function reopenWorkspace(id: string): WorkspaceRecord | undefined {
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   const db = getDb()
+  // Sanitize BEFORE the existence check so a bad name (empty/whitespace-only)
+  // is rejected with 'name cannot be empty' even for a nonexistent id — the
+  // sanitize error is the more specific/actionable one for a malformed rename
+  // payload, while a genuinely missing workspace still surfaces below.
+  const sanitizedName = sanitizeWorkspaceName(name)
   const row = db
     .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
-    .get(name, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`renameWorkspace: workspace not found: ${id}`)
+    .get(sanitizedName, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -389,7 +442,7 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
       .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
       .get(status, id) as WorkspaceRow | undefined
   }
-  if (!row) throw new Error(`setWorkspaceStatus: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 

@@ -56,6 +56,10 @@
  *   - Commands may declare `minPositionals`/`maxPositionals` on their
  *     CommandDescriptor; extra/missing positionals are a usage error when
  *     declared. (Undeclared arity is not enforced — see registry.ts.)
+ *   - Boolean flags given in `--flag=value` form (e.g. `--json=true`) accept
+ *     'true'/'false' (case-insensitive); any other value (e.g. `--json=garbage`)
+ *     is a usage error rather than being silently coerced to a truthy string.
+ *     Bare `--json` (no `=value`) is unaffected and still sets the flag true.
  *
  * VERSION
  * -------
@@ -198,6 +202,20 @@ function isMissingValueFor(name: string, next: string | undefined): boolean {
 }
 
 /**
+ * Parse a `--flag=value` value for a BOOLEAN flag. Accepts 'true'/'false'
+ * (case-insensitive) for convenience (`--json=true`, `--json=false`); any
+ * other value (e.g. `--json=garbage`) is invalid — the boolean flag's =value
+ * form is otherwise silently swallowed/misinterpreted, which is the bug this
+ * fixes (#6). Returns null for an invalid value.
+ */
+function parseBooleanFlagValue(v: string): boolean | null {
+  const lower = v.toLowerCase()
+  if (lower === 'true') return true
+  if (lower === 'false') return false
+  return null
+}
+
+/**
  * Parse argv (already stripped of node/electron/script path, so starting at
  * the first user token). Extracts global flags, resolves the command path
  * by matching registered commands (longest match first), then collects
@@ -206,12 +224,18 @@ function isMissingValueFor(name: string, next: string | undefined): boolean {
  * Flags requiring a value whose value token is missing or flag-shaped are
  * recorded in flags._missingValue (array of flag names) rather than silently
  * consuming the next token — main() turns this into a usage error (#11).
+ *
+ * Boolean flags given in `--flag=value` form (e.g. `--json=true`) are parsed
+ * as true/false (case-insensitive); any other value is recorded in
+ * flags._invalidBooleanValue rather than being silently accepted as a
+ * truthy string — main() turns this into a usage error too (#6).
  */
 function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResult {
   const allFlags: FlagDeclarations = { ...GLOBAL_FLAGS, ...perCommandFlags }
   const flags: ParsedFlags = {}
   const args: string[] = []
   const missingValue: string[] = []
+  const invalidBooleanValue: string[] = []
 
   let i = 0
   while (i < argv.length) {
@@ -228,7 +252,17 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
         // --key=value
         const k = name.slice(0, eqIdx)
         const v = name.slice(eqIdx + 1)
-        flags[k] = v
+        if (allFlags[k] === 'boolean') {
+          // Boolean flag in =value form: accept true/false, reject anything else (#6).
+          const parsed = parseBooleanFlagValue(v)
+          if (parsed == null) {
+            invalidBooleanValue.push(k)
+          } else {
+            flags[k] = parsed
+          }
+        } else {
+          flags[k] = v
+        }
         i++
       } else if (allFlags[name] === 'string') {
         // --key value — the value must not be missing, another flag, or (for
@@ -280,6 +314,9 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
 
   if (missingValue.length > 0) {
     flags._missingValue = missingValue
+  }
+  if (invalidBooleanValue.length > 0) {
+    flags._invalidBooleanValue = invalidBooleanValue
   }
 
   // Resolve command path via longest prefix match against registered commands.
@@ -625,6 +662,17 @@ export async function main(argv: string[]): Promise<void> {
   if (Array.isArray(parsed.flags._missingValue) && parsed.flags._missingValue.length > 0) {
     const [first] = parsed.flags._missingValue
     printUsageError(`flag --${first} requires a value`)
+    return
+  }
+
+  // A boolean flag (e.g. --json) was given in `--flag=value` form with a value
+  // that isn't 'true'/'false' (#6, e.g. `--json=garbage`).
+  if (
+    Array.isArray(parsed.flags._invalidBooleanValue) &&
+    parsed.flags._invalidBooleanValue.length > 0
+  ) {
+    const [first] = parsed.flags._invalidBooleanValue
+    printUsageError(`flag --${first} must be --${first}, --${first}=true, or --${first}=false`)
     return
   }
 

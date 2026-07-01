@@ -23,6 +23,12 @@ export type ParsedFlags = Record<string, string | boolean | string[]> & {
   _unknown?: string[]
   /** Names of string-valued flags whose value token was missing or flag-shaped. */
   _missingValue?: string[]
+  /**
+   * Names of boolean-valued flags given in `--flag=value` form where value
+   * was neither 'true' nor 'false' (e.g. `--json=garbage`). main() turns this
+   * into a usage error (exit 2) — see the "--json=<value> parsing" fix.
+   */
+  _invalidBooleanValue?: string[]
 }
 
 /** Context passed to every command handler. */

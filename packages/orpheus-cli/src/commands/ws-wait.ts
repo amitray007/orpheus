@@ -21,12 +21,28 @@
  *   blocked-input     → exit code 11  (waiting for user input)
  *   timeout           → exit code 12  (wait duration elapsed with no terminal state)
  *   died              → exit code 13  (session file gone / process dead)
+ *   not-found         → exit code 3   (id does not resolve to any workspace at all —
+ *                        distinct from 'died', which means the id was a real,
+ *                        previously-live workspace whose session ended/crashed)
  *
  * MULTI-ID AGGREGATION
  * --------------------
  * When multiple ids are given, the aggregate exit code uses the HIGHEST priority
  * reason across all ids. Priority order (highest first):
- *   died > timeout > blocked-permission > blocked-input > done
+ *   died > timeout > not-found > blocked-permission > blocked-input > done
+ *
+ * DECISION: why 'not-found' sits below 'died'/'timeout' but above the
+ * 'blocked-*'/'done' terminal states. A script waiting on N ids wants to know
+ * about the worst outcome. 'died' (a workspace that WAS running and then
+ * vanished/crashed) and 'timeout' (nothing resolved in time) are treated as
+ * the most actionable/urgent failures, so they still win if present. But a
+ * 'not-found' id (bad input — the id never existed) is still a hard error
+ * that must not be masked by a healthy 'done'/'blocked-*' result on another
+ * id in the same invocation — so it outranks those. This keeps `ws wait
+ * <real> <fake>` reporting exit 3 (not-found) rather than silently reporting
+ * exit 0/10/11 from the real id, while still letting a genuine 'died' or
+ * 'timeout' elsewhere take priority since those indicate an active session
+ * failure rather than a typo'd id.
  *
  * DURATION PARSING
  * ----------------
@@ -113,23 +129,27 @@ function parseDurationMs(input: string): number | null {
 // Exit reason → exit code
 // ---------------------------------------------------------------------------
 
-type WaitReason = 'done' | 'blocked-permission' | 'blocked-input' | 'timeout' | 'died'
+type WaitReason = 'done' | 'blocked-permission' | 'blocked-input' | 'timeout' | 'died' | 'not-found'
 
 const REASON_TO_EXIT_CODE: Record<WaitReason, number> = {
   done: 0,
   'blocked-permission': 10,
   'blocked-input': 11,
   timeout: 12,
-  died: 13
+  died: 13,
+  'not-found': 3
 }
 
-// Priority for aggregate: higher number = higher priority (determines the aggregate exit code)
+// Priority for aggregate: higher number = higher priority (determines the aggregate exit code).
+// Order (highest first): died > timeout > not-found > blocked-permission > blocked-input > done.
+// See the DECISION note in the file header for the reasoning behind not-found's placement.
 const REASON_PRIORITY: Record<WaitReason, number> = {
   done: 0,
   'blocked-input': 1,
   'blocked-permission': 2,
-  timeout: 3,
-  died: 4
+  'not-found': 3,
+  timeout: 4,
+  died: 5
 }
 
 function isValidReason(r: string): r is WaitReason {

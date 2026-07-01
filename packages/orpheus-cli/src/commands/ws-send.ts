@@ -49,6 +49,14 @@
  * become injectable within the 10 s timeout, the server returns a structured
  * "not ready" error surfaced here with a clear message and exit code 1.
  *
+ * NOT-FOUND BEHAVIOR
+ * -------------------
+ * If the id does not resolve to any workspace, the server error message
+ * includes "not found" (e.g. "workspace not found: <id>"); this is detected
+ * via isNotFoundError (shared with ws-lifecycle.ts) and surfaced as exit code
+ * 3 (data not found) instead of the general-error default of exit code 1, so
+ * scripts can distinguish "bad id" from other failures.
+ *
  * AUTO-LAUNCH
  * -----------
  * Not isRead — AppNotRunningError triggers the standard auto-launch + retry
@@ -59,6 +67,12 @@ import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 import { resolveFocus } from '../focus.js'
+import { isNotFoundError } from './ws-lifecycle.js'
+
+/** Extract a message string from a thrown value the same way printError does. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 registerCommand('ws send', {
   usage: 'ws send <id> [text] [--submit] [--key <name>] [--focus | --background]',
@@ -112,7 +126,7 @@ registerCommand('ws send', {
     try {
       result = await sendCommand('workspace.send', args)
     } catch (err) {
-      printError(err)
+      printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
 

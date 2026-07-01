@@ -405,10 +405,13 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
 
     // Rename a workspace.
     // NOTE: no explicit existence guard needed here — renameWorkspace() in
-    // workspaces.ts already throws `renameWorkspace: workspace not found: <id>`
-    // when the UPDATE...RETURNING matches zero rows, so a nonexistent id
-    // already surfaces as a real error (not a false success). Adding a
-    // redundant getWorkspace() check here would just duplicate that.
+    // workspaces.ts already throws `workspace not found: <id>` when the
+    // UPDATE...RETURNING matches zero rows, so a nonexistent id already
+    // surfaces as a real error (not a false success). Adding a redundant
+    // getWorkspace() check here would just duplicate that. renameWorkspace()
+    // also sanitizes/caps the name (see sanitizeWorkspaceName in workspaces.ts:
+    // strips control chars, collapses whitespace, trims, caps at 200 chars
+    // with an ellipsis, and rejects an empty-after-trim name).
     'workspace.rename': (args) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       if (typeof args.name !== 'string') throw new Error('args.name is required')
@@ -424,6 +427,15 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // looking at).
     'workspace.open': (args) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
+      // DATA-INTEGRITY FIX (QA — mirrors workspace.archive/close/reopen): previously
+      // this dispatch never checked existence, so `ws open <nonexistent-id>` reported
+      // { requested: true } (success-shaped) and exit 0 even though nothing was opened.
+      // Fix: getWorkspace(id) FIRST; a null result throws 'workspace not found: <id>',
+      // which the CLI's not-found heuristic maps to exit 3 — consistent with archive/
+      // close/reopen/rename.
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
       const focus = args.focus !== false
       deps.requestOpenWorkspace(args.id, focus)
       return { requested: true }
@@ -650,6 +662,24 @@ export function startCommandServer(deps: CommandServerDeps): {
         // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
         const everSeenAlive = new Set<string>()
 
+        // NOT-FOUND VALIDATION (QA fix — `ws wait <nonexistent-id>` was resolving as
+        // 'died', conflating "genuinely dead" with "never existed"). Validate every
+        // requested id against the DB RIGHT NOW, before any grace-window/deriveReason
+        // machinery runs. A null getWorkspace() here means the id never existed at
+        // subscribe time — resolve it immediately as 'not-found' and never enter the
+        // wait loop for it. This also guards a multi-id batch: `ws wait <real> <fake>`
+        // must report the fake id as 'not-found' without blocking or poisoning the
+        // real id's eventual 'done'/'died'/etc — each id resolves independently via
+        // the `resolved` map, so marking the fake one here just removes it from every
+        // later loop (`checkAllResolved`, the observer, the initial-check loop, and the
+        // timeout sweep all skip ids already in `resolved`).
+        for (const workspaceId of workspaceIds) {
+          if (getWorkspace(workspaceId) == null) {
+            resolved.set(workspaceId, 'not-found')
+            writeFrame({ id: workspaceId, reason: 'not-found', status: 'unknown' })
+          }
+        }
+
         // GRACE WINDOW (fixes: `ws send --submit` immediately followed by `ws wait`
         // reporting 'died' for a workspace that is actively booting/running).
         //
@@ -706,7 +736,13 @@ export function startCommandServer(deps: CommandServerDeps): {
         // That status is written synchronously by setStatusFromFile → dispatch →
         // setWorkspaceStatus, so it reflects the *last known-good* transition even
         // during a session-file read race:
-        //   - workspace missing entirely (row deleted)          → died (can't be live)
+        //   - workspace missing entirely (row deleted)          → 'died' if it was ever
+        //     seen alive during this subscription (genuinely destroyed mid-wait), else
+        //     'not-found' (it never existed in the first place — though the subscribe-
+        //     start validation above should have already caught that case before this
+        //     function is ever called for it; this branch is a defensive fallback for
+        //     an id that somehow slipped past, e.g. a race with the DB row appearing
+        //     and then vanishing between the start-of-subscribe check and here).
         //   - archivedAt != null                                → died (workspace is gone)
         //   - closedAt != null (deliberately closed by the user/CLI) → died (not live)
         //   - status === 'awaiting_input' or status === 'idle'  → 'done' — the DB already
@@ -733,8 +769,13 @@ export function startCommandServer(deps: CommandServerDeps): {
             const ws = getWorkspace(workspaceId)
 
             if (ws == null) {
-              // Workspace row is gone entirely — cannot be live.
-              return 'died'
+              // Workspace row is gone entirely — cannot be live. Distinguish
+              // "never existed" from "existed and was destroyed": if this
+              // subscription never observed the workspace alive, treat it as
+              // 'not-found' rather than 'died' (matches the subscribe-start
+              // validation above). Otherwise it was alive and is now genuinely
+              // gone → 'died'.
+              return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
             }
             if (ws.archivedAt != null) {
               // Archived — teardown already happened; treat as died (not a live wait target).
@@ -844,7 +885,8 @@ export function startCommandServer(deps: CommandServerDeps): {
             reason === 'done' ||
             reason === 'blocked-permission' ||
             reason === 'blocked-input' ||
-            reason === 'died'
+            reason === 'died' ||
+            reason === 'not-found'
           )
         }
 
