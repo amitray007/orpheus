@@ -151,6 +151,16 @@ regress hover cards into keystroke thieves.
 
 ## Data flow
 
+> Amendment (2026-07-02, planning research): Electron #44590 — a view hidden via
+> `setVisible(false)` (or occluded) reports `visibilityState: 'hidden'` and can
+> read `innerWidth === 0` even with `backgroundThrottling: false`, which breaks
+> paint-while-hidden. The implementation plan therefore keeps the view
+> permanently visible and hides by parking bounds at zero: open becomes
+> `setBounds(target)` → render → ack → CSS fade-in. Transparent pixels mean
+> nothing flashes. See the plan's Key Technical Decisions for the verified
+> recipe and fallbacks; where this section says `setVisible`, read
+> bounds-parking.
+
 ### Open (paint-then-show handshake — no flash of empty/stale content)
 
 1. Main renderer requests an overlay (like `showConfirmModal` today) →
