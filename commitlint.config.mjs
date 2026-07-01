@@ -12,7 +12,7 @@
 // so no additional devDependencies are required.
 
 /** @type {import('@commitlint/types').UserConfig} */
-module.exports = {
+export default {
   extends: ['@commitlint/config-conventional'],
   rules: {
     // Turn off length cap — some subjects in this repo exceed 100 chars.
