@@ -2719,8 +2719,31 @@ static Napi::Value IsOverlayRegistered(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), isOverlayRegistered());
 }
 
-// reassertOverlayOrder — re-raise the overlay above any surface view (or
-// other subview) that has been ordered above it in contentView.subviews.
+// reassertOverlayOrder — enforce "terminal(s) below overlay" by moving the
+// TERMINAL views, never the overlay view itself.
+//
+// WHY: the overlay view is a Chromium-managed WebContentsViewCocoa (attached
+// once at registration — see the attach-once KTD). Detaching and re-adding a
+// Chromium-managed NSView breaks its compositing (the Electron #44652 class
+// of bug): the renderer keeps painting and acking frames, but AppKit never
+// shows them again, so the overlay silently goes invisible while looking
+// "alive" from the renderer's point of view. The previous implementation of
+// this function did exactly that (removeFromSuperview + addSubview the
+// overlay) to self-heal Electron's own subview reshuffles, and that self-heal
+// was itself the bug: once it fired, the overlay was undetachable-safe no
+// longer, and every future modal rendered invisibly "behind" the terminal.
+//
+// FIX: OrpheusGhosttyView (the terminal surface) tolerates detach/re-attach
+// by design — reconcileSurface does exactly that on every hide/show. So
+// instead of moving the overlay, walk contentView.subviews and for every
+// terminal view ordered ABOVE the overlay, remove + re-add THAT view
+// `positioned:NSWindowBelow relativeTo:overlayView`. This never calls any
+// ghostty surface lifecycle function (no occlusion/focus toggling), only the
+// AppKit subview move, and addSubview preserves the view's frame — so no
+// visible flicker or state loss. The backstop view stays at index 0
+// regardless: NSWindowBelow relativeTo:overlayView only sinks the terminal to
+// just beneath the overlay, not beneath the backstop.
+//
 // Cheap no-op when the order is already correct (index comparison only; no
 // AppKit calls in the common case). Self-heal for native subview reshuffles
 // that historically happen around DevTools/fullscreen transitions and any
@@ -2736,15 +2759,35 @@ static void reassertOverlayOrder(void) {
 
     if (overlayIndex == subviews.count - 1) return;  // already topmost — no-op
 
-    // Overlay isn't topmost: something is ordered above it. Re-raise it above
-    // everything by removing and re-adding at NSWindowAbove relativeTo:nil —
-    // relativeTo:nil is always safe (unlike relativeTo:someView, which
-    // silently sinks the view to the bottom if someView isn't currently a
-    // sibling — see the terminal attach-site comments below).
-    [overlayView removeFromSuperview];
-    [contentView addSubview:overlayView positioned:NSWindowAbove relativeTo:nil];
-    NSLog(@"[ghostty-surface] reassertOverlayOrder: overlay was not topmost (index=%lu of %lu) — re-raised",
-          (unsigned long)overlayIndex, (unsigned long)subviews.count);
+    // Overlay isn't topmost: one or more terminal views are ordered above it.
+    // Move each offending terminal below the overlay instead of touching the
+    // overlay view. Re-snapshot subviews/overlayIndex after each move since
+    // the array mutates as we go.
+    for (auto& kv : g_surfaces) {
+        NSView* termView = kv.second.view;
+        if (!termView || termView.superview != contentView) continue;
+
+        NSArray<NSView*>* current = contentView.subviews;
+        NSUInteger termIndex = [current indexOfObject:termView];
+        NSUInteger curOverlayIndex = [current indexOfObject:overlayView];
+        if (termIndex == NSNotFound || curOverlayIndex == NSNotFound) continue;
+        if (termIndex < curOverlayIndex) continue;  // already below — fine
+
+        // removeFromSuperview resigns first responder if termView (or a
+        // descendant) currently holds it — capture that before the move so
+        // keyboard focus can be restored after re-attach, otherwise a
+        // focused terminal silently stops receiving keystrokes.
+        NSWindow* win = termView.window;
+        BOOL wasFirstResponder = (win != nil && win.firstResponder == termView);
+
+        [termView removeFromSuperview];
+        [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
+        if (wasFirstResponder && !g_overlayFocusSuppressed && win) {
+            [win makeFirstResponder:termView];
+        }
+        NSLog(@"[ghostty-surface] reassertOverlayOrder: moved terminal view (workspaceId=%s) below overlay (was index=%lu, overlay index=%lu)",
+              kv.first.c_str(), (unsigned long)termIndex, (unsigned long)curOverlayIndex);
+    }
 }
 
 static Napi::Value ReassertOverlayOrder(const Napi::CallbackInfo& info) {

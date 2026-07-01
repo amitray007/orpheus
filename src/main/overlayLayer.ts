@@ -435,6 +435,10 @@ function handleAckPainted(ack: OverlayAck): void {
   if (currentDescriptor?.takesFocus && viewAlive()) {
     view!.webContents.focus()
     addon?.setOverlayFocusSuppressed(true)
+    // Chromium can re-stack its own child views on focus; with the new
+    // move-terminal-not-overlay semantics in reassertOverlayOrder this is
+    // safe and cheap to call unconditionally here.
+    addon?.reassertOverlayOrder()
   }
   p.resolve({ shown: true })
 }
