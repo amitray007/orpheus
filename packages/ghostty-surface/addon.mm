@@ -4757,7 +4757,15 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    [self installCardTrackingArea];
+    // A confirm modal must never have a hover-bridge tracking area — it must
+    // stay open regardless of pointer movement, closing only via button /
+    // Escape / backdrop click. AppKit invokes updateTrackingAreas
+    // automatically on layout/resize/hierarchy changes, so without this guard
+    // it would unconditionally re-install the auto-close tracking area even
+    // though ShowPopover deliberately skips the initial install for confirm.
+    if (![self.kind isEqualToString:@"confirm"]) {
+        [self installCardTrackingArea];
+    }
 }
 
 - (void)mouseEntered:(NSEvent*)event {
@@ -4768,6 +4776,14 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 }
 
 - (void)mouseExited:(NSEvent*)event {
+    // Belt-and-suspenders: a confirm modal must never auto-close on
+    // pointer-leave, even if a tracking area somehow exists on it. Only a
+    // button click / Escape / backdrop click may dismiss a confirm modal.
+    if ([self.kind isEqualToString:@"confirm"]) {
+        [super mouseExited:event];
+        return;
+    }
+
     (void)event;
     self.pointerInCard = NO;
     NSLog(@"[ghostty-surface] popover mouseExited workspaceId=%s — closing card",
