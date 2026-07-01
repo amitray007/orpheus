@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { GitBranch, Plus, SpinnerGap } from '@phosphor-icons/react'
 import type { WorkspaceRecord } from '@shared/types'
 import { Overlay } from '../ui/Overlay'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import { playSound } from '@/lib/sound'
+import { useSidebarBounds } from './SidebarBoundsContext'
 
 // ---------------------------------------------------------------------------
 // Renderer-side slug helper (mirrors main/worktrees.ts worktreeSlug without
@@ -260,6 +261,9 @@ type MenuView = 'closed' | 'picker' | 'branch'
 // without reading `ref.current` during render.
 type AnchorPos = { top: number; left: number }
 
+// Clamped popover position, computed after the rendered content is measured.
+type ClampedPos = { top: number; left: number }
+
 export function NewWorkspaceMenu({
   projectId,
   defaultName,
@@ -273,7 +277,10 @@ export function NewWorkspaceMenu({
     () => modesCache.get(projectId) ?? null
   )
   const [anchorPos, setAnchorPos] = useState<AnchorPos | null>(null)
+  const [clampedPos, setClampedPos] = useState<ClampedPos | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const sidebarBoundsRef = useSidebarBounds()
 
   // Fetch offered modes (async IPC call), populating the cache.
   // Single-fire auto-create: if only one mode is available, collapse immediately
@@ -323,6 +330,42 @@ export function NewWorkspaceMenu({
     // local-only case is handled in fetchModes .then() — do NOT call onCreateLocal here.
   }, [modes, view])
 
+  // Clamp the popover inside the sidebar bounds (falling back to the viewport),
+  // mirroring ContextMenu's clamping math. Re-runs whenever the anchor changes,
+  // the view switches (picker -> branch resizes the card), or modes finish
+  // loading (loading -> loaded picker can change size).
+  useLayoutEffect(() => {
+    if (view === 'closed' || !anchorPos) return
+    const el = contentRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    let top = anchorPos.top
+    let left = anchorPos.left
+    const bounds = sidebarBoundsRef?.current?.getBoundingClientRect() ?? {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight
+    }
+    if (left + rect.width > bounds.right) left = bounds.right - rect.width - 4
+    if (top + rect.height > bounds.bottom) top = bounds.bottom - rect.height - 4
+    if (left < bounds.left) left = bounds.left + 4
+    if (top < bounds.top) top = bounds.top + 4
+    setClampedPos({ top, left })
+  }, [anchorPos, view, modes, sidebarBoundsRef])
+
+  // Reposition on window resize while open (mirrors TopBar's StatusPopover).
+  useEffect(() => {
+    if (view === 'closed') return
+    function reposition(): void {
+      if (!wrapperRef.current) return
+      const rect = wrapperRef.current.getBoundingClientRect()
+      setAnchorPos({ top: rect.bottom + 4, left: rect.left })
+    }
+    window.addEventListener('resize', reposition)
+    return () => window.removeEventListener('resize', reposition)
+  }, [view])
+
   function captureAnchor(): AnchorPos | null {
     if (!wrapperRef.current) return null
     const rect = wrapperRef.current.getBoundingClientRect()
@@ -340,19 +383,29 @@ export function NewWorkspaceMenu({
     // Capture anchor position immediately while the element is still in layout.
     const pos = captureAnchor()
     setAnchorPos(pos)
+    // Reset the clamped position so the popover doesn't briefly render at a
+    // stale clamped location from a prior open before the layout effect reruns.
+    setClampedPos(pos)
 
     // Always re-fetch on open to pick up config changes (clears the cache entry).
     modesCache.delete(projectId)
     // Kick off async fetch; state update arrives via setModes in fetchModes.
     fetchModes()
 
-    // While modes load, tentatively show picker (collapsed by the effect above
-    // once modes arrive, if only one mode is available).
+    // Open immediately and stay open through the async fetch — the picker
+    // renders a stable loading state (see showLoading below) instead of
+    // vanishing while modes === null, so there's no flicker.
     setView('picker')
   }
 
+  // Genuine-dismiss only: outside-click, Escape (both handled by Overlay), or an
+  // explicit selection (Local/Worktree picked, or branch created/cancelled).
+  // The trigger's onMouseDown stopPropagation (above) prevents the same click
+  // that opens the menu from being seen as an "outside" click by Overlay.
   function handleClose(): void {
     setView('closed')
+    setAnchorPos(null)
+    setClampedPos(null)
   }
 
   function handlePickLocal(e: React.MouseEvent): void {
@@ -373,24 +426,36 @@ export function NewWorkspaceMenu({
 
   const defaultBranch = `worktree-${worktreeSlugRenderer(defaultName)}`
 
-  // Show picker only when modes are loaded AND both are available. While modes
-  // are loading (modes === null) we keep view='picker' but render nothing yet
-  // (invisible, harmless loading state).
-  const showPicker = view === 'picker' && modes !== null && modes.local && modes.worktree
+  // The picker stays mounted for the entire 'picker' view — including while
+  // fetchModes() is in flight — so the menu never visually vanishes-then-
+  // reappears. While modes === null we render a stable disabled/loading state
+  // instead of nothing; once modes resolve to "both offered" we render the
+  // real Local/Worktree items (single-mode cases collapse away via the effect
+  // above / fetchModes' resolve handler, never rendered here).
+  const showPicker = view === 'picker'
   const showBranch = view === 'branch'
+  const pickerLoading = modes === null
 
-  const overlayStyle: React.CSSProperties | undefined = anchorPos
-    ? { top: anchorPos.top, left: anchorPos.left }
-    : undefined
+  const overlayStyle: React.CSSProperties | undefined = clampedPos ?? anchorPos ?? undefined
 
   return (
     <div ref={wrapperRef} className={['relative inline-flex', className].filter(Boolean).join(' ')}>
-      {/* Trigger wrapper — intercepts clicks before they reach the inner button */}
-      <div onClick={handleTriggerClick} className="inline-flex">
+      {/* Trigger wrapper — intercepts clicks before they reach the inner button.
+          onMouseDown stops propagation so the SAME click that opens the menu
+          isn't also seen by Overlay's document-level outside-mousedown listener
+          (which would otherwise fire onDismiss for the trigger's own mousedown,
+          since the trigger sits outside the portaled Overlay's ref). */}
+      <div
+        onClick={handleTriggerClick}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="inline-flex"
+      >
         {children}
       </div>
 
-      {/* Picker dropdown: Local | Worktree */}
+      {/* Picker dropdown: Local | Worktree. Stays mounted (view='picker') through
+          the async fetchModes() load — shows a disabled/loading state rather
+          than unmounting, so the menu never flickers or vanishes mid-load. */}
       <Overlay
         open={showPicker}
         interactive
@@ -399,25 +464,39 @@ export function NewWorkspaceMenu({
         className="fixed z-50 min-w-[140px] rounded-md border border-border-default bg-surface-overlay shadow-lg py-1"
         style={overlayStyle}
       >
-        <div role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handlePickLocal}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-          >
-            <Plus size={12} weight="bold" className="text-text-muted flex-shrink-0" />
-            Local
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handlePickWorktree}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
-          >
-            <GitBranch size={12} className="text-text-muted flex-shrink-0" />
-            Worktree
-          </button>
+        <div ref={contentRef} role="menu">
+          {pickerLoading ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted">
+              <SpinnerGap size={12} className="animate-spin flex-shrink-0" />
+              Loading…
+            </div>
+          ) : modes && modes.local && modes.worktree ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={handlePickLocal}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
+              >
+                <Plus size={12} weight="bold" className="text-text-muted flex-shrink-0" />
+                Local
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={handlePickWorktree}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-text-primary transition-colors duration-100 hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised cursor-pointer"
+              >
+                <GitBranch size={12} className="text-text-muted flex-shrink-0" />
+                Worktree
+              </button>
+            </>
+          ) : (
+            // Both modes unavailable (rare/error edge case) — nothing sensible
+            // to offer; render an empty measured node so clamping still works
+            // and the menu doesn't look broken open with no content semantics.
+            <div className="px-3 py-2 text-sm text-text-muted">No workspace types available</div>
+          )}
         </div>
       </Overlay>
 
@@ -430,12 +509,14 @@ export function NewWorkspaceMenu({
         className="fixed z-50 w-64 rounded-md border border-border-default bg-surface-overlay shadow-lg"
         style={overlayStyle}
       >
-        <BranchField
-          projectId={projectId}
-          defaultBranch={defaultBranch}
-          onCreated={handleCreated}
-          onCancel={handleClose}
-        />
+        <div ref={contentRef}>
+          <BranchField
+            projectId={projectId}
+            defaultBranch={defaultBranch}
+            onCreated={handleCreated}
+            onCancel={handleClose}
+          />
+        </div>
       </Overlay>
     </div>
   )

@@ -8,11 +8,21 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
-import { WorktreeErrorCard } from './WorktreeErrorCard'
-import type { WorktreeError } from './WorktreeErrorCard'
+import { showConfirmModal, getActiveModalWorkspaceId, hideNativePopover } from '@/lib/nativePopover'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
+
+// Worktree reconcile error shape returned by terminal:mount (formerly imported
+// from the now-removed React WorktreeErrorCard component — the error card is
+// now a native confirm modal; see the effect below).
+export type WorktreeErrorKind = 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
+
+export interface WorktreeError {
+  kind: WorktreeErrorKind
+  message: string
+  conflictPath?: string
+}
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -62,10 +72,13 @@ export function WorkspaceView({
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
   // Worktree reconcile error — set when terminal:mount returns worktreeError.
-  // While non-null the terminal surface is not mounted; WorktreeErrorCard is shown instead.
+  // While non-null, a native confirm modal is shown (see the effect below)
+  // instead of mounting the terminal surface.
   const [worktreeError, setWorktreeError] = useState<WorktreeError | null>(null)
-  // converting — true while a convertToLocal IPC is in-flight; prevents double-conversion.
-  const [converting, setConverting] = useState(false)
+  // convertingRef — true while a convertToLocal IPC is in-flight; guards against
+  // double-conversion (the native modal dismisses on click, so re-entrancy would
+  // only happen from a rapid double-click before the promise resolves).
+  const convertingRef = useRef(false)
   // pendingCwdOverrideRef — holds the fresh cwd returned by convertToLocal so the
   // re-mount triggered by bumping remountKey uses the updated repo-root path rather
   // than the stale workspace.cwd prop (which propagates via workspaces:changed only
@@ -145,11 +158,12 @@ export function WorkspaceView({
    * through Dashboard state — potentially after the mount effect closure has
    * already been created with the old value).
    *
-   * The `converting` flag prevents double-conversion if the button is clicked
-   * twice before the IPC resolves.
+   * The `convertingRef` guard prevents double-conversion if triggered twice
+   * before the IPC resolves.
    */
   const handleWorktreeConvertToLocal = useCallback(() => {
-    setConverting(true)
+    if (convertingRef.current) return
+    convertingRef.current = true
     void window.api.workspaces
       .convertToLocal(workspace.id)
       .then((updated) => {
@@ -163,9 +177,92 @@ export function WorkspaceView({
         console.error('[WorkspaceView] convertToLocal failed:', e)
       })
       .finally(() => {
-        setConverting(false)
+        convertingRef.current = false
       })
   }, [workspace.id])
+
+  // Supplementary detail per error kind — mirrors the copy that used to live
+  // in the (now-removed) React WorktreeErrorCard.
+  const WORKTREE_ERROR_DETAIL: Record<WorktreeErrorKind, string> = {
+    checkedOutElsewhere:
+      'Convert to local to use this workspace from the repository root instead, or check out a different branch in the conflicting location and retry.',
+    corruptDir:
+      'The worktree directory is in an unrecoverable state. Retry to attempt re-creation, or convert to local to continue from the repository root.',
+    parentGone:
+      'The parent repository could not be found. Convert to local to detach from the worktree configuration.'
+  }
+
+  // Native-modal-driven worktree reconcile error card. Fires whenever
+  // terminal:mount returns a worktreeError (surface not mounted). Rendered
+  // through the native chassis (not a React <div>) so it can't be occluded by
+  // a live libghostty surface even if the user navigates back to one.
+  // All three actions (Retry / Open location / Convert to local) resolve the
+  // modal and perform their action; re-opening the workspace re-triggers this
+  // effect if the underlying problem persists.
+  useEffect(() => {
+    if (!active || !worktreeError) return
+
+    let cancelled = false
+    const revealPath = worktreeError.conflictPath ?? workspace.worktreeParentCwd ?? undefined
+    const detail = WORKTREE_ERROR_DETAIL[worktreeError.kind]
+    const body = detail ? `${worktreeError.message}\n\n${detail}` : worktreeError.message
+
+    void showConfirmModal({
+      title: 'Worktree unavailable',
+      body,
+      buttons: [
+        { id: 'retry', label: 'Retry', style: 'primary' },
+        ...(revealPath ? [{ id: 'openLocation', label: 'Open location' }] : []),
+        { id: 'convertToLocal', label: 'Convert to local' }
+      ]
+    }).then((result) => {
+      if (cancelled) return
+      switch (result.buttonId) {
+        case 'retry':
+          handleWorktreeRetry()
+          break
+        case 'openLocation':
+          // Doesn't remount (worktreeError stays set, no re-mount effect fires
+          // to re-focus) — re-assert focus now that the modal is closed so the
+          // (still error-carded) workspace doesn't end up out of focus.
+          if (revealPath) handleWorktreeOpenLocation(revealPath)
+          handleFocusTerminal()
+          break
+        case 'convertToLocal':
+          handleWorktreeConvertToLocal()
+          break
+        default:
+          // Escape/backdrop cancel — leave worktreeError set; the user can
+          // re-trigger by navigating away and back, which re-fires this effect.
+          // No remount follows this path, so re-assert focus on this (still
+          // active, still error-carded) workspace's terminal ourselves —
+          // otherwise the modal's stolen first responder is never returned.
+          handleFocusTerminal()
+          break
+      }
+    })
+    // Capture the synthetic modal workspaceId synchronously right after
+    // opening it (showConfirmModal sets it before returning) so cleanup below
+    // can address exactly this modal, not whatever happens to be active later.
+    const modalWorkspaceId = getActiveModalWorkspaceId()
+
+    return () => {
+      cancelled = true
+      // Actively dismiss the modal this effect opened. Without this, navigating
+      // away (workspace switch/unmount) while the modal is still open left it
+      // orphaned: the native card + dimmed backdrop stayed on screen blocking
+      // input, and the JS promise never resolved (its modalHandlers entry
+      // leaked). hideNativePopover is idempotent — a no-op if the modal already
+      // settled (button click / Escape / backdrop) before cleanup ran, since
+      // the native side only acts on a workspaceId that's still the active
+      // popover. The native HidePopover path also fires a synthetic cancel for
+      // any 'confirm' modal still pending, so the promise settles either way.
+      if (modalWorkspaceId) {
+        hideNativePopover(modalWorkspaceId)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree*/handleFocusTerminal callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
+  }, [active, worktreeError, workspace.worktreeParentCwd])
 
   // Auto-dismiss the one-time notice after 6 seconds.
   useEffect(() => {
@@ -663,19 +760,9 @@ export function WorkspaceView({
                 onFocusTerminal={handleFocusTerminal}
               />
             )}
-            {/* Worktree reconcile error card — shown instead of the terminal surface
-                when terminal:mount returns a worktreeError. Only rendered for the
-                active view so inactive (keep-alive) views don't render it unnecessarily. */}
-            {active && worktreeError && (
-              <WorktreeErrorCard
-                error={worktreeError}
-                worktreeParentCwd={workspace.worktreeParentCwd}
-                onRetry={handleWorktreeRetry}
-                onOpenLocation={handleWorktreeOpenLocation}
-                onConvertToLocal={handleWorktreeConvertToLocal}
-                converting={converting}
-              />
-            )}
+            {/* Worktree reconcile error — shown as a NATIVE confirm modal (see the
+                effect above) instead of a React overlay, so it renders above the
+                libghostty terminal surface and can't be occluded. */}
             {/* One-time notice banner (e.g. "started fresh on branch X") — shown
                 briefly after a successful mount and auto-dismissed after 6 s. */}
             {active && notice && (
