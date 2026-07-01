@@ -205,6 +205,82 @@ export type GhosttySurfaceAddon = {
     accent: [number, number, number]
     isDark: boolean
   }) => void
+
+  // ---------------------------------------------------------------------------
+  // Overlay registration, ordering, and first-responder primitives
+  // (Phase A — the overlay WebContentsView kept above the terminal NSView)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Begin overlay registration for the given native window handle: bridges
+   * the handle to `contentView` and snapshots its current subviews. Call
+   * this BEFORE the caller adds the overlay WebContentsView's NSView (e.g.
+   * via `addChildView`), then call `commitOverlayRegistration` after.
+   * Re-entrant — safe (and required) to call again when the BrowserWindow is
+   * recreated (e.g. dock-activate); each call discards prior registration
+   * state rather than being a permanent one-shot.
+   */
+  beginOverlayRegistration: (handle: Buffer) => void
+
+  /**
+   * Complete overlay registration: diffs `contentView.subviews` against the
+   * snapshot taken by `beginOverlayRegistration`. Exactly one new subview is
+   * treated as the overlay view and registered; returns `true`. Zero or more
+   * than one new subview leaves no registration and returns `false` (the
+   * native side logs the count for diagnosis).
+   */
+  commitOverlayRegistration: () => boolean
+
+  /**
+   * True iff the overlay view is registered and still parented under the
+   * contentView it was registered against.
+   */
+  isOverlayRegistered: () => boolean
+
+  /**
+   * Re-raise the registered overlay above the terminal (or any other view)
+   * if something has been ordered above it in `contentView.subviews`. Cheap
+   * no-op when the order is already correct. Call after events known to
+   * reshuffle native subviews (fullscreen enter/exit, DevTools dock toggle)
+   * as a self-heal for ordering regressions.
+   */
+  reassertOverlayOrder: () => void
+
+  /**
+   * Gate the terminal's mount-time / re-show `makeFirstResponder` calls.
+   * While `suppressed` is true, those calls are skipped so a visible
+   * `takesFocus` overlay never has keyboard focus yanked away by a terminal
+   * attach/re-show happening underneath it.
+   */
+  setOverlayFocusSuppressed: (suppressed: boolean) => void
+
+  /**
+   * Save the window's current first responder into a slot dedicated to the
+   * overlay layer (separate from the native popover chassis's own saved
+   * responder). Refuses to overwrite the slot when the current first
+   * responder is the overlay view itself (or a descendant of it) — this is
+   * what keys the save to token acquisition rather than to each individual
+   * overlay show.
+   */
+  saveOverlayFirstResponder: () => void
+
+  /**
+   * Restore the first responder saved by `saveOverlayFirstResponder`, if it
+   * is still valid (non-nil, still attached to the same window). Clears the
+   * saved slot either way. Returns `true` on a successful restore, `false`
+   * if there was nothing valid to restore — the caller should then run its
+   * own fallback chain (e.g. focus the active workspace's terminal, then the
+   * main webContents).
+   */
+  restoreOverlayFirstResponder: () => boolean
+
+  /**
+   * True iff the window's current first responder is the registered overlay
+   * view or a descendant of it. Intended to be checked on every overlay hide
+   * (not just modal-class overlays) since any click on an `acceptsClicks`
+   * overlay can move first responder there.
+   */
+  isOverlayFirstResponder: () => boolean
 }
 
 // ---------------------------------------------------------------------------

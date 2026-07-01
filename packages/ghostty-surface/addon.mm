@@ -154,6 +154,12 @@ static std::string g_visibleWorkspaceId;
 static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
 static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake);
 
+// Forward declarations for the overlay registration/ordering primitives
+// (defined near ensureBackstopView) so reconcileSurface's terminal attach
+// sites can consult overlay state before choosing insertion order.
+static BOOL isOverlayRegistered(void);
+static void reassertOverlayOrder(void);
+
 @implementation OrpheusGhosttyView
 
 - (BOOL)isFlipped {
@@ -2575,6 +2581,266 @@ static NSView* ensureBackstopView(NSView* contentView) {
 }
 
 // ---------------------------------------------------------------------------
+// Overlay registration, ordering, and first-responder primitives (U1).
+//
+// The overlay is a WebContentsView's NSView, added by the JS side directly to
+// contentView (main.ts owns creation/addChildView — this addon never creates
+// it). We can't be handed the overlay's NSView pointer directly over NAPI
+// (Electron doesn't expose one), so registration works by DIFFING
+// contentView.subviews before/after the JS side adds it: begin() snapshots
+// the current subviews, the JS caller then does addChildView, and commit()
+// finds the one new subview and holds a __weak ref to it.
+//
+// Re-entrant by design (NOT dispatch_once like installBackstop/ensureBackstopView):
+// the BrowserWindow — and therefore contentView and the overlay NSView — is
+// recreated on dock-activate (src/main/index.ts app.on('activate')), so a
+// second begin/commit cycle for the new window must fully replace the old
+// registration rather than being a permanent one-shot.
+// ---------------------------------------------------------------------------
+
+// contentView captured at beginOverlayRegistration time; also the "is this
+// registration still for the current window" check in commit/reassert.
+static NSView* __weak g_overlayContentView = nil;
+
+// Subview snapshot taken at begin() — compared against contentView.subviews
+// at commit() time to find the newly-added overlay view. NSArray copy (not a
+// live reference to contentView.subviews) so mutations after begin() don't
+// change what we diff against.
+static NSArray<NSView*>* __strong g_overlaySnapshot = nil;
+
+// The registered overlay NSView. __weak: if the WebContentsView is destroyed
+// out from under us (window close/recreate without a fresh begin/commit,
+// crash-recovery reload of the whole window), this simply reads nil and
+// isOverlayRegistered() correctly reports false instead of holding a
+// dangling pointer alive.
+static NSView* __weak g_overlayView = nil;
+
+// True while a takesFocus overlay is visible — gates reconcileSurface's
+// mount-time/re-show makeFirstResponder calls so opening/re-showing a
+// terminal surface never yanks keyboard focus off the overlay. Set/cleared
+// by the TS-side overlayLayer state machine via setOverlayFocusSuppressed.
+static bool g_overlayFocusSuppressed = false;
+
+// First responder saved for the overlay layer's focus handoff, keyed to
+// TOKEN ACQUISITION (idle→pending), not to each individual show — see
+// saveOverlayFirstResponder's guard below. Separate slot from
+// g_modalPreviousFirstResponder (chassis popovers) so the two focus-restore
+// systems can't clobber each other during the Phase A/B/C migration overlap.
+// __weak for the same reason as g_modalPreviousFirstResponder: a responder
+// destroyed out from under us (surface teardown) reads nil, and restoring
+// nil is a safe no-op.
+static NSResponder* __weak g_overlaySavedFirstResponder = nil;
+
+// NAPI: beginOverlayRegistration(handle) → void
+//
+// Bridges the window handle to contentView (same Buffer→NSView* pattern as
+// InstallBackstop) and snapshots contentView.subviews so a following
+// commitOverlayRegistration() can diff for the newly-added overlay view.
+// Re-entrant: clears any prior registration state first, so calling this
+// again (window recreated on dock-activate) discards the old __weak refs
+// instead of leaving them around to fight the new registration.
+static Napi::Value BeginOverlayRegistration(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBuffer()) {
+        Napi::TypeError::New(env, "beginOverlayRegistration requires a window handle buffer")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Buffer<uint8_t> handleBuf = info[0].As<Napi::Buffer<uint8_t>>();
+    void* rawHandle = nullptr;
+    size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
+    memcpy(&rawHandle, handleBuf.Data(), copyLen);
+    NSView* contentView = (__bridge NSView*)rawHandle;
+    if (!contentView) return env.Undefined();
+
+    // Clear prior registration state up front — re-entrant, not one-shot.
+    g_overlayView = nil;
+    g_overlaySnapshot = nil;
+
+    g_overlayContentView = contentView;
+    g_overlaySnapshot = [contentView.subviews copy];
+
+    NSLog(@"[ghostty-surface] beginOverlayRegistration: snapshotted %lu subviews",
+          (unsigned long)g_overlaySnapshot.count);
+    return env.Undefined();
+}
+
+// NAPI: commitOverlayRegistration() → boolean
+//
+// Diffs contentView.subviews (now) against the begin()-time snapshot.
+// Exactly one new subview → that's the overlay WebContentsView's NSView;
+// store a __weak ref and return true. Zero or multiple new subviews means
+// the JS-side addChildView call raced with something else adding/removing
+// subviews between begin() and commit() (or didn't happen at all) — log
+// loudly with the count so it's diagnosable, leave no registration, and
+// return false so the TS caller can retry or fall back.
+static Napi::Value CommitOverlayRegistration(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    NSView* contentView = g_overlayContentView;
+    if (!contentView || !g_overlaySnapshot) {
+        NSLog(@"[ghostty-surface] commitOverlayRegistration: no beginOverlayRegistration in progress");
+        return Napi::Boolean::New(env, false);
+    }
+
+    NSMutableArray<NSView*>* added = [NSMutableArray array];
+    for (NSView* sub in contentView.subviews) {
+        if (![g_overlaySnapshot containsObject:sub]) {
+            [added addObject:sub];
+        }
+    }
+
+    if (added.count != 1) {
+        NSLog(@"[ghostty-surface] commitOverlayRegistration: expected exactly 1 new subview, found %lu — "
+              @"leaving overlay unregistered",
+              (unsigned long)added.count);
+        g_overlaySnapshot = nil;
+        return Napi::Boolean::New(env, false);
+    }
+
+    g_overlayView = added.firstObject;
+    g_overlaySnapshot = nil;
+    NSLog(@"[ghostty-surface] commitOverlayRegistration: registered overlay view %@", g_overlayView);
+    return Napi::Boolean::New(env, true);
+}
+
+// NAPI: isOverlayRegistered() → boolean
+//
+// True iff the weak overlay ref is still alive AND still parented under the
+// contentView it was registered against (guards the window-recreation
+// window where a stale ref could otherwise report a false positive).
+static BOOL isOverlayRegistered(void) {
+    NSView* overlayView = g_overlayView;
+    NSView* contentView = g_overlayContentView;
+    return overlayView != nil && contentView != nil && overlayView.superview == contentView;
+}
+
+static Napi::Value IsOverlayRegistered(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), isOverlayRegistered());
+}
+
+// reassertOverlayOrder — re-raise the overlay above any surface view (or
+// other subview) that has been ordered above it in contentView.subviews.
+// Cheap no-op when the order is already correct (index comparison only; no
+// AppKit calls in the common case). Self-heal for native subview reshuffles
+// that historically happen around DevTools/fullscreen transitions and any
+// other undocumented reordering Electron performs on contentView's children.
+static void reassertOverlayOrder(void) {
+    if (!isOverlayRegistered()) return;
+    NSView* overlayView = g_overlayView;
+    NSView* contentView = g_overlayContentView;
+
+    NSArray<NSView*>* subviews = contentView.subviews;
+    NSUInteger overlayIndex = [subviews indexOfObject:overlayView];
+    if (overlayIndex == NSNotFound) return;  // shouldn't happen given the guard above
+
+    if (overlayIndex == subviews.count - 1) return;  // already topmost — no-op
+
+    // Overlay isn't topmost: something is ordered above it. Re-raise it above
+    // everything by removing and re-adding at NSWindowAbove relativeTo:nil —
+    // relativeTo:nil is always safe (unlike relativeTo:someView, which
+    // silently sinks the view to the bottom if someView isn't currently a
+    // sibling — see the terminal attach-site comments below).
+    [overlayView removeFromSuperview];
+    [contentView addSubview:overlayView positioned:NSWindowAbove relativeTo:nil];
+    NSLog(@"[ghostty-surface] reassertOverlayOrder: overlay was not topmost (index=%lu of %lu) — re-raised",
+          (unsigned long)overlayIndex, (unsigned long)subviews.count);
+}
+
+static Napi::Value ReassertOverlayOrder(const Napi::CallbackInfo& info) {
+    reassertOverlayOrder();
+    return info.Env().Undefined();
+}
+
+// NAPI: setOverlayFocusSuppressed(suppressed) → void
+//
+// Consulted by reconcileSurface's two makeFirstResponder call sites (attach
+// and already-attached re-show). While suppressed, those sites skip stealing
+// first responder from the overlay so a visible takesFocus overlay (e.g. a
+// confirm modal) keeps keystrokes even when a terminal mount/re-show/kick
+// happens underneath it (notification-click requestOpenWorkspace is the
+// known repro path — TS cannot intercept this ObjC-side makeFirstResponder).
+static Napi::Value SetOverlayFocusSuppressed(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "setOverlayFocusSuppressed requires a boolean")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    g_overlayFocusSuppressed = info[0].As<Napi::Boolean>().Value();
+    return env.Undefined();
+}
+
+// isOverlayFirstResponder — true when the window's current first responder
+// is the overlay view itself or a descendant of it (the overlay's
+// WebContentsView NSView typically hosts Chromium's own view hierarchy, so
+// first responder often lands on a descendant, not the overlay view itself).
+static BOOL isOverlayFirstResponderInternal(void) {
+    NSView* overlayView = g_overlayView;
+    if (!overlayView || !overlayView.window) return NO;
+    NSResponder* first = overlayView.window.firstResponder;
+    if (!first || ![first isKindOfClass:[NSView class]]) return NO;
+    NSView* firstView = (NSView*)first;
+    return firstView == overlayView || [firstView isDescendantOf:overlayView];
+}
+
+static Napi::Value IsOverlayFirstResponder(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), isOverlayFirstResponderInternal());
+}
+
+// NAPI: saveOverlayFirstResponder() → void
+//
+// Saves the window's current first responder into the overlay's dedicated
+// slot, mirroring g_modalPreviousFirstResponder's __weak + validity idiom
+// (see that global's comment). GUARD: if the current first responder is
+// already the overlay view (or a descendant of it), do NOT overwrite the
+// slot — this is what makes the save keyed to TOKEN ACQUISITION rather than
+// to each individual show: replacing modal A with modal B while A is still
+// focused must NOT clobber the responder saved when A first took focus,
+// or restoreOverlayFirstResponder would later hand focus back to the
+// (by-then invisible) overlay view instead of whatever had focus before A —
+// exactly the R7 dangling-focus failure class this primitive exists to close.
+static Napi::Value SaveOverlayFirstResponder(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NSView* overlayView = g_overlayView;
+    NSWindow* window = overlayView ? overlayView.window : nil;
+    if (!window) return env.Undefined();
+
+    if (isOverlayFirstResponderInternal()) {
+        // Current responder IS the overlay (or a descendant) — keep whatever
+        // was saved before; do not overwrite.
+        return env.Undefined();
+    }
+
+    g_overlaySavedFirstResponder = window.firstResponder;
+    return env.Undefined();
+}
+
+// NAPI: restoreOverlayFirstResponder() → boolean
+//
+// If the saved responder is still valid (non-nil weak ref, still attached to
+// the same window it was saved from), makes it first responder again, clears
+// the slot, and returns true. Otherwise clears the slot and returns false so
+// the TS caller's fallback chain (active workspace terminal:focus → main
+// webContents) knows to run.
+static Napi::Value RestoreOverlayFirstResponder(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NSResponder* saved = g_overlaySavedFirstResponder;
+    g_overlaySavedFirstResponder = nil;
+
+    if (!saved) return Napi::Boolean::New(env, false);
+    if (![saved isKindOfClass:[NSView class]]) return Napi::Boolean::New(env, false);
+
+    NSView* savedView = (NSView*)saved;
+    NSView* overlayView = g_overlayView;
+    NSWindow* window = overlayView ? overlayView.window : savedView.window;
+    if (!window || savedView.window != window) return Napi::Boolean::New(env, false);
+
+    BOOL ok = [window makeFirstResponder:savedView];
+    return Napi::Boolean::New(env, ok);
+}
+
+// ---------------------------------------------------------------------------
 // reconcileSurface — the single writer of focus+occlusion for a surface.
 //
 // Reads entry.desiredVisible and reconciles the actual ghostty gate to match.
@@ -2609,7 +2875,19 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // ensureBackstopView installs the bleed-guard at index 0 as a side effect.
             if (contentView) {
                 (void)ensureBackstopView(contentView);
-                [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
+                // Overlay invariant (R5): when the overlay is registered for THIS
+                // contentView, the terminal must attach BELOW it, not above.
+                // relativeTo:overlayView is only safe because isOverlayRegistered()
+                // already confirmed overlayView.superview == contentView — a
+                // relativeTo: view that ISN'T currently a sibling silently sinks
+                // the new subview to the bottom instead of erroring, so this
+                // ordering check is load-bearing, not defensive fluff.
+                if (isOverlayRegistered() && g_overlayContentView == contentView) {
+                    NSView* overlayView = g_overlayView;
+                    [contentView addSubview:entry.view positioned:NSWindowBelow relativeTo:overlayView];
+                } else {
+                    [contentView addSubview:entry.view positioned:NSWindowAbove relativeTo:nil];
+                }
             }
             // Gap-fill: paint pre-first-frame gap app-dark.
             entry.view.layer.backgroundColor = orpheusGapFillColor();
@@ -2626,8 +2904,10 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 
             // SYNCHRONOUS makeFirstResponder (async opens an input race where a
             // keystroke right after mount routes to WebContents instead of terminal).
-            // NAPI runs on main thread ✓.
-            {
+            // NAPI runs on main thread ✓. Suppressed while a takesFocus overlay is
+            // visible (R6) — this ObjC path is reachable via notification-click
+            // requestOpenWorkspace with a modal open, which TS cannot intercept.
+            if (!g_overlayFocusSuppressed) {
                 NSWindow* win = [entry.view window];
                 if (win) [win makeFirstResponder:entry.view];
             }
@@ -2649,8 +2929,14 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             }
             ghostty_surface_draw(entry.surface);
 
-            // Sync makeFirstResponder for focus re-assertion.
-            {
+            // Self-heal (R5): this branch runs on every nav/kick/wake, so it's
+            // the backstop for reordering triggers we don't have an explicit
+            // event hook for — verify-and-repair overlay order unconditionally.
+            reassertOverlayOrder();
+
+            // Sync makeFirstResponder for focus re-assertion. Suppressed while a
+            // takesFocus overlay is visible (R6) — see the re-attach branch above.
+            if (!g_overlayFocusSuppressed) {
                 NSWindow* win = [entry.view window];
                 if (win) [win makeFirstResponder:entry.view];
             }
@@ -2905,8 +3191,18 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
 
     OrpheusGhosttyView* termView = [[OrpheusGhosttyView alloc] initWithFrame:frame];
     termView.workspaceId = [NSString stringWithUTF8String:workspaceId.c_str()];
-    // Terminal always parks above the web layer; popovers are native siblings above it.
-    [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+    // Terminal always parks above the web layer; popovers are native siblings above
+    // it. Overlay invariant (R5): when the overlay is registered for THIS
+    // contentView, the terminal attaches BELOW it instead — relativeTo:overlayView
+    // is only safe here because isOverlayRegistered() already confirmed
+    // overlayView.superview == contentView (a relativeTo: view that isn't
+    // currently a sibling silently sinks the new subview to the bottom).
+    if (isOverlayRegistered() && g_overlayContentView == contentView) {
+        NSView* overlayView = g_overlayView;
+        [contentView addSubview:termView positioned:NSWindowBelow relativeTo:overlayView];
+    } else {
+        [contentView addSubview:termView positioned:NSWindowAbove relativeTo:nil];
+    }
     // Gap-fill: set background so the pre-first-frame gap shows app-dark.
     termView.layer.backgroundColor = orpheusGapFillColor();
     // Accept file URLs (images, any files) so claude attachments work via drop.
@@ -6623,6 +6919,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
+    exports.Set("beginOverlayRegistration",   Napi::Function::New(env, BeginOverlayRegistration));
+    exports.Set("commitOverlayRegistration",  Napi::Function::New(env, CommitOverlayRegistration));
+    exports.Set("isOverlayRegistered",        Napi::Function::New(env, IsOverlayRegistered));
+    exports.Set("reassertOverlayOrder",       Napi::Function::New(env, ReassertOverlayOrder));
+    exports.Set("setOverlayFocusSuppressed",  Napi::Function::New(env, SetOverlayFocusSuppressed));
+    exports.Set("saveOverlayFirstResponder",  Napi::Function::New(env, SaveOverlayFirstResponder));
+    exports.Set("restoreOverlayFirstResponder", Napi::Function::New(env, RestoreOverlayFirstResponder));
+    exports.Set("isOverlayFirstResponder",    Napi::Function::New(env, IsOverlayFirstResponder));
     return exports;
 }
 
