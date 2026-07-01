@@ -106,8 +106,28 @@ registerCommand('ws new', {
     // STRICTNESS: require --task XOR --empty/--blank (an agent must declare
     // intent — see module doc). Checked before any DB/socket work so the
     // usage error is fast and side-effect-free.
-    const hasTask = typeof ctx.flags.task === 'string' && ctx.flags.task !== ''
+    //
+    // --task is trimmed before the emptiness check: a whitespace-only value
+    // ("   ") was explicitly passed but carries no real task text, so it is
+    // treated as a usage error rather than silently falling through to
+    // "no task declared" (which would produce a confusing generic message)
+    // or silently being accepted as a blank-but-truthy task (which would
+    // create a workspace with a whitespace-only seed prompt). The caller
+    // clearly intended to provide a task — tell them it was blank and to
+    // either provide real text or use --empty.
+    const rawTask = typeof ctx.flags.task === 'string' ? ctx.flags.task : undefined
+    const trimmedTask = rawTask?.trim()
     const hasEmpty = ctx.flags.empty === true || ctx.flags.blank === true
+
+    if (rawTask != null && trimmedTask === '') {
+      printUsageError(
+        'ws new: --task was given but is blank (whitespace-only). ' +
+          'Provide real task text, or use --empty (or --blank) to explicitly create an empty workspace.'
+      )
+      return
+    }
+
+    const hasTask = trimmedTask != null && trimmedTask !== ''
 
     if (!hasTask && !hasEmpty) {
       printUsageError(

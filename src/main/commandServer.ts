@@ -116,6 +116,18 @@ type DispatchFn = (
 ) => Promise<unknown> | unknown
 
 // ---------------------------------------------------------------------------
+// /subscribe — --until modes (see ws-wait.ts's DURATION PARSING / --UNTIL doc
+// comment for the full behavioral spec). Passed through from the CLI's
+// `subscribe({ workspaceIds, timeoutMs, until })` body.
+// ---------------------------------------------------------------------------
+
+type UntilMode = 'done' | 'input' | 'idle'
+
+function isValidUntilMode(v: string): v is UntilMode {
+  return v === 'done' || v === 'input' || v === 'idle'
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch table — one entry per supported CLI action.
 // ---------------------------------------------------------------------------
 
@@ -605,11 +617,12 @@ export function startCommandServer(deps: CommandServerDeps): {
       req.on('end', async () => {
         if (subOversized) return
 
-        let body: { workspaceIds?: unknown; timeoutMs?: unknown }
+        let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
         try {
           body = JSON.parse(Buffer.concat(subChunks).toString('utf-8')) as {
             workspaceIds?: unknown
             timeoutMs?: unknown
+            until?: unknown
           }
         } catch {
           if (!res.writableEnded) {
@@ -632,6 +645,17 @@ export function startCommandServer(deps: CommandServerDeps): {
           }
           return
         }
+
+        // --until — how specific a terminal state the caller wants to block for.
+        // 'done' (default) preserves the historical behavior exactly: any non-running
+        // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
+        // 'input' blocks past awaiting_input/idle until the workspace is genuinely
+        // blocked on the user. 'idle' blocks past awaiting_input until the workspace
+        // is fully idle. The CLI already validates this client-side (exit 2 on a bad
+        // value), so an invalid/missing value here just falls back to the default
+        // rather than erroring the whole subscription.
+        const until: UntilMode =
+          typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
 
         // Server-side timeout policy:
         //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
@@ -880,6 +904,43 @@ export function startCommandServer(deps: CommandServerDeps): {
           return ''
         }
 
+        // Apply the caller's --until mode to a raw reason from deriveReason().
+        //
+        // deriveReason() always computes the DEFAULT ('done') notion of terminal —
+        // the workspace stopped running for ANY reason (awaiting_input, idle, or
+        // blocked-*). --until narrows what counts as resolved for a 'done' reason
+        // specifically; blocked-permission/blocked-input/died/not-found are always
+        // terminal in every mode (a dead/missing/timed-out/blocked-on-user workspace
+        // always resolves, regardless of --until).
+        //
+        // 'input' mode: a raw 'done' means the workspace reached awaiting_input/idle
+        // WITHOUT being blocked on the user — that's exactly what 'input' mode wants
+        // to wait PAST. So 'done' is downgraded to '' (keep waiting) under 'input'.
+        //
+        // 'idle' mode: a raw 'done' could mean either awaiting_input (turn-end, but
+        // not fully settled) or idle (fully settled) — deriveReason() collapses both
+        // into 'done'. To distinguish them we consult the DB's own workspace.status
+        // column (WorkspaceStatus has distinct 'awaiting_input' and 'idle' values;
+        // see getWorkspace()/rowToWorkspaceRecord in workspaces.ts), which is the same
+        // source deriveReason() itself already falls back to during its race-window
+        // handling. Only a DB status of exactly 'idle' resolves under 'idle' mode;
+        // 'awaiting_input' (or anything else) is downgraded to '' (keep waiting).
+        function applyUntilFilter(reason: string, workspaceId: string): string {
+          if (reason !== 'done') return reason // blocked-*/died/not-found always terminal
+
+          if (until === 'done') return reason // default — unchanged behavior
+
+          if (until === 'input') {
+            // 'done' here means non-blocked (awaiting_input/idle) — not what 'input' wants.
+            return ''
+          }
+
+          // until === 'idle': only a genuine DB status of 'idle' counts.
+          const ws = getWorkspace(workspaceId)
+          if (ws?.status === 'idle') return 'done'
+          return '' // awaiting_input (or unresolved) — keep waiting
+        }
+
         function isTerminalReason(reason: string): boolean {
           return (
             reason === 'done' ||
@@ -947,9 +1008,12 @@ export function startCommandServer(deps: CommandServerDeps): {
           void (async () => {
             // fromTransition=true: this is a real status-change event, so 'unknown'
             // means the workspace was alive and its session file just disappeared → 'died'.
-            const reason = await deriveReason(workspaceId, true)
+            const rawReason = await deriveReason(workspaceId, true)
             if (resolved.has(workspaceId)) return // resolved by another path while awaiting
-            if (!isTerminalReason(reason)) return // still busy, not yet terminal
+            // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+            // blocked-*/died/not-found pass through unchanged in every mode.
+            const reason = applyUntilFilter(rawReason, workspaceId)
+            if (!isTerminalReason(reason)) return // still busy, not yet terminal per --until
 
             resolved.set(workspaceId, reason)
             const info = getWorkspaceFileInfo(workspaceId)
@@ -969,8 +1033,10 @@ export function startCommandServer(deps: CommandServerDeps): {
         // unless it hits the forceReconcile ground-truth path, and even then bounded.
         for (const workspaceId of workspaceIds) {
           if (resolved.has(workspaceId)) continue
-          const reason = await deriveReason(workspaceId, false)
+          const rawReason = await deriveReason(workspaceId, false)
           if (resolved.has(workspaceId)) continue // resolved by a transition while awaiting
+          // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+          const reason = applyUntilFilter(rawReason, workspaceId)
           if (isTerminalReason(reason)) {
             resolved.set(workspaceId, reason)
             const info = getWorkspaceFileInfo(workspaceId)

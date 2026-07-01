@@ -54,6 +54,25 @@
  *       h / hr / hrs / hour / hours        → multiply by 3 600 000
  * Default: 10m (600 000 ms).
  *
+ * --UNTIL — how specific a terminal state to block for
+ * -----------------------------------------------------
+ * The server's default notion of "terminal" (turn complete) is: the workspace
+ * reached ANY non-running state — awaiting_input, idle, or blocked on the user
+ * (permission/input). --until narrows or matches that:
+ *   - done  (DEFAULT) — resolve as soon as the workspace stops running for ANY
+ *     reason (awaiting_input, idle, blocked-permission, blocked-input all
+ *     count). This is the historical/current behavior — unchanged.
+ *   - input — block PAST awaiting_input/idle; only resolve once the workspace
+ *     is genuinely blocked waiting on the USER (blocked-permission or
+ *     blocked-input). "Wait until the agent needs me." If the workspace
+ *     reaches idle/awaiting_input without needing input, keep waiting.
+ *   - idle  — block PAST awaiting_input; only resolve once the workspace is
+ *     fully idle (settled, nothing pending) rather than merely
+ *     awaiting_input (turn-end). "Wait until it's completely settled."
+ * In every mode, a died/not-found/timeout outcome is ALWAYS terminal — --until
+ * only changes which of the "workspace stopped running" states counts as
+ * resolved; it never changes the exit-code taxonomy for a given reason.
+ *
  * APP NOT RUNNING
  * ---------------
  * AppNotRunningError (socket absent / token missing) means the Orpheus app is
@@ -156,6 +175,18 @@ function isValidReason(r: string): r is WaitReason {
   return r in REASON_TO_EXIT_CODE
 }
 
+// ---------------------------------------------------------------------------
+// --until — how specific a terminal state to block for (see file header)
+// ---------------------------------------------------------------------------
+
+type UntilMode = 'done' | 'input' | 'idle'
+
+const VALID_UNTIL_MODES: UntilMode[] = ['done', 'input', 'idle']
+
+function isValidUntilMode(v: string): v is UntilMode {
+  return (VALID_UNTIL_MODES as string[]).includes(v)
+}
+
 /**
  * Return the aggregate reason from a list of per-id reasons.
  * Highest-priority reason wins.
@@ -177,13 +208,14 @@ function aggregateReason(reasons: WaitReason[]): WaitReason {
 
 registerCommand('ws wait', {
   // NOT isRead — we use the socket. But we suppress auto-launch manually (see handler).
-  usage: 'ws wait <id...> [--timeout <dur>]',
+  usage: 'ws wait <id...> [--timeout <dur>] [--until done|input|idle]',
   help: 'Wait for one or more workspaces to reach a terminal activity state',
   minPositionals: 1,
   // Variadic (accepts any number of workspace ids) — maxPositionals intentionally
   // omitted so an arbitrary number of ids is never rejected as a usage error.
   flags: {
-    timeout: 'string'
+    timeout: 'string',
+    until: 'string'
   },
   handler: async (ctx) => {
     const workspaceIds = ctx.positionals
@@ -206,6 +238,21 @@ registerCommand('ws wait', {
         return
       }
       timeoutMs = parsed
+    }
+
+    // Parse --until (default: 'done' — preserves the historical/default behavior
+    // exactly: resolve as soon as the workspace stops running for any reason).
+    let until: UntilMode = 'done'
+    if (typeof ctx.flags.until === 'string' && ctx.flags.until !== '') {
+      if (!isValidUntilMode(ctx.flags.until)) {
+        printError(
+          `invalid --until value: "${ctx.flags.until}". ` +
+            `Use one of: ${VALID_UNTIL_MODES.join(', ')}.`,
+          { exitCode: 2 }
+        )
+        return
+      }
+      until = ctx.flags.until
     }
 
     // Collected per-id results (resolved as frames arrive)
@@ -236,7 +283,7 @@ registerCommand('ws wait', {
       // subscribe() synchronously calls resolveToken(); if AppNotRunningError is thrown
       // it propagates here before the connection is opened.
       subscription = subscribe(
-        { workspaceIds, timeoutMs },
+        { workspaceIds, timeoutMs, until },
         onEvent,
         { timeoutMs } // client-side timeout mirrors --timeout
       )
