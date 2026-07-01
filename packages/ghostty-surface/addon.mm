@@ -3765,8 +3765,40 @@ static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat 
 - (CGFloat)buildContentFromData:(NSDictionary*)data;
 // Install (or re-install) the NSTrackingArea covering the full card bounds.
 - (void)installCardTrackingArea;
+// Build a 'confirm' modal card (title/body/checkbox/buttons). Returns total height.
+- (CGFloat)buildModalCard:(NSDictionary*)data;
 
 @end
+
+// ---------------------------------------------------------------------------
+// OrpheusPopoverBackdropView — full-contentView dimmed scrim shown BELOW a
+// 'confirm' modal card. A click anywhere on the backdrop (i.e. outside the
+// card) fires "<workspaceId>::cancel" through the popover action TSFN, same
+// as Escape. Torn down together with the modal card (see HidePopover).
+// ---------------------------------------------------------------------------
+@interface OrpheusPopoverBackdropView : NSView
+@property (nonatomic, copy) NSString* workspaceId;
+@end
+
+@implementation OrpheusPopoverBackdropView
+- (BOOL)isFlipped { return YES; }
+- (BOOL)nonWebContentView { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
+- (void)mouseDown:(NSEvent*)event {
+    (void)event;
+    // Backdrop click (never reached for clicks on the card itself, which sits
+    // above the backdrop as a sibling subview) → cancel, same as Escape.
+    if (!self.workspaceId || !g_popoverActionTSFNActive) return;
+    std::string cancelMsg = std::string(self.workspaceId.UTF8String) + "::cancel";
+    g_popoverActionTSFN.NonBlockingCall([cancelMsg](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, cancelMsg) });
+    });
+}
+@end
+
+// Global backdrop tracked alongside g_activePopover so HidePopover tears down
+// both together. nil whenever the active popover (if any) is not a 'confirm'.
+static OrpheusPopoverBackdropView* __strong g_activePopoverBackdrop = nil;
 
 // ---------------------------------------------------------------------------
 // Singleton Obj-C target for popover clickable elements (PR chip click).
@@ -3786,8 +3818,9 @@ static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat 
     return s;
 }
 - (void)elementClicked:(NSButton*)sender {
-    // sender.identifier encodes "workspaceId::pr".
-    // JS receives the identifier string and opens the PR URL it already has for this workspace.
+    // sender.identifier encodes "workspaceId::pr" (or, for a 'confirm' modal
+    // button, "workspaceId::<buttonId>" / "workspaceId::cancel").
+    // JS receives the identifier string and routes on the elementId suffix.
     NSString* ident = sender.identifier;
     if (!ident || ident.length == 0) return;
     NSLog(@"[ghostty-surface] popover element clicked: %s", ident.UTF8String);
@@ -3795,6 +3828,38 @@ static inline CGFloat centerIconY(CGFloat textBoxTop, CGFloat textBoxH, CGFloat 
     std::string identCpp = ident.UTF8String;
     g_popoverActionTSFN.NonBlockingCall([identCpp](Napi::Env env, Napi::Function cb) {
         cb.Call({ Napi::String::New(env, identCpp) });
+    });
+}
+@end
+
+// ---------------------------------------------------------------------------
+// Singleton Obj-C target for a 'confirm' modal's checkbox toggle.
+// sender.identifier encodes "workspaceId::checkbox:<checkboxId>" — the "checkbox:"
+// prefix on the elementId lets the renderer distinguish a toggle from a final
+// button click. Fires "<identifier>::<0|1>" reflecting the NEW checkbox state.
+// ---------------------------------------------------------------------------
+@interface OrpheusPopoverCheckboxTarget : NSObject
++ (instancetype)shared;
+- (void)checkboxToggled:(NSButton*)sender;
+@end
+
+@implementation OrpheusPopoverCheckboxTarget
++ (instancetype)shared {
+    static OrpheusPopoverCheckboxTarget* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ s = [[OrpheusPopoverCheckboxTarget alloc] init]; });
+    return s;
+}
+- (void)checkboxToggled:(NSButton*)sender {
+    NSString* ident = sender.identifier;
+    if (!ident || ident.length == 0) return;
+    BOOL checked = (sender.state == NSControlStateValueOn);
+    NSString* msg = [NSString stringWithFormat:@"%@::%d", ident, checked ? 1 : 0];
+    NSLog(@"[ghostty-surface] popover checkbox toggled: %s", msg.UTF8String);
+    if (!g_popoverActionTSFNActive) return;
+    std::string msgCpp = msg.UTF8String;
+    g_popoverActionTSFN.NonBlockingCall([msgCpp](Napi::Env env, Napi::Function cb) {
+        cb.Call({ Napi::String::New(env, msgCpp) });
     });
 }
 @end
@@ -3864,6 +3929,10 @@ static int dictInt(NSDictionary* d, NSString* key) {
 static NSDictionary* dictDict(NSDictionary* d, NSString* key) {
     id v = d[key];
     return [v isKindOfClass:[NSDictionary class]] ? (NSDictionary*)v : nil;
+}
+static NSArray* dictArray(NSDictionary* d, NSString* key) {
+    id v = d[key];
+    return [v isKindOfClass:[NSArray class]] ? (NSArray*)v : @[];
 }
 
 // Create a non-editable, non-selectable label with explicit frame disabled.
@@ -4599,6 +4668,31 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 - (BOOL)acceptsFirstMouse:(NSEvent*)event {
     (void)event;
     return YES;
+}
+
+// Only 'confirm' modals need keyboard focus (Escape-to-cancel); hover/details/
+// project cards never become first responder (ShowPopover only calls
+// makeFirstResponder: for kind==confirm), but this stays permissive so a future
+// caller could opt in without another wiring pass.
+- (BOOL)acceptsFirstResponder {
+    return YES;
+}
+
+// Escape (keyCode 53) on a 'confirm' modal fires "<workspaceId>::cancel" —
+// same signal as a backdrop click. No-op for non-confirm kinds (they're never
+// made first responder, so this normally isn't reached for them).
+- (void)keyDown:(NSEvent*)event {
+    if ([self.kind isEqualToString:@"confirm"] && event.keyCode == 53 /* Escape */) {
+        NSString* wsId = self.workspaceId;
+        if (wsId && g_popoverActionTSFNActive) {
+            std::string cancelMsg = std::string(wsId.UTF8String) + "::cancel";
+            g_popoverActionTSFN.NonBlockingCall([cancelMsg](Napi::Env env, Napi::Function cb) {
+                cb.Call({ Napi::String::New(env, cancelMsg) });
+            });
+        }
+        return;
+    }
+    [super keyDown:event];
 }
 
 - (void)dealloc {
@@ -5693,6 +5787,166 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 }
 
 // ---------------------------------------------------------------------------
+// buildModalCard — 'confirm' kind. Renders a title, wrapping body, optional
+// checkbox row, and a right-aligned row of action buttons. Centered + dimmed
+// via the backdrop wired in ShowPopover/HidePopover (this method only builds
+// the card CONTENT — positioning/backdrop is the caller's job).
+//
+// data = { title: string, body: string, buttons: [{id,label,style?}],
+//          checkbox?: {id,label,checked} }
+// buttons[].style ∈ 'default' | 'primary' | 'danger' (default: 'default').
+// Button identifier: "<workspaceId>::<button.id>".
+// Checkbox identifier: "<workspaceId>::checkbox:<checkbox.id>" (the "checkbox:"
+// prefix lets the renderer tell a toggle apart from a terminal button click).
+// ---------------------------------------------------------------------------
+- (CGFloat)buildModalCard:(NSDictionary*)data {
+    NSColor* primaryColor = themeColorOr(g_popoverTheme.textPrimary,
+        [NSColor colorWithCalibratedRed:0xf4/255.0 green:0xf4/255.0 blue:0xf5/255.0 alpha:1.0]);
+    NSColor* secColor = themeColorOr(g_popoverTheme.textSecondary,
+        [NSColor colorWithCalibratedRed:0xa1/255.0 green:0xa1/255.0 blue:0xaa/255.0 alpha:1.0]);
+    NSColor* borderColor = themeColorOr(
+        g_popoverTheme.border,
+        [NSColor colorWithCalibratedRed:0x27/255.0 green:0x27/255.0 blue:0x2a/255.0 alpha:1.0]);
+    NSColor* accentColor = themeColorOr(g_popoverTheme.accent,
+        [NSColor colorWithCalibratedRed:0x60/255.0 green:0xa5/255.0 blue:0xfa/255.0 alpha:1.0]);
+    // Danger red — not themed (destructive actions read as red regardless of accent).
+    NSColor* dangerColor = fixedColor(kColorRed);
+
+    NSString* title    = dictStr(data, @"title");
+    NSString* body     = dictStr(data, @"body");
+    NSArray*  buttons  = dictArray(data, @"buttons");
+    NSDictionary* checkbox = dictDict(data, @"checkbox");
+
+    const CGFloat padTop    = 18.0;
+    const CGFloat padBottom = 16.0;
+    const CGFloat textW     = self.cardWidth - 2.0 * kCardPadH;
+
+    CGFloat y = padTop;
+
+    // ---- Title: Geist-Medium 14px, textPrimary, may wrap. ----
+    if (title.length > 0) {
+        NSFont* titleFont = geistFont(@"Geist-Medium", 14.0);
+        CGFloat titleH = wrappingHeight(title, titleFont, textW);
+        if (titleH < 17.0) titleH = 17.0;
+        NSTextField* titleLbl = [NSTextField labelWithString:title];
+        titleLbl.font = titleFont;
+        titleLbl.textColor = primaryColor;
+        titleLbl.drawsBackground = NO;
+        titleLbl.bordered = NO;
+        titleLbl.editable = NO;
+        titleLbl.selectable = NO;
+        titleLbl.cell.wraps = YES;
+        titleLbl.cell.lineBreakMode = NSLineBreakByWordWrapping;
+        titleLbl.frame = NSMakeRect(kCardPadH, y, textW, titleH);
+        [self addSubview:titleLbl];
+        y += titleH + 8.0;
+    }
+
+    // ---- Body: Geist-Regular 12px, textSecondary, wraps (may contain \n). ----
+    if (body.length > 0) {
+        NSFont* bodyFont = geistFont(@"Geist-Regular", 12.0);
+        CGFloat bodyH = wrappingHeight(body, bodyFont, textW);
+        if (bodyH < 15.0) bodyH = 15.0;
+        NSTextField* bodyLbl = [NSTextField labelWithString:body];
+        bodyLbl.font = bodyFont;
+        bodyLbl.textColor = secColor;
+        bodyLbl.drawsBackground = NO;
+        bodyLbl.bordered = NO;
+        bodyLbl.editable = NO;
+        bodyLbl.selectable = NO;
+        bodyLbl.cell.wraps = YES;
+        bodyLbl.cell.lineBreakMode = NSLineBreakByWordWrapping;
+        bodyLbl.frame = NSMakeRect(kCardPadH, y, textW, bodyH);
+        [self addSubview:bodyLbl];
+        y += bodyH + 14.0;
+    }
+
+    // ---- Optional checkbox row ----
+    if (checkbox) {
+        NSString* cbId = dictStr(checkbox, @"id");
+        NSString* cbLabel = dictStr(checkbox, @"label");
+        BOOL cbChecked = dictBool(checkbox, @"checked");
+
+        NSButton* cb = [[NSButton alloc] initWithFrame:NSMakeRect(kCardPadH, y, textW, 18.0)];
+        cb.buttonType = NSButtonTypeSwitch;
+        cb.title      = cbLabel ?: @"";
+        cb.font       = geistFont(@"Geist-Regular", 12.0);
+        cb.state      = cbChecked ? NSControlStateValueOn : NSControlStateValueOff;
+        cb.identifier = [NSString stringWithFormat:@"%@::checkbox:%@", self.workspaceId, cbId ?: @""];
+        cb.target     = [OrpheusPopoverCheckboxTarget shared];
+        cb.action     = @selector(checkboxToggled:);
+        [self addSubview:cb];
+        y += 18.0 + 14.0;
+    }
+
+    // ---- Button row — right-aligned, laid out right-to-left. ----
+    if (buttons.count > 0) {
+        const CGFloat btnH        = 28.0;
+        const CGFloat btnGap      = 8.0;
+        const CGFloat btnPadH     = 14.0; // horizontal text padding inside each button
+        const CGFloat minBtnW     = 64.0;
+        NSFont* btnFont = geistFont(@"Geist-Medium", 12.0);
+
+        // Pre-measure each button's width so we can lay them out right-aligned.
+        NSMutableArray<NSNumber*>* widths = [NSMutableArray arrayWithCapacity:buttons.count];
+        CGFloat totalW = 0;
+        for (NSDictionary* b in buttons) {
+            if (![b isKindOfClass:[NSDictionary class]]) { [widths addObject:@(minBtnW)]; totalW += minBtnW; continue; }
+            NSString* label = dictStr(b, @"label");
+            CGFloat textW2 = ceil([label sizeWithAttributes:@{ NSFontAttributeName: btnFont }].width);
+            CGFloat w = MAX(minBtnW, textW2 + 2.0 * btnPadH);
+            [widths addObject:@(w)];
+            totalW += w;
+        }
+        totalW += btnGap * (buttons.count - 1);
+
+        CGFloat bx = self.cardWidth - kCardPadH - totalW;
+        if (bx < kCardPadH) bx = kCardPadH; // clamp — buttons may wrap-overflow on extreme cases
+
+        for (NSUInteger i = 0; i < buttons.count; i++) {
+            NSDictionary* b = buttons[i];
+            if (![b isKindOfClass:[NSDictionary class]]) continue;
+            NSString* btnId    = dictStr(b, @"id");
+            NSString* btnLabel = dictStr(b, @"label");
+            NSString* btnStyle = dictStr(b, @"style"); // 'default' | 'primary' | 'danger'
+            CGFloat w = [widths[i] doubleValue];
+
+            NSButton* btn = [[NSButton alloc] initWithFrame:NSMakeRect(bx, y, w, btnH)];
+            btn.bezelStyle = NSBezelStyleRounded;
+            btn.title      = btnLabel ?: @"";
+            btn.font       = btnFont;
+            btn.identifier = [NSString stringWithFormat:@"%@::%@", self.workspaceId, btnId ?: @""];
+            btn.target     = [OrpheusPopoverActionTarget shared];
+            btn.action     = @selector(elementClicked:);
+            btn.wantsLayer = YES;
+            btn.layer.cornerRadius = 6.0;
+
+            if ([btnStyle isEqualToString:@"primary"]) {
+                btn.layer.backgroundColor = accentColor.CGColor;
+                btn.contentTintColor = [NSColor whiteColor];
+            } else if ([btnStyle isEqualToString:@"danger"]) {
+                btn.layer.backgroundColor = dangerColor.CGColor;
+                btn.contentTintColor = [NSColor whiteColor];
+            } else {
+                // 'default' — subtle bordered button matching the card chrome.
+                btn.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.06].CGColor;
+                btn.layer.borderWidth = 1.0;
+                btn.layer.borderColor = borderColor.CGColor;
+                btn.contentTintColor = primaryColor;
+            }
+
+            [self addSubview:btn];
+            bx += w + btnGap;
+        }
+
+        y += btnH;
+    }
+
+    y += padBottom;
+    return y;
+}
+
+// ---------------------------------------------------------------------------
 // buildContentFromData — dispatch to hover or details builder. Removes all
 // existing subviews first (used by updatePopover re-render path). Returns
 // total card height.
@@ -5713,6 +5967,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
         totalH = [self buildHoverCard:data];
     } else if ([self.kind isEqualToString:@"project"]) {
         totalH = [self buildProjectCard:data];
+    } else if ([self.kind isEqualToString:@"confirm"]) {
+        totalH = [self buildModalCard:data];
     } else {
         // 'details' and default
         totalH = [self buildDetailsCard:data];
@@ -5734,6 +5990,8 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
 // Card is placed:
 //   'details': below the anchor button, left-aligned to anchor left edge.
 //   'hover':   to the right of the anchor row, vertically centered on it.
+//   'confirm': centered in the contentView (anchor rect is ignored — modals
+//              aren't tied to a trigger element).
 //
 // Both are clamped to stay within contentView bounds.
 static NSRect computePopoverFrame(NSString* kind,
@@ -5748,7 +6006,11 @@ static NSRect computePopoverFrame(NSString* kind,
 
     CGFloat cx, cy;  // CSS top-left origin for the card
 
-    if ([kind isEqualToString:@"hover"] || [kind isEqualToString:@"project"]) {
+    if ([kind isEqualToString:@"confirm"]) {
+        // Centered in the contentView — anchor rect is irrelevant for modals.
+        cx = (parentW - cardWidth) / 2.0;
+        cy = (parentH - cardHeight) / 2.0;
+    } else if ([kind isEqualToString:@"hover"] || [kind isEqualToString:@"project"]) {
         // Place to the RIGHT of the anchor row/icon, vertically centered.
         cx = ax + aw + kGap;
         cy = ay + (ah / 2.0) - (cardHeight / 2.0);
@@ -5874,10 +6136,16 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
     double aw = rectObj.Get("w").As<Napi::Number>().DoubleValue();
     double ah = rectObj.Get("h").As<Napi::Number>().DoubleValue();
 
-    // Card width by kind: 'hover' and 'project' → 224px; 'details' → 252px.
+    // Card width by kind: 'hover' and 'project' → 224px; 'confirm' → 360px; 'details' → 252px.
     NSString* nsKindLocal = [NSString stringWithUTF8String:kind.c_str()];
-    CGFloat cardWidth = ([nsKindLocal isEqualToString:@"hover"] ||
-                         [nsKindLocal isEqualToString:@"project"]) ? 224.0 : 252.0;
+    CGFloat cardWidth;
+    if ([nsKindLocal isEqualToString:@"hover"] || [nsKindLocal isEqualToString:@"project"]) {
+        cardWidth = 224.0;
+    } else if ([nsKindLocal isEqualToString:@"confirm"]) {
+        cardWidth = 360.0;
+    } else {
+        cardWidth = 252.0;
+    }
 
     // Use the cached contentView from installBackstop. This is global and always
     // available regardless of whether this workspace has a mounted surface — so
@@ -5898,11 +6166,42 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSView* contentView = cachedContentView;
 
-        // Destroy any pre-existing global popover before creating a new one.
+        // Destroy any pre-existing global popover (+ its backdrop, if any)
+        // before creating a new one.
         if (g_activePopover) {
             [g_activePopover removeFromSuperview];
             g_activePopover = nil;
             g_activePopoverWorkspaceId.clear();
+        }
+        if (g_activePopoverBackdrop) {
+            [g_activePopoverBackdrop removeFromSuperview];
+            g_activePopoverBackdrop = nil;
+        }
+
+        BOOL isConfirm = [nsKind isEqualToString:@"confirm"];
+
+        // 'confirm' modals get a full-contentView dimmed scrim BELOW the card,
+        // added first so the card (added next) sits above it. Fades in together
+        // with the card and is torn down together with it on hide.
+        if (isConfirm) {
+            OrpheusPopoverBackdropView* backdrop =
+                [[OrpheusPopoverBackdropView alloc] initWithFrame:contentView.bounds];
+            backdrop.workspaceId = nsWorkspaceId;
+            backdrop.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            backdrop.wantsLayer = YES;
+            backdrop.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.0 alpha:0.45].CGColor;
+            backdrop.alphaValue = 0.0;
+            [contentView addSubview:backdrop positioned:NSWindowAbove relativeTo:nil];
+            g_activePopoverBackdrop = backdrop;
+
+            CABasicAnimation* backdropFadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            backdropFadeIn.fromValue = @(0.0);
+            backdropFadeIn.toValue   = @(1.0);
+            backdropFadeIn.duration  = 0.12;
+            [CATransaction begin];
+            [backdrop.layer addAnimation:backdropFadeIn forKey:@"fadeIn"];
+            backdrop.alphaValue = 1.0;
+            [CATransaction commit];
         }
 
         // Create the popover view with real content. initWithKind:workspaceId:width:data:
@@ -5920,10 +6219,15 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         // Install NSTrackingArea covering the full card bounds after the final
         // frame is set. This is the hover-bridge: mouseEntered/mouseExited fire
         // when the pointer moves from the DOM trigger onto/off the native card.
-        [pv installCardTrackingArea];
+        // NOT installed for 'confirm' — a modal must stay open regardless of
+        // pointer movement; it only closes via button / Escape / backdrop click.
+        if (!isConfirm) {
+            [pv installCardTrackingArea];
+        }
 
         // Parent to contentView ABOVE everything (terminal is below web layer which
         // is below the popover — no z-swap needed, no blackout by construction).
+        // Above the backdrop too, since the backdrop was just added as a sibling.
         [contentView addSubview:pv positioned:NSWindowAbove relativeTo:nil];
         g_activePopover = pv;
         g_activePopoverWorkspaceId = workspaceId;
@@ -5941,6 +6245,12 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         [pv.layer addAnimation:fadeIn forKey:@"fadeIn"];
         pv.alphaValue = 1.0;
         [CATransaction commit];
+
+        // Modal focus: make the card first responder so Escape (keyDown:) works
+        // immediately without requiring a click first.
+        if (isConfirm && contentView.window) {
+            [contentView.window makeFirstResponder:pv];
+        }
     });
 
     return env.Undefined();
@@ -6038,6 +6348,11 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
     g_activePopover = nil;
     g_activePopoverWorkspaceId.clear();
 
+    // A 'confirm' modal owns a backdrop — tear both down together so the scrim
+    // never outlives the card (or vice versa).
+    OrpheusPopoverBackdropView* backdrop = g_activePopoverBackdrop;
+    g_activePopoverBackdrop = nil;
+
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!pv) return;
 
@@ -6055,6 +6370,20 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
         [pv.layer addAnimation:fade forKey:@"fadeOut"];
         pv.alphaValue = 0.0;
         [CATransaction commit];
+
+        if (backdrop) {
+            CABasicAnimation* backdropFade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            backdropFade.fromValue = @(backdrop.alphaValue);
+            backdropFade.toValue   = @(0.0);
+            backdropFade.duration  = 0.1;
+            [CATransaction begin];
+            [CATransaction setCompletionBlock:^{
+                [backdrop removeFromSuperview];
+            }];
+            [backdrop.layer addAnimation:backdropFade forKey:@"fadeOut"];
+            backdrop.alphaValue = 0.0;
+            [CATransaction commit];
+        }
     });
 
     return env.Undefined();

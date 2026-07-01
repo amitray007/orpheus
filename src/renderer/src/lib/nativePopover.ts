@@ -40,6 +40,21 @@ export type ProjectPopoverData = {
   }>
 }
 
+export type ConfirmModalButton = {
+  id: string
+  label: string
+  style?: 'default' | 'primary' | 'danger'
+}
+
+export type ConfirmModalData = {
+  title: string
+  body: string
+  buttons: ConfirmModalButton[]
+  checkbox?: { id: string; label: string; checked: boolean }
+}
+
+export type ConfirmModalResult = { buttonId: string; checkboxChecked: boolean }
+
 export type DetailsPopoverData = {
   pr?: { number: number; state: 'open' | 'merged' | 'closed' | 'draft'; check: string }
   prUrl?: string
@@ -139,6 +154,16 @@ export function onNativePopoverClosed(workspaceId: string, handler: () => void):
   }
 }
 
+// ── Confirm-modal action routing ─────────────────────────────────────────────
+// Each open modal registers a handler here, keyed by its synthetic
+// workspaceId ("modal:<id>"). The router below dispatches elementId strings
+// to the matching handler; the handler removes itself once the modal resolves.
+const modalHandlers = new Map<string, (elementId: string) => void>()
+
+function isModalWorkspaceId(workspaceId: string): boolean {
+  return workspaceId.startsWith('modal:')
+}
+
 // ── One-time action listener registration ───────────────────────────────────
 
 let actionListenerRegistered = false
@@ -147,11 +172,22 @@ function ensurePopoverActionListener(): void {
   if (actionListenerRegistered) return
   actionListenerRegistered = true
   window.api.terminal.onPopoverAction((e) => {
-    // identifier format: "workspaceId::pr" or "workspaceId::closed"
-    const sep = e.identifier.lastIndexOf('::')
+    // identifier format: "workspaceId::pr", "workspaceId::closed",
+    // "workspaceId::cancel", "workspaceId::<buttonId>", or
+    // "workspaceId::checkbox:<id>::<0|1>" (the LAST case has TWO "::"
+    // separators — split on the FIRST one for workspaceId; the remainder,
+    // including any further "::", is the elementId).
+    const sep = e.identifier.indexOf('::')
     if (sep === -1) return
     const workspaceId = e.identifier.slice(0, sep)
     const elementId = e.identifier.slice(sep + 2)
+
+    if (isModalWorkspaceId(workspaceId)) {
+      const handler = modalHandlers.get(workspaceId)
+      if (handler) handler(elementId)
+      return
+    }
+
     if (elementId === 'pr') {
       const url = prUrlByWorkspace.get(workspaceId)
       if (url) {
@@ -278,6 +314,57 @@ export function updateDetailsPopover(
 export function hideNativePopover(workspaceId: string): void {
   prUrlByWorkspace.delete(workspaceId)
   void window.api.terminal.hidePopover(workspaceId).catch(() => {})
+}
+
+// ── Native confirm modal ─────────────────────────────────────────────────────
+//
+// Renders a centered, dimmed, native modal ABOVE the terminal surface (React
+// modals get occluded by the live libghostty NSView; this chassis doesn't).
+// Each call gets its own synthetic workspaceId ("modal:<uuid>") so concurrent
+// modals (unlikely, but not disallowed) never collide with each other or with
+// real workspace popover actions.
+export function showConfirmModal(data: ConfirmModalData): Promise<ConfirmModalResult> {
+  ensurePopoverActionListener()
+
+  const workspaceId = `modal:${crypto.randomUUID()}`
+  let checkboxChecked = data.checkbox?.checked ?? false
+
+  return new Promise<ConfirmModalResult>((resolve) => {
+    let settled = false
+    const settle = (buttonId: string): void => {
+      if (settled) return
+      settled = true
+      modalHandlers.delete(workspaceId)
+      hideNativePopover(workspaceId)
+      resolve({ buttonId, checkboxChecked })
+    }
+
+    modalHandlers.set(workspaceId, (elementId) => {
+      if (elementId.startsWith('checkbox:')) {
+        // "checkbox:<id>::<0|1>" — split on the LAST "::" for the 0/1 flag.
+        const sep = elementId.lastIndexOf('::')
+        if (sep === -1) return
+        checkboxChecked = elementId.slice(sep + 2) === '1'
+        return
+      }
+      if (elementId === 'cancel') {
+        settle('cancel')
+        return
+      }
+      // Any other elementId is a terminal button click.
+      settle(elementId)
+    })
+
+    // Anchor rect is ignored for kind 'confirm' (native side centers it).
+    const anchorRect = { x: 0, y: 0, w: 0, h: 0 }
+    void window.api.terminal
+      .showPopover(workspaceId, 'confirm', anchorRect, data as unknown as Record<string, unknown>)
+      .catch(() => {
+        // If showPopover itself fails (e.g. no host contentView yet), resolve
+        // as cancel rather than leaving the caller's await hanging forever.
+        settle('cancel')
+      })
+  })
 }
 
 // Re-export the git+pr converters for use by consumers that already have raw objects
