@@ -46,6 +46,7 @@ import {
   printError,
   printNotFoundError,
   printLines,
+  truncateForDisplay,
   type TableColumn
 } from '../output.js'
 import type { WorkspaceRecord, WorkspaceTreeNode, ProjectRecord } from '../reads/db.js'
@@ -53,6 +54,17 @@ import type { WorkspaceRecord, WorkspaceTreeNode, ProjectRecord } from '../reads
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Max width (in chars) for the workspace NAME column in pretty/table/tree
+ * output. Long enough to be useful, short enough that ID (36) + NAME (48) +
+ * STATUS (~14) + YOURS (~5) plus column gutters stays within ~110 cols,
+ * keeping STATUS/YOURS on-screen on a standard 80-120 col terminal instead of
+ * being pushed off by a pathologically long workspace name. This is
+ * DISPLAY-ONLY — --json always emits the full, untruncated name/displayName
+ * (see the JSON branches below, which never call truncateForDisplay).
+ */
+const MAX_NAME_COL_WIDTH = 48
 
 /** Overlay live status onto a workspace record, returning the run-status string. */
 function runStatusOf(ws: WorkspaceRecord): string {
@@ -103,7 +115,7 @@ function renderTree(
   for (const node of nodes) {
     const ws = node.workspace
     const status = effectiveStatus(ws)
-    const name = displayNameOf(ws, db, projectCache)
+    const name = truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH)
     const isOwned = callerWsId != null && ws.parentWorkspaceId === callerWsId
     const ownedMark = isOwned ? '  *' : ''
     process.stdout.write(`${indent}${name}  [${status}]${ownedMark}\n`)
@@ -210,7 +222,9 @@ registerCommand('ws ls', {
 
         const rows: WsRow[] = workspaces.map((ws) => ({
           id: ws.id,
-          name: displayNameOf(ws, db, projectCache),
+          // Truncated for pretty/table display only — the --json branch below
+          // calls displayNameOf() directly and emits the full, untruncated value.
+          name: truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH),
           status: effectiveStatus(ws),
           parentWorkspaceId: ws.parentWorkspaceId ?? '',
           isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
@@ -229,9 +243,14 @@ registerCommand('ws ls', {
             }))
           )
         } else {
+          // NAME has no explicit `width` floor here: printTable's width is a
+          // *minimum* (it expands to fit the widest cell), and the `name`
+          // values are already truncated to MAX_NAME_COL_WIDTH above, so the
+          // column naturally caps there without padding short names out to 48
+          // chars unnecessarily.
           const columns: TableColumn<WsRow>[] = [
             { key: 'id', header: 'ID', width: 36 },
-            { key: 'name', header: 'NAME', width: 20 },
+            { key: 'name', header: 'NAME' },
             { key: 'status', header: 'STATUS', width: 14 },
             { key: 'isOwnedChild', header: 'YOURS', width: 5 }
           ]

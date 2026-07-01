@@ -47,9 +47,20 @@ import {
   printError,
   printNotFoundError,
   printLines,
+  truncateForDisplay,
   type TableColumn
 } from '../output.js'
 import type { ProjectRecord, WorkspaceRecord } from '../reads/db.js'
+
+/**
+ * Max width (in chars) for the DISPLAY NAME column in the `project show`
+ * workspaces sub-table. Same rationale/value as ws-ls.ts's
+ * MAX_NAME_COL_WIDTH — kept as a separate const since these are two
+ * independent command modules, but intentionally the same number so a long
+ * workspace name renders consistently across `ws ls` and `project show`.
+ * DISPLAY-ONLY: --json emits the full, untruncated `displayName` below.
+ */
+const MAX_NAME_COL_WIDTH = 48
 
 /** Resolve a workspace's display name, reading the transcript only when needed. */
 function displayNameOf(ws: WorkspaceRecord, project: ProjectRecord): string {
@@ -237,7 +248,10 @@ registerCommand('project show', {
 
           const wsRows: WsRow[] = workspaces.map((ws) => ({
             id: ws.id,
-            displayName: displayNameOf(ws, project),
+            // Truncated for pretty/table display only — the --json branch
+            // above calls displayNameOf() directly and emits the full,
+            // untruncated value.
+            displayName: truncateForDisplay(displayNameOf(ws, project), MAX_NAME_COL_WIDTH),
             status: effectiveLifecycleStatus(ws, ws.status),
             runStatus: ws.status,
             createdAt: new Date(ws.createdAt).toISOString(),
@@ -245,9 +259,14 @@ registerCommand('project show', {
             lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : ''
           }))
 
+          // DISPLAY NAME has no explicit `width` floor: printTable's width is
+          // a *minimum* (expands to fit the widest cell), and displayName
+          // values are already truncated to MAX_NAME_COL_WIDTH above, so the
+          // column naturally caps there without padding short names out to 48
+          // chars unnecessarily.
           const columns: TableColumn<WsRow>[] = [
             { key: 'id', header: 'ID', width: 36 },
-            { key: 'displayName', header: 'DISPLAY NAME', width: 20 },
+            { key: 'displayName', header: 'DISPLAY NAME' },
             { key: 'status', header: 'STATUS', width: 14 },
             { key: 'runStatus', header: 'RUN STATUS', width: 10 },
             { key: 'createdAt', header: 'CREATED', width: 24 },
