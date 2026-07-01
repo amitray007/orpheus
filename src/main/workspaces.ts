@@ -25,6 +25,8 @@ type WorkspaceRow = {
   last_title: string | null
   // v43: fork session support (Plan A)
   forked_from_session_id: string | null
+  // v64: parent workspace lineage
+  parent_workspace_id: string | null
   // v64: worktree-native workspaces
   worktree_parent_cwd: string | null
   worktree_branch: string | null
@@ -64,6 +66,7 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     claudeSessionId: row.claude_session_id ?? null,
     forkedFromSessionId: row.forked_from_session_id ?? null,
     lastTitle: row.last_title ?? null,
+    parentWorkspaceId: row.parent_workspace_id ?? null,
     worktreeParentCwd: row.worktree_parent_cwd ?? null,
     worktreeBranch: row.worktree_branch ?? null
   }
@@ -102,6 +105,53 @@ function rowToProjectRecord(row: ProjectRow): ProjectRecord {
     githubAvatarUrl: row.github_avatar_url ?? null,
     githubCheckedAt: row.github_checked_at ?? null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Workspace name sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Max length (in characters) for a user-supplied workspace name. Names longer
+ * than this are truncated with a trailing ellipsis ('…'). Chosen to keep
+ * `ws ls` table rendering (and the sidebar) sane against a hostile/careless
+ * caller passing a 300+ char name — 200 chars is comfortably longer than any
+ * legitimate workspace name while still bounding worst-case column width.
+ */
+const WORKSPACE_NAME_MAX_LENGTH = 200
+
+/**
+ * Sanitize a user-supplied workspace name so it can never blow out table
+ * rendering (`ws ls`) or the sidebar:
+ *   - CRLF/LF/tab (and other control chars) are replaced with a space so a
+ *     pasted multi-line string collapses to one line.
+ *   - Runs of whitespace are collapsed to a single space.
+ *   - Leading/trailing whitespace is trimmed.
+ *   - The result is capped to WORKSPACE_NAME_MAX_LENGTH chars, truncated with
+ *     a trailing '…' when longer.
+ * Throws if the sanitized result is empty (name was blank/whitespace-only)
+ * so callers get a clear error instead of silently storing an empty name.
+ */
+function sanitizeWorkspaceName(name: string): string {
+  // C0 control chars (U+0000-U+001F) + DEL (U+007F), built via fromCharCode
+  // rather than a literal \x00-\x1f regex escape to keep this ASCII-clean.
+  const CONTROL_CHARS_RE = new RegExp(
+    `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]+`,
+    'g'
+  )
+  // Replace CR/LF/tab and other C0 control chars + DEL with a space so a
+  // pasted multi-line / control-char-laden string collapses to plain text.
+  const noControlChars = name.replace(CONTROL_CHARS_RE, ' ')
+  // Collapse runs of whitespace (including the spaces just introduced) to one.
+  const collapsed = noControlChars.replace(/\s+/g, ' ')
+  const trimmed = collapsed.trim()
+  if (trimmed === '') {
+    throw new Error('name cannot be empty')
+  }
+  if (trimmed.length > WORKSPACE_NAME_MAX_LENGTH) {
+    return trimmed.slice(0, WORKSPACE_NAME_MAX_LENGTH - 1) + '…'
+  }
+  return trimmed
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +194,7 @@ export function createWorkspace({
   name,
   cwd,
   forkedFromSessionId = null,
+  parentWorkspaceId = null,
   worktreeParentCwd = null,
   worktreeBranch = null
 }: {
@@ -154,6 +205,9 @@ export function createWorkspace({
    *  record is written before broadcastWorkspaceCreated fires. Avoids a race
    *  where the renderer receives workspaces:created with a null field. */
   forkedFromSessionId?: string | null
+  /** When creating a child workspace, pass the parent workspace ID to establish
+   *  lineage for depth/children guardrails (v64). */
+  parentWorkspaceId?: string | null
   /** Repo root this worktree branches from; null for a plain workspace (v64). */
   worktreeParentCwd?: string | null
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
@@ -162,6 +216,7 @@ export function createWorkspace({
   const db = getDb()
   const id = crypto.randomUUID()
   const createdAt = Date.now()
+  const sanitizedName = sanitizeWorkspaceName(name)
 
   // Pre-generate the claude session UUID at workspace creation so that the
   // very first launch can pass --session-id <uuid> to claude (deterministic).
@@ -182,18 +237,19 @@ export function createWorkspace({
 
   const row = db
     .prepare(
-      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, worktree_parent_cwd, worktree_branch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+      `INSERT INTO workspaces (id, project_id, name, cwd, created_at, claude_session_id, sort_order, forked_from_session_id, parent_workspace_id, worktree_parent_cwd, worktree_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
     )
     .get(
       id,
       projectId,
-      name,
+      sanitizedName,
       cwd,
       createdAt,
       claudeSessionId,
       sortOrder,
       forkedFromSessionId ?? null,
+      parentWorkspaceId ?? null,
       worktreeParentCwd ?? null,
       worktreeBranch ?? null
     ) as WorkspaceRow | undefined
@@ -240,7 +296,7 @@ export function openWorkspace(id: string): WorkspaceRecord {
   const row = db
     .prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ? RETURNING *')
     .get(Date.now(), id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`openWorkspace: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -250,7 +306,7 @@ export function setWorkspacePinned(id: string, pinned: boolean): WorkspaceRecord
   const row = db
     .prepare('UPDATE workspaces SET pinned_at = ? WHERE id = ? RETURNING *')
     .get(pinnedAt, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`setWorkspacePinned: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -340,10 +396,15 @@ export function reopenWorkspace(id: string): WorkspaceRecord | undefined {
 
 export function renameWorkspace(id: string, name: string): WorkspaceRecord {
   const db = getDb()
+  // Sanitize BEFORE the existence check so a bad name (empty/whitespace-only)
+  // is rejected with 'name cannot be empty' even for a nonexistent id — the
+  // sanitize error is the more specific/actionable one for a malformed rename
+  // payload, while a genuinely missing workspace still surfaces below.
+  const sanitizedName = sanitizeWorkspaceName(name)
   const row = db
     .prepare('UPDATE workspaces SET name = ?, name_is_auto = 0 WHERE id = ? RETURNING *')
-    .get(name, id) as WorkspaceRow | undefined
-  if (!row) throw new Error(`renameWorkspace: workspace not found: ${id}`)
+    .get(sanitizedName, id) as WorkspaceRow | undefined
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -424,7 +485,7 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
       .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
       .get(status, id) as WorkspaceRow | undefined
   }
-  if (!row) throw new Error(`setWorkspaceStatus: workspace not found: ${id}`)
+  if (!row) throw new Error(`workspace not found: ${id}`)
   return rowToWorkspaceRecord(row)
 }
 
@@ -568,4 +629,55 @@ export function listAllPinned(): PinnedItem[] {
       github_checked_at: null
     })
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace lineage (v64)
+// ---------------------------------------------------------------------------
+
+/**
+ * List all direct children of the given workspace (workspaces whose
+ * parent_workspace_id === parentId). Excludes archived workspaces.
+ */
+export function listChildWorkspaces(parentId: string): WorkspaceRecord[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT * FROM workspaces
+       WHERE parent_workspace_id = ? AND archived_at IS NULL
+       ORDER BY sort_order ASC NULLS LAST, created_at DESC`
+    )
+    .all(parentId) as WorkspaceRow[]
+  return rows.map(rowToWorkspaceRecord)
+}
+
+/**
+ * Return the root-to-node ancestry path for the given workspace by walking
+ * parent_workspace_id upward. The returned array is ordered from the root
+ * ancestor down to (and including) the workspace itself.
+ *
+ * A visited set guards against cycles in malformed data — if a cycle is
+ * detected the walk stops and the partial path is returned.
+ */
+export function getWorkspaceLineage(id: string): WorkspaceRecord[] {
+  const db = getDb()
+  const visited = new Set<string>()
+  const path: WorkspaceRecord[] = []
+
+  let currentId: string | null = id
+  while (currentId !== null) {
+    if (visited.has(currentId)) {
+      // Cycle detected — stop the walk
+      break
+    }
+    visited.add(currentId)
+    const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(currentId) as
+      | WorkspaceRow
+      | undefined
+    if (!row) break
+    path.unshift(rowToWorkspaceRecord(row))
+    currentId = row.parent_workspace_id ?? null
+  }
+
+  return path
 }

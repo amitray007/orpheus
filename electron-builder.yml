@@ -19,6 +19,13 @@ asarUnpack:
   # electron-builder extracts anything matching these globs to app.asar.unpacked/
   - resources/**
   - '**/*.node'
+  # better-sqlite3 + its runtime deps must be fully unpacked so the CLI bundle
+  # (Resources/cli/cli.cjs, loaded via the shim's NODE_PATH) can resolve them —
+  # better-sqlite3 does a dynamic require('bindings'), which is otherwise left
+  # packed inside app.asar and unreachable.
+  - node_modules/better-sqlite3/**
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
 extraResources:
   # Copy each native addon's built .node file into Contents/Resources/packages/<pkg>/
   # so the main process can load them from process.resourcesPath at runtime.
@@ -45,6 +52,14 @@ extraResources:
   # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
   - from: resources/bin/orpheus-notify
     to: bin/orpheus-notify
+  # Orpheus CLI shim — runs the bundled CLI via Electron-as-Node.
+  # Lives at Contents/Resources/bin/orpheus; prepended to PATH in workspace terminals.
+  - from: resources/bin/orpheus
+    to: bin/orpheus
+  # Bundled Orpheus CLI — single CJS bundle with better-sqlite3 externalised.
+  # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
+  - from: packages/orpheus-cli/dist/cli.cjs
+    to: cli/cli.cjs
   # Geist Sans TTFs for native popover cards. Packaged at Contents/Resources/fonts/
   # so registerPopoverFonts() can resolve them via process.resourcesPath.
   - from: node_modules/geist/dist/fonts/geist-sans

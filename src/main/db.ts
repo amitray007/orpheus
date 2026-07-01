@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 64
+export const CURRENT_VERSION = 65
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -69,9 +69,12 @@ const WORKSPACES_SCHEMA_SQL = `
     name_is_auto INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER,
     claude_session_id TEXT,
-    last_title TEXT
-  ,worktree_parent_cwd TEXT
-  ,worktree_branch TEXT
+    last_title TEXT,
+    -- parent workspace lineage (v64)
+    parent_workspace_id TEXT,
+    -- worktree-native workspaces (v64)
+    worktree_parent_cwd TEXT,
+    worktree_branch TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -207,6 +210,9 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     screen_reader INTEGER NOT NULL DEFAULT 0 CHECK (screen_reader IN (0, 1)),
     additional_dirs_claude_md INTEGER NOT NULL DEFAULT 0 CHECK (additional_dirs_claude_md IN (0, 1)),
     ghostty_config_json TEXT NOT NULL DEFAULT '{}',
+    -- Guardrail settings (v64) — spawn caps for workspace lineage
+    max_workspace_depth INTEGER NOT NULL DEFAULT 3,
+    max_workspace_children INTEGER NOT NULL DEFAULT 10,
     updated_at INTEGER NOT NULL
   );
 `
@@ -2300,8 +2306,32 @@ export function migrate(db: Database.Database): void {
     db.prepare('UPDATE schema_version SET version = ?').run(63)
   }
 
-  // v64: worktree-native workspaces — repo root + branch this worktree owns
   if (currentVersion < 64) {
+    // Version 64: workspace lineage + guardrail settings + worktree-native workspaces.
+    // (a) workspaces.parent_workspace_id — nullable FK for parent/child lineage (Task A / U1).
+    // (b) claude_global_settings.max_workspace_depth — cap on workspace tree depth (default 3).
+    // (c) claude_global_settings.max_workspace_children — cap on children per workspace (default 10).
+    // (d) workspaces.worktree_parent_cwd — repo root this worktree branches from.
+    // (e) workspaces.worktree_branch — branch checked out in this worktree.
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_depth INTEGER NOT NULL DEFAULT 3'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_children INTEGER NOT NULL DEFAULT 10'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
     try {
       db.exec('ALTER TABLE workspaces ADD COLUMN worktree_parent_cwd TEXT')
     } catch {
@@ -2313,6 +2343,47 @@ export function migrate(db: Database.Database): void {
       /* column may already exist on fresh install */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(64)
+  }
+
+  if (currentVersion < 65) {
+    // Version 65: convergence backfill for the v64 merge collision.
+    // Two branches each shipped a DIFFERENT migration under `if (currentVersion < 64)`
+    // (workspace lineage + guardrails vs. worktree-native columns). Any DB that had
+    // already run EITHER branch's v64 is stuck at schema_version=64, so the merged
+    // v64 block above (now containing all 5 ALTERs) never re-runs for it — it's
+    // missing whichever branch's columns it didn't originally get. Re-add all five
+    // here defensively (try/catch = no-op if the column already exists) so every
+    // v64 DB, regardless of lineage, converges to having all five columns.
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_parent_cwd TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_depth INTEGER NOT NULL DEFAULT 3'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_children INTEGER NOT NULL DEFAULT 10'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(65)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()

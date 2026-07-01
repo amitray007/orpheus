@@ -15,6 +15,11 @@
 # users whose `claude` is only on the .zshrc PATH are never left stranded.
 [[ -n "${ORPHEUS_USER_PATH:-}" ]] && export PATH="${ORPHEUS_USER_PATH}"
 command -v claude >/dev/null 2>&1 || { [[ -r ~/.zshrc ]] && source ~/.zshrc 2>/dev/null; }
+# Prepend the Orpheus bin dir (where the `orpheus` CLI shim lives) to PATH.
+# ORPHEUS_BIN_DIR is injected by buildMountEnv to point at Contents/Resources/bin.
+# Prepending after ORPHEUS_USER_PATH is applied so `orpheus` wins over any stale
+# system-level installation, but user tools (npm, bun, etc.) also remain reachable.
+[[ -n "${ORPHEUS_BIN_DIR:-}" ]] && export PATH="${ORPHEUS_BIN_DIR}:${PATH}"
 
 # Strip Claude Code's per-session self-identification vars. When Orpheus is
 # launched from inside a Claude Code session these variables leak down the

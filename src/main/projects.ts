@@ -162,6 +162,12 @@ export function setProjectExpandedInSidebar(id: string, expanded: boolean): void
   db.prepare('UPDATE projects SET expanded_in_sidebar = ? WHERE id = ?').run(expanded ? 1 : 0, id)
 }
 
+export function getProjectById(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row != null ? rowToRecord(row) : null
+}
+
 export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {
   const db = getDb()
   const pinnedAt = pinned ? Date.now() : null

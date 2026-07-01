@@ -216,6 +216,9 @@ declare global {
         reopen: (id: string) => Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }>
         onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void) => () => void
         onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void) => () => void
+        onWorkspaceRequestOpen: (
+          cb: (e: { workspaceId: string; focus: boolean }) => void
+        ) => () => void
         convertToLocal: (id: string) => Promise<WorkspaceRecord>
       }
       worktrees: {

@@ -119,6 +119,8 @@ export type WorkspaceRecord = {
   forkedFromSessionId: string | null
   /** Last terminal title seen before the workspace was closed (v58). */
   lastTitle: string | null
+  /** Parent workspace ID for lineage tracking; null for root workspaces (v64). */
+  parentWorkspaceId: string | null
   /** Repo root this worktree branches from; null for a plain workspace (v64). */
   worktreeParentCwd: string | null
   /** Branch checked out in this worktree; null for a plain workspace (v64). */
@@ -473,6 +475,10 @@ export type ClaudeGlobalSettings = {
 
   // Env-var controls (v52) — Memory & Context
   additionalDirsClaudeMd: boolean
+
+  // Guardrail settings (v64) — spawn caps for workspace lineage
+  maxWorkspaceDepth: number
+  maxWorkspaceChildren: number
 
   updatedAt: number
 }
