@@ -327,8 +327,18 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // Close a workspace (sets closed_at). The CLI caller is headless and
     // deliberately closing — no busy-status guard (unlike the GUI handler).
     // Self-action guard: refuse if the caller's own workspace is being closed.
+    //
+    // DATA-INTEGRITY FIX (mirrors workspace.archive): performClose (→
+    // closeWorkspace in workspaces.ts) is a silent no-op UPDATE — it returns
+    // undefined for a nonexistent id instead of throwing, so previously this
+    // dispatch reported { workspace: null } (success-shaped) even when args.id
+    // never existed. Fix: getWorkspace(id) FIRST; existence-before-self-guard
+    // so a genuine not-found isn't masked as a self-action refusal.
     'workspace.close': (args, context) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
       if (context?.workspaceId != null && args.id === context.workspaceId) {
         throw new Error(`cannot close your own workspace (id=${args.id})`)
       }
@@ -337,13 +347,27 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     },
 
     // Reopen a previously-closed workspace (clears closed_at).
+    //
+    // DATA-INTEGRITY FIX (mirrors workspace.archive): reopenWorkspace is a
+    // silent no-op UPDATE — it returns undefined for a nonexistent id instead
+    // of throwing, so previously this dispatch reported { workspace: null }
+    // (success-shaped) even when args.id never existed. Fix: getWorkspace(id)
+    // FIRST.
     'workspace.reopen': (args) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
+      if (getWorkspace(args.id) == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
       const workspace = reopenWorkspace(args.id)
       return { workspace: workspace ?? null }
     },
 
     // Rename a workspace.
+    // NOTE: no explicit existence guard needed here — renameWorkspace() in
+    // workspaces.ts already throws `renameWorkspace: workspace not found: <id>`
+    // when the UPDATE...RETURNING matches zero rows, so a nonexistent id
+    // already surfaces as a real error (not a false success). Adding a
+    // redundant getWorkspace() check here would just duplicate that.
     'workspace.rename': (args) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       if (typeof args.name !== 'string') throw new Error('args.name is required')
