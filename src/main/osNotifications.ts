@@ -97,7 +97,8 @@ function focusAndNavigate(workspaceId: string): void {
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
-  win.webContents.send('workspace:navigateTo', { workspaceId })
+  const ws = getWorkspace(workspaceId)
+  win.webContents.send('workspace:navigateTo', { workspaceId, projectId: ws?.projectId })
 }
 
 function fireAttentionNotification(workspaceId: string, count: number, maxRepeats: number): void {

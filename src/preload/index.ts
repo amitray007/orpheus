@@ -317,9 +317,11 @@ const api = {
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
-        cb(e.workspaceId)
+    onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; projectId?: string }
+      ): void => cb(e.workspaceId, e.projectId)
       ipcRenderer.on('workspace:navigateTo', listener)
       return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
     },

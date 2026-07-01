@@ -532,16 +532,22 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // the callback current without requiring it in the dep array; the ref is
   // updated by the no-dep useLayoutEffect placed after handleSelectWorkspace.
   useEffect(() => {
-    return window.api.workspaces.onNavigateTo((workspaceId) => {
-      const byProject = workspacesByProjectRef.current
-      // Build a flat Map<workspaceId, projectId> for O(1) lookup instead of O(n*m) find-in-loop
-      const wsToProject = new Map<string, string>()
-      for (const [projectId, wsList] of Object.entries(byProject)) {
-        for (const w of wsList) wsToProject.set(w.id, projectId)
+    return window.api.workspaces.onNavigateTo((workspaceId, projectId) => {
+      // Prefer the projectId from the notification payload — the target
+      // project may not be loaded in workspacesByProjectRef yet (it's lazily
+      // populated), and handleSelectWorkspace lazy-loads it on demand.
+      let resolvedProjectId = projectId
+      if (resolvedProjectId === undefined) {
+        const byProject = workspacesByProjectRef.current
+        for (const [pid, wsList] of Object.entries(byProject)) {
+          if (wsList.some((w) => w.id === workspaceId)) {
+            resolvedProjectId = pid
+            break
+          }
+        }
       }
-      const projectId = wsToProject.get(workspaceId)
-      if (projectId !== undefined) {
-        handleSelectWorkspaceRef.current(workspaceId, projectId)
+      if (resolvedProjectId !== undefined) {
+        handleSelectWorkspaceRef.current(workspaceId, resolvedProjectId)
       }
     })
   }, [])

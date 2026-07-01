@@ -207,7 +207,7 @@ declare global {
           ) => void
         ) => () => void
         setCurrentlyViewed: (workspaceId: string | null) => void
-        onNavigateTo: (cb: (workspaceId: string) => void) => () => void
+        onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void) => () => void
         onCreated: (cb: (workspace: WorkspaceRecord) => void) => () => void
         onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void) => () => void
         close: (
