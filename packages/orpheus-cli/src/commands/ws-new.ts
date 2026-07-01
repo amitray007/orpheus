@@ -11,6 +11,12 @@
  *                       the caller's workspace (ORPHEUS_WORKSPACE_ID) unless overridden.
  *   --task <text>       After creating, open the workspace in the GUI and inject this
  *                       text as the initial prompt. Requires the app window to be visible.
+ *   --no-submit         Stage --task's text in claude's input box WITHOUT pressing
+ *                       Enter, so it can be reviewed/edited before sending. Default
+ *                       (flag omitted) is to submit (type + Enter) — the normal
+ *                       "spawn a worker that starts working" behavior. Only meaningful
+ *                       with --task; ignored (no-op) with --empty since there is
+ *                       nothing to submit.
  *   --empty             Explicitly create a workspace with no initial task (see
  *                       STRICTNESS below). Alias: --blank.
  *   --model <model>     Workspace-level model override (stored in claude_workspace_settings).
@@ -79,12 +85,13 @@ import type { WorkspaceRecord } from '../reads/db.js'
 
 registerCommand('ws new', {
   usage:
-    'ws new (--task <text> | --empty) [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
+    'ws new (--task <text> | --empty) [--no-submit] [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
   help: 'Create a new workspace (must declare --task <text> or --empty)',
   maxPositionals: 0,
   flags: {
     fork: 'boolean',
     task: 'string',
+    'no-submit': 'boolean',
     empty: 'boolean',
     blank: 'boolean',
     model: 'string',
@@ -158,6 +165,12 @@ registerCommand('ws new', {
 
     if (typeof ctx.flags.task === 'string' && ctx.flags.task !== '') {
       args.task = ctx.flags.task
+      // --no-submit only makes sense alongside --task (with --empty there is no
+      // seeded text to submit or withhold) — only resolve/send it in this branch,
+      // so passing --no-submit with --empty is silently ignored (documented above).
+      if (ctx.flags['no-submit'] === true) {
+        args.submit = false
+      }
     }
 
     if (typeof ctx.flags.model === 'string' && ctx.flags.model !== '') {

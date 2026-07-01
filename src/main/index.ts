@@ -2605,25 +2605,39 @@ if (!app.requestSingleInstanceLock()) {
             openAndSeed: async (
               workspaceId: string,
               taskText: string,
-              focus: boolean = true
+              focus: boolean = true,
+              submit: boolean = true
             ): Promise<string | null> => {
               // Ask the renderer to open + mount the workspace. focus=true (default)
               // navigates the UI there (the normal nav path); focus=false performs a
               // background mount — the surface becomes injectable without stealing
               // the user's view.
               requestOpenWorkspace(workspaceId, focus)
-              // Poll canInject with a bounded timeout (10 s). canInject returns true
-              // only when the workspace status is 'idle' or 'awaiting_input', which
-              // happens once the terminal surface is mounted and claude is ready.
+              // Poll with a bounded timeout (25 s) for THREE conditions:
+              //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
+              //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
+              //      getWorkspaceActivity() defaults an absent entry to 'idle', so
+              //      canInject() alone reports "injectable" on the very first poll tick,
+              //      before requestOpenWorkspace() has actually finished mounting the NSView.
+              //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
+              //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
+              //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
+              //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
+              //      but claude takes several seconds to launch + reach its interactive
+              //      prompt. Without this check, injection races ahead of claude's boot —
+              //      the text lands in an empty shell (or before claude's TUI is reading
+              //      input) and is silently lost: no transcript is ever written, even
+              //      though this function reports success. This was the root cause of
+              //      `ws new --task` reporting seedWarning:null while producing no
+              //      transcript and leaving status at awaiting_input forever.
               //
-              // QA fix #3 — also require getSurfacePhase() to confirm an actual mounted
-              // surface (not 'none'), not just canInject(). A brand-new workspace has no
-              // activityMap entry yet, and getWorkspaceActivity() defaults an absent entry
-              // to 'idle' — so canInject() alone reports "injectable" on the very first
-              // poll tick, before requestOpenWorkspace() has actually finished mounting the
-              // NSView. See the matching fix + longer explanation on sendToWorkspace below.
+              // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
+              // surface-mount time (~100ms); now the poll also waits out claude's full
+              // boot + session-registration sequence, which can take 3-8 s in practice
+              // (binary launch, MCP/tool init, session file write). 25 s leaves generous
+              // headroom over the observed worst case without hanging indefinitely.
               const POLL_INTERVAL_MS = 300
-              const TIMEOUT_MS = 10_000
+              const TIMEOUT_MS = 25_000
               const deadline = Date.now() + TIMEOUT_MS
               let injectable = false
               while (Date.now() < deadline) {
@@ -2634,7 +2648,11 @@ if (!app.requestSingleInstanceLock()) {
                 } catch {
                   mounted = false
                 }
-                if (mounted && terminalActions.canInject(workspaceId)) {
+                if (
+                  mounted &&
+                  terminalActions.canInject(workspaceId) &&
+                  isWorkspaceSessionReady(workspaceId)
+                ) {
                   injectable = true
                   break
                 }
@@ -2642,15 +2660,22 @@ if (!app.requestSingleInstanceLock()) {
               }
               if (!injectable) {
                 return (
-                  'seed-timeout: workspace was created but the task could not be injected ' +
-                  '— the surface did not become injectable within 10 s. ' +
-                  'Open the workspace manually and paste the task text.'
+                  `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
+                  'task not injected. The workspace was created but claude may still be booting ' +
+                  '— open it manually and paste the task text once it reaches the prompt.'
                 )
               }
               const addon = loadTerminalAddon()
               const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
               if (!inputResult.ok) {
                 return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
+              }
+              // submit=false: caller wants the task STAGED (typed into claude's input
+              // box) but not sent — e.g. for review/editing before the user presses
+              // Enter themselves. Skip the delay + submit entirely; the text sitting
+              // in the input box is the desired end state, not an intermediate one.
+              if (!submit) {
+                return null
               }
               // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
               // a synthetic Return) are two different libghostty code paths. Claude's

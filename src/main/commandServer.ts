@@ -58,15 +58,27 @@ export type CommandServerDeps = {
   /**
    * Open a workspace and inject a seed task once the surface is injectable.
    * Implemented in index.ts using requestOpenWorkspace + a bounded poll on
-   * canInject + terminalActions.sendInput/submit. Returns a warning string if
-   * the surface failed to become injectable within the timeout, null on
-   * success. The workspace is always created regardless; only the injection
-   * may be skipped.
+   * getSurfacePhase + canInject + isWorkspaceSessionReady (waits for claude
+   * itself to have booted and registered its session, not just the terminal
+   * surface to be mounted) + terminalActions.sendInput/submit. Returns a
+   * warning string if the workspace never became ready within the timeout
+   * (task not injected), null on success. The workspace is always created
+   * regardless; only the injection may be skipped.
    *
    * `focus` (default true) is forwarded to requestOpenWorkspace: true
    * navigates the UI to the workspace, false performs a background mount.
+   *
+   * `submit` (default true) controls whether the task is submitted (typed +
+   * Enter) after being staged. false leaves the text staged in claude's input
+   * box unsent (for user review/editing) — sendInput still runs, only the
+   * SUBMIT_DELAY_MS delay + submit() call is skipped.
    */
-  openAndSeed: (workspaceId: string, taskText: string, focus?: boolean) => Promise<string | null>
+  openAndSeed: (
+    workspaceId: string,
+    taskText: string,
+    focus?: boolean,
+    submit?: boolean
+  ) => Promise<string | null>
   /**
    * Send text, a named key, and/or submit to a running workspace. If the
    * workspace surface is not yet injectable, opens it (requestOpenWorkspace)
@@ -120,6 +132,9 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     //   permissionMode?      — workspace-level permission mode override
     //   effort?              — workspace-level effort override
     //   task?                — seed text to inject after opening the workspace in the GUI
+    //   submit? (boolean)    — whether a seeded task is submitted (typed + Enter) after
+    //                          staging, vs left staged/unsent for review. Default true
+    //                          (omitted → submit). Only meaningful together with task.
     'workspace.create': async (args, context, innerDeps) => {
       if (typeof args.projectId !== 'string') throw new Error('args.projectId is required')
       if (typeof args.cwd !== 'string') throw new Error('args.cwd is required')
@@ -264,10 +279,14 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       // boolean, but this default keeps any other caller's pre-existing
       // "always navigate" behavior.
       const focus = args.focus !== false
+      // submit: whether a seeded task should be typed + Enter (true, default) or
+      // merely staged in claude's input box unsent (false, --no-submit). Only
+      // meaningful when a task is present; irrelevant for a task-less create.
+      const submit = args.submit !== false
       let seedWarning: string | null = null
       const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
       if (taskText != null) {
-        seedWarning = await innerDeps.openAndSeed(ws.id, taskText, focus)
+        seedWarning = await innerDeps.openAndSeed(ws.id, taskText, focus, submit)
       } else {
         innerDeps.requestOpenWorkspace(ws.id, focus)
       }
