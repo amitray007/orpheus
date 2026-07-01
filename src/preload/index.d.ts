@@ -51,7 +51,10 @@ import type {
   DiagEvent,
   HealthReport,
   KeepAwakeState,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  OverlayDescriptor,
+  OverlayShowResult,
+  OverlayEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -424,6 +427,12 @@ declare global {
         setDisplayOn: (on: boolean) => Promise<KeepAwakeState>
         startTimer: (minutes: number) => Promise<KeepAwakeState>
         onState: (cb: (state: KeepAwakeState) => void) => () => void
+      }
+      overlay: {
+        show: (descriptor: OverlayDescriptor) => Promise<OverlayShowResult>
+        update: (id: string, props: Record<string, unknown>) => Promise<void>
+        hide: (id: string) => Promise<void>
+        onEvent: (cb: (e: OverlayEvent) => void) => () => void
       }
     }
   }

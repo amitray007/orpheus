@@ -963,3 +963,83 @@ export type HealthReport = {
   hooks: HealthProbe & { enabled: boolean; installed: number }
   dataDir: HealthProbe
 }
+
+// ---------------------------------------------------------------------------
+// Overlay layer (React overlays above the terminal NSView)
+// ---------------------------------------------------------------------------
+
+export type OverlayPlacement =
+  | {
+      mode: 'anchored'
+      /** DIPs relative to `contentView`, top-left origin (see plan HTD note on zoomFactor). */
+      anchorRect: { x: number; y: number; w: number; h: number }
+      preferredSide?: 'top' | 'bottom' | 'left' | 'right'
+    }
+  | { mode: 'centered' }
+
+export type OverlayDescriptor = {
+  id: string
+  kind: string
+  placement: OverlayPlacement
+  props: Record<string, unknown>
+  /**
+   * Card is clickable (e.g. PR chip, hover card) without stealing keyboard
+   * focus from the terminal. Independent of `takesFocus` — a card can accept
+   * clicks and still never become first responder.
+   */
+  acceptsClicks: boolean
+  /**
+   * Only confirm/palette-class overlays take focus. When true, main saves the
+   * terminal's first responder at token acquisition and restores it on hide.
+   */
+  takesFocus: boolean
+  /**
+   * When set, main auto-hides this (anchored) overlay if the owning
+   * workspace unmounts or is destroyed — a backstop independent of the
+   * caller's own anchor-tracking cleanup.
+   */
+  ownerWorkspaceId?: string
+}
+
+// `invoke('overlay:showDescriptor', ...)` resolves at paint-ack, not at
+// dismissal — dismissal (user action, timeout, replacement) arrives later as
+// an `overlay:event` push, mirroring the chassis's showPopover/actionClicked split.
+export type OverlayShowResult = { shown: boolean }
+
+// Pushed from main to the requesting (main) renderer: button clicks, cancel,
+// mouseenter/mouseleave (hover bridge), and the terminal exit-fade-complete signal.
+export type OverlayEvent = {
+  overlayId: string
+  kind: string
+  type: string
+  payload?: Record<string, unknown>
+}
+
+// --- Overlay-renderer-side messages (main -> overlay WebContentsView) ---
+
+export type OverlayShowMessage = {
+  descriptor: OverlayDescriptor
+  /** Monotonic per-show generation; stale acks/updates/events are dropped by main. */
+  generation: number
+  theme: string
+}
+
+export type OverlayUpdateMessage = {
+  id: string
+  generation: number
+  props: Record<string, unknown>
+}
+
+export type OverlaySizeReport = {
+  id: string
+  generation: number
+  w: number
+  h: number
+}
+
+export type OverlayAck = {
+  id: string
+  generation: number
+  /** Set when the kind's error boundary caught a render failure. */
+  error?: string
+}

@@ -52,7 +52,10 @@ import type {
   DiagEvent,
   HealthReport,
   KeepAwakeState,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  OverlayDescriptor,
+  OverlayShowResult,
+  OverlayEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -708,6 +711,18 @@ const api = {
       const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
       ipcRenderer.on('keepAwake:state', handler)
       return () => ipcRenderer.removeListener('keepAwake:state', handler)
+    }
+  },
+  overlay: {
+    show: (descriptor: OverlayDescriptor): Promise<OverlayShowResult> =>
+      ipcRenderer.invoke('overlay:showDescriptor', { descriptor }),
+    update: (id: string, props: Record<string, unknown>): Promise<void> =>
+      ipcRenderer.invoke('overlay:update', { id, props }),
+    hide: (id: string): Promise<void> => ipcRenderer.invoke('overlay:hide', { id }),
+    onEvent: (cb: (e: OverlayEvent) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: OverlayEvent): void => cb(e)
+      ipcRenderer.on('overlay:event', listener)
+      return () => ipcRenderer.removeListener('overlay:event', listener)
     }
   }
 }
