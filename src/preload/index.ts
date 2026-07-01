@@ -330,9 +330,13 @@ const api = {
       ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
       return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
     },
-    onWorkspaceRequestOpen: (cb: (workspaceId: string) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
-        cb(e.workspaceId)
+    onWorkspaceRequestOpen: (
+      cb: (e: { workspaceId: string; focus: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; focus?: boolean }
+      ): void => cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
       ipcRenderer.on('workspace:requestOpen', listener)
       return () => ipcRenderer.removeListener('workspace:requestOpen', listener)
     }

@@ -23,6 +23,14 @@
  *                       Recognised names: enter, return, escape, esc,
  *                       up, down, left, right, tab, backspace, delete, space
  *   --project <val>     Project context override (global flag: id, name, or path)
+ *   --focus             If the workspace surface isn't mounted yet and has to be
+ *                       auto-opened, navigate the GUI to it (steals focus).
+ *   --background         If the workspace surface isn't mounted yet, activate it
+ *                       (mount its terminal surface so it becomes injectable)
+ *                       WITHOUT navigating the GUI to it. This is the DEFAULT
+ *                       for `ws send` (agent fan-out shouldn't yank the user's
+ *                       view around); pass --focus to opt into navigating.
+ *                       --focus and --background are mutually exclusive.
  *
  * ORDER OF OPERATIONS (when multiple modes are combined)
  * -------------------------------------------------------
@@ -50,9 +58,10 @@
 import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
+import { resolveFocus } from '../focus.js'
 
 registerCommand('ws send', {
-  usage: 'ws send <id> [text] [--submit] [--key <name>]',
+  usage: 'ws send <id> [text] [--submit] [--key <name>] [--focus | --background]',
   help: 'Send text, a named key, and/or a submit (Enter) to a workspace',
   minPositionals: 1,
   // text is an OPTIONAL second positional (ws send <id> --key enter is valid
@@ -60,7 +69,9 @@ registerCommand('ws send', {
   maxPositionals: 2,
   flags: {
     submit: 'boolean',
-    key: 'string'
+    key: 'string',
+    focus: 'boolean',
+    background: 'boolean'
     // --project is the global flag; cli.ts parses it as ctx.project
   },
   handler: async (ctx) => {
@@ -83,7 +94,16 @@ registerCommand('ws send', {
       return
     }
 
-    const args: Record<string, unknown> = { id }
+    // --focus/--background: default BACKGROUND for `ws send` — if the surface
+    // has to be auto-opened, don't yank the user's view around by default;
+    // --focus opts into navigating the GUI to the workspace.
+    const focusResult = resolveFocus(ctx.flags, false)
+    if (!focusResult.ok) {
+      printUsageError(focusResult.error)
+      return
+    }
+
+    const args: Record<string, unknown> = { id, focus: focusResult.focus }
     if (text != null) args.text = text
     if (submit) args.submit = true
     if (key != null) args.key = key

@@ -291,11 +291,17 @@ function getMainWindow(): BrowserWindow | null {
   return mainWindowRef
 }
 
-// Ask the renderer to open (and mount) the given workspace via the normal
-// handleSelectWorkspace path. Mirrors the pattern used by other main→renderer
-// signals (e.g. workspace:activityBatch, workspace:navigateTo).
-function requestOpenWorkspace(workspaceId: string): void {
-  getMainWindow()?.webContents.send('workspace:requestOpen', { workspaceId })
+// Ask the renderer to open (and mount) the given workspace. Mirrors the
+// pattern used by other main→renderer signals (e.g. workspace:activityBatch,
+// workspace:navigateTo).
+//
+// `focus` controls whether the renderer NAVIGATES the UI to this workspace
+// (handleSelectWorkspace: setView + mount) or performs a BACKGROUND MOUNT
+// (mount the terminal surface so it becomes injectable, without changing
+// what the user is looking at). Defaults to true so existing callers that
+// don't pass it keep the pre-existing "always navigate" behavior.
+function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
+  getMainWindow()?.webContents.send('workspace:requestOpen', { workspaceId, focus })
 }
 
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
@@ -2582,9 +2588,16 @@ if (!app.requestSingleInstanceLock()) {
             performClose: (workspaceId) => performClose(workspaceId),
             performArchive: (workspaceId) => performArchive(workspaceId),
             requestOpenWorkspace,
-            openAndSeed: async (workspaceId: string, taskText: string): Promise<string | null> => {
-              // Ask the renderer to open + mount the workspace via the normal nav path.
-              requestOpenWorkspace(workspaceId)
+            openAndSeed: async (
+              workspaceId: string,
+              taskText: string,
+              focus: boolean = true
+            ): Promise<string | null> => {
+              // Ask the renderer to open + mount the workspace. focus=true (default)
+              // navigates the UI there (the normal nav path); focus=false performs a
+              // background mount — the surface becomes injectable without stealing
+              // the user's view.
+              requestOpenWorkspace(workspaceId, focus)
               // Poll canInject with a bounded timeout (10 s). canInject returns true
               // only when the workspace status is 'idle' or 'awaiting_input', which
               // happens once the terminal surface is mounted and claude is ready.
@@ -2633,7 +2646,8 @@ if (!app.requestSingleInstanceLock()) {
             },
             sendToWorkspace: async (
               workspaceId: string,
-              payload: { text?: string; submit?: boolean; key?: string }
+              payload: { text?: string; submit?: boolean; key?: string },
+              focus: boolean = true
             ): Promise<{ ok: boolean; error?: string }> => {
               // QA #7 fix — verified root cause: terminalActions.canInject() reads
               // getWorkspaceActivity(), which defaults to 'idle' for ANY workspace with
@@ -2693,7 +2707,7 @@ if (!app.requestSingleInstanceLock()) {
               }
 
               async function openAndWaitInjectable(): Promise<boolean> {
-                requestOpenWorkspace(workspaceId)
+                requestOpenWorkspace(workspaceId, focus)
                 const deadline = Date.now() + TIMEOUT_MS
                 while (Date.now() < deadline) {
                   if (hasMountedSurface() && terminalActions.canInject(workspaceId)) return true

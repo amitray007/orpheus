@@ -452,6 +452,80 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     handleSelectWorkspaceRef.current = handleSelectWorkspace
   })
 
+  // ---------------------------------------------------------------------------
+  // BACKGROUND MOUNT (focus=false path of onWorkspaceRequestOpen below).
+  //
+  // DESIGN NOTE: handleSelectWorkspace couples two things — (1) setView (UI
+  // navigation, steals the user's focus) and (2) making the workspace's
+  // terminal surface live/injectable (mounting happens as a *side effect* of
+  // WorkspaceView rendering once the view is active). For CLI-driven agent
+  // fan-out (`ws new --background` / `ws send --background`), we want (2)
+  // WITHOUT (1): the workspace should become injectable while the user stays
+  // exactly where they are.
+  //
+  // MECHANISM CHOSEN: call window.api.terminal.mount(...) directly, then
+  // immediately window.api.terminal.hide(...) — the same two IPC calls
+  // WorkspaceView's own mount effect makes — WITHOUT touching `view` or
+  // `selectedWorkspaceId` at all. This works because terminal:mount (see
+  // src/main/index.ts) is a plain IPC handler keyed only by workspaceId + the
+  // sender's BrowserWindow (for the native parent handle); it has no
+  // dependency on WorkspaceView being mounted/active — it composes the launch
+  // env, spawns/attaches the libghostty surface, and returns. `hide` (addon.hide)
+  // does not destroy the surface — it just stops it from drawing/being
+  // frontmost, exactly like navigating away from a normal workspace. Once
+  // mount resolves, getSurfacePhase(workspaceId) is 'hidden' (not 'none') and
+  // terminalActions.canInject() reports true, so the CLI's openAndSeed /
+  // sendToWorkspace polling loops on the main side succeed exactly as if the
+  // user had opened the workspace — the surface is fully live and injectable,
+  // it simply isn't the one currently rendered/visible.
+  //
+  // This avoids the heavier alternative (mounting a hidden/off-screen
+  // WorkspaceView instance) — no new render tree, no risk of the hidden
+  // instance's resize/observer effects fighting the active view's.
+  //
+  // A rect is still required by the mount IPC signature even though nothing
+  // is drawn on screen while hidden; reuse the current window's viewport rect
+  // (falls back to a small nonzero rect if unavailable) — it only matters if
+  // the surface is later made active via a normal navigation, at which point
+  // WorkspaceView's own active-toggle effect immediately re-measures and
+  // resizes it to the real container rect anyway.
+  const backgroundMountWorkspace = useCallback((workspaceId: string): void => {
+    void (async (): Promise<void> => {
+      try {
+        const scaleFactor = window.devicePixelRatio ?? 1
+        const rect = {
+          x: 0,
+          y: 0,
+          w: Math.max(1, Math.round(window.innerWidth || 1)),
+          h: Math.max(1, Math.round(window.innerHeight || 1))
+        }
+        await window.api.terminal.mount(workspaceId, rect, scaleFactor)
+        // Mount can attach the surface as frontmost momentarily; hide it right
+        // away so it never becomes visible/steals draw time while the user is
+        // looking at a different workspace (or no workspace at all).
+        await window.api.terminal.hide(workspaceId).catch(() => {})
+      } catch (err) {
+        console.error('[dashboard] background mount failed:', err)
+      }
+      // Genuinely "open" the workspace (closedAt/lastOpenedAt) same as a focused
+      // open would — it just doesn't touch view/selectedWorkspaceId.
+      await window.api.workspaces
+        .open(workspaceId)
+        .then((updated) => {
+          setWorkspacesByProject((prev) => {
+            const projectId = updated.projectId
+            const list = prev[projectId]
+            if (!list) return prev
+            return {
+              ...prev,
+              [projectId]: list.map((w) => (w.id === workspaceId ? updated : w))
+            }
+          })
+        })
+        .catch(console.error)
+    })()
+  }, [])
+
   const handleToggleProjectExpand = useCallback(
     (id: string): void => {
       setExpandedProjectIds((prev) => {
@@ -529,10 +603,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   }, [])
 
   // onWorkspaceRequestOpen: main → renderer signal so the command server can ask
-  // the renderer to open (and mount) a workspace — the entry point for U8/U12.
+  // the renderer to open (and mount) a workspace — the entry point for U8/U12
+  // and for the CLI's --focus/--background flags.
+  //
+  // focus=true  → current behavior: handleSelectWorkspace (navigate + mount).
+  // focus=false → BACKGROUND MOUNT: mount the surface (backgroundMountWorkspace,
+  //               see its doc comment above) WITHOUT setView/selectedWorkspaceId
+  //               changing — the user stays exactly where they are.
+  //
   // Uses the same zero-dep ref pattern as onNavigateTo so it never re-subscribes.
   useEffect(() => {
-    return window.api.workspaces.onWorkspaceRequestOpen((workspaceId) => {
+    return window.api.workspaces.onWorkspaceRequestOpen(({ workspaceId, focus }) => {
+      if (!focus) {
+        backgroundMountWorkspace(workspaceId)
+        return
+      }
       const byProject = workspacesByProjectRef.current
       const wsToProject = new Map<string, string>()
       for (const [projectId, wsList] of Object.entries(byProject)) {
@@ -546,7 +631,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       // CLI before the renderer has fetched), we don't crash — the workspace will
       // become visible on the next workspaces:created broadcast or the next fetch.
     })
-  }, [])
+  }, [backgroundMountWorkspace])
 
   useEffect(() => {
     window.api.projects

@@ -18,6 +18,14 @@
  *   --effort <level>    Workspace-level effort override (auto|low|medium|high|xhigh|max).
  *   --name <name>       Workspace name. Defaults to 'New workspace'.
  *   --project <val>     Project context override (global flag: id, name, or path).
+ *   --focus             Navigate the GUI to the new workspace (steals focus from
+ *                       wherever the user currently is).
+ *   --background         Activate the workspace (mount its terminal surface so it
+ *                       becomes injectable) WITHOUT navigating the GUI to it —
+ *                       the user's current view is undisturbed. This is the
+ *                       DEFAULT for `ws new` (agent fan-out shouldn't yank the
+ *                       user's view around); pass --focus to opt into navigating.
+ *                       --focus and --background are mutually exclusive.
  *
  * STRICTNESS — --task XOR --empty is required
  * --------------------------------------------
@@ -66,11 +74,12 @@ import { openDb } from '../reads/db.js'
 import { resolveContext, noProjectMessage } from '../context.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError, printLines } from '../output.js'
+import { resolveFocus } from '../focus.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 
 registerCommand('ws new', {
   usage:
-    'ws new (--task <text> | --empty) [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>]',
+    'ws new (--task <text> | --empty) [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
   help: 'Create a new workspace (must declare --task <text> or --empty)',
   maxPositionals: 0,
   flags: {
@@ -81,7 +90,9 @@ registerCommand('ws new', {
     model: 'string',
     'permission-mode': 'string',
     effort: 'string',
-    name: 'string'
+    name: 'string',
+    focus: 'boolean',
+    background: 'boolean'
     // --project is the global flag; cli.ts parses it as ctx.project
   },
   handler: async (ctx) => {
@@ -103,6 +114,16 @@ registerCommand('ws new', {
       return
     }
 
+    // --focus/--background: default BACKGROUND for `ws new` — agent fan-out
+    // (spawning a worker workspace) shouldn't yank the user's view around;
+    // --focus opts into navigating the GUI to the new workspace.
+    const focusResult = resolveFocus(ctx.flags, false)
+    if (!focusResult.ok) {
+      printUsageError(focusResult.error)
+      return
+    }
+    const focus = focusResult.focus
+
     // Resolve project context
     const db = openDb()
     let projectId: string
@@ -122,7 +143,8 @@ registerCommand('ws new', {
     // Build args for workspace.create
     const args: Record<string, unknown> = {
       projectId,
-      cwd: projectCwd
+      cwd: projectCwd,
+      focus
     }
 
     const name = typeof ctx.flags.name === 'string' ? ctx.flags.name : undefined

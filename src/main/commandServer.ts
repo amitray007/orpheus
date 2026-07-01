@@ -44,29 +44,44 @@ export type CommandServerDeps = {
    */
   performArchive: (workspaceId: string) => void
   /**
-   * Send 'workspace:requestOpen' to the renderer so it opens and mounts the
-   * given workspace via the normal handleSelectWorkspace path. Used by U8/U12.
+   * Send 'workspace:requestOpen' to the renderer so it opens/mounts the given
+   * workspace. Used by U8/U12 and by `ws open`.
+   *
+   * `focus` (default true) controls whether the renderer NAVIGATES the UI to
+   * the workspace (handleSelectWorkspace: setView + mount — steals focus) or
+   * performs a BACKGROUND MOUNT (mounts the terminal surface so it becomes
+   * injectable without changing what the user is looking at). See the
+   * background-mount design note in Dashboard.tsx's onWorkspaceRequestOpen
+   * handler.
    */
-  requestOpenWorkspace: (workspaceId: string) => void
+  requestOpenWorkspace: (workspaceId: string, focus?: boolean) => void
   /**
-   * Open a workspace in the GUI and inject a seed task once the surface is
-   * injectable. Implemented in index.ts using requestOpenWorkspace + a bounded
-   * poll on canInject + terminalActions.sendInput/submit. Returns a warning
-   * string if the surface failed to become injectable within the timeout, null
-   * on success. The workspace is always created regardless; only the injection
+   * Open a workspace and inject a seed task once the surface is injectable.
+   * Implemented in index.ts using requestOpenWorkspace + a bounded poll on
+   * canInject + terminalActions.sendInput/submit. Returns a warning string if
+   * the surface failed to become injectable within the timeout, null on
+   * success. The workspace is always created regardless; only the injection
    * may be skipped.
+   *
+   * `focus` (default true) is forwarded to requestOpenWorkspace: true
+   * navigates the UI to the workspace, false performs a background mount.
    */
-  openAndSeed: (workspaceId: string, taskText: string) => Promise<string | null>
+  openAndSeed: (workspaceId: string, taskText: string, focus?: boolean) => Promise<string | null>
   /**
    * Send text, a named key, and/or submit to a running workspace. If the
    * workspace surface is not yet injectable, opens it (requestOpenWorkspace)
    * and polls canInject up to a bounded timeout (10 s) before injecting.
    * Returns { ok: true } on success or { ok: false, error: string } on failure
    * (surface not ready, timeout, send error).
+   *
+   * `focus` (default true) is forwarded to the auto-open path: true navigates
+   * the UI to the workspace, false performs a background mount (the workspace
+   * becomes injectable without stealing the user's view).
    */
   sendToWorkspace: (
     workspaceId: string,
-    payload: { text?: string; submit?: boolean; key?: string }
+    payload: { text?: string; submit?: boolean; key?: string },
+    focus?: boolean
   ) => Promise<{ ok: boolean; error?: string }>
 }
 
@@ -242,12 +257,19 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       // Either way the renderer receives the open signal and mounts the workspace;
       // closedAt is never set on a freshly created workspace (createWorkspace doesn't
       // touch it), so this only affects whether the surface is actually live.
+      // focus: whether to navigate the UI to the newly created workspace
+      // (true) or background-mount it (false, mount+inject without stealing
+      // the user's view). Defaults to true — CLI callers resolve their own
+      // default (ws-new.ts defaults --background) and always pass an explicit
+      // boolean, but this default keeps any other caller's pre-existing
+      // "always navigate" behavior.
+      const focus = args.focus !== false
       let seedWarning: string | null = null
       const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
       if (taskText != null) {
-        seedWarning = await innerDeps.openAndSeed(ws.id, taskText)
+        seedWarning = await innerDeps.openAndSeed(ws.id, taskText, focus)
       } else {
-        innerDeps.requestOpenWorkspace(ws.id)
+        innerDeps.requestOpenWorkspace(ws.id, focus)
       }
 
       return { workspace: ws, seedWarning }
@@ -374,12 +396,17 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       return renameWorkspace(args.id, args.name)
     },
 
-    // Ask the renderer to open (and mount) a workspace via the normal
-    // handleSelectWorkspace path. Used by U8 (ws new --task) and U12 (ws send
-    // to an unmounted workspace) after this plumbing lands in U14.
+    // Ask the renderer to open (and mount) a workspace. Used by U8 (ws new
+    // --task) and U12 (ws send to an unmounted workspace), and directly by
+    // `ws open`.
+    // args.focus: true (default) navigates the UI to the workspace (explicit
+    // "open this" intent); false performs a background mount (mounts the
+    // surface so it becomes injectable without changing what the user is
+    // looking at).
     'workspace.open': (args) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
-      deps.requestOpenWorkspace(args.id)
+      const focus = args.focus !== false
+      deps.requestOpenWorkspace(args.id, focus)
       return { requested: true }
     },
 
@@ -402,7 +429,12 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       if (text == null && key == null && !submit) {
         throw new Error('at least one of args.text, args.key, or args.submit is required')
       }
-      const result = await innerDeps.sendToWorkspace(args.id, { text, submit, key })
+      // focus: whether an auto-open (workspace not yet mounted) navigates the
+      // UI to the workspace (true) or background-mounts it (false). Defaults
+      // to true; ws-send.ts defaults --background and always passes an
+      // explicit boolean.
+      const focus = args.focus !== false
+      const result = await innerDeps.sendToWorkspace(args.id, { text, submit, key }, focus)
       if (!result.ok) {
         throw new Error(result.error ?? 'send failed')
       }

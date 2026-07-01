@@ -4,8 +4,12 @@
  * Registers the following commands (all ACTION commands — not isRead — so
  * AppNotRunningError triggers auto-launch + retry in cli.ts):
  *
- *   ws open <id>
- *     Ask the app to open and mount a workspace in the GUI.
+ *   ws open <id> [--focus | --background]
+ *     Ask the app to open and mount a workspace. Defaults to --focus (an
+ *     explicit "open this workspace" command navigates the GUI to it, same
+ *     as clicking it); pass --background to activate/mount the workspace
+ *     (making it injectable) WITHOUT navigating the GUI to it. --focus and
+ *     --background are mutually exclusive.
  *     Server returns { requested: true }.
  *
  *   ws archive <id...> [--recursive]
@@ -42,6 +46,7 @@ import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 import { effectiveLifecycleStatus } from '../reads/session-status.js'
+import { resolveFocus } from '../focus.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 
 // ---------------------------------------------------------------------------
@@ -68,10 +73,14 @@ function errorMessage(err: unknown): string {
 // ---------------------------------------------------------------------------
 
 registerCommand('ws open', {
-  usage: 'ws open <id>',
+  usage: 'ws open <id> [--focus | --background]',
   help: 'Open a workspace in the app (mounts its terminal surface)',
   minPositionals: 1,
   maxPositionals: 1,
+  flags: {
+    focus: 'boolean',
+    background: 'boolean'
+  },
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -79,9 +88,18 @@ registerCommand('ws open', {
       return
     }
 
+    // --focus/--background: default FOCUS for `ws open` — an explicit "open
+    // this workspace" command should show it (same as clicking it in the
+    // GUI); pass --background to activate/mount it without navigating there.
+    const focusResult = resolveFocus(ctx.flags, true)
+    if (!focusResult.ok) {
+      printUsageError(focusResult.error)
+      return
+    }
+
     let result: unknown
     try {
-      result = await sendCommand('workspace.open', { id })
+      result = await sendCommand('workspace.open', { id, focus: focusResult.focus })
     } catch (err) {
       printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
