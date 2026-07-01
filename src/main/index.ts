@@ -255,6 +255,19 @@ import {
 import type { KeepAwakeBaseMode } from '../shared/types'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
+import {
+  initOverlayLayer,
+  registerOverlayRendererIpc,
+  showOverlay,
+  updateOverlay,
+  hideOverlay,
+  isOverlayTokenHeld,
+  isInteractiveOverlayVisible,
+  focusOverlay,
+  forceHideOwnedBy,
+  setOverlayTheme
+} from './overlayLayer'
+import type { OverlayDescriptor } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -432,6 +445,30 @@ let popoverWired = false
 // action callback can open it directly via shell.openExternal — avoids the
 // fragile renderer round-trip whose Map entry is cleared before the click.
 const popoverPrUrlByWorkspace = new Map<string, string>()
+
+// The workspace whose native popover chassis card is currently shown, if
+// any — there's exactly one native card visible at a time (chassis cards
+// already auto-replace each other). Tracked so the overlay layer's
+// dismiss-on-acquire (KTD: "Acquiring for an interactive overlay dismisses
+// an already-open native card first") has something to force-hide; cleared
+// whenever the chassis reports the card closed (`popover:actionClicked` is
+// unrelated — the card is dismissed via `terminal:hidePopover` or a
+// self-clearing hover-close, neither of which round-trips through main, so
+// this is best-effort: cleared on the next `terminal:hidePopover` call for
+// the same workspace, and superseded whenever a new popover is shown).
+let lastShownPopoverWorkspaceId: string | null = null
+
+/** Force-dismiss the currently-open native popover card, if any — used by the overlay layer's dismiss-on-acquire (U4/KTD). */
+function dismissActiveNativePopover(): void {
+  const workspaceId = lastShownPopoverWorkspaceId
+  if (!workspaceId) return
+  lastShownPopoverWorkspaceId = null
+  try {
+    loadTerminalAddon().hidePopover(workspaceId)
+  } catch (err) {
+    console.error('[overlayLayer] dismissActiveNativePopover failed:', err)
+  }
+}
 
 function applyPopoverTheme(theme: Theme): void {
   if (!terminalAddon) return
@@ -747,6 +784,23 @@ app.on('before-quit', () => {
   isQuitting = true
 })
 
+// Focuses the currently-viewed workspace's terminal via the addon. Shared by
+// the `terminal:focus` IPC handler's internal logic and overlayLayer's
+// hide-flow focus-restore fallback chain (which knows "the active workspace"
+// but not a specific workspaceId to target). Returns false when there's no
+// currently-viewed workspace so callers can continue their own fallback chain.
+function focusWorkspaceTerminal(): boolean {
+  try {
+    const ws = getCurrentlyViewedWorkspace()
+    if (!ws) return false
+    loadTerminalAddon().focus(ws)
+    return true
+  } catch (err) {
+    console.error('[lifecycle] focusWorkspaceTerminal failed:', err)
+    return false
+  }
+}
+
 function kickActiveTerminal(): void {
   try {
     // Use the in-memory currently-viewed workspace (no SQLite dependency, so
@@ -755,6 +809,13 @@ function kickActiveTerminal(): void {
     // so it wakes even when the terminal was frozen / input was stuck.
     const ws = getCurrentlyViewedWorkspace()
     if (!ws) return
+    // While a takesFocus overlay is pending/visible, refocus the overlay
+    // instead of yanking focus back to the terminal underneath it (R6/R7).
+    if (isInteractiveOverlayVisible()) {
+      console.log('[lifecycle] terminal kick (wake) — overlay has focus, refocusing overlay')
+      focusOverlay()
+      return
+    }
     console.log('[lifecycle] terminal kick (wake)')
     loadTerminalAddon().focus(ws)
   } catch (err) {
@@ -851,6 +912,16 @@ function createWindow(): void {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
+    }
+    try {
+      initOverlayLayer(mainWindow, loadTerminalAddon(), {
+        getMainWindow,
+        focusActiveWorkspaceTerminal: focusWorkspaceTerminal,
+        dismissActiveNativePopover
+      })
+      setOverlayTheme(getAppUiState().theme as Theme)
+    } catch (err) {
+      console.error('[overlayLayer] init failed:', err)
     }
     if (isDev) {
       mainWindow.setTitle(app.getName())
@@ -1809,6 +1880,7 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.theme !== undefined) {
     applyLoadingOverlayTheme(patch.theme as Theme)
     applyPopoverTheme(patch.theme as Theme)
+    setOverlayTheme(patch.theme as Theme)
   }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -2354,6 +2426,9 @@ handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => 
     })
     throw err
   }
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive its parent surface.
+  forceHideOwnedBy(workspaceId)
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -2405,8 +2480,18 @@ handle(
       data: Record<string, unknown>
     }
   ): void => {
+    // Exclusivity token (U4/KTD): while an interactive overlay holds the
+    // token, hover-class ('hover'/'details'/'project') popover shows are a
+    // SILENT no-op — mirrors the native guard's existing silent-defer
+    // behavior, never a surfaced error. Confirm-class ('confirm' kind) shows
+    // may proceed only if the token is free; if held, also silently defer
+    // (chassis card serialization) — realistically unreachable in U4-era code
+    // since confirm modals are still fully chassis until U7, implemented here
+    // for forward-compat per the plan.
+    if (isOverlayTokenHeld()) return
     const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
     if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
+    lastShownPopoverWorkspaceId = workspaceId
     const addon = loadTerminalAddon()
     // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
     // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
@@ -2424,6 +2509,7 @@ handle(
 )
 
 handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
+  if (lastShownPopoverWorkspaceId === workspaceId) lastShownPopoverWorkspaceId = null
   const addon = loadTerminalAddon()
   addon.hidePopover(workspaceId)
 })
@@ -2490,6 +2576,9 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
   }
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive the destroyed surface.
+  forceHideOwnedBy(workspaceId)
   // Tear down the git watcher for this workspace (ref-counted: only closes
   // underlying fs.watch when the last subscriber for this cwd is removed).
   const wsForGit = getWorkspace(workspaceId)
@@ -2517,6 +2606,27 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
     workspaceId
   })
 })
+
+// ---------------------------------------------------------------------------
+// Overlay layer IPC (React overlays above the terminal)
+// ---------------------------------------------------------------------------
+
+handle('overlay:showDescriptor', (_e, { descriptor }: { descriptor: OverlayDescriptor }) =>
+  showOverlay(descriptor)
+)
+
+handle(
+  'overlay:update',
+  (_e, { id, props }: { id: string; props: Record<string, unknown> }): void =>
+    updateOverlay(id, props)
+)
+
+handle('overlay:hide', (_e, { id }: { id: string }) => hideOverlay(id))
+
+// ipcMain.on registrations for the overlayRenderer:* channels (sends from the
+// overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.
+// Registered once here at module init (process-global by channel name).
+registerOverlayRendererIpc()
 
 // ---------------------------------------------------------------------------
 // resolveNamedKey — map CLI key names to TerminalSendKeyDescriptor
