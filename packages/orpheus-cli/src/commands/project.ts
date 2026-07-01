@@ -11,11 +11,28 @@
  *     2. by name (exact case-sensitive match)
  *     3. by path (realpath-normalised)
  *   Also shows the project's workspaces (non-archived) as a sub-table.
+ *
+ * NAME RESOLUTION + LIFECYCLE (#9)
+ * ---------------------------------
+ * Workspace rows shown here go through the same resolveWorkspaceDisplayName()
+ * ladder and effectiveLifecycleStatus() fold as ws-ls/ws-status, so a project's
+ * workspace list is consistent with those commands (raw `name` + `status` are
+ * still exposed in --json; `displayName`/effective `status` drive text output).
+ *
+ * TEXT/JSON PARITY (#13)
+ * -----------------------
+ * `project show`'s --json now includes `githubOwner`/`githubRepo` (previously
+ * only shown in text as a combined `github` string) so both modes expose the
+ * same underlying fields — text keeps the human-friendly combined string,
+ * json keeps the raw parts. Dates are ISO strings in text, epoch ms in json
+ * (same underlying value, formatted per mode).
  */
 
 import * as fs from 'node:fs'
 import { registerCommand } from '../registry.js'
 import { openDb } from '../reads/db.js'
+import { effectiveLifecycleStatus } from '../reads/session-status.js'
+import { resolveWorkspaceDisplayName, extractSessionTitle } from '../reads/resolve-name.js'
 import {
   printResult,
   printKeyValue,
@@ -25,7 +42,16 @@ import {
   printLines,
   type TableColumn
 } from '../output.js'
-import type { ProjectRecord } from '../reads/db.js'
+import type { ProjectRecord, WorkspaceRecord } from '../reads/db.js'
+
+/** Resolve a workspace's display name, reading the transcript only when needed. */
+function displayNameOf(ws: WorkspaceRecord, project: ProjectRecord): string {
+  let sessionTitle: string | null = null
+  if (ws.nameIsAuto && !ws.lastTitle && ws.closedAt === null) {
+    sessionTitle = extractSessionTitle(ws, project)
+  }
+  return resolveWorkspaceDisplayName(ws, sessionTitle)
+}
 
 // ---------------------------------------------------------------------------
 // project ls
@@ -33,6 +59,9 @@ import type { ProjectRecord } from '../reads/db.js'
 
 registerCommand('project ls', {
   isRead: true,
+  usage: 'project ls',
+  help: 'List all registered Orpheus projects',
+  maxPositionals: 0,
   handler: async (ctx) => {
     const db = openDb()
     try {
@@ -114,6 +143,10 @@ function resolveProject(db: ReturnType<typeof openDb>, query: string): ProjectRe
 
 registerCommand('project show', {
   isRead: true,
+  usage: 'project show <id|name|path>',
+  help: 'Show project details and its (non-archived) workspaces',
+  minPositionals: 1,
+  maxPositionals: 1,
   handler: async (ctx) => {
     const query = ctx.positionals[0]
     if (query == null || query === '') {
@@ -146,7 +179,9 @@ registerCommand('project show', {
           workspaces: workspaces.map((ws) => ({
             id: ws.id,
             name: ws.name,
-            status: ws.status,
+            displayName: displayNameOf(ws, project),
+            status: effectiveLifecycleStatus(ws, ws.status),
+            runStatus: ws.status,
             createdAt: ws.createdAt,
             lastOpenedAt: ws.lastOpenedAt,
             parentWorkspaceId: ws.parentWorkspaceId
@@ -154,6 +189,7 @@ registerCommand('project show', {
         })
       } else {
         // Pretty output: key/value block then workspace table
+        // (githubOwner/githubRepo also exposed in json above — #13 parity)
         const detail: Record<string, unknown> = {
           id: project.id,
           name: project.name,
@@ -183,8 +219,8 @@ registerCommand('project show', {
 
           const wsRows: WsRow[] = workspaces.map((ws) => ({
             id: ws.id,
-            name: ws.name,
-            status: ws.status,
+            name: displayNameOf(ws, project),
+            status: effectiveLifecycleStatus(ws, ws.status),
             lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : ''
           }))
 

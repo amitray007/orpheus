@@ -52,6 +52,12 @@ import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
 
 registerCommand('ws send', {
+  usage: 'ws send <id> [text] [--submit] [--key <name>]',
+  help: 'Send text, a named key, and/or a submit (Enter) to a workspace',
+  minPositionals: 1,
+  // text is an OPTIONAL second positional (ws send <id> --key enter is valid
+  // with zero text), so maxPositionals is 2, not 1 — do not tighten this to 1.
+  maxPositionals: 2,
   flags: {
     submit: 'boolean',
     key: 'string'

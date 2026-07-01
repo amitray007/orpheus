@@ -40,8 +40,31 @@
  *   --project <value>   string   Set project context (id, name, or path)
  *
  * Per-command flags are declared in the command descriptor and parsed the same way.
- * Unknown flags are silently collected in flags._unknown (array of strings) so
- * later units can decide whether to error on them.
+ * Unknown flags are collected in flags._unknown (array of strings) during parsing;
+ * main() rejects the invocation (usage error, exit 2) if that array is non-empty —
+ * see the "strictness" note below.
+ *
+ * STRICTNESS
+ * ----------
+ * The CLI is intentional about rejecting malformed invocations rather than
+ * silently doing the wrong thing:
+ *   - Unknown flags (anything not in GLOBAL_FLAGS or the resolved command's
+ *     declared flags) are a usage error, not silently ignored.
+ *   - `--project` requires a value; if the next token is missing or looks like
+ *     a flag (starts with '-'), it's a usage error rather than swallowing the
+ *     next positional/command token as the project value.
+ *   - Commands may declare `minPositionals`/`maxPositionals` on their
+ *     CommandDescriptor; extra/missing positionals are a usage error when
+ *     declared. (Undeclared arity is not enforced — see registry.ts.)
+ *
+ * VERSION
+ * -------
+ * Sourced from packages/orpheus-cli/package.json's "version" field via a JSON
+ * import (tsconfig has resolveJsonModule: true). esbuild inlines the JSON at
+ * bundle time (see build:cli in the root package.json), so the bundled
+ * dist/cli.cjs has no runtime dependency on package.json being present next to
+ * it — the string is baked in at build time. Keep package.json#version as the
+ * single source of truth; nothing else needs to change to keep --version in sync.
  *
  * READS vs ACTIONS (auto-launch policy)
  * ----------------------------------------
@@ -73,8 +96,19 @@ import {
   printResult,
   printKeyValue
 } from './output.js'
-import { registerCommand, getCommand, hasCommand } from './registry.js'
-import type { ParsedFlags, CommandContext, FlagDeclarations } from './registry.js'
+import { registerCommand, getCommand, hasCommand, getRegistry } from './registry.js'
+import type {
+  ParsedFlags,
+  CommandContext,
+  FlagDeclarations,
+  CommandDescriptor
+} from './registry.js'
+// VERSION is sourced directly from this package's package.json (single source
+// of truth). esbuild bundles JSON imports as inline object literals, so the
+// version string is baked into dist/cli.cjs at build time — see build:cli.
+import pkg from '../package.json' with { type: 'json' }
+
+const VERSION: string = pkg.version
 // Re-export types so existing importers of cli.ts continue to work.
 export type {
   ParsedFlags,
@@ -114,16 +148,68 @@ type ParseResult = {
   jsonMode: boolean
 }
 
+/** Short-flag aliases: -j/-p/-h/-v → --json/--project/--help/--version. */
+const SHORT_FLAG_MAP: Record<string, string> = {
+  j: 'json',
+  p: 'project',
+  h: 'help',
+  v: 'version'
+}
+
+/**
+ * True if `token` looks like a flag rather than a value a string flag could
+ * consume — i.e. it starts with '-' (covers both '--foo' and '-f'). Used to
+ * detect a missing value for string flags in general: if the next token is
+ * absent or flag-shaped, we must not silently swallow it as the value.
+ */
+function looksLikeFlag(token: string | undefined): boolean {
+  return token == null || token.startsWith('-')
+}
+
+/**
+ * True if `token` is (the first word of) a registered command path, e.g.
+ * 'ws' (prefix of 'ws new'/'ws ls'/...), 'project' (prefix of 'project ls'),
+ * or 'whoami' (a full command on its own). Used only for --project's value
+ * heuristic (#11): --project's value should never accidentally swallow a
+ * command token like `orpheus --project ws ls`.
+ */
+function looksLikeCommandToken(token: string | undefined): boolean {
+  if (token == null) return false
+  for (const path of getRegistry().keys()) {
+    const firstWord = path.split(' ')[0]
+    if (firstWord === token) return true
+  }
+  return false
+}
+
+/**
+ * True if `next` is unusable as the value for string flag `name` — i.e. it's
+ * missing, flag-shaped, or (for --project specifically, per #11) shaped like
+ * a command token. Other string flags (--task, --name, --model, ...) only
+ * apply the flag-shaped/missing check, since their free-text values may
+ * legitimately collide with command words.
+ */
+function isMissingValueFor(name: string, next: string | undefined): boolean {
+  if (looksLikeFlag(next)) return true
+  if (name === 'project' && looksLikeCommandToken(next)) return true
+  return false
+}
+
 /**
  * Parse argv (already stripped of node/electron/script path, so starting at
  * the first user token). Extracts global flags, resolves the command path
  * by matching registered commands (longest match first), then collects
  * remaining positionals and per-command flags.
+ *
+ * Flags requiring a value whose value token is missing or flag-shaped are
+ * recorded in flags._missingValue (array of flag names) rather than silently
+ * consuming the next token — main() turns this into a usage error (#11).
  */
 function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResult {
   const allFlags: FlagDeclarations = { ...GLOBAL_FLAGS, ...perCommandFlags }
   const flags: ParsedFlags = {}
   const args: string[] = []
+  const missingValue: string[] = []
 
   let i = 0
   while (i < argv.length) {
@@ -143,12 +229,14 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
         flags[k] = v
         i++
       } else if (allFlags[name] === 'string') {
-        // --key value
-        if (i + 1 < argv.length) {
-          flags[name] = argv[i + 1]!
+        // --key value — the value must not be missing, another flag, or (for
+        // --project) a command token (#11)
+        const next = argv[i + 1]
+        if (!isMissingValueFor(name, next)) {
+          flags[name] = next!
           i += 2
         } else {
-          flags[name] = ''
+          missingValue.push(name)
           i++
         }
       } else if (allFlags[name] === 'boolean') {
@@ -161,13 +249,18 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
         i++
       }
     } else if (token.startsWith('-') && token.length === 2) {
-      // Short flag: -j → --json, -p → --project (only a couple defined)
-      const shortMap: Record<string, string> = { j: 'json', p: 'project' }
-      const expanded = shortMap[token[1]!]
+      // Short flag: -j/-p/-h/-v → --json/--project/--help/--version
+      const expanded = SHORT_FLAG_MAP[token[1]!]
       if (expanded != null) {
-        if (allFlags[expanded] === 'string' && i + 1 < argv.length) {
-          flags[expanded] = argv[i + 1]!
-          i += 2
+        if (allFlags[expanded] === 'string') {
+          const next = argv[i + 1]
+          if (!isMissingValueFor(expanded, next)) {
+            flags[expanded] = next!
+            i += 2
+          } else {
+            missingValue.push(expanded)
+            i++
+          }
         } else {
           flags[expanded] = true
           i++
@@ -181,6 +274,10 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
       args.push(token)
       i++
     }
+  }
+
+  if (missingValue.length > 0) {
+    flags._missingValue = missingValue
   }
 
   // Resolve command path via longest prefix match against registered commands.
@@ -324,6 +421,10 @@ async function handleWhoami(ctx: CommandContext): Promise<void> {
 
 registerCommand('whoami', {
   isRead: true,
+  // No positional args accepted (#12: reject `whoami extra junk`).
+  minPositionals: 0,
+  maxPositionals: 0,
+  help: 'Show current project/workspace context',
   handler: handleWhoami
 })
 
@@ -352,14 +453,20 @@ registerCommand('whoami', {
 const USAGE = `
 Orpheus CLI
 
+Command-line interface for the Orpheus app — inspect and drive projects and
+workspaces from the terminal.
+
 Usage:
   orpheus [--json] [--project <id|name|path>] <command> [args] [flags]
+  orpheus <command> -h | --help
+  orpheus -h | --help
+  orpheus -v | --version
 
-Global flags:
+Options:
   --json              Emit JSON output (stable, machine-readable)
   --project <val>     Set project context by id, name, or path
-  --help              Show this help text
-  --version           Show CLI version
+  -h, --help          Show help (top-level, or for a specific command)
+  -v, --version       Show CLI version
 
 Commands:
   whoami              Show current project/workspace context
@@ -377,6 +484,8 @@ Commands:
   project ls          List projects                (U13)
   project show        Show project details         (U13)
 
+Run 'orpheus <command> --help' for help on a specific command.
+
 Exit codes:
   0  success
   1  general error
@@ -384,6 +493,65 @@ Exit codes:
   3  not found
   10-13  ws wait codes (U11)
 `.trimStart()
+
+/**
+ * Build help text for a single command (#10). Uses the descriptor's explicit
+ * `usage`/`help` fields if provided; otherwise synthesizes a conventional
+ * usage line + flags list from the command name and its declared flags/arity.
+ * Command modules may populate `usage`/`help` in a follow-up — this works
+ * either way.
+ */
+function commandHelp(commandPath: string, descriptor: CommandDescriptor): string {
+  const lines: string[] = []
+  lines.push(`orpheus ${commandPath}`)
+  if (descriptor.help != null && descriptor.help !== '') {
+    lines.push('')
+    lines.push(descriptor.help)
+  }
+  lines.push('')
+  lines.push('Usage:')
+  if (descriptor.usage != null && descriptor.usage !== '') {
+    lines.push(`  ${descriptor.usage}`)
+  } else {
+    // Synthesize a usage line from declared arity.
+    const min = descriptor.minPositionals ?? 0
+    const max = descriptor.maxPositionals
+    const positionalHint: string[] = []
+    for (let idx = 0; idx < (max ?? min); idx++) {
+      const label = `arg${idx + 1}`
+      positionalHint.push(idx < min ? `<${label}>` : `[${label}]`)
+    }
+    if (max == null && min === 0 && positionalHint.length === 0) {
+      // Arity not declared — don't imply a fixed shape.
+      positionalHint.push('[args...]')
+    }
+    const flagHint =
+      descriptor.flags != null && Object.keys(descriptor.flags).length > 0 ? ' [flags]' : ''
+    lines.push(`  orpheus ${commandPath} ${positionalHint.join(' ')}${flagHint}`.trimEnd())
+  }
+
+  lines.push('')
+  lines.push('Global options:')
+  lines.push('  --json              Emit JSON output')
+  lines.push('  --project <val>     Set project context by id, name, or path')
+  lines.push('  -h, --help          Show this help text')
+
+  if (descriptor.flags != null && Object.keys(descriptor.flags).length > 0) {
+    lines.push('')
+    lines.push('Flags:')
+    const entries = Object.entries(descriptor.flags)
+    const labels = entries.map(([name, kind]) =>
+      kind === 'string' ? `--${name} <value>` : `--${name}`
+    )
+    const width = Math.max(...labels.map((l) => l.length)) + 2
+    entries.forEach(([, kind], idx) => {
+      lines.push(`  ${labels[idx]!.padEnd(width)}(${kind})`)
+    })
+  }
+
+  lines.push('')
+  return lines.join('\n') + '\n'
+}
 
 // ---------------------------------------------------------------------------
 // Main entrypoint — exported for the U13 shim
@@ -402,29 +570,88 @@ export async function main(argv: string[]): Promise<void> {
   // Apply global output mode immediately
   setJsonMode(parsed.jsonMode)
 
-  // --help or no command → print usage
-  if (
-    parsed.flags.help === true ||
-    (parsed.commandPath == null && parsed.positionals.length === 0)
-  ) {
-    process.stdout.write(USAGE)
+  const helpRequested = parsed.flags.help === true
+
+  // --help/-h WITH a resolved command → print that command's help (#10),
+  // regardless of other flag/arity problems (help always wins for a known command).
+  if (helpRequested && parsed.commandPath != null) {
+    const descriptor = getCommand(parsed.commandPath)!
+    process.stdout.write(commandHelp(parsed.commandPath, descriptor))
+    process.exitCode = 0
     return
   }
 
-  // --version
+  // Bare --help/-h → top-level usage. Exit 0: help was explicitly requested.
+  if (helpRequested) {
+    process.stdout.write(USAGE)
+    process.exitCode = 0
+    return
+  }
+
+  // --version/-v (checked before the "bare invocation" fallback below, since
+  // `orpheus --version` has zero argv tokens' worth of command/positionals
+  // but must not be treated as a bare invocation)
   if (parsed.flags.version === true) {
-    process.stdout.write('0.1.0\n')
+    if (parsed.jsonMode) {
+      process.stdout.write(JSON.stringify({ version: VERSION }) + '\n')
+    } else {
+      process.stdout.write(`${VERSION}\n`)
+    }
+    process.exitCode = 0
+    return
+  }
+
+  // Truly bare invocation (no argv at all) → top-level usage, exit 0.
+  if (argv.length === 0) {
+    process.stdout.write(USAGE)
+    process.exitCode = 0
+    return
+  }
+
+  // Unknown flags are a usage error, not silently ignored (#6 — strictness).
+  if (Array.isArray(parsed.flags._unknown) && parsed.flags._unknown.length > 0) {
+    const names = parsed.flags._unknown.join(', ')
+    const hint =
+      parsed.commandPath != null
+        ? `Run 'orpheus ${parsed.commandPath} -h' for usage.`
+        : `Run 'orpheus -h' for usage.`
+    printUsageError(`unknown flag: ${names}. ${hint}`)
+    return
+  }
+
+  // A string flag (e.g. --project) was given without a usable value (#11).
+  if (Array.isArray(parsed.flags._missingValue) && parsed.flags._missingValue.length > 0) {
+    const [first] = parsed.flags._missingValue
+    printUsageError(`flag --${first} requires a value`)
     return
   }
 
   // Unknown command
   if (parsed.commandPath == null) {
     const attempted = parsed.positionals.slice(0, 2).join(' ')
-    printUsageError(`unknown command: ${attempted || '(none)'}. Run with --help for usage.`)
+    printUsageError(
+      `unknown command: ${attempted || '(none)'}. Run 'orpheus -h' for a list of commands.`
+    )
     return
   }
 
   const descriptor = getCommand(parsed.commandPath)!
+
+  // Arity checking (#12): only enforced when the descriptor declares it.
+  const positionalCount = parsed.positionals.length
+  if (descriptor.minPositionals != null && positionalCount < descriptor.minPositionals) {
+    printUsageError(
+      `${parsed.commandPath} expects at least ${descriptor.minPositionals} argument(s), got ${positionalCount}. Run 'orpheus ${parsed.commandPath} -h' for usage.`
+    )
+    return
+  }
+  if (descriptor.maxPositionals != null && positionalCount > descriptor.maxPositionals) {
+    printUsageError(
+      `${parsed.commandPath} expects at most ${descriptor.maxPositionals} argument(s), got ${positionalCount}. Run 'orpheus ${parsed.commandPath} -h' for usage.`
+    )
+    return
+  }
+
   const ctx: CommandContext = {
     positionals: parsed.positionals,
     flags: parsed.flags,

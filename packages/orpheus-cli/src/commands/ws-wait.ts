@@ -157,6 +157,11 @@ function aggregateReason(reasons: WaitReason[]): WaitReason {
 
 registerCommand('ws wait', {
   // NOT isRead — we use the socket. But we suppress auto-launch manually (see handler).
+  usage: 'ws wait <id...> [--timeout <dur>]',
+  help: 'Wait for one or more workspaces to reach a terminal activity state',
+  minPositionals: 1,
+  // Variadic (accepts any number of workspace ids) — maxPositionals intentionally
+  // omitted so an arbitrary number of ids is never rejected as a usage error.
   flags: {
     timeout: 'string'
   },

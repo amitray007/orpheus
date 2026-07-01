@@ -36,6 +36,10 @@ import type { TranscriptOpts } from '../reads/transcript.js'
 
 registerCommand('ws read', {
   isRead: true,
+  usage: 'ws read <id> [--last-assistant] [--last <n>] [--full] [--role <r>] [--since <t>]',
+  help: 'Read a workspace transcript (defaults to the last assistant turn)',
+  minPositionals: 1,
+  maxPositionals: 1,
   flags: {
     'last-assistant': 'boolean',
     last: 'string',

@@ -2621,65 +2621,121 @@ if (!app.requestSingleInstanceLock()) {
               workspaceId: string,
               payload: { text?: string; submit?: boolean; key?: string }
             ): Promise<{ ok: boolean; error?: string }> => {
-              // Check if the surface is already injectable; if not, open it and wait.
+              // QA #7 fix — verified root cause: terminalActions.canInject() reads
+              // getWorkspaceActivity(), which defaults to 'idle' for ANY workspace with
+              // no in-memory activity entry (orpheusNotify.ts: `activityMap.get(id) ??
+              // 'idle'`) — including a workspace whose surface was never mounted, or one
+              // that is closedAt-closed. So `!canInject(workspaceId)` was FALSE for an
+              // unopened workspace (it looked injectable), the auto-open branch below was
+              // skipped entirely, and the raw addon call failed with the unhelpful
+              // 'No terminal surface for workspace' (code: 'not_found').
+              //
+              // Fix, two parts:
+              //  (a) up front, if the workspace is known-closed (closedAt != null), always
+              //      go through the open+poll path — closedAt is an authoritative DB
+              //      signal that canInject's in-memory default can't see.
+              //  (b) defense in depth: after the open+poll path (or when skipped because
+              //      canInject looked true), if the actual send/key/submit call comes back
+              //      with code 'not_found' (surface genuinely not mounted), open the
+              //      workspace and retry once — this covers the exact false-'idle' case
+              //      above for a workspace that was never mounted at all, not just closed.
               const POLL_INTERVAL_MS = 300
               const TIMEOUT_MS = 10_000
-              if (!terminalActions.canInject(workspaceId)) {
+              const ACTIONABLE_ERROR_SUFFIX =
+                ' — run: orpheus ws open ' +
+                workspaceId +
+                ' (or it will be opened automatically; retry the send after it starts)'
+
+              async function openAndWaitInjectable(): Promise<boolean> {
                 requestOpenWorkspace(workspaceId)
                 const deadline = Date.now() + TIMEOUT_MS
-                let injectable = false
                 while (Date.now() < deadline) {
-                  if (terminalActions.canInject(workspaceId)) {
-                    injectable = true
-                    break
-                  }
+                  if (terminalActions.canInject(workspaceId)) return true
                   await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
                 }
+                return false
+              }
+
+              const ws = getWorkspace(workspaceId)
+              if (ws == null) {
+                return { ok: false, error: `workspace not found: ${workspaceId}` }
+              }
+
+              // (a) Known-closed — the in-memory canInject default can't see this, so
+              // don't trust it; always open + wait first.
+              if (ws.closedAt != null || !terminalActions.canInject(workspaceId)) {
+                const injectable = await openAndWaitInjectable()
                 if (!injectable) {
                   return {
                     ok: false,
                     error:
-                      'workspace not ready: the surface did not become injectable within 10 s. ' +
-                      'The workspace may be busy or not yet mounted. Try again shortly.'
+                      'workspace not ready: the surface did not become injectable within 10 s.' +
+                      ACTIONABLE_ERROR_SUFFIX
                   }
                 }
               }
+
               const addon = loadTerminalAddon()
-              // Send text first (if provided).
-              if (payload.text != null && payload.text !== '') {
-                const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
-                if (!inputResult.ok) {
-                  return {
-                    ok: false,
-                    error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+
+              // Runs one full text/key/submit pass. Returns the first failure (if any).
+              function attemptSend(): { ok: boolean; error?: string; notFound?: boolean } {
+                if (payload.text != null && payload.text !== '') {
+                  const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
+                  if (!inputResult.ok) {
+                    return {
+                      ok: false,
+                      notFound: inputResult.code === 'not_found',
+                      error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+                    }
                   }
                 }
-              }
-              // Send named key (if provided) — after text.
-              if (payload.key != null && payload.key !== '') {
-                const keyDescriptor = resolveNamedKey(payload.key)
-                if (keyDescriptor == null) {
-                  return { ok: false, error: `unknown key name: "${payload.key}"` }
-                }
-                const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
-                if (!keysResult.ok) {
-                  return {
-                    ok: false,
-                    error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                if (payload.key != null && payload.key !== '') {
+                  const keyDescriptor = resolveNamedKey(payload.key)
+                  if (keyDescriptor == null) {
+                    return { ok: false, error: `unknown key name: "${payload.key}"` }
+                  }
+                  const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
+                  if (!keysResult.ok) {
+                    return {
+                      ok: false,
+                      notFound: keysResult.code === 'not_found',
+                      error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                    }
                   }
                 }
-              }
-              // Submit (Return) last — after text and key.
-              if (payload.submit === true) {
-                const submitResult = terminalActions.submit(addon, workspaceId)
-                if (!submitResult.ok) {
-                  return {
-                    ok: false,
-                    error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                if (payload.submit === true) {
+                  const submitResult = terminalActions.submit(addon, workspaceId)
+                  if (!submitResult.ok) {
+                    return {
+                      ok: false,
+                      notFound: submitResult.code === 'not_found',
+                      error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                    }
                   }
                 }
+                return { ok: true }
               }
-              return { ok: true }
+
+              const firstAttempt = attemptSend()
+              if (firstAttempt.ok) return { ok: true }
+
+              // (b) Defense in depth: the surface genuinely isn't mounted despite
+              // canInject saying otherwise (stale/defaulted activity). Open + wait, then
+              // retry exactly once before giving up with an actionable error.
+              if (firstAttempt.notFound === true) {
+                const injectable = await openAndWaitInjectable()
+                if (injectable) {
+                  const retryAttempt = attemptSend()
+                  if (retryAttempt.ok) return { ok: true }
+                  return { ok: false, error: retryAttempt.error ?? 'send failed' }
+                }
+                return {
+                  ok: false,
+                  error: `workspace not open${ACTIONABLE_ERROR_SUFFIX}`
+                }
+              }
+
+              return { ok: false, error: firstAttempt.error ?? 'send failed' }
             }
           }
           commandServer = startCommandServer(cmdDeps)

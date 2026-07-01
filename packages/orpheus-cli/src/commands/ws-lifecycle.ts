@@ -41,6 +41,7 @@
 import { registerCommand } from '../registry.js'
 import { sendCommand } from '../socket-client.js'
 import { printResult, printKeyValue, printError, printUsageError } from '../output.js'
+import { effectiveLifecycleStatus } from '../reads/session-status.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,10 @@ import type { WorkspaceRecord } from '../reads/db.js'
 // ---------------------------------------------------------------------------
 
 registerCommand('ws open', {
+  usage: 'ws open <id>',
+  help: 'Open a workspace in the app (mounts its terminal surface)',
+  minPositionals: 1,
+  maxPositionals: 1,
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -75,6 +80,11 @@ registerCommand('ws open', {
 // ---------------------------------------------------------------------------
 
 registerCommand('ws archive', {
+  usage: 'ws archive <id...> [--recursive]',
+  help: 'Archive one or more workspaces (with --recursive, archives the full subtree)',
+  minPositionals: 1,
+  // Variadic (accepts any number of ids) — maxPositionals intentionally omitted
+  // so batch-archiving many workspaces is never rejected as a usage error.
   flags: {
     recursive: 'boolean'
   },
@@ -101,9 +111,19 @@ registerCommand('ws archive', {
       }
     }
 
-    // In JSON mode, emit all results as an array.
+    // In JSON mode, emit all results as an array. Each entry mirrors the text
+    // mode's fields (#13 parity): ok/archived both present so scripts can key
+    // off either name, count included whenever known (not just --recursive).
     if (ctx.jsonMode) {
-      printResult(results)
+      printResult(
+        results.map((r) => ({
+          id: r.id,
+          ok: r.ok,
+          archived: r.ok,
+          ...(r.count != null ? { count: r.count } : {}),
+          ...(r.error != null ? { error: r.error } : {})
+        }))
+      )
       // Set non-zero exit if any failed
       if (results.some((r) => !r.ok)) {
         process.exitCode = 1
@@ -130,6 +150,10 @@ registerCommand('ws archive', {
 // ---------------------------------------------------------------------------
 
 registerCommand('ws close', {
+  usage: 'ws close <id>',
+  help: 'Close a workspace (sets closedAt without deleting it)',
+  minPositionals: 1,
+  maxPositionals: 1,
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -153,7 +177,7 @@ registerCommand('ws close', {
         printKeyValue({
           id: ws.id,
           name: ws.name,
-          status: ws.status,
+          status: effectiveLifecycleStatus(ws, ws.status),
           closedAt: ws.closedAt != null ? new Date(ws.closedAt).toISOString() : '(none)'
         })
       } else {
@@ -168,6 +192,10 @@ registerCommand('ws close', {
 // ---------------------------------------------------------------------------
 
 registerCommand('ws reopen', {
+  usage: 'ws reopen <id>',
+  help: 'Reopen a previously-closed workspace (clears closedAt)',
+  minPositionals: 1,
+  maxPositionals: 1,
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -191,7 +219,7 @@ registerCommand('ws reopen', {
         printKeyValue({
           id: ws.id,
           name: ws.name,
-          status: ws.status,
+          status: effectiveLifecycleStatus(ws, ws.status),
           closedAt: ws.closedAt != null ? new Date(ws.closedAt).toISOString() : '(none)'
         })
       } else {
@@ -206,6 +234,10 @@ registerCommand('ws reopen', {
 // ---------------------------------------------------------------------------
 
 registerCommand('ws rename', {
+  usage: 'ws rename <id> <name>',
+  help: 'Rename a workspace (sets a manual name; wins over auto-naming)',
+  minPositionals: 2,
+  maxPositionals: 2,
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     const name = ctx.positionals[1]

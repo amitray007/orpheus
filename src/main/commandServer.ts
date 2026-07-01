@@ -229,11 +229,25 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         updateClaudeWorkspaceSettings(ws.id, settingsOverride)
       }
 
-      // Seed task: open the workspace in the GUI and inject the task text once injectable.
+      // ACTIVATION (user directive): a newly created workspace must never be left
+      // created-but-closed. Previously requestOpenWorkspace only fired via
+      // openAndSeed, and only when --task was given — a task-less `ws new` just
+      // inserted the DB row and returned, leaving the workspace looking CLOSED/
+      // inactive in the UI (closedAt is null by default, but the renderer never
+      // mounts+selects it, so nothing about the workspace is "live" until the
+      // user manually clicks it). Fix: ALWAYS activate.
+      //   - task present    → openAndSeed (opens via requestOpenWorkspace internally,
+      //                       then injects the task once the surface is injectable).
+      //   - task absent     → requestOpenWorkspace directly (opens/mounts, no injection).
+      // Either way the renderer receives the open signal and mounts the workspace;
+      // closedAt is never set on a freshly created workspace (createWorkspace doesn't
+      // touch it), so this only affects whether the surface is actually live.
       let seedWarning: string | null = null
       const taskText = typeof args.task === 'string' && args.task !== '' ? args.task : null
       if (taskText != null) {
         seedWarning = await innerDeps.openAndSeed(ws.id, taskText)
+      } else {
+        innerDeps.requestOpenWorkspace(ws.id)
       }
 
       return { workspace: ws, seedWarning }
@@ -243,9 +257,25 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // handler in index.ts via the shared performArchive dep.
     // With recursive:true, archives the entire subtree (children-before-parent) so
     // teardown ordering is safe and no workspace is left with a missing parent.
+    //
+    // DATA-INTEGRITY FIX (QA #3): archiveWorkspace() in workspaces.ts is a silent
+    // no-op DELETE — it never throws for a nonexistent id, so previously this
+    // dispatch reported { archived: true } even when args.id never existed. The
+    // caller (a script) would see success and move on, masking a typo'd or
+    // already-archived id. Fix: getWorkspace(id) FIRST; a null result throws a
+    // 'workspace not found: <id>' error, which the /cmd envelope turns into
+    // { ok: false, error: '...' } and which the CLI's not-found heuristic maps
+    // to exit 3. The same check applies to the recursive root — if the root
+    // itself doesn't exist, refuse before doing any BFS/teardown work.
     'workspace.archive': (args, context) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       const recursive = args.recursive === true
+
+      // Root-must-exist check (single AND recursive) — see comment above.
+      const root = getWorkspace(args.id)
+      if (root == null) {
+        throw new Error(`workspace not found: ${args.id}`)
+      }
 
       if (recursive) {
         // Collect the full subtree rooted at args.id (BFS), then archive leaves-up.
@@ -274,6 +304,9 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         }
 
         // Archive leaves-up: reverse the BFS order so children come before parents.
+        // Each subtree member is guaranteed to exist (it was discovered via
+        // listChildWorkspaces from a live parent), so no per-id existence check
+        // is needed here — only the root needed the explicit check above.
         for (let i = subtreeIds.length - 1; i >= 0; i--) {
           deps.performArchive(subtreeIds[i]!)
         }
@@ -550,6 +583,36 @@ export function startCommandServer(deps: CommandServerDeps): {
         // If the workspace has never been seen alive, 'unknown' is treated as non-terminal
         // (the session file simply hasn't been written yet). The subscription timeout is the
         // backstop for a workspace that never starts.
+        //
+        // DB CROSS-CHECK (QA #4 — false 'died' on a just-completed turn):
+        // getWorkspaceFileInfo can legitimately read 'unknown' for a workspace that is
+        // very much alive/finished-cleanly: the window between claude finishing a turn
+        // (session file rewritten to 'idle'/'waiting') and sessionState.ts's fs.watch
+        // debounce settling can transiently drop liveSessionMap's view of the session,
+        // or the on-disk file can be caught mid-write. Naively mapping every 'unknown'
+        // (once everSeenAlive) to 'died' meant a workspace that had just gone
+        // awaiting_input got misreported as 'died' on the FIRST wait, only to read
+        // correctly as 'done' on a re-run once the race settled.
+        //
+        // Fix: before concluding 'died' for fileStatus === 'unknown', consult the
+        // persisted DB workspace.status (the same field the GUI and `ws status` read).
+        // That status is written synchronously by setStatusFromFile → dispatch →
+        // setWorkspaceStatus, so it reflects the *last known-good* transition even
+        // during a session-file read race:
+        //   - workspace missing entirely (row deleted)          → died (can't be live)
+        //   - archivedAt != null                                → died (workspace is gone)
+        //   - closedAt != null (deliberately closed by the user/CLI) → died (not live)
+        //   - status === 'awaiting_input' or status === 'idle'  → 'done' — the DB already
+        //     recorded the terminal, non-died outcome of the turn; surface that instead
+        //     of re-deriving from a momentarily-stale file.
+        //   - status === 'attention'                             → blocked-permission/input,
+        //     derived from the DB's own detail (file's waitingFor is unavailable, so we
+        //     fall back to blocked-input, the more common case).
+        //   - status === 'in_progress'                           → still live, not yet
+        //     terminal — 'unknown' here is the read race described above; keep waiting.
+        // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
+        // live nor a resolvable terminal state) do we fall through to the old
+        // everSeenAlive/fromTransition 'died' behavior.
         function deriveReason(workspaceId: string, fromTransition: boolean): string {
           const info = getWorkspaceFileInfo(workspaceId)
           const fileStatus = info.status
@@ -560,10 +623,46 @@ export function startCommandServer(deps: CommandServerDeps): {
           }
 
           if (fileStatus === 'unknown') {
-            // Only treat 'unknown' as terminal ('died') if:
-            //   (a) called from a status-change transition (the workspace was live and disappeared), OR
-            //   (b) the workspace was previously seen alive (everSeenAlive) — session file gone/dead-pid.
-            // Otherwise (initial check, workspace not yet started) → non-terminal, keep waiting.
+            const ws = getWorkspace(workspaceId)
+
+            if (ws == null) {
+              // Workspace row is gone entirely — cannot be live.
+              return 'died'
+            }
+            if (ws.archivedAt != null) {
+              // Archived — teardown already happened; treat as died (not a live wait target).
+              return 'died'
+            }
+            if (ws.closedAt != null) {
+              // Deliberately closed — not live, but not a crash either. 'died' is the
+              // closest terminal bucket ws-wait has; the caller closed it on purpose.
+              return 'died'
+            }
+            if (ws.status === 'awaiting_input' || ws.status === 'idle') {
+              // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
+              // via setStatusFromFile before this file read raced past it. Report the
+              // real outcome — never 'died' — even though the file momentarily reads
+              // 'unknown'.
+              return 'done'
+            }
+            if (ws.status === 'attention') {
+              // DB says the workspace is blocked on something; file's waitingFor detail
+              // isn't available in this race, so default to the more common case.
+              return waitingFor.toLowerCase().includes('permission')
+                ? 'blocked-permission'
+                : 'blocked-input'
+            }
+            if (ws.status === 'in_progress') {
+              // DB says the workspace is still actively running — 'unknown' here is a
+              // transient file-read race, not a death. Keep waiting.
+              return ''
+            }
+
+            // Fallback: DB status didn't resolve to a known-live or known-terminal
+            // bucket. Preserve the previous behavior — only terminal ('died') if this
+            // was a live status-change transition, or the workspace was previously
+            // observed alive and has now disappeared. Otherwise (initial check, workspace
+            // not yet started) → non-terminal, keep waiting (startup grace).
             if (fromTransition || everSeenAlive.has(workspaceId)) {
               return 'died'
             }

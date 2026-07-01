@@ -45,6 +45,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import type { WorkspaceRecord } from './db.js'
 
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions')
 
@@ -132,4 +133,49 @@ export function getLiveStatus(
   }
 
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle status (#9) — surfaces closed/archived over the run-status
+// ---------------------------------------------------------------------------
+
+/**
+ * The run-status (activity) for a workspace: 'in_progress' | 'attention' |
+ * 'awaiting_input' | 'idle' | any other WorkspaceStatus value — i.e. whatever
+ * getLiveStatus()/the DB status column reports. This is orthogonal to
+ * lifecycle (open/closed/archived).
+ */
+export type RunStatus = string
+
+/**
+ * Compute the effective status to DISPLAY for a workspace, folding lifecycle
+ * (archived/closed) over the run-status.
+ *
+ * BUG THIS FIXES (#9)
+ * --------------------
+ * Previously `ws status`/`ws ls` always printed the run-status column
+ * (idle/in_progress/attention/awaiting_input) even for a workspace that has
+ * been closed or archived — so a closed workspace showed 'idle' instead of
+ * something indicating it's closed. That's misleading: 'idle' implies the
+ * workspace is still an active, resumable session sitting there waiting,
+ * when in fact it's been explicitly closed or archived.
+ *
+ * PRECEDENCE
+ * ----------
+ *   1. archivedAt != null → 'archived'   (archived always wins — terminal state)
+ *   2. closedAt != null   → 'closed'     (closed but not archived)
+ *   3. otherwise          → runStatus    (the live/DB activity status)
+ *
+ * Callers should still expose the raw runStatus (e.g. as a `status` field in
+ * --json output) alongside this effective value (e.g. as `lifecycle` or
+ * `effectiveStatus`) so scripts that want the underlying activity status
+ * unaffected by lifecycle can still get it.
+ */
+export function effectiveLifecycleStatus(
+  workspace: Pick<WorkspaceRecord, 'archivedAt' | 'closedAt'>,
+  runStatus: RunStatus
+): string {
+  if (workspace.archivedAt != null) return 'archived'
+  if (workspace.closedAt != null) return 'closed'
+  return runStatus
 }

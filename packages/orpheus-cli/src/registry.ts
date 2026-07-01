@@ -19,7 +19,10 @@
 
 /** Shape of parsed flags. Values are string (single or last-wins) or boolean. */
 export type ParsedFlags = Record<string, string | boolean | string[]> & {
+  /** Flag tokens the parser didn't recognize at all (neither global nor per-command). */
   _unknown?: string[]
+  /** Names of string-valued flags whose value token was missing or flag-shaped. */
+  _missingValue?: string[]
 }
 
 /** Context passed to every command handler. */
@@ -45,6 +48,25 @@ export type CommandDescriptor = {
   flags?: FlagDeclarations
   /** Whether this is a read-only command (bypasses auto-launch). */
   isRead?: boolean
+  /**
+   * Optional explicit usage/help text shown for `<cmd> --help`. If omitted,
+   * help is synthesized from the command name + declared flags/arity.
+   * Command modules may populate this in a follow-up; the mechanism here
+   * works with or without it.
+   */
+  usage?: string
+  /**
+   * Optional one-line description shown alongside synthesized help.
+   */
+  help?: string
+  /**
+   * Optional arity bounds on positional argument count. When declared, the
+   * CLI enforces it (usage error, exit 2, if violated) before the handler
+   * runs. When omitted, no positional-count enforcement happens — command
+   * modules that haven't declared arity yet are unaffected.
+   */
+  minPositionals?: number
+  maxPositionals?: number
   handler: (ctx: CommandContext) => Promise<void>
 }
 

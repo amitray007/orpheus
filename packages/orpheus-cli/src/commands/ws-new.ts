@@ -11,11 +11,27 @@
  *                       the caller's workspace (ORPHEUS_WORKSPACE_ID) unless overridden.
  *   --task <text>       After creating, open the workspace in the GUI and inject this
  *                       text as the initial prompt. Requires the app window to be visible.
+ *   --empty             Explicitly create a workspace with no initial task (see
+ *                       STRICTNESS below). Alias: --blank.
  *   --model <model>     Workspace-level model override (stored in claude_workspace_settings).
  *   --permission-mode   Workspace-level permission mode (default|acceptEdits|plan|bypassPermissions).
  *   --effort <level>    Workspace-level effort override (auto|low|medium|high|xhigh|max).
  *   --name <name>       Workspace name. Defaults to 'New workspace'.
  *   --project <val>     Project context override (global flag: id, name, or path).
+ *
+ * STRICTNESS — --task XOR --empty is required
+ * --------------------------------------------
+ * `ws new` with NEITHER --task NOR --empty/--blank is a usage error (exit 2):
+ * an agent calling this CLI must declare intent up front — either seed the
+ * workspace with a task, or explicitly acknowledge it wants a blank one. This
+ * makes empty-workspace creation intentional rather than an accident of
+ * forgetting --task. Passing BOTH --task and --empty is also a usage error
+ * (they're contradictory declarations of intent).
+ *
+ * An --empty workspace still goes through the normal create + activate path
+ * (the server opens it in the GUI same as any other workspace) — --empty only
+ * means no `task` field is sent to workspace.create, so no initial prompt is
+ * injected.
  *
  * GUARDRAILS
  * ----------
@@ -42,9 +58,15 @@ import { printResult, printKeyValue, printError, printUsageError, printLines } f
 import type { WorkspaceRecord } from '../reads/db.js'
 
 registerCommand('ws new', {
+  usage:
+    'ws new (--task <text> | --empty) [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>]',
+  help: 'Create a new workspace (must declare --task <text> or --empty)',
+  maxPositionals: 0,
   flags: {
     fork: 'boolean',
     task: 'string',
+    empty: 'boolean',
+    blank: 'boolean',
     model: 'string',
     'permission-mode': 'string',
     effort: 'string',
@@ -52,6 +74,24 @@ registerCommand('ws new', {
     // --project is the global flag; cli.ts parses it as ctx.project
   },
   handler: async (ctx) => {
+    // STRICTNESS: require --task XOR --empty/--blank (an agent must declare
+    // intent — see module doc). Checked before any DB/socket work so the
+    // usage error is fast and side-effect-free.
+    const hasTask = typeof ctx.flags.task === 'string' && ctx.flags.task !== ''
+    const hasEmpty = ctx.flags.empty === true || ctx.flags.blank === true
+
+    if (!hasTask && !hasEmpty) {
+      printUsageError(
+        'ws new requires declaring intent: pass --task "<work>" to start with a task, ' +
+          'or --empty (or --blank) to explicitly create an empty workspace.'
+      )
+      return
+    }
+    if (hasTask && hasEmpty) {
+      printUsageError('ws new: pass either --task <text> or --empty/--blank, not both')
+      return
+    }
+
     // Resolve project context
     const db = openDb()
     let projectId: string

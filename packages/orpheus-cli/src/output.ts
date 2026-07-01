@@ -135,7 +135,25 @@ export function printLines(...lines: string[]): void {
 }
 
 /**
- * Print an error message to stderr and set an appropriate exit code.
+ * Emit an error, respecting --json mode.
+ *
+ * In --json mode: writes `{"error": "<msg>", "code": <exitCode>}` to stdout
+ * (so tooling can reliably parse a single JSON document from stdout
+ * regardless of success/failure) and sets process.exitCode.
+ * In plain mode: writes `<prefix>: <msg>` to stderr and sets process.exitCode.
+ */
+function emitError(msg: string, exitCode: number, prefix: string): void {
+  if (isJsonMode()) {
+    process.stdout.write(JSON.stringify({ error: msg, code: exitCode }) + '\n')
+  } else {
+    process.stderr.write(`${prefix}: ${msg}\n`)
+  }
+  process.exitCode = exitCode
+}
+
+/**
+ * Print an error message and set an appropriate exit code. Respects --json
+ * mode (see emitError).
  *
  * - AppNotRunningError → exit 1, message with hint to launch the app.
  * - CommandError       → exit 1, server error message.
@@ -147,14 +165,12 @@ export function printLines(...lines: string[]): void {
 export function printError(err: unknown, opts?: { exitCode?: number; prefix?: string }): void {
   const prefix = opts?.prefix ?? 'error'
   let msg: string
-  let exitCode = opts?.exitCode ?? 1
+  const exitCode = opts?.exitCode ?? 1
 
   if (err instanceof AppNotRunningError) {
     msg = err.message + '\n  Tip: open Orpheus and try again, or let the CLI launch it for you.'
-    exitCode = opts?.exitCode ?? 1
   } else if (err instanceof CommandError) {
     msg = err.message
-    exitCode = opts?.exitCode ?? 1
   } else if (err instanceof Error) {
     msg = err.message
   } else if (typeof err === 'string') {
@@ -163,18 +179,15 @@ export function printError(err: unknown, opts?: { exitCode?: number; prefix?: st
     msg = String(err)
   }
 
-  process.stderr.write(`${prefix}: ${msg}\n`)
-  process.exitCode = exitCode
+  emitError(msg, exitCode, prefix)
 }
 
-/** Print a usage/arg-parsing error (exit 2). */
+/** Print a usage/arg-parsing error (exit 2). Respects --json mode. */
 export function printUsageError(msg: string): void {
-  process.stderr.write(`usage error: ${msg}\n`)
-  process.exitCode = 2
+  emitError(msg, 2, 'usage error')
 }
 
-/** Print a not-found error (exit 3). */
+/** Print a not-found error (exit 3). Respects --json mode. */
 export function printNotFoundError(msg: string): void {
-  process.stderr.write(`not found: ${msg}\n`)
-  process.exitCode = 3
+  emitError(msg, 3, 'not found')
 }

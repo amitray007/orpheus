@@ -11,6 +11,17 @@
  * DB value when present. The overlay is best-effort; failures are silently
  * ignored and the DB value is used instead.
  *
+ * The overlaid run-status is then folded through effectiveLifecycleStatus()
+ * (#9) so closed/archived workspaces show 'closed'/'archived' rather than a
+ * stale run-status like 'idle'. See reads/session-status.ts.
+ *
+ * NAME RESOLUTION
+ * ---------------
+ * The raw `name` column is not what the GUI shows for auto-named workspaces.
+ * `displayName` is resolved via resolveWorkspaceDisplayName() (see
+ * reads/resolve-name.ts) and is what's shown in pretty/tree output; `name`
+ * (raw) is still exposed in --json for scripts that want the stored value.
+ *
  * TREE FORMAT
  * -----------
  * Indented with two spaces per depth level. Workspaces whose
@@ -25,18 +36,19 @@
  */
 
 import { registerCommand } from '../registry.js'
-import { openDb } from '../reads/db.js'
+import { openDb, type OrpheusDb } from '../reads/db.js'
 import { resolveContext, noProjectMessage } from '../context.js'
-import { getLiveStatus } from '../reads/session-status.js'
+import { getLiveStatus, effectiveLifecycleStatus } from '../reads/session-status.js'
+import { resolveWorkspaceDisplayName, extractSessionTitle } from '../reads/resolve-name.js'
 import { printResult, printTable, printError, printLines, type TableColumn } from '../output.js'
-import type { WorkspaceRecord, WorkspaceTreeNode } from '../reads/db.js'
+import type { WorkspaceRecord, WorkspaceTreeNode, ProjectRecord } from '../reads/db.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Overlay live status onto a workspace record, returning the effective status string. */
-function effectiveStatus(ws: WorkspaceRecord): string {
+/** Overlay live status onto a workspace record, returning the run-status string. */
+function runStatusOf(ws: WorkspaceRecord): string {
   if (ws.claudeSessionId != null) {
     const live = getLiveStatus(ws.claudeSessionId)
     if (live?.status != null) return live.status
@@ -44,21 +56,52 @@ function effectiveStatus(ws: WorkspaceRecord): string {
   return ws.status
 }
 
+/** Effective (lifecycle-aware) status: run-status folded through archived/closed. */
+function effectiveStatus(ws: WorkspaceRecord): string {
+  return effectiveLifecycleStatus(ws, runStatusOf(ws))
+}
+
+/**
+ * Resolve the display name for a workspace, only paying for the transcript
+ * read (extractSessionTitle) when a cheaper rung of the ladder hasn't already
+ * decided the name. `projectCache` avoids re-fetching the same project's
+ * record for every workspace in a list.
+ */
+function displayNameOf(
+  ws: WorkspaceRecord,
+  db: OrpheusDb,
+  projectCache: Map<string, ProjectRecord | null>
+): string {
+  let sessionTitle: string | null = null
+  if (ws.nameIsAuto && !ws.lastTitle && ws.closedAt === null) {
+    let project = projectCache.get(ws.projectId)
+    if (project === undefined) {
+      project = db.getProjectFull(ws.projectId)
+      projectCache.set(ws.projectId, project)
+    }
+    if (project != null) sessionTitle = extractSessionTitle(ws, project)
+  }
+  return resolveWorkspaceDisplayName(ws, sessionTitle)
+}
+
 /** Render a tree of WorkspaceTreeNodes as indented lines to stdout. */
 function renderTree(
   nodes: WorkspaceTreeNode[],
   depth: number,
-  callerWsId: string | undefined
+  callerWsId: string | undefined,
+  db: OrpheusDb,
+  projectCache: Map<string, ProjectRecord | null>
 ): void {
   const indent = '  '.repeat(depth)
   for (const node of nodes) {
     const ws = node.workspace
     const status = effectiveStatus(ws)
+    const name = displayNameOf(ws, db, projectCache)
     const isOwned = callerWsId != null && ws.parentWorkspaceId === callerWsId
     const ownedMark = isOwned ? '  *' : ''
-    process.stdout.write(`${indent}${ws.name}  [${status}]${ownedMark}\n`)
+    process.stdout.write(`${indent}${name}  [${status}]${ownedMark}\n`)
     if (node.children.length > 0) {
-      renderTree(node.children, depth + 1, callerWsId)
+      renderTree(node.children, depth + 1, callerWsId, db, projectCache)
     }
   }
 }
@@ -69,6 +112,9 @@ function renderTree(
 
 registerCommand('ws ls', {
   isRead: true,
+  usage: 'ws ls [--tree] [--status <s>] [--project <p>] [--all-projects]',
+  help: 'List workspaces (flat or --tree), scoped to the current/given project by default',
+  maxPositionals: 0,
   flags: {
     tree: 'boolean',
     status: 'string',
@@ -77,6 +123,7 @@ registerCommand('ws ls', {
   },
   handler: async (ctx) => {
     const db = openDb()
+    const projectCache = new Map<string, ProjectRecord | null>()
     try {
       const allProjects = ctx.flags['all-projects'] === true
 
@@ -113,13 +160,15 @@ registerCommand('ws ls', {
         const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
 
         if (ctx.jsonMode) {
-          // JSON: serialize tree with live status overlaid
+          // JSON: serialize tree with live status + display name overlaid
           function serializeNode(node: WorkspaceTreeNode): Record<string, unknown> {
             const ws = node.workspace
             return {
               id: ws.id,
               name: ws.name,
+              displayName: displayNameOf(ws, db, projectCache),
               status: effectiveStatus(ws),
+              runStatus: runStatusOf(ws),
               parentWorkspaceId: ws.parentWorkspaceId,
               isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId,
               children: node.children.map(serializeNode)
@@ -130,7 +179,7 @@ registerCommand('ws ls', {
           if (nodes.length === 0) {
             printLines('  (none)')
           } else {
-            renderTree(nodes, 0, callerWsId)
+            renderTree(nodes, 0, callerWsId, db, projectCache)
           }
         }
       } else {
@@ -154,7 +203,7 @@ registerCommand('ws ls', {
 
         const rows: WsRow[] = workspaces.map((ws) => ({
           id: ws.id,
-          name: ws.name,
+          name: displayNameOf(ws, db, projectCache),
           status: effectiveStatus(ws),
           parentWorkspaceId: ws.parentWorkspaceId ?? '',
           isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
@@ -165,7 +214,9 @@ registerCommand('ws ls', {
             workspaces.map((ws) => ({
               id: ws.id,
               name: ws.name,
+              displayName: displayNameOf(ws, db, projectCache),
               status: effectiveStatus(ws),
+              runStatus: runStatusOf(ws),
               parentWorkspaceId: ws.parentWorkspaceId,
               isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId
             }))
