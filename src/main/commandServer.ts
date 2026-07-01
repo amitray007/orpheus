@@ -17,7 +17,7 @@ import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getProjectById } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
-import { getWorkspaceFileInfo } from './sessionState'
+import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -539,7 +539,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         subChunks.push(chunk)
       })
 
-      req.on('end', () => {
+      req.on('end', async () => {
         if (subOversized) return
 
         let body: { workspaceIds?: unknown; timeoutMs?: unknown }
@@ -599,8 +599,40 @@ export function startCommandServer(deps: CommandServerDeps): {
         // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
         const everSeenAlive = new Set<string>()
 
+        // GRACE WINDOW (fixes: `ws send --submit` immediately followed by `ws wait`
+        // reporting 'died' for a workspace that is actively booting/running).
+        //
+        // Root cause: right after `ws send --submit`, claude has just rewritten its
+        // ~/.claude/sessions/<pid>.json to 'busy', but sessionState.ts's fs.watch +
+        // 75ms debounce + reconcile() hasn't run yet, so liveSessionMap (and therefore
+        // getWorkspaceFileInfo) still reads 'unknown'. The DB workspace.status is ALSO
+        // stale at that instant (setStatusFromFile hasn't committed the busy transition
+        // yet), so the old code fell through every DB-status branch to a final `died`.
+        //
+        // Fix, in order:
+        //   1. Never trust a single 'unknown' read — force a synchronous reconcile
+        //      (forceReconcile) and re-derive from a fresh read before concluding
+        //      anything terminal. This closes the debounce gap directly.
+        //   2. Cross-check with a second, independent ground-truth source
+        //      (getWorkspaceFileStatusSync — reads the session file straight off disk,
+        //      bypassing liveSessionMap entirely) in case the map is still cold even
+        //      after a forced reconcile (e.g. the file only appeared mid-reconcile).
+        //   3. For the first SUBSCRIPTION_GRACE_MS of a subscription's lifetime, an
+        //      'unknown' status that survives both ground-truth checks is treated as
+        //      "still starting/transitioning", never 'died'. A workspace that was just
+        //      sent input needs a moment for claude to flush its status file; this is
+        //      exactly that moment.
+        //   4. 'died' is only ever concluded once the grace window has elapsed AND the
+        //      ground-truth re-reads still can't find a live session — i.e. genuinely
+        //      dead (session file gone / pid not alive), not just "the debounced cache
+        //      hasn't caught up yet".
+        const SUBSCRIPTION_GRACE_MS = 5000
+        const subscriptionStartedAt = Date.now()
+
         // Derive terminal exit reason for a workspace from its live session file info.
         // Returns '' (empty string) when the workspace is still busy (not yet terminal).
+        // Async: may force a reconcile() pass to get a ground-truth read before
+        // concluding 'died' (see grace-window comment above).
         //
         // STARTUP GRACE: 'unknown' is only terminal ('died') when everSeenAlive contains
         // the workspace id — meaning it was previously observed alive and then disappeared.
@@ -635,9 +667,9 @@ export function startCommandServer(deps: CommandServerDeps): {
         //   - status === 'in_progress'                           → still live, not yet
         //     terminal — 'unknown' here is the read race described above; keep waiting.
         // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
-        // live nor a resolvable terminal state) do we fall through to the old
-        // everSeenAlive/fromTransition 'died' behavior.
-        function deriveReason(workspaceId: string, fromTransition: boolean): string {
+        // live nor a resolvable terminal state) do we force a ground-truth reconcile and,
+        // failing that, apply the grace window before ever concluding 'died'.
+        async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
           const info = getWorkspaceFileInfo(workspaceId)
           const fileStatus = info.status
           const waitingFor = info.waitingFor ?? ''
@@ -682,11 +714,62 @@ export function startCommandServer(deps: CommandServerDeps): {
               return ''
             }
 
-            // Fallback: DB status didn't resolve to a known-live or known-terminal
-            // bucket. Preserve the previous behavior — only terminal ('died') if this
-            // was a live status-change transition, or the workspace was previously
-            // observed alive and has now disappeared. Otherwise (initial check, workspace
-            // not yet started) → non-terminal, keep waiting (startup grace).
+            // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
+            // (refreshes liveSessionMap from disk right now, not on the next debounce
+            // tick) and re-read. If the workspace is actually busy/idle/waiting, use
+            // that — it was never dead, just a cold cache.
+            await forceReconcile()
+            const refreshedInfo = getWorkspaceFileInfo(workspaceId)
+            if (refreshedInfo.status === 'busy') {
+              everSeenAlive.add(workspaceId)
+              return ''
+            }
+            if (refreshedInfo.status === 'idle') {
+              everSeenAlive.add(workspaceId)
+              return 'done'
+            }
+            if (refreshedInfo.status === 'waiting') {
+              everSeenAlive.add(workspaceId)
+              const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
+              return refreshedWaitingFor.includes('permission')
+                ? 'blocked-permission'
+                : 'blocked-input'
+            }
+
+            // Second, independent ground-truth source: read the session file straight
+            // off disk, bypassing liveSessionMap entirely, in case the map is still
+            // cold even right after a forced reconcile (e.g. the file only appeared
+            // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
+            const syncStatus = getWorkspaceFileStatusSync(workspaceId)
+            if (syncStatus === 'busy') {
+              everSeenAlive.add(workspaceId)
+              return ''
+            }
+            if (syncStatus === 'idle') {
+              everSeenAlive.add(workspaceId)
+              return 'done'
+            }
+            if (syncStatus === 'waiting') {
+              everSeenAlive.add(workspaceId)
+              return 'blocked-input'
+            }
+
+            // Still genuinely unknown after BOTH ground-truth refreshes. Only now
+            // consider 'died' — and only once the subscription's startup grace window
+            // has elapsed. A workspace that was just created/sent-to is transitioning;
+            // giving it a few seconds to flush its first status file prevents the
+            // false-died race this fix targets.
+            const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
+            if (withinGraceWindow) {
+              return '' // still within grace — not yet terminal
+            }
+
+            // Genuine death = confirmed gone even after ground-truth refresh, AND
+            // either this is a real transition event (the workspace was live and its
+            // status observably changed) or it was previously seen alive and has now
+            // disappeared. Otherwise (initial check, workspace never observed alive,
+            // grace window elapsed with no session ever appearing) keep waiting — the
+            // subscription timeout is the backstop for a workspace that never starts.
             if (fromTransition || everSeenAlive.has(workspaceId)) {
               return 'died'
             }
@@ -759,31 +842,42 @@ export function startCommandServer(deps: CommandServerDeps): {
         // onWorkspaceStatusChange returns the unsubscribe function.
         // We derive the reason from getWorkspaceFileInfo, so the old/new status
         // args are unused — omit them (a narrower callback is assignable).
+        // deriveReason is async (it may force a reconcile pass for ground truth), but
+        // onWorkspaceStatusChange's observer callback is synchronous by type. Fire the
+        // async work from inside a void-returning wrapper; resolved.has(workspaceId) is
+        // re-checked after the await resolves to guard against another observer firing
+        // (or the initial check completing) while this one was awaiting forceReconcile.
         unsubscribe = onWorkspaceStatusChange((workspaceId) => {
           if (!workspaceIds.includes(workspaceId)) return
           if (resolved.has(workspaceId)) return
 
-          // fromTransition=true: this is a real status-change event, so 'unknown'
-          // means the workspace was alive and its session file just disappeared → 'died'.
-          const reason = deriveReason(workspaceId, true)
-          if (!isTerminalReason(reason)) return // still busy, not yet terminal
+          void (async () => {
+            // fromTransition=true: this is a real status-change event, so 'unknown'
+            // means the workspace was alive and its session file just disappeared → 'died'.
+            const reason = await deriveReason(workspaceId, true)
+            if (resolved.has(workspaceId)) return // resolved by another path while awaiting
+            if (!isTerminalReason(reason)) return // still busy, not yet terminal
 
-          resolved.set(workspaceId, reason)
-          const info = getWorkspaceFileInfo(workspaceId)
-          writeFrame({ id: workspaceId, reason, status: info.status })
+            resolved.set(workspaceId, reason)
+            const info = getWorkspaceFileInfo(workspaceId)
+            writeFrame({ id: workspaceId, reason, status: info.status })
 
-          if (checkAllResolved()) {
-            cleanup()
-          }
+            if (checkAllResolved()) {
+              cleanup()
+            }
+          })()
         })
 
         // Initial check: emit immediately for any workspace already in a terminal state.
         // This handles the case where a workspace was already idle/waiting before subscribe.
         // fromTransition=false: use startup grace — 'unknown' here means the session file
         // hasn't been written yet (workspace just created), not that the process died.
+        // Sequential await (not Promise.all) keeps this simple; each iteration is cheap
+        // unless it hits the forceReconcile ground-truth path, and even then bounded.
         for (const workspaceId of workspaceIds) {
           if (resolved.has(workspaceId)) continue
-          const reason = deriveReason(workspaceId, false)
+          const reason = await deriveReason(workspaceId, false)
+          if (resolved.has(workspaceId)) continue // resolved by a transition while awaiting
           if (isTerminalReason(reason)) {
             resolved.set(workspaceId, reason)
             const info = getWorkspaceFileInfo(workspaceId)
