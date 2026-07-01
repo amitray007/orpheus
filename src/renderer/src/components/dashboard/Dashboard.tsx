@@ -1260,7 +1260,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
             project={view.kind === 'project' ? activeProject : activeProjectForWorkspace}
             workspace={activeWorkspace}
             workspacesForProject={
-              view.kind === 'project' ? (workspacesByProject[view.projectId] ?? null) : null
+              view.kind === 'project' || view.kind === 'workspace'
+                ? (workspacesByProject[view.projectId] ?? null)
+                : null
             }
             onRequestRemoveProject={handleRequestRemoveProject}
             onSelectWorkspace={handleSelectWorkspace}
