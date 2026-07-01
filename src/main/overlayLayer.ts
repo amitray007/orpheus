@@ -224,6 +224,27 @@ function applyCurrentBounds(): void {
   view!.setBounds(computeBounds(currentDescriptor))
 }
 
+// Electron re-stacks its own contentView children (the main window's
+// WebContentsView and this overlay WebContentsView) at boot/show/focus, and
+// can land the overlay BELOW the main web-contents view — which, since the
+// main BrowserWindow is opaque, makes the overlay (and anything the addon
+// sinks just below it, e.g. terminals) invisible. Calling
+// `contentView.addChildView(view)` again on an already-attached view is
+// Electron's own sanctioned, compositing-safe reorder: it moves the view to
+// the TOP of Electron's children through Chromium's ViewsHostable machinery
+// (the documented replacement for the removed setTopBrowserView API). The
+// native addon must NEVER re-add this NSView itself — that bypasses
+// Chromium's compositor bookkeeping and breaks rendering; only this
+// Electron-side re-add is safe.
+function raiseOverlayView(): void {
+  if (!winAlive() || !viewAlive()) return
+  try {
+    win!.contentView.addChildView(view!)
+  } catch (err) {
+    console.error('[overlayLayer] raiseOverlayView failed:', err)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // initOverlayLayer — construction + registration handshake
 //
@@ -334,6 +355,12 @@ export function initOverlayLayer(
 
   wireWindowGeometryListeners(win)
 
+  // Freshly registered — make sure the overlay lands above the main WCV
+  // (Electron may have re-stacked children during the addChildView above)
+  // and that the addon sinks the terminal back below it.
+  raiseOverlayView()
+  addon?.reassertOverlayOrder()
+
   // Push current theme immediately once the view exists (also re-sent on the
   // renderer's `ready` ping and embedded in every show message — see
   // ipcMain.on('overlayRenderer:ready', ...) below and setOverlayTheme()).
@@ -435,9 +462,10 @@ function handleAckPainted(ack: OverlayAck): void {
   if (currentDescriptor?.takesFocus && viewAlive()) {
     view!.webContents.focus()
     addon?.setOverlayFocusSuppressed(true)
-    // Chromium can re-stack its own child views on focus; with the new
-    // move-terminal-not-overlay semantics in reassertOverlayOrder this is
-    // safe and cheap to call unconditionally here.
+    // Chromium/Electron can re-stack their own child views on focus; raise
+    // the overlay back to the top via Electron first, then let the addon
+    // sink the terminal below it. Safe and cheap to call unconditionally here.
+    raiseOverlayView()
     addon?.reassertOverlayOrder()
   }
   p.resolve({ shown: true })
@@ -490,7 +518,9 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
 
   const onEnterFullScreen = (): void => {
     // KTD: reassert order after events known to reshuffle native subviews,
-    // not just on the next idle->pending show.
+    // not just on the next idle->pending show. Raise the overlay above the
+    // main WCV via Electron first, then let the addon sink the terminal.
+    raiseOverlayView()
     addon?.reassertOverlayOrder()
     if (state !== 'visible' && state !== 'pending') return
     if (!currentDescriptor) return
@@ -502,6 +532,7 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
   }
 
   const onLeaveFullScreen = (): void => {
+    raiseOverlayView()
     addon?.reassertOverlayOrder()
     if (state === 'visible' || state === 'pending') {
       if (currentDescriptor?.placement.mode === 'centered') {
@@ -510,6 +541,7 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
         // uses for the main window's own bounds-save logic after leave-full-screen.
         setTimeout(() => {
           if (winAlive() && (state === 'visible' || state === 'pending')) {
+            raiseOverlayView()
             addon?.reassertOverlayOrder()
             applyCurrentBounds()
           }
@@ -633,6 +665,9 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
     addon?.saveOverlayFirstResponder()
   }
 
+  // Raise the overlay above the main WCV via Electron's own re-stacking API
+  // first, THEN let the addon sink the terminal back below it.
+  raiseOverlayView()
   addon?.reassertOverlayOrder()
 
   if (winAlive()) {
