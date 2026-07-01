@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 64
+export const CURRENT_VERSION = 65
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -2343,6 +2343,47 @@ export function migrate(db: Database.Database): void {
       /* column may already exist on fresh install */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(64)
+  }
+
+  if (currentVersion < 65) {
+    // Version 65: convergence backfill for the v64 merge collision.
+    // Two branches each shipped a DIFFERENT migration under `if (currentVersion < 64)`
+    // (workspace lineage + guardrails vs. worktree-native columns). Any DB that had
+    // already run EITHER branch's v64 is stuck at schema_version=64, so the merged
+    // v64 block above (now containing all 5 ALTERs) never re-runs for it — it's
+    // missing whichever branch's columns it didn't originally get. Re-add all five
+    // here defensively (try/catch = no-op if the column already exists) so every
+    // v64 DB, regardless of lineage, converges to having all five columns.
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_parent_cwd TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT')
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_depth INTEGER NOT NULL DEFAULT 3'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_children INTEGER NOT NULL DEFAULT 10'
+      )
+    } catch {
+      /* column may already exist */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(65)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()
