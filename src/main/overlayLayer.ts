@@ -237,6 +237,21 @@ export function initOverlayLayer(
   ghosttyAddon: GhosttySurfaceAddon,
   layerDeps: OverlayLayerDeps
 ): void {
+  // Idempotency guard (per-window): 'ready-to-show' can refire for the SAME
+  // BrowserWindow — e.g. backgroundThrottling: false on the main window means
+  // each new overlay WebContentsView's first paint re-triggers 'ready-to-show'.
+  // If we're already initialized for this exact window and the view is still
+  // alive, skip the teardown/reconstruct entirely; otherwise every refire
+  // tears down + recreates the view, which itself re-triggers the event —
+  // a self-sustaining loop. Re-init must still proceed for a genuinely new
+  // BrowserWindow instance (window recreation) or a dead view.
+  if (win === window && state !== 'unregistered' && viewAlive()) {
+    console.log(
+      '[overlayLayer] init skipped — already initialized for this window (ready-to-show refire)'
+    )
+    return
+  }
+
   // Tear down any prior view/state (window recreation path).
   clearPendingShowTimer()
   clearPendingExitTimer()
@@ -247,11 +262,30 @@ export function initOverlayLayer(
   currentScaleFactor = null
   overlayTokenHeld = false
   initialLoadDone = false
-  view = null
   if (geometryListenersCleanup) {
     geometryListenersCleanup()
     geometryListenersCleanup = null
   }
+  // Fully dispose the old view (if any) so recreated windows don't leak a
+  // renderer process: detach from its (possibly still-alive, e.g. old-window)
+  // contentView, then close its webContents.
+  if (view && !view.webContents.isDestroyed()) {
+    const oldWin = win
+    const oldView = view
+    try {
+      if (oldWin && !oldWin.isDestroyed()) {
+        oldWin.contentView.removeChildView(oldView)
+      }
+    } catch (err) {
+      console.error('[overlayLayer] removeChildView on old view failed:', err)
+    }
+    try {
+      oldView.webContents.close()
+    } catch (err) {
+      console.error('[overlayLayer] closing old view webContents failed:', err)
+    }
+  }
+  view = null
 
   win = window
   addon = ghosttyAddon
