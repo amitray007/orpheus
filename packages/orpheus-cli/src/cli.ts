@@ -78,7 +78,9 @@
  *   0  success
  *   1  general error
  *   2  usage / arg parsing error
- *   3  data not found
+ *   3  data not found (includes ProjectNotFoundError from an explicit
+ *      --project value that didn't resolve — see context.ts and the
+ *      ProjectNotFoundError handling in main()'s catch block, QA fix #2)
  *  10+ reserved for ws wait (U11)
  */
 
@@ -86,7 +88,7 @@ import { spawn } from 'node:child_process'
 import * as net from 'node:net'
 import { AppNotRunningError, CommandError } from './socket-client.js'
 import { OrpheusDataNotFoundError, openDb } from './reads/db.js'
-import { resolveContext } from './context.js'
+import { resolveContext, ProjectNotFoundError } from './context.js'
 import { getCmdSockPath } from './paths.js'
 import {
   setJsonMode,
@@ -662,6 +664,16 @@ export async function main(argv: string[]): Promise<void> {
   try {
     await descriptor.handler(ctx)
   } catch (err: unknown) {
+    // Explicit --project value that didn't resolve to any project (QA fix #2).
+    // Checked FIRST, ahead of the AppNotRunningError auto-launch branch below:
+    // a bad --project value is a data problem, not an "app isn't running yet"
+    // problem, so it must never trigger auto-launch. Exit 3, distinct from the
+    // generic noProjectMessage() usage error (exit 2) used when --project was
+    // never given at all.
+    if (err instanceof ProjectNotFoundError) {
+      printNotFoundError(err.message)
+      return
+    }
     // Read commands get no auto-launch; action commands that hit AppNotRunningError
     // trigger auto-launch then retry.
     if (err instanceof AppNotRunningError && descriptor.isRead !== true) {
@@ -670,7 +682,9 @@ export async function main(argv: string[]): Promise<void> {
         // Retry the command once after the app is reachable
         await descriptor.handler(ctx)
       } catch (retryErr: unknown) {
-        if (retryErr instanceof AppNotRunningError) {
+        if (retryErr instanceof ProjectNotFoundError) {
+          printNotFoundError(retryErr.message)
+        } else if (retryErr instanceof AppNotRunningError) {
           printError(retryErr)
         } else if (retryErr instanceof CommandError) {
           printError(retryErr)

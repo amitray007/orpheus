@@ -19,13 +19,20 @@
  * workspace list is consistent with those commands (raw `name` + `status` are
  * still exposed in --json; `displayName`/effective `status` drive text output).
  *
- * TEXT/JSON PARITY (#13)
- * -----------------------
+ * TEXT/JSON PARITY (#13, extended by QA fix #5)
+ * ------------------------------------------------
  * `project show`'s --json now includes `githubOwner`/`githubRepo` (previously
  * only shown in text as a combined `github` string) so both modes expose the
  * same underlying fields — text keeps the human-friendly combined string,
  * json keeps the raw parts. Dates are ISO strings in text, epoch ms in json
  * (same underlying value, formatted per mode).
+ *
+ * The workspaces sub-table (text) previously showed only id/name(display)/
+ * status/lastOpenedAt while --json's `workspaces[]` also had runStatus/
+ * createdAt/parentWorkspaceId — those are now columns in the text table too
+ * (same field names as json; NAME is intentionally labelled DISPLAY NAME since
+ * it shows the resolved displayName value, matching json's `displayName` key,
+ * not the raw `name` field).
  */
 
 import * as fs from 'node:fs'
@@ -210,24 +217,41 @@ registerCommand('project show', {
         } else {
           process.stdout.write('  workspaces:\n')
 
+          // Same field NAMES as the --json `workspaces[]` entries (QA fix #5):
+          // status/runStatus/createdAt/parentWorkspaceId are all present in both
+          // modes now (previously the table silently dropped runStatus/createdAt/
+          // parentWorkspaceId). The table's NAME column shows displayName (the
+          // human-friendly resolved name, same value as json's `displayName`
+          // field) — header says DISPLAY NAME to avoid implying it's the raw
+          // `name` field, which text intentionally doesn't duplicate in the table
+          // (available via `ws ls`/`ws status` for the raw value if needed).
           type WsRow = {
             id: string
-            name: string
+            displayName: string
             status: string
+            runStatus: string
+            createdAt: string
+            parentWorkspaceId: string
             lastOpenedAt: string
           }
 
           const wsRows: WsRow[] = workspaces.map((ws) => ({
             id: ws.id,
-            name: displayNameOf(ws, project),
+            displayName: displayNameOf(ws, project),
             status: effectiveLifecycleStatus(ws, ws.status),
+            runStatus: ws.status,
+            createdAt: new Date(ws.createdAt).toISOString(),
+            parentWorkspaceId: ws.parentWorkspaceId ?? '(none)',
             lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : ''
           }))
 
           const columns: TableColumn<WsRow>[] = [
             { key: 'id', header: 'ID', width: 36 },
-            { key: 'name', header: 'NAME', width: 20 },
+            { key: 'displayName', header: 'DISPLAY NAME', width: 20 },
             { key: 'status', header: 'STATUS', width: 14 },
+            { key: 'runStatus', header: 'RUN STATUS', width: 10 },
+            { key: 'createdAt', header: 'CREATED', width: 24 },
+            { key: 'parentWorkspaceId', header: 'PARENT', width: 36 },
             { key: 'lastOpenedAt', header: 'LAST OPENED', width: 24 }
           ]
           printTable(wsRows, columns)

@@ -37,10 +37,17 @@
 
 import { registerCommand } from '../registry.js'
 import { openDb, type OrpheusDb } from '../reads/db.js'
-import { resolveContext, noProjectMessage } from '../context.js'
+import { resolveContext, noProjectMessage, ProjectNotFoundError } from '../context.js'
 import { getLiveStatus, effectiveLifecycleStatus } from '../reads/session-status.js'
 import { resolveWorkspaceDisplayName, extractSessionTitle } from '../reads/resolve-name.js'
-import { printResult, printTable, printError, printLines, type TableColumn } from '../output.js'
+import {
+  printResult,
+  printTable,
+  printError,
+  printNotFoundError,
+  printLines,
+  type TableColumn
+} from '../output.js'
 import type { WorkspaceRecord, WorkspaceTreeNode, ProjectRecord } from '../reads/db.js'
 
 // ---------------------------------------------------------------------------
@@ -232,7 +239,14 @@ registerCommand('ws ls', {
         }
       }
     } catch (err: unknown) {
-      printError(err)
+      // Explicit --project value that didn't resolve to any project (QA fix #2)
+      // gets a targeted not-found error (exit 3), distinct from the generic
+      // noProjectMessage() usage error (exit 2) used when --project was absent.
+      if (err instanceof ProjectNotFoundError) {
+        printNotFoundError(err.message)
+      } else {
+        printError(err)
+      }
     } finally {
       db.close()
     }

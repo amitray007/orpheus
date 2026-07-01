@@ -48,6 +48,17 @@
  * -----------
  * This is NOT a read command (isRead is unset), so AppNotRunningError triggers the
  * standard auto-launch + retry loop in cli.ts.
+ *
+ * TEXT/JSON PARITY (QA fix #5)
+ * -----------------------------
+ * --json returns { workspace: WorkspaceRecord, seedWarning }. Text mode previously
+ * showed only a hand-picked subset of WorkspaceRecord's fields (id/name/projectId/
+ * cwd/parentWorkspaceId/forkedFromSessionId/claudeSessionId), silently omitting
+ * nameIsAuto/pinnedAt/createdAt/lastOpenedAt/archivedAt/closedAt/status/sortOrder/
+ * lastTitle that ARE present in --json. Text now surfaces the full field set under
+ * the same key names as JSON, so a consumer gets the same logical data either way —
+ * only formatting differs (timestamps are ISO strings in text, epoch ms in json,
+ * same convention as `project show` — see commands/project.ts).
  */
 
 import { registerCommand } from '../registry.js'
@@ -160,14 +171,26 @@ registerCommand('ws new', {
     const ws = data.workspace
 
     printResult(data, () => {
+      // Same field NAMES as the --json `workspace` object (QA fix #5) — only
+      // timestamp formatting differs (ISO string here vs epoch ms in json),
+      // matching the convention `project show` already uses.
       printKeyValue({
         id: ws.id,
         name: ws.name,
+        nameIsAuto: ws.nameIsAuto,
         projectId: ws.projectId,
         cwd: ws.cwd,
-        parentWorkspaceId: ws.parentWorkspaceId ?? '(none)',
-        forkedFromSessionId: ws.forkedFromSessionId ?? '(none)',
-        claudeSessionId: ws.claudeSessionId ?? '(none)'
+        status: ws.status,
+        pinnedAt: ws.pinnedAt != null ? new Date(ws.pinnedAt).toISOString() : null,
+        createdAt: new Date(ws.createdAt).toISOString(),
+        lastOpenedAt: ws.lastOpenedAt != null ? new Date(ws.lastOpenedAt).toISOString() : null,
+        archivedAt: ws.archivedAt != null ? new Date(ws.archivedAt).toISOString() : null,
+        closedAt: ws.closedAt != null ? new Date(ws.closedAt).toISOString() : null,
+        sortOrder: ws.sortOrder,
+        parentWorkspaceId: ws.parentWorkspaceId,
+        forkedFromSessionId: ws.forkedFromSessionId,
+        claudeSessionId: ws.claudeSessionId,
+        lastTitle: ws.lastTitle
       })
     })
 

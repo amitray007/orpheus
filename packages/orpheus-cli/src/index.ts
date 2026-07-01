@@ -9,6 +9,7 @@ export { getUserDataDir, getSqlitePath, getCmdSockPath, getCmdTokenPath } from '
 export {
   resolveContext,
   noProjectMessage,
+  ProjectNotFoundError,
   type ResolvedContext,
   type ResolveContextOpts,
   type ContextDb,

@@ -23,6 +23,23 @@
  * The function depends on a narrow ContextDb interface rather than the
  * concrete better-sqlite3 implementation so this module typechecks
  * independently of packages/orpheus-cli/src/reads/db.ts (a later unit).
+ *
+ * EXPLICIT-PROJECT-NOT-FOUND vs NO-CONTEXT (QA fix #2)
+ * ------------------------------------------------------
+ * Two distinct failure modes were previously conflated: both "no --project was
+ * given and cwd doesn't match any project" AND "--project <value> was given
+ * but resolves to nothing" returned the exact same all-nulls ResolvedContext.
+ * Callers couldn't tell them apart, so `--project zzz-nope` produced the
+ * generic "not inside a project; pass --project ..." message at exit 2 — even
+ * though --project WAS passed, just with a bad value.
+ *
+ * Fix: resolveContext() now throws a typed ProjectNotFoundError when
+ * opts.project is non-empty but doesn't resolve to any project (case (a)).
+ * Callers catch this explicitly and route it to printNotFoundError (exit 3,
+ * "project not found: <value>") instead of the generic no-context message.
+ * Case (b) — no --project, no ORPHEUS_WORKSPACE_ID, cwd doesn't match any
+ * project — is unaffected: resolveContext still returns an all-nulls
+ * ResolvedContext, and callers use noProjectMessage() (usage error).
  */
 
 import * as fs from 'node:fs'
@@ -69,6 +86,23 @@ export interface ResolvedContext {
   projectPath: string | null
   /** process.cwd() at resolution time (always present). */
   cwd: string
+}
+
+/**
+ * Thrown by resolveContext() when opts.project was explicitly given (non-empty)
+ * but did not match any project by id, name, or path. Distinguishes "explicit
+ * --project with a bad value" (exit 3, printNotFoundError) from "no context at
+ * all" (exit 2, noProjectMessage()) — see the module doc above (QA fix #2).
+ */
+export class ProjectNotFoundError extends Error {
+  /** The raw --project value that failed to resolve. */
+  readonly query: string
+
+  constructor(query: string) {
+    super(`project not found: ${query}`)
+    this.name = 'ProjectNotFoundError'
+    this.query = query
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +162,11 @@ export interface ResolveContextOpts {
  * Resolve the current Orpheus project/workspace context.
  *
  * Returns a ResolvedContext; callers should check projectId for null and
- * surface noProjectMessage() to the user in that case.
+ * surface noProjectMessage() to the user in that case (usage error, exit 2).
+ *
+ * @throws ProjectNotFoundError if opts.project was explicitly given but did
+ *   not resolve to any project — callers should catch this and surface
+ *   printNotFoundError(err.message) (not-found error, exit 3) instead.
  */
 export function resolveContext(opts: ResolveContextOpts, db: ContextDb): ResolvedContext {
   const cwd = process.cwd()
@@ -159,9 +197,10 @@ export function resolveContext(opts: ResolveContextOpts, db: ContextDb): Resolve
       }
     }
 
-    // Explicit flag but no match — return nulls so the caller can give a
-    // targeted "project not found" error rather than a generic one.
-    return { workspaceId: null, projectId: null, projectPath: null, cwd }
+    // Explicit flag but no match — throw a typed error so the caller can give
+    // a targeted "project not found: <value>" error (exit 3) rather than the
+    // generic no-context message (exit 2). See ProjectNotFoundError above.
+    throw new ProjectNotFoundError(query)
   }
 
   // --- 2. ORPHEUS_WORKSPACE_ID env var ---

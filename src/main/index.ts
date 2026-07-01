@@ -2588,12 +2588,26 @@ if (!app.requestSingleInstanceLock()) {
               // Poll canInject with a bounded timeout (10 s). canInject returns true
               // only when the workspace status is 'idle' or 'awaiting_input', which
               // happens once the terminal surface is mounted and claude is ready.
+              //
+              // QA fix #3 — also require getSurfacePhase() to confirm an actual mounted
+              // surface (not 'none'), not just canInject(). A brand-new workspace has no
+              // activityMap entry yet, and getWorkspaceActivity() defaults an absent entry
+              // to 'idle' — so canInject() alone reports "injectable" on the very first
+              // poll tick, before requestOpenWorkspace() has actually finished mounting the
+              // NSView. See the matching fix + longer explanation on sendToWorkspace below.
               const POLL_INTERVAL_MS = 300
               const TIMEOUT_MS = 10_000
               const deadline = Date.now() + TIMEOUT_MS
               let injectable = false
               while (Date.now() < deadline) {
-                if (terminalActions.canInject(workspaceId)) {
+                let mounted = false
+                try {
+                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                  mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                } catch {
+                  mounted = false
+                }
+                if (mounted && terminalActions.canInject(workspaceId)) {
                   injectable = true
                   break
                 }
@@ -2639,6 +2653,22 @@ if (!app.requestSingleInstanceLock()) {
               //      with code 'not_found' (surface genuinely not mounted), open the
               //      workspace and retry once — this covers the exact false-'idle' case
               //      above for a workspace that was never mounted at all, not just closed.
+              //
+              // QA fix #3 — the poll itself had the SAME stale-default bug it was meant to
+              // fix: openAndWaitInjectable() polled ONLY terminalActions.canInject(), which
+              // is the same activityMap-defaults-to-'idle' check from (a) above. So the very
+              // first poll iteration after requestOpenWorkspace() (fired but not yet actually
+              // mounted the NSView) already reported "injectable" — the loop exited after 0ms
+              // of real waiting, attemptSend() ran immediately against a not-yet-mounted
+              // surface, got 'not_found', and even the (b) retry-once repeated the exact same
+              // instant-false-positive poll. Net effect: `ws send` on a closed/unmounted
+              // workspace failed ~100% of the time regardless of --submit — the reported
+              // "text-only reports sent:true before the surface exists" asymmetry didn't
+              // reproduce directly (both paths shared attemptSend and failed identically),
+              // but the underlying not-ready detection was broken for both, which is the
+              // real bug worth fixing here: the poll must confirm a surface ACTUALLY exists
+              // via the addon's authoritative getSurfacePhase() (not the activity-map
+              // default) before considering the workspace injectable.
               const POLL_INTERVAL_MS = 300
               const TIMEOUT_MS = 10_000
               const ACTIONABLE_ERROR_SUFFIX =
@@ -2646,11 +2676,27 @@ if (!app.requestSingleInstanceLock()) {
                 workspaceId +
                 ' (or it will be opened automatically; retry the send after it starts)'
 
+              /**
+               * True only when the addon reports an actual mounted surface for this
+               * workspace ('hidden' | 'attached' | 'visible') — 'none' (never mounted)
+               * and 'freeing' (being torn down) are NOT ready. This is the authoritative
+               * truth query; unlike terminalActions.canInject() it cannot be fooled by
+               * the activity map's 'idle' default for a workspace with no activity entry.
+               */
+              function hasMountedSurface(): boolean {
+                try {
+                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                  return phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                } catch {
+                  return false
+                }
+              }
+
               async function openAndWaitInjectable(): Promise<boolean> {
                 requestOpenWorkspace(workspaceId)
                 const deadline = Date.now() + TIMEOUT_MS
                 while (Date.now() < deadline) {
-                  if (terminalActions.canInject(workspaceId)) return true
+                  if (hasMountedSurface() && terminalActions.canInject(workspaceId)) return true
                   await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
                 }
                 return false
@@ -2661,9 +2707,13 @@ if (!app.requestSingleInstanceLock()) {
                 return { ok: false, error: `workspace not found: ${workspaceId}` }
               }
 
-              // (a) Known-closed — the in-memory canInject default can't see this, so
-              // don't trust it; always open + wait first.
-              if (ws.closedAt != null || !terminalActions.canInject(workspaceId)) {
+              // (a) Known-closed, or no confirmed mounted surface yet, or the in-memory
+              // canInject default can't be trusted — don't trust it; always open + wait.
+              if (
+                ws.closedAt != null ||
+                !hasMountedSurface() ||
+                !terminalActions.canInject(workspaceId)
+              ) {
                 const injectable = await openAndWaitInjectable()
                 if (!injectable) {
                   return {
