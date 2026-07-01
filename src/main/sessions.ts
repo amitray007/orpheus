@@ -6,6 +6,18 @@ import { getAppUiState } from './uiState'
 import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
+import {
+  branchExists,
+  createWorktree,
+  listWorktreePaths,
+  NotAGitRepoError,
+  readWorktreeBaseRef,
+  removeWorktree,
+  resolveMainWorktree,
+  withRepoLock,
+  worktreeSlug
+} from './worktrees'
 import type {
   ProjectRecord,
   SessionRecord,
@@ -463,6 +475,38 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
+ * Return the list of Claude-encoded directory names for all linked worktrees
+ * of the repo that owns `projectCwd`, excluding the main repo root itself
+ * (which is already covered by the project's own claudeEncodedName).
+ *
+ * If `projectCwd` is not inside a git repo, returns [].
+ */
+export async function worktreeEncodedDirs(projectCwd: string): Promise<string[]> {
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(projectCwd)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) return []
+    throw err
+  }
+
+  let allPaths: string[]
+  try {
+    allPaths = await listWorktreePaths(repoRoot)
+  } catch {
+    return []
+  }
+
+  const result: string[] = []
+  for (const wPath of allPaths) {
+    // Exclude the main repo root — it's already covered by project.claudeEncodedName.
+    if (wPath === repoRoot) continue
+    result.push(encodePathToClaudeDir(wPath))
+  }
+  return result
+}
+
+/**
  * Shared helper: scan a Claude project directory and INSERT any .jsonl files
  * not yet in the sessions table.
  *
@@ -645,17 +689,21 @@ async function upsertSessionFilesForProject(projectId: string, dir: string): Pro
 }
 
 /**
- * Scans the Claude Code project directory for .jsonl session files and
- * inserts them into the sessions table (INSERT OR IGNORE — idempotent).
- * Wrapped in a transaction by the caller (addProject).
+ * Scans the Claude Code project directory (and all linked worktree encoded
+ * dirs) for .jsonl session files and inserts them into the sessions table
+ * (INSERT OR IGNORE — idempotent). Wrapped in a transaction by the caller (addProject).
  */
 export async function importSessionsForProject(project: ProjectRecord): Promise<SessionRecord[]> {
   if (!project.claudeEncodedName) return []
 
-  const dir = nodePath.join(os.homedir(), '.claude', 'projects', project.claudeEncodedName)
-  if (!fs.existsSync(dir)) return []
+  const worktreeDirs = await worktreeEncodedDirs(project.path)
+  const encodedDirs = [project.claudeEncodedName, ...worktreeDirs]
 
-  await upsertSessionFilesForProject(project.id, dir)
+  for (const encodedDir of encodedDirs) {
+    const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
+    if (!fs.existsSync(dir)) continue
+    await upsertSessionFilesForProject(project.id, dir)
+  }
 
   return listSessionsForProject(project.id)
 }
@@ -694,15 +742,21 @@ export async function refreshSessionMetadata(projectId: string): Promise<void> {
 async function _refreshSessionMetadata(projectId: string): Promise<void> {
   const db = getDb()
 
-  // Pull the claudeEncodedName for this project so we can scan for new files.
+  // Pull the claudeEncodedName and path for this project so we can scan for
+  // new files across the project dir and all linked worktree encoded dirs.
   const projectRow = db
-    .prepare('SELECT claude_encoded_name FROM projects WHERE id = ?')
-    .get(projectId) as { claude_encoded_name: string | null } | undefined
+    .prepare('SELECT claude_encoded_name, path FROM projects WHERE id = ?')
+    .get(projectId) as { claude_encoded_name: string | null; path: string } | undefined
 
   if (projectRow?.claude_encoded_name) {
-    const dir = nodePath.join(os.homedir(), '.claude', 'projects', projectRow.claude_encoded_name)
-    if (fs.existsSync(dir)) {
-      await upsertSessionFilesForProject(projectId, dir)
+    const worktreeDirs = await worktreeEncodedDirs(projectRow.path)
+    const encodedDirs = [projectRow.claude_encoded_name, ...worktreeDirs]
+
+    for (const encodedDir of encodedDirs) {
+      const dir = nodePath.join(os.homedir(), '.claude', 'projects', encodedDir)
+      if (fs.existsSync(dir)) {
+        await upsertSessionFilesForProject(projectId, dir)
+      }
     }
   }
 
@@ -1092,6 +1146,130 @@ export function createWorkspaceResumingSession(
     throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
   }
   return refreshed
+}
+
+/**
+ * Creates a worktree-backed workspace pre-wired with `claude_session_id = sessionId`
+ * so that the first terminal mount will launch claude with `--resume <sessionId>`.
+ *
+ * The worktree branch is derived from the session's jsonl_path: if the encoded
+ * dir contains `--claude-worktrees-`, the slug that follows is used as the
+ * branch name. If the branch already exists in the repo, git worktree checks it
+ * out; otherwise a fresh branch is created from the default base ref.
+ *
+ * Falls back to `createWorkspaceResumingSession` (plain workspace) if the
+ * session has no worktree origin or the project is not a git repo.
+ */
+export async function createWorktreeResumingSession(
+  projectId: string,
+  sessionId: string
+): Promise<WorkspaceRecord> {
+  const db = getDb()
+
+  const project = db.prepare('SELECT id, path, name FROM projects WHERE id = ?').get(projectId) as
+    | ProjectPathRow
+    | undefined
+  if (!project) throw new Error(`Project not found: ${projectId}`)
+
+  const sessionRow = db
+    .prepare('SELECT title, jsonl_path FROM sessions WHERE id = ?')
+    .get(sessionId) as { title: string | null; jsonl_path: string | null } | undefined
+
+  const shortId = sessionId.slice(0, 8)
+  const rawTitle = sessionRow?.title
+  const workspaceName = rawTitle
+    ? rawTitle.length > 40
+      ? rawTitle.slice(0, 40) + '…'
+      : rawTitle
+    : `Resume ${shortId}`
+
+  // Extract the worktree slug from the jsonl_path encoded dir segment.
+  // A worktree path encodes as: …--claude-worktrees-<slug>/<sessionId>.jsonl
+  const WORKTREE_MARKER = '--claude-worktrees-'
+  let branch: string | null = null
+  if (sessionRow?.jsonl_path) {
+    const encodedDir = nodePath.basename(nodePath.dirname(sessionRow.jsonl_path))
+    const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)
+    if (markerIdx !== -1) {
+      branch = encodedDir.slice(markerIdx + WORKTREE_MARKER.length)
+    }
+  }
+
+  // No worktree origin detected — fall back to a plain resume workspace.
+  if (!branch) {
+    return createWorkspaceResumingSession(projectId, sessionId)
+  }
+
+  // Resolve the repo root — non-git projects throw NotAGitRepoError.
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      return createWorkspaceResumingSession(projectId, sessionId)
+    }
+    throw err
+  }
+
+  // Prefer the branch name stored on an existing (or archived) workspace whose
+  // cwd matches the worktree directory.  The worktree cwd is reconstructed as
+  // <repoRoot>/.claude/worktrees/<slug> and its correct branch may differ from
+  // the slug (e.g. a branch named "feature/foo" becomes slug "feature-foo").
+  const slugFromPath = worktreeSlug(branch)
+  const expectedWorktreePath = nodePath.join(repoRoot, '.claude', 'worktrees', slugFromPath)
+  const storedRow = getDb()
+    .prepare<
+      [string, string],
+      { worktree_branch: string | null }
+    >('SELECT worktree_branch FROM workspaces WHERE project_id = ? AND cwd = ? LIMIT 1')
+    .get(projectId, expectedWorktreePath)
+  const storedBranch = storedRow?.worktree_branch ?? null
+  // Use the stored branch when available; it is the authoritative git branch
+  // name (e.g. "feature/foo").  Fall back to slug-derived name for the
+  // auto-generated "worktree-<slug>" case where slug == branch.
+  branch = storedBranch ?? branch
+
+  const slug = worktreeSlug(branch)
+
+  return withRepoLock(repoRoot, async () => {
+    const mode = (await branchExists(repoRoot, branch!)) ? 'existing' : 'new'
+    const baseRef = await readWorktreeBaseRef()
+
+    const { path: worktreePath, branch: finalBranch } = await createWorktree({
+      repoRoot,
+      slug,
+      branch: branch!,
+      mode,
+      baseRef
+    })
+
+    let ws: WorkspaceRecord
+    try {
+      ws = createWorkspace({
+        projectId,
+        name: workspaceName,
+        cwd: worktreePath,
+        worktreeParentCwd: repoRoot,
+        worktreeBranch: finalBranch
+      })
+    } catch (rowErr) {
+      try {
+        await removeWorktree({ path: worktreePath, force: true })
+      } catch {
+        // best-effort rollback
+      }
+      throw rowErr
+    }
+
+    // Override the pre-seeded claudeSessionId with the session being resumed.
+    setWorkspaceClaudeSessionId(ws.id, sessionId)
+
+    const refreshed = getWorkspace(ws.id)
+    if (!refreshed) {
+      throw new Error(`Workspace disappeared immediately after creation: ${ws.id}`)
+    }
+    return refreshed
+  })
 }
 
 // ---------------------------------------------------------------------------

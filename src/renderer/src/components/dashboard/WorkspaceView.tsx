@@ -8,6 +8,8 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
+import { WorktreeErrorCard } from './WorktreeErrorCard'
+import type { WorktreeError } from './WorktreeErrorCard'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
@@ -59,6 +61,19 @@ export function WorkspaceView({
   const [remountKey, setRemountKey] = useState(0)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
+  // Worktree reconcile error — set when terminal:mount returns worktreeError.
+  // While non-null the terminal surface is not mounted; WorktreeErrorCard is shown instead.
+  const [worktreeError, setWorktreeError] = useState<WorktreeError | null>(null)
+  // converting — true while a convertToLocal IPC is in-flight; prevents double-conversion.
+  const [converting, setConverting] = useState(false)
+  // pendingCwdOverrideRef — holds the fresh cwd returned by convertToLocal so the
+  // re-mount triggered by bumping remountKey uses the updated repo-root path rather
+  // than the stale workspace.cwd prop (which propagates via workspaces:changed only
+  // after the IPC resolves, potentially after the effect closure has already closed
+  // over the old value). Cleared (set to null) once consumed by doMount.
+  const pendingCwdOverrideRef = useRef<string | null>(null)
+  // One-time notice from a successful mount (e.g. "started fresh on branch X").
+  const [notice, setNotice] = useState<string | null>(null)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -105,6 +120,59 @@ export function WorkspaceView({
   }, [workspace.id])
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
+
+  // --- Worktree error card callbacks ---
+
+  /** Retry mount after a worktree reconcile error by bumping the remount key. */
+  const handleWorktreeRetry = useCallback(() => {
+    setWorktreeError(null)
+    setRemountKey((k) => k + 1)
+  }, [])
+
+  /** Reveal the conflict path (or worktree parent) in Finder. */
+  const handleWorktreeOpenLocation = useCallback((p: string) => {
+    void window.api.shell.revealInFinder(p).catch((e) => {
+      console.error('[WorkspaceView] revealInFinder failed:', e)
+    })
+  }, [])
+
+  /**
+   * Convert a worktree workspace to a local workspace (non-destructive), then
+   * re-mount at the repo root. The IPC returns the updated WorkspaceRecord; we
+   * stash its cwd in pendingCwdOverrideRef so the re-mount (triggered by bumping
+   * remountKey) uses the fresh repo-root path instead of the stale workspace.cwd
+   * prop (which only updates when the workspaces:changed broadcast propagates
+   * through Dashboard state — potentially after the mount effect closure has
+   * already been created with the old value).
+   *
+   * The `converting` flag prevents double-conversion if the button is clicked
+   * twice before the IPC resolves.
+   */
+  const handleWorktreeConvertToLocal = useCallback(() => {
+    setConverting(true)
+    void window.api.workspaces
+      .convertToLocal(workspace.id)
+      .then((updated) => {
+        // Stash the fresh cwd BEFORE bumping remountKey so the mount effect
+        // closure created on the next render can read it via the ref.
+        pendingCwdOverrideRef.current = updated.cwd
+        setWorktreeError(null)
+        setRemountKey((k) => k + 1)
+      })
+      .catch((e) => {
+        console.error('[WorkspaceView] convertToLocal failed:', e)
+      })
+      .finally(() => {
+        setConverting(false)
+      })
+  }, [workspace.id])
+
+  // Auto-dismiss the one-time notice after 6 seconds.
+  useEffect(() => {
+    if (!notice) return
+    const id = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(id)
+  }, [notice])
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -175,7 +243,11 @@ export function WorkspaceView({
     mountedRef.current = true
 
     const workspaceId = workspace.id
-    const cwd = workspace.cwd
+    // Prefer pendingCwdOverrideRef when set (populated by convertToLocal so the
+    // re-mount uses the returned repo-root cwd rather than the stale prop value).
+    // Consume and clear immediately so it doesn't leak into later mounts.
+    const cwd = pendingCwdOverrideRef.current ?? workspace.cwd
+    pendingCwdOverrideRef.current = null
 
     // rAF guard for resize coalescing
     let resizeRafId: number | null = null
@@ -207,6 +279,18 @@ export function WorkspaceView({
       )
       try {
         const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
+        if ('worktreeError' in result) {
+          // Worktree reconcile failed — surface not mounted; show the error card.
+          console.warn('[WorkspaceView] worktree reconcile error:', result.worktreeError)
+          setWorktreeError(result.worktreeError)
+          return
+        }
+        // Success path — clear any prior reconcile error.
+        setWorktreeError(null)
+        // Surface a one-time notice if the backend emitted one (e.g. "started fresh on branch X").
+        if (result.notice) {
+          setNotice(result.notice)
+        }
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
         // immediately so the surface doesn't draw while inactive.
@@ -418,6 +502,12 @@ export function WorkspaceView({
     if (!effectStateRef.current) return
     if (isClosed) return
 
+    // Clear any stale worktree error before attempting re-mount so the user sees
+    // a clean loading state instead of a stale error card flashing during a now-
+    // succeeding reconcile.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional pre-mount reset, not a cascading update; cleared once before the rAF that initiates the IPC
+    setWorktreeError(null)
+
     let rafId: number | null = null
     rafId = requestAnimationFrame(() => {
       rafId = null
@@ -486,6 +576,21 @@ export function WorkspaceView({
               workspaceId,
               durationMs: Math.round(performance.now() - t0)
             })
+            if ('worktreeError' in result) {
+              // Worktree reconcile failed — surface not mounted; show the error card.
+              console.warn(
+                '[WorkspaceView] worktree reconcile error (re-mount):',
+                result.worktreeError
+              )
+              setWorktreeError(result.worktreeError)
+              return
+            }
+            // Success path — clear any prior reconcile error.
+            setWorktreeError(null)
+            // Surface a one-time notice if the backend emitted one.
+            if (result.notice) {
+              setNotice(result.notice)
+            }
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
             // immediately so the surface doesn't draw while inactive.
@@ -557,6 +662,27 @@ export function WorkspaceView({
                 isClosed={isClosed}
                 onFocusTerminal={handleFocusTerminal}
               />
+            )}
+            {/* Worktree reconcile error card — shown instead of the terminal surface
+                when terminal:mount returns a worktreeError. Only rendered for the
+                active view so inactive (keep-alive) views don't render it unnecessarily. */}
+            {active && worktreeError && (
+              <WorktreeErrorCard
+                error={worktreeError}
+                worktreeParentCwd={workspace.worktreeParentCwd}
+                onRetry={handleWorktreeRetry}
+                onOpenLocation={handleWorktreeOpenLocation}
+                onConvertToLocal={handleWorktreeConvertToLocal}
+                converting={converting}
+              />
+            )}
+            {/* One-time notice banner (e.g. "started fresh on branch X") — shown
+                briefly after a successful mount and auto-dismissed after 6 s. */}
+            {active && notice && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 max-w-sm w-auto px-4 py-2.5 rounded-lg bg-surface-overlay/95 border border-border-default shadow-lg flex items-center gap-2.5 pointer-events-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+                <span className="text-xs text-text-secondary leading-snug">{notice}</span>
+              </div>
             )}
           </div>
 

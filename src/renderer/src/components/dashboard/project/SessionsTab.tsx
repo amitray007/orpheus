@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { Play, Trash } from '@phosphor-icons/react'
+import { GitBranch, Play, Trash } from '@phosphor-icons/react'
 import type { SessionRecord, SessionsPagedRequest, WorkspaceRecord } from '@shared/types'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { DotmSquare13 } from '../../ui/dotm-square-13'
@@ -16,6 +16,28 @@ import {
   type DateRange,
   type SortBy
 } from './sessions-tab-helpers'
+
+// ---------------------------------------------------------------------------
+// Worktree-origin detection (render-time, no IPC)
+// ---------------------------------------------------------------------------
+
+const WORKTREE_MARKER = '--claude-worktrees-'
+
+/**
+ * Returns the worktree slug from a session's jsonlPath if the session originated
+ * in a git worktree (i.e. its encoded dir contains '--claude-worktrees-').
+ * Returns null for sessions from the main project directory.
+ */
+function worktreeSlugFromPath(jsonlPath: string): string | null {
+  // jsonlPath = ~/.claude/projects/<encodedDir>/<sessionId>.jsonl
+  // encodedDir for a worktree: ...<repoEncoded>--claude-worktrees-<slug>
+  const parts = jsonlPath.split('/')
+  // The encoded dir is the second-to-last segment (last is the .jsonl filename)
+  const encodedDir = parts.length >= 2 ? parts[parts.length - 2] : ''
+  const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)
+  if (markerIdx === -1) return null
+  return encodedDir.slice(markerIdx + WORKTREE_MARKER.length) || null
+}
 
 // ---------------------------------------------------------------------------
 // Tab
@@ -213,7 +235,10 @@ export function SessionsTab({
     if (resumingId) return
     setResumingId(row.id)
     try {
-      const ws = await window.api.sessions.resumeInNewWorkspace(row.id, projectId)
+      const isWorktree = worktreeSlugFromPath(row.jsonlPath) !== null
+      const ws = isWorktree
+        ? await window.api.sessions.resumeInWorktreeWorkspace(row.id, projectId)
+        : await window.api.sessions.resumeInNewWorkspace(row.id, projectId)
       onResumedInWorkspace(ws)
     } catch (err) {
       console.error('[sessions-tab] resume failed', err)
@@ -227,11 +252,25 @@ export function SessionsTab({
       key: 'title',
       label: 'Prompt',
       sortable: true,
-      render: (r) => (
-        <span className="truncate" title={r.title ?? r.id}>
-          {r.title ?? <span className="text-text-muted italic">untitled</span>}
-        </span>
-      )
+      render: (r) => {
+        const worktreeSlug = worktreeSlugFromPath(r.jsonlPath)
+        return (
+          <span className="flex items-center gap-1.5 min-w-0">
+            {worktreeSlug && (
+              <span
+                title={worktreeSlug}
+                aria-label="worktree session"
+                className="flex-shrink-0 inline-flex items-center gap-0.5 text-text-muted"
+              >
+                <GitBranch size={10} weight="duotone" />
+              </span>
+            )}
+            <span className="truncate" title={r.title ?? r.id}>
+              {r.title ?? <span className="text-text-muted italic">untitled</span>}
+            </span>
+          </span>
+        )
+      }
     }
     const updatedCol: DataTableColumn<SessionRecord> = {
       key: 'updatedAt',

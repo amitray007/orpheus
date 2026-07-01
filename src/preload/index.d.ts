@@ -9,6 +9,8 @@ import type {
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
+  CreateWorktreeParams,
+  TerminalMountResult,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -60,6 +62,7 @@ declare global {
       app: {
         getVersion: () => Promise<string>
         getPaths: () => Promise<{ userData: string; logs: string }>
+        offeredModes: (projectId: string) => Promise<{ local: boolean; worktree: boolean }>
       }
       window: {
         openDevTools: () => Promise<void>
@@ -74,7 +77,7 @@ declare global {
           rect: TerminalRect,
           scaleFactor: number,
           cwd?: string
-        ) => Promise<{ workspaceId: string; created: boolean }>
+        ) => Promise<TerminalMountResult>
         hide: (workspaceId: string) => Promise<void>
         resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number) => Promise<void>
         destroy: (workspaceId: string) => Promise<void>
@@ -124,7 +127,11 @@ declare global {
         add: (path: string) => Promise<ProjectRecord>
         pickAndAdd: () => Promise<ProjectRecord | null>
         open: (id: string) => Promise<ProjectRecord>
-        remove: (id: string) => Promise<void>
+        remove: (
+          id: string,
+          opts?: { deleteWorktrees?: boolean; force?: boolean }
+        ) => Promise<{ deleted: boolean; dirtyWorktrees: number }>
+        worktreeSummary: (projectId: string) => Promise<{ count: number }>
         rename: (id: string, name: string) => Promise<void>
         setExpandedInSidebar: (id: string, expanded: boolean) => Promise<void>
         reorder: (orderedIds: string[]) => Promise<void>
@@ -149,6 +156,10 @@ declare global {
         setStatus: (id: string, status: SessionStatus) => Promise<void>
         listForProjectPaged: (req: SessionsPagedRequest) => Promise<SessionsPagedResult>
         resumeInNewWorkspace: (sessionId: string, projectId: string) => Promise<WorkspaceRecord>
+        resumeInWorktreeWorkspace: (
+          sessionId: string,
+          projectId: string
+        ) => Promise<WorkspaceRecord>
         refreshMetadata: (projectId: string) => Promise<void>
         delete: (id: string) => Promise<void>
         getContextBudget: (
@@ -161,9 +172,16 @@ declare global {
           options?: { scope?: 'active' | 'archived' | 'all' }
         ) => Promise<WorkspaceRecord[]>
         create: (args: { projectId: string; name: string; cwd: string }) => Promise<WorkspaceRecord>
+        createWorktree: (
+          projectId: string,
+          params: CreateWorktreeParams
+        ) => Promise<WorkspaceRecord>
         open: (id: string) => Promise<WorkspaceRecord>
         setPinned: (id: string, pinned: boolean) => Promise<WorkspaceRecord>
-        archive: (id: string) => Promise<void>
+        archive: (
+          id: string,
+          opts?: { force?: boolean }
+        ) => Promise<{ archived: boolean; wasDirty: boolean }>
         rename: (id: string, name: string) => Promise<WorkspaceRecord>
         reorder: (projectId: string, orderedIds: string[]) => Promise<void>
         isDirty: (id: string) => Promise<boolean>
@@ -198,6 +216,10 @@ declare global {
         reopen: (id: string) => Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }>
         onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void) => () => void
         onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void) => () => void
+        convertToLocal: (id: string) => Promise<WorkspaceRecord>
+      }
+      worktrees: {
+        branchExists: (projectId: string, branch: string) => Promise<boolean>
       }
       pins: {
         listAll: () => Promise<PinnedItem[]>
@@ -228,6 +250,13 @@ declare global {
           workspaceId: string,
           patch: ClaudeWorkspaceSettingsOverrides
         ) => Promise<ClaudeWorkspaceSettings>
+      }
+      orpheusConfig: {
+        get: (projectId: string) => Promise<{ allowLocal: boolean; allowWorktree: boolean }>
+        setOverride: (
+          projectId: string,
+          patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
+        ) => Promise<{ allowLocal: boolean; allowWorktree: boolean }>
       }
       uiState: {
         get: () => Promise<AppUiState>

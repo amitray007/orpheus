@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 63
+export const CURRENT_VERSION = 64
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,6 +70,8 @@ const WORKSPACES_SCHEMA_SQL = `
     sort_order INTEGER,
     claude_session_id TEXT,
     last_title TEXT
+  ,worktree_parent_cwd TEXT
+  ,worktree_branch TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -2296,6 +2298,21 @@ export function migrate(db: Database.Database): void {
       /* may exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(63)
+  }
+
+  // v64: worktree-native workspaces — repo root + branch this worktree owns
+  if (currentVersion < 64) {
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_parent_cwd TEXT')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(64)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()

@@ -32,7 +32,13 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
+import type {
+  DoctorResult,
+  GitStatus,
+  HealthReport,
+  CreateWorktreeParams,
+  TerminalMountResult
+} from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -49,12 +55,26 @@ import {
   listProjects,
   addProject,
   openProject,
+  getProject,
   deleteProject,
   renameProject,
   setProjectExpandedInSidebar,
   reorderProjects,
   setProjectPinned
 } from './projects'
+import {
+  resolveMainWorktree,
+  withRepoLock,
+  createWorktree,
+  removeWorktree,
+  isWorktreeDirty,
+  worktreeSlug,
+  readWorktreeBaseRef,
+  branchExists,
+  NotAGitRepoError,
+  reconcileWorktree
+} from './worktrees'
+import { resolveOfferedModes, resolveWorkspacesConfig, writeProjectOverride } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
@@ -62,6 +82,7 @@ import {
   listAllSessions,
   setSessionStatus,
   createWorkspaceResumingSession,
+  createWorktreeResumingSession,
   refreshSessionMetadata,
   deleteSession,
   getContextBudget
@@ -80,7 +101,11 @@ import {
   listAllPinned,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
-  resetTransientStatusesOnStartup
+  resetTransientStatusesOnStartup,
+  setWorkspaceCwd,
+  convertWorktreeToLocal,
+  countWorktreeWorkspaces,
+  listWorktreeWorkspaces
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -563,6 +588,8 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
 }
 
 function performClose(id: string): WorkspaceRecord | undefined {
+  // NOTE: close keeps the worktree on disk (reconciled on next open); only
+  // archive/project-delete tears it down. Do NOT add worktree removal here.
   const ws = getWorkspace(id)
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
@@ -1080,6 +1107,29 @@ handle('app:getPaths', () => ({
   logs: app.getPath('logs')
 }))
 
+// Which workspace-creation modes the UI should offer for this project. Computes
+// is-git-repo authoritatively (resolveMainWorktree throws NotAGitRepoError for a
+// non-git cwd) and narrows the resolver result to the bare {local, worktree} the
+// renderer needs. Non-NotAGitRepo errors propagate.
+handle('app:offeredModes', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`app:offeredModes: project not found: ${projectId}`)
+
+  let isGit = true
+  try {
+    await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      isGit = false
+    } else {
+      throw err
+    }
+  }
+
+  const modes = await resolveOfferedModes(project.path, isGit)
+  return { local: modes.local, worktree: modes.worktree }
+})
+
 handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
@@ -1112,24 +1162,77 @@ handle('projects:pickAndAdd', async () => {
 
 handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-handle('projects:remove', (_e, { id }: { id: string }) => {
-  // Enumerate workspaces before the cascade-delete removes the rows so we can
-  // tear down each one's in-memory state and native surface. The renderer
-  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
-  // self-sufficient even when called directly (double-cleanup is safe — all
-  // teardown operations are idempotent).
-  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
-  for (const ws of workspacesToRemove) {
-    if (terminalAddon) {
-      try {
-        terminalAddon.destroy(ws.id)
-      } catch {
-        // Surface not mounted or already destroyed — ignore.
+handle(
+  'projects:remove',
+  async (
+    _e,
+    {
+      id,
+      deleteWorktrees = false,
+      force = false
+    }: { id: string; deleteWorktrees?: boolean; force?: boolean }
+  ): Promise<{ deleted: boolean; dirtyWorktrees: number }> => {
+    // Optional worktree teardown before cascade-delete.
+    // Must happen before deleteProject() so we still have workspace rows to query.
+    if (deleteWorktrees) {
+      const worktreeWorkspaces = listWorktreeWorkspaces(id)
+
+      // ── Phase 1 (pre-check, NO removal): count dirty worktrees ───────────
+      // Check dirtiness WITHOUT removing anything. If any are dirty and the
+      // caller hasn't set force, return early having removed NOTHING — so the
+      // user can cancel the confirmation without losing clean worktrees.
+      if (!force) {
+        let dirtyCount = 0
+        for (const ws of worktreeWorkspaces) {
+          const dirty = await isWorktreeDirty(ws.cwd)
+          if (dirty) dirtyCount++
+        }
+        if (dirtyCount > 0) {
+          return { deleted: false, dirtyWorktrees: dirtyCount }
+        }
+      }
+
+      // ── Phase 2 (removal): only reached when dirtyCount===0 or force ─────
+      // Remove each worktree best-effort; log non-fatal errors and continue so
+      // a single failure does not leave the project permanently undeletable.
+      for (const ws of worktreeWorkspaces) {
+        try {
+          await withRepoLock(ws.worktreeParentCwd, () =>
+            removeWorktree({ path: ws.cwd, force, repoRoot: ws.worktreeParentCwd })
+          )
+        } catch (err) {
+          console.warn(
+            `[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`,
+            err instanceof Error ? err.message : String(err)
+          )
+          // Continue — best-effort removal; don't abort the whole delete.
+        }
       }
     }
-    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+
+    // Enumerate workspaces before the cascade-delete removes the rows so we can
+    // tear down each one's in-memory state and native surface. The renderer
+    // pre-destroys surfaces via terminal:destroy, but projects:remove must be
+    // self-sufficient even when called directly (double-cleanup is safe — all
+    // teardown operations are idempotent).
+    const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
+    for (const ws of workspacesToRemove) {
+      if (terminalAddon) {
+        try {
+          terminalAddon.destroy(ws.id)
+        } catch {
+          // Surface not mounted or already destroyed — ignore.
+        }
+      }
+      teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+    }
+    deleteProject(id)
+    return { deleted: true, dirtyWorktrees: 0 }
   }
-  deleteProject(id)
+)
+
+handle('projects:worktreeSummary', (_e, { projectId }: { projectId: string }) => {
+  return { count: countWorktreeWorkspaces(projectId) }
 })
 
 handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
@@ -1150,17 +1253,117 @@ handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: s
   createWorkspace(args)
 )
 
+// Create a worktree-backed workspace. Async + git-first transaction order:
+// resolve repo root → authoritatively enforce the offered-modes config →
+// (under the per-repo mutex) decide new-vs-existing branch → create the git
+// worktree → insert the DB row, rolling the worktree back if the insert fails.
+// Nothing is persisted until the worktree exists, and a failed insert leaves no
+// orphaned worktree behind.
+handle(
+  'workspaces:createWorktree',
+  async (_e, { projectId, params }: { projectId: string; params: CreateWorktreeParams }) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
+
+    // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
+    // worktree workspaces are impossible there, so reject with a clear message.
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch (err) {
+      if (err instanceof NotAGitRepoError) {
+        throw new Error(
+          `Cannot create a worktree workspace: ${project.path} is not a git repository`
+        )
+      }
+      throw err
+    }
+
+    // Authoritative enforcement (spec §7.2): re-read the offered modes in the
+    // main process and reject if worktree creation is disabled by config. The
+    // UI gate is advisory; this is the real gate.
+    const modes = await resolveOfferedModes(project.path, true)
+    if (!modes.worktree) {
+      throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
+    }
+
+    const slug = worktreeSlug(params.name)
+    const branch = params.branch?.trim() || `worktree-${slug}`
+
+    return withRepoLock(repoRoot, async () => {
+      const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
+      const baseRef = await readWorktreeBaseRef()
+
+      // If createWorktree throws, propagate — no DB row has been inserted yet.
+      const { path: worktreePath, branch: finalBranch } = await createWorktree({
+        repoRoot,
+        slug,
+        branch,
+        mode,
+        baseRef
+      })
+
+      try {
+        // createWorkspace broadcasts workspaces:created internally (same as the
+        // normal create path), so no separate broadcast is needed here.
+        return createWorkspace({
+          projectId,
+          name: params.name,
+          cwd: worktreePath,
+          worktreeParentCwd: repoRoot,
+          worktreeBranch: finalBranch
+        })
+      } catch (rowErr) {
+        // Roll back the freshly created worktree so a failed insert can't leak a
+        // dangling worktree. Force-remove since it's brand new (no user changes).
+        try {
+          await removeWorktree({ path: worktreePath, force: true })
+        } catch {
+          // Best-effort rollback; surface the original insert error regardless.
+        }
+        throw rowErr
+      }
+    })
+  }
+)
+
+// Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
+handle(
+  'worktrees:branchExists',
+  async (_e, { projectId, branch }: { projectId: string; branch: string }) => {
+    const project = getProject(projectId)
+    if (!project) return false
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch {
+      return false
+    }
+    return branchExists(repoRoot, branch)
+  }
+)
+
 handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
 
 handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
   setWorkspacePinned(id, pinned)
 )
 
-handle('workspaces:archive', (_e, { id }: { id: string }) => {
+handle('workspaces:archive', async (_e, { id, force = false }: { id: string; force?: boolean }) => {
   // Capture cwd before the DB row is gone so teardown can stop the git watcher.
   const ws = getWorkspace(id)
-  // Destroy the libghostty surface so the NSView is freed before the DB row
-  // disappears. Silently no-ops when the terminal was never mounted.
+  // Run archiveWorkspace FIRST. For worktree-backed workspaces with a dirty
+  // worktree and force=false it returns { archived: false, wasDirty: true }
+  // without touching the DB row — in that case we must NOT destroy the surface
+  // so the workspace terminal stays alive for the user.
+  const result = await archiveWorkspace(id, force)
+  if (!result.archived) {
+    // Dirty worktree without force — row and surface are intact; caller should
+    // show a confirm dialog and re-invoke with force:true.
+    return result
+  }
+  // Archive succeeded: destroy the libghostty surface now that the DB row is
+  // gone. Silently no-ops when the terminal was never mounted.
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
@@ -1168,10 +1371,10 @@ handle('workspaces:archive', (_e, { id }: { id: string }) => {
       // Surface not mounted or already destroyed — ignore.
     }
   }
-  archiveWorkspace(id)
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
+  return result
 })
 
 handle('workspace:close', (_e, { id }: { id: string }) => {
@@ -1191,6 +1394,11 @@ handle('workspace:reopen', (_e, { id }: { id: string }) => {
 handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
+
+// Convert a worktree-backed workspace to a plain local workspace (non-destructive:
+// does NOT delete the branch or worktree directory). Sets cwd = worktreeParentCwd
+// and nulls the worktree fields, then broadcasts workspaces:changed.
+handle('workspaces:convertToLocal', (_e, { id }: { id: string }) => convertWorktreeToLocal(id))
 
 handle(
   'workspaces:reorder',
@@ -1232,6 +1440,12 @@ handle(
   'sessions:resumeInNewWorkspace',
   (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
     createWorkspaceResumingSession(projectId, sessionId)
+)
+
+handle(
+  'sessions:resumeInWorktreeWorkspace',
+  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
+    createWorktreeResumingSession(projectId, sessionId)
 )
 
 handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
@@ -1417,6 +1631,32 @@ handle(
     const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
     recomputeDirty()
     return result
+  }
+)
+
+// ---------------------------------------------------------------------------
+// Orpheus project config IPC (.orpheus/config.yml)
+// ---------------------------------------------------------------------------
+
+handle('orpheusConfig:get', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`orpheusConfig:get: project not found: ${projectId}`)
+  return resolveWorkspacesConfig(project.path)
+})
+
+handle(
+  'orpheusConfig:setOverride',
+  async (
+    _e,
+    {
+      projectId,
+      patch
+    }: { projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }
+  ) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
+    await writeProjectOverride(project.path, patch)
+    return resolveWorkspacesConfig(project.path)
   }
 )
 
@@ -1853,7 +2093,7 @@ handle(
       scaleFactor,
       cwd
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): Promise<{ workspaceId: string; created: boolean }> => {
+  ): Promise<TerminalMountResult> => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
@@ -1865,6 +2105,55 @@ handle(
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
+
+    // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
+    // For worktree-backed workspaces, reconcile the worktree state BEFORE any
+    // native surface operation. This detects and heals stale/missing worktrees.
+    //
+    // We show the loading overlay FIRST (before the potentially multi-second
+    // git operations) so the user never sees a blank pane.
+    //
+    // reconcileWorktree NEVER throws — it returns { ok: false } on all error
+    // paths. If reconcile fails, we return the error without mounting and
+    // without touching the surface, leaving it retryable.
+    let reconcileNotice: string | undefined
+    let effectiveCwd = cwd
+    if (ws?.worktreeParentCwd != null && ws.worktreeBranch != null) {
+      showLoadingOverlay(workspaceId, { title: 'Preparing worktree…' })
+      let r: Awaited<ReturnType<typeof reconcileWorktree>>
+      try {
+        r = await reconcileWorktree({
+          cwd: ws.cwd,
+          worktreeParentCwd: ws.worktreeParentCwd,
+          worktreeBranch: ws.worktreeBranch
+        })
+      } catch (err) {
+        // reconcileWorktree guarantees no throws, but guard anyway so a bug
+        // there cannot propagate to an unrecoverable blank surface.
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: {
+            kind: 'parentGone',
+            message: `Worktree reconcile threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`
+          }
+        }
+      }
+      if (!r.ok) {
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: { kind: r.kind, message: r.message, conflictPath: r.conflictPath }
+        }
+      }
+      // Reconcile succeeded. Use the reconciled path as mount cwd; if the
+      // worktree was recreated at a suffixed path (slug-2), persist the new cwd.
+      if (r.path !== ws.cwd) {
+        setWorkspaceCwd(workspaceId, r.path)
+      }
+      effectiveCwd = r.path
+      reconcileNotice = r.notice
+    }
 
     // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
     // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
@@ -1913,7 +2202,7 @@ handle(
           workspaceId,
           rect,
           scaleFactor,
-          cwd,
+          cwd: effectiveCwd,
           command,
           env: surfaceEnv
         })
@@ -1983,6 +2272,13 @@ handle(
         }, 10000)
         overlayFallbackTimers.set(workspaceId, t)
       }
+    } else {
+      // Surface already existed (re-attach). If a worktree workspace showed the
+      // "Preparing worktree…" overlay before reconcile, clear it now — claude is
+      // already running and no boot sequence is pending.
+      // hideLoadingOverlay is a safe no-op when no overlay is active, so this
+      // is unconditional and handles the non-worktree re-mount path too.
+      hideLoadingOverlay(workspaceId)
     }
 
     // Snapshot the composed launch so we can detect settings drift later.
@@ -1998,11 +2294,11 @@ handle(
 
     // Start (or re-join) the fs.watch watcher for this workspace's git repo so
     // status is pushed on change instead of polled every 30s.
-    if (cwd) {
-      startGitWatch(workspaceId, cwd, e.sender)
+    if (effectiveCwd) {
+      startGitWatch(workspaceId, effectiveCwd, e.sender)
     }
 
-    return result
+    return reconcileNotice != null ? { ...result, notice: reconcileNotice } : result
   }
 )
 

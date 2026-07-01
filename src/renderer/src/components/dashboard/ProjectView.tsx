@@ -4,6 +4,7 @@ import type { ClaudeProjectSettings, ProjectRecord, WorkspaceRecord } from '@sha
 import { ProjectHeader } from './project/ProjectHeader'
 import { WorkspacesTab } from './project/WorkspacesTab'
 import { SettingsDrawer } from './project/SettingsDrawer'
+import { nextWorkspaceName } from './dashboard.helpers'
 
 // ---------------------------------------------------------------------------
 // ProjectView — header + project body (workspaces, sessions, commits)
@@ -116,7 +117,9 @@ export function ProjectView({
         workspaceCount={workspaceCount}
         lastActivityAt={lastActivityAt}
         overrideCount={overrideCount}
+        workspaceDefaultName={nextWorkspaceName(activeWorkspaces)}
         onNewWorkspace={() => onAddWorkspace(project.id)}
+        onWorktreeCreated={(ws) => onSelectWorkspace(ws.id)}
         onOpenSettings={() => setSettingsOpen(true)}
         onRequestRemove={onRequestRemove}
         fetchGithubAvatars={fetchGithubAvatars}
