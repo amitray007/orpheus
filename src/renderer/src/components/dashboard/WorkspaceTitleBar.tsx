@@ -6,7 +6,8 @@ import {
   ArrowBendUpLeft,
   Cpu,
   Info,
-  GitBranch
+  GitBranch,
+  Flask
 } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
@@ -23,6 +24,7 @@ import {
 import type { DetailsPopoverData } from '@/lib/nativePopover'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
 import type { ContextBudgetInfo } from './workspaceTitleBar.helpers'
+import { cycleOverlayDevTest } from '@/lib/overlayDevTest'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -410,6 +412,24 @@ export function WorkspaceTitleBar({
           <Gear size={14} />
           <span>Workspace Settings</span>
         </button>
+        {__ORPHEUS_MODE__ !== 'production' && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => cycleOverlayDevTest()}
+            title="Cycle overlay test (dev)"
+            aria-label="Cycle overlay test (dev)"
+            className={[
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            ].join(' ')}
+          >
+            <Flask size={14} />
+            <span>Overlay</span>
+          </button>
+        )}
       </div>
     </div>
   )
