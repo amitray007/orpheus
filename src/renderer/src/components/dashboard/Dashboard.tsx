@@ -489,8 +489,42 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // the surface is later made active via a normal navigation, at which point
   // WorkspaceView's own active-toggle effect immediately re-measures and
   // resizes it to the real container rect anyway.
+  //
+  // CWD: terminal:mount's 4th arg (cwd) is optional, and when omitted the
+  // launched claude process inherits Electron's own cwd (effectively the
+  // user's home directory) instead of the workspace's project directory —
+  // that was a real bug here. WorkspaceView always passes workspace.cwd (see
+  // its own terminal.mount call sites); this path must do the same. Since
+  // onWorkspaceRequestOpen only carries {workspaceId, focus} (no projectId),
+  // and a workspace freshly created via `ws new --background` may not be in
+  // workspacesByProject yet, we resolve cwd via window.api.workspaces.open()
+  // below, which reads the DB row directly and is authoritative regardless of
+  // renderer state.
   const backgroundMountWorkspace = useCallback((workspaceId: string): void => {
     void (async (): Promise<void> => {
+      // Resolve the workspace's cwd BEFORE mounting. window.api.workspaces.open()
+      // reads straight from the DB (see openWorkspace() in src/main/workspaces.ts),
+      // so it's authoritative even for a workspace the renderer hasn't fetched
+      // into workspacesByProject yet (e.g. one just created by `ws new
+      // --background` from the CLI). This also doubles as the "genuinely open
+      // the workspace" call the code already needed to make (closedAt/
+      // lastOpenedAt), so we just do it first instead of after mount.
+      let cwd: string | undefined
+      try {
+        const opened = await window.api.workspaces.open(workspaceId)
+        cwd = opened.cwd
+        setWorkspacesByProject((prev) => {
+          const projectId = opened.projectId
+          const list = prev[projectId]
+          if (!list) return prev
+          return {
+            ...prev,
+            [projectId]: list.map((w) => (w.id === workspaceId ? opened : w))
+          }
+        })
+      } catch (err) {
+        console.error('[dashboard] background mount: failed to resolve workspace cwd:', err)
+      }
       try {
         const scaleFactor = window.devicePixelRatio ?? 1
         const rect = {
@@ -499,7 +533,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           w: Math.max(1, Math.round(window.innerWidth || 1)),
           h: Math.max(1, Math.round(window.innerHeight || 1))
         }
-        await window.api.terminal.mount(workspaceId, rect, scaleFactor)
+        await window.api.terminal.mount(workspaceId, rect, scaleFactor, cwd)
         // Mount can attach the surface as frontmost momentarily; hide it right
         // away so it never becomes visible/steals draw time while the user is
         // looking at a different workspace (or no workspace at all).
@@ -507,22 +541,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       } catch (err) {
         console.error('[dashboard] background mount failed:', err)
       }
-      // Genuinely "open" the workspace (closedAt/lastOpenedAt) same as a focused
-      // open would — it just doesn't touch view/selectedWorkspaceId.
-      await window.api.workspaces
-        .open(workspaceId)
-        .then((updated) => {
-          setWorkspacesByProject((prev) => {
-            const projectId = updated.projectId
-            const list = prev[projectId]
-            if (!list) return prev
-            return {
-              ...prev,
-              [projectId]: list.map((w) => (w.id === workspaceId ? updated : w))
-            }
-          })
-        })
-        .catch(console.error)
     })()
   }, [])
 
