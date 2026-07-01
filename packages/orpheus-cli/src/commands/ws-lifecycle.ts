@@ -45,6 +45,25 @@ import { effectiveLifecycleStatus } from '../reads/session-status.js'
 import type { WorkspaceRecord } from '../reads/db.js'
 
 // ---------------------------------------------------------------------------
+// Not-found classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify an error message as "data not found" (exit 3) vs. a general
+ * failure (exit 1). Mirrors the heuristic used elsewhere (e.g. project show /
+ * ws status): the server reports missing entities with messages like
+ * "workspace not found: <id>".
+ */
+export function isNotFoundError(msg: string): boolean {
+  return msg.toLowerCase().includes('not found')
+}
+
+/** Extract a message string from a thrown value the same way printError does. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+// ---------------------------------------------------------------------------
 // ws open
 // ---------------------------------------------------------------------------
 
@@ -64,7 +83,7 @@ registerCommand('ws open', {
     try {
       result = await sendCommand('workspace.open', { id })
     } catch (err) {
-      printError(err)
+      printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
 
@@ -106,8 +125,7 @@ registerCommand('ws archive', {
         const data = result as { archived: boolean; count?: number } | null
         results.push({ id, ok: true, count: data?.count })
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        results.push({ id, ok: false, error: message })
+        results.push({ id, ok: false, error: errorMessage(err) })
       }
     }
 
@@ -124,14 +142,18 @@ registerCommand('ws archive', {
           ...(r.error != null ? { error: r.error } : {})
         }))
       )
-      // Set non-zero exit if any failed
-      if (results.some((r) => !r.ok)) {
-        process.exitCode = 1
+      // Set non-zero exit if any failed: 3 if ALL failures are not-found
+      // errors, 1 otherwise (mirrors printError's per-error classification,
+      // aggregated since this command can batch multiple ids).
+      const failures = results.filter((r) => !r.ok)
+      if (failures.length > 0) {
+        process.exitCode = failures.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
       }
       return
     }
 
     // Pretty mode: print each result.
+    const failedIds: Array<{ error?: string }> = []
     for (const r of results) {
       if (r.ok) {
         const kv: Record<string, unknown> = { id: r.id, archived: true }
@@ -139,8 +161,11 @@ registerCommand('ws archive', {
         printKeyValue(kv)
       } else {
         process.stderr.write(`error: ${r.id}: ${r.error ?? 'unknown error'}\n`)
-        process.exitCode = 1
+        failedIds.push({ error: r.error })
       }
+    }
+    if (failedIds.length > 0) {
+      process.exitCode = failedIds.every((r) => isNotFoundError(r.error ?? '')) ? 3 : 1
     }
   }
 })
@@ -165,7 +190,7 @@ registerCommand('ws close', {
     try {
       result = await sendCommand('workspace.close', { id })
     } catch (err) {
-      printError(err)
+      printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
 
@@ -207,7 +232,7 @@ registerCommand('ws reopen', {
     try {
       result = await sendCommand('workspace.reopen', { id })
     } catch (err) {
-      printError(err)
+      printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
 
@@ -250,7 +275,7 @@ registerCommand('ws rename', {
     try {
       result = await sendCommand('workspace.rename', { id, name })
     } catch (err) {
-      printError(err)
+      printError(err, { exitCode: isNotFoundError(errorMessage(err)) ? 3 : 1 })
       return
     }
 
