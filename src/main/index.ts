@@ -2250,6 +2250,20 @@ function resolveNamedKey(name: string): TerminalSendKeyDescriptor | null {
 }
 
 // ---------------------------------------------------------------------------
+// delay / SUBMIT_DELAY_MS — bridge the text-ingest race between staging text
+// (ghostty_surface_text, via terminalActions.sendInput/sendKeys) and
+// submitting it (ghostty_surface_key Return, via terminalActions.submit).
+// Those are two different libghostty code paths, and claude's full-screen TUI
+// reads the PTY asynchronously — it needs a brief moment to ingest the
+// just-committed text before a Return keypress means anything. Firing Return
+// synchronously right after the text commit races ahead of that ingestion, so
+// the line visibly sits in the input box without being submitted. 150ms is
+// imperceptible to a human but ample for the TUI's read loop (terminal
+// paste-then-submit automation typically needs 50-200ms).
+const SUBMIT_DELAY_MS = 150
+const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+// ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
@@ -2638,8 +2652,28 @@ if (!app.requestSingleInstanceLock()) {
               if (!inputResult.ok) {
                 return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
               }
+              // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
+              // a synthetic Return) are two different libghostty code paths. Claude's
+              // full-screen TUI reads the PTY asynchronously, so it needs a moment to
+              // ingest the just-committed text before a Return keypress is meaningful.
+              // Firing Return microseconds later races ahead of that ingestion and the
+              // line never actually submits — the text just sits in the input box.
+              // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
+              // the TUI's read loop (terminal paste-then-submit automation typically
+              // needs 50-200ms; 150 is a safe middle).
+              await delay(SUBMIT_DELAY_MS)
               const submitResult = terminalActions.submit(addon, workspaceId)
               if (!submitResult.ok) {
+                // If the workspace flipped to 'busy' during the delay, that most
+                // likely means claude already started processing the text we just
+                // staged (canInject() — and therefore submit — goes false the moment
+                // status leaves idle/awaiting_input). Treat this as a soft signal
+                // rather than a hard failure: the submit may well have raced a
+                // status flip caused by the text itself landing. Only a genuine,
+                // non-busy failure is reported as an error.
+                if (submitResult.code === 'busy') {
+                  return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                }
                 return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
               }
               return null
@@ -2742,7 +2776,16 @@ if (!app.requestSingleInstanceLock()) {
               const addon = loadTerminalAddon()
 
               // Runs one full text/key/submit pass. Returns the first failure (if any).
-              function attemptSend(): { ok: boolean; error?: string; notFound?: boolean } {
+              // Note: `wasStaged` tracks whether this pass wrote text/keys into the PTY
+              // before any submit — used below to decide whether a 'busy' submit result
+              // is a soft (likely-already-submitted) signal rather than a hard failure.
+              async function attemptSend(): Promise<{
+                ok: boolean
+                error?: string
+                notFound?: boolean
+                softBusy?: boolean
+              }> {
+                let wasStaged = false
                 if (payload.text != null && payload.text !== '') {
                   const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
                   if (!inputResult.ok) {
@@ -2752,6 +2795,7 @@ if (!app.requestSingleInstanceLock()) {
                       error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
                     }
                   }
+                  wasStaged = true
                 }
                 if (payload.key != null && payload.key !== '') {
                   const keyDescriptor = resolveNamedKey(payload.key)
@@ -2766,10 +2810,30 @@ if (!app.requestSingleInstanceLock()) {
                       error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
                     }
                   }
+                  wasStaged = true
                 }
                 if (payload.submit === true) {
+                  // sendInput/sendKeys (text/key commit) and submit (a synthetic Return
+                  // key event) are two different libghostty code paths. Claude's
+                  // full-screen TUI reads the PTY asynchronously, so it needs a moment
+                  // to ingest the just-staged text/key before Return is meaningful —
+                  // firing it immediately races ahead of that ingestion and the line
+                  // never actually submits. Only wait when something was actually
+                  // staged this pass; a submit with no preceding text/key doesn't need
+                  // the ingest gap.
+                  if (wasStaged) {
+                    await delay(SUBMIT_DELAY_MS)
+                  }
                   const submitResult = terminalActions.submit(addon, workspaceId)
                   if (!submitResult.ok) {
+                    if (wasStaged && submitResult.code === 'busy') {
+                      // The workspace flipped to 'busy' during the delay — most likely
+                      // claude already started processing the text/key we just staged
+                      // (canInject/submit go false the moment status leaves
+                      // idle/awaiting_input). Treat as a soft signal, not a hard
+                      // failure: the content may well have already been submitted.
+                      return { ok: true, softBusy: true }
+                    }
                     return {
                       ok: false,
                       notFound: submitResult.code === 'not_found',
@@ -2780,8 +2844,17 @@ if (!app.requestSingleInstanceLock()) {
                 return { ok: true }
               }
 
-              const firstAttempt = attemptSend()
-              if (firstAttempt.ok) return { ok: true }
+              const firstAttempt = await attemptSend()
+              if (firstAttempt.ok) {
+                if (firstAttempt.softBusy) {
+                  return {
+                    ok: true,
+                    error:
+                      'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                  }
+                }
+                return { ok: true }
+              }
 
               // (b) Defense in depth: the surface genuinely isn't mounted despite
               // canInject saying otherwise (stale/defaulted activity). Open + wait, then
@@ -2789,8 +2862,17 @@ if (!app.requestSingleInstanceLock()) {
               if (firstAttempt.notFound === true) {
                 const injectable = await openAndWaitInjectable()
                 if (injectable) {
-                  const retryAttempt = attemptSend()
-                  if (retryAttempt.ok) return { ok: true }
+                  const retryAttempt = await attemptSend()
+                  if (retryAttempt.ok) {
+                    if (retryAttempt.softBusy) {
+                      return {
+                        ok: true,
+                        error:
+                          'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                      }
+                    }
+                    return { ok: true }
+                  }
                   return { ok: false, error: retryAttempt.error ?? 'send failed' }
                 }
                 return {
