@@ -441,16 +441,16 @@ function handleOverlayRendererEvent(event: OverlayEvent): void {
 // ---------------------------------------------------------------------------
 
 function wireWindowGeometryListeners(window: BrowserWindow): void {
-  window.on('resize', () => {
+  const onResize = (): void => {
     if (
       (state === 'visible' || state === 'pending') &&
       currentDescriptor?.placement.mode === 'centered'
     ) {
       applyCurrentBounds()
     }
-  })
+  }
 
-  window.on('enter-full-screen', () => {
+  const onEnterFullScreen = (): void => {
     // KTD: reassert order after events known to reshuffle native subviews,
     // not just on the next idle->pending show.
     addon?.reassertOverlayOrder()
@@ -461,9 +461,9 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
     } else {
       forceHide('fullscreen-enter')
     }
-  })
+  }
 
-  window.on('leave-full-screen', () => {
+  const onLeaveFullScreen = (): void => {
     addon?.reassertOverlayOrder()
     if (state === 'visible' || state === 'pending') {
       if (currentDescriptor?.placement.mode === 'centered') {
@@ -480,9 +480,9 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
         forceHide('fullscreen-leave')
       }
     }
-  })
+  }
 
-  window.on('move', () => {
+  const onMove = (): void => {
     if (state !== 'visible' && state !== 'pending') return
     if (!currentDescriptor || currentDescriptor.placement.mode !== 'anchored') return
     if (currentScaleFactor === null) return
@@ -491,18 +491,41 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
     if (display.scaleFactor !== currentScaleFactor) {
       forceHide('display-scale-changed')
     }
-  })
+  }
 
   // DevTools dock-mode changes reshuffle native subviews (KTD); the
   // detach-mode toggle used by `window:openDevTools` doesn't affect
   // `contentView` layout, but a future docked mode would, and this is a
   // cheap no-op self-heal either way. Docked-mode changes WITHIN an already-
   // open DevTools panel emit no event — a known dev-only gap (KTD).
-  window.webContents.on('devtools-opened', () => {
+  const onDevToolsOpened = (): void => {
     addon?.reassertOverlayOrder()
-  })
-  window.webContents.on('devtools-closed', () => {
+  }
+  const onDevToolsClosed = (): void => {
     addon?.reassertOverlayOrder()
+  }
+
+  window.on('resize', onResize)
+  window.on('enter-full-screen', onEnterFullScreen)
+  window.on('leave-full-screen', onLeaveFullScreen)
+  window.on('move', onMove)
+  window.webContents.on('devtools-opened', onDevToolsOpened)
+  window.webContents.on('devtools-closed', onDevToolsClosed)
+
+  const cleanup = (): void => {
+    window.removeListener('resize', onResize)
+    window.removeListener('enter-full-screen', onEnterFullScreen)
+    window.removeListener('leave-full-screen', onLeaveFullScreen)
+    window.removeListener('move', onMove)
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.removeListener('devtools-opened', onDevToolsOpened)
+      window.webContents.removeListener('devtools-closed', onDevToolsClosed)
+    }
+  }
+  geometryListenersCleanup = cleanup
+  window.once('closed', () => {
+    cleanup()
+    if (geometryListenersCleanup === cleanup) geometryListenersCleanup = null
   })
 }
 
