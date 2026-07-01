@@ -38,8 +38,15 @@ registerCommand('ws status', {
   isRead: true,
   usage: 'ws status <id>',
   help: 'Show the current lifecycle + activity status for a workspace',
+  longDesc:
+    'A pure read (never triggers auto-launch) — a quick non-blocking status check, ' +
+    'as opposed to ws wait which blocks until a terminal state. Prefers a live ' +
+    "status signal from claude's on-disk session file when available, falling " +
+    'back to the last-known DB status.',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [{ name: 'id', required: true, desc: 'Workspace id to check.' }],
+  examples: ['orpheus ws status abc-123', 'orpheus --json ws status abc-123 | jq .status'],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {

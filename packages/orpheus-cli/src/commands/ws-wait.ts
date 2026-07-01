@@ -210,13 +210,41 @@ registerCommand('ws wait', {
   // NOT isRead — we use the socket. But we suppress auto-launch manually (see handler).
   usage: 'ws wait <id...> [--timeout <dur>] [--until done|input|idle]',
   help: 'Wait for one or more workspaces to reach a terminal activity state',
+  longDesc:
+    'Blocks until each workspace reaches a terminal state, then exits with a code ' +
+    'reflecting the aggregate outcome (see the exit-code table below). This is the ' +
+    'core synchronization primitive for fan-out: spawn workers with ws new, then ' +
+    'ws wait on their ids before reading results. With multiple ids, the exit code ' +
+    'reflects the HIGHEST-priority reason across all of them (died > timeout > ' +
+    'not-found > blocked-permission > blocked-input > done).',
   minPositionals: 1,
   // Variadic (accepts any number of workspace ids) — maxPositionals intentionally
   // omitted so an arbitrary number of ids is never rejected as a usage error.
+  argsSpec: [
+    { name: 'id', required: true, variadic: true, desc: 'One or more workspace ids to wait on.' }
+  ],
   flags: {
-    timeout: 'string',
-    until: 'string'
+    timeout: {
+      type: 'string',
+      valueHint: '<dur>',
+      desc: 'Maximum time to wait before giving up on any id that has not reached a terminal state. Accepts a duration string (e.g. 10m, 30s, 1h) or a plain integer (milliseconds).',
+      default: '10m'
+    },
+    until: {
+      type: 'string',
+      valueHint: '<mode>',
+      desc: 'How specific a terminal state to block for.',
+      values: ['done', 'input', 'idle'],
+      default: 'done',
+      notes:
+        'done = resolve as soon as the workspace stops running for ANY reason (finished, idle, or blocked on the user). input = keep waiting past idle/awaiting_input; only resolve once the workspace is genuinely blocked on the user (permission or input) — "wait until the agent needs me". idle = keep waiting past awaiting_input; only resolve once fully idle/settled. A died/not-found/timeout outcome is always terminal regardless of --until.'
+    }
   },
+  examples: [
+    'orpheus ws wait abc-123 --timeout 10m',
+    'orpheus ws wait abc-123 def-456 ghi-789   # wait on a whole fan-out batch',
+    'orpheus ws wait abc-123 --until input --timeout 30m   # block until it needs you'
+  ],
   handler: async (ctx) => {
     const workspaceIds = ctx.positionals
     if (workspaceIds.length === 0) {

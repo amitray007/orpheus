@@ -38,15 +38,47 @@ registerCommand('ws read', {
   isRead: true,
   usage: 'ws read <id> [--last-assistant] [--last <n>] [--full] [--role <r>] [--since <t>]',
   help: 'Read a workspace transcript (defaults to the last assistant turn)',
+  longDesc:
+    "Reads the workspace's claude JSONL transcript from disk — a pure read, never " +
+    'triggers auto-launch. The default (no flags) returns just the last assistant ' +
+    'turn, the common "give me the result" case after ws wait exits 0. Pass ' +
+    '--full to audit the entire transcript including tool activity.',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [{ name: 'id', required: true, desc: 'Workspace id to read the transcript of.' }],
   flags: {
-    'last-assistant': 'boolean',
-    last: 'string',
-    full: 'boolean',
-    role: 'string',
-    since: 'string'
+    'last-assistant': {
+      type: 'boolean',
+      desc: 'Show only the final assistant turn.',
+      default: 'true — this is the default when no flags are given'
+    },
+    last: {
+      type: 'string',
+      valueHint: '<n>',
+      desc: 'Show the last N turns (any role).'
+    },
+    full: {
+      type: 'boolean',
+      desc: 'Show all turns, including tool calls/results — the complete transcript.',
+      default: 'false'
+    },
+    role: {
+      type: 'string',
+      valueHint: '<role>',
+      desc: 'Filter turns by role.',
+      values: ['user', 'assistant']
+    },
+    since: {
+      type: 'string',
+      valueHint: '<ts>',
+      desc: 'Show only turns at or after this Unix timestamp (integer seconds).'
+    }
   },
+  examples: [
+    'orpheus ws read abc-123                       # last assistant turn (the result)',
+    'orpheus ws read abc-123 --full                 # full transcript incl. tool calls',
+    'orpheus ws read abc-123 --last 5 --role user    # last 5 user turns'
+  ],
   handler: async (ctx) => {
     const wsId = ctx.positionals[0]
     if (wsId == null || wsId === '') {

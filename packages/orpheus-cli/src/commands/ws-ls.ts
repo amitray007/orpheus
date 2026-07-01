@@ -133,13 +133,45 @@ registerCommand('ws ls', {
   isRead: true,
   usage: 'ws ls [--tree] [--status <s>] [--project <p>] [--all-projects]',
   help: 'List workspaces (flat or --tree), scoped to the current/given project by default',
+  longDesc:
+    'A pure read — never triggers auto-launch. Scoped to the current project by ' +
+    'default (resolved the same way as --project everywhere else); pass ' +
+    '--all-projects to see every workspace across every registered project. ' +
+    '--tree shows the parent/child hierarchy, marking workspaces spawned by the ' +
+    'calling workspace (via ORPHEUS_WORKSPACE_ID) with " *".',
   maxPositionals: 0,
   flags: {
-    tree: 'boolean',
-    status: 'string',
-    project: 'string',
-    'all-projects': 'boolean'
+    tree: {
+      type: 'boolean',
+      desc: 'Show workspaces as an indented parent/child tree instead of a flat list.',
+      default: 'false',
+      notes:
+        '--status is not applied in --tree mode (a note is printed in text mode; suppressed in --json).'
+    },
+    status: {
+      type: 'string',
+      valueHint: '<status>',
+      desc: 'Filter the flat list to workspaces with this status.',
+      values: ['in_progress', 'attention', 'awaiting_input', 'idle', 'closed', 'archived'],
+      notes: 'Ignored in --tree mode.'
+    },
+    project: {
+      type: 'string',
+      valueHint: '<id|name|path>',
+      desc: 'Project context override (same as the global --project flag).'
+    },
+    'all-projects': {
+      type: 'boolean',
+      desc: 'List workspaces across ALL registered projects instead of scoping to one.',
+      default: 'false (scoped to the current/given project)'
+    }
   },
+  examples: [
+    'orpheus ws ls',
+    'orpheus ws ls --tree',
+    'orpheus ws ls --status attention   # find workspaces blocked on a decision',
+    'orpheus ws ls --all-projects --json'
+  ],
   handler: async (ctx) => {
     const db = openDb()
     const projectCache = new Map<string, ProjectRecord | null>()

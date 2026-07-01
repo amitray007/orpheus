@@ -87,21 +87,88 @@ registerCommand('ws new', {
   usage:
     'ws new (--task <text> | --empty) [--no-submit] [--fork] [--name <n>] [--model <m>] [--permission-mode <p>] [--effort <e>] [--project <p>] [--focus | --background]',
   help: 'Create a new workspace (must declare --task <text> or --empty)',
+  longDesc:
+    'An Orpheus workspace IS a claude session — creating one always starts claude. ' +
+    '--task seeds and submits an initial prompt; --empty/--blank explicitly creates ' +
+    'a workspace with a running claude session but no seeded task (idle at the ' +
+    "prompt). Exactly one of --task or --empty/--blank is required — ws new won't " +
+    'guess your intent. The primary tool for agent fan-out: spawn a worker with ' +
+    '--task for fresh work, or --fork to hand it your own session history.',
   maxPositionals: 0,
   flags: {
-    fork: 'boolean',
-    task: 'string',
-    'no-submit': 'boolean',
-    empty: 'boolean',
-    blank: 'boolean',
-    model: 'string',
-    'permission-mode': 'string',
-    effort: 'string',
-    name: 'string',
-    focus: 'boolean',
-    background: 'boolean'
+    task: {
+      type: 'string',
+      valueHint: '<text>',
+      desc: 'Seed prompt: after the workspace is created, this text is typed into the new claude session and submitted (Enter pressed) automatically.',
+      notes:
+        'Mutually exclusive with --empty/--blank; exactly one is required. Pass --no-submit to stage the text without pressing Enter.'
+    },
+    'no-submit': {
+      type: 'boolean',
+      desc: "Stage --task's text in the new workspace's prompt WITHOUT pressing Enter, so it can be reviewed/edited before sending.",
+      default: 'false (task text is submitted immediately)',
+      notes: 'Only meaningful with --task; silently ignored with --empty (nothing to submit).'
+    },
+    empty: {
+      type: 'boolean',
+      desc: 'Explicitly create a workspace with a running claude session but no seeded task (idle at the prompt). Alias: --blank.',
+      notes: 'Mutually exclusive with --task; exactly one is required.'
+    },
+    blank: {
+      type: 'boolean',
+      desc: 'Alias for --empty.',
+      notes: 'Mutually exclusive with --task; exactly one is required.'
+    },
+    fork: {
+      type: 'boolean',
+      desc: "Inherit the parent workspace's claude session history via claude's --fork-session, instead of (or alongside) --task. The parent is the caller's own workspace (ORPHEUS_WORKSPACE_ID) unless the caller isn't itself a workspace.",
+      default: 'false (new, independent session)'
+    },
+    name: {
+      type: 'string',
+      valueHint: '<name>',
+      desc: 'Workspace display name.',
+      default: "'New workspace' (or an auto-derived name from the session, if left unset)"
+    },
+    model: {
+      type: 'string',
+      valueHint: '<model>',
+      desc: 'Workspace-level Claude model override, stored in claude_workspace_settings.',
+      default: 'inherits the project/global model setting'
+    },
+    'permission-mode': {
+      type: 'string',
+      valueHint: '<mode>',
+      desc: 'Workspace-level Claude permission mode override.',
+      values: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
+      default: 'inherits the project/global permission-mode setting'
+    },
+    effort: {
+      type: 'string',
+      valueHint: '<level>',
+      desc: 'Workspace-level effort override.',
+      values: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'],
+      default: 'inherits the project/global effort setting'
+    },
+    focus: {
+      type: 'boolean',
+      desc: 'Navigate the Orpheus GUI to the new workspace (steals focus from wherever the user currently is).',
+      notes: 'Mutually exclusive with --background.'
+    },
+    background: {
+      type: 'boolean',
+      desc: "Activate the workspace (mount its terminal surface so it's injectable) WITHOUT navigating the GUI to it.",
+      default: 'true — this is the default for ws new',
+      notes:
+        "Agent fan-out shouldn't yank the user's view around; pass --focus to opt into navigating instead. Mutually exclusive with --focus."
+    }
     // --project is the global flag; cli.ts parses it as ctx.project
   },
+  examples: [
+    'orpheus ws new --task "Summarize the auth module and list TODOs"',
+    'orpheus ws new --fork --name "reviewer" --permission-mode plan',
+    'orpheus --json ws new --task "run the test suite" | jq -r .workspace.id'
+  ],
   handler: async (ctx) => {
     // STRICTNESS: require --task XOR --empty/--blank (an agent must declare
     // intent — see module doc). Checked before any DB/socket work so the

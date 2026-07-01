@@ -79,7 +79,10 @@ registerCommand('project ls', {
   isRead: true,
   usage: 'project ls',
   help: 'List all registered Orpheus projects',
+  longDesc:
+    'A pure read (never triggers auto-launch). Shows each project with a live workspace count.',
   maxPositionals: 0,
+  examples: ['orpheus project ls', 'orpheus --json project ls | jq .'],
   handler: async (ctx) => {
     const db = openDb()
     try {
@@ -163,8 +166,16 @@ registerCommand('project show', {
   isRead: true,
   usage: 'project show <id|name|path>',
   help: 'Show project details and its (non-archived) workspaces',
+  longDesc:
+    'A pure read (never triggers auto-launch). Resolves the query against projects ' +
+    'in order: by id, then by name (exact, case-sensitive), then by filesystem path ' +
+    '(realpath-normalised).',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [
+    { name: 'query', required: true, desc: 'Project id, exact name, or filesystem path.' }
+  ],
+  examples: ['orpheus project show my-project', 'orpheus project show /Users/me/code/my-project'],
   handler: async (ctx) => {
     const query = ctx.positionals[0]
     if (query == null || query === '') {

@@ -77,17 +77,68 @@ function errorMessage(err: unknown): string {
 registerCommand('ws send', {
   usage: 'ws send <id> [text] [--submit] [--key <name>] [--focus | --background]',
   help: 'Send text, a named key, and/or a submit (Enter) to a workspace',
+  longDesc:
+    'Injects text and/or a named key into a running workspace, optionally followed ' +
+    "by Enter (--submit). Use this to steer a worker mid-task, answer a worker's " +
+    'question (after ws wait exits 11), or send a raw key like escape. If the ' +
+    'workspace surface is not yet mounted, it is auto-opened and polled for up to ' +
+    '10s before injecting.',
   minPositionals: 1,
   // text is an OPTIONAL second positional (ws send <id> --key enter is valid
   // with zero text), so maxPositionals is 2, not 1 — do not tighten this to 1.
   maxPositionals: 2,
+  argsSpec: [
+    { name: 'id', required: true, desc: 'Workspace id to send input to.' },
+    {
+      name: 'text',
+      required: false,
+      desc: 'Text to type into the workspace prompt. Sent first, before --key and --submit.'
+    }
+  ],
   flags: {
-    submit: 'boolean',
-    key: 'string',
-    focus: 'boolean',
-    background: 'boolean'
+    submit: {
+      type: 'boolean',
+      desc: 'Send Enter after text (or alone, if no text is given). Sent LAST, after text and --key.',
+      default: 'false'
+    },
+    key: {
+      type: 'string',
+      valueHint: '<name>',
+      desc: 'Send a named key after text (and before --submit, if both are given).',
+      values: [
+        'enter',
+        'return',
+        'escape',
+        'esc',
+        'up',
+        'down',
+        'left',
+        'right',
+        'tab',
+        'backspace',
+        'delete',
+        'space'
+      ]
+    },
+    focus: {
+      type: 'boolean',
+      desc: "If the workspace surface isn't mounted yet and has to be auto-opened, navigate the GUI to it.",
+      notes: 'Mutually exclusive with --background.'
+    },
+    background: {
+      type: 'boolean',
+      desc: "If the workspace surface isn't mounted yet, activate it (mount its terminal surface) WITHOUT navigating the GUI to it.",
+      default: 'true — this is the default for ws send',
+      notes:
+        "Agent fan-out shouldn't yank the user's view around; pass --focus to opt into navigating instead. Mutually exclusive with --focus."
+    }
     // --project is the global flag; cli.ts parses it as ctx.project
   },
+  examples: [
+    'orpheus ws send abc-123 "please also add tests" --submit',
+    'orpheus ws send abc-123 --key escape',
+    'orpheus ws send abc-123 "yes, proceed" --submit   # answer a blocked-input worker'
+  ],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {

@@ -77,10 +77,22 @@ registerCommand('ws open', {
   help: 'Open a workspace in the app (mounts its terminal surface)',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [{ name: 'id', required: true, desc: 'Workspace id to open.' }],
   flags: {
-    focus: 'boolean',
-    background: 'boolean'
+    focus: {
+      type: 'boolean',
+      desc: 'Navigate the GUI to this workspace (same as clicking it).',
+      default: 'true — this is the default for ws open',
+      notes: 'Mutually exclusive with --background.'
+    },
+    background: {
+      type: 'boolean',
+      desc: 'Activate/mount the workspace terminal surface WITHOUT navigating the GUI to it.',
+      default: 'false (ws open defaults to --focus, unlike ws new/ws send)',
+      notes: 'Mutually exclusive with --focus.'
+    }
   },
+  examples: ['orpheus ws open abc-123', 'orpheus ws open abc-123 --background'],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -119,12 +131,28 @@ registerCommand('ws open', {
 registerCommand('ws archive', {
   usage: 'ws archive <id...> [--recursive]',
   help: 'Archive one or more workspaces (with --recursive, archives the full subtree)',
+  longDesc:
+    'Accepts multiple ids in one call so a whole fan-out batch can be cleaned up ' +
+    'atomically. The server rejects archiving your OWN workspace (or a subtree ' +
+    'containing it) as a self-action guard.',
   minPositionals: 1,
   // Variadic (accepts any number of ids) — maxPositionals intentionally omitted
   // so batch-archiving many workspaces is never rejected as a usage error.
+  argsSpec: [
+    { name: 'id', required: true, variadic: true, desc: 'One or more workspace ids to archive.' }
+  ],
   flags: {
-    recursive: 'boolean'
+    recursive: {
+      type: 'boolean',
+      desc: 'Also archive the full subtree rooted at each id (children before parents).',
+      default: 'false (only the given ids are archived, not their children)'
+    }
   },
+  examples: [
+    'orpheus ws archive abc-123',
+    'orpheus ws archive abc-123 def-456 ghi-789   # batch-archive a fan-out',
+    'orpheus ws archive abc-123 --recursive        # also archive its children'
+  ],
   handler: async (ctx) => {
     if (ctx.positionals.length === 0) {
       printUsageError('usage: ws archive <id...> [--recursive]')
@@ -195,8 +223,14 @@ registerCommand('ws archive', {
 registerCommand('ws close', {
   usage: 'ws close <id>',
   help: 'Close a workspace (sets closedAt without deleting it)',
+  longDesc:
+    'Closing is lighter-weight than archiving: the workspace is hidden/marked ' +
+    'closed but not removed, and can be reopened with ws reopen. The server ' +
+    'rejects closing your OWN workspace as a self-action guard.',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [{ name: 'id', required: true, desc: 'Workspace id to close.' }],
+  examples: ['orpheus ws close abc-123'],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -239,6 +273,8 @@ registerCommand('ws reopen', {
   help: 'Reopen a previously-closed workspace (clears closedAt)',
   minPositionals: 1,
   maxPositionals: 1,
+  argsSpec: [{ name: 'id', required: true, desc: 'Workspace id to reopen.' }],
+  examples: ['orpheus ws reopen abc-123'],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     if (id == null || id === '') {
@@ -281,6 +317,11 @@ registerCommand('ws rename', {
   help: 'Rename a workspace (sets a manual name; wins over auto-naming)',
   minPositionals: 2,
   maxPositionals: 2,
+  argsSpec: [
+    { name: 'id', required: true, desc: 'Workspace id to rename.' },
+    { name: 'name', required: true, desc: 'New display name. Overrides auto-naming.' }
+  ],
+  examples: ['orpheus ws rename abc-123 "db migration worker"'],
   handler: async (ctx) => {
     const id = ctx.positionals[0]
     const name = ctx.positionals[1]

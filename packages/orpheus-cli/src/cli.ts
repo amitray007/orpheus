@@ -102,12 +102,20 @@ import {
   printResult,
   printKeyValue
 } from './output.js'
-import { registerCommand, getCommand, hasCommand, getRegistry } from './registry.js'
+import {
+  registerCommand,
+  getCommand,
+  hasCommand,
+  getRegistry,
+  flagType,
+  isFlagSpec
+} from './registry.js'
 import type {
   ParsedFlags,
   CommandContext,
   FlagDeclarations,
-  CommandDescriptor
+  CommandDescriptor,
+  FlagSpec
 } from './registry.js'
 // VERSION is sourced directly from this package's package.json (single source
 // of truth). esbuild bundles JSON imports as inline object literals, so the
@@ -120,7 +128,9 @@ export type {
   ParsedFlags,
   CommandContext,
   FlagDeclarations,
-  CommandDescriptor
+  CommandDescriptor,
+  FlagSpec,
+  ArgSpec
 } from './registry.js'
 // Command implementations — each module imports from registry.ts (a leaf) and
 // calls registerCommand() as an ESM side-effect. Importing registry.ts first
@@ -134,6 +144,14 @@ import './commands/ws-status.js'
 import './commands/ws-wait.js'
 import './commands/ws-send.js'
 import './commands/project.js'
+// help.ts / ai.ts are the agent-facing documentation layer (see help-model.ts
+// for the shared doc model both are built from). Imported last since they
+// introspect the already-registered commands above via getRegistry() at
+// command-invocation time (not at import time), so import order relative to
+// the command modules above doesn't matter for correctness — kept last here
+// only for readability (documentation commands after the "real" commands).
+import './commands/help.js'
+import './commands/ai.js'
 
 // ---------------------------------------------------------------------------
 // Arg parser
@@ -237,6 +255,15 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
   const missingValue: string[] = []
   const invalidBooleanValue: string[] = []
 
+  // The parser only cares about boolean-vs-string, never the rich FlagSpec
+  // fields — flagType() normalizes both the legacy shorthand and FlagSpec to
+  // that, so this loop works unchanged regardless of which form a command
+  // declares its flags in (see registry.ts's FlagSpec/flagType doc).
+  const kindOf = (name: string): 'boolean' | 'string' | undefined => {
+    const decl = allFlags[name]
+    return decl == null ? undefined : flagType(decl)
+  }
+
   let i = 0
   while (i < argv.length) {
     const token = argv[i]!
@@ -252,7 +279,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
         // --key=value
         const k = name.slice(0, eqIdx)
         const v = name.slice(eqIdx + 1)
-        if (allFlags[k] === 'boolean') {
+        if (kindOf(k) === 'boolean') {
           // Boolean flag in =value form: accept true/false, reject anything else (#6).
           const parsed = parseBooleanFlagValue(v)
           if (parsed == null) {
@@ -264,7 +291,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
           flags[k] = v
         }
         i++
-      } else if (allFlags[name] === 'string') {
+      } else if (kindOf(name) === 'string') {
         // --key value — the value must not be missing, another flag, or (for
         // --project) a command token (#11)
         const next = argv[i + 1]
@@ -275,7 +302,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
           missingValue.push(name)
           i++
         }
-      } else if (allFlags[name] === 'boolean') {
+      } else if (kindOf(name) === 'boolean') {
         flags[name] = true
         i++
       } else {
@@ -288,7 +315,7 @@ function parseArgv(argv: string[], perCommandFlags: FlagDeclarations): ParseResu
       // Short flag: -j/-p/-h/-v → --json/--project/--help/--version
       const expanded = SHORT_FLAG_MAP[token[1]!]
       if (expanded != null) {
-        if (allFlags[expanded] === 'string') {
+        if (kindOf(expanded) === 'string') {
           const next = argv[i + 1]
           if (!isMissingValueFor(expanded, next)) {
             flags[expanded] = next!
@@ -464,6 +491,13 @@ registerCommand('whoami', {
   minPositionals: 0,
   maxPositionals: 0,
   help: 'Show current project/workspace context',
+  longDesc:
+    'A pure read (never triggers auto-launch). Resolves context the same way every ' +
+    'other command does (--project flag, then ORPHEUS_WORKSPACE_ID, then cwd match) ' +
+    'and prints { workspaceId, projectId, projectName, cwd } — useful to sanity-check ' +
+    'what project/workspace an agent invocation will resolve to before running an ' +
+    'action command.',
+  examples: ['orpheus whoami', 'orpheus --json whoami | jq .projectId'],
   handler: handleWhoami
 })
 
@@ -509,48 +543,74 @@ Options:
 
 Commands:
   whoami              Show current project/workspace context
-  ws new              Create a new workspace       (U7)
-  ws open             Open a workspace in the app  (U7)
-  ws archive          Archive a workspace          (U7)
-  ws close            Close a workspace            (U7)
-  ws reopen           Reopen a closed workspace    (U7)
-  ws rename           Rename a workspace           (U7)
-  ws ls               List workspaces              (U8)
-  ws status           Show workspace activity      (U9)
-  ws read             Read workspace transcript    (U10)
-  ws wait             Wait for workspace to idle   (U11)
-  ws send             Send input to a workspace    (U12)
-  project ls          List projects                (U13)
-  project show        Show project details         (U13)
+  ws new              Create a new workspace
+  ws open             Open a workspace in the app
+  ws archive          Archive one or more workspaces
+  ws close            Close a workspace
+  ws reopen           Reopen a closed workspace
+  ws rename           Rename a workspace
+  ws ls               List workspaces
+  ws status           Show workspace activity
+  ws read             Read workspace transcript
+  ws wait             Wait for workspace(s) to reach a terminal state
+  ws send             Send input to a workspace
+  project ls          List projects
+  project show        Show project details
+  help                Show full CLI reference (text/md/json)
+  ai skill            Agent playbook for orchestrating via this CLI
+  ai schema           Machine-readable CLI schema (JSON)
 
-Run 'orpheus <command> --help' for help on a specific command.
+Run 'orpheus <command> --help' for rich help on a specific command, or
+'orpheus help --format md' for the full agent-facing reference.
 
 Exit codes:
-  0  success
-  1  general error
-  2  usage / argument error
-  3  not found
-  10-13  ws wait codes (U11)
+  0   success
+  1   general error
+  2   usage / argument error
+  3   not found
+  10  ws wait: blocked on a permission prompt
+  11  ws wait: blocked on user input
+  12  ws wait: timed out
+  13  ws wait: session died / app not running
 `.trimStart()
 
 /**
- * Build help text for a single command (#10). Uses the descriptor's explicit
- * `usage`/`help` fields if provided; otherwise synthesizes a conventional
- * usage line + flags list from the command name and its declared flags/arity.
- * Command modules may populate `usage`/`help` in a follow-up — this works
- * either way.
+ * Label used in the usage line / Flags heading for a single flag, e.g.
+ * '--permission-mode <mode>' (rich, with a valueHint) or '--focus' (boolean).
+ * Falls back to a generic '<value>' hint for string flags with no valueHint.
  */
-function commandHelp(commandPath: string, descriptor: CommandDescriptor): string {
+function flagLabel(name: string, decl: 'boolean' | 'string' | FlagSpec): string {
+  const kind = flagType(decl)
+  if (kind === 'boolean') return `--${name}`
+  const hint = (typeof decl !== 'string' ? decl.valueHint : undefined) ?? '<value>'
+  return `--${name} ${hint}`
+}
+
+/**
+ * Build RICH help text for a single command (Part 2 of the agent-first
+ * documentation system). Uses the descriptor's explicit `usage`/`help`/
+ * `longDesc` fields if provided; otherwise synthesizes a conventional usage
+ * line from arity. Each flag renders with its full FlagSpec metadata (desc,
+ * values, default, notes) each on their own indented line — legacy
+ * 'boolean'|'string' flags still render (just with less detail, via
+ * flagType()/flagLabel() which tolerate both shapes). Positional args
+ * (argsSpec) and examples are rendered when present.
+ */
+export function commandHelp(commandPath: string, descriptor: CommandDescriptor): string {
   const lines: string[] = []
   lines.push(`orpheus ${commandPath}`)
   if (descriptor.help != null && descriptor.help !== '') {
     lines.push('')
     lines.push(descriptor.help)
   }
+  if (descriptor.longDesc != null && descriptor.longDesc !== '') {
+    lines.push('')
+    lines.push(descriptor.longDesc)
+  }
   lines.push('')
   lines.push('Usage:')
   if (descriptor.usage != null && descriptor.usage !== '') {
-    lines.push(`  ${descriptor.usage}`)
+    lines.push(`  orpheus ${descriptor.usage}`)
   } else {
     // Synthesize a usage line from declared arity.
     const min = descriptor.minPositionals ?? 0
@@ -569,6 +629,22 @@ function commandHelp(commandPath: string, descriptor: CommandDescriptor): string
     lines.push(`  orpheus ${commandPath} ${positionalHint.join(' ')}${flagHint}`.trimEnd())
   }
 
+  if (descriptor.argsSpec != null && descriptor.argsSpec.length > 0) {
+    lines.push('')
+    lines.push('Arguments:')
+    const labels = descriptor.argsSpec.map((a) => {
+      const inner = a.variadic ? `${a.name}...` : a.name
+      return a.required ? `<${inner}>` : `[${inner}]`
+    })
+    const width = Math.max(...labels.map((l) => l.length)) + 2
+    descriptor.argsSpec.forEach((a, idx) => {
+      lines.push(`  ${labels[idx]!.padEnd(width)}${a.desc}`)
+      if (a.values != null && a.values.length > 0) {
+        lines.push(`  ${''.padEnd(width)}values: ${a.values.join(' | ')}`)
+      }
+    })
+  }
+
   lines.push('')
   lines.push('Global options:')
   lines.push('  --json              Emit JSON output')
@@ -579,13 +655,35 @@ function commandHelp(commandPath: string, descriptor: CommandDescriptor): string
     lines.push('')
     lines.push('Flags:')
     const entries = Object.entries(descriptor.flags)
-    const labels = entries.map(([name, kind]) =>
-      kind === 'string' ? `--${name} <value>` : `--${name}`
-    )
+    const labels = entries.map(([name, decl]) => flagLabel(name, decl))
     const width = Math.max(...labels.map((l) => l.length)) + 2
-    entries.forEach(([, kind], idx) => {
-      lines.push(`  ${labels[idx]!.padEnd(width)}(${kind})`)
+    entries.forEach(([, decl], idx) => {
+      const label = labels[idx]!
+      if (!isFlagSpec(decl)) {
+        // Legacy shorthand — no rich metadata available, fall back to kind.
+        lines.push(`  ${label.padEnd(width)}(${flagType(decl)})`)
+        return
+      }
+      lines.push(`  ${label.padEnd(width)}${decl.desc}`)
+      const pad = ''.padEnd(width)
+      if (decl.values != null && decl.values.length > 0) {
+        lines.push(`  ${pad}values: ${decl.values.join(' | ')}`)
+      }
+      if (decl.default != null && decl.default !== '') {
+        lines.push(`  ${pad}default: ${decl.default}`)
+      }
+      if (decl.notes != null && decl.notes !== '') {
+        lines.push(`  ${pad}note: ${decl.notes}`)
+      }
     })
+  }
+
+  if (descriptor.examples != null && descriptor.examples.length > 0) {
+    lines.push('')
+    lines.push('Examples:')
+    for (const ex of descriptor.examples) {
+      lines.push(`  ${ex}`)
+    }
   }
 
   lines.push('')
