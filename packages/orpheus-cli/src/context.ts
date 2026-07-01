@@ -84,7 +84,13 @@ export interface ResolvedContext {
   projectId: string | null
   /** The filesystem path of the matched project, or null. */
   projectPath: string | null
-  /** process.cwd() at resolution time (always present). */
+  /**
+   * The "current" directory for this context: the resolved project's path
+   * when a project was matched (same value as projectPath in that case),
+   * or process.cwd() when no project could be resolved (the no-match branch,
+   * where there is no project path to report and the shell cwd is the only
+   * informational value available).
+   */
   cwd: string
 }
 
@@ -193,7 +199,7 @@ export function resolveContext(opts: ResolveContextOpts, db: ContextDb): Resolve
         workspaceId: null,
         projectId: project.id,
         projectPath: project.path,
-        cwd
+        cwd: project.path
       }
     }
 
@@ -214,7 +220,7 @@ export function resolveContext(opts: ResolveContextOpts, db: ContextDb): Resolve
           workspaceId: workspace.id,
           projectId: project.id,
           projectPath: project.path,
-          cwd
+          cwd: project.path
         }
       }
     }
@@ -229,7 +235,7 @@ export function resolveContext(opts: ResolveContextOpts, db: ContextDb): Resolve
       workspaceId: null,
       projectId: matched.id,
       projectPath: matched.path,
-      cwd
+      cwd: matched.path
     }
   }
 
