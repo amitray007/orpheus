@@ -3,7 +3,10 @@ import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-const orpheusMode = (process.env.ORPHEUS_MODE ?? 'production') as 'development' | 'production'
+const orpheusMode = (process.env.ORPHEUS_MODE ?? 'production') as
+  | 'development'
+  | 'production'
+  | 'worktree'
 
 export default defineConfig({
   main: {

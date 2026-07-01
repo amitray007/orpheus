@@ -9,6 +9,7 @@ import {
   Trash,
   GitMerge
 } from '@phosphor-icons/react'
+import { WorktreeBadge } from '../WorktreeBadge'
 import type { GitStatus, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
@@ -198,6 +199,7 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
       {isPinned && !renamingId && (
         <PushPin size={10} weight="fill" className="text-accent flex-shrink-0" />
       )}
+      {!renamingId && <WorktreeBadge workspace={ws} />}
     </span>
   )
 })
@@ -249,18 +251,24 @@ const WorkspacesFilterBar = memo(function WorkspacesFilterBar({
 // ---------------------------------------------------------------------------
 // BranchCell — git branch display for a workspace row. Memo'd since `gs` only
 // changes when the background git-status fetch for that workspace completes.
+// For worktree workspaces, `worktreeBranch` is shown when git status is absent
+// so the branch column is always correct for worktrees.
 // ---------------------------------------------------------------------------
 
 const BranchCell = memo(function BranchCell({
-  gs
+  gs,
+  ws
 }: {
   gs: GitStatus | null | undefined
+  ws: WorkspaceRecord
 }): React.JSX.Element {
-  if (!gs?.branch) return <span className="text-text-muted">—</span>
+  // Prefer live git status branch; fall back to stored worktreeBranch for worktrees.
+  const branch = gs?.branch ?? (ws.worktreeParentCwd ? ws.worktreeBranch : null)
+  if (!branch) return <span className="text-text-muted">—</span>
   return (
-    <span className="inline-flex items-center gap-1 text-xs min-w-0" title={`Branch: ${gs.branch}`}>
+    <span className="inline-flex items-center gap-1 text-xs min-w-0" title={`Branch: ${branch}`}>
       <GitMerge size={11} className="flex-shrink-0 text-text-muted" />
-      <span className="font-mono truncate">{gs.branch}</span>
+      <span className="font-mono truncate">{branch}</span>
     </span>
   )
 })
@@ -599,7 +607,7 @@ export function WorkspacesTab({
         key: 'branch',
         label: 'Branch',
         width: '140px',
-        render: (ws) => <BranchCell gs={gitByWs[ws.id]} />
+        render: (ws) => <BranchCell gs={gitByWs[ws.id]} ws={ws} />
       },
       {
         key: 'messages',

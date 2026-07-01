@@ -71,7 +71,10 @@ const WORKSPACES_SCHEMA_SQL = `
     claude_session_id TEXT,
     last_title TEXT,
     -- parent workspace lineage (v64)
-    parent_workspace_id TEXT
+    parent_workspace_id TEXT,
+    -- worktree-native workspaces (v64)
+    worktree_parent_cwd TEXT,
+    worktree_branch TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_project_id_idx ON workspaces(project_id);
   CREATE INDEX IF NOT EXISTS workspaces_pinned_idx ON workspaces(pinned_at);
@@ -2304,10 +2307,12 @@ export function migrate(db: Database.Database): void {
   }
 
   if (currentVersion < 64) {
-    // Version 64: workspace lineage + guardrail settings.
+    // Version 64: workspace lineage + guardrail settings + worktree-native workspaces.
     // (a) workspaces.parent_workspace_id — nullable FK for parent/child lineage (Task A / U1).
     // (b) claude_global_settings.max_workspace_depth — cap on workspace tree depth (default 3).
     // (c) claude_global_settings.max_workspace_children — cap on children per workspace (default 10).
+    // (d) workspaces.worktree_parent_cwd — repo root this worktree branches from.
+    // (e) workspaces.worktree_branch — branch checked out in this worktree.
     try {
       db.exec('ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT')
     } catch {
@@ -2324,6 +2329,16 @@ export function migrate(db: Database.Database): void {
       db.exec(
         'ALTER TABLE claude_global_settings ADD COLUMN max_workspace_children INTEGER NOT NULL DEFAULT 10'
       )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_parent_cwd TEXT')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT')
     } catch {
       /* column may already exist on fresh install */
     }

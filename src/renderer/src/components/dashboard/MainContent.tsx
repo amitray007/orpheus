@@ -6,6 +6,7 @@ import { Eyebrow } from './settings/primitives'
 import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getPrSnapshot } from '@/lib/prStore'
+import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 
 const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
@@ -159,6 +160,21 @@ export function MainContent({
 
   if (view.kind === 'workspace') {
     if (!workspace || !project) {
+      // Distinguish "still loading this project's workspaces" from "genuinely
+      // absent". workspacesForProject === null means the lazy fetch for this
+      // project hasn't resolved yet (e.g. navigating from a notification click
+      // to a not-yet-opened project) — show a neutral loading frame rather than
+      // a spurious "not found" flash. Once the list is fetched (non-null) and
+      // the workspace is still missing (or the project row is missing), surface
+      // the real not-found placeholder.
+      const stillLoading = !!project && workspacesForProject === null
+      if (stillLoading) {
+        return (
+          <div className="flex flex-col gap-6">
+            <SessionListSkeleton />
+          </div>
+        )
+      }
       return (
         <div className="flex flex-col gap-6">
           <PlaceholderSection title="Workspace not found" />

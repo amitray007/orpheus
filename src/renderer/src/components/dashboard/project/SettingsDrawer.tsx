@@ -11,6 +11,7 @@ import {
 } from '@shared/types'
 import { Select } from '../settings/primitives'
 import { Overlay } from '@/components/ui/Overlay'
+import { WorkspaceCreationSettings } from './WorkspaceCreationSettings'
 
 // ---------------------------------------------------------------------------
 // Per-project settings drawer
@@ -273,6 +274,8 @@ export function SettingsDrawer({
               </div>
             )}
           </section>
+
+          <WorkspaceCreationSettings projectId={projectId} />
 
           <section className="flex flex-col mt-4 border-t border-border-default/40">
             <header className="px-4 pt-5 pb-2">

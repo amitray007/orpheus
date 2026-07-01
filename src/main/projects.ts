@@ -5,6 +5,7 @@ import { createWorkspace } from './workspaces'
 import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -91,8 +92,8 @@ export function addProject(path: string): ProjectRecord {
 
   const id = crypto.randomUUID()
   const name = nodePath.basename(path)
-  // Encode absolute path to Claude Code's directory-name format: replace / with -
-  const claudeEncodedName = path.replace(/\//g, '-')
+  // Encode absolute path to Claude Code's directory-name format: slashes and dots -> dashes (see claudeProjectDir.ts).
+  const claudeEncodedName = encodePathToClaudeDir(path)
   const addedAt = Date.now()
 
   // Insert project + default workspace atomically.
@@ -133,6 +134,13 @@ export function openProject(id: string): ProjectRecord {
   db.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), id)
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow
   return rowToRecord(row)
+}
+
+/** Fetch a single project by id without touching last_opened_at. */
+export function getProject(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row ? rowToRecord(row) : null
 }
 
 export function deleteProject(id: string): void {

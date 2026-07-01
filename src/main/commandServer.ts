@@ -39,10 +39,12 @@ export type CommandServerDeps = {
    */
   performClose: (workspaceId: string) => WorkspaceRecord | undefined
   /**
-   * Destroy surface + teardown + DB archiveWorkspace in one shot.
+   * Destroy surface + teardown + DB archiveWorkspace in one shot. Forces the
+   * archive (dirty worktrees are torn down without a confirmation round-trip)
+   * since the CLI/command-server caller has already decided to archive.
    * Mirrors performArchive in index.ts.
    */
-  performArchive: (workspaceId: string) => void
+  performArchive: (workspaceId: string) => Promise<{ archived: boolean; wasDirty: boolean }>
   /**
    * Send 'workspace:requestOpen' to the renderer so it opens/mounts the given
    * workspace. Used by U8/U12 and by `ws open`.
@@ -320,7 +322,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
     // { ok: false, error: '...' } and which the CLI's not-found heuristic maps
     // to exit 3. The same check applies to the recursive root — if the root
     // itself doesn't exist, refuse before doing any BFS/teardown work.
-    'workspace.archive': (args, context) => {
+    'workspace.archive': async (args, context) => {
       if (typeof args.id !== 'string') throw new Error('args.id is required')
       const recursive = args.recursive === true
 
@@ -361,7 +363,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         // listChildWorkspaces from a live parent), so no per-id existence check
         // is needed here — only the root needed the explicit check above.
         for (let i = subtreeIds.length - 1; i >= 0; i--) {
-          deps.performArchive(subtreeIds[i]!)
+          await deps.performArchive(subtreeIds[i]!)
         }
 
         return { archived: true, count: subtreeIds.length }
@@ -373,7 +375,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         throw new Error(`cannot archive your own workspace (id=${args.id})`)
       }
 
-      deps.performArchive(args.id)
+      await deps.performArchive(args.id)
       return { archived: true }
     },
 
