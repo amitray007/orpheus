@@ -4695,6 +4695,21 @@ static CGFloat wrappingHeight(NSString* text, NSFont* font, CGFloat width) {
     [super keyDown:event];
 }
 
+// Defense-in-depth for Escape dead-key reports: makeFirstResponder: in
+// ShowPopover can fail (e.g. the window wasn't key at modal-open time), which
+// leaves keyDown: unreachable until something re-grabs first responder. A
+// click on the card body (NOT a button subview — those hit-test to
+// themselves and handle their own clicks via target-action before mouseDown:
+// ever reaches the card) re-asserts first responder so Escape recovers.
+// Deliberately does NOT fire cancel — a click on the card body must not
+// dismiss the modal (only the backdrop's mouseDown: and Escape do that).
+- (void)mouseDown:(NSEvent*)event {
+    if ([self.kind isEqualToString:@"confirm"] && self.window) {
+        [self.window makeFirstResponder:self];
+    }
+    [super mouseDown:event];
+}
+
 - (void)dealloc {
     [self stopSpinnerTimer];
     // NSTrackingArea is automatically removed when the view is deallocated.
@@ -6167,7 +6182,16 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         NSView* contentView = cachedContentView;
 
         // Destroy any pre-existing global popover (+ its backdrop, if any)
-        // before creating a new one.
+        // before creating a new one. If the popover being torn down was a
+        // 'confirm' modal, its JS-side Promise is still pending — fire a
+        // synthetic "<oldWorkspaceId>::cancel" through the action TSFN so the
+        // JS handler resolves (as cancel) and cleans itself up, instead of
+        // leaking the promise + modalHandlers entry forever. Only confirm
+        // modals have a JS promise waiting; hover/details/project popovers
+        // have no handler registered for "::cancel" so this is a no-op for them.
+        std::string oldWorkspaceId = g_activePopoverWorkspaceId;
+        BOOL oldWasConfirm = (g_activePopover != nil) &&
+            [g_activePopover.kind isEqualToString:@"confirm"];
         if (g_activePopover) {
             [g_activePopover removeFromSuperview];
             g_activePopover = nil;
@@ -6176,6 +6200,12 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         if (g_activePopoverBackdrop) {
             [g_activePopoverBackdrop removeFromSuperview];
             g_activePopoverBackdrop = nil;
+        }
+        if (oldWasConfirm && !oldWorkspaceId.empty() && g_popoverActionTSFNActive) {
+            std::string cancelMsg = oldWorkspaceId + "::cancel";
+            g_popoverActionTSFN.NonBlockingCall([cancelMsg](Napi::Env env, Napi::Function cb) {
+                cb.Call({ Napi::String::New(env, cancelMsg) });
+            });
         }
 
         BOOL isConfirm = [nsKind isEqualToString:@"confirm"];
@@ -6247,9 +6277,18 @@ static Napi::Value ShowPopover(const Napi::CallbackInfo& info) {
         [CATransaction commit];
 
         // Modal focus: make the card first responder so Escape (keyDown:) works
-        // immediately without requiring a click first.
+        // immediately without requiring a click first. makeFirstResponder: can
+        // fail (e.g. window isn't key yet, or something else refuses to
+        // resign) — defense-in-depth: log it so a dead-Escape report is
+        // diagnosable, and fall back to the card's own mouseDown: (below)
+        // re-asserting first responder on the first click.
         if (isConfirm && contentView.window) {
-            [contentView.window makeFirstResponder:pv];
+            BOOL becameFirstResponder = [contentView.window makeFirstResponder:pv];
+            if (!becameFirstResponder) {
+                NSLog(@"[ghostty-surface] showPopover workspaceId=%s: makeFirstResponder FAILED "
+                      @"for confirm modal — Escape may not work until the card is clicked",
+                      workspaceId.c_str());
+            }
         }
     });
 
@@ -6352,6 +6391,22 @@ static Napi::Value HidePopover(const Napi::CallbackInfo& info) {
     // never outlives the card (or vice versa).
     OrpheusPopoverBackdropView* backdrop = g_activePopoverBackdrop;
     g_activePopoverBackdrop = nil;
+
+    // If this was a 'confirm' modal, fire a synthetic "<workspaceId>::cancel"
+    // so a still-pending JS promise resolves and its modalHandlers entry is
+    // cleaned up — covers the case where a caller (e.g. a React effect's
+    // cleanup) dismisses the modal directly via hidePopover() instead of
+    // going through the button/Escape/backdrop paths that already settle it.
+    // Harmless if the JS side already settled and deregistered its handler
+    // (e.g. hidePopover called from settle() itself) — the router simply
+    // finds no handler for the id and no-ops.
+    BOOL wasConfirm = [pv.kind isEqualToString:@"confirm"];
+    if (wasConfirm && g_popoverActionTSFNActive) {
+        std::string cancelMsg = workspaceId + "::cancel";
+        g_popoverActionTSFN.NonBlockingCall([cancelMsg](Napi::Env env, Napi::Function cb) {
+            cb.Call({ Napi::String::New(env, cancelMsg) });
+        });
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!pv) return;

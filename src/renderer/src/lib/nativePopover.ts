@@ -160,6 +160,15 @@ export function onNativePopoverClosed(workspaceId: string, handler: () => void):
 // to the matching handler; the handler removes itself once the modal resolves.
 const modalHandlers = new Map<string, (elementId: string) => void>()
 
+// Belt-and-suspenders against a leaked modal: the native side now fires a
+// synthetic "<workspaceId>::cancel" when a 'confirm' popover is torn down to
+// be replaced (see addon.mm ShowPopover) or hidden directly (HidePopover), so
+// in the normal case the OLD modal's promise is already resolved by the time
+// a new one opens. This tracks the single currently-active modal workspaceId
+// so showConfirmModal can also settle the previous one from the JS side —
+// belt-and-suspenders in case a native message is ever missed/reordered.
+let activeModalWorkspaceId: string | null = null
+
 function isModalWorkspaceId(workspaceId: string): boolean {
   return workspaceId.startsWith('modal:')
 }
@@ -323,11 +332,33 @@ export function hideNativePopover(workspaceId: string): void {
 // Each call gets its own synthetic workspaceId ("modal:<uuid>") so concurrent
 // modals (unlikely, but not disallowed) never collide with each other or with
 // real workspace popover actions.
+// Returns the synthetic workspaceId of the modal opened by the MOST RECENT
+// showConfirmModal() call that hasn't settled yet, or null if none is open.
+// Callers that need to actively dismiss a modal they opened (e.g. a React
+// effect's cleanup navigating away before the user responds) can capture this
+// right after calling showConfirmModal and pass it to hideNativePopover.
+export function getActiveModalWorkspaceId(): string | null {
+  return activeModalWorkspaceId
+}
+
 export function showConfirmModal(data: ConfirmModalData): Promise<ConfirmModalResult> {
   ensurePopoverActionListener()
 
   const workspaceId = `modal:${crypto.randomUUID()}`
   let checkboxChecked = data.checkbox?.checked ?? false
+
+  // Belt-and-suspenders: if a previous modal is still outstanding when a new
+  // one opens, settle it as cancel + delete its handler on the JS side too.
+  // Normally the native teardown-cancel (addon.mm ShowPopover) already
+  // resolved it before we get here, but this ensures the JS side never leaks
+  // a pending promise even if that native message were ever missed.
+  if (activeModalWorkspaceId) {
+    const staleId = activeModalWorkspaceId
+    const staleHandler = modalHandlers.get(staleId)
+    modalHandlers.delete(staleId)
+    if (staleHandler) staleHandler('cancel')
+  }
+  activeModalWorkspaceId = workspaceId
 
   return new Promise<ConfirmModalResult>((resolve) => {
     let settled = false
@@ -335,6 +366,7 @@ export function showConfirmModal(data: ConfirmModalData): Promise<ConfirmModalRe
       if (settled) return
       settled = true
       modalHandlers.delete(workspaceId)
+      if (activeModalWorkspaceId === workspaceId) activeModalWorkspaceId = null
       hideNativePopover(workspaceId)
       resolve({ buttonId, checkboxChecked })
     }

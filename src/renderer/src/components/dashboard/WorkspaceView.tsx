@@ -8,7 +8,7 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
-import { showConfirmModal } from '@/lib/nativePopover'
+import { showConfirmModal, getActiveModalWorkspaceId, hideNativePopover } from '@/lib/nativePopover'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
@@ -233,9 +233,25 @@ export function WorkspaceView({
           break
       }
     })
+    // Capture the synthetic modal workspaceId synchronously right after
+    // opening it (showConfirmModal sets it before returning) so cleanup below
+    // can address exactly this modal, not whatever happens to be active later.
+    const modalWorkspaceId = getActiveModalWorkspaceId()
 
     return () => {
       cancelled = true
+      // Actively dismiss the modal this effect opened. Without this, navigating
+      // away (workspace switch/unmount) while the modal is still open left it
+      // orphaned: the native card + dimmed backdrop stayed on screen blocking
+      // input, and the JS promise never resolved (its modalHandlers entry
+      // leaked). hideNativePopover is idempotent — a no-op if the modal already
+      // settled (button click / Escape / backdrop) before cleanup ran, since
+      // the native side only acts on a workspaceId that's still the active
+      // popover. The native HidePopover path also fires a synthetic cancel for
+      // any 'confirm' modal still pending, so the promise settles either way.
+      if (modalWorkspaceId) {
+        hideNativePopover(modalWorkspaceId)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree* callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
   }, [active, worktreeError, workspace.worktreeParentCwd])
