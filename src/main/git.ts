@@ -395,7 +395,8 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // rev-parse was in flight (stopGitWatch already ran and had nothing to
       // clean up). Registering a watcher now would leak FSWatcher handles.
       if (webContents.isDestroyed()) return
-      if (!getWorkspace(workspaceId)) return
+      const w = getWorkspace(workspaceId)
+      if (!w || w.closedAt != null) return
 
       const rel = stdout.trim()
       const gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)

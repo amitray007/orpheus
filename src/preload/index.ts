@@ -617,14 +617,20 @@ const api = {
       }
 
       ipcRenderer.on('actions:subscription-update', listener)
-      ipcRenderer.invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
+      const subP = ipcRenderer
+        .invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
+        .catch((e) => {
+          console.error('actions:subscribe failed', e)
+        })
 
       return {
         dispose: () => {
           ipcRenderer.removeListener('actions:subscription-update', listener)
-          ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }).catch(() => {
-            /* ignore cleanup errors */
-          })
+          subP
+            .then(() => ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }))
+            .catch(() => {
+              /* ignore cleanup errors */
+            })
         }
       }
     }
