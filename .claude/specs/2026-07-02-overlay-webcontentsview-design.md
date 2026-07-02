@@ -1,7 +1,29 @@
 # React Overlay Layer above the Terminal (Overlay WebContentsView)
 
+> **AMENDMENT (2026-07-02, Phase A live verification) — host corrected to a
+> child window.** Runtime ground truth (NSView stack dump in the dev build)
+> invalidated this spec's central mechanism: Chromium composites ALL of a
+> window's web content through a single topmost `ViewsCompositorSuperview`
+> NSView; the per-`WebContentsView` `WebContentsViewCocoa` children are event
+> shells, not pixel surfaces. Sibling NSView ordering therefore CANNOT place
+> web pixels above the terminal in the same window — the overlay view rendered
+> into the shared compositor and stayed visually under the opaque-on-top
+> terminal no matter its NSView index (and native re-adds of Chromium's view
+> broke its compositing outright). The corrected host: the SAME overlay
+> `WebContentsView`/renderer/bridge, but in a frameless transparent CHILD
+> `BrowserWindow` (`parent: mainWindow`) — its own compositor, always above
+> the parent, moves with it; `showInactive()` for card/tooltip classes (zero
+> key-window churn), `show()+focus()` only for `takesFocus` modals;
+> `setIgnoreMouseEvents(true)` for tooltip-class. The terminal keeps
+> production ordering (topmost sibling, above the compositor view) and is
+> structurally un-occludable. Everything else in this spec (descriptors,
+> generations, handshake, exclusivity, focus save/restore, migration phases)
+> carries over unchanged. Sections below describing same-window
+> `addChildView` stacking and the addon ordering invariant are superseded by
+> this amendment.
+
 **Date:** 2026-07-02
-**Status:** Approved design, pre-implementation
+**Status:** Approved design, pre-implementation (amended: child-window host)
 **Owner branch:** `worktree-overlay-webcontentsview` (worktree off `staging`)
 
 ## Problem
