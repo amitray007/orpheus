@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   Circle,
@@ -23,7 +23,7 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
-import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
@@ -677,6 +677,7 @@ const ProjectRow = memo(function ProjectRow({
   const [hovered, setHovered] = useState(false)
   const [renameValue, setRenameValue] = useState(project.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [revealExtra, setRevealExtra] = useState(0)
   const sidebarBoundsRef = useSidebarBounds()
 
   // Sync rename input when project name changes externally (useEffect avoids render-time setState)
@@ -684,6 +685,13 @@ const ProjectRow = memo(function ProjectRow({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
     if (!renaming) setRenameValue(project.name)
   }, [project.name, renaming])
+
+  // Collapse the revealed-extra count when the project is collapsed, so
+  // re-expanding starts back at the capped view.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only resets when collapsing
+    if (!expanded) setRevealExtra(0)
+  }, [expanded])
 
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
@@ -707,6 +715,45 @@ const ProjectRow = memo(function ProjectRow({
     }
     setMenu({ x: e.clientX, y: e.clientY })
   }
+
+  // Cap the visible workspace list: always show active workspaces (working/
+  // attention/ready), plus idles up to a base of 5 (or actives.length if
+  // higher), plus any extra idles revealed via "Show more".
+  const workspaceIds = useMemo(() => workspaces.map((w) => w.id), [workspaces])
+  // Subscribed purely for its re-render trigger: the returned key changes
+  // whenever the active SET changes (including a compensating swap that
+  // leaves the count unchanged), so the partition below is recomputed from a
+  // fresh snapshot instead of going stale on same-count membership changes.
+  useActiveIdsKey(workspaceIds)
+  const snap = getActivitySnapshot()
+  const actives: WorkspaceRecord[] = []
+  const idles: WorkspaceRecord[] = []
+  for (const ws of workspaces) {
+    const detail = snap.get(ws.id)
+    if (detail === 'working' || detail === 'attention' || detail === 'ready') {
+      actives.push(ws)
+    } else {
+      idles.push(ws)
+    }
+  }
+  const baseVisible = Math.max(5, actives.length)
+  const idleSlots = Math.max(0, baseVisible - actives.length) + revealExtra
+  const visibleIds = new Set([
+    ...actives.map((w) => w.id),
+    ...idles.slice(0, idleSlots).map((w) => w.id)
+  ])
+  // Always show the workspace currently open in the terminal view and the one
+  // selected in the sidebar, even if it would otherwise fall past the cap —
+  // navigating into a workspace must never make it vanish from the sidebar.
+  // Pinned in ADDITION to the idle-fill above (doesn't consume an idle slot).
+  if (currentWorkspaceId && workspaceIds.includes(currentWorkspaceId)) {
+    visibleIds.add(currentWorkspaceId)
+  }
+  if (selectedWorkspaceId && workspaceIds.includes(selectedWorkspaceId)) {
+    visibleIds.add(selectedWorkspaceId)
+  }
+  const visibleWorkspaces = workspaces.filter((w) => visibleIds.has(w.id))
+  const hiddenCount = workspaces.length - visibleIds.size
 
   const isPinned = project.pinnedAt !== null
   const projectMenuItems: ContextMenuItem[] = [
@@ -849,7 +896,11 @@ const ProjectRow = memo(function ProjectRow({
       )}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
-          {workspaces.map((ws) => {
+          {/* Rows hidden by the cap have no drop target here — they're not
+              rendered, so there's nowhere to drag onto. Reordering into the
+              hidden tail requires expanding via "Show more" first. Accepted
+              as-is: capped rows are an edge case, not the common reorder path. */}
+          {visibleWorkspaces.map((ws) => {
             const showLineAbove = wsDropTargetId === ws.id && wsDropPos === 'before'
             const showLineBelow = wsDropTargetId === ws.id && wsDropPos === 'after'
             const isDragging = wsDragId === ws.id
@@ -889,6 +940,19 @@ const ProjectRow = memo(function ProjectRow({
               </div>
             )
           })}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setRevealExtra((x) => x + 5)
+              }}
+              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            >
+              <CaretDown size={12} />
+              <span>Show more</span>
+            </button>
+          )}
         </div>
       )}
     </div>
