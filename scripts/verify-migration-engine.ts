@@ -359,6 +359,145 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     )
   }
 
+  // --- Fixture (c): a real "v66-shaped" staging DB -------------------------
+  // Staging's imperative db.ts advanced to CURRENT_VERSION=66, adding 10
+  // columns this branch's schema.ts was missing (workspaces.{parent_workspace_id,
+  // worktree_parent_cwd,worktree_branch} + claude_global_settings.{
+  // max_workspace_depth,max_workspace_children,tool_call_timeout_ms,
+  // max_tool_output_length,disable_mouse_clicks,rewind_on_error_enabled,
+  // low_power_mode}). Build workspaces + claude_global_settings BY HAND with
+  // those columns already present (mimicking a real user's on-disk v66 DB,
+  // schema_version=66), run sync() with legacyVersion 66, and assert the
+  // engine sees a fully-converged, idempotent DB — no spurious rebuild /
+  // addColumn — proving a staging-based DB converges cleanly onto this
+  // engine's declared schema.
+  {
+    const vdb = new Database(':memory:')
+    vdb.exec('PRAGMA foreign_keys = OFF')
+
+    vdb.exec(renderCreateTable('projects', schema.projects))
+    for (const [idxName, idxDef] of Object.entries(schema.projects.indexes ?? {})) {
+      vdb.exec(renderIndex('projects', idxName, idxDef))
+    }
+    vdb.exec("INSERT INTO projects (id, path, name, added_at) VALUES ('p1', '/tmp/p1', 'p1', 0)")
+
+    // v66-shaped workspaces: exact staging fresh-install CREATE TABLE shape,
+    // including the 3 new lineage/worktree columns.
+    vdb.exec(`CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      pinned_at INTEGER,
+      created_at INTEGER NOT NULL,
+      last_opened_at INTEGER,
+      archived_at INTEGER,
+      closed_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'idle'
+        CHECK (status IN ('in_progress', 'awaiting_input', 'attention', 'idle', 'archived')),
+      name_is_auto INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER,
+      claude_session_id TEXT,
+      last_title TEXT,
+      forked_from_session_id TEXT,
+      parent_workspace_id TEXT,
+      worktree_parent_cwd TEXT,
+      worktree_branch TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`)
+    for (const [idxName, idxDef] of Object.entries(schema.workspaces.indexes ?? {})) {
+      vdb.exec(renderIndex('workspaces', idxName, idxDef))
+    }
+    vdb.exec(
+      'INSERT INTO workspaces (id, project_id, name, cwd, created_at, status, parent_workspace_id, worktree_parent_cwd, worktree_branch) VALUES ' +
+        "('w1', 'p1', 'w1', '/tmp/w1', 0, 'idle', NULL, NULL, NULL)," +
+        "('w2', 'p1', 'w2', '/tmp/w2', 0, 'idle', 'w1', '/tmp/w1', 'feature/worktree-branch')"
+    )
+
+    // v66-shaped claude_global_settings: fresh-install CREATE TABLE shape via
+    // renderCreateTable (identical to what the engine itself renders — this
+    // fixture is specifically about proving the 7 NEW columns being already
+    // present doesn't trigger a phantom rebuild), then INSERT a row exercising
+    // the new columns' data.
+    vdb.exec(renderCreateTable('claude_global_settings', schema.claude_global_settings))
+    for (const [idxName, idxDef] of Object.entries(schema.claude_global_settings.indexes ?? {})) {
+      vdb.exec(renderIndex('claude_global_settings', idxName, idxDef))
+    }
+    vdb.exec(
+      `INSERT INTO claude_global_settings (
+        id, max_workspace_depth, max_workspace_children, tool_call_timeout_ms,
+        max_tool_output_length, disable_mouse_clicks, rewind_on_error_enabled,
+        low_power_mode, updated_at
+      ) VALUES (1, 5, 20, 30000, 100000, 1, 1, 1, 0)`
+    )
+
+    // The remaining tables get created fresh-shaped — this fixture is only
+    // exercising workspaces + claude_global_settings convergence.
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (
+        tableName === 'projects' ||
+        tableName === 'workspaces' ||
+        tableName === 'claude_global_settings'
+      )
+        continue
+      vdb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        vdb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+
+    sync(vdb, schema, { dbPath: ':memory:', legacyVersion: 66 })
+
+    // (i) fully converged to the same normalized shape as a fresh build — the
+    // engine recognizes the 10 columns as already present, no phantom
+    // rebuild/addColumn against a DB that's already schema-correct.
+    assert.deepEqual(normalizedShape(vdb), refShape, 'v66-shaped fixture did not converge')
+
+    // (ii) idempotent — a second planSync is empty.
+    assert.deepEqual(planSync(vdb, schema), [], 'v66-shaped fixture not idempotent after sync')
+
+    // (iii) data preserved across convergence — both workspaces rows and the
+    // new columns' values on claude_global_settings survive.
+    const wcount = vdb.prepare('SELECT COUNT(*) c FROM workspaces').get() as { c: number }
+    assert.equal(wcount.c, 2, 'workspaces row count must be preserved across v66 convergence')
+    const w2 = vdb
+      .prepare(
+        'SELECT parent_workspace_id, worktree_parent_cwd, worktree_branch FROM workspaces WHERE id = ?'
+      )
+      .get('w2') as {
+      parent_workspace_id: string | null
+      worktree_parent_cwd: string | null
+      worktree_branch: string | null
+    }
+    assert.equal(w2.parent_workspace_id, 'w1')
+    assert.equal(w2.worktree_parent_cwd, '/tmp/w1')
+    assert.equal(w2.worktree_branch, 'feature/worktree-branch')
+
+    const settings = vdb
+      .prepare(
+        `SELECT max_workspace_depth, max_workspace_children, tool_call_timeout_ms,
+                max_tool_output_length, disable_mouse_clicks, rewind_on_error_enabled,
+                low_power_mode
+         FROM claude_global_settings WHERE id = 1`
+      )
+      .get() as {
+      max_workspace_depth: number
+      max_workspace_children: number
+      tool_call_timeout_ms: number | null
+      max_tool_output_length: number | null
+      disable_mouse_clicks: number
+      rewind_on_error_enabled: number
+      low_power_mode: number
+    }
+    assert.equal(settings.max_workspace_depth, 5)
+    assert.equal(settings.max_workspace_children, 20)
+    assert.equal(settings.tool_call_timeout_ms, 30000)
+    assert.equal(settings.max_tool_output_length, 100000)
+    assert.equal(settings.disable_mouse_clicks, 1)
+    assert.equal(settings.rewind_on_error_enabled, 1)
+    assert.equal(settings.low_power_mode, 1)
+  }
+
   console.log('✓ convergence')
 }
 

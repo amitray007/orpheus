@@ -156,7 +156,12 @@ export const schema: SchemaDef = {
       sort_order: 'INTEGER',
       claude_session_id: 'TEXT',
       last_title: 'TEXT',
-      forked_from_session_id: 'TEXT'
+      forked_from_session_id: 'TEXT',
+      // parent workspace lineage (v64)
+      parent_workspace_id: 'TEXT',
+      // worktree-native workspaces (v64)
+      worktree_parent_cwd: 'TEXT',
+      worktree_branch: 'TEXT'
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
     indexes: {
@@ -177,7 +182,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // claude_global_settings (110 columns)
+  // claude_global_settings (117 columns)
   // ---------------------------------------------------------------------
   claude_global_settings: {
     columns: {
@@ -336,6 +341,15 @@ export const schema: SchemaDef = {
       screen_reader: bool('screen_reader', '0'),
       additional_dirs_claude_md: bool('additional_dirs_claude_md', '0'),
       ghostty_config_json: { type: 'TEXT', notNull: true, default: "'{}'" },
+      // Guardrail settings (v64) — spawn caps for workspace lineage
+      max_workspace_depth: { type: 'INTEGER', notNull: true, default: '3' },
+      max_workspace_children: { type: 'INTEGER', notNull: true, default: '10' },
+      // Env-var controls (v66)
+      tool_call_timeout_ms: 'INTEGER',
+      max_tool_output_length: 'INTEGER',
+      disable_mouse_clicks: bool('disable_mouse_clicks', '0'),
+      rewind_on_error_enabled: bool('rewind_on_error_enabled', '0'),
+      low_power_mode: bool('low_power_mode', '0'),
       updated_at: 'INTEGER NOT NULL'
     },
     normalizeOnRebuild: {
