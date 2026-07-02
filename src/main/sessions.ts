@@ -165,33 +165,22 @@ function extractTitle(jsonlPath: string): string | null {
 
 function extractModel(jsonlPath: string): string | null {
   try {
+    const stat = fs.statSync(jsonlPath)
+    const fileSize = stat.size
+    const readSize = Math.min(fileSize, MAX_BYTES)
+    const offset = fileSize > MAX_BYTES ? fileSize - readSize : 0
+
     const fd = fs.openSync(jsonlPath, 'r')
     let bytesRead: number
-    const buf = Buffer.allocUnsafe(MAX_BYTES)
+    const buf = Buffer.allocUnsafe(readSize)
     try {
-      bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0)
+      bytesRead = fs.readSync(fd, buf, 0, readSize, offset)
     } finally {
       fs.closeSync(fd)
     }
 
     const text = buf.slice(0, bytesRead).toString('utf-8')
-    const lines = text.split('\n')
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      try {
-        const parsed = JSON.parse(trimmed) as Record<string, unknown>
-        // Claude Code shape: { "type": "assistant", "message": { "model": "claude-..." } }
-        if (parsed['type'] !== 'assistant') continue
-        const message = parsed['message']
-        if (typeof message !== 'object' || message === null) continue
-        const model = (message as Record<string, unknown>)['model']
-        if (typeof model === 'string' && model.length > 0) return model
-      } catch {
-        continue
-      }
-    }
+    return extractFromTail(text).lastModel
   } catch {
     // ignore
   }
@@ -311,6 +300,7 @@ type TailExtracted = {
   lastMessageRole: string | null
   lastMessagePreview: string | null
   lastUserMessagePreview: string | null
+  lastModel: string | null
 }
 
 function extractFromHead(text: string): HeadExtracted {
@@ -382,6 +372,7 @@ function extractFromTail(text: string): TailExtracted {
   let lastMessagePreview: string | null = null
   let fallbackUserText: string | null = null
   let lastUserMessagePreview: string | null = null
+  let lastModel: string | null = null
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -403,6 +394,14 @@ function extractFromTail(text: string): TailExtracted {
     if (lastMessageRole === null) {
       const role = (message as Record<string, unknown>)['role']
       if (typeof role === 'string') lastMessageRole = role
+    }
+
+    // Extract the LAST real (non-synthetic) assistant model, walking tail-first.
+    if (lastModel === null && type === 'assistant') {
+      const m = (message as Record<string, unknown>)['model']
+      if (typeof m === 'string' && m.length > 0 && m !== '<synthetic>') {
+        lastModel = m
+      }
     }
 
     const content = (message as Record<string, unknown>)['content']
@@ -454,14 +453,19 @@ function extractFromTail(text: string): TailExtracted {
       lastUserMessagePreview = preview
     }
 
-    // Stop once we have everything we need (all three fields populated).
-    if (lastMessagePreview !== null && lastUserMessagePreview !== null && lastMessageRole !== null)
+    // Stop once we have everything we need (all four fields populated).
+    if (
+      lastMessagePreview !== null &&
+      lastUserMessagePreview !== null &&
+      lastMessageRole !== null &&
+      lastModel !== null
+    )
       break
   }
 
   if (lastMessagePreview === null) lastMessagePreview = fallbackUserText
 
-  return { lastMessageRole, lastMessagePreview, lastUserMessagePreview }
+  return { lastMessageRole, lastMessagePreview, lastUserMessagePreview, lastModel }
 }
 
 // ---------------------------------------------------------------------------
@@ -833,7 +837,8 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
 
   const previewUpdateStmt = db.prepare(
     `UPDATE sessions
-     SET last_message_preview = ?, last_user_message_preview = ?, jsonl_mtime = ?
+     SET last_message_preview = ?, last_user_message_preview = ?,
+         model = COALESCE(?, model), jsonl_mtime = ?
      WHERE id = ?`
   )
 
@@ -842,6 +847,7 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
     id: string
     lastMessagePreview: string | null
     lastUserMessagePreview: string | null
+    model: string | null
     currentMtime: number
   }
   const previewResults: PreviewResult[] = []
@@ -889,8 +895,14 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
         }
       }
 
-      const { lastMessagePreview, lastUserMessagePreview } = extractFromTail(tailText)
-      previewResults.push({ id: row.id, lastMessagePreview, lastUserMessagePreview, currentMtime })
+      const { lastMessagePreview, lastUserMessagePreview, lastModel } = extractFromTail(tailText)
+      previewResults.push({
+        id: row.id,
+        lastMessagePreview,
+        lastUserMessagePreview,
+        model: lastModel,
+        currentMtime
+      })
     } catch {
       // Extraction failure is non-fatal
     }
@@ -899,7 +911,13 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
   // Commit all preview updates in one transaction.
   db.transaction((results: PreviewResult[]) => {
     for (const r of results) {
-      previewUpdateStmt.run(r.lastMessagePreview, r.lastUserMessagePreview, r.currentMtime, r.id)
+      previewUpdateStmt.run(
+        r.lastMessagePreview,
+        r.lastUserMessagePreview,
+        r.model,
+        r.currentMtime,
+        r.id
+      )
     }
   })(previewResults)
 

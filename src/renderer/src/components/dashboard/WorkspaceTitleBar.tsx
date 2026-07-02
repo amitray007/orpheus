@@ -12,6 +12,7 @@ import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
+import { useWorkspaceActivity } from '@/lib/activityStore'
 import {
   showDetailsCard,
   updateDetailsCard,
@@ -90,6 +91,7 @@ function ModelContextChip({
   const cached = contextBudgetCache.get(cacheKey) ?? null
   const [info, setInfo] = useState<ContextBudgetInfo | null>(cached)
   const [usage, setUsage] = useState<SessionUsage | null>(null)
+  const activity = useWorkspaceActivity(workspaceId)
 
   useEffect(() => {
     let cancelled = false
@@ -127,7 +129,7 @@ function ModelContextChip({
     return () => {
       cancelled = true
     }
-  }, [workspaceId, claudeSessionId])
+  }, [workspaceId, claudeSessionId, activity])
 
   if (!info) return null
 
