@@ -7,7 +7,7 @@ import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
-import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
+import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
@@ -554,6 +554,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         // away so it never becomes visible/steals draw time while the user is
         // looking at a different workspace (or no workspace at all).
         await window.api.terminal.hide(workspaceId).catch(() => {})
+        // RACE-3: addon.mount unconditionally promotes this background-mounted
+        // workspace to native visibility, transiently stealing it from whatever
+        // the user is actually looking at. Re-promote the viewed workspace.
+        const vid = selectedWorkspaceIdRef.current
+        if (vid && vid !== workspaceId) {
+          const remount = getActiveRemount()
+          if (remount) remount()
+        }
       } catch (err) {
         console.error('[dashboard] background mount failed:', err)
       }

@@ -592,7 +592,14 @@ function recomputeDirty(): void {
   const globalSettings = getClaudeGlobalSettings()
   for (const [workspaceId, snap] of launchSnapshots.entries()) {
     const ws = getWorkspace(workspaceId)
-    if (!ws) continue
+    if (!ws) {
+      // Workspace was archived/removed while a snapshot was still tracked
+      // (e.g. archived mid-mount) — evict the stale entry instead of
+      // leaving it around forever.
+      launchSnapshots.delete(workspaceId)
+      setDirty(workspaceId, false)
+      continue
+    }
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
     setDirty(workspaceId, !launchEquals(snap, fresh))
   }
@@ -2317,11 +2324,34 @@ handle(
       reconcileNotice = r.notice
     }
 
+    // Re-validate: the workspace may have been archived while reconcileWorktree
+    // was in flight (potentially multi-second git operations). Mounting a
+    // gone workspace would recreate its worktree and spawn a zombie claude
+    // process for a row that no longer exists.
+    {
+      const wsNow = getWorkspace(workspaceId)
+      if (!wsNow || wsNow.archivedAt != null) {
+        hideLoadingOverlay(workspaceId)
+        return { workspaceId, aborted: 'gone' as const }
+      }
+    }
+
     // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
     // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
     // instead of forcing the .zshrc fallback (+100–800 ms).
     if (getCachedShellPath() === null) {
       await getUserShellPath()
+    }
+
+    // Re-validate again: the workspace may have been archived while
+    // getUserShellPath was in flight. This is the last check before
+    // addon.mount actually spawns the native surface + claude process.
+    {
+      const wsNow = getWorkspace(workspaceId)
+      if (!wsNow || wsNow.archivedAt != null) {
+        hideLoadingOverlay(workspaceId)
+        return { workspaceId, aborted: 'gone' as const }
+      }
     }
 
     let launch!: ReturnType<typeof buildMountEnv>['launch']

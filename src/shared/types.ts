@@ -138,12 +138,18 @@ export type CreateWorktreeParams = { name: string; branch?: string }
  * worktree was recreated with a new branch the optional `notice` carries a
  * one-time human-readable message the renderer should surface.
  *
+ * Aborted: `{ workspaceId, aborted: 'gone' }` — the workspace was archived
+ * or removed while the mount was in flight (e.g. mid worktree-reconcile or
+ * shell-path resolution). The surface was never touched; the renderer
+ * should treat this as a no-op, not an error.
+ *
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
  * mounted; the renderer should show an error card instead.
  */
 export type TerminalMountResult =
   | { workspaceId: string; created: boolean; notice?: string }
+  | { workspaceId: string; aborted: 'gone' }
   | {
       workspaceId: string
       worktreeError: {
