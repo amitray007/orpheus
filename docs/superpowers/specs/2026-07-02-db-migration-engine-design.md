@@ -83,12 +83,28 @@ there, because the double-declaration and `catch{}`-idempotency problems live in
 *fresh-install* `CREATE TABLE` path too — a baseline-freeze would leave the fresh-install
 path exactly as fragile as it is today, so it wouldn't actually fix failures #1 and #2.
 
-**Build vs. use.** Off-the-shelf better-sqlite3 migration/declarative-diff libraries have
-**not** yet been formally evaluated. This is flagged as an open item to resolve during
-planning: does an existing library deliver declarative diff + auto-rebuild +
-versionless ordering with less bespoke code than the hand-built normalized-SQL differ
-described here? No conclusion is asserted either way — this is recorded as a deliberate
-open question so the build-vs-use choice is a decision, not a default.
+**Build vs. use — evaluated, decision: build.** Off-the-shelf better-sqlite3
+migration/declarative-diff libraries were evaluated across two research passes. No
+library fits the constraint set: synchronous + in-process + adopts an arbitrary
+pre-existing DB + CHECK-heavy schema + no build-time codegen.
+
+| Library | Why it's rejected |
+| --- | --- |
+| Atlas / sqldef / sqlite-schema-diff | Declarative diff + auto-rebuild done well, but each is a Go binary — would mean bundling a per-arch binary into the `.app`, spawning it asynchronously, and re-signing it. Fails synchronous + in-process. |
+| Drizzle `migrate()` (file flow) | Synchronous, but diffing is a dev-time CLI step (`drizzle-kit generate`) — a shipped app can't diff live-vs-desired at boot; adopting an existing DB needs a manual baseline ceremony. |
+| Drizzle `pushSQLiteSchema` (diffs live at boot) | Async — returns Promises, unusable in the synchronous `getDb()` path. Pulls the whole drizzle-kit dev toolchain into the runtime bundle. And hits open bug `drizzle-team/drizzle-orm#4574`, where SQLite tables with a CHECK plus an index always mis-diff and error — exactly the `sessions`/`workspaces` shape (`status TEXT CHECK(...)` plus indexes). That's the same CHECK-drift failure class `healWorkspacesCheck` already exists to fix, so adopting it would reintroduce our own worst bug. |
+| Kysely / Knex / umzug / better-sqlite3-migrations | Imperative/ledger runners only — no declarative diffing. |
+
+Prior art validates the build rather than discouraging it: the reference algorithm
+(David Rothlis's declarative SQLite migrator, which Atlas/sqldef/drizzle-kit all
+reimplement) is load desired schema → diff against `sqlite_master` + `PRAGMA
+table_info` → apply SQLite's documented 12-step rebuild. Porting that pattern to TS on
+better-sqlite3's synchronous PRAGMAs is a few hundred lines with zero new runtime
+deps — exactly what §engine.ts describes.
+
+Optional dev-only stepping stone: drizzle-kit's `generateSQLiteMigration` could be used
+at *dev* time (never shipped) to help author correct rebuild SQL, but given bug #4574
+its output must be validated against our real CHECK tables before trusting it.
 
 ## Architecture
 
@@ -302,12 +318,17 @@ Per `CLAUDE.md`, the top-level agent orchestrates only. All code for `schema.ts`
 `engine.ts`, `data-steps.ts`, `index.ts`, and the verification harness is delegated to
 **Sonnet** subagents; the orchestrator plans, reviews, and integrates.
 
-## Open items for user review
+## Resolved decisions
+
+No open items remain — both decisions below are settled, and the spec is ready for
+planning.
 
 1. **Synthesis vs. pure replace** (legacy data transforms) and **structured columns vs.
    raw-SQL-only** (schema format) are both **confirmed** by the user — keep synthesis
    (ledger backfill from `schema_version`), keep structured columns with the raw-SQL
-   escape hatch. No longer open.
-2. **Build vs. use** (§ Scope & alternatives considered): formally evaluate off-the-shelf
-   migration/declarative-diff libraries for `better-sqlite3` during planning, before
-   committing to the hand-built normalized-SQL differ.
+   escape hatch.
+2. **Build vs. use** (§ Scope & alternatives considered): off-the-shelf
+   migration/declarative-diff libraries for `better-sqlite3` were formally evaluated —
+   no library fits the synchronous + in-process + adopt-existing-DB + CHECK-heavy
+   constraint set. Decision: **build** the thin hand-built normalized-SQL differ
+   described in §engine.ts.
