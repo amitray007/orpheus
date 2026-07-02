@@ -480,6 +480,19 @@ export type ClaudeGlobalSettings = {
   maxWorkspaceDepth: number
   maxWorkspaceChildren: number
 
+  // Env-var controls (v66) — Tools
+  toolCallTimeoutMs: number | null
+  maxToolOutputLength: number | null
+
+  // Env-var controls (v66) — Display / Rendering
+  disableMouseClicks: boolean
+
+  // Env-var controls (v66) — Tools / File operations
+  rewindOnErrorEnabled: boolean
+
+  // Env-var controls (v66) — General / Model behavior
+  lowPowerMode: boolean
+
   updatedAt: number
 }
 

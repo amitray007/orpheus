@@ -2,8 +2,8 @@
   "_meta": {
     "description": "Canonical list of Claude Code env vars + settings keys + CLI flags, with whether Orpheus exposes each one. Updated by .claude/agents/audit-claude-env-vars.md.",
     "source": "https://code.claude.com/docs/en/env-vars.md",
-    "lastUpdated": "2026-06-21",
-    "schemaVersion": 24
+    "lastUpdated": "2026-07-02",
+    "schemaVersion": 66
   },
   "envVars": {
     "auth": {
@@ -88,7 +88,7 @@
       },
       "CLAUDE_CODE_CONNECT_TIMEOUT_MS": {
         "wired": false,
-        "note": "Connect/TLS/header phase timeout (default 60000ms) — use Custom env vars editor"
+        "note": "Removed upstream in v2.1.186 — now a no-op, superseded by API_TIMEOUT_MS"
       },
       "CLAUDE_CODE_MAX_RETRIES": { "wired": true, "via": "Developer → Network" }
     },
@@ -114,7 +114,11 @@
     "fastMode": {
       "CLAUDE_CODE_DISABLE_FAST_MODE": { "wired": true, "via": "General → Model behavior" },
       "CLAUDE_CODE_ENABLE_OPUS_4_7_FAST_MODE": { "wired": false },
-      "CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE": { "wired": false }
+      "CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE": { "wired": false },
+      "CLAUDE_CODE_LOW_POWER_MODE": {
+        "wired": true,
+        "via": "General → Model behavior (v66)"
+      }
     },
     "capabilities": {
       "CLAUDE_CODE_DISABLE_1M_CONTEXT": {
@@ -186,6 +190,10 @@
       "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING": {
         "wired": true,
         "via": "Tools → File operations (v24)"
+      },
+      "CLAUDE_CODE_REWIND_ON_ERROR_ENABLED": {
+        "wired": true,
+        "via": "Tools → File operations (v66)"
       }
     },
     "git": {
@@ -212,6 +220,10 @@
       "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_DISABLE_MOUSE": { "wired": true, "via": "Display → Rendering (v24)" },
+      "CLAUDE_CODE_DISABLE_MOUSE_CLICKS": {
+        "wired": true,
+        "via": "Display → Rendering (v66)"
+      },
       "CLAUDE_CODE_NATIVE_CURSOR": { "wired": true, "via": "Display" },
       "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": { "wired": true, "via": "Display → Rendering (v24)" },
       "CLAUDE_CODE_SCROLL_SPEED": { "wired": true, "via": "Display → Rendering (v24)" },
@@ -384,7 +396,15 @@
     },
     "tools": {
       "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY": { "wired": true, "via": "Tools (toolConcurrency)" },
-      "CLAUDE_CODE_SCRIPT_CAPS": { "wired": false, "note": "Security policy JSON" }
+      "CLAUDE_CODE_SCRIPT_CAPS": { "wired": false, "note": "Security policy JSON" },
+      "CLAUDE_CODE_TOOL_CALL_TIMEOUT_MS": {
+        "wired": true,
+        "via": "Tools → Concurrency & integrations (v66)"
+      },
+      "CLAUDE_CODE_MAX_TOOL_OUTPUT_LENGTH": {
+        "wired": true,
+        "via": "Tools → Concurrency & integrations (v66)"
+      }
     },
     "internal": {
       "CLAUDECODE": { "wired": false, "note": "Auto-set in subprocesses" },

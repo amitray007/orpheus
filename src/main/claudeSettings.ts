@@ -154,6 +154,12 @@ type ClaudeSettingsRow = {
   // Guardrail settings (v64)
   max_workspace_depth: number | null
   max_workspace_children: number | null
+  // Env-var controls (v66)
+  tool_call_timeout_ms: number | null
+  max_tool_output_length: number | null
+  disable_mouse_clicks: number
+  rewind_on_error_enabled: number
+  low_power_mode: number
   updated_at: number
 }
 
@@ -298,6 +304,12 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     // Guardrail settings (v64) — apply defaults when null (pre-v64 rows)
     maxWorkspaceDepth: row.max_workspace_depth ?? 3,
     maxWorkspaceChildren: row.max_workspace_children ?? 10,
+    // Env-var controls (v66)
+    toolCallTimeoutMs: row.tool_call_timeout_ms ?? null,
+    maxToolOutputLength: row.max_tool_output_length ?? null,
+    disableMouseClicks: row.disable_mouse_clicks === 1,
+    rewindOnErrorEnabled: row.rewind_on_error_enabled === 1,
+    lowPowerMode: row.low_power_mode === 1,
     updatedAt: row.updated_at
   }
 }
@@ -379,7 +391,11 @@ const BOOLEAN_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
   'disableArtifact',
   'disableAdvisorTool',
   'screenReader',
-  'additionalDirsClaudeMd'
+  'additionalDirsClaudeMd',
+  // Env-var controls (v66)
+  'disableMouseClicks',
+  'rewindOnErrorEnabled',
+  'lowPowerMode'
 ]
 
 const STRING_ARRAY_KEYS: (keyof ClaudeGlobalSettingsPatch)[] = [
@@ -604,6 +620,18 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
     const v = patch.maxWorkspaceChildren
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
       throw new Error('claudeSettings: maxWorkspaceChildren must be a positive integer')
+    }
+  }
+  if ('toolCallTimeoutMs' in patch) {
+    const v = patch.toolCallTimeoutMs
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: toolCallTimeoutMs must be a positive integer or null')
+    }
+  }
+  if ('maxToolOutputLength' in patch) {
+    const v = patch.maxToolOutputLength
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1)) {
+      throw new Error('claudeSettings: maxToolOutputLength must be a positive integer or null')
     }
   }
   if ('customEnvVars' in patch) {
@@ -1020,6 +1048,23 @@ export function composeClaudeLaunch(
   // Env-var controls (v52) — Memory & Context
   if (s.additionalDirsClaudeMd) env['CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'] = '1'
 
+  // Env-var controls (v66) — Tools
+  if (s.toolCallTimeoutMs !== null && s.toolCallTimeoutMs !== undefined) {
+    env['CLAUDE_CODE_TOOL_CALL_TIMEOUT_MS'] = String(s.toolCallTimeoutMs)
+  }
+  if (s.maxToolOutputLength !== null && s.maxToolOutputLength !== undefined) {
+    env['CLAUDE_CODE_MAX_TOOL_OUTPUT_LENGTH'] = String(s.maxToolOutputLength)
+  }
+
+  // Env-var controls (v66) — Display / Rendering
+  if (s.disableMouseClicks) env['CLAUDE_CODE_DISABLE_MOUSE_CLICKS'] = '1'
+
+  // Env-var controls (v66) — Tools / File operations
+  if (s.rewindOnErrorEnabled) env['CLAUDE_CODE_REWIND_ON_ERROR_ENABLED'] = '1'
+
+  // Env-var controls (v66) — General / Model behavior
+  if (s.lowPowerMode) env['CLAUDE_CODE_LOW_POWER_MODE'] = '1'
+
   // Custom env vars — merged last; user's keys win on conflict
   for (const [k, v] of Object.entries(s.customEnvVars)) {
     if (k && typeof v === 'string') env[k] = v
@@ -1164,7 +1209,13 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     additionalDirsClaudeMd: 'additional_dirs_claude_md',
     // Guardrail settings (v64)
     maxWorkspaceDepth: 'max_workspace_depth',
-    maxWorkspaceChildren: 'max_workspace_children'
+    maxWorkspaceChildren: 'max_workspace_children',
+    // Env-var controls (v66)
+    toolCallTimeoutMs: 'tool_call_timeout_ms',
+    maxToolOutputLength: 'max_tool_output_length',
+    disableMouseClicks: 'disable_mouse_clicks',
+    rewindOnErrorEnabled: 'rewind_on_error_enabled',
+    lowPowerMode: 'low_power_mode'
   }
 
   const setClauses: string[] = []

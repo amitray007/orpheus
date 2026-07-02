@@ -764,6 +764,28 @@ export function ClaudeToolsSection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
+            label="Tool call timeout (ms)"
+            description="Maximum time a single tool call may run before being aborted (CLAUDE_CODE_TOOL_CALL_TIMEOUT_MS). Leave empty to use claude's default."
+            mapsTo="CLAUDE_CODE_TOOL_CALL_TIMEOUT_MS"
+          >
+            <NumberInput
+              value={settings.toolCallTimeoutMs}
+              onChange={(v) => patch({ toolCallTimeoutMs: v })}
+              placeholder="default"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Max tool output length"
+            description="Maximum characters of output captured across all tools, not just Bash (CLAUDE_CODE_MAX_TOOL_OUTPUT_LENGTH). Leave empty to let claude auto-truncate."
+            mapsTo="CLAUDE_CODE_MAX_TOOL_OUTPUT_LENGTH"
+          >
+            <NumberInput
+              value={settings.maxToolOutputLength}
+              onChange={(v) => patch({ maxToolOutputLength: v })}
+              placeholder="auto-truncate"
+            />
+          </SettingRow>
+          <SettingRow
             label="Browser integration"
             description="Enable claude's Chrome browser integration for web browsing and interaction."
           >
@@ -866,6 +888,17 @@ export function ClaudeToolsSection(): React.JSX.Element {
               ariaLabel="Disable file checkpointing"
               value={settings.disableFileCheckpointing}
               onChange={(v) => patch({ disableFileCheckpointing: v })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Rewind on error"
+            description="Automatically roll back file checkpoints when a tool call errors out (CLAUDE_CODE_REWIND_ON_ERROR_ENABLED=1)."
+            mapsTo="CLAUDE_CODE_REWIND_ON_ERROR_ENABLED"
+          >
+            <Toggle
+              ariaLabel="Rewind on error"
+              value={settings.rewindOnErrorEnabled}
+              onChange={(v) => patch({ rewindOnErrorEnabled: v })}
             />
           </SettingRow>
           <SettingRow

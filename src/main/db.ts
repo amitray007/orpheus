@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 65
+export const CURRENT_VERSION = 66
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -213,6 +213,12 @@ const CLAUDE_SETTINGS_SCHEMA_SQL = `
     -- Guardrail settings (v64) — spawn caps for workspace lineage
     max_workspace_depth INTEGER NOT NULL DEFAULT 3,
     max_workspace_children INTEGER NOT NULL DEFAULT 10,
+    -- Env-var controls (v66)
+    tool_call_timeout_ms INTEGER,
+    max_tool_output_length INTEGER,
+    disable_mouse_clicks INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse_clicks IN (0, 1)),
+    rewind_on_error_enabled INTEGER NOT NULL DEFAULT 0 CHECK (rewind_on_error_enabled IN (0, 1)),
+    low_power_mode INTEGER NOT NULL DEFAULT 0 CHECK (low_power_mode IN (0, 1)),
     updated_at INTEGER NOT NULL
   );
 `
@@ -2384,6 +2390,44 @@ export function migrate(db: Database.Database): void {
       /* column may already exist */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(65)
+  }
+
+  if (currentVersion < 66) {
+    // Version 66: five new Claude Code env-var settings columns — tool call timeout,
+    // max tool output length, disable mouse clicks (keep scroll), rewind on error,
+    // low power mode.
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN tool_call_timeout_ms INTEGER')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec('ALTER TABLE claude_global_settings ADD COLUMN max_tool_output_length INTEGER')
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN disable_mouse_clicks INTEGER NOT NULL DEFAULT 0 CHECK (disable_mouse_clicks IN (0, 1))'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN rewind_on_error_enabled INTEGER NOT NULL DEFAULT 0 CHECK (rewind_on_error_enabled IN (0, 1))'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    try {
+      db.exec(
+        'ALTER TABLE claude_global_settings ADD COLUMN low_power_mode INTEGER NOT NULL DEFAULT 0 CHECK (low_power_mode IN (0, 1))'
+      )
+    } catch {
+      /* column may already exist on fresh install */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(66)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()

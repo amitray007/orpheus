@@ -234,6 +234,17 @@ export function ClaudeDisplaySection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
+            label="Disable mouse clicks (keep scroll)"
+            description="Disable mouse click handling while still allowing scroll events (CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1)."
+            mapsTo="CLAUDE_CODE_DISABLE_MOUSE_CLICKS"
+          >
+            <Toggle
+              ariaLabel="Disable mouse clicks"
+              value={settings.disableMouseClicks}
+              onChange={(v) => patch({ disableMouseClicks: v })}
+            />
+          </SettingRow>
+          <SettingRow
             label="Disable terminal title"
             description="Stop Claude from updating the terminal window title during sessions (CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1)."
             mapsTo="CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
