@@ -18,7 +18,7 @@
 // against models.dev):
 //   claude-opus-4-7:   $5/$25 input/output (1M ctx)
 //   claude-opus-4-5:   $5/$25 input/output (200K ctx)
-//   claude-sonnet-5:   $3/$15 input/output (1M ctx)
+//   claude-sonnet-5:   $2/$10 input/output (1M ctx) — models.dev promo rate
 //   claude-sonnet-4-6: $3/$15 input/output (1M ctx)
 //   claude-sonnet-4-5: $3/$15 input/output (200K ctx)
 //   claude-haiku-4-5:  $1/$5  input/output (200K ctx)
@@ -73,13 +73,14 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     context: 200_000,
     output_limit: 64_000
   },
-  // Claude Sonnet 5 — $3/$15, 1M context (standard sticker; $2/$10 intro through
-  // 2026-08-31, not modeled here — see FALLBACK_PRICING header note)
+  // Claude Sonnet 5 — $2/$10, 1M context (mirrors models.dev, which currently
+  // reflects Anthropic's active promotional rate; reverts to $3/$15 when the
+  // promo ends — runtime refreshFromModelsDev() keeps this live)
   'claude-sonnet-5': {
-    input: 3,
-    output: 15,
-    cacheRead: 0.3,
-    cacheWrite: 3.75,
+    input: 2,
+    output: 10,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
     context: 1_000_000,
     output_limit: 128_000
   },
@@ -129,10 +130,10 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     output_limit: 128_000
   },
   sonnet: {
-    input: 3,
-    output: 15,
-    cacheRead: 0.3,
-    cacheWrite: 3.75,
+    input: 2,
+    output: 10,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
     context: 1_000_000,
     output_limit: 128_000
   },
