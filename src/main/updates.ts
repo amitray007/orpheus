@@ -76,7 +76,11 @@ function refreshTap(done: () => void): void {
   const repoChild = spawn(BREW, ['--repository', 'amitray007/homebrew-tap'], {
     stdio: ['ignore', 'pipe', 'pipe']
   })
-  repoChild.on('error', () => done())
+  const repoKillTimer = setTimeout(() => repoChild.kill('SIGTERM'), 60_000)
+  repoChild.on('error', () => {
+    clearTimeout(repoKillTimer)
+    done()
+  })
 
   let tapPath = ''
   repoChild.stdout.on('data', (chunk: Buffer) => (tapPath += chunk.toString()))
@@ -84,6 +88,7 @@ function refreshTap(done: () => void): void {
   repoChild.stderr.on('data', () => {})
 
   repoChild.on('exit', (code) => {
+    clearTimeout(repoKillTimer)
     tapPath = tapPath.trim()
     if (code !== 0 || !tapPath || !existsSync(tapPath)) {
       done()
@@ -92,11 +97,18 @@ function refreshTap(done: () => void): void {
     const pullChild = spawn('git', ['-C', tapPath, 'pull', '--ff-only'], {
       stdio: ['ignore', 'pipe', 'pipe']
     })
-    pullChild.on('error', () => done())
+    const pullKillTimer = setTimeout(() => pullChild.kill('SIGTERM'), 60_000)
+    pullChild.on('error', () => {
+      clearTimeout(pullKillTimer)
+      done()
+    })
     // consume stdout/stderr to avoid pipe buffer blocks
     pullChild.stdout.on('data', () => {})
     pullChild.stderr.on('data', () => {})
-    pullChild.on('exit', () => done())
+    pullChild.on('exit', () => {
+      clearTimeout(pullKillTimer)
+      done()
+    })
   })
 }
 
@@ -118,11 +130,13 @@ function runOutdated(
   const child = spawn(BREW, ['outdated', '--cask', 'orpheus', '--json', '--fetch'], {
     stdio: ['ignore', 'pipe', 'pipe']
   })
+  const killTimer = setTimeout(() => child.kill('SIGTERM'), 60_000)
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
   child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
   child.on('exit', (code) => {
+    clearTimeout(killTimer)
     // brew outdated exits 1 when casks are outdated — that's not an error.
     // Only treat non-zero as an error when stdout is empty (real failure).
     if (code !== 0 && !stdout.trim()) {
@@ -259,6 +273,7 @@ export function installUpdate(): void {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
     })
+    const killTimer = setTimeout(() => child.kill('SIGTERM'), 180_000)
 
     function handleLine(raw: string): void {
       // Split on newlines — a single data event may carry multiple lines
@@ -280,6 +295,7 @@ export function installUpdate(): void {
     child.stdout.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => handleLine(chunk.toString()))
     child.on('exit', (code) => {
+      clearTimeout(killTimer)
       if (code === 0) {
         setSnapshot({ kind: 'installed', phase: null, percent: null })
       } else {

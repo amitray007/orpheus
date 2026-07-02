@@ -357,6 +357,18 @@ export function ensureManagedHooks(): void {
     const p = JSON.parse(raw)
     if (typeof p === 'object' && p !== null && !Array.isArray(p)) {
       parsed = p as Record<string, unknown>
+    } else {
+      // Valid JSON but not a plain object (array/string/number/null) — bail
+      // without writing so we don't clobber whatever this file legitimately is.
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.MANAGED_HOOKS_BAILED_NONOBJECT
+      })
+      console.warn(
+        '[orpheusNotify] ~/.claude/settings.json is valid JSON but not an object — skipping hook install to avoid clobbering it'
+      )
+      return
     }
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code
@@ -373,6 +385,7 @@ export function ensureManagedHooks(): void {
       })
       return
     }
+    // ENOENT: parsed stays {} — proceed to create fresh.
   }
 
   if (
