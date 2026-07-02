@@ -431,3 +431,62 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
 
   console.log('✓ data-steps')
 }
+
+const { runMigrations } = await import('../src/main/db/cutover.ts')
+
+{
+  // The pre-v28 in_review hazard, end-to-end: a real ~v21 DB has a
+  // workspaces CHECK that still allows the retired 'in_review' status, and a
+  // row sitting in that state. seedLedgerFromLegacy(db, 21) will NOT mark the
+  // v28 remap step as already-applied (21 < 28), so it must run in the
+  // preRebuild pass BEFORE sync() tightens the workspaces CHECK — otherwise
+  // the rebuild's shadow-table copy would need to reject or coerce the
+  // legacy value with nothing but normalizeOnRebuild as a backstop. This
+  // proves the ordering in cutover.ts actually holds.
+  const cdb = new Database(':memory:')
+  cdb.exec('PRAGMA foreign_keys = OFF')
+
+  cdb.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)')
+  cdb.exec('INSERT INTO schema_version VALUES (21)')
+
+  cdb.exec(`CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    path TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    added_at INTEGER NOT NULL)`)
+  cdb.exec("INSERT INTO projects (id, path, name, added_at) VALUES ('p1', '/tmp/p1', 'p1', 0)")
+
+  cdb.exec(`CREATE TABLE workspaces (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    cwd TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER,
+    status TEXT NOT NULL DEFAULT 'idle'
+      CHECK (status IN ('in_progress','in_review','idle','archived')))`)
+  cdb.exec("INSERT INTO workspaces (id, project_id, status) VALUES ('w1', 'p1', 'in_review')")
+
+  // Must complete without throwing — no 'CHECK constraint failed', proving
+  // the preRebuild normalization ran before the workspaces CHECK tightened.
+  runMigrations(cdb, { dbPath: ':memory:' })
+
+  const w1 = cdb.prepare("SELECT status FROM workspaces WHERE id = 'w1'").get() as {
+    status: string
+  }
+  assert.ok(
+    (WORKSPACE_STATUS as readonly string[]).includes(w1.status),
+    `cutover: w1.status '${w1.status}' is not a valid WORKSPACE_STATUS value`
+  )
+
+  const svCount = (
+    cdb.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE name = 'schema_version'").get() as {
+      c: number
+    }
+  ).c
+  assert.equal(svCount, 0, 'cutover: schema_version table must be dropped')
+
+  assert.deepEqual(planSync(cdb, schema), [], 'cutover: DB must be fully converged + idempotent')
+
+  console.log('✓ cutover')
+}
