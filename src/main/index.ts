@@ -406,7 +406,7 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
   if (loadingOverlayWired) return
   loadingOverlayWired = true
   // Push the current app theme to the native side so the overlay matches.
-  const currentTheme = getAppUiState().theme as Theme
+  const currentTheme = getAppUiState().theme
   addon.setLoadingTheme(THEME_PALETTES[currentTheme] ?? THEME_PALETTES.midnight)
   // Bridge the state machine to the native addon's overlay calls.
   configureLoadingOverlay((workspaceId, state, copy) => {
@@ -495,7 +495,7 @@ function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
   if (ak.length !== bk.length) return false
   for (let i = 0; i < ak.length; i++) {
     if (ak[i] !== bk[i]) return false
-    if (a.env[ak[i] as string] !== b.env[ak[i] as string]) return false
+    if (a.env[ak[i]] !== b.env[ak[i]]) return false
   }
   return true
 }
@@ -920,7 +920,7 @@ function createWindow(): void {
         getMainWindow,
         focusActiveWorkspaceTerminal: focusWorkspaceTerminal
       })
-      setOverlayTheme(getAppUiState().theme as Theme)
+      setOverlayTheme(getAppUiState().theme)
     } catch (err) {
       console.error('[overlayLayer] init failed:', err)
     }
@@ -1121,7 +1121,7 @@ async function checkClaude(): Promise<{
 // Diagnostics: typed IPC wrapper — times every handler, logs slow (>50ms) calls
 // as PERF_IPC_ROUNDTRIP, captures and re-throws errors as ERROR_IPC_FAIL.
 // ---------------------------------------------------------------------------
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+
 function handle(
   channel: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
@@ -1182,7 +1182,7 @@ function assertAbsolutePath(value: unknown, label: string): asserts value is str
  */
 function assertManagedConfigPath(value: unknown, label: string): asserts value is string {
   assertAbsolutePath(value, label)
-  const v = value as string
+  const v = value
   const isUnder = (root: string): boolean => v === root || v.startsWith(root + path.sep)
   if (isUnder(os.homedir())) return
   for (const project of listProjects()) {
@@ -1916,8 +1916,8 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) {
-    applyLoadingOverlayTheme(patch.theme as Theme)
-    setOverlayTheme(patch.theme as Theme)
+    applyLoadingOverlayTheme(patch.theme)
+    setOverlayTheme(patch.theme)
   }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -2862,8 +2862,11 @@ if (!app.requestSingleInstanceLock()) {
 
     // Event-loop delay monitor — logs p99 and max lag every 10s so we have
     // data on whether a future utilityProcess migration is worth the cost.
-    // All output is [perf]-tagged for easy grep/removal later.
-    {
+    // All output is [perf]-tagged for easy grep/removal later. Gated behind
+    // dev builds (or an explicit opt-in env var in packaged builds) so a
+    // background timer + monitor handle isn't allocated in production by
+    // default.
+    if (is.dev || process.env.ORPHEUS_PERF_EVENTLOOP === '1') {
       const eld = monitorEventLoopDelay({ resolution: 10 })
       eld.enable()
       setInterval(() => {
