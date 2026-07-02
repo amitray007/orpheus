@@ -5,6 +5,7 @@ import eslintConfigPrettier from '@electron-toolkit/eslint-config-prettier'
 import eslintPluginReact from 'eslint-plugin-react'
 import eslintPluginReactHooks from 'eslint-plugin-react-hooks'
 import eslintPluginReactRefresh from 'eslint-plugin-react-refresh'
+import eslintPluginSonarjs from 'eslint-plugin-sonarjs'
 
 export default defineConfig(
   {
@@ -97,5 +98,31 @@ export default defineConfig(
       '@typescript-eslint/prefer-promise-reject-errors': 'warn'
     }
   }),
+  // Curated sonarjs subset (NOT sonarjs.configs.recommended — that pulls in a much
+  // noisier full rule set). Scoped to first-party app + CLI source only; excludes
+  // packages/ghostty-surface (native/Obj-C++), scripts/, docs/.
+  {
+    files: ['src/**/*.{ts,tsx}', 'packages/orpheus-cli/**/*.{ts,tsx}'],
+    plugins: {
+      sonarjs: eslintPluginSonarjs
+    },
+    rules: {
+      // Options-schema note (verified against node_modules/eslint-plugin-sonarjs
+      // rule source): cognitive-complexity's threshold is context.options[0] as a
+      // plain number; no-duplicate-string's threshold is context.options[0] as an
+      // options object ({ threshold }).
+      'sonarjs/cognitive-complexity': ['warn', 20],
+      'sonarjs/no-identical-functions': 'warn',
+      'sonarjs/no-duplicate-string': ['warn', { threshold: 5 }],
+      // These three take no options. Severity is ratcheted per-rule below based
+      // on whether the codebase currently has zero violations for it (verified
+      // by running lint after adding each at 'error' and checking for hits).
+      // no-all-duplicated-branches has 1 existing violation (Dashboard.tsx) as
+      // of this rollout, so it's downgraded to 'warn' to keep lint exiting 0.
+      'sonarjs/no-all-duplicated-branches': 'warn',
+      'sonarjs/no-element-overwrite': 'error',
+      'sonarjs/no-identical-expressions': 'error'
+    }
+  },
   eslintConfigPrettier
 )
