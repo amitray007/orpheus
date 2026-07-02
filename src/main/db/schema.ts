@@ -54,17 +54,23 @@ function enumCoerce(col: string, values: readonly string[], fallback: string): s
   return `CASE WHEN ${col} IN (${values.map((v) => `'${v}'`).join(', ')}) THEN ${col} ELSE '${fallback}' END`
 }
 
+// Shorthand column-type literals reused across many table definitions below —
+// hoisted so the literal string exists exactly once (sonarjs/no-duplicate-string).
+const TEXT_PK = 'TEXT PRIMARY KEY NOT NULL'
+const TEXT_NOT_NULL = 'TEXT NOT NULL'
+const INTEGER_NOT_NULL = 'INTEGER NOT NULL'
+
 export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   // projects
   // ---------------------------------------------------------------------
   projects: {
     columns: {
-      id: 'TEXT PRIMARY KEY NOT NULL',
+      id: TEXT_PK,
       path: 'TEXT UNIQUE NOT NULL',
-      name: 'TEXT NOT NULL',
+      name: TEXT_NOT_NULL,
       claude_encoded_name: 'TEXT',
-      added_at: 'INTEGER NOT NULL',
+      added_at: INTEGER_NOT_NULL,
       last_opened_at: 'INTEGER',
       pinned_at: 'INTEGER',
       expanded_in_sidebar: { type: 'INTEGER', notNull: true, default: '0' },
@@ -90,9 +96,9 @@ export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   sessions: {
     columns: {
-      id: 'TEXT PRIMARY KEY NOT NULL',
-      project_id: 'TEXT NOT NULL',
-      jsonl_path: 'TEXT NOT NULL',
+      id: TEXT_PK,
+      project_id: TEXT_NOT_NULL,
+      jsonl_path: TEXT_NOT_NULL,
       title: 'TEXT',
       status: {
         type: 'TEXT',
@@ -100,8 +106,8 @@ export const schema: SchemaDef = {
         default: "'in_review'",
         check: enumCheck('status', SESSION_STATUS)
       },
-      created_at: 'INTEGER NOT NULL',
-      updated_at: 'INTEGER NOT NULL',
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL,
       archived_at: 'INTEGER',
       model: 'TEXT',
       last_message_role: 'TEXT',
@@ -137,12 +143,12 @@ export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   workspaces: {
     columns: {
-      id: 'TEXT PRIMARY KEY NOT NULL',
-      project_id: 'TEXT NOT NULL',
-      name: 'TEXT NOT NULL',
-      cwd: 'TEXT NOT NULL',
+      id: TEXT_PK,
+      project_id: TEXT_NOT_NULL,
+      name: TEXT_NOT_NULL,
+      cwd: TEXT_NOT_NULL,
       pinned_at: 'INTEGER',
-      created_at: 'INTEGER NOT NULL',
+      created_at: INTEGER_NOT_NULL,
       last_opened_at: 'INTEGER',
       archived_at: 'INTEGER',
       closed_at: 'INTEGER',
@@ -350,7 +356,7 @@ export const schema: SchemaDef = {
       disable_mouse_clicks: bool('disable_mouse_clicks', '0'),
       rewind_on_error_enabled: bool('rewind_on_error_enabled', '0'),
       low_power_mode: bool('low_power_mode', '0'),
-      updated_at: 'INTEGER NOT NULL'
+      updated_at: INTEGER_NOT_NULL
     },
     normalizeOnRebuild: {
       // Defensive backstop for a table holding plaintext secrets (id=1
@@ -375,9 +381,9 @@ export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   claude_project_settings: {
     columns: {
-      project_id: 'TEXT PRIMARY KEY NOT NULL',
+      project_id: TEXT_PK,
       overrides_json: { type: 'TEXT', notNull: true, default: "'{}'" },
-      updated_at: 'INTEGER NOT NULL'
+      updated_at: INTEGER_NOT_NULL
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }]
   },
@@ -387,9 +393,9 @@ export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   claude_workspace_settings: {
     columns: {
-      workspace_id: 'TEXT PRIMARY KEY NOT NULL',
+      workspace_id: TEXT_PK,
       overrides_json: { type: 'TEXT', notNull: true, default: "'{}'" },
-      updated_at: 'INTEGER NOT NULL'
+      updated_at: INTEGER_NOT_NULL
     },
     foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }]
   },
@@ -488,7 +494,7 @@ export const schema: SchemaDef = {
       },
       auto_check_updates: bool('auto_check_updates', '1'),
       stale_after_minutes: { type: 'INTEGER', notNull: true, default: '60' },
-      updated_at: 'INTEGER NOT NULL'
+      updated_at: INTEGER_NOT_NULL
     }
   },
 
@@ -498,12 +504,12 @@ export const schema: SchemaDef = {
   action_audit_log: {
     columns: {
       id: { type: 'INTEGER', primaryKey: true },
-      workspace_id: 'TEXT NOT NULL',
-      action_id: 'TEXT NOT NULL',
-      params_json: 'TEXT NOT NULL',
-      result_code: 'TEXT NOT NULL',
-      consumer_hint: 'TEXT NOT NULL',
-      created_at: 'INTEGER NOT NULL'
+      workspace_id: TEXT_NOT_NULL,
+      action_id: TEXT_NOT_NULL,
+      params_json: TEXT_NOT_NULL,
+      result_code: TEXT_NOT_NULL,
+      consumer_hint: TEXT_NOT_NULL,
+      created_at: INTEGER_NOT_NULL
     },
     indexes: {
       idx_action_audit_workspace_created: ['workspace_id', 'created_at DESC']
@@ -516,17 +522,17 @@ export const schema: SchemaDef = {
   diagnostics_events: {
     columns: {
       id: { type: 'INTEGER', primaryKey: true },
-      ts: 'INTEGER NOT NULL',
-      process: 'TEXT NOT NULL',
-      category: 'TEXT NOT NULL',
-      level: 'TEXT NOT NULL',
-      event: 'TEXT NOT NULL',
+      ts: INTEGER_NOT_NULL,
+      process: TEXT_NOT_NULL,
+      category: TEXT_NOT_NULL,
+      level: TEXT_NOT_NULL,
+      event: TEXT_NOT_NULL,
       workspace_id: 'TEXT',
       session_id: 'TEXT',
       duration_ms: 'INTEGER',
       message: 'TEXT',
       data: 'TEXT',
-      seq: 'INTEGER NOT NULL',
+      seq: INTEGER_NOT_NULL,
       trace_id: 'TEXT',
       span_id: 'TEXT',
       parent_span_id: 'TEXT',
@@ -548,14 +554,14 @@ export const schema: SchemaDef = {
   footer_actions_global: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      label: 'TEXT NOT NULL',
+      label: TEXT_NOT_NULL,
       icon: 'TEXT',
-      action_id: 'TEXT NOT NULL',
+      action_id: TEXT_NOT_NULL,
       params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
       visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
-      position: 'INTEGER NOT NULL',
-      created_at: 'INTEGER NOT NULL',
-      updated_at: 'INTEGER NOT NULL',
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL,
       prompts_json: 'TEXT'
     }
   },
@@ -566,15 +572,15 @@ export const schema: SchemaDef = {
   footer_actions_project: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      project_id: 'TEXT NOT NULL',
-      label: 'TEXT NOT NULL',
+      project_id: TEXT_NOT_NULL,
+      label: TEXT_NOT_NULL,
       icon: 'TEXT',
-      action_id: 'TEXT NOT NULL',
+      action_id: TEXT_NOT_NULL,
       params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
       visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
-      position: 'INTEGER NOT NULL',
-      created_at: 'INTEGER NOT NULL',
-      updated_at: 'INTEGER NOT NULL',
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL,
       prompts_json: 'TEXT'
     },
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
@@ -589,15 +595,15 @@ export const schema: SchemaDef = {
   footer_actions_workspace: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      workspace_id: 'TEXT NOT NULL',
-      label: 'TEXT NOT NULL',
+      workspace_id: TEXT_NOT_NULL,
+      label: TEXT_NOT_NULL,
       icon: 'TEXT',
-      action_id: 'TEXT NOT NULL',
+      action_id: TEXT_NOT_NULL,
       params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
       visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
-      position: 'INTEGER NOT NULL',
-      created_at: 'INTEGER NOT NULL',
-      updated_at: 'INTEGER NOT NULL',
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL,
       prompts_json: 'TEXT'
     },
     foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
