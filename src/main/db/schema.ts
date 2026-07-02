@@ -5,6 +5,9 @@ import { enumCheck } from './render'
 // set of valid values lives in exactly one place. Values copied verbatim from
 // the CHECK clauses in docs/superpowers/plans/_db-surface.md.
 
+// 'archived' is vestigial-but-load-bearing for workspaces: kept because
+// legacy data-step rows carry it AND the renderer's WorkspaceActivityDetail
+// union (src/shared/types.ts) still includes 'archived'. Do not remove it.
 const WORKSPACE_STATUS = ['in_progress', 'awaiting_input', 'attention', 'idle', 'archived'] as const
 const SESSION_STATUS = ['in_progress', 'in_review', 'archived'] as const
 const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const

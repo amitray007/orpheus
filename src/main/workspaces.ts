@@ -466,6 +466,18 @@ export function resetTransientStatusesOnStartup(): number {
   return res.changes
 }
 
+/**
+ * Decide the archived_at column value when a workspace/session status changes.
+ * Returns null when leaving/not-in the archived state (clears the timestamp).
+ * Returns the provided `now` when entering archived. Callers decide whether to
+ * COALESCE with any existing archived_at (workspaces preserve the original
+ * archive time; sessions overwrite) — this helper only centralizes the
+ * status→archived_at branch that both sites previously hand-rolled.
+ */
+export function archivedAtForStatus(status: string, now: number): number | null {
+  return status === 'archived' ? now : null
+}
+
 export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
     throw new Error(`Invalid status: ${status}`)
@@ -475,11 +487,14 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   // transitioning AWAY from 'archived' clears it.
   let row: WorkspaceRow | undefined
   if (status === 'archived') {
+    // COALESCE preserves the original archived_at on idempotent re-archive;
+    // archivedAtForStatus('archived', now) is just `now` here, used only as
+    // the COALESCE fallback for a first-time archive.
     row = db
       .prepare(
         'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
       )
-      .get(status, Date.now(), id) as WorkspaceRow | undefined
+      .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
   } else {
     row = db
       .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')
