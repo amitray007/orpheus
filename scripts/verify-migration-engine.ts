@@ -169,3 +169,19 @@ const { backupBefore } = await import('../src/main/db/backup.ts')
   bdb.close()
   console.log('✓ backup')
 }
+
+const { sync, planSync } = await import('../src/main/db/engine.ts')
+
+{
+  const edb = new Database(':memory:')
+  const eschema = {
+    projects: {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL' },
+      indexes: { projects_name_idx: ['name'] }
+    }
+  }
+  sync(edb, eschema, { dbPath: ':memory:', legacyVersion: 0 })
+  assert.ok(introspectTable(edb, 'projects'))
+  assert.deepEqual(planSync(edb, eschema), [])
+  console.log('✓ engine')
+}
