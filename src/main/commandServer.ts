@@ -14,7 +14,7 @@ import {
 } from './workspaces'
 import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getProjectById } from './projects'
+import { getProject } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
@@ -363,7 +363,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         // listChildWorkspaces from a live parent), so no per-id existence check
         // is needed here — only the root needed the explicit check above.
         for (let i = subtreeIds.length - 1; i >= 0; i--) {
-          await deps.performArchive(subtreeIds[i]!)
+          await deps.performArchive(subtreeIds[i])
         }
 
         return { archived: true, count: subtreeIds.length }
@@ -496,7 +496,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       }
       const ws = getWorkspace(workspaceId)
       if (!ws) throw new Error(`workspace not found: ${workspaceId}`)
-      const project = getProjectById(ws.projectId)
+      const project = getProject(ws.projectId)
       return {
         workspaceId,
         projectId: ws.projectId,
@@ -1166,8 +1166,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         const handlerCandidate = Object.prototype.hasOwnProperty.call(dispatch, action)
           ? dispatch[action]
           : undefined
-        const handler =
-          typeof handlerCandidate === 'function' ? (handlerCandidate as DispatchFn) : undefined
+        const handler = typeof handlerCandidate === 'function' ? handlerCandidate : undefined
         if (!handler) {
           if (!res.writableEnded) {
             try {

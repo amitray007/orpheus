@@ -1,5 +1,5 @@
 /**
- * sessionState.ts — Shadow-mode session state service (Phase 1)
+ * sessionState.ts — session state service
  *
  * Watches ~/.claude/sessions/<pid>.json files written by the claude CLI and
  * drives workspace status transitions. This module is the SOLE authority for

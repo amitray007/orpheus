@@ -400,8 +400,8 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       const rel = stdout.trim()
       const gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
 
-      // Use the resolved absolute git dir as the dedup key (handles worktrees
-      // where multiple cwds share the same .git dir).
+      // Dedup key is the resolved absolute cwd (one watcher entry per cwd).
+      // Distinct worktrees keep separate entries even when they share a .git dir.
       const dir = nodePath.resolve(cwd)
 
       let entry = gitWatchers.get(dir)

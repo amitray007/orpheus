@@ -1065,7 +1065,11 @@ export function composeClaudeLaunch(
   // Env-var controls (v66) — General / Model behavior
   if (s.lowPowerMode) env['CLAUDE_CODE_LOW_POWER_MODE'] = '1'
 
-  // Custom env vars — merged last; user's keys win on conflict
+  // Custom env vars — merged last; user's keys win on conflict here. Note
+  // this is only the layering within composeClaudeLaunch's own `env` output:
+  // downstream, buildMountEnv (orpheusSurfaceAdapter.ts:118-120) spreads
+  // authEnv AFTER launch.env when assembling the final mount env, so auth
+  // keys (e.g. ANTHROPIC_API_KEY) still win over these custom values.
   for (const [k, v] of Object.entries(s.customEnvVars)) {
     if (k && typeof v === 'string') env[k] = v
   }
