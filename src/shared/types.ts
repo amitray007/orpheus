@@ -1088,3 +1088,62 @@ export type DetailsCardProps = {
   git?: OverlayCardGit
   cwd?: string
 }
+
+// ---------------------------------------------------------------------------
+// Overlay kind: projectCard — U8-adjacent React migration of the chassis
+// 'project' popover (addon.mm buildProjectCard). Same section order: header
+// (name + pinned chip), repo, path, workspace count, workspace list (up to 8
+// + "+K more"). Width target ~224px, matching the chassis card.
+// ---------------------------------------------------------------------------
+
+export type OverlayCardWorkspaceEntry = {
+  name: string
+  state: WorkspaceActivityDetail
+}
+
+export type ProjectCardProps = {
+  name: string
+  pinned: boolean
+  /** "owner/repo" when GitHub-linked, else absent. */
+  repo?: string
+  path: string
+  workspaceCount: number
+  /** Capped to 8 entries by the caller; overflow renders as "+K more". */
+  workspaces: OverlayCardWorkspaceEntry[]
+}
+
+// ---------------------------------------------------------------------------
+// Overlay kind: confirmModal — Phase B React migration of the chassis
+// 'confirm' popover (addon.mm buildModalCard). Centered, takesFocus: true.
+// Mirrors ConfirmModalData/ConfirmModalButton/ConfirmModalResult in
+// nativePopover.ts exactly so callers don't need a second result shape.
+// ---------------------------------------------------------------------------
+
+export type ConfirmModalButtonStyle = 'default' | 'primary' | 'danger'
+
+export type ConfirmModalButton = {
+  id: string
+  label: string
+  style?: ConfirmModalButtonStyle
+}
+
+export type ConfirmModalProps = {
+  title: string
+  body: string
+  buttons: ConfirmModalButton[]
+  checkbox?: { id: string; label: string; checked: boolean }
+}
+
+export type ConfirmModalResult = { buttonId: string; checkboxChecked: boolean }
+
+// ---------------------------------------------------------------------------
+// Overlay kind: noticeBanner — U9 React migration of WorkspaceView's one-time
+// notice banner. Non-interactive (acceptsClicks: false, takesFocus: false),
+// anchored to the terminal host, auto-hidden by the call site's own timer
+// (the kind itself has no internal timer — main renderer owns display
+// duration exactly like the chassis-free `notice` state did).
+// ---------------------------------------------------------------------------
+
+export type NoticeBannerProps = {
+  message: string
+}

@@ -9,6 +9,15 @@ import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
 import { showConfirmModal, getActiveModalWorkspaceId, hideNativePopover } from '@/lib/nativePopover'
+import {
+  USE_REACT_OVERLAYS,
+  showConfirmModalReact,
+  getActiveConfirmOverlayId,
+  hideConfirmOverlay,
+  showNoticeBanner,
+  hideOverlayCard,
+  noticeBannerId
+} from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
@@ -192,13 +201,16 @@ export function WorkspaceView({
       'The parent repository could not be found. Convert to local to detach from the worktree configuration.'
   }
 
-  // Native-modal-driven worktree reconcile error card. Fires whenever
-  // terminal:mount returns a worktreeError (surface not mounted). Rendered
-  // through the native chassis (not an in-window React <div>, which would be
-  // occluded by a live libghostty surface — see
-  // docs/learnings/overlay-child-window-macos.md) even if the user navigates
-  // back to one. This predates the child-window overlay layer and is the
-  // USE_REACT_OVERLAYS=false fallback pending migration.
+  // Worktree reconcile error card. Fires whenever terminal:mount returns a
+  // worktreeError (surface not mounted). Rendered above the live libghostty
+  // surface via the overlay layer's confirmModal kind
+  // (overlayClient.showConfirmModalReact) when USE_REACT_OVERLAYS, else the
+  // native chassis (showConfirmModal) — see
+  // docs/learnings/overlay-child-window-macos.md. Both share the exact same
+  // ConfirmModalResult shape, so the result-handling switch below is
+  // identical either way; only the capture-id-for-cleanup mechanics differ
+  // (getActiveModalWorkspaceId/hideNativePopover for the chassis,
+  // getActiveConfirmOverlayId/hideConfirmOverlay for the overlay layer).
   // All three actions (Retry / Open location / Convert to local) resolve the
   // modal and perform their action; re-opening the workspace re-triggers this
   // effect if the underlying problem persists.
@@ -210,7 +222,7 @@ export function WorkspaceView({
     const detail = WORKTREE_ERROR_DETAIL[worktreeError.kind]
     const body = detail ? `${worktreeError.message}\n\n${detail}` : worktreeError.message
 
-    void showConfirmModal({
+    void (USE_REACT_OVERLAYS ? showConfirmModalReact : showConfirmModal)({
       title: 'Worktree unavailable',
       body,
       buttons: [
@@ -244,24 +256,26 @@ export function WorkspaceView({
           break
       }
     })
-    // Capture the synthetic modal workspaceId synchronously right after
-    // opening it (showConfirmModal sets it before returning) so cleanup below
-    // can address exactly this modal, not whatever happens to be active later.
-    const modalWorkspaceId = getActiveModalWorkspaceId()
+    // Capture the synthetic modal id synchronously right after opening it
+    // (both showConfirmModal and showConfirmModalReact set their respective
+    // "active" tracker before returning) so cleanup below can address
+    // exactly this modal, not whatever happens to be active later.
+    const modalWorkspaceId = USE_REACT_OVERLAYS ? null : getActiveModalWorkspaceId()
+    const confirmOverlayId = USE_REACT_OVERLAYS ? getActiveConfirmOverlayId() : null
 
     return () => {
       cancelled = true
       // Actively dismiss the modal this effect opened. Without this, navigating
       // away (workspace switch/unmount) while the modal is still open left it
-      // orphaned: the native card + dimmed backdrop stayed on screen blocking
-      // input, and the JS promise never resolved (its modalHandlers entry
-      // leaked). hideNativePopover is idempotent — a no-op if the modal already
-      // settled (button click / Escape / backdrop) before cleanup ran, since
-      // the native side only acts on a workspaceId that's still the active
-      // popover. The native HidePopover path also fires a synthetic cancel for
-      // any 'confirm' modal still pending, so the promise settles either way.
+      // orphaned: the card + dimmed backdrop stayed on screen blocking input,
+      // and the JS promise never resolved (its handler entry leaked). Both
+      // hide paths are idempotent — a no-op if the modal already settled
+      // (button click / Escape / backdrop) before cleanup ran.
       if (modalWorkspaceId) {
         hideNativePopover(modalWorkspaceId)
+      }
+      if (confirmOverlayId) {
+        hideConfirmOverlay(confirmOverlayId)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree*/handleFocusTerminal callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
@@ -273,6 +287,25 @@ export function WorkspaceView({
     const id = setTimeout(() => setNotice(null), 6000)
     return () => clearTimeout(id)
   }, [notice])
+
+  // Notice banner overlay (U9): when USE_REACT_OVERLAYS, the notice renders
+  // via the overlay layer's noticeBanner kind instead of the in-window
+  // absolute-positioned <div> below (which sits inside the terminal host and
+  // risks occlusion by the live libghostty surface — see
+  // docs/learnings/overlay-child-window-macos.md). Anchored to the terminal
+  // container's own rect; the banner kind itself renders bottom-up like the
+  // chassis-free markup (bottom-4 left-1/2 -translate-x-1/2), so anchoring to
+  // the container with preferredSide 'top' (i.e. grow from the container's
+  // bounds) reproduces the same on-screen position. Display duration is
+  // driven entirely by this effect (same 6s the `notice` state itself uses,
+  // via the timer above) — the kind has no internal timer.
+  useEffect(() => {
+    if (!active || !notice) return
+    const el = containerRef.current
+    if (!el) return
+    showNoticeBanner(workspace.id, el, { message: notice })
+    return () => hideOverlayCard(noticeBannerId(workspace.id))
+  }, [active, notice, workspace.id])
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -763,16 +796,17 @@ export function WorkspaceView({
                 onFocusTerminal={handleFocusTerminal}
               />
             )}
-            {/* Worktree reconcile error — shown as a NATIVE confirm modal (see the
-                effect above) instead of an in-window React overlay, so it renders
-                above the libghostty terminal surface without being occluded. The
-                child-window overlay layer (overlayClient.ts) is the current
-                mechanism for React UI above the terminal; this native modal is
-                the legacy USE_REACT_OVERLAYS=false fallback pending migration —
-                see docs/learnings/overlay-child-window-macos.md. */}
+            {/* Worktree reconcile error — shown as a confirm modal (see the effect
+                above, overlay layer or native chassis depending on
+                USE_REACT_OVERLAYS) instead of an in-window React overlay, so it
+                renders above the libghostty terminal surface without being
+                occluded — see docs/learnings/overlay-child-window-macos.md. */}
             {/* One-time notice banner (e.g. "started fresh on branch X") — shown
-                briefly after a successful mount and auto-dismissed after 6 s. */}
-            {active && notice && (
+                briefly after a successful mount and auto-dismissed after 6 s.
+                When USE_REACT_OVERLAYS the overlay-layer effect above renders it
+                (noticeBanner kind, anchored to this container); this in-window
+                <div> is the legacy fallback, kept for USE_REACT_OVERLAYS=false. */}
+            {!USE_REACT_OVERLAYS && active && notice && (
               <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 max-w-sm w-auto px-4 py-2.5 rounded-lg bg-surface-overlay/95 border border-border-default shadow-lg flex items-center gap-2.5 pointer-events-none">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
                 <span className="text-xs text-text-secondary leading-snug">{notice}</span>

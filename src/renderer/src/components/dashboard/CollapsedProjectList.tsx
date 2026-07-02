@@ -4,6 +4,13 @@ import { Plus, PushPin } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
 import { showProjectPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  USE_REACT_OVERLAYS,
+  showProjectCard,
+  hideOverlayCard,
+  projectCardId,
+  type ProjectCardProps
+} from '@/lib/overlayClient'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
@@ -78,7 +85,7 @@ const ProjectTile = memo(function ProjectTile({
       const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
       const capped = activeWorkspaces.slice(0, 8)
 
-      showProjectPopover(p.id, buttonRef.current, {
+      const cardProps: ProjectCardProps = {
         name: p.name,
         pinned: p.pinnedAt != null,
         repo: p.githubOwner && p.githubRepo ? `${p.githubOwner}/${p.githubRepo}` : undefined,
@@ -101,12 +108,18 @@ const ProjectTile = memo(function ProjectTile({
             state: toPopoverState(activityMap.get(w.id))
           }
         })
-      })
+      }
 
-      // Register native-closed handler: reset timer state when card closes itself.
-      onNativePopoverClosed(popoverId, () => {
-        clearHoverTimer()
-      })
+      if (USE_REACT_OVERLAYS) {
+        showProjectCard(p.id, buttonRef.current, cardProps)
+      } else {
+        showProjectPopover(p.id, buttonRef.current, cardProps)
+
+        // Register native-closed handler: reset timer state when card closes itself.
+        onNativePopoverClosed(popoverId, () => {
+          clearHoverTimer()
+        })
+      }
     }, 150)
   }
 
@@ -114,7 +127,11 @@ const ProjectTile = memo(function ProjectTile({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      hideNativePopover(popoverId)
+      if (USE_REACT_OVERLAYS) {
+        hideOverlayCard(projectCardId(p.id))
+      } else {
+        hideNativePopover(popoverId)
+      }
     }, 80)
   }
 

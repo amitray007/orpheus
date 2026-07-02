@@ -2,6 +2,9 @@ import type { OverlayDescriptor } from '@shared/types'
 import { DevTest } from './kinds/DevTest'
 import { HoverCard } from './kinds/HoverCard'
 import { DetailsCard } from './kinds/DetailsCard'
+import { ProjectCard } from './kinds/ProjectCard'
+import { ConfirmModal } from './kinds/ConfirmModal'
+import { NoticeBanner } from './kinds/NoticeBanner'
 
 export interface OverlayKindProps {
   descriptor: OverlayDescriptor
@@ -14,5 +17,8 @@ export interface OverlayKindProps {
 export const registry: Record<string, React.ComponentType<OverlayKindProps>> = {
   devTest: DevTest,
   hoverCard: HoverCard,
-  detailsCard: DetailsCard
+  detailsCard: DetailsCard,
+  projectCard: ProjectCard,
+  confirmModal: ConfirmModal,
+  noticeBanner: NoticeBanner
 }
