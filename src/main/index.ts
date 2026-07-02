@@ -2689,6 +2689,35 @@ const SUBMIT_DELAY_MS = 150
 const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 // ---------------------------------------------------------------------------
+// Per-workspace injection mutex (RACE-10) — mirrors withRepoLock's
+// promise-chain pattern (worktrees.ts) but keyed by workspaceId, a separate
+// lock domain. Without this, two concurrent CLI injections into the SAME
+// workspace (e.g. two `ws send` calls) can interleave their
+// sendInput/sendKeys → delay → submit sequences: A stages text, B stages
+// text, A submits (submitting A+B concatenated), B submits into a now-empty
+// input box. Serialising the stage-then-submit critical section per
+// workspace prevents that interleaving while leaving unrelated workspaces
+// fully concurrent.
+// ---------------------------------------------------------------------------
+const injectLocks = new Map<string, Promise<unknown>>()
+function withInjectLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = injectLocks.get(workspaceId) ?? Promise.resolve()
+  const next = prev.then(
+    () => fn(),
+    () => fn()
+  )
+  // Store a silent version so map entry errors don't surface as unhandled rejections
+  injectLocks.set(
+    workspaceId,
+    next.then(
+      () => undefined,
+      () => undefined
+    )
+  )
+  return next
+}
+
+// ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
@@ -3112,43 +3141,50 @@ if (!app.requestSingleInstanceLock()) {
                     '— open it manually and paste the task text once it reaches the prompt.'
                   )
                 }
-                const addon = loadTerminalAddon()
-                const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
-                if (!inputResult.ok) {
-                  return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
-                }
-                // submit=false: caller wants the task STAGED (typed into claude's input
-                // box) but not sent — e.g. for review/editing before the user presses
-                // Enter themselves. Skip the delay + submit entirely; the text sitting
-                // in the input box is the desired end state, not an intermediate one.
-                if (!submit) {
-                  return null
-                }
-                // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
-                // a synthetic Return) are two different libghostty code paths. Claude's
-                // full-screen TUI reads the PTY asynchronously, so it needs a moment to
-                // ingest the just-committed text before a Return keypress is meaningful.
-                // Firing Return microseconds later races ahead of that ingestion and the
-                // line never actually submits — the text just sits in the input box.
-                // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
-                // the TUI's read loop (terminal paste-then-submit automation typically
-                // needs 50-200ms; 150 is a safe middle).
-                await delay(SUBMIT_DELAY_MS)
-                const submitResult = terminalActions.submit(addon, workspaceId)
-                if (!submitResult.ok) {
-                  // If the workspace flipped to 'busy' during the delay, that most
-                  // likely means claude already started processing the text we just
-                  // staged (canInject() — and therefore submit — goes false the moment
-                  // status leaves idle/awaiting_input). Treat this as a soft signal
-                  // rather than a hard failure: the submit may well have raced a
-                  // status flip caused by the text itself landing. Only a genuine,
-                  // non-busy failure is reported as an error.
-                  if (submitResult.code === 'busy') {
-                    return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                // Critical section: stage text and (optionally) submit it. Locked per
+                // workspace (RACE-10) so a concurrent injection into the same workspace
+                // can't interleave its own stage/submit sequence with this one — the
+                // 25s open+poll above intentionally runs OUTSIDE the lock so concurrent
+                // calls don't stack slow waits behind each other.
+                return withInjectLock(workspaceId, async (): Promise<string | null> => {
+                  const addon = loadTerminalAddon()
+                  const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
+                  if (!inputResult.ok) {
+                    return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
                   }
-                  return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
-                }
-                return null
+                  // submit=false: caller wants the task STAGED (typed into claude's input
+                  // box) but not sent — e.g. for review/editing before the user presses
+                  // Enter themselves. Skip the delay + submit entirely; the text sitting
+                  // in the input box is the desired end state, not an intermediate one.
+                  if (!submit) {
+                    return null
+                  }
+                  // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
+                  // a synthetic Return) are two different libghostty code paths. Claude's
+                  // full-screen TUI reads the PTY asynchronously, so it needs a moment to
+                  // ingest the just-committed text before a Return keypress is meaningful.
+                  // Firing Return microseconds later races ahead of that ingestion and the
+                  // line never actually submits — the text just sits in the input box.
+                  // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
+                  // the TUI's read loop (terminal paste-then-submit automation typically
+                  // needs 50-200ms; 150 is a safe middle).
+                  await delay(SUBMIT_DELAY_MS)
+                  const submitResult = terminalActions.submit(addon, workspaceId)
+                  if (!submitResult.ok) {
+                    // If the workspace flipped to 'busy' during the delay, that most
+                    // likely means claude already started processing the text we just
+                    // staged (canInject() — and therefore submit — goes false the moment
+                    // status leaves idle/awaiting_input). Treat this as a soft signal
+                    // rather than a hard failure: the submit may well have raced a
+                    // status flip caused by the text itself landing. Only a genuine,
+                    // non-busy failure is reported as an error.
+                    if (submitResult.code === 'busy') {
+                      return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                    }
+                    return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
+                  }
+                  return null
+                })
               },
               sendToWorkspace: async (
                 workspaceId: string,
@@ -3316,7 +3352,12 @@ if (!app.requestSingleInstanceLock()) {
                   return { ok: true }
                 }
 
-                const firstAttempt = await attemptSend()
+                // Locked per workspace (RACE-10) so a concurrent injection into the
+                // same workspace can't interleave its own stage/submit sequence with
+                // this one. openAndWaitInjectable() above intentionally runs OUTSIDE
+                // the lock so concurrent calls don't stack slow (10s) opens behind
+                // each other.
+                const firstAttempt = await withInjectLock(workspaceId, attemptSend)
                 if (firstAttempt.ok) {
                   if (firstAttempt.softBusy) {
                     return {
@@ -3334,7 +3375,8 @@ if (!app.requestSingleInstanceLock()) {
                 if (firstAttempt.notFound === true) {
                   const injectable = await openAndWaitInjectable()
                   if (injectable) {
-                    const retryAttempt = await attemptSend()
+                    // Same per-workspace lock as the first attempt above (RACE-10).
+                    const retryAttempt = await withInjectLock(workspaceId, attemptSend)
                     if (retryAttempt.ok) {
                       if (retryAttempt.softBusy) {
                         return {
