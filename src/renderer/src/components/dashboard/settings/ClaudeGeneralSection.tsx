@@ -210,6 +210,17 @@ export function ClaudeGeneralSection(): React.JSX.Element {
             />
           </SettingRow>
           <SettingRow
+            label="Low power mode"
+            description="Reduce background CPU/battery usage by throttling non-essential Claude activity (CLAUDE_CODE_LOW_POWER_MODE=1)."
+            mapsTo="CLAUDE_CODE_LOW_POWER_MODE"
+          >
+            <Toggle
+              ariaLabel="Low power mode"
+              value={settings.lowPowerMode}
+              onChange={(v) => patch({ lowPowerMode: v })}
+            />
+          </SettingRow>
+          <SettingRow
             label="Disable bundled skills"
             description="Prevent Claude from loading bundled skills and workflows (CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1). User, project, and plugin skills are not affected."
             mapsTo="CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"
