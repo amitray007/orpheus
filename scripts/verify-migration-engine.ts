@@ -1,5 +1,10 @@
 import assert from 'node:assert'
-import { enumCheck, renderCreateTable } from '../src/main/db/render'
+import { DatabaseSync } from 'node:sqlite'
+// better-sqlite3-compatible shim for the harness: DatabaseSync's prepare()/exec() already match;
+// provide a Database-like constructor name so the rest of the harness is unchanged.
+class Database extends DatabaseSync {}
+import { enumCheck, renderCreateTable } from '../src/main/db/render.ts'
+import { introspectTable } from '../src/main/db/introspect.ts'
 
 // enumCheck renders a canonical IN(...) clause from a shared array
 assert.equal(
@@ -20,3 +25,17 @@ assert.ok(sql.startsWith('CREATE TABLE workspaces ('), sql)
 assert.ok(sql.includes("status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle', 'archived'))"), sql)
 assert.ok(sql.includes('FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE'), sql)
 console.log('✓ render')
+
+// introspectTable reads live DB structural state via PRAGMA + sqlite_master
+const db = new Database(':memory:')
+db.exec("CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)")
+db.exec("CREATE INDEX t_n_idx ON t(n)")
+const live = introspectTable(db, 't')!
+assert.equal(live.columns.length, 2)
+assert.equal(live.columns[0].name, 'id')
+assert.equal(live.columns[0].pk, true)
+assert.equal(live.columns[1].notNull, true)
+assert.equal(live.columns[1].dflt, '0')
+assert.ok(live.indexes.some((i) => i.name === 't_n_idx' && !i.auto))
+assert.equal(introspectTable(db, 'missing'), null)
+console.log('✓ introspect')
