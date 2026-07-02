@@ -192,7 +192,8 @@ export const schema: SchemaDef = {
     indexes: {
       workspaces_project_id_idx: ['project_id'],
       workspaces_pinned_idx: ['pinned_at'],
-      idx_workspaces_project_sort: ['project_id', 'sort_order', 'created_at DESC']
+      idx_workspaces_project_sort: ['project_id', 'sort_order', 'created_at DESC'],
+      idx_workspaces_parent: ['parent_workspace_id']
     },
     normalizeOnRebuild: {
       // Copied from healWorkspacesCheck's CASE (src/main/db.ts:2380): valid
@@ -430,7 +431,7 @@ export const schema: SchemaDef = {
       last_view_kind: {
         type: 'TEXT',
         notNull: true,
-        default: "'dashboard'",
+        default: "'sessions'",
         check: enumCheck('last_view_kind', LAST_VIEW_KIND)
       },
       last_project_id: 'TEXT REFERENCES projects(id) ON DELETE SET NULL',
