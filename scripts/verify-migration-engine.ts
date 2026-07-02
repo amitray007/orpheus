@@ -1,5 +1,6 @@
 import assert from 'node:assert'
 import { register } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -521,7 +522,7 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     !dsdb2.prepare("SELECT 1 FROM applied_data_steps WHERE name='workspace-status-remap'").get()
   )
 
-  // a fresh DB (legacyVersion 0): the 5 legacy transforms are pre-marked
+  // a fresh DB (legacyVersion 0): the 7 legacy transforms are pre-marked
   // applied (nothing legacy to fix on a brand-new schema), but the
   // alwaysRun 'keep-awake-seed' step is NOT pre-marked — it must still get
   // a real run so the default row gets inserted.
@@ -529,7 +530,7 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   ensureLedger(dsdb3)
   seedLedgerFromLegacy(dsdb3, 0)
   const legacyStepNames = dataSteps.filter((s) => !s.alwaysRun).map((s) => s.name)
-  assert.equal(legacyStepNames.length, 5, 'expected exactly 5 non-alwaysRun legacy transforms')
+  assert.equal(legacyStepNames.length, 7, 'expected exactly 7 non-alwaysRun legacy transforms')
   for (const name of legacyStepNames) {
     assert.ok(
       dsdb3.prepare('SELECT 1 FROM applied_data_steps WHERE name = ?').get(name),
@@ -539,6 +540,94 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
   assert.ok(
     !dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='keep-awake-seed'").get(),
     'alwaysRun step must NOT be pre-marked applied on a fresh install'
+  )
+
+  // v67/v68 footer steps: a pre-v67 DB (legacyVersion 66) must NOT be
+  // pre-marked applied for either step, so they run for real on such a DB.
+  const dsdb4 = new Database(':memory:')
+  ensureLedger(dsdb4)
+  seedLedgerFromLegacy(dsdb4, 66)
+  assert.ok(
+    !dsdb4
+      .prepare("SELECT 1 FROM applied_data_steps WHERE name='footer-model-select-rewrite'")
+      .get(),
+    'a v66 DB must not pre-mark footer-model-select-rewrite (legacyThroughVersion 67) as applied'
+  )
+  assert.ok(
+    !dsdb4.prepare("SELECT 1 FROM applied_data_steps WHERE name='footer-effort-select-seed'").get(),
+    'a v66 DB must not pre-mark footer-effort-select-seed (legacyThroughVersion 68) as applied'
+  )
+
+  // Exercise both steps for real against a v66-shaped footer_actions_global:
+  // a legacy '/model' chip must rewrite to the modelSelect dropdown, and the
+  // Effort chip must get seeded since it's absent.
+  dsdb4.exec(`CREATE TABLE footer_actions_global (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    icon TEXT,
+    action_id TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    visible_when TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompts_json TEXT
+  )`)
+  dsdb4
+    .prepare(
+      `INSERT INTO footer_actions_global
+         (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      randomUUID(),
+      '/model',
+      'Robot',
+      'terminal.sendInput',
+      JSON.stringify({ text: '/model', submit: true }),
+      'always',
+      0,
+      0,
+      0,
+      null
+    )
+  // runDataSteps sweeps ALL unapplied non-preRebuild steps, including the
+  // alwaysRun 'keep-awake-seed' step, which needs its table to exist first
+  // (same requirement as the dsdb3 fixture above).
+  dsdb4.exec(`CREATE TABLE keep_awake_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
+    display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
+    timer_minutes INTEGER NOT NULL DEFAULT 120
+  )`)
+  runDataSteps(dsdb4, { preRebuild: false })
+  runDataSteps(dsdb4, { preRebuild: true })
+
+  const modelRow = dsdb4
+    .prepare(
+      `SELECT label, action_id, params_json FROM footer_actions_global WHERE label = 'Model'`
+    )
+    .get() as { label: string; action_id: string; params_json: string } | undefined
+  assert.ok(modelRow, 'footer-model-select-rewrite must rewrite the /model chip to the Model chip')
+  assert.equal(modelRow!.action_id, 'footer.modelSelect')
+  assert.equal(modelRow!.params_json, '{}')
+
+  const effortRow = dsdb4
+    .prepare(
+      `SELECT action_id, position FROM footer_actions_global WHERE action_id = 'footer.effortSelect'`
+    )
+    .get() as { action_id: string; position: number } | undefined
+  assert.ok(effortRow, 'footer-effort-select-seed must seed the Effort chip when absent')
+
+  assert.ok(
+    dsdb4
+      .prepare("SELECT 1 FROM applied_data_steps WHERE name='footer-model-select-rewrite'")
+      .get(),
+    'footer-model-select-rewrite must be recorded in the ledger after running'
+  )
+  assert.ok(
+    dsdb4.prepare("SELECT 1 FROM applied_data_steps WHERE name='footer-effort-select-seed'").get(),
+    'footer-effort-select-seed must be recorded in the ledger after running'
   )
 
   // Exercise the alwaysRun step on the fresh DB: it needs keep_awake_settings

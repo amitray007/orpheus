@@ -312,7 +312,77 @@ const dataSteps: DataStep[] = [
   },
 
   // -------------------------------------------------------------------------
-  // 6. keep_awake_settings default row seed (Task 7 deferred this here: the
+  // 6. v67 — migrate the default '/model' footer action seed (which typed a
+  //    bare "/model" into the terminal, opening claude's own picker) to the
+  //    new built-in Model dropdown chip (actionId 'footer.modelSelect'),
+  //    which reads/writes claude_workspace_settings directly instead of
+  //    parsing the terminal. Matches on label + action_id + exact old
+  //    params_json to avoid touching rows the user has since customised
+  //    (same pattern as the v46 migration in 'footer-seed-reconcile').
+  // -------------------------------------------------------------------------
+  {
+    name: 'footer-model-select-rewrite',
+    legacyThroughVersion: 67,
+    run: (db) => {
+      try {
+        db.prepare(
+          `UPDATE footer_actions_global
+           SET action_id = 'footer.modelSelect', label = 'Model', params_json = '{}', updated_at = ?
+           WHERE label = '/model' AND action_id = 'terminal.sendInput' AND params_json = ?`
+        ).run(Date.now(), JSON.stringify({ text: '/model', submit: true }))
+      } catch {
+        /* footer_actions_global may not exist yet on a clean install; safe to skip */
+      }
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // 7. v68 — seed the new built-in Effort dropdown chip (actionId
+  //    'footer.effortSelect') into existing installs' global footer actions —
+  //    fresh installs already get it via seedDefaultFooterActions()'s
+  //    DEFAULT_SEEDS. Only inserts if no row with this action_id exists yet,
+  //    so reruns and users who've since deleted it are both left alone.
+  // -------------------------------------------------------------------------
+  {
+    name: 'footer-effort-select-seed',
+    legacyThroughVersion: 68,
+    run: (db) => {
+      try {
+        const hasEffort = db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM footer_actions_global WHERE action_id = 'footer.effortSelect'`
+          )
+          .get() as { c: number }
+        if (hasEffort.c === 0) {
+          const maxPos = db
+            .prepare(`SELECT COALESCE(MAX(position), -1) AS maxPos FROM footer_actions_global`)
+            .get() as { maxPos: number }
+          const now = Date.now()
+          db.prepare(
+            `INSERT INTO footer_actions_global
+               (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            randomUUID(),
+            'Effort',
+            'Sliders',
+            'footer.effortSelect',
+            '{}',
+            'always',
+            maxPos.maxPos + 1,
+            now,
+            now,
+            null
+          )
+        }
+      } catch {
+        /* footer_actions_global may not exist yet on a clean install; safe to skip */
+      }
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // 8. keep_awake_settings default row seed (Task 7 deferred this here: the
   //    v62 KEEP_AWAKE_SCHEMA_SQL constant bundled `INSERT OR IGNORE` alongside
   //    its CREATE TABLE — schema.ts renders structure only, this data step
   //    supplies the seed).
