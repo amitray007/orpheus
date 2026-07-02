@@ -149,7 +149,7 @@ const { rebuildTable } = await import('../src/main/db/rebuild.ts')
     { id: 'w1', status: 'idle' },
     { id: 'w2', status: 'idle' }
   ])
-  assert.equal((rdb.prepare('SELECT COUNT(*) c FROM workspaces').get() as any).c, 2)
+  assert.equal((rdb.prepare('SELECT COUNT(*) c FROM workspaces').get() as { c: number }).c, 2)
   console.log('✓ rebuild')
 }
 
@@ -164,7 +164,7 @@ const { backupBefore } = await import('../src/main/db/backup.ts')
   const bak = backupBefore(bdb, dbPath, 63)
   assert.ok(fs.existsSync(bak), 'backup file exists')
   const readonlyDb = new DatabaseSync(bak, { readOnly: true })
-  assert.equal((readonlyDb.prepare('SELECT COUNT(*) c FROM t').get() as any).c, 1)
+  assert.equal((readonlyDb.prepare('SELECT COUNT(*) c FROM t').get() as { c: number }).c, 1)
   readonlyDb.close()
   bdb.close()
   console.log('✓ backup')
@@ -217,10 +217,18 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
   // plus sorted index sql from sqlite_master. Two DBs with equal
   // normalizedShape() are structurally converged regardless of how they got
   // there (fresh build vs. reconciled-from-legacy).
+  interface PragmaTableInfoRow {
+    name: string
+    type: string
+    notnull: number
+    dflt_value: string | null
+    pk: number
+  }
+
   function normalizedShape(cdb: InstanceType<typeof Database>): Record<string, unknown> {
     const out: Record<string, unknown> = {}
     for (const table of Object.keys(schema)) {
-      const cols = (cdb.prepare(`PRAGMA table_info("${table}")`).all() as any[])
+      const cols = (cdb.prepare(`PRAGMA table_info("${table}")`).all() as PragmaTableInfoRow[])
         .map((r) => ({
           name: r.name,
           type: r.type,

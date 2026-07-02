@@ -19,23 +19,39 @@ interface LiveTable {
   indexes: LiveIndex[]
 }
 
+// Row shapes for the two PRAGMA queries used below. SQLite's PRAGMA output
+// columns are stable across versions; see https://sqlite.org/pragma.html.
+interface PragmaTableInfoRow {
+  name: string
+  type: string
+  notnull: number
+  dflt_value: string | null
+  pk: number
+}
+interface PragmaIndexListRow {
+  name: string
+  origin: string
+  partial: number
+  unique: number
+}
+
 function introspectTable(db: Database.Database, name: string): LiveTable | null {
   const tableRow = db
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
     .get(name) as { sql: string } | undefined
   if (!tableRow) return null
 
-  const columns = (db.prepare(`PRAGMA table_info("${name}")`).all() as any[]).map(
+  const columns = (db.prepare(`PRAGMA table_info("${name}")`).all() as PragmaTableInfoRow[]).map(
     (row): LiveColumn => ({
       name: row.name,
       type: row.type,
       notNull: !!row.notnull,
       dflt: row.dflt_value,
-      pk: !!row.pk,
-    }),
+      pk: !!row.pk
+    })
   )
 
-  const indexList = db.prepare(`PRAGMA index_list("${name}")`).all() as any[]
+  const indexList = db.prepare(`PRAGMA index_list("${name}")`).all() as PragmaIndexListRow[]
   const indexSqlStmt = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name=?")
   const indexes = indexList.map((row): LiveIndex => {
     const indexRow = indexSqlStmt.get(row.name) as { sql: string | null } | undefined

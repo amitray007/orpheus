@@ -1,4 +1,4 @@
-import type { SchemaDef } from './types'
+import type { ColumnDef, SchemaDef } from './types'
 import { enumCheck } from './render'
 
 // Shared enum arrays — exported for reuse by app code (renderer/main) so the
@@ -35,7 +35,7 @@ const SOUND_PACK = [
 // A boolean stored as INTEGER CHECK (col IN (0,1)) — reused across the many
 // flag columns in claude_global_settings / app_ui_state. Takes the column
 // name explicitly since the CHECK text must reference it.
-function bool(name: string, def: '0' | '1' = '0') {
+function bool(name: string, def: '0' | '1' = '0'): ColumnDef {
   return {
     type: 'INTEGER',
     notNull: true,

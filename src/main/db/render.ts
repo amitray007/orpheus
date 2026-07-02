@@ -17,9 +17,12 @@ function renderColumn(colName: string, def: ColumnDef): string {
 }
 
 function renderCreateTable(name: string, def: TableDef): string {
-  const columnLines = Object.entries(def.columns).map(([colName, colDef]) => renderColumn(colName, colDef))
+  const columnLines = Object.entries(def.columns).map(([colName, colDef]) =>
+    renderColumn(colName, colDef)
+  )
   const foreignKeyLines = (def.foreignKeys ?? []).map(
-    (fk) => `FOREIGN KEY (${fk.columns.join(', ')}) REFERENCES ${fk.ref}${fk.onDelete ? ' ON DELETE ' + fk.onDelete : ''}`,
+    (fk) =>
+      `FOREIGN KEY (${fk.columns.join(', ')}) REFERENCES ${fk.ref}${fk.onDelete ? ' ON DELETE ' + fk.onDelete : ''}`
   )
   const lines = [...columnLines, ...foreignKeyLines]
   return `CREATE TABLE ${name} (\n  ${lines.join(',\n  ')}\n)`
