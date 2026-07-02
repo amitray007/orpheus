@@ -185,3 +185,21 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   assert.deepEqual(planSync(edb, eschema), [])
   console.log('✓ engine')
 }
+
+const { schema } = await import('../src/main/db/schema.ts')
+
+{
+  const sdb = new Database(':memory:')
+  sync(sdb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+  // every declared table exists
+  for (const t of Object.keys(schema)) {
+    assert.ok(introspectTable(sdb, t), `missing ${t}`)
+  }
+  // idempotent on a fresh build
+  const secondPlan = planSync(sdb, schema)
+  if (secondPlan.length !== 0) {
+    console.log('schema-fresh: non-empty second plan', JSON.stringify(secondPlan, null, 2))
+  }
+  assert.deepEqual(secondPlan, [], 'fresh build must be idempotent')
+  console.log('✓ schema-fresh')
+}

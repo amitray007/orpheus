@@ -23,7 +23,7 @@ const TYPE_AFFINITY_CLASSES: string[][] = [
   ['INTEGER', 'INT', 'BIGINT', 'SMALLINT', 'TINYINT'],
   ['TEXT', 'VARCHAR', 'CHAR', 'CLOB'],
   ['REAL', 'FLOAT', 'DOUBLE'],
-  ['BLOB'],
+  ['BLOB']
 ]
 
 function normalizeTypeAffinity(rawType: string): string {
@@ -57,11 +57,16 @@ function parseStringColumnDef(def: string): ResolvedColumn {
 
 function resolveColumnDef(def: ColumnDef): ResolvedColumn {
   if (typeof def === 'string') return parseStringColumnDef(def)
+  // Structured `check` is stored with a leading CHECK keyword (render.ts's
+  // renderColumn appends it verbatim, and enumCheck() returns it that way) —
+  // strip it here so this matches parseStringColumnDef/extractLiveColumnCheck,
+  // which both capture only the parenthesized body via the same CHECK regex.
+  const check = def.check ? def.check.replace(/^\s*CHECK\s*/i, '') : null
   return {
     type: def.type,
     notNull: !!def.notNull,
     pk: !!def.primaryKey,
-    check: def.check ? normalizeWhitespace(def.check) : null,
+    check: check ? normalizeWhitespace(check) : null
   }
 }
 
@@ -120,7 +125,8 @@ function balanceParens(s: string): string {
 // CREATE TABLE statement, normalized for comparison.
 function extractLiveForeignKeys(createSql: string): string[] {
   const results: string[] = []
-  const re = /FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+[A-Za-z0-9_"'`]+\s*(?:\([^)]*\))?(?:\s+ON\s+DELETE\s+\w+)?(?:\s+ON\s+UPDATE\s+\w+)?/gi
+  const re =
+    /FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+[A-Za-z0-9_"'`]+\s*(?:\([^)]*\))?(?:\s+ON\s+DELETE\s+(?:SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION|CASCADE|RESTRICT))?(?:\s+ON\s+UPDATE\s+(?:SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION|CASCADE|RESTRICT))?/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(createSql)) !== null) {
     results.push(normalizeWhitespace(m[0]))
@@ -131,8 +137,8 @@ function extractLiveForeignKeys(createSql: string): string[] {
 function renderDesiredForeignKeys(desired: TableDef): string[] {
   return (desired.foreignKeys ?? []).map((fk) =>
     normalizeWhitespace(
-      `FOREIGN KEY (${fk.columns.join(', ')}) REFERENCES ${fk.ref}${fk.onDelete ? ' ON DELETE ' + fk.onDelete : ''}`,
-    ),
+      `FOREIGN KEY (${fk.columns.join(', ')}) REFERENCES ${fk.ref}${fk.onDelete ? ' ON DELETE ' + fk.onDelete : ''}`
+    )
   )
 }
 
