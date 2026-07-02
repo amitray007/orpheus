@@ -10,7 +10,7 @@
  *   getActivitySnapshot()                 — read the full map (no subscription)
  */
 
-import { useCallback, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -99,4 +99,36 @@ export function useWorkspaceActivity(workspaceId: string): WorkspaceActivityDeta
     () => store.get(workspaceId),
     () => store.get(workspaceId) // server snapshot — same in Electron context
   )
+}
+
+const ACTIVE_DETAILS = new Set<WorkspaceActivityDetail>(['working', 'attention', 'ready'])
+
+/**
+ * Subscribe to a list of workspaces and return how many are currently
+ * "active" (working/attention/ready, as opposed to idle/archived). Used by
+ * the sidebar to size the always-visible slice of a project's workspace list.
+ * Returns a primitive number so useSyncExternalStore's identity check stays
+ * stable across renders.
+ */
+export function useActiveCount(workspaceIds: string[]): number {
+  const key = workspaceIds.join('|')
+  // Subscribe to every id in the list; combine into a single unsubscribe.
+  // Memoized on the joined key (not the array reference) so we don't
+  // resubscribe on every parent render when the id list is unchanged.
+  const subscribeToAll = useCallback(
+    (fn: () => void) => {
+      if (workspaceIds.length === 0) return () => {}
+      const unsubscribes = workspaceIds.map((id) => subscribe(id, fn))
+      return () => unsubscribes.forEach((unsub) => unsub())
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable joined string, not the array reference
+    [key]
+  )
+  const getSnapshot = useMemo(
+    () => () =>
+      workspaceIds.reduce((count, id) => count + (ACTIVE_DETAILS.has(store.get(id)!) ? 1 : 0), 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable joined string, not the array reference
+    [key]
+  )
+  return useSyncExternalStore(subscribeToAll, getSnapshot, getSnapshot)
 }
