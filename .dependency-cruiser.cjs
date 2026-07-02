@@ -102,7 +102,11 @@ module.exports = {
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config
-          '(^|/)(?:babel|webpack|vite|electron[.]vite|electron-builder)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$'
+          '(^|/)(?:babel|webpack|vite|electron[.]vite|electron-builder)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$',
+          // Build entry points, not orphans: electron.vite.config.ts declares
+          // src/preload/index.ts and src/preload/overlay.ts as rollup inputs —
+          // nothing imports them, they're loaded by Electron at runtime.
+          '^src/preload/(?:index|overlay)[.]ts$'
         ]
       },
       to: {}
