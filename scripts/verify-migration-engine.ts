@@ -28,7 +28,7 @@ register('data:text/javascript,' + encodeURIComponent(extensionFallbackHook), im
 // better-sqlite3-compatible shim for the harness: DatabaseSync's prepare()/exec() already match;
 // provide a Database-like constructor name so the rest of the harness is unchanged.
 class Database extends DatabaseSync {}
-import { enumCheck, renderCreateTable } from '../src/main/db/render.ts'
+import { enumCheck, renderCreateTable, renderIndex } from '../src/main/db/render.ts'
 import { introspectTable } from '../src/main/db/introspect.ts'
 
 // enumCheck renders a canonical IN(...) clause from a shared array
@@ -186,7 +186,7 @@ const { sync, planSync } = await import('../src/main/db/engine.ts')
   console.log('✓ engine')
 }
 
-const { schema } = await import('../src/main/db/schema.ts')
+const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
 
 {
   const sdb = new Database(':memory:')
@@ -202,4 +202,154 @@ const { schema } = await import('../src/main/db/schema.ts')
   }
   assert.deepEqual(secondPlan, [], 'fresh build must be idempotent')
   console.log('✓ schema-fresh')
+}
+
+// convergence: build synthetic legacy-shaped DBs BY HAND with raw SQL that
+// mimics real historical shapes, then run the NEW engine's sync() on them and
+// assert convergence to the same normalized shape as a fresh build, plus
+// idempotency (a second planSync is empty). We deliberately do NOT import or
+// call the OLD src/main/db.ts migrate() here: it is written against
+// better-sqlite3-specific APIs and does not load under this harness's
+// node:sqlite runtime (see Task 8 constraints in the plan).
+{
+  // normalizedShape: a stable structural fingerprint of every table in
+  // `schema` — sorted PRAGMA table_info rows (name,type,notnull,dflt_value,pk)
+  // plus sorted index sql from sqlite_master. Two DBs with equal
+  // normalizedShape() are structurally converged regardless of how they got
+  // there (fresh build vs. reconciled-from-legacy).
+  function normalizedShape(cdb: InstanceType<typeof Database>): Record<string, unknown> {
+    const out: Record<string, unknown> = {}
+    for (const table of Object.keys(schema)) {
+      const cols = (cdb.prepare(`PRAGMA table_info("${table}")`).all() as any[])
+        .map((r) => ({
+          name: r.name,
+          type: r.type,
+          notnull: r.notnull,
+          dflt_value: r.dflt_value,
+          pk: r.pk
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+      const indexSqls = (
+        cdb
+          .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=?")
+          .all(table) as { sql: string | null }[]
+      )
+        .map((r) => r.sql)
+        .filter((sql): sql is string => sql !== null)
+        .sort()
+      out[table] = { columns: cols, indexes: indexSqls }
+    }
+    return out
+  }
+
+  // Reference shape: fresh db, sync() from scratch.
+  const ref = new Database(':memory:')
+  sync(ref, schema, { dbPath: ':memory:', legacyVersion: 0 })
+  const refShape = normalizedShape(ref)
+
+  // --- Fixture (a): a "v21-ish" workspaces DB -----------------------------
+  // Hand-built legacy shape: workspaces has the OLD CHECK that allows the
+  // retired 'in_review' value. Other tables are created fresh-shaped (the
+  // point of this fixture is exercising workspaces drift + normalizeOnRebuild,
+  // not re-testing every table's history). projects is created first since
+  // workspaces references it via FOREIGN KEY.
+  {
+    const ldb = new Database(':memory:')
+    ldb.exec('PRAGMA foreign_keys = OFF')
+
+    ldb.exec(renderCreateTable('projects', schema.projects))
+    for (const [idxName, idxDef] of Object.entries(schema.projects.indexes ?? {})) {
+      ldb.exec(renderIndex('projects', idxName, idxDef))
+    }
+    ldb.exec("INSERT INTO projects (id, path, name, added_at) VALUES ('p1', '/tmp/p1', 'p1', 0)")
+
+    // Legacy-shaped workspaces: old CHECK still allowing 'in_review'.
+    ldb.exec(`CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      pinned_at INTEGER,
+      created_at INTEGER NOT NULL,
+      last_opened_at INTEGER,
+      archived_at INTEGER,
+      closed_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'idle'
+        CHECK (status IN ('in_progress','in_review','idle','archived')),
+      name_is_auto INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER,
+      claude_session_id TEXT,
+      last_title TEXT,
+      forked_from_session_id TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`)
+    ldb.exec(
+      'INSERT INTO workspaces (id, project_id, name, cwd, created_at, status) VALUES ' +
+        "('w1', 'p1', 'w1', '/tmp/w1', 0, 'in_review')," +
+        "('w2', 'p1', 'w2', '/tmp/w2', 0, 'idle')"
+    )
+
+    // The remaining tables in schema get created fresh-shaped (no drift
+    // being exercised for them in this fixture) so sync() has nothing else
+    // to converge but workspaces.
+    for (const [tableName, def] of Object.entries(schema)) {
+      if (tableName === 'projects' || tableName === 'workspaces') continue
+      ldb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        ldb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+
+    sync(ldb, schema, { dbPath: ':memory:', legacyVersion: 21 })
+
+    // (i) workspaces (and everything else) converged to the new CHECK shape
+    assert.deepEqual(normalizedShape(ldb), refShape, 'v21-ish fixture did not converge')
+
+    // (ii) the 'in_review' row's status is now a VALID new value, coerced by
+    // normalizeOnRebuild — row count preserved.
+    const w1 = ldb.prepare("SELECT status FROM workspaces WHERE id = 'w1'").get() as {
+      status: string
+    }
+    assert.ok(
+      (WORKSPACE_STATUS as readonly string[]).includes(w1.status),
+      `w1.status '${w1.status}' is not a valid WORKSPACE_STATUS value`
+    )
+    assert.equal(
+      w1.status,
+      'idle',
+      `expected legacy 'in_review' to coerce to 'idle', got '${w1.status}'`
+    )
+    const count = ldb.prepare('SELECT COUNT(*) c FROM workspaces').get() as { c: number }
+    assert.equal(count.c, 2, 'row count must be preserved across rebuild')
+
+    // (iii) idempotent after converge.
+    assert.deepEqual(planSync(ldb, schema), [], 'v21-ish fixture not idempotent after converge')
+  }
+
+  // --- Fixture (b): "fresh but pre-existing tables" -----------------------
+  // Every table created fresh-shaped (via renderCreateTable, i.e. the exact
+  // SQL the engine itself would emit for createTable), inserted in FK-safe
+  // order, then sync() again. planSync must return [] — no phantom rebuilds
+  // triggered against an already-correct DB.
+  {
+    const pdb = new Database(':memory:')
+    pdb.exec('PRAGMA foreign_keys = OFF')
+    for (const [tableName, def] of Object.entries(schema)) {
+      pdb.exec(renderCreateTable(tableName, def))
+      for (const [idxName, idxDef] of Object.entries(def.indexes ?? {})) {
+        pdb.exec(renderIndex(tableName, idxName, idxDef))
+      }
+    }
+
+    sync(pdb, schema, { dbPath: ':memory:', legacyVersion: 63 })
+
+    assert.deepEqual(normalizedShape(pdb), refShape, 'pre-existing fresh-shaped fixture diverged')
+    assert.deepEqual(
+      planSync(pdb, schema),
+      [],
+      'sync() on an already-correct DB must not produce phantom rebuilds'
+    )
+  }
+
+  console.log('✓ convergence')
 }

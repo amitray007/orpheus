@@ -88,19 +88,62 @@ function sync(
   const skipBackup = opts.dbPath === ':memory:' || opts.legacyVersion === 0
   let backedUp = false
 
-  try {
-    db.exec('BEGIN')
+  // rebuildTable() manages its own BEGIN/COMMIT/ROLLBACK transaction
+  // internally (see rebuild.ts) — real SQLite forbids nesting a second BEGIN
+  // inside an already-open transaction, so this plan cannot be wrapped in one
+  // outer transaction when it contains a rebuildTable op. Non-rebuild ops
+  // (createTable/addColumn/dropColumn/addIndex/dropIndex) are individually
+  // atomic DDL statements in SQLite, so executing them outside an explicit
+  // transaction is safe; only rebuildTable needs (and provides) its own
+  // transactional boundary.
+  let inTxn = false
+  const beginIfNeeded = (): void => {
+    if (!inTxn) {
+      db.exec('BEGIN')
+      inTxn = true
+    }
+  }
+  const commitIfNeeded = (): void => {
+    if (inTxn) {
+      db.exec('COMMIT')
+      inTxn = false
+    }
+  }
 
+  // Tables rebuilt this run: rebuildTable() already recreates every index in
+  // desired.indexes as its final step (its shadow-table swap drops the old
+  // table, and with it any indexes attached to it), so any addIndex op the
+  // up-front plan also emitted for one of desired.indexes on this table is
+  // already satisfied — executing it again would fail with "index already
+  // exists". dropIndex ops are unaffected: a rebuilt table can't retain an
+  // index that isn't in desired.indexes (rebuild only recreates desired
+  // ones), so a planned drop of a non-desired index still applies... except
+  // there's nothing left to drop either, since the old table (and its
+  // indexes) is gone. Skip dropIndex for rebuilt tables too, for the same
+  // reason.
+  const rebuiltTables = new Set(
+    plan.filter((op) => op.kind === 'rebuildTable').map((op) => op.table)
+  )
+
+  try {
     for (const op of plan) {
       if (!backedUp && !skipBackup && (op.kind === 'rebuildTable' || op.kind === 'dropColumn')) {
         backupBefore(db, opts.dbPath, opts.legacyVersion)
         backedUp = true
       }
 
+      if ((op.kind === 'addIndex' || op.kind === 'dropIndex') && rebuiltTables.has(op.table)) {
+        // Already handled by rebuildTable's own index recreation — skip to
+        // avoid "index already exists" / dropping an index that no longer
+        // exists post-rebuild.
+        continue
+      }
+
       opts.log?.({ table: op.table, kind: op.kind })
 
       switch (op.kind) {
         case 'createTable': {
+          beginIfNeeded()
           const def = schema[op.table]
           db.exec(renderCreateTable(op.table, def))
           for (const [indexName, indexDef] of Object.entries(def.indexes ?? {})) {
@@ -109,34 +152,41 @@ function sync(
           break
         }
         case 'addColumn': {
+          beginIfNeeded()
           const colDef = schema[op.table].columns[op.column]
           const fragment = renderColumnFragment(op.column, colDef)
           db.exec(`ALTER TABLE "${op.table}" ADD COLUMN ${fragment}`)
           break
         }
         case 'dropColumn': {
+          beginIfNeeded()
           db.exec(`ALTER TABLE "${op.table}" DROP COLUMN "${op.column}"`)
           break
         }
         case 'rebuildTable': {
+          // Flush + close any open outer transaction first: rebuildTable
+          // opens its own.
+          commitIfNeeded()
           const freshLive = introspectTable(db, op.table)!
           rebuildTable(db, op.table, schema[op.table], freshLive)
           break
         }
         case 'addIndex': {
+          beginIfNeeded()
           db.exec(renderIndex(op.table, op.index, schema[op.table].indexes![op.index]))
           break
         }
         case 'dropIndex': {
+          beginIfNeeded()
           db.exec(`DROP INDEX IF EXISTS "${op.index}"`)
           break
         }
       }
     }
 
-    db.exec('COMMIT')
+    commitIfNeeded()
   } catch (err) {
-    db.exec('ROLLBACK')
+    if (inTxn) db.exec('ROLLBACK')
     throw err
   }
 }
