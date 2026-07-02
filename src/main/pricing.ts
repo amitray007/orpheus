@@ -13,12 +13,16 @@
 // exists so known model IDs are priceable offline. Only bump when an entirely
 // new model family appears (and update models.dev cross-check comment below).
 //
-// Cross-checked against models.dev/api.json on 2026-05-21:
+// Cross-checked against models.dev/api.json on 2026-05-21 (claude-sonnet-5
+// added 2026-07-02 per Anthropic's model catalog, not yet cross-checked
+// against models.dev):
 //   claude-opus-4-7:   $5/$25 input/output (1M ctx)
 //   claude-opus-4-5:   $5/$25 input/output (200K ctx)
+//   claude-sonnet-5:   $3/$15 input/output (1M ctx)
 //   claude-sonnet-4-6: $3/$15 input/output (1M ctx)
 //   claude-sonnet-4-5: $3/$15 input/output (200K ctx)
 //   claude-haiku-4-5:  $1/$5  input/output (200K ctx)
+//   claude-fable-5:    $10/$50 input/output (1M ctx)
 // ---------------------------------------------------------------------------
 
 export type ModelPricing = {
@@ -69,6 +73,16 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     context: 200_000,
     output_limit: 64_000
   },
+  // Claude Sonnet 5 — $3/$15, 1M context (standard sticker; $2/$10 intro through
+  // 2026-08-31, not modeled here — see FALLBACK_PRICING header note)
+  'claude-sonnet-5': {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cacheWrite: 3.75,
+    context: 1_000_000,
+    output_limit: 128_000
+  },
   // Claude Sonnet 4.6 — $3/$15, 1M context
   'claude-sonnet-4-6': {
     input: 3,
@@ -96,6 +110,15 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     context: 200_000,
     output_limit: 64_000
   },
+  // Claude Fable 5 — $10/$50, 1M context
+  'claude-fable-5': {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite: 12.5,
+    context: 1_000_000,
+    output_limit: 128_000
+  },
   // Generic family aliases — map to representative latest pricing
   opus: {
     input: 5,
@@ -120,6 +143,14 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     cacheWrite: 1.25,
     context: 200_000,
     output_limit: 64_000
+  },
+  fable: {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite: 12.5,
+    context: 1_000_000,
+    output_limit: 128_000
   }
 }
 
@@ -214,6 +245,7 @@ function inferFamilyAlias(modelId: string): string | null {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('fable')) return 'fable'
   return null
 }
 

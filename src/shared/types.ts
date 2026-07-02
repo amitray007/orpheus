@@ -300,15 +300,17 @@ export type KeepAwakeState = {
 // `getPricing` family-alias resolution.
 export const CLAUDE_MODEL_OPTIONS = [
   // Explicit versions — unambiguous pricing + context lookup
+  { value: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus' },
-  { value: 'claude-opus-4-5', label: 'Opus 4.5', family: 'opus' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5', family: 'sonnet' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet' },
-  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', family: 'sonnet' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku' },
+  { value: 'claude-fable-5', label: 'Fable 5', family: 'fable' },
   // Always-latest aliases — claude resolves at launch
   { value: 'opus', label: 'Opus (latest)', family: 'opus' },
   { value: 'sonnet', label: 'Sonnet (latest)', family: 'sonnet' },
-  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' }
+  { value: 'haiku', label: 'Haiku (latest)', family: 'haiku' },
+  { value: 'fable', label: 'Fable (latest)', family: 'fable' }
 ] as const
 
 export type ClaudeModelOption = (typeof CLAUDE_MODEL_OPTIONS)[number]['value']
