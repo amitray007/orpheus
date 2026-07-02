@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
   pull_request:
 
 # Cancel in-flight runs on the same ref when a newer commit lands.
@@ -12,21 +12,32 @@ concurrency:
 
 jobs:
   check:
-    name: typecheck + lint + format
-    # typecheck + lint don't need the native xcframework or compiled addons, so
-    # we skip the postinstall (--ignore-scripts below). This also decouples CI
-    # from the third-party libghostty "storage" releases, which rotate weekly
-    # and 404 once the pinned tag is rotated out. (Runner could be ubuntu now;
-    # kept on macOS-14 to match the rest of the toolchain.)
-    runs-on: macos-14
+    name: typecheck + lint + format + quality gates
+    # typecheck + lint + the quality gates below don't need the native
+    # xcframework or compiled addons, so we skip the postinstall
+    # (--ignore-scripts below). This also decouples CI from the third-party
+    # libghostty "storage" releases, which rotate weekly and 404 once the
+    # pinned tag is rotated out. Runs on ubuntu (cheaper than macOS minutes);
+    # the one job that genuinely needs macOS (native compile) lives in
+    # native-build-check.yml, and DB-migration smoke (needs the Electron ABI)
+    # lives in its own path-filtered macOS job below.
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: 1.3.10
+
+      - name: Cache bun dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Install dependencies
         # --ignore-scripts: skip the postinstall (libghostty fetch + native
@@ -38,10 +49,40 @@ jobs:
         run: bun run typecheck
 
       - name: Lint
-        run: bun run lint
+        # --max-warnings ratchets the warning budget: fails if the count grows
+        # past the pre-push baseline (183 warnings at time of writing). Lower
+        # this number as warnings are cleaned up; never raise it without
+        # reviewing what regressed.
+        run: bunx eslint . --max-warnings=183
 
       - name: Format check
         run: bun run format:check
+
+      - name: Duplication check (jscpd)
+        run: bun run check:dup
+
+      - name: Architecture / dependency-cruiser check
+        run: bun run check:arch
+
+      # Advisory: overlay-discipline guard currently has pre-existing findings
+      # in the tree (src/renderer/src/overlay/kinds/ChipPrompt.tsx and
+      # ChipTooltip.tsx trip the raw-primitive heuristic on comment text, not
+      # actual unguarded overlay usage) — continue-on-error until that's
+      # triaged/fixed so this doesn't block unrelated PRs. Flip to blocking
+      # once the tree is clean.
+      - name: Overlay discipline check (advisory)
+        continue-on-error: true
+        run: node scripts/check-overlay-discipline.mjs
+
+      - name: Contrast check (WCAG-AA)
+        run: node scripts/verify-contrast.mjs
+
+      # Advisory: dead-code count (knip) is not yet a gate — 97 known findings
+      # at time of writing. Runs so the count is visible in every CI log;
+      # flip to blocking once the backlog is triaged.
+      - name: Dead code check (knip, advisory)
+        continue-on-error: true
+        run: bun run check:dead
 
       # Advisory react-doctor check: surfaces React anti-patterns introduced by
       # this PR vs. the base branch. Non-blocking (continue-on-error: true) so it
@@ -56,3 +97,46 @@ jobs:
 
       # No tests in this repo yet. When tests land, add `bun test` (or vitest/
       # playwright equivalents) as another step.
+
+  migration-smoke-filter:
+    name: Detect DB migration changes
+    runs-on: ubuntu-latest
+    outputs:
+      db_changed: ${{ steps.filter.outputs.db }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        id: filter
+        with:
+          filters: |
+            db:
+              - 'src/main/db.ts'
+              - 'scripts/smoke-db-migrations.ts'
+
+  migration-smoke:
+    name: DB migration smoke test
+    needs: migration-smoke-filter
+    if: needs.migration-smoke-filter.outputs.db_changed == 'true'
+    # better-sqlite3 is compiled against Electron's ABI, so this needs a real
+    # install (no --ignore-scripts) and the Electron runtime to execute
+    # against — same setup as release-please.yml's build-and-attach job.
+    # macOS-only cost, gated behind the paths-filter above so it only spends
+    # minutes when migration-relevant files actually change.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Smoke-test DB migrations
+        run: |
+          bunx esbuild scripts/smoke-db-migrations.ts \
+            --bundle --platform=node --format=cjs \
+            --external:better-sqlite3 --external:electron \
+            --outfile=out/smoke-db-migrations.cjs
+          ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron out/smoke-db-migrations.cjs
