@@ -39,3 +39,35 @@ assert.equal(live.columns[1].dflt, '0')
 assert.ok(live.indexes.some((i) => i.name === 't_n_idx' && !i.auto))
 assert.equal(introspectTable(db, 'missing'), null)
 console.log('✓ introspect')
+
+import { diffTable } from '../src/main/db/diff.ts'
+
+{
+  const desired = {
+    columns: { id: 'TEXT PRIMARY KEY', n: 'INTEGER', extra: 'TEXT' },
+  }
+  // live is missing `extra` → addColumn
+  const live = {
+    name: 't', createSql: 'CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER)',
+    columns: [
+      { name: 'id', type: 'TEXT', notNull: false, dflt: null, pk: true },
+      { name: 'n', type: 'INTEGER', notNull: false, dflt: null, pk: false },
+    ],
+    indexes: [],
+  }
+  const ops = diffTable('t', desired, live)
+  assert.deepEqual(ops, [{ kind: 'addColumn', table: 't', column: 'extra' }])
+
+  // missing table → createTable
+  assert.deepEqual(diffTable('t', desired, null), [{ kind: 'createTable', table: 't' }])
+
+  // live has a stray column NOT in dropColumns → no op
+  const desired2 = { columns: { id: 'TEXT PRIMARY KEY' } }
+  const live2 = { ...live, columns: [live.columns[0], { name: 'gone', type: 'TEXT', notNull: false, dflt: null, pk: false }] }
+  assert.deepEqual(diffTable('t', desired2, live2), [])
+
+  // same, but with dropColumns → dropColumn op
+  const desired3 = { columns: { id: 'TEXT PRIMARY KEY' }, dropColumns: ['gone'] }
+  assert.deepEqual(diffTable('t', desired3, live2), [{ kind: 'dropColumn', table: 't', column: 'gone' }])
+  console.log('✓ diff')
+}
