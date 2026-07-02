@@ -50,9 +50,9 @@ jobs:
 
       - name: Lint
         # --max-warnings ratchets the warning budget downward as findings close
-        # (currently 170). Lower this number as warnings are cleaned up; never
+        # (currently 169). Lower this number as warnings are cleaned up; never
         # raise it without reviewing what regressed.
-        run: bunx eslint . --max-warnings=170
+        run: bunx eslint . --max-warnings=169
 
       - name: Format check
         run: bun run format:check
