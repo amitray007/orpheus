@@ -753,8 +753,25 @@ function applyGlobalHotkey(hotkey: string): boolean {
   }
 }
 
-// Diagnostics: record uncaught errors / rejections. Logging only — does NOT
-// alter Electron's default crash handling; logDiagMain never throws.
+// Last-resort crash logging: written straight to disk so a fatal error is
+// still diagnosable even if the diagnostics pipeline itself is what failed.
+// Must never throw — this runs from inside error handlers.
+function writeCrashFile(err: unknown): void {
+  try {
+    fs.writeFileSync(
+      path.join(app.getPath('userData'), 'orpheus-crash.log'),
+      `${new Date().toISOString()}\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
+    )
+  } catch {
+    /* last-resort logging must never throw */
+  }
+}
+
+// Diagnostics: record uncaught errors, write a crash file, and fail fast.
+// Registering this listener suppresses Node's default uncaughtException
+// behavior (print + exit), so we must replicate an exit here ourselves —
+// otherwise the process would stay alive in a corrupted state.
+let handlingFatal = false
 process.on('uncaughtException', (err) => {
   logDiagMain({
     category: 'error',
@@ -763,7 +780,24 @@ process.on('uncaughtException', (err) => {
     message: err?.message ?? String(err),
     data: { stack: err?.stack ?? null, name: err?.name ?? null }
   })
+  if (handlingFatal) return
+  handlingFatal = true
+  logDiagMain({
+    category: 'error',
+    level: 'fatal',
+    event: DIAG_EVENTS.UNCAUGHT_EXCEPTION,
+    message: err?.message ?? String(err),
+    data: { stack: err?.stack ?? null, name: err?.name ?? null }
+  })
+  writeCrashFile(err)
+  dialog.showErrorBox(
+    'Orpheus — Unexpected Error',
+    'Orpheus encountered an unexpected error and must close.\n\n' + (err?.message ?? String(err))
+  )
+  app.exit(1)
 })
+// Diagnostics: record unhandled promise rejections. Logging only — does NOT
+// alter Electron's default handling; logDiagMain never throws.
 process.on('unhandledRejection', (reason) => {
   const e = reason as { message?: string; stack?: string; name?: string }
   logDiagMain({
@@ -2840,527 +2874,543 @@ if (!app.requestSingleInstanceLock()) {
     win.focus()
   })
 
-  app.whenReady().then(() => {
-    // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
-    // This is a no-op after the first call (getUserShellPath caches internally).
-    void diag
-      .trace('startup.shell_path', {}, async () => {
-        const resolvedPath = await getUserShellPath()
-        if (!resolvedPath) {
-          logDiagMain({
-            category: 'anomaly',
-            level: 'warn',
-            event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
-          })
-        }
-      })
-      .catch(() => {
-        /* swallow — getUserShellPath already logs errors internally */
-      })
-
-    electronApp.setAppUserModelId(APP_ID)
-
-    // Event-loop delay monitor — logs p99 and max lag every 10s so we have
-    // data on whether a future utilityProcess migration is worth the cost.
-    // All output is [perf]-tagged for easy grep/removal later. Gated behind
-    // dev builds (or an explicit opt-in env var in packaged builds) so a
-    // background timer + monitor handle isn't allocated in production by
-    // default.
-    if (is.dev || process.env.ORPHEUS_PERF_EVENTLOOP === '1') {
-      const eld = monitorEventLoopDelay({ resolution: 10 })
-      eld.enable()
-      setInterval(() => {
-        console.log(
-          '[perf] eventloop p99=%dms max=%dms',
-          Math.round(eld.percentile(99) / 1e6),
-          Math.round(eld.max / 1e6)
-        )
-        eld.reset()
-      }, 10_000).unref()
-    }
-
-    // Initialize / migrate the SQLite database early, before any IPC can fire.
-    // Every other startup step here is try/catch-wrapped with console.error,
-    // but this one is the most upstream: a migration throw must not silently
-    // kill the app with no window and no visible error (the uncaughtException
-    // handler is logging-only). Fail fast and visibly instead — a half-migrated
-    // DB must not run a half-app.
-    try {
-      getDb()
-    } catch (err) {
-      console.error('[startup] database migration failed:', err)
-      dialog.showErrorBox(
-        'Orpheus — Database Error',
-        'The database could not be migrated to the latest version and the app cannot start safely.\n\n' +
-          'Your data has not been modified. A backup may exist alongside the database file.\n\n' +
-          String(err instanceof Error ? err.message : err)
-      )
-      app.exit(1)
-      return
-    }
-    startDiagnostics()
-    syncDiagFlags()
-
-    // Boot Quick Actions registry — registers all action descriptors so they're
-    // available before any IPC can invoke them.
-    bootActions()
-
-    // Seed default footer actions on first install (idempotent: no-op if rows exist).
-    try {
-      seedDefaultFooterActions()
-    } catch (err) {
-      console.error('[footerActions] failed to seed defaults:', err)
-    }
-
-    // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
-    refreshFromModelsDev().catch(() => {})
-
-    // Clear stale in_progress / attention statuses left over from a prior
-    // session (crash, hard quit). Without this, the WorkspaceView would show a
-    // forever-spinning "thinking" indicator until a fresh activity event lands.
-    try {
-      const cleared = resetTransientStatusesOnStartup()
-      if (cleared > 0) {
-        console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
-      }
-    } catch (err) {
-      console.error('[startup] failed to clear stale activity statuses:', err)
-    }
-
-    // Seed the in-memory workspaceTitles map from the DB so the sidebar /
-    // workspace header can show the last observed prompt title immediately on
-    // launch — without waiting for Claude to re-emit an OSC title.
-    try {
-      for (const { id, title } of getAllWorkspaceLastTitles()) {
-        workspaceTitles.set(id, title)
-      }
-    } catch (err) {
-      console.error('[startup] failed to seed workspaceTitles from DB:', err)
-    }
-
-    app.on('browser-window-created', (_, window) => {
-      optimizer.watchWindowShortcuts(window)
-    })
-
-    createWindow()
-
-    // Kick the active terminal on system wake events so the CVDisplayLink
-    // restarts after display sleep / screen lock / user-switch.
-    powerMonitor.on('resume', kickActiveTerminal)
-    powerMonitor.on('unlock-screen', kickActiveTerminal)
-    if (process.platform === 'darwin') {
-      powerMonitor.on('user-did-become-active', kickActiveTerminal)
-    }
-
-    // Apply OS-level settings after the window exists (hotkey callback needs it)
-    try {
-      const state = getAppUiState()
-      applyLaunchAtLogin(state.launchAtLogin)
-      applyGlobalHotkey(state.globalHotkey)
-    } catch (err) {
-      console.error('[startup] failed to apply launch/hotkey settings:', err)
-    }
-
-    // Start the update auto-check loop (30s initial delay, then every 6h).
-    // Gated internally on the autoCheckUpdates setting.
-    startAutoCheckLoop()
-
-    // Start the Claude service-status poller (3s initial delay, then per user setting).
-    // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
-    startStatusPoller()
-
-    // Defer notify server + hook reconcile until after the first frame — keeps
-    // createWindow() hot so the UI appears faster on launch.
-    setImmediate(() => {
-      // Wire up the activity batch channel regardless of hook integration state —
-      // the batch listener is always needed for file-based status updates.
-      onActivityBatch((updates) => {
-        const win = getMainWindow()
-        if (!win) return
-        win.webContents.send('workspace:activityBatch', updates)
-        // Push canInject state for each workspace that changed activity so the
-        // renderer chips don't need to poll terminal:canInject every second.
-        // Use the authoritative terminalActions.canInject() so 'attention' and
-        // any future status additions are handled identically to the IPC handler.
-        for (const { workspaceId } of updates) {
-          if (!win.webContents.isDestroyed()) {
-            win.webContents.send('terminal:canInjectChanged', {
-              workspaceId,
-              canInject: terminalActions.canInject(workspaceId)
+  app
+    .whenReady()
+    .then(() => {
+      // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
+      // This is a no-op after the first call (getUserShellPath caches internally).
+      void diag
+        .trace('startup.shell_path', {}, async () => {
+          const resolvedPath = await getUserShellPath()
+          if (!resolvedPath) {
+            logDiagMain({
+              category: 'anomaly',
+              level: 'warn',
+              event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
             })
           }
+        })
+        .catch(() => {
+          /* swallow — getUserShellPath already logs errors internally */
+        })
+
+      electronApp.setAppUserModelId(APP_ID)
+
+      // Event-loop delay monitor — logs p99 and max lag every 10s so we have
+      // data on whether a future utilityProcess migration is worth the cost.
+      // All output is [perf]-tagged for easy grep/removal later. Gated behind
+      // dev builds (or an explicit opt-in env var in packaged builds) so a
+      // background timer + monitor handle isn't allocated in production by
+      // default.
+      if (is.dev || process.env.ORPHEUS_PERF_EVENTLOOP === '1') {
+        const eld = monitorEventLoopDelay({ resolution: 10 })
+        eld.enable()
+        setInterval(() => {
+          console.log(
+            '[perf] eventloop p99=%dms max=%dms',
+            Math.round(eld.percentile(99) / 1e6),
+            Math.round(eld.max / 1e6)
+          )
+          eld.reset()
+        }, 10_000).unref()
+      }
+
+      // Initialize / migrate the SQLite database early, before any IPC can fire.
+      // Every other startup step here is try/catch-wrapped with console.error,
+      // but this one is the most upstream: a migration throw must not silently
+      // kill the app with no window and no visible error. Fail fast and
+      // visibly instead — a half-migrated DB must not run a half-app.
+      try {
+        getDb()
+      } catch (err) {
+        console.error('[startup] database migration failed:', err)
+        writeCrashFile(err)
+        dialog.showErrorBox(
+          'Orpheus — Database Error',
+          'The database could not be migrated to the latest version and the app cannot start safely.\n\n' +
+            'Your data has not been modified. A backup may exist alongside the database file.\n\n' +
+            String(err instanceof Error ? err.message : err)
+        )
+        app.exit(1)
+        return
+      }
+      startDiagnostics()
+      syncDiagFlags()
+
+      // Boot Quick Actions registry — registers all action descriptors so they're
+      // available before any IPC can invoke them.
+      bootActions()
+
+      // Seed default footer actions on first install (idempotent: no-op if rows exist).
+      try {
+        seedDefaultFooterActions()
+      } catch (err) {
+        console.error('[footerActions] failed to seed defaults:', err)
+      }
+
+      // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
+      refreshFromModelsDev().catch(() => {})
+
+      // Clear stale in_progress / attention statuses left over from a prior
+      // session (crash, hard quit). Without this, the WorkspaceView would show a
+      // forever-spinning "thinking" indicator until a fresh activity event lands.
+      try {
+        const cleared = resetTransientStatusesOnStartup()
+        if (cleared > 0) {
+          console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
         }
+      } catch (err) {
+        console.error('[startup] failed to clear stale activity statuses:', err)
+      }
+
+      // Seed the in-memory workspaceTitles map from the DB so the sidebar /
+      // workspace header can show the last observed prompt title immediately on
+      // launch — without waiting for Claude to re-emit an OSC title.
+      try {
+        for (const { id, title } of getAllWorkspaceLastTitles()) {
+          workspaceTitles.set(id, title)
+        }
+      } catch (err) {
+        console.error('[startup] failed to seed workspaceTitles from DB:', err)
+      }
+
+      app.on('browser-window-created', (_, window) => {
+        optimizer.watchWindowShortcuts(window)
       })
 
-      // Declarative hook reconcile: enabled → start server + install hooks;
-      // disabled (default) → remove any previously-installed managed hooks and
-      // do NOT start the socket server.
-      reconcileHooks()
+      createWindow()
 
-      // Start the command server unconditionally — the CLI shouldn't depend on
-      // hooks being enabled. Provides a request/response channel for CLI workspace
-      // actions (create, archive, close, reopen, rename, whoami.resolve).
-      if (!commandServer) {
-        try {
-          const cmdDeps: CommandServerDeps = {
-            destroySurface: (workspaceId) => {
-              if (terminalAddon) {
-                try {
-                  terminalAddon.destroy(workspaceId)
-                } catch {
-                  // Surface not mounted or already destroyed — ignore.
-                }
-              }
-            },
-            teardownWorkspaceResources,
-            performClose: (workspaceId) => performClose(workspaceId),
-            performArchive: (workspaceId) => performArchive(workspaceId, true),
-            requestOpenWorkspace,
-            openAndSeed: async (
-              workspaceId: string,
-              taskText: string,
-              focus: boolean = true,
-              submit: boolean = true
-            ): Promise<string | null> => {
-              // Ask the renderer to open + mount the workspace. focus=true (default)
-              // navigates the UI there (the normal nav path); focus=false performs a
-              // background mount — the surface becomes injectable without stealing
-              // the user's view.
-              requestOpenWorkspace(workspaceId, focus)
-              // Poll with a bounded timeout (25 s) for THREE conditions:
-              //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
-              //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
-              //      getWorkspaceActivity() defaults an absent entry to 'idle', so
-              //      canInject() alone reports "injectable" on the very first poll tick,
-              //      before requestOpenWorkspace() has actually finished mounting the NSView.
-              //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
-              //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
-              //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
-              //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
-              //      but claude takes several seconds to launch + reach its interactive
-              //      prompt. Without this check, injection races ahead of claude's boot —
-              //      the text lands in an empty shell (or before claude's TUI is reading
-              //      input) and is silently lost: no transcript is ever written, even
-              //      though this function reports success. This was the root cause of
-              //      `ws new --task` reporting seedWarning:null while producing no
-              //      transcript and leaving status at awaiting_input forever.
-              //
-              // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
-              // surface-mount time (~100ms); now the poll also waits out claude's full
-              // boot + session-registration sequence, which can take 3-8 s in practice
-              // (binary launch, MCP/tool init, session file write). 25 s leaves generous
-              // headroom over the observed worst case without hanging indefinitely.
-              const POLL_INTERVAL_MS = 300
-              const TIMEOUT_MS = 25_000
-              const deadline = Date.now() + TIMEOUT_MS
-              let injectable = false
-              while (Date.now() < deadline) {
-                let mounted = false
-                try {
-                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
-                  mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
-                } catch {
-                  mounted = false
-                }
-                if (
-                  mounted &&
-                  terminalActions.canInject(workspaceId) &&
-                  isWorkspaceSessionReady(workspaceId)
-                ) {
-                  injectable = true
-                  break
-                }
-                await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-              }
-              if (!injectable) {
-                return (
-                  `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
-                  'task not injected. The workspace was created but claude may still be booting ' +
-                  '— open it manually and paste the task text once it reaches the prompt.'
-                )
-              }
-              const addon = loadTerminalAddon()
-              const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
-              if (!inputResult.ok) {
-                return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
-              }
-              // submit=false: caller wants the task STAGED (typed into claude's input
-              // box) but not sent — e.g. for review/editing before the user presses
-              // Enter themselves. Skip the delay + submit entirely; the text sitting
-              // in the input box is the desired end state, not an intermediate one.
-              if (!submit) {
-                return null
-              }
-              // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
-              // a synthetic Return) are two different libghostty code paths. Claude's
-              // full-screen TUI reads the PTY asynchronously, so it needs a moment to
-              // ingest the just-committed text before a Return keypress is meaningful.
-              // Firing Return microseconds later races ahead of that ingestion and the
-              // line never actually submits — the text just sits in the input box.
-              // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
-              // the TUI's read loop (terminal paste-then-submit automation typically
-              // needs 50-200ms; 150 is a safe middle).
-              await delay(SUBMIT_DELAY_MS)
-              const submitResult = terminalActions.submit(addon, workspaceId)
-              if (!submitResult.ok) {
-                // If the workspace flipped to 'busy' during the delay, that most
-                // likely means claude already started processing the text we just
-                // staged (canInject() — and therefore submit — goes false the moment
-                // status leaves idle/awaiting_input). Treat this as a soft signal
-                // rather than a hard failure: the submit may well have raced a
-                // status flip caused by the text itself landing. Only a genuine,
-                // non-busy failure is reported as an error.
-                if (submitResult.code === 'busy') {
-                  return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
-                }
-                return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
-              }
-              return null
-            },
-            sendToWorkspace: async (
-              workspaceId: string,
-              payload: { text?: string; submit?: boolean; key?: string },
-              focus: boolean = true
-            ): Promise<{ ok: boolean; error?: string }> => {
-              // QA #7 fix — verified root cause: terminalActions.canInject() reads
-              // getWorkspaceActivity(), which defaults to 'idle' for ANY workspace with
-              // no in-memory activity entry (orpheusNotify.ts: `activityMap.get(id) ??
-              // 'idle'`) — including a workspace whose surface was never mounted, or one
-              // that is closedAt-closed. So `!canInject(workspaceId)` was FALSE for an
-              // unopened workspace (it looked injectable), the auto-open branch below was
-              // skipped entirely, and the raw addon call failed with the unhelpful
-              // 'No terminal surface for workspace' (code: 'not_found').
-              //
-              // Fix, two parts:
-              //  (a) up front, if the workspace is known-closed (closedAt != null), always
-              //      go through the open+poll path — closedAt is an authoritative DB
-              //      signal that canInject's in-memory default can't see.
-              //  (b) defense in depth: after the open+poll path (or when skipped because
-              //      canInject looked true), if the actual send/key/submit call comes back
-              //      with code 'not_found' (surface genuinely not mounted), open the
-              //      workspace and retry once — this covers the exact false-'idle' case
-              //      above for a workspace that was never mounted at all, not just closed.
-              //
-              // QA fix #3 — the poll itself had the SAME stale-default bug it was meant to
-              // fix: openAndWaitInjectable() polled ONLY terminalActions.canInject(), which
-              // is the same activityMap-defaults-to-'idle' check from (a) above. So the very
-              // first poll iteration after requestOpenWorkspace() (fired but not yet actually
-              // mounted the NSView) already reported "injectable" — the loop exited after 0ms
-              // of real waiting, attemptSend() ran immediately against a not-yet-mounted
-              // surface, got 'not_found', and even the (b) retry-once repeated the exact same
-              // instant-false-positive poll. Net effect: `ws send` on a closed/unmounted
-              // workspace failed ~100% of the time regardless of --submit — the reported
-              // "text-only reports sent:true before the surface exists" asymmetry didn't
-              // reproduce directly (both paths shared attemptSend and failed identically),
-              // but the underlying not-ready detection was broken for both, which is the
-              // real bug worth fixing here: the poll must confirm a surface ACTUALLY exists
-              // via the addon's authoritative getSurfacePhase() (not the activity-map
-              // default) before considering the workspace injectable.
-              const POLL_INTERVAL_MS = 300
-              const TIMEOUT_MS = 10_000
-              const ACTIONABLE_ERROR_SUFFIX =
-                ' — run: orpheus ws open ' +
-                workspaceId +
-                ' (or it will be opened automatically; retry the send after it starts)'
+      // Kick the active terminal on system wake events so the CVDisplayLink
+      // restarts after display sleep / screen lock / user-switch.
+      powerMonitor.on('resume', kickActiveTerminal)
+      powerMonitor.on('unlock-screen', kickActiveTerminal)
+      if (process.platform === 'darwin') {
+        powerMonitor.on('user-did-become-active', kickActiveTerminal)
+      }
 
-              /**
-               * True only when the addon reports an actual mounted surface for this
-               * workspace ('hidden' | 'attached' | 'visible') — 'none' (never mounted)
-               * and 'freeing' (being torn down) are NOT ready. This is the authoritative
-               * truth query; unlike terminalActions.canInject() it cannot be fooled by
-               * the activity map's 'idle' default for a workspace with no activity entry.
-               */
-              function hasMountedSurface(): boolean {
-                try {
-                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
-                  return phase === 'hidden' || phase === 'attached' || phase === 'visible'
-                } catch {
-                  return false
-                }
-              }
+      // Apply OS-level settings after the window exists (hotkey callback needs it)
+      try {
+        const state = getAppUiState()
+        applyLaunchAtLogin(state.launchAtLogin)
+        applyGlobalHotkey(state.globalHotkey)
+      } catch (err) {
+        console.error('[startup] failed to apply launch/hotkey settings:', err)
+      }
 
-              async function openAndWaitInjectable(): Promise<boolean> {
-                requestOpenWorkspace(workspaceId, focus)
-                const deadline = Date.now() + TIMEOUT_MS
-                while (Date.now() < deadline) {
-                  if (hasMountedSurface() && terminalActions.canInject(workspaceId)) return true
-                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-                }
-                return false
-              }
+      // Start the update auto-check loop (30s initial delay, then every 6h).
+      // Gated internally on the autoCheckUpdates setting.
+      startAutoCheckLoop()
 
-              const ws = getWorkspace(workspaceId)
-              if (ws == null) {
-                return { ok: false, error: `workspace not found: ${workspaceId}` }
-              }
+      // Start the Claude service-status poller (3s initial delay, then per user setting).
+      // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
+      startStatusPoller()
 
-              // (a) Known-closed, or no confirmed mounted surface yet, or the in-memory
-              // canInject default can't be trusted — don't trust it; always open + wait.
-              if (
-                ws.closedAt != null ||
-                !hasMountedSurface() ||
-                !terminalActions.canInject(workspaceId)
-              ) {
-                const injectable = await openAndWaitInjectable()
-                if (!injectable) {
-                  return {
-                    ok: false,
-                    error:
-                      'workspace not ready: the surface did not become injectable within 10 s.' +
-                      ACTIONABLE_ERROR_SUFFIX
-                  }
-                }
-              }
-
-              const addon = loadTerminalAddon()
-
-              // Runs one full text/key/submit pass. Returns the first failure (if any).
-              // Note: `wasStaged` tracks whether this pass wrote text/keys into the PTY
-              // before any submit — used below to decide whether a 'busy' submit result
-              // is a soft (likely-already-submitted) signal rather than a hard failure.
-              async function attemptSend(): Promise<{
-                ok: boolean
-                error?: string
-                notFound?: boolean
-                softBusy?: boolean
-              }> {
-                let wasStaged = false
-                if (payload.text != null && payload.text !== '') {
-                  const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
-                  if (!inputResult.ok) {
-                    return {
-                      ok: false,
-                      notFound: inputResult.code === 'not_found',
-                      error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
-                    }
-                  }
-                  wasStaged = true
-                }
-                if (payload.key != null && payload.key !== '') {
-                  const keyDescriptor = resolveNamedKey(payload.key)
-                  if (keyDescriptor == null) {
-                    return { ok: false, error: `unknown key name: "${payload.key}"` }
-                  }
-                  const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
-                  if (!keysResult.ok) {
-                    return {
-                      ok: false,
-                      notFound: keysResult.code === 'not_found',
-                      error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
-                    }
-                  }
-                  wasStaged = true
-                }
-                if (payload.submit === true) {
-                  // sendInput/sendKeys (text/key commit) and submit (a synthetic Return
-                  // key event) are two different libghostty code paths. Claude's
-                  // full-screen TUI reads the PTY asynchronously, so it needs a moment
-                  // to ingest the just-staged text/key before Return is meaningful —
-                  // firing it immediately races ahead of that ingestion and the line
-                  // never actually submits. Only wait when something was actually
-                  // staged this pass; a submit with no preceding text/key doesn't need
-                  // the ingest gap.
-                  if (wasStaged) {
-                    await delay(SUBMIT_DELAY_MS)
-                  }
-                  const submitResult = terminalActions.submit(addon, workspaceId)
-                  if (!submitResult.ok) {
-                    if (wasStaged && submitResult.code === 'busy') {
-                      // The workspace flipped to 'busy' during the delay — most likely
-                      // claude already started processing the text/key we just staged
-                      // (canInject/submit go false the moment status leaves
-                      // idle/awaiting_input). Treat as a soft signal, not a hard
-                      // failure: the content may well have already been submitted.
-                      return { ok: true, softBusy: true }
-                    }
-                    return {
-                      ok: false,
-                      notFound: submitResult.code === 'not_found',
-                      error: `submit failed: ${submitResult.error ?? 'unknown error'}`
-                    }
-                  }
-                }
-                return { ok: true }
-              }
-
-              const firstAttempt = await attemptSend()
-              if (firstAttempt.ok) {
-                if (firstAttempt.softBusy) {
-                  return {
-                    ok: true,
-                    error:
-                      'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
-                  }
-                }
-                return { ok: true }
-              }
-
-              // (b) Defense in depth: the surface genuinely isn't mounted despite
-              // canInject saying otherwise (stale/defaulted activity). Open + wait, then
-              // retry exactly once before giving up with an actionable error.
-              if (firstAttempt.notFound === true) {
-                const injectable = await openAndWaitInjectable()
-                if (injectable) {
-                  const retryAttempt = await attemptSend()
-                  if (retryAttempt.ok) {
-                    if (retryAttempt.softBusy) {
-                      return {
-                        ok: true,
-                        error:
-                          'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
-                      }
-                    }
-                    return { ok: true }
-                  }
-                  return { ok: false, error: retryAttempt.error ?? 'send failed' }
-                }
-                return {
-                  ok: false,
-                  error: `workspace not open${ACTIONABLE_ERROR_SUFFIX}`
-                }
-              }
-
-              return { ok: false, error: firstAttempt.error ?? 'send failed' }
+      // Defer notify server + hook reconcile until after the first frame — keeps
+      // createWindow() hot so the UI appears faster on launch.
+      setImmediate(() => {
+        // Wire up the activity batch channel regardless of hook integration state —
+        // the batch listener is always needed for file-based status updates.
+        onActivityBatch((updates) => {
+          const win = getMainWindow()
+          if (!win) return
+          win.webContents.send('workspace:activityBatch', updates)
+          // Push canInject state for each workspace that changed activity so the
+          // renderer chips don't need to poll terminal:canInject every second.
+          // Use the authoritative terminalActions.canInject() so 'attention' and
+          // any future status additions are handled identically to the IPC handler.
+          for (const { workspaceId } of updates) {
+            if (!win.webContents.isDestroyed()) {
+              win.webContents.send('terminal:canInjectChanged', {
+                workspaceId,
+                canInject: terminalActions.canInject(workspaceId)
+              })
             }
           }
-          commandServer = startCommandServer(cmdDeps)
-        } catch (err) {
-          console.error('[commandServer] failed to start:', err)
-        }
-      }
+        })
 
-      setAutoCloseHandler((workspaceId) => {
-        performClose(workspaceId)
+        // Declarative hook reconcile: enabled → start server + install hooks;
+        // disabled (default) → remove any previously-installed managed hooks and
+        // do NOT start the socket server.
+        reconcileHooks()
+
+        // Start the command server unconditionally — the CLI shouldn't depend on
+        // hooks being enabled. Provides a request/response channel for CLI workspace
+        // actions (create, archive, close, reopen, rename, whoami.resolve).
+        if (!commandServer) {
+          try {
+            const cmdDeps: CommandServerDeps = {
+              destroySurface: (workspaceId) => {
+                if (terminalAddon) {
+                  try {
+                    terminalAddon.destroy(workspaceId)
+                  } catch {
+                    // Surface not mounted or already destroyed — ignore.
+                  }
+                }
+              },
+              teardownWorkspaceResources,
+              performClose: (workspaceId) => performClose(workspaceId),
+              performArchive: (workspaceId) => performArchive(workspaceId, true),
+              requestOpenWorkspace,
+              openAndSeed: async (
+                workspaceId: string,
+                taskText: string,
+                focus: boolean = true,
+                submit: boolean = true
+              ): Promise<string | null> => {
+                // Ask the renderer to open + mount the workspace. focus=true (default)
+                // navigates the UI there (the normal nav path); focus=false performs a
+                // background mount — the surface becomes injectable without stealing
+                // the user's view.
+                requestOpenWorkspace(workspaceId, focus)
+                // Poll with a bounded timeout (25 s) for THREE conditions:
+                //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
+                //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
+                //      getWorkspaceActivity() defaults an absent entry to 'idle', so
+                //      canInject() alone reports "injectable" on the very first poll tick,
+                //      before requestOpenWorkspace() has actually finished mounting the NSView.
+                //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
+                //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
+                //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
+                //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
+                //      but claude takes several seconds to launch + reach its interactive
+                //      prompt. Without this check, injection races ahead of claude's boot —
+                //      the text lands in an empty shell (or before claude's TUI is reading
+                //      input) and is silently lost: no transcript is ever written, even
+                //      though this function reports success. This was the root cause of
+                //      `ws new --task` reporting seedWarning:null while producing no
+                //      transcript and leaving status at awaiting_input forever.
+                //
+                // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
+                // surface-mount time (~100ms); now the poll also waits out claude's full
+                // boot + session-registration sequence, which can take 3-8 s in practice
+                // (binary launch, MCP/tool init, session file write). 25 s leaves generous
+                // headroom over the observed worst case without hanging indefinitely.
+                const POLL_INTERVAL_MS = 300
+                const TIMEOUT_MS = 25_000
+                const deadline = Date.now() + TIMEOUT_MS
+                let injectable = false
+                while (Date.now() < deadline) {
+                  let mounted = false
+                  try {
+                    const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                    mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                  } catch {
+                    mounted = false
+                  }
+                  if (
+                    mounted &&
+                    terminalActions.canInject(workspaceId) &&
+                    isWorkspaceSessionReady(workspaceId)
+                  ) {
+                    injectable = true
+                    break
+                  }
+                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+                }
+                if (!injectable) {
+                  return (
+                    `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
+                    'task not injected. The workspace was created but claude may still be booting ' +
+                    '— open it manually and paste the task text once it reaches the prompt.'
+                  )
+                }
+                const addon = loadTerminalAddon()
+                const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
+                if (!inputResult.ok) {
+                  return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
+                }
+                // submit=false: caller wants the task STAGED (typed into claude's input
+                // box) but not sent — e.g. for review/editing before the user presses
+                // Enter themselves. Skip the delay + submit entirely; the text sitting
+                // in the input box is the desired end state, not an intermediate one.
+                if (!submit) {
+                  return null
+                }
+                // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
+                // a synthetic Return) are two different libghostty code paths. Claude's
+                // full-screen TUI reads the PTY asynchronously, so it needs a moment to
+                // ingest the just-committed text before a Return keypress is meaningful.
+                // Firing Return microseconds later races ahead of that ingestion and the
+                // line never actually submits — the text just sits in the input box.
+                // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
+                // the TUI's read loop (terminal paste-then-submit automation typically
+                // needs 50-200ms; 150 is a safe middle).
+                await delay(SUBMIT_DELAY_MS)
+                const submitResult = terminalActions.submit(addon, workspaceId)
+                if (!submitResult.ok) {
+                  // If the workspace flipped to 'busy' during the delay, that most
+                  // likely means claude already started processing the text we just
+                  // staged (canInject() — and therefore submit — goes false the moment
+                  // status leaves idle/awaiting_input). Treat this as a soft signal
+                  // rather than a hard failure: the submit may well have raced a
+                  // status flip caused by the text itself landing. Only a genuine,
+                  // non-busy failure is reported as an error.
+                  if (submitResult.code === 'busy') {
+                    return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                  }
+                  return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
+                }
+                return null
+              },
+              sendToWorkspace: async (
+                workspaceId: string,
+                payload: { text?: string; submit?: boolean; key?: string },
+                focus: boolean = true
+              ): Promise<{ ok: boolean; error?: string }> => {
+                // QA #7 fix — verified root cause: terminalActions.canInject() reads
+                // getWorkspaceActivity(), which defaults to 'idle' for ANY workspace with
+                // no in-memory activity entry (orpheusNotify.ts: `activityMap.get(id) ??
+                // 'idle'`) — including a workspace whose surface was never mounted, or one
+                // that is closedAt-closed. So `!canInject(workspaceId)` was FALSE for an
+                // unopened workspace (it looked injectable), the auto-open branch below was
+                // skipped entirely, and the raw addon call failed with the unhelpful
+                // 'No terminal surface for workspace' (code: 'not_found').
+                //
+                // Fix, two parts:
+                //  (a) up front, if the workspace is known-closed (closedAt != null), always
+                //      go through the open+poll path — closedAt is an authoritative DB
+                //      signal that canInject's in-memory default can't see.
+                //  (b) defense in depth: after the open+poll path (or when skipped because
+                //      canInject looked true), if the actual send/key/submit call comes back
+                //      with code 'not_found' (surface genuinely not mounted), open the
+                //      workspace and retry once — this covers the exact false-'idle' case
+                //      above for a workspace that was never mounted at all, not just closed.
+                //
+                // QA fix #3 — the poll itself had the SAME stale-default bug it was meant to
+                // fix: openAndWaitInjectable() polled ONLY terminalActions.canInject(), which
+                // is the same activityMap-defaults-to-'idle' check from (a) above. So the very
+                // first poll iteration after requestOpenWorkspace() (fired but not yet actually
+                // mounted the NSView) already reported "injectable" — the loop exited after 0ms
+                // of real waiting, attemptSend() ran immediately against a not-yet-mounted
+                // surface, got 'not_found', and even the (b) retry-once repeated the exact same
+                // instant-false-positive poll. Net effect: `ws send` on a closed/unmounted
+                // workspace failed ~100% of the time regardless of --submit — the reported
+                // "text-only reports sent:true before the surface exists" asymmetry didn't
+                // reproduce directly (both paths shared attemptSend and failed identically),
+                // but the underlying not-ready detection was broken for both, which is the
+                // real bug worth fixing here: the poll must confirm a surface ACTUALLY exists
+                // via the addon's authoritative getSurfacePhase() (not the activity-map
+                // default) before considering the workspace injectable.
+                const POLL_INTERVAL_MS = 300
+                const TIMEOUT_MS = 10_000
+                const ACTIONABLE_ERROR_SUFFIX =
+                  ' — run: orpheus ws open ' +
+                  workspaceId +
+                  ' (or it will be opened automatically; retry the send after it starts)'
+
+                /**
+                 * True only when the addon reports an actual mounted surface for this
+                 * workspace ('hidden' | 'attached' | 'visible') — 'none' (never mounted)
+                 * and 'freeing' (being torn down) are NOT ready. This is the authoritative
+                 * truth query; unlike terminalActions.canInject() it cannot be fooled by
+                 * the activity map's 'idle' default for a workspace with no activity entry.
+                 */
+                function hasMountedSurface(): boolean {
+                  try {
+                    const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                    return phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                  } catch {
+                    return false
+                  }
+                }
+
+                async function openAndWaitInjectable(): Promise<boolean> {
+                  requestOpenWorkspace(workspaceId, focus)
+                  const deadline = Date.now() + TIMEOUT_MS
+                  while (Date.now() < deadline) {
+                    if (hasMountedSurface() && terminalActions.canInject(workspaceId)) return true
+                    await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+                  }
+                  return false
+                }
+
+                const ws = getWorkspace(workspaceId)
+                if (ws == null) {
+                  return { ok: false, error: `workspace not found: ${workspaceId}` }
+                }
+
+                // (a) Known-closed, or no confirmed mounted surface yet, or the in-memory
+                // canInject default can't be trusted — don't trust it; always open + wait.
+                if (
+                  ws.closedAt != null ||
+                  !hasMountedSurface() ||
+                  !terminalActions.canInject(workspaceId)
+                ) {
+                  const injectable = await openAndWaitInjectable()
+                  if (!injectable) {
+                    return {
+                      ok: false,
+                      error:
+                        'workspace not ready: the surface did not become injectable within 10 s.' +
+                        ACTIONABLE_ERROR_SUFFIX
+                    }
+                  }
+                }
+
+                const addon = loadTerminalAddon()
+
+                // Runs one full text/key/submit pass. Returns the first failure (if any).
+                // Note: `wasStaged` tracks whether this pass wrote text/keys into the PTY
+                // before any submit — used below to decide whether a 'busy' submit result
+                // is a soft (likely-already-submitted) signal rather than a hard failure.
+                async function attemptSend(): Promise<{
+                  ok: boolean
+                  error?: string
+                  notFound?: boolean
+                  softBusy?: boolean
+                }> {
+                  let wasStaged = false
+                  if (payload.text != null && payload.text !== '') {
+                    const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
+                    if (!inputResult.ok) {
+                      return {
+                        ok: false,
+                        notFound: inputResult.code === 'not_found',
+                        error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+                      }
+                    }
+                    wasStaged = true
+                  }
+                  if (payload.key != null && payload.key !== '') {
+                    const keyDescriptor = resolveNamedKey(payload.key)
+                    if (keyDescriptor == null) {
+                      return { ok: false, error: `unknown key name: "${payload.key}"` }
+                    }
+                    const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
+                    if (!keysResult.ok) {
+                      return {
+                        ok: false,
+                        notFound: keysResult.code === 'not_found',
+                        error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                      }
+                    }
+                    wasStaged = true
+                  }
+                  if (payload.submit === true) {
+                    // sendInput/sendKeys (text/key commit) and submit (a synthetic Return
+                    // key event) are two different libghostty code paths. Claude's
+                    // full-screen TUI reads the PTY asynchronously, so it needs a moment
+                    // to ingest the just-staged text/key before Return is meaningful —
+                    // firing it immediately races ahead of that ingestion and the line
+                    // never actually submits. Only wait when something was actually
+                    // staged this pass; a submit with no preceding text/key doesn't need
+                    // the ingest gap.
+                    if (wasStaged) {
+                      await delay(SUBMIT_DELAY_MS)
+                    }
+                    const submitResult = terminalActions.submit(addon, workspaceId)
+                    if (!submitResult.ok) {
+                      if (wasStaged && submitResult.code === 'busy') {
+                        // The workspace flipped to 'busy' during the delay — most likely
+                        // claude already started processing the text/key we just staged
+                        // (canInject/submit go false the moment status leaves
+                        // idle/awaiting_input). Treat as a soft signal, not a hard
+                        // failure: the content may well have already been submitted.
+                        return { ok: true, softBusy: true }
+                      }
+                      return {
+                        ok: false,
+                        notFound: submitResult.code === 'not_found',
+                        error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                      }
+                    }
+                  }
+                  return { ok: true }
+                }
+
+                const firstAttempt = await attemptSend()
+                if (firstAttempt.ok) {
+                  if (firstAttempt.softBusy) {
+                    return {
+                      ok: true,
+                      error:
+                        'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                    }
+                  }
+                  return { ok: true }
+                }
+
+                // (b) Defense in depth: the surface genuinely isn't mounted despite
+                // canInject saying otherwise (stale/defaulted activity). Open + wait, then
+                // retry exactly once before giving up with an actionable error.
+                if (firstAttempt.notFound === true) {
+                  const injectable = await openAndWaitInjectable()
+                  if (injectable) {
+                    const retryAttempt = await attemptSend()
+                    if (retryAttempt.ok) {
+                      if (retryAttempt.softBusy) {
+                        return {
+                          ok: true,
+                          error:
+                            'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                        }
+                      }
+                      return { ok: true }
+                    }
+                    return { ok: false, error: retryAttempt.error ?? 'send failed' }
+                  }
+                  return {
+                    ok: false,
+                    error: `workspace not open${ACTIONABLE_ERROR_SUFFIX}`
+                  }
+                }
+
+                return { ok: false, error: firstAttempt.error ?? 'send failed' }
+              }
+            }
+            commandServer = startCommandServer(cmdDeps)
+          } catch (err) {
+            console.error('[commandServer] failed to start:', err)
+          }
+        }
+
+        setAutoCloseHandler((workspaceId) => {
+          performClose(workspaceId)
+        })
+
+        // Pre-load the native terminal addon during idle time so the first
+        // terminal:mount call doesn't pay the dlopen stall (50–300ms).
+        // loadTerminalAddon() is idempotent — if already loaded it returns early.
+        try {
+          loadTerminalAddon()
+        } catch {
+          // Failure is non-fatal here; terminal:mount will surface the error when needed.
+        }
+
+        // Start shadow-mode session state service (Phase 1 — observes and logs only)
+        try {
+          sessionStateService = startSessionStateService()
+        } catch (err) {
+          console.error('[sessionState] failed to start:', err)
+        }
+
+        try {
+          powerAwakeCleanup = startPowerAwake(getMainWindow)
+        } catch (err) {
+          console.error('[powerAwake] failed to start:', err)
+        }
       })
 
-      // Pre-load the native terminal addon during idle time so the first
-      // terminal:mount call doesn't pay the dlopen stall (50–300ms).
-      // loadTerminalAddon() is idempotent — if already loaded it returns early.
-      try {
-        loadTerminalAddon()
-      } catch {
-        // Failure is non-fatal here; terminal:mount will surface the error when needed.
-      }
-
-      // Start shadow-mode session state service (Phase 1 — observes and logs only)
-      try {
-        sessionStateService = startSessionStateService()
-      } catch (err) {
-        console.error('[sessionState] failed to start:', err)
-      }
-
-      try {
-        powerAwakeCleanup = startPowerAwake(getMainWindow)
-      } catch (err) {
-        console.error('[powerAwake] failed to start:', err)
-      }
+      app.on('activate', function () {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow()
+        else kickActiveTerminal()
+      })
     })
-
-    app.on('activate', function () {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-      else kickActiveTerminal()
+    .catch((err: unknown) => {
+      writeCrashFile(err)
+      logDiagMain({
+        category: 'error',
+        level: 'fatal',
+        event: DIAG_EVENTS.STARTUP_FATAL,
+        message: err instanceof Error ? err.message : String(err)
+      })
+      dialog.showErrorBox(
+        'Orpheus — Startup Error',
+        'Orpheus failed to start.\n\n' + String(err instanceof Error ? err.message : err)
+      )
+      app.exit(1)
     })
-  })
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
