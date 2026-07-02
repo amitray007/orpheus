@@ -71,6 +71,17 @@ const readySignaled = new Set<string>()
 let reconcileRunning = false
 let dirty = false
 
+/**
+ * Re-entrancy guard scoped specifically to forceReconcile's synchronous
+ * call chain (forceReconcile → reconcile → setStatusFromFile/dispatch →
+ * some observer → forceReconcile again, before the first call returns).
+ * Deliberately separate from reconcileRunning/dirty above, which guards
+ * the async fs.watch debounce path (scheduleReconcile → _runReconcile) —
+ * forceReconcile must keep its direct-call/fresh-read contract and not be
+ * folded into that single-flight queue.
+ */
+let reconcileInProgress = false
+
 let watcher: fs.FSWatcher | null = null
 let debounceTimer: NodeJS.Timeout | null = null
 let intervalHandle: NodeJS.Timeout | null = null
@@ -180,9 +191,13 @@ export function startSessionStateService(): { stop: () => void } {
     console.log(`[sessionState] ${SESSIONS_DIR} not found — falling back to interval-only polling`)
   }
 
-  // Interval backstop regardless of watcher
+  // Interval backstop regardless of watcher. Calls _runReconcile directly
+  // (not scheduleReconcile) — _runReconcile already single-flights via
+  // reconcileRunning/dirty, so this is safe, and it avoids the interval
+  // resetting the 75ms debounce timer under event storms (which could
+  // otherwise starve reconcile).
   intervalHandle = setInterval(() => {
-    scheduleReconcile()
+    void _runReconcile()
   }, 2500)
 
   // Initial reconcile
@@ -222,7 +237,13 @@ export function getLiveSessionState(): Map<string, LiveSession> {
 }
 
 export async function forceReconcile(): Promise<void> {
-  return reconcile()
+  if (reconcileInProgress) return
+  reconcileInProgress = true
+  try {
+    await reconcile()
+  } finally {
+    reconcileInProgress = false
+  }
 }
 
 export function setSessionReadyHandler(fn: (workspaceId: string) => void): void {
@@ -320,6 +341,9 @@ async function _runReconcile(): Promise<void> {
 // Core reconcile
 // ---------------------------------------------------------------------------
 
+// INVARIANT: reconcile() must stay await-free between its liveSessionMap/lastRawActed
+// reads and writes; forceReconcile guards against re-entrancy but provides no
+// protection if an await is introduced here.
 async function reconcile(): Promise<void> {
   const t0 = Date.now()
   // 1. Read all session files
