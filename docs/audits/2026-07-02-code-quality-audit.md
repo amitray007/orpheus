@@ -158,6 +158,16 @@ Commits `71e050b4..13362214` on this branch:
 - Watch on first real CI run: dorny/paths-filter behavior, docker actionlint pull,
   CodeQL resource fit, osv SARIF upload permissions, migration-smoke ABI build.
 
+**2026-07-03 — Rebased onto staging (`af929899`, +9 commits) and re-reviewed.**
+Clean rebase; typecheck/jscpd/depcruise stayed green on the new code. The eslint
+ratchet correctly caught 2 new warnings in the footer-dropdown code
+(`parseFlagTokens` redundant cast; `setWorkspaceSettingAndSuppressDirty` complexity
+23) — fixed properly in `e1f25fc2`, back to exactly 183. Audit deltas from the new
+staging code: STR-3 grew (ChipDropdown is a 9th overlay kind repeating the
+`as unknown as` cast; overlayClient now ~12 casts) — Phase 7's `OverlayKindPropsMap`
+covers it; `composeClaudeLaunch` grew with 5 new env vars — reinforces CI-4 making
+it the first test target. knip now 95 findings. No tooling changes needed.
+
 ## Wave 2 — code-quality deep dive
 
 _Dimensions: React & renderer patterns (§7), conventions/comments/naming (§8),
