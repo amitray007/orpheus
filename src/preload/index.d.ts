@@ -212,6 +212,8 @@ declare global {
           cb: (e: { workspaceId: string; focus: boolean }) => void
         ) => () => void
         convertToLocal: (id: string) => Promise<WorkspaceRecord>
+        setModel: (workspaceId: string, model: string) => Promise<ClaudeWorkspaceSettings>
+        getEffectiveModel: (workspaceId: string) => Promise<{ model: string }>
       }
       worktrees: {
         branchExists: (projectId: string, branch: string) => Promise<boolean>

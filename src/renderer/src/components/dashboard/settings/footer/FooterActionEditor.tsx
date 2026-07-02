@@ -27,6 +27,7 @@ type ActionType =
   | 'openInEditor'
   | 'copyPath'
   | 'cancel'
+  | 'modelSelect'
   | 'liveUsage'
   | 'liveCost'
   | 'liveStatus'
@@ -41,6 +42,7 @@ const ACTION_TYPE_OPTIONS: { value: ActionType; label: string }[] = [
   { value: 'openInEditor', label: 'Open in Editor' },
   { value: 'copyPath', label: 'Copy path' },
   { value: 'cancel', label: 'Cancel input' },
+  { value: 'modelSelect', label: 'Model selector (built-in)' },
   { value: 'liveUsage', label: 'Live indicator — Context usage' },
   { value: 'liveCost', label: 'Live indicator — Cost' },
   { value: 'liveStatus', label: 'Live indicator — Activity status' }
@@ -73,6 +75,8 @@ function actionIdForType(type: ActionType): string {
       return 'workspace.copyPath'
     case 'cancel':
       return 'terminal.cancel'
+    case 'modelSelect':
+      return 'footer.modelSelect'
     case 'liveUsage':
       return 'session.getUsage'
     case 'liveCost':
@@ -103,6 +107,8 @@ function typeForActionId(actionId: string): ActionType {
       return 'copyPath'
     case 'terminal.cancel':
       return 'cancel'
+    case 'footer.modelSelect':
+      return 'modelSelect'
     case 'session.getUsage':
       return 'liveUsage'
     case 'session.getCost':
@@ -726,6 +732,13 @@ export function FooterActionEditor({
 
           {actionType === 'duplicate' && (
             <DuplicateConfig dupSuffix={dupSuffix} setDupSuffix={setDupSuffix} />
+          )}
+
+          {actionType === 'modelSelect' && (
+            <div className="text-xs text-text-muted bg-surface-overlay/40 border border-border-default/40 rounded-md px-2.5 py-1.5 leading-relaxed">
+              This is a built-in action — clicking it opens the model picker. Label and icon are
+              customizable; behavior is not.
+            </div>
           )}
 
           {/* Visibility */}

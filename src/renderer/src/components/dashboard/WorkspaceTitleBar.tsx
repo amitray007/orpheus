@@ -4,7 +4,6 @@ import {
   Terminal as TerminalIcon,
   Gear,
   ArrowBendUpLeft,
-  Cpu,
   Info,
   GitBranch
 } from '@phosphor-icons/react'
@@ -23,7 +22,6 @@ import {
 } from '@/lib/overlayClient'
 import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
-import type { ContextBudgetInfo } from './workspaceTitleBar.helpers'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -63,91 +61,6 @@ function shortTokens(n: number): string {
   if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`
   return `${n}`
-}
-
-// ---------------------------------------------------------------------------
-// ModelContextChip — small read-only chip showing model + context mode.
-// Fetches context budget once on mount; stays static until workspace changes.
-//
-// Module-level cache: seeded on first fetch per workspace, invalidated when
-// the session ID changes (handled by the workspaceId + sessionId key below).
-// On switch-back the chip renders the stale value immediately (no layout shift
-// or late-appear flash) while the fresh fetch runs in the background.
-// ---------------------------------------------------------------------------
-
-interface ModelContextChipProps {
-  workspaceId: string
-  /** claudeSessionId — used as part of the cache key so the chip
-   *  re-fetches when the session changes (workspace restarts, forks, etc.). */
-  claudeSessionId: string | null
-}
-
-function ModelContextChip({
-  workspaceId,
-  claudeSessionId
-}: ModelContextChipProps): React.JSX.Element | null {
-  const cacheKey = `${workspaceId}:${claudeSessionId ?? ''}`
-  const cached = contextBudgetCache.get(cacheKey) ?? null
-  const [info, setInfo] = useState<ContextBudgetInfo | null>(cached)
-  const [usage, setUsage] = useState<SessionUsage | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const key = `${workspaceId}:${claudeSessionId ?? ''}`
-
-    // Serve cache immediately; still revalidate so the chip stays fresh after
-    // a session's first message (context budget updates as tokens are used).
-    const stale = contextBudgetCache.get(key)
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: seed chip from cache on workspace/session change before async result arrives
-    if (stale) setInfo(stale)
-
-    window.api.sessions
-      .getContextBudget(workspaceId)
-      .then((result) => {
-        if (!cancelled && result) {
-          // Skip caching for pre-session workspaces (claudeSessionId === null)
-          // so a stale model chip isn't shown after a global model change.
-          if (claudeSessionId !== null) {
-            contextBudgetCache.set(key, result)
-          }
-          setInfo(result)
-        }
-      })
-      .catch(() => {})
-
-    window.api.actions
-      .invoke({ id: 'session.getUsage', params: {}, workspaceId }, 'workspace-context')
-      .then((result) => {
-        if (!cancelled && result.ok && result.value != null) {
-          setUsage(result.value as SessionUsage)
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId, claudeSessionId])
-
-  if (!info) return null
-
-  // Show only the model + total context budget (e.g. "Opus 4.8 · 1M").
-  // The used-context count lives in the hover tooltip, not the always-visible chip.
-  const label = `${modelLabel(info.modelId)} · ${shortTokens(info.contextBudget)}`
-
-  return (
-    <span
-      className="inline-flex items-center gap-1 text-xs text-text-muted bg-surface-overlay border border-border-default/50 rounded px-1.5 py-0.5 flex-shrink-0 leading-none"
-      title={
-        usage
-          ? `Context: ${usage.lastTurnContextTokens.toLocaleString()} / ${info.contextBudget.toLocaleString()} tokens (${Math.round(usage.usedPct)}%)`
-          : `Model: ${info.modelId} · Context: ${info.contextBudget.toLocaleString()} tokens`
-      }
-    >
-      <Cpu size={10} className="flex-shrink-0 opacity-60" />
-      <span>{label}</span>
-    </span>
-  )
 }
 
 interface WorkspaceTitleBarProps {
@@ -386,9 +299,6 @@ export function WorkspaceTitleBar({
           {`Worktree · ${workspace.worktreeBranch ?? 'worktree'}`}
         </span>
       )}
-
-      {/* Model + context chip — read-only, fetched from main via IPC */}
-      <ModelContextChip workspaceId={workspace.id} claudeSessionId={workspace.claudeSessionId} />
 
       <div className="ml-auto flex items-center gap-1">
         <button

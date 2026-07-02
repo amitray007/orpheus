@@ -7,6 +7,7 @@ import { ConfirmModal } from './kinds/ConfirmModal'
 import { NoticeBanner } from './kinds/NoticeBanner'
 import { ChipTooltip } from './kinds/ChipTooltip'
 import { ChipPrompt } from './kinds/ChipPrompt'
+import { ChipDropdown } from './kinds/ChipDropdown'
 
 export interface OverlayKindProps {
   descriptor: OverlayDescriptor
@@ -24,5 +25,6 @@ export const registry: Record<string, React.ComponentType<OverlayKindProps>> = {
   confirmModal: ConfirmModal,
   noticeBanner: NoticeBanner,
   chipTooltip: ChipTooltip,
-  chipPrompt: ChipPrompt
+  chipPrompt: ChipPrompt,
+  chipDropdown: ChipDropdown
 }

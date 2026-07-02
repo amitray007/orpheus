@@ -4,6 +4,7 @@ import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
+import { ModelSelectChip } from './ModelSelectChip'
 
 interface WorkspaceFooterProps {
   workspaceId: string
@@ -94,22 +95,32 @@ export function WorkspaceFooter({
       {/* Left zone — mutator chips */}
       <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
         {!loading &&
-          mutators.map((item) => (
-            <ActionChip
-              key={item.id}
-              actionId={item.actionId}
-              label={item.label}
-              icon={item.icon}
-              params={item.params}
-              prompts={item.prompts}
-              workspaceId={workspaceId}
-              sessionId={sessionId}
-              cwd={cwd}
-              workspaceName={workspaceName}
-              onForkSuccess={handleForkSuccess}
-              enabled={isVisible(item.visibleWhen, activityDetail)}
-            />
-          ))}
+          mutators.map((item) =>
+            item.actionId === 'footer.modelSelect' ? (
+              <ModelSelectChip
+                key={item.id}
+                workspaceId={workspaceId}
+                icon={item.icon}
+                label={item.label}
+                enabled={isVisible(item.visibleWhen, activityDetail)}
+              />
+            ) : (
+              <ActionChip
+                key={item.id}
+                actionId={item.actionId}
+                label={item.label}
+                icon={item.icon}
+                params={item.params}
+                prompts={item.prompts}
+                workspaceId={workspaceId}
+                sessionId={sessionId}
+                cwd={cwd}
+                workspaceName={workspaceName}
+                onForkSuccess={handleForkSuccess}
+                enabled={isVisible(item.visibleWhen, activityDetail)}
+              />
+            )
+          )}
       </div>
 
       {/* Divider — only when both zones have content */}

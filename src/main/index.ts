@@ -188,6 +188,7 @@ import type {
   AppUiStatePatch,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
+  ClaudeWorkspaceSettings,
   ClaudeAuthPatch,
   ClaudeHookDraft,
   McpServerDraft,
@@ -594,6 +595,54 @@ function recomputeDirty(): void {
     const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
     setDirty(workspaceId, !launchEquals(snap, fresh))
   }
+}
+
+// Persists a model change made via the footer Model dropdown AND neutralizes
+// the resulting dirty delta for JUST the model dimension of the launch
+// snapshot — because `/model <value>` is typed into the terminal live by the
+// caller immediately after this resolves, the running claude process is
+// already using the new model, so the stored snapshot must be updated to
+// match reality without touching any OTHER pending genuine dirty delta
+// (e.g. if the user separately changed permission-mode and hasn't restarted
+// yet, that delta must still show "Restart to apply" afterwards).
+function setWorkspaceModelAndSuppressDirty(
+  workspaceId: string,
+  model: string
+): ClaudeWorkspaceSettings {
+  const result = updateClaudeWorkspaceSettings(workspaceId, { model })
+
+  const snap = launchSnapshots.get(workspaceId)
+  if (snap) {
+    const ws = getWorkspace(workspaceId)
+    if (ws) {
+      // Recompose fresh — this reflects the NEW model (already persisted above)
+      // plus whatever ELSE currently differs from the snapshot (untouched).
+      const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
+
+      // Extract just the "--model <value>" token (always flagParts[0] when
+      // present — verified in composeClaudeLaunch) from both the OLD snapshot
+      // flags and the FRESH flags, and splice fresh's model token into the
+      // snapshot in place, leaving every other token/settingsJson/env from the
+      // OLD snapshot completely untouched. This way launchEquals(patchedSnap,
+      // fresh) is true ONLY if model was the sole delta; any other
+      // pre-existing divergence between snap and fresh remains a divergence
+      // after the patch, so recomputeDirty() below still correctly flags it.
+      const modelFlagRe = /^--model\s+\S+\s*/
+      const oldFlagsWithoutModel = snap.flags.replace(modelFlagRe, '')
+      const freshModelMatch = fresh.flags.match(modelFlagRe)
+      const newModelToken = freshModelMatch ? freshModelMatch[0] : ''
+      const patchedFlags = newModelToken + oldFlagsWithoutModel
+
+      launchSnapshots.set(workspaceId, { ...snap, flags: patchedFlags })
+    }
+  }
+
+  // Recompute dirty for ALL workspaces (cheap, existing behavior) — now that
+  // the model dimension of this workspace's snapshot matches fresh, only a
+  // GENUINE pre-existing divergence (unrelated to model) would still flag dirty.
+  recomputeDirty()
+
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,6 +1669,25 @@ handle(
     return result
   }
 )
+
+// Footer Model chip: persist a model override and suppress the resulting
+// dirty delta (the chip also injects `/model <value>` into the terminal live
+// right after this resolves, so the running process already matches — see
+// setWorkspaceModelAndSuppressDirty above).
+handle('workspace:setModel', (_e, args: { workspaceId: string; model: string }) => {
+  return setWorkspaceModelAndSuppressDirty(args.workspaceId, args.model)
+})
+
+// Footer Model chip: read the TRUE effective model a workspace would launch
+// with right now (workspace override → project override → global setting),
+// by reusing composeClaudeLaunch verbatim — the single source of truth for
+// launch composition — instead of duplicating its resolution precedence.
+handle('workspace:getEffectiveModel', (_e, args: { workspaceId: string }) => {
+  const ws = getWorkspace(args.workspaceId)
+  const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
+  const m = launch.flags.match(/^--model\s+(\S+)/)
+  return { model: m ? m[1] : '' }
+})
 
 // ---------------------------------------------------------------------------
 // Orpheus project config IPC (.orpheus/config.yml)

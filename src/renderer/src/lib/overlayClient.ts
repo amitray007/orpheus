@@ -22,7 +22,10 @@ import type {
   NoticeBannerProps,
   ChipTooltipProps,
   ChipPromptProps,
-  ChipPromptResult
+  ChipPromptResult,
+  ChipDropdownProps,
+  ChipDropdownItem,
+  ChipDropdownResult
 } from '@shared/types'
 
 export type {
@@ -33,7 +36,10 @@ export type {
   ConfirmModalResult,
   ChipTooltipProps,
   ChipPromptProps,
-  ChipPromptResult
+  ChipPromptResult,
+  ChipDropdownProps,
+  ChipDropdownItem,
+  ChipDropdownResult
 }
 
 // ── Activity state mapping ───────────────────────────────────────────────
@@ -130,6 +136,16 @@ interface ChipPromptHandlers {
 
 const chipPromptSettlers = new Map<string, ChipPromptHandlers>()
 
+// Per-id chipDropdown event handlers (select/cancel only), routed by the same
+// `ensureRouter` listener below. A given overlay id is never in more than one
+// of handlersById/confirmSettlers/chipPromptSettlers/chipDropdownSettlers.
+interface ChipDropdownHandlers {
+  onSelect: (value: string) => void
+  onCancel: () => void
+}
+
+const chipDropdownSettlers = new Map<string, ChipDropdownHandlers>()
+
 let routerInitialized = false
 
 function ensureRouter(): void {
@@ -170,6 +186,23 @@ function ensureRouter(): void {
         }
         case 'cancel':
           chipPromptHandlers.onCancel()
+          break
+        default:
+          break
+      }
+      return
+    }
+
+    const chipDropdownHandlers = chipDropdownSettlers.get(e.overlayId)
+    if (chipDropdownHandlers) {
+      switch (e.type) {
+        case 'select': {
+          const payload = e.payload as { value: string } | undefined
+          if (payload) chipDropdownHandlers.onSelect(payload.value)
+          break
+        }
+        case 'cancel':
+          chipDropdownHandlers.onCancel()
           break
         default:
           break
@@ -551,6 +584,78 @@ export function showChipPrompt(
  */
 export function hideChipPrompt(id: string): void {
   const forceCancel = chipPromptForceCancel.get(id)
+  if (forceCancel) {
+    forceCancel()
+  } else {
+    void window.api.overlay.hide(id).catch(() => {})
+  }
+}
+
+export function chipDropdownId(x: string): string {
+  return `chipDropdown:${x}`
+}
+
+// Force-cancel hooks for still-pending chip dropdowns, keyed by overlay id —
+// lets hideChipDropdown (outside-click / blur at the call site) settle the
+// promise as null instead of just hiding the window and leaving the await
+// hanging forever (mirrors chipPromptForceCancel).
+const chipDropdownForceCancel = new Map<string, () => void>()
+
+/**
+ * Shows the interactive dropdown popover above a chip and resolves once the
+ * user picks a row or cancels. Mirrors showChipPrompt's settle contract
+ * exactly: NEVER rejects — Cancel/Escape (global takesFocus handler in
+ * OverlayRoot, plus the kind's own Escape keydown), outside-click/blur (via
+ * hideChipDropdown), or an overlay:show IPC failure all resolve `null`.
+ * Row click/Enter resolves `{ kind: 'select', value }`.
+ */
+export function showChipDropdown(
+  id: string,
+  anchorRect: { x: number; y: number; w: number; h: number },
+  props: ChipDropdownProps,
+  ownerWorkspaceId?: string
+): Promise<ChipDropdownResult> {
+  ensureRouter()
+
+  return new Promise<ChipDropdownResult>((resolve) => {
+    let settled = false
+    const settle = (result: ChipDropdownResult): void => {
+      if (settled) return
+      settled = true
+      chipDropdownSettlers.delete(id)
+      chipDropdownForceCancel.delete(id)
+      void window.api.overlay.hide(id).catch(() => {})
+      resolve(result)
+    }
+
+    chipDropdownSettlers.set(id, {
+      onSelect: (value) => settle({ kind: 'select', value }),
+      onCancel: () => settle(null)
+    })
+    chipDropdownForceCancel.set(id, () => settle(null))
+
+    const descriptor: OverlayDescriptor = {
+      id,
+      kind: 'chipDropdown',
+      placement: { mode: 'anchored', anchorRect, preferredSide: 'top' },
+      props: props as unknown as Record<string, unknown>,
+      acceptsClicks: true,
+      takesFocus: true,
+      ownerWorkspaceId
+    }
+
+    void window.api.overlay.show(descriptor).catch(() => {
+      settle(null)
+    })
+  })
+}
+
+/**
+ * Actively dismiss a still-pending chip dropdown (outside-click / blur at the
+ * call site) and settle its promise as `null`. No-op if already settled.
+ */
+export function hideChipDropdown(id: string): void {
+  const forceCancel = chipDropdownForceCancel.get(id)
   if (forceCancel) {
     forceCancel()
   } else {
