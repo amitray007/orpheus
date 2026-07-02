@@ -133,6 +133,31 @@ Verified fine: LICENSE/SECURITY/CONTRIBUTING/CoC/TPN/templates/FUNDING/dependabo
 
 ---
 
+## Remediation log
+
+**2026-07-03 — Enforcement layer built first (pre-phase, per maintainer decision).**
+Commits `71e050b4..13362214` on this branch:
+
+- Fixed: **ACT-1** (eslint ignores docs/tmp/.gstack — lint green), **CI-1** (staging
+  pushes run CI), **CI-3** (addon path filter), **CI-5** (migration smoke on PRs,
+  paths-gated), **CI-8** (CodeQL + osv-scanner), **CI-9/11** (SHA-pinned actions,
+  bun pinned 1.3.10 everywhere), **CI-10** (eslint in lint-staged; commitlint
+  commit-msg hook; typecheck+lint pre-push), **CI-12** (overlay-discipline advisory —
+  2 pre-existing heuristic false-positives; contrast check blocking), **CI-13**
+  (ubuntu + bun cache), **CI-16** (type-aware ESLint for main/preload/shared),
+  **OSS-7** (engines + packageManager). Bonus: broke a real `cli.ts↔help.ts` import
+  cycle dependency-cruiser found on day one (`8647cc55`).
+- New tooling: knip 6.24.0 (`check:dead`, advisory, 97 findings), jscpd 5.0.11
+  (`check:dup`, blocking, threshold 2.4% vs current 2.38%), dependency-cruiser 18
+  (`check:arch`, blocking: no-circular + layer rules), eslint-plugin-sonarjs 4.1.0
+  (curated set), typescript-eslint 8.62 type-checked. Lint ratchet:
+  `--max-warnings=183` (pre-push + CI).
+- Still open in §2: CI-2 (`noImplicitAny`), CI-4 (first tests), CI-6/7/14/15
+  (release-flow items — deliberately untouched), CI-16 partial (rules at `warn`
+  pending burn-down: 9 floating-promise, 3 misused-promise, 33 unsafe-any warnings).
+- Watch on first real CI run: dorny/paths-filter behavior, docker actionlint pull,
+  CodeQL resource fit, osv SARIF upload permissions, migration-smoke ABI build.
+
 ## Wave 2 — code-quality deep dive
 
 _Dimensions: React & renderer patterns (§7), conventions/comments/naming (§8),
