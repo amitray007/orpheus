@@ -74,6 +74,13 @@ let generation = 0
 // The descriptor currently pending/visible/exiting (cleared back to null at idle).
 let currentDescriptor: OverlayDescriptor | null = null
 let currentGeneration = 0
+// Latest renderer-reported natural card size for the CURRENT generation (anchored
+// mode only). Cleared on every new showOverlay() so a stale size from a prior
+// descriptor is never reused for a new one. Null until the first reportSize for
+// this generation lands, in which case DEFAULT_ANCHORED is used as a
+// generous-then-shrink placeholder (the window is transparent, so oversize before
+// the first report is invisible — see plan KTD).
+let currentAnchoredSize: { w: number; h: number } | null = null
 // Display scale factor captured at show time, for the `move` scaleFactor-diff
 // dismissal check on anchored overlays (KTD: "dismiss anchored overlays on
 // monitor change").
@@ -125,7 +132,14 @@ let deps: OverlayLayerDeps | null = null
 
 const SHOW_TIMEOUT_MS = 500
 const EXIT_WAIT_CAP_MS = 150
-const ANCHOR_SHADOW_MARGIN = 24
+const ANCHOR_GAP = 6
+// Generous-then-shrink default window size for an anchored overlay before the
+// first renderer-reported card size lands for its generation. The overlay
+// window is transparent, so any oversize beyond the card's actual content is
+// invisible to the user — a brief input-swallow in that dead zone (mouse
+// events over transparent-but-window-covered pixels) is a known accepted
+// side effect (see plan KTD).
+const DEFAULT_ANCHORED = { w: 440, h: 380 }
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -201,6 +215,77 @@ function getWindowContentBounds(): { x: number; y: number; width: number; height
   return win!.getContentBounds()
 }
 
+/**
+ * Anchored placement algorithm.
+ *
+ * The anchorRect (already zoomFactor-scaled to screen-ish DIPs by the caller)
+ * is the element to attach TO — e.g. a 200x32 chip — never the window size.
+ * The window is sized to the latest renderer-reported natural card size for
+ * the current generation (falling back to DEFAULT_ANCHORED before the first
+ * report), then placed adjacent to the anchor on `preferredSide` (default
+ * 'bottom'), flipping to the opposite side when the preferred side doesn't
+ * have room within the parent content bounds, and finally clamped so the
+ * window stays fully inside those content bounds.
+ *
+ * `content` and `anchor` must both already be in the SAME coordinate space
+ * (parent-content-relative DIPs); the result is translated to screen space
+ * by the caller.
+ */
+function computeAnchoredPlacement(
+  anchor: { x: number; y: number; w: number; h: number },
+  size: { w: number; h: number },
+  preferredSide: 'top' | 'bottom' | 'left' | 'right',
+  content: { width: number; height: number }
+): { x: number; y: number; width: number; height: number } {
+  const w = Math.min(size.w, content.width)
+  const h = Math.min(size.h, content.height)
+
+  const fitsBottom = anchor.y + anchor.h + ANCHOR_GAP + h <= content.height
+  const fitsTop = anchor.y - ANCHOR_GAP - h >= 0
+  const fitsRight = anchor.x + anchor.w + ANCHOR_GAP + w <= content.width
+  const fitsLeft = anchor.x - ANCHOR_GAP - w >= 0
+
+  const fits: Record<'top' | 'bottom' | 'left' | 'right', boolean> = {
+    top: fitsTop,
+    bottom: fitsBottom,
+    left: fitsLeft,
+    right: fitsRight
+  }
+  const opposite: Record<'top' | 'bottom' | 'left' | 'right', 'top' | 'bottom' | 'left' | 'right'> =
+    { top: 'bottom', bottom: 'top', left: 'right', right: 'left' }
+
+  // Flip to the opposite side when the preferred side has insufficient room;
+  // if neither fits, keep the preferred side (clamp below will pull it back
+  // on-screen as best-effort).
+  const side = fits[preferredSide]
+    ? preferredSide
+    : fits[opposite[preferredSide]]
+      ? opposite[preferredSide]
+      : preferredSide
+
+  let x: number
+  let y: number
+  if (side === 'bottom') {
+    x = anchor.x
+    y = anchor.y + anchor.h + ANCHOR_GAP
+  } else if (side === 'top') {
+    x = anchor.x
+    y = anchor.y - ANCHOR_GAP - h
+  } else if (side === 'right') {
+    x = anchor.x + anchor.w + ANCHOR_GAP
+    y = anchor.y
+  } else {
+    x = anchor.x - ANCHOR_GAP - w
+    y = anchor.y
+  }
+
+  // Clamp fully inside the parent content bounds.
+  x = Math.min(Math.max(x, 0), Math.max(0, content.width - w))
+  y = Math.min(Math.max(y, 0), Math.max(0, content.height - h))
+
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) }
+}
+
 /** Compute the target bounds (SCREEN coordinates) for the current descriptor. */
 function computeScreenBounds(descriptor: OverlayDescriptor): {
   x: number
@@ -212,28 +297,33 @@ function computeScreenBounds(descriptor: OverlayDescriptor): {
   if (descriptor.placement.mode === 'centered') {
     return { x: content.x, y: content.y, width: content.width, height: content.height }
   }
-  // Anchored: grow anchorRect by the shadow margin, multiply by the main
-  // window's zoom factor (anchorRect comes from the main renderer's DOM —
-  // see plan KTD on getBoundingClientRect() * getZoomFactor()), clamp to the
-  // window's content bounds, then offset by the content bounds' screen
-  // origin to land in screen coordinates.
+  // Anchored: the anchorRect comes from the main renderer's DOM (see plan KTD
+  // on getBoundingClientRect() * getZoomFactor()) — scale it to screen-ish
+  // DIPs, then run the side-selection/flip/clamp placement algorithm against
+  // the latest reported card size (or the generous default before the first
+  // report), then offset by the content bounds' screen origin to land in
+  // screen coordinates.
   const zoom = winAlive() ? win!.webContents.getZoomFactor() : 1
-  const anchor = descriptor.placement.anchorRect
-  let x = anchor.x * zoom - ANCHOR_SHADOW_MARGIN
-  let y = anchor.y * zoom - ANCHOR_SHADOW_MARGIN
-  let w = anchor.w * zoom + ANCHOR_SHADOW_MARGIN * 2
-  let h = anchor.h * zoom + ANCHOR_SHADOW_MARGIN * 2
+  const anchorRect = descriptor.placement.anchorRect
+  const anchor = {
+    x: anchorRect.x * zoom,
+    y: anchorRect.y * zoom,
+    w: anchorRect.w * zoom,
+    h: anchorRect.h * zoom
+  }
+  const size = currentAnchoredSize ?? DEFAULT_ANCHORED
+  const preferredSide = descriptor.placement.preferredSide ?? 'bottom'
 
-  if (x < 0) x = 0
-  if (y < 0) y = 0
-  if (x + w > content.width) w = Math.max(0, content.width - x)
-  if (y + h > content.height) h = Math.max(0, content.height - y)
+  const placed = computeAnchoredPlacement(anchor, size, preferredSide, {
+    width: content.width,
+    height: content.height
+  })
 
   return {
-    x: Math.round(content.x + x),
-    y: Math.round(content.y + y),
-    width: Math.round(w),
-    height: Math.round(h)
+    x: Math.round(content.x + placed.x),
+    y: Math.round(content.y + placed.y),
+    width: placed.width,
+    height: placed.height
   }
 }
 
@@ -278,6 +368,7 @@ export function initOverlayLayer(
   currentDescriptor = null
   currentGeneration = 0
   currentScaleFactor = null
+  currentAnchoredSize = null
   overlayTokenHeld = false
   initialLoadDone = false
   if (geometryListenersCleanup) {
@@ -468,14 +559,11 @@ function handleReportSize(report: OverlaySizeReport): void {
   if (currentDescriptor.placement.mode !== 'anchored') return // centered overlays ignore reportSize
   if (!overlayAlive()) return
 
-  const base = computeScreenBounds(currentDescriptor)
-  const content = getWindowContentBounds()
-  let w = report.w
-  let h = report.h
-  if (base.x - content.x + w > content.width) w = Math.max(0, content.width - (base.x - content.x))
-  if (base.y - content.y + h > content.height)
-    h = Math.max(0, content.height - (base.y - content.y))
-  overlayWin!.setBounds({ x: base.x, y: base.y, width: Math.round(w), height: Math.round(h) })
+  // Store the reported natural card size for this generation, then recompute
+  // the FULL anchored placement (side selection + flip + clamp again, not a
+  // naive in-place resize) — the new size can change which side fits.
+  currentAnchoredSize = { w: report.w, h: report.h }
+  overlayWin!.setBounds(computeScreenBounds(currentDescriptor))
 }
 
 function handleOverlayRendererEvent(event: OverlayEvent): void {
@@ -649,6 +737,10 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
   const gen = generation
   currentGeneration = gen
   currentDescriptor = descriptor
+  // New generation — any reported size belongs to the PREVIOUS descriptor/show
+  // and must not be reused. computeScreenBounds() below (via applyCurrentBounds)
+  // falls back to DEFAULT_ANCHORED until the first reportSize for this gen lands.
+  currentAnchoredSize = null
 
   if (wasIdle) {
     // Token-acquisition-keyed save — only on fresh acquire, not replacement shows.

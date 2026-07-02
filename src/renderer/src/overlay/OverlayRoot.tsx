@@ -191,8 +191,12 @@ export function OverlayRoot(): React.JSX.Element | null {
   return (
     <div
       ref={cardRef}
-      className={isCentered ? 'flex h-full w-full items-center justify-center' : 'h-full w-full'}
-      style={{ opacity, transition }}
+      className={isCentered ? 'flex h-full w-full items-center justify-center' : 'inline-block'}
+      style={
+        isCentered
+          ? { opacity, transition }
+          : { opacity, transition, width: 'max-content', height: 'max-content', maxWidth: 'none' }
+      }
       onMouseEnter={onCardMouseEnter}
       onMouseLeave={onCardMouseLeave}
     >
