@@ -29,6 +29,18 @@ import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
 import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  USE_REACT_OVERLAYS,
+  showHoverCard,
+  hideOverlayCard,
+  hoverCardId,
+  onCardPointer,
+  activityToState,
+  activityToLabel,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { HoverCardProps } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
 import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
@@ -219,6 +231,14 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     }
   }
 
+  function hideHoverCard(): void {
+    if (USE_REACT_OVERLAYS) {
+      hideOverlayCard(hoverCardId(workspace.id))
+    } else {
+      hideNativePopover(workspace.id)
+    }
+  }
+
   function handleRowMouseEnter(): void {
     if (!cardAllowed) return
     clearHoverTimer()
@@ -231,16 +251,29 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         workspace.worktreeParentCwd && workspace.worktreeBranch
           ? `${workspace.cwd} (${workspace.worktreeBranch})`
           : workspace.cwd
-      showHoverPopover(
-        workspace.id,
-        rowRef.current,
-        gitStatus,
-        pr,
-        dn.text,
-        activity,
-        relativeTime,
-        popoverCwd
-      )
+      if (USE_REACT_OVERLAYS) {
+        const cardProps: HoverCardProps = {
+          title: dn.text,
+          activityLabel: activityToLabel(activity),
+          activityState: activityToState(activity),
+          relativeTime,
+          git: gitStatusToCard(gitStatus),
+          pr: prToCard(pr),
+          cwd: popoverCwd
+        }
+        showHoverCard(workspace.id, rowRef.current, cardProps)
+      } else {
+        showHoverPopover(
+          workspace.id,
+          rowRef.current,
+          gitStatus,
+          pr,
+          dn.text,
+          activity,
+          relativeTime,
+          popoverCwd
+        )
+      }
     }, 120)
   }
 
@@ -248,7 +281,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }, 80)
   }
 
@@ -257,27 +290,45 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   useEffect(() => {
     if (!cardAllowed) {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardAllowed, workspace.id])
 
   // Clean up on unmount.
   useEffect(() => {
     return () => {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on this row re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself, so moving from the row into the card doesn't close-timer it out.
+  // React path: the overlay card emits mouseenter/mouseleave (OverlayRoot's
+  // card wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
+  // leave. Chassis path: the native card closes itself via NSTrackingArea
+  // mouseExited and signals "::closed" — reset our open-state so a
+  // subsequent hover re-opens the card cleanly.
   useEffect(() => {
+    if (USE_REACT_OVERLAYS) {
+      const unregister = onCardPointer(hoverCardId(workspace.id), {
+        onEnter: clearHoverTimer,
+        onLeave: () => {
+          hoverTimerRef.current = setTimeout(() => {
+            hoverTimerRef.current = null
+            hideHoverCard()
+          }, 80)
+        }
+      })
+      return unregister
+    }
     const unregister = onNativePopoverClosed(workspace.id, () => {
       clearHoverTimer()
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   return (

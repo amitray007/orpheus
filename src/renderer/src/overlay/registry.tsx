@@ -1,5 +1,7 @@
 import type { OverlayDescriptor } from '@shared/types'
 import { DevTest } from './kinds/DevTest'
+import { HoverCard } from './kinds/HoverCard'
+import { DetailsCard } from './kinds/DetailsCard'
 
 export interface OverlayKindProps {
   descriptor: OverlayDescriptor
@@ -10,5 +12,7 @@ export interface OverlayKindProps {
 
 /** kind -> component. Unknown kinds are handled by OverlayRoot (error card + ack error). */
 export const registry: Record<string, React.ComponentType<OverlayKindProps>> = {
-  devTest: DevTest
+  devTest: DevTest,
+  hoverCard: HoverCard,
+  detailsCard: DetailsCard
 }

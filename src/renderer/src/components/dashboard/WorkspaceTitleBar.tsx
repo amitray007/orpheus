@@ -21,6 +21,17 @@ import {
   prToNative
 } from '@/lib/nativePopover'
 import type { DetailsPopoverData } from '@/lib/nativePopover'
+import {
+  USE_REACT_OVERLAYS,
+  showDetailsCard,
+  updateDetailsCard,
+  hideOverlayCard,
+  detailsCardId,
+  onCardPointer,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
 import type { ContextBudgetInfo } from './workspaceTitleBar.helpers'
 
@@ -199,6 +210,22 @@ export function WorkspaceTitleBar({
     }
   }
 
+  function updateDetails(patch: Partial<DetailsPopoverData & DetailsCardProps>): void {
+    if (USE_REACT_OVERLAYS) {
+      updateDetailsCard(detailsCardId(workspace.id), patch)
+    } else {
+      updateDetailsPopover(workspace.id, patch)
+    }
+  }
+
+  function hideDetailsCard(): void {
+    if (USE_REACT_OVERLAYS) {
+      hideOverlayCard(detailsCardId(workspace.id))
+    } else {
+      hideNativePopover(workspace.id)
+    }
+  }
+
   function openDetailsPopover(): void {
     if (!detailsButtonRef.current) return
 
@@ -208,20 +235,32 @@ export function WorkspaceTitleBar({
     const cwdDisplay = workspace.worktreeParentCwd
       ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
       : workspace.cwd
-    const initialData: DetailsPopoverData = {
-      pr: prToNative(pr ?? null),
-      git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
-      cwd: cwdDisplay,
-      contextLoading: true,
-      costLoading: true
+
+    if (USE_REACT_OVERLAYS) {
+      const initialProps: DetailsCardProps = {
+        pr: prToCard(pr ?? null),
+        git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
+        cwd: cwdDisplay,
+        contextLoading: true,
+        costLoading: true
+      }
+      showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
+    } else {
+      const initialData: DetailsPopoverData = {
+        pr: prToNative(pr ?? null),
+        git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
+        cwd: cwdDisplay,
+        contextLoading: true,
+        costLoading: true
+      }
+      showDetailsPopover(workspace.id, detailsButtonRef.current, initialData, pr ?? null)
     }
-    showDetailsPopover(workspace.id, detailsButtonRef.current, initialData, pr ?? null)
 
     // ── Async: context budget ────────────────────────────────────────────────
     const cacheKey = `${workspace.id}:${workspace.claudeSessionId ?? ''}`
     const cached = contextBudgetCache.get(cacheKey)
     if (cached) {
-      updateDetailsPopover(workspace.id, {
+      updateDetails({
         model: modelLabel(cached.modelId),
         contextLoading: false
       })
@@ -248,7 +287,7 @@ export function WorkspaceTitleBar({
             const ctxText = usage
               ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(result.contextBudget)} · ${Math.round(usage.usedPct)}%`
               : shortTokens(result.contextBudget)
-            updateDetailsPopover(workspace.id, {
+            updateDetails({
               model: modelLabel(result.modelId),
               contextText: ctxText,
               contextLoading: false
@@ -256,7 +295,7 @@ export function WorkspaceTitleBar({
           })
       })
       .catch(() => {
-        updateDetailsPopover(workspace.id, { contextLoading: false })
+        updateDetails({ contextLoading: false })
       })
 
     // ── Async: cost ──────────────────────────────────────────────────────────
@@ -265,16 +304,16 @@ export function WorkspaceTitleBar({
       .then((result) => {
         if (result.ok && result.value != null) {
           const cost = result.value as SessionCost
-          updateDetailsPopover(workspace.id, {
+          updateDetails({
             cost: `$${cost.usd.toFixed(2)}`,
             costLoading: false
           })
         } else {
-          updateDetailsPopover(workspace.id, { costLoading: false })
+          updateDetails({ costLoading: false })
         }
       })
       .catch(() => {
-        updateDetailsPopover(workspace.id, { costLoading: false })
+        updateDetails({ costLoading: false })
       })
   }
 
@@ -290,7 +329,7 @@ export function WorkspaceTitleBar({
     clearDetailsHoverTimer()
     detailsHoverTimerRef.current = setTimeout(() => {
       detailsHoverTimerRef.current = null
-      hideNativePopover(workspace.id)
+      hideDetailsCard()
     }, 80)
   }
 
@@ -298,19 +337,34 @@ export function WorkspaceTitleBar({
   useEffect(() => {
     return () => {
       clearDetailsHoverTimer()
-      hideNativePopover(workspace.id)
+      hideDetailsCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on the Details button re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself. React path: the overlay card emits mouseenter/mouseleave —
+  // cancel the close timer on enter, re-arm it (same 80ms) on leave. Chassis
+  // path: the native card signals "::closed" via NSTrackingArea mouseExited
+  // — reset our open-state so a subsequent hover re-opens the card cleanly.
   useEffect(() => {
+    if (USE_REACT_OVERLAYS) {
+      const unregister = onCardPointer(detailsCardId(workspace.id), {
+        onEnter: clearDetailsHoverTimer,
+        onLeave: () => {
+          detailsHoverTimerRef.current = setTimeout(() => {
+            detailsHoverTimerRef.current = null
+            hideDetailsCard()
+          }, 80)
+        }
+      })
+      return unregister
+    }
     const unregister = onNativePopoverClosed(workspace.id, () => {
       clearDetailsHoverTimer()
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   // Resolve parent name for the "forked from" chip

@@ -1043,3 +1043,48 @@ export type OverlayAck = {
   /** Set when the kind's error boundary caught a render failure. */
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Overlay card kinds — hoverCard / detailsCard (U8: React migration of the
+// chassis 'hover'/'details' popovers). Props are serializable and reuse the
+// app's own GitStatus/GhPullRequest shapes directly rather than the chassis's
+// NSDictionary-flattened equivalents (HoverPopoverData/DetailsPopoverData in
+// nativePopover.ts) — those flattened shapes exist only because ObjC needed
+// primitives; the React kind can consume the real domain types.
+// ---------------------------------------------------------------------------
+
+export type OverlayCardGit = {
+  branch: string
+  detached: boolean
+  summary: string
+  insertions: number
+  deletions: number
+}
+
+export type OverlayCardPr = {
+  number: number
+  state: GhPullRequestState
+  check: 'ok' | 'fail' | 'pending' | 'none'
+  url?: string
+}
+
+export type HoverCardProps = {
+  title: string
+  activityLabel: string
+  activityState: WorkspaceActivityDetail
+  relativeTime: string
+  git?: OverlayCardGit
+  pr?: OverlayCardPr
+  cwd?: string
+}
+
+export type DetailsCardProps = {
+  pr?: OverlayCardPr
+  model?: string
+  contextText?: string
+  contextLoading?: boolean
+  cost?: string
+  costLoading?: boolean
+  git?: OverlayCardGit
+  cwd?: string
+}
