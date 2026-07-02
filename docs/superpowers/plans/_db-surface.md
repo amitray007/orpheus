@@ -318,7 +318,7 @@ Lines 81-209, the `CLAUDE_SETTINGS_SCHEMA_SQL` constant (lines 80-210).
   );
 ```
 
-**Column count: 111** (counted at top-level comma boundaries; task brief estimated "roughly 150" — actual is 111, flagged as a discrepancy vs. the brief's estimate, not vs. any version-origin claim).
+**Column count: 110** (counted as column-definition lines in the CREATE body; task brief estimated "roughly 150" — actual is 110, flagged as a discrepancy vs. the brief's estimate, not vs. any version-origin claim. The transcribed column set above is byte-for-byte identical to the source `CREATE TABLE` constant.).
 
 No columns for this table are ALTER-only (absent from the constant) — every column added across v8/v9/v11/v13/v14/v16/v17/v22/v23/v24/v52/v53 migrations has been folded back into this fresh-install constant, per the file's stated convention ("Pattern for additive changes is non-destructive: add the column to the CREATE TABLE block for fresh installs, then append a defensive ALTER").
 
