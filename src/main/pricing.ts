@@ -134,7 +134,7 @@ export const FALLBACK_PRICING: Record<string, ModelPricing> = {
     cacheRead: 0.3,
     cacheWrite: 3.75,
     context: 1_000_000,
-    output_limit: 64_000
+    output_limit: 128_000
   },
   haiku: {
     input: 1,
