@@ -4,7 +4,7 @@ import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
-import { ModelSelectChip } from './ModelSelectChip'
+import { DropdownChip } from './DropdownChip'
 
 interface WorkspaceFooterProps {
   workspaceId: string
@@ -21,6 +21,15 @@ interface WorkspaceFooterProps {
   /** Live activity detail for visibleWhen filtering. Provided by WorkspaceView. */
   activityDetail?: WorkspaceActivityDetail
 }
+
+// actionIds that render as a DropdownChip (opens a chipDropdown popover)
+// instead of an ActionChip — the built-in Model/Effort selectors plus the
+// fully custom author-configured "Dropdown menu" action type.
+const DROPDOWN_ACTION_IDS = new Set([
+  'footer.modelSelect',
+  'footer.effortSelect',
+  'footer.dropdown'
+])
 
 /**
  * Whether a chip should be shown given the current activity detail.
@@ -96,12 +105,11 @@ export function WorkspaceFooter({
       <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
         {!loading &&
           mutators.map((item) =>
-            item.actionId === 'footer.modelSelect' ? (
-              <ModelSelectChip
+            DROPDOWN_ACTION_IDS.has(item.actionId) ? (
+              <DropdownChip
                 key={item.id}
+                item={item}
                 workspaceId={workspaceId}
-                icon={item.icon}
-                label={item.label}
                 enabled={isVisible(item.visibleWhen, activityDetail)}
               />
             ) : (

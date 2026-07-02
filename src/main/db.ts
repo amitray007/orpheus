@@ -9,7 +9,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // Schema
 // ---------------------------------------------------------------------------
 
-export const CURRENT_VERSION = 67
+export const CURRENT_VERSION = 68
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -2447,6 +2447,46 @@ export function migrate(db: Database.Database): void {
       /* footer_actions_global may not exist yet on a clean install; safe to skip */
     }
     db.prepare('UPDATE schema_version SET version = ?').run(67)
+  }
+
+  // Version 68: seed the new built-in Effort dropdown chip (actionId
+  // 'footer.effortSelect') into existing installs' global footer actions —
+  // fresh installs already get it via seedDefaultFooterActions()'s
+  // DEFAULT_SEEDS. Only inserts if no row with this action_id exists yet, so
+  // reruns and users who've since deleted it are both left alone.
+  if (currentVersion < 68) {
+    try {
+      const hasEffort = db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM footer_actions_global WHERE action_id = 'footer.effortSelect'`
+        )
+        .get() as { c: number }
+      if (hasEffort.c === 0) {
+        const maxPos = db
+          .prepare(`SELECT COALESCE(MAX(position), -1) AS maxPos FROM footer_actions_global`)
+          .get() as { maxPos: number }
+        const now = Date.now()
+        db.prepare(
+          `INSERT INTO footer_actions_global
+             (id, label, icon, action_id, params_json, visible_when, position, created_at, updated_at, prompts_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          randomUUID(),
+          'Effort',
+          'Sliders',
+          'footer.effortSelect',
+          '{}',
+          'always',
+          maxPos.maxPos + 1,
+          now,
+          now,
+          null
+        )
+      }
+    } catch {
+      /* footer_actions_global may not exist yet on a clean install; safe to skip */
+    }
+    db.prepare('UPDATE schema_version SET version = ?').run(68)
   }
 
   // Emit db.migrate lifecycle event (best-effort). NOTE: migrate() runs during getDb()

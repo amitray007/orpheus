@@ -189,6 +189,7 @@ import type {
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
   ClaudeWorkspaceSettings,
+  ClaudeEffort,
   ClaudeAuthPatch,
   ClaudeHookDraft,
   McpServerDraft,
@@ -597,49 +598,99 @@ function recomputeDirty(): void {
   }
 }
 
-// Persists a model change made via the footer Model dropdown AND neutralizes
-// the resulting dirty delta for JUST the model dimension of the launch
-// snapshot — because `/model <value>` is typed into the terminal live by the
-// caller immediately after this resolves, the running claude process is
-// already using the new model, so the stored snapshot must be updated to
-// match reality without touching any OTHER pending genuine dirty delta
-// (e.g. if the user separately changed permission-mode and hasn't restarted
-// yet, that delta must still show "Restart to apply" afterwards).
-function setWorkspaceModelAndSuppressDirty(
+// Tokenizes a composed `flags` string into `{ name, raw }` pairs, one per
+// `--flag [value]` occurrence. `raw` is the exact matched substring (leading
+// whitespace trimmed) so tokens can be spliced back into a flags string
+// losslessly — e.g. "--model claude-opus-4-8" or "--debug" (no value).
+function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
+  const tokens: Array<{ name: string; raw: string }> = []
+  const re = /(?:^|\s)--([a-zA-Z-]+)(?:\s+(\S+))?/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(flags)) !== null) {
+    tokens.push({ name: match[1] as string, raw: match[0].trim() })
+  }
+  return tokens
+}
+
+// Persists a model/effort change made via a footer dropdown chip (Model or
+// Effort) AND neutralizes the resulting dirty delta for JUST that ONE flag
+// dimension of the launch snapshot — because `/model <value>` or
+// `/effort <value>` is typed into the terminal live by the caller immediately
+// after this resolves, the running claude process already reflects the new
+// value, so the stored snapshot must be updated to match reality without
+// touching any OTHER pending genuine dirty delta (e.g. if the user separately
+// changed permission-mode and hasn't restarted yet, that delta must still
+// show "Restart to apply" afterwards).
+//
+// Algorithm (position-independent, multi-flag-safe — "reconstruct from
+// fresh"): start from `fresh.flags` (guarantees compose's own deterministic
+// token ordering), then for every flag NAME other than `flagName` whose token
+// differs between the OLD snapshot and FRESH (including one having it and the
+// other not), rewrite the working string so that name's token matches OLD's
+// value again — i.e. undo everything fresh changed EXCEPT the one flag we
+// intentionally want reflected. The `flagName` token itself is always left as
+// fresh's value. This guarantees `launchEquals(patchedSnapshot, fresh)` is
+// true iff `flagName` was the ONLY thing that changed since mount: if nothing
+// else changed, every non-`flagName` token is restored to OLD's (== fresh's,
+// since nothing else diverged) value, so patched === fresh. If something else
+// DID change, that other token is deliberately reverted to OLD's stale value,
+// so patched !== fresh and recomputeDirty() below still correctly flags it.
+function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
-  model: string
+  patch: Partial<{ model: string; effort: ClaudeEffort }>,
+  flagName: 'model' | 'effort'
 ): ClaudeWorkspaceSettings {
-  const result = updateClaudeWorkspaceSettings(workspaceId, { model })
+  const result = updateClaudeWorkspaceSettings(workspaceId, patch)
 
   const snap = launchSnapshots.get(workspaceId)
   if (snap) {
     const ws = getWorkspace(workspaceId)
     if (ws) {
-      // Recompose fresh — this reflects the NEW model (already persisted above)
-      // plus whatever ELSE currently differs from the snapshot (untouched).
+      // Recompose fresh — this reflects the NEW value (already persisted
+      // above) plus whatever ELSE currently differs from the snapshot.
       const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
 
-      // Extract just the "--model <value>" token (always flagParts[0] when
-      // present — verified in composeClaudeLaunch) from both the OLD snapshot
-      // flags and the FRESH flags, and splice fresh's model token into the
-      // snapshot in place, leaving every other token/settingsJson/env from the
-      // OLD snapshot completely untouched. This way launchEquals(patchedSnap,
-      // fresh) is true ONLY if model was the sole delta; any other
-      // pre-existing divergence between snap and fresh remains a divergence
-      // after the patch, so recomputeDirty() below still correctly flags it.
-      const modelFlagRe = /^--model\s+\S+\s*/
-      const oldFlagsWithoutModel = snap.flags.replace(modelFlagRe, '')
-      const freshModelMatch = fresh.flags.match(modelFlagRe)
-      const newModelToken = freshModelMatch ? freshModelMatch[0] : ''
-      const patchedFlags = newModelToken + oldFlagsWithoutModel
+      const oldTokens = parseFlagTokens(snap.flags)
+      const freshTokens = parseFlagTokens(fresh.flags)
+      const oldByName = new Map(oldTokens.map((t) => [t.name, t.raw]))
+      const freshByName = new Map(freshTokens.map((t) => [t.name, t.raw]))
 
+      const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
+      let patchedFlags = fresh.flags
+      for (const name of allNames) {
+        if (name === flagName) continue // leave fresh's value — this is the wanted change
+        const oldRaw = oldByName.get(name)
+        const freshRaw = freshByName.get(name)
+        if (oldRaw === freshRaw) continue // unchanged — nothing to restore
+
+        if (freshRaw !== undefined && oldRaw !== undefined) {
+          // Present in both, but differing value — replace fresh's token text
+          // with old's token text.
+          patchedFlags = patchedFlags.replace(freshRaw, oldRaw)
+        } else if (freshRaw !== undefined && oldRaw === undefined) {
+          // Fresh has it, old didn't — remove fresh's token.
+          patchedFlags = patchedFlags.replace(freshRaw, '').trim()
+        } else if (oldRaw !== undefined && freshRaw === undefined) {
+          // Old had it, fresh doesn't — append old's token back (exact
+          // insertion position doesn't matter: this branch only runs when
+          // some OTHER flag already changed, which already makes
+          // patched !== fresh, satisfying the invariant regardless of where
+          // we splice it back in).
+          patchedFlags = `${patchedFlags} ${oldRaw}`.trim()
+        }
+      }
+      // Normalize whitespace left behind by removals/replacements.
+      patchedFlags = patchedFlags.replace(/\s+/g, ' ').trim()
+
+      // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
       launchSnapshots.set(workspaceId, { ...snap, flags: patchedFlags })
     }
   }
 
   // Recompute dirty for ALL workspaces (cheap, existing behavior) — now that
-  // the model dimension of this workspace's snapshot matches fresh, only a
-  // GENUINE pre-existing divergence (unrelated to model) would still flag dirty.
+  // the target flag's dimension of this workspace's snapshot matches fresh,
+  // only a GENUINE pre-existing divergence (unrelated to flagName) would
+  // still flag dirty.
   recomputeDirty()
 
   return result
@@ -1673,9 +1724,9 @@ handle(
 // Footer Model chip: persist a model override and suppress the resulting
 // dirty delta (the chip also injects `/model <value>` into the terminal live
 // right after this resolves, so the running process already matches — see
-// setWorkspaceModelAndSuppressDirty above).
+// setWorkspaceSettingAndSuppressDirty above).
 handle('workspace:setModel', (_e, args: { workspaceId: string; model: string }) => {
-  return setWorkspaceModelAndSuppressDirty(args.workspaceId, args.model)
+  return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { model: args.model }, 'model')
 })
 
 // Footer Model chip: read the TRUE effective model a workspace would launch
@@ -1687,6 +1738,24 @@ handle('workspace:getEffectiveModel', (_e, args: { workspaceId: string }) => {
   const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
   const m = launch.flags.match(/^--model\s+(\S+)/)
   return { model: m ? m[1] : '' }
+})
+
+// Footer Effort chip: persist an effort override and suppress the resulting
+// dirty delta (the chip also injects `/effort <value>` into the terminal live
+// right after this resolves, so the running process already matches — see
+// setWorkspaceSettingAndSuppressDirty above).
+handle('workspace:setEffort', (_e, args: { workspaceId: string; effort: ClaudeEffort }) => {
+  return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { effort: args.effort }, 'effort')
+})
+
+// Footer Effort chip: read the TRUE effective effort a workspace would launch
+// with right now, by reusing composeClaudeLaunch verbatim. Not anchored to
+// start-of-string (unlike model) because --effort is not always flagParts[0].
+handle('workspace:getEffectiveEffort', (_e, args: { workspaceId: string }) => {
+  const ws = getWorkspace(args.workspaceId)
+  const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
+  const m = launch.flags.match(/(?:^|\s)--effort\s+(\S+)/)
+  return { effort: m ? m[1] : '' }
 })
 
 // ---------------------------------------------------------------------------

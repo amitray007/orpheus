@@ -479,6 +479,13 @@ const DEFAULT_SEEDS: Array<{
     visibleWhen: 'always'
   },
   {
+    label: 'Effort',
+    icon: 'Sliders',
+    actionId: 'footer.effortSelect',
+    params: {},
+    visibleWhen: 'always'
+  },
+  {
     label: 'Archive',
     icon: 'Archive',
     actionId: 'workspace.archive',

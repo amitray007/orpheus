@@ -27,10 +27,6 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
   const [highlighted, setHighlighted] = useState(initialIndex)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    containerRef.current?.focus()
-  }, [])
-
   function handleSelect(value: string): void {
     emit('select', { value })
   }
@@ -38,6 +34,20 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
   function handleCancel(): void {
     emit('cancel')
   }
+
+  useEffect(() => {
+    containerRef.current?.focus()
+
+    // Backstop for FIX A (hover-then-click-to-close): if macOS doesn't
+    // deliver a DOM `blur` on the popover container reliably (window-level
+    // deactivation), a native `window` blur still fires when the main
+    // window reactivates. Treat that the same as focus leaving the popover
+    // — self-dismiss so the reactivating click isn't eaten by a stale
+    // focus-taking child window.
+    window.addEventListener('blur', handleCancel)
+    return () => window.removeEventListener('blur', handleCancel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleCancel just emits a stable 'cancel' event; re-subscribing per-render would add churn without behavior change.
+  }, [])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     if (e.key === 'ArrowDown') {
@@ -61,6 +71,15 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
       ref={containerRef}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
+      onBlur={(e) => {
+        // Only cancel when focus leaves the whole popover (not row→row —
+        // button-to-button focus moves keep relatedTarget inside the
+        // container). This is what makes the reactivation click that
+        // refocuses the main window also close the dropdown on the SAME
+        // click (bug 1): the click blurs this container, we emit 'cancel',
+        // the overlay hides — no dead first click.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) handleCancel()
+      }}
       className="w-56 bg-surface-overlay border border-border-default rounded-lg shadow-lg p-1.5 flex flex-col gap-0.5 font-[family-name:var(--font-sans)] outline-none"
     >
       {title && (

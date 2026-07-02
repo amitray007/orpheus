@@ -19,6 +19,7 @@ import type {
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettings,
   ClaudeWorkspaceSettingsOverrides,
+  ClaudeEffort,
   AppUiState,
   AppUiStatePatch,
   GitStatus,
@@ -363,7 +364,17 @@ const api = {
     // with right now (workspace override → project override → global
     // setting), via composeClaudeLaunch — the single source of truth.
     getEffectiveModel: (workspaceId: string): Promise<{ model: string }> =>
-      ipcRenderer.invoke('workspace:getEffectiveModel', { workspaceId })
+      ipcRenderer.invoke('workspace:getEffectiveModel', { workspaceId }),
+    // Footer Effort chip: persists an effort override and suppresses the
+    // resulting dirty delta (see setWorkspaceSettingAndSuppressDirty in
+    // src/main/index.ts) since the caller injects `/effort <value>` into the
+    // terminal live right after this resolves.
+    setEffort: (workspaceId: string, effort: ClaudeEffort): Promise<ClaudeWorkspaceSettings> =>
+      ipcRenderer.invoke('workspace:setEffort', { workspaceId, effort }),
+    // Footer Effort chip: reads the effective effort a workspace would launch
+    // with right now, via composeClaudeLaunch — the single source of truth.
+    getEffectiveEffort: (workspaceId: string): Promise<{ effort: string }> =>
+      ipcRenderer.invoke('workspace:getEffectiveEffort', { workspaceId })
   },
   worktrees: {
     branchExists: (projectId: string, branch: string): Promise<boolean> =>

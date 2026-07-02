@@ -18,6 +18,7 @@ import type {
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettings,
   ClaudeWorkspaceSettingsOverrides,
+  ClaudeEffort,
   AppUiState,
   AppUiStatePatch,
   GitStatus,
@@ -214,6 +215,8 @@ declare global {
         convertToLocal: (id: string) => Promise<WorkspaceRecord>
         setModel: (workspaceId: string, model: string) => Promise<ClaudeWorkspaceSettings>
         getEffectiveModel: (workspaceId: string) => Promise<{ model: string }>
+        setEffort: (workspaceId: string, effort: ClaudeEffort) => Promise<ClaudeWorkspaceSettings>
+        getEffectiveEffort: (workspaceId: string) => Promise<{ effort: string }>
       }
       worktrees: {
         branchExists: (projectId: string, branch: string) => Promise<boolean>
