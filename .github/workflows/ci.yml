@@ -49,11 +49,10 @@ jobs:
         run: bun run typecheck
 
       - name: Lint
-        # --max-warnings ratchets the warning budget: fails if the count grows
-        # past the pre-push baseline (183 warnings at time of writing). Lower
-        # this number as warnings are cleaned up; never raise it without
-        # reviewing what regressed.
-        run: bunx eslint . --max-warnings=171
+        # --max-warnings ratchets the warning budget downward as findings close
+        # (currently 170). Lower this number as warnings are cleaned up; never
+        # raise it without reviewing what regressed.
+        run: bunx eslint . --max-warnings=170
 
       - name: Format check
         run: bun run format:check
