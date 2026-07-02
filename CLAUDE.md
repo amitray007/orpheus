@@ -128,7 +128,17 @@ When **any** layer mutates, `recomputeDirty()` in `src/main/index.ts` compares t
 
 ### SQLite schema + migrations
 
-`src/main/db.ts` is migrations-as-code. `CURRENT_VERSION` is the source of truth. Pattern for additive changes is **non-destructive**: add the column to the `CREATE TABLE` block for fresh installs, then append a defensive `try { db.exec("ALTER TABLE ... ADD COLUMN ...") } catch {}` migration at the bottom. Never write destructive migrations. Bump `CURRENT_VERSION` so the migration block runs once.
+Schema lives in `src/main/db/` (a directory, not a monolith). `schema.ts` is the single declarative source of truth — every table is declared once as a structured `TableDef`. `engine.ts` introspects the live DB, diffs it against `schema.ts`, and reconciles the difference (add column / add index / or a full SQLite 12-step table rebuild when a change touches a `CHECK` constraint, column type, or `NOT NULL`). `data-steps.ts` holds ordered, named, run-once data transforms tracked in an `applied_data_steps` ledger (named, not integer-versioned, so steps can't collide). `cutover.ts` is the ordered first-boot entry point; `index.ts` exposes the unchanged public surface (`getDb()` / `migrate()`).
+
+**To add a column:** edit the table's `TableDef` in `schema.ts` — add the column once. The engine adds it on the next boot. No more CREATE-block + defensive-ALTER double-declaration, no `catch {}`, no version bump.
+
+**To add a data transform:** append a named `DataStep` to `data-steps.ts` — it runs once and is recorded in the ledger by name.
+
+**CHECK/enum evolution is automatic:** change the shared enum array in `schema.ts` and the engine rebuilds the table, with `normalizeOnRebuild` coercing legacy values into the new constraint. The old `healWorkspacesCheck` / `healProjectsArchivedAt` boot-time healers are gone — the reconciler subsumes them.
+
+**Column drops are explicit** — a `dropColumns: [...]` array on the `TableDef` — never inferred from a column's absence, so a typo in `schema.ts` can't cause silent data loss.
+
+Never write destructive migrations by hand; the engine's rebuild path backs up via `VACUUM INTO` before any rebuild and verifies row counts after. Verification harness: `node scripts/verify-migration-engine.ts` (dev-only, under `scripts/`, not shipped) exercises render/introspect/diff/rebuild/backup/engine/schema-fresh/convergence/data-steps/cutover.
 
 ### Native terminal addon
 
