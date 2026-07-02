@@ -23,7 +23,7 @@ import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import { SidebarBoundsContext, useSidebarBounds } from './SidebarBoundsContext'
-import { useWorkspaceActivity, useActiveCount, getActivitySnapshot } from '@/lib/activityStore'
+import { useWorkspaceActivity, useActiveIdsKey, getActivitySnapshot } from '@/lib/activityStore'
 import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
@@ -717,10 +717,14 @@ const ProjectRow = memo(function ProjectRow({
   }
 
   // Cap the visible workspace list: always show active workspaces (working/
-  // attention/ready), plus idles up to a base of 5 (or activeCount if higher),
-  // plus any extra idles revealed via "Show more".
+  // attention/ready), plus idles up to a base of 5 (or actives.length if
+  // higher), plus any extra idles revealed via "Show more".
   const workspaceIds = useMemo(() => workspaces.map((w) => w.id), [workspaces])
-  const activeCount = useActiveCount(workspaceIds)
+  // Subscribed purely for its re-render trigger: the returned key changes
+  // whenever the active SET changes (including a compensating swap that
+  // leaves the count unchanged), so the partition below is recomputed from a
+  // fresh snapshot instead of going stale on same-count membership changes.
+  useActiveIdsKey(workspaceIds)
   const snap = getActivitySnapshot()
   const actives: WorkspaceRecord[] = []
   const idles: WorkspaceRecord[] = []
@@ -732,12 +736,22 @@ const ProjectRow = memo(function ProjectRow({
       idles.push(ws)
     }
   }
-  const baseVisible = Math.max(5, activeCount)
+  const baseVisible = Math.max(5, actives.length)
   const idleSlots = Math.max(0, baseVisible - actives.length) + revealExtra
   const visibleIds = new Set([
     ...actives.map((w) => w.id),
     ...idles.slice(0, idleSlots).map((w) => w.id)
   ])
+  // Always show the workspace currently open in the terminal view and the one
+  // selected in the sidebar, even if it would otherwise fall past the cap —
+  // navigating into a workspace must never make it vanish from the sidebar.
+  // Pinned in ADDITION to the idle-fill above (doesn't consume an idle slot).
+  if (currentWorkspaceId && workspaceIds.includes(currentWorkspaceId)) {
+    visibleIds.add(currentWorkspaceId)
+  }
+  if (selectedWorkspaceId && workspaceIds.includes(selectedWorkspaceId)) {
+    visibleIds.add(selectedWorkspaceId)
+  }
   const visibleWorkspaces = workspaces.filter((w) => visibleIds.has(w.id))
   const hiddenCount = workspaces.length - visibleIds.size
 
@@ -882,6 +896,10 @@ const ProjectRow = memo(function ProjectRow({
       )}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
+          {/* Rows hidden by the cap have no drop target here — they're not
+              rendered, so there's nowhere to drag onto. Reordering into the
+              hidden tail requires expanding via "Show more" first. Accepted
+              as-is: capped rows are an edge case, not the common reorder path. */}
           {visibleWorkspaces.map((ws) => {
             const showLineAbove = wsDropTargetId === ws.id && wsDropPos === 'before'
             const showLineBelow = wsDropTargetId === ws.id && wsDropPos === 'after'

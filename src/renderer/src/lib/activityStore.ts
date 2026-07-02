@@ -104,13 +104,14 @@ export function useWorkspaceActivity(workspaceId: string): WorkspaceActivityDeta
 const ACTIVE_DETAILS = new Set<WorkspaceActivityDetail>(['working', 'attention', 'ready'])
 
 /**
- * Subscribe to a list of workspaces and return how many are currently
- * "active" (working/attention/ready, as opposed to idle/archived). Used by
- * the sidebar to size the always-visible slice of a project's workspace list.
- * Returns a primitive number so useSyncExternalStore's identity check stays
- * stable across renders.
+ * Subscribe to a list of workspaces; returns a stable '|'-joined string of the
+ * ids currently "active" (working/attention/ready), in the given order. The
+ * string changes whenever the active SET changes (including a compensating
+ * swap that keeps the count constant), so consumers re-render and can
+ * recompute their partition from a fresh snapshot. Returns a primitive so
+ * useSyncExternalStore's identity check stays stable.
  */
-export function useActiveCount(workspaceIds: string[]): number {
+export function useActiveIdsKey(workspaceIds: string[]): string {
   const key = workspaceIds.join('|')
   // Subscribe to every id in the list; combine into a single unsubscribe.
   // Memoized on the joined key (not the array reference) so we don't
@@ -125,8 +126,7 @@ export function useActiveCount(workspaceIds: string[]): number {
     [key]
   )
   const getSnapshot = useMemo(
-    () => () =>
-      workspaceIds.reduce((count, id) => count + (ACTIVE_DETAILS.has(store.get(id)!) ? 1 : 0), 0),
+    () => () => workspaceIds.filter((id) => ACTIVE_DETAILS.has(store.get(id)!)).join('|'),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable joined string, not the array reference
     [key]
   )
