@@ -4,20 +4,17 @@ import type { ConfirmModalProps } from '@shared/types'
 import type { OverlayKindProps } from '../registry'
 
 // ---------------------------------------------------------------------------
-// ConfirmModal — centered confirm/danger modal (Phase B React migration of
-// the chassis 'confirm' kind, addon.mm buildModalCard). Same hierarchy:
-// title, body, optional checkbox, right-aligned button row with
-// default/primary/danger styles. Width target ~360px, matching the chassis
-// card. takesFocus: true — OverlayRoot's global Escape handler already emits
-// 'cancel' for takesFocus descriptors; the scrim below independently emits
-// 'cancel' on backdrop click (OverlayRoot centers this kind full-bleed via
-// placement.mode === 'centered').
+// ConfirmModal — centered confirm/danger modal. Hierarchy: title, body,
+// optional checkbox, right-aligned button row with default/primary/danger
+// styles. Width target ~360px. takesFocus: true — OverlayRoot's global
+// Escape handler already emits 'cancel' for takesFocus descriptors; the
+// scrim below independently emits 'cancel' on backdrop click (OverlayRoot
+// centers this kind full-bleed via placement.mode === 'centered').
 //
 // Result contract: overlayClient.showConfirmModalReact resolves
 // { buttonId, checkboxChecked } for every settle path (button click, Escape,
 // scrim click) — this component never resolves anything itself, it only
-// emits events; overlayClient owns turning events into the promise result
-// (mirrors nativePopover.ts's showConfirmModal exactly).
+// emits events; overlayClient owns turning events into the promise result.
 // ---------------------------------------------------------------------------
 
 export function ConfirmModal({ props, emit }: OverlayKindProps): React.JSX.Element {

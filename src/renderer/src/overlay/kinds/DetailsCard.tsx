@@ -13,10 +13,9 @@ import { openPrUrl } from '../../lib/overlayClient'
 import type { OverlayKindProps } from '../registry'
 
 // ---------------------------------------------------------------------------
-// DetailsCard — workspace title bar "Details" popover (U8 React migration of
-// the chassis 'details' kind, addon.mm buildDetailsCard). Same section order:
-// PR, Model & Usage (model/context/cost rows with loading '…' / empty '—'
-// muted placeholders), Repository (git + cwd). Width target ~252px.
+// DetailsCard — workspace title bar "Details" popover. Section order: PR,
+// Model & Usage (model/context/cost rows with loading '…' / empty '—' muted
+// placeholders), Repository (git + cwd). Width target ~252px.
 // ---------------------------------------------------------------------------
 
 function SectionHeader({ children }: { children: React.ReactNode }): React.JSX.Element {

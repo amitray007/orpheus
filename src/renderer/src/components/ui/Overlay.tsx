@@ -22,9 +22,8 @@ interface OverlayProps {
 // NOTE: a same-window DOM node can never paint above the terminal's NSView
 // (see docs/learnings/overlay-child-window-macos.md) — this component doesn't
 // change that. UI that must render above the live terminal uses the
-// child-window overlay layer (overlayClient.ts) or, for the legacy fallback
-// path, native popovers (nativePopover.ts) — both are separate windows/NSView
-// siblings, not this component. Use Overlay for DOM chrome that's fine being
+// child-window overlay layer (overlayClient.ts), a separate window/NSView
+// sibling, not this component. Use Overlay for DOM chrome that's fine being
 // occluded by the terminal (e.g. content within non-terminal views).
 export function Overlay({
   open,

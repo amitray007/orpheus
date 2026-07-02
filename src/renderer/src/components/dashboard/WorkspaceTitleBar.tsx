@@ -13,16 +13,6 @@ import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
 import {
-  showDetailsPopover,
-  updateDetailsPopover,
-  hideNativePopover,
-  onNativePopoverClosed,
-  gitStatusToNative,
-  prToNative
-} from '@/lib/nativePopover'
-import type { DetailsPopoverData } from '@/lib/nativePopover'
-import {
-  USE_REACT_OVERLAYS,
   showDetailsCard,
   updateDetailsCard,
   hideOverlayCard,
@@ -210,20 +200,12 @@ export function WorkspaceTitleBar({
     }
   }
 
-  function updateDetails(patch: Partial<DetailsPopoverData & DetailsCardProps>): void {
-    if (USE_REACT_OVERLAYS) {
-      updateDetailsCard(detailsCardId(workspace.id), patch)
-    } else {
-      updateDetailsPopover(workspace.id, patch)
-    }
+  function updateDetails(patch: Partial<DetailsCardProps>): void {
+    updateDetailsCard(detailsCardId(workspace.id), patch)
   }
 
   function hideDetailsCard(): void {
-    if (USE_REACT_OVERLAYS) {
-      hideOverlayCard(detailsCardId(workspace.id))
-    } else {
-      hideNativePopover(workspace.id)
-    }
+    hideOverlayCard(detailsCardId(workspace.id))
   }
 
   function openDetailsPopover(): void {
@@ -236,25 +218,14 @@ export function WorkspaceTitleBar({
       ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
       : workspace.cwd
 
-    if (USE_REACT_OVERLAYS) {
-      const initialProps: DetailsCardProps = {
-        pr: prToCard(pr ?? null),
-        git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
-        cwd: cwdDisplay,
-        contextLoading: true,
-        costLoading: true
-      }
-      showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
-    } else {
-      const initialData: DetailsPopoverData = {
-        pr: prToNative(pr ?? null),
-        git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
-        cwd: cwdDisplay,
-        contextLoading: true,
-        costLoading: true
-      }
-      showDetailsPopover(workspace.id, detailsButtonRef.current, initialData, pr ?? null)
+    const initialProps: DetailsCardProps = {
+      pr: prToCard(pr ?? null),
+      git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
+      cwd: cwdDisplay,
+      contextLoading: true,
+      costLoading: true
     }
+    showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
 
     // ── Async: context budget ────────────────────────────────────────────────
     const cacheKey = `${workspace.id}:${workspace.claudeSessionId ?? ''}`
@@ -343,25 +314,17 @@ export function WorkspaceTitleBar({
   }, [workspace.id])
 
   // Hover-bridge: keep the card open while the pointer is over the card
-  // itself. React path: the overlay card emits mouseenter/mouseleave —
-  // cancel the close timer on enter, re-arm it (same 80ms) on leave. Chassis
-  // path: the native card signals "::closed" via NSTrackingArea mouseExited
-  // — reset our open-state so a subsequent hover re-opens the card cleanly.
+  // itself — the overlay card emits mouseenter/mouseleave, so cancel the
+  // close timer on enter and re-arm it (same 80ms) on leave.
   useEffect(() => {
-    if (USE_REACT_OVERLAYS) {
-      const unregister = onCardPointer(detailsCardId(workspace.id), {
-        onEnter: clearDetailsHoverTimer,
-        onLeave: () => {
-          detailsHoverTimerRef.current = setTimeout(() => {
-            detailsHoverTimerRef.current = null
-            hideDetailsCard()
-          }, 80)
-        }
-      })
-      return unregister
-    }
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearDetailsHoverTimer()
+    const unregister = onCardPointer(detailsCardId(workspace.id), {
+      onEnter: clearDetailsHoverTimer,
+      onLeave: () => {
+        detailsHoverTimerRef.current = setTimeout(() => {
+          detailsHoverTimerRef.current = null
+          hideDetailsCard()
+        }, 80)
+      }
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps

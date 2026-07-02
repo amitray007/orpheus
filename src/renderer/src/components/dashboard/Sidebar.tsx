@@ -28,9 +28,7 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
 import {
-  USE_REACT_OVERLAYS,
   showHoverCard,
   hideOverlayCard,
   hoverCardId,
@@ -215,10 +213,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const hasDetail = gitStatus !== null || pr != null
 
-  // Native popover: only allowed when inactive, not renaming, and has data.
+  // Hover card: only allowed when inactive, not renaming, and has data.
   const cardAllowed = hasDetail && !renaming && !active
 
-  // Ref to the row element used as anchor for the native popover.
+  // Ref to the row element used as anchor for the hover card.
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
@@ -232,11 +230,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   }
 
   function hideHoverCard(): void {
-    if (USE_REACT_OVERLAYS) {
-      hideOverlayCard(hoverCardId(workspace.id))
-    } else {
-      hideNativePopover(workspace.id)
-    }
+    hideOverlayCard(hoverCardId(workspace.id))
   }
 
   function handleRowMouseEnter(): void {
@@ -251,29 +245,16 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         workspace.worktreeParentCwd && workspace.worktreeBranch
           ? `${workspace.cwd} (${workspace.worktreeBranch})`
           : workspace.cwd
-      if (USE_REACT_OVERLAYS) {
-        const cardProps: HoverCardProps = {
-          title: dn.text,
-          activityLabel: activityToLabel(activity),
-          activityState: activityToState(activity),
-          relativeTime,
-          git: gitStatusToCard(gitStatus),
-          pr: prToCard(pr),
-          cwd: popoverCwd
-        }
-        showHoverCard(workspace.id, rowRef.current, cardProps)
-      } else {
-        showHoverPopover(
-          workspace.id,
-          rowRef.current,
-          gitStatus,
-          pr,
-          dn.text,
-          activity,
-          relativeTime,
-          popoverCwd
-        )
+      const cardProps: HoverCardProps = {
+        title: dn.text,
+        activityLabel: activityToLabel(activity),
+        activityState: activityToState(activity),
+        relativeTime,
+        git: gitStatusToCard(gitStatus),
+        pr: prToCard(pr),
+        cwd: popoverCwd
       }
+      showHoverCard(workspace.id, rowRef.current, cardProps)
     }, 120)
   }
 
@@ -306,26 +287,18 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   // Hover-bridge: keep the card open while the pointer is over the card
   // itself, so moving from the row into the card doesn't close-timer it out.
-  // React path: the overlay card emits mouseenter/mouseleave (OverlayRoot's
-  // card wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
-  // leave. Chassis path: the native card closes itself via NSTrackingArea
-  // mouseExited and signals "::closed" — reset our open-state so a
-  // subsequent hover re-opens the card cleanly.
+  // The overlay card emits mouseenter/mouseleave (OverlayRoot's card
+  // wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
+  // leave.
   useEffect(() => {
-    if (USE_REACT_OVERLAYS) {
-      const unregister = onCardPointer(hoverCardId(workspace.id), {
-        onEnter: clearHoverTimer,
-        onLeave: () => {
-          hoverTimerRef.current = setTimeout(() => {
-            hoverTimerRef.current = null
-            hideHoverCard()
-          }, 80)
-        }
-      })
-      return unregister
-    }
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearHoverTimer()
+    const unregister = onCardPointer(hoverCardId(workspace.id), {
+      onEnter: clearHoverTimer,
+      onLeave: () => {
+        hoverTimerRef.current = setTimeout(() => {
+          hoverTimerRef.current = null
+          hideHoverCard()
+        }, 80)
+      }
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps

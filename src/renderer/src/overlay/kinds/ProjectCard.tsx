@@ -5,11 +5,10 @@ import { ActivityIndicator } from '../../components/dashboard/ActivityIndicator'
 import type { OverlayKindProps } from '../registry'
 
 // ---------------------------------------------------------------------------
-// ProjectCard — collapsed-sidebar project hover popover (React migration of
-// the chassis 'project' kind, addon.mm buildProjectCard). Same section order:
+// ProjectCard — collapsed-sidebar project hover popover. Section order:
 // header (name + pinned chip) / repo / path / workspace count / workspace
-// list (up to 8 rows + "+K more" overflow) — using app design tokens instead
-// of AppKit drawing. Width target ~224px to match the chassis card.
+// list (up to 8 rows + "+K more" overflow) — using app design tokens. Width
+// target ~224px.
 // ---------------------------------------------------------------------------
 
 function SectionRow({

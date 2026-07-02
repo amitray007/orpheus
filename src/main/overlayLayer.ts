@@ -127,8 +127,6 @@ export type OverlayLayerDeps = {
   getMainWindow: () => BrowserWindow | null
   /** Focus the active workspace's terminal (via getCurrentlyViewedWorkspace() + addon.focus). No-op if there's no currently-viewed workspace. */
   focusActiveWorkspaceTerminal: () => boolean
-  /** Force-dismiss the currently-open native popover chassis card, if any (dismiss-on-acquire, KTD). No-op if none is open. */
-  dismissActiveNativePopover: () => void
 }
 let deps: OverlayLayerDeps | null = null
 
@@ -416,10 +414,7 @@ export function initOverlayLayer(
   } catch (err) {
     state = 'unavailable'
     overlayWin = null
-    console.error(
-      '[overlayLayer] child window creation failed — overlay unavailable, chassis fallback remains:',
-      err
-    )
+    console.error('[overlayLayer] child window creation failed — overlay unavailable:', err)
     return
   }
 
@@ -433,10 +428,7 @@ export function initOverlayLayer(
     }
   } catch (err) {
     state = 'unavailable'
-    console.error(
-      '[overlayLayer] child window load failed — overlay unavailable, chassis fallback remains:',
-      err
-    )
+    console.error('[overlayLayer] child window load failed — overlay unavailable:', err)
     try {
       overlayWin.destroy()
     } catch {
@@ -708,16 +700,6 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
   }
 
   const interactive = descriptor.acceptsClicks || descriptor.takesFocus
-
-  // Dismiss-on-acquire of an open native chassis card (KTD: "Acquiring for
-  // an interactive overlay dismisses an already-open native card first").
-  // TODO(U7): the pointerInCard force-hide variant (bypassing HidePopover's
-  // hover-deferral so a card can't strand itself above a modal scrim) is
-  // deferred to U7 per the plan — this call goes through the existing
-  // `hidePopover` path, which is sufficient for U4 since no interactive
-  // overlay kinds exist yet to race against an open card.
-  if (interactive) deps?.dismissActiveNativePopover()
-
   const wasIdle = state === 'idle'
 
   // Replacement semantics: settle the prior descriptor (if any) as dismissed

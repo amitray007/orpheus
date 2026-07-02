@@ -261,7 +261,6 @@ import {
   showOverlay,
   updateOverlay,
   hideOverlay,
-  isOverlayTokenHeld,
   isInteractiveOverlayVisible,
   focusOverlay,
   forceHideOwnedBy,
@@ -392,111 +391,6 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     isDark: true,
     tintAlpha: 0.35
   }
-}
-
-// ---------------------------------------------------------------------------
-// Popover theme palettes — separate from loading overlay (different token set:
-// no backdrop/tintAlpha; adds textMuted + accent).
-// surface-overlay tokens are the solid card background for the 3 themes.
-// ---------------------------------------------------------------------------
-type PopoverThemePalette = {
-  card: [number, number, number]
-  textPrimary: [number, number, number]
-  textSecondary: [number, number, number]
-  textMuted: [number, number, number]
-  border: [number, number, number]
-  accent: [number, number, number]
-  isDark: boolean
-}
-
-const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
-  midnight: {
-    card: [0x1c, 0x1c, 0x1f], // surface-overlay: slightly lighter than page bg
-    textPrimary: [0xf4, 0xf4, 0xf5], // zinc-100
-    textSecondary: [0xa1, 0xa1, 0xaa], // zinc-400
-    textMuted: [0x71, 0x71, 0x7a], // zinc-500
-    border: [0x3f, 0x3f, 0x46], // zinc-700 (border-white/10 approximation on dark)
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  },
-  daylight: {
-    card: [0xff, 0xff, 0xff], // white
-    textPrimary: [0x18, 0x18, 0x1b], // zinc-900
-    textSecondary: [0x52, 0x52, 0x5b], // zinc-600
-    textMuted: [0xa1, 0xa1, 0xaa], // zinc-400
-    border: [0xe4, 0xe4, 0xe7], // zinc-200
-    accent: [0x25, 0x63, 0xeb], // blue-600
-    isDark: false
-  },
-  eclipse: {
-    card: [0x10, 0x10, 0x10], // near-black surface
-    textPrimary: [0xff, 0xff, 0xff],
-    textSecondary: [0xb4, 0xb4, 0xb4],
-    textMuted: [0x71, 0x71, 0x71],
-    border: [0x2a, 0x2a, 0x2a],
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  }
-}
-
-let popoverWired = false
-
-// PR URL per workspace, captured when a popover is shown so the popover
-// action callback can open it directly via shell.openExternal — avoids the
-// fragile renderer round-trip whose Map entry is cleared before the click.
-const popoverPrUrlByWorkspace = new Map<string, string>()
-
-// The workspace whose native popover chassis card is currently shown, if
-// any — there's exactly one native card visible at a time (chassis cards
-// already auto-replace each other). Tracked so the overlay layer's
-// dismiss-on-acquire (KTD: "Acquiring for an interactive overlay dismisses
-// an already-open native card first") has something to force-hide; cleared
-// whenever the chassis reports the card closed (`popover:actionClicked` is
-// unrelated — the card is dismissed via `terminal:hidePopover` or a
-// self-clearing hover-close, neither of which round-trips through main, so
-// this is best-effort: cleared on the next `terminal:hidePopover` call for
-// the same workspace, and superseded whenever a new popover is shown).
-let lastShownPopoverWorkspaceId: string | null = null
-
-/** Force-dismiss the currently-open native popover card, if any — used by the overlay layer's dismiss-on-acquire (U4/KTD). */
-function dismissActiveNativePopover(): void {
-  const workspaceId = lastShownPopoverWorkspaceId
-  if (!workspaceId) return
-  lastShownPopoverWorkspaceId = null
-  try {
-    loadTerminalAddon().hidePopover(workspaceId)
-  } catch (err) {
-    console.error('[overlayLayer] dismissActiveNativePopover failed:', err)
-  }
-}
-
-function applyPopoverTheme(theme: Theme): void {
-  if (!terminalAddon) return
-  const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
-  terminalAddon.setPopoverTheme(palette)
-  console.log('[popover] theme applied:', theme)
-}
-
-function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
-  if (popoverWired) return
-  popoverWired = true
-  const currentTheme = getAppUiState().theme as Theme
-  addon.setPopoverTheme(POPOVER_THEME_PALETTES[currentTheme] ?? POPOVER_THEME_PALETTES.midnight)
-  // Wire the action callback: fires when a clickable element (Phase B: PR chip)
-  // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
-  addon.setPopoverActionCallback((identifier: string) => {
-    console.log('[popover] action callback:', identifier)
-    // Open the PR directly from main on a PR-chip click — the renderer Map that
-    // used to hold the URL is cleared before the click lands, so main owns this.
-    if (identifier.endsWith('::pr')) {
-      const wsId = identifier.slice(0, identifier.lastIndexOf('::'))
-      const url = popoverPrUrlByWorkspace.get(wsId)
-      if (url) shell.openExternal(url)
-    }
-    // Phase B: parse identifier and route action (e.g. open PR URL).
-    // For now, broadcast to renderer so it can handle it.
-    getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
-  })
 }
 
 function applyLoadingOverlayTheme(theme: Theme): void {
@@ -916,8 +810,7 @@ function createWindow(): void {
     try {
       initOverlayLayer(mainWindow, loadTerminalAddon(), {
         getMainWindow,
-        focusActiveWorkspaceTerminal: focusWorkspaceTerminal,
-        dismissActiveNativePopover
+        focusActiveWorkspaceTerminal: focusWorkspaceTerminal
       })
       setOverlayTheme(getAppUiState().theme as Theme)
     } catch (err) {
@@ -1879,7 +1772,6 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) {
     applyLoadingOverlayTheme(patch.theme as Theme)
-    applyPopoverTheme(patch.theme as Theme)
     setOverlayTheme(patch.theme as Theme)
   }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
@@ -2192,7 +2084,6 @@ handle(
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
-    ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const nativeHandle = win.getNativeWindowHandle()
@@ -2458,60 +2349,6 @@ handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void =>
     event: DIAG_EVENTS.TERMINAL_FOCUS_RECLAIMED,
     workspaceId
   })
-})
-
-// ---------------------------------------------------------------------------
-// Native popover IPC handlers (Phase A chassis)
-// ---------------------------------------------------------------------------
-
-handle(
-  'terminal:showPopover',
-  (
-    _e,
-    {
-      workspaceId,
-      kind,
-      anchorRect,
-      data
-    }: {
-      workspaceId: string
-      kind: string
-      anchorRect: { x: number; y: number; w: number; h: number }
-      data: Record<string, unknown>
-    }
-  ): void => {
-    // Exclusivity token (U4/KTD): while an interactive overlay holds the
-    // token, hover-class ('hover'/'details'/'project') popover shows are a
-    // SILENT no-op — mirrors the native guard's existing silent-defer
-    // behavior, never a surfaced error. Confirm-class ('confirm' kind) shows
-    // may proceed only if the token is free; if held, also silently defer
-    // (chassis card serialization) — realistically unreachable in U4-era code
-    // since confirm modals are still fully chassis until U7, implemented here
-    // for forward-compat per the plan.
-    if (isOverlayTokenHeld()) return
-    const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
-    if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
-    lastShownPopoverWorkspaceId = workspaceId
-    const addon = loadTerminalAddon()
-    // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
-    // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
-    const fontDir = app.isPackaged ? join(process.resourcesPath, 'fonts') : undefined
-    addon.showPopover(workspaceId, kind, anchorRect, data, fontDir)
-  }
-)
-
-handle(
-  'terminal:updatePopover',
-  (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
-    const addon = loadTerminalAddon()
-    addon.updatePopover(workspaceId, data)
-  }
-)
-
-handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
-  if (lastShownPopoverWorkspaceId === workspaceId) lastShownPopoverWorkspaceId = null
-  const addon = loadTerminalAddon()
-  addon.hidePopover(workspaceId)
 })
 
 handle('terminal:getSurfacePhase', (_e, { workspaceId }: { workspaceId: string }): string => {

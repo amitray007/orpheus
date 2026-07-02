@@ -107,17 +107,6 @@ declare global {
             occluded: boolean
           }) => void
         ) => () => void
-        // Native popover chassis (Phase A)
-        showPopover: (
-          workspaceId: string,
-          kind: string,
-          anchorRect: { x: number; y: number; w: number; h: number },
-          data: Record<string, unknown>,
-          fontDir?: string
-        ) => Promise<void>
-        updatePopover: (workspaceId: string, data: Record<string, unknown>) => Promise<void>
-        hidePopover: (workspaceId: string) => Promise<void>
-        onPopoverAction: (cb: (e: { identifier: string }) => void) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>

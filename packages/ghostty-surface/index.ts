@@ -148,65 +148,6 @@ export type GhosttySurfaceAddon = {
   getSurfacePhase: (workspaceId: string) => string
 
   // ---------------------------------------------------------------------------
-  // Native popover chassis (Phase A — generic info-card over terminal)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Show a native popover card above the terminal for the given workspace.
-   * The card is positioned relative to anchorRect (CSS px from getBoundingClientRect)
-   * and clamped to stay on-screen.
-   *
-   * @param workspaceId  opaque surface identifier
-   * @param kind         'details' (252px) | 'hover' (224px)
-   * @param anchorRect   bounding rect of the trigger element in CSS px (top-left origin)
-   * @param data         generic data object (Phase B populates real fields)
-   * @param fontDir      optional: absolute path to Geist fonts directory.
-   *                     Packaged: path.join(process.resourcesPath, 'fonts')
-   *                     Dev:      resolved from node_modules by native fallback when omitted
-   */
-  showPopover: (
-    workspaceId: string,
-    kind: string,
-    anchorRect: { x: number; y: number; w: number; h: number },
-    data: Record<string, unknown>,
-    fontDir?: string
-  ) => void
-
-  /**
-   * Update the content of an already-visible popover in place.
-   * Used for the Details card's async fields (cost, context, usage).
-   * Phase A: no-op stub.
-   */
-  updatePopover: (workspaceId: string, data: Record<string, unknown>) => void
-
-  /**
-   * Hide and remove the popover for the given workspace.
-   * Fades out 100ms then removes from superview. Idempotent.
-   */
-  hidePopover: (workspaceId: string) => void
-
-  /**
-   * Register a callback fired when a clickable element inside a popover is
-   * activated (Phase B: PR chip). The identifier string encodes
-   * "workspaceId::elementId" for routing.
-   */
-  setPopoverActionCallback: (cb: (identifier: string) => void) => void
-
-  /**
-   * Push a color palette to native popovers for theme alignment.
-   * RGB values are 0–255 integers. Call on startup and on theme change.
-   */
-  setPopoverTheme: (colors: {
-    card: [number, number, number]
-    textPrimary: [number, number, number]
-    textSecondary: [number, number, number]
-    textMuted: [number, number, number]
-    border: [number, number, number]
-    accent: [number, number, number]
-    isDark: boolean
-  }) => void
-
-  // ---------------------------------------------------------------------------
   // Overlay first-responder primitives (child-window era)
   //
   // The overlay used to be a same-window WebContentsView sibling, tracked via
@@ -230,11 +171,10 @@ export type GhosttySurfaceAddon = {
 
   /**
    * Save the window's current first responder into a slot dedicated to the
-   * overlay layer (separate from the native popover chassis's own saved
-   * responder). Refuses to overwrite the slot when the current first
-   * responder is the overlay view itself (or a descendant of it) — this is
-   * what keys the save to token acquisition rather than to each individual
-   * overlay show.
+   * overlay layer's focus handoff. Refuses to overwrite the slot when the
+   * current first responder is the overlay view itself (or a descendant of
+   * it) — this is what keys the save to token acquisition rather than to
+   * each individual overlay show.
    */
   saveOverlayFirstResponder: () => void
 

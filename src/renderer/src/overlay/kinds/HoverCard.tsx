@@ -14,11 +14,9 @@ import { openPrUrl } from '../../lib/overlayClient'
 import type { OverlayKindProps } from '../registry'
 
 // ---------------------------------------------------------------------------
-// HoverCard — sidebar workspace hover popover (U8 React migration of the
-// chassis 'hover' kind, addon.mm buildHoverCard). Same information hierarchy:
-// title + status line, git branch/changes rows, PR chip, cwd — using the
-// app's own design tokens (Tailwind v4) instead of AppKit drawing.
-// Width target ~224px to match the chassis card.
+// HoverCard — sidebar workspace hover popover. Information hierarchy: title
+// + status line, git branch/changes rows, PR chip, cwd — using the app's own
+// design tokens (Tailwind v4). Width target ~224px.
 // ---------------------------------------------------------------------------
 
 function PrRow({ pr }: { pr: NonNullable<HoverCardProps['pr']> }): React.JSX.Element {

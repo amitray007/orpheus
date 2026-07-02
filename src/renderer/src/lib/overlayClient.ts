@@ -1,14 +1,9 @@
 // ---------------------------------------------------------------------------
-// overlayClient.ts — renderer-side helpers for the React overlay layer's
-// 'hoverCard' / 'detailsCard' kinds (U8). Mirrors nativePopover.ts's
-// promise/dismissal/exclusivity semantics on top of window.api.overlay
-// instead of window.api.terminal.showPopover/updatePopover/hidePopover.
-//
-// USE_REACT_OVERLAYS is the kill-switch (plan U8/U9 requirement): flip to
-// false to fall back to the chassis path at every call site in one place.
-// Call sites (Sidebar.tsx, WorkspaceTitleBar.tsx) branch on this flag and
-// call EITHER this module OR nativePopover.ts, never both for the same
-// logical show — see the per-callsite comments there.
+// overlayClient.ts — renderer-side helpers for the React overlay layer: the
+// hoverCard / detailsCard / projectCard / confirmModal / noticeBanner /
+// chipTooltip / chipPrompt kinds. Wraps window.api.overlay.show/update/hide
+// with per-kind promise/dismissal/exclusivity semantics so call sites don't
+// need to know about descriptor construction or generation/id bookkeeping.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -30,8 +25,6 @@ import type {
   ChipPromptResult
 } from '@shared/types'
 
-export const USE_REACT_OVERLAYS = true
-
 export type {
   HoverCardProps,
   DetailsCardProps,
@@ -43,7 +36,7 @@ export type {
   ChipPromptResult
 }
 
-// ── Activity state mapping (same vocabulary as nativePopover.ts) ───────────
+// ── Activity state mapping ───────────────────────────────────────────────
 
 const ACTIVITY_LABEL: Partial<Record<WorkspaceActivityDetail, string>> = {
   working: 'Working…',
@@ -227,10 +220,10 @@ export function onCardPointer(
 }
 
 // PR-chip clicks: the card kind opens the URL itself (embeds it in props),
-// via the same window.open(...) → shell.openExternal path PrChip.tsx and
-// nativePopover.ts already use — no extra IPC plumbing needed since the URL
-// is already sitting in HoverCardProps.pr / DetailsCardProps.pr and the card
-// component can call this directly on click.
+// via the same window.open(...) → shell.openExternal path PrChip.tsx uses —
+// no extra IPC plumbing needed since the URL is already sitting in
+// HoverCardProps.pr / DetailsCardProps.pr and the card component can call
+// this directly on click.
 export function openPrUrl(url: string): void {
   try {
     window.open(url, '_blank', 'noopener,noreferrer')
@@ -331,27 +324,23 @@ export function projectCardId(projectId: string): string {
 
 // ── Confirm modal ────────────────────────────────────────────────────────────
 //
-// showConfirmModalReact mirrors nativePopover.ts's showConfirmModal contract
-// exactly: same ConfirmModalResult shape, NEVER rejects (every failure path —
-// overlay:show rejection/timeout, a stale/unmatched event, the overlay layer
-// being unavailable — settles as { buttonId: 'cancel', checkboxChecked }).
-// Checkbox state is tracked here (not just inside the ConfirmModal component)
-// so the result carries the latest value even if the user never touches the
+// showConfirmModalReact NEVER rejects: every failure path (overlay:show
+// rejection/timeout, a stale/unmatched event, the overlay layer being
+// unavailable) settles as { buttonId: 'cancel', checkboxChecked }. Checkbox
+// state is tracked here (not just inside the ConfirmModal component) so the
+// result carries the latest value even if the user never touches the
 // checkbox (defaults to its initial `checked`) and so a rapid toggle-then-
 // confirm always reads the last emitted value rather than a stale render.
 //
-// Each call gets a synthetic id ("confirm:<uuid>") exactly like the chassis's
-// "modal:<uuid>" workspaceId — so concurrent modals (calls overlapping in
-// time, e.g. a fast double-trigger) never collide with each other or with any
-// live hover/details/project overlay id.
+// Each call gets a synthetic id ("confirm:<uuid>") so concurrent modals
+// (calls overlapping in time, e.g. a fast double-trigger) never collide with
+// each other or with any live hover/details/project overlay id.
 //
-// activeConfirmOverlayId mirrors nativePopover.ts's activeModalWorkspaceId:
-// the id of the most recently opened confirm modal that hasn't settled yet
-// (null if none). getActiveConfirmOverlayId()/hideConfirmOverlay() let a
-// caller (e.g. WorkspaceView's worktree-error effect) capture and actively
-// dismiss the specific modal IT opened on cleanup — same "capture id right
-// after showing, hide on unmount" pattern getActiveModalWorkspaceId() +
-// hideNativePopover() serve for the chassis.
+// activeConfirmOverlayId is the id of the most recently opened confirm modal
+// that hasn't settled yet (null if none). getActiveConfirmOverlayId()/
+// hideConfirmOverlay() let a caller (e.g. WorkspaceView's worktree-error
+// effect) capture and actively dismiss the specific modal IT opened on
+// cleanup — "capture id right after showing, hide on unmount".
 let activeConfirmOverlayId: string | null = null
 
 export function getActiveConfirmOverlayId(): string | null {
@@ -402,8 +391,7 @@ export function showConfirmModalReact(data: ConfirmModalProps): Promise<ConfirmM
 
     void window.api.overlay.show(descriptor).catch(() => {
       // overlay:show rejected (timeout / layer unavailable / crash) — absorb
-      // into resolve-as-cancel so the caller's await can never hang, mirroring
-      // nativePopover.ts's showConfirmModal catch(() => settle('cancel')).
+      // into resolve-as-cancel so the caller's await can never hang.
       settle('cancel')
     })
   })

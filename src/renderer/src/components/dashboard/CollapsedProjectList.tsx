@@ -3,9 +3,7 @@ import { memo, useRef } from 'react'
 import { Plus, PushPin } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
-import { showProjectPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
 import {
-  USE_REACT_OVERLAYS,
   showProjectCard,
   hideOverlayCard,
   projectCardId,
@@ -42,7 +40,7 @@ function toPopoverState(
 }
 
 // ---------------------------------------------------------------------------
-// ProjectTile — one icon button with native popover hover behavior
+// ProjectTile — one icon button with overlay-card hover behavior
 // ---------------------------------------------------------------------------
 
 interface ProjectTileProps {
@@ -64,7 +62,6 @@ const ProjectTile = memo(function ProjectTile({
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const popoverId = `proj:${p.id}`
 
   function clearHoverTimer(): void {
     if (hoverTimerRef.current !== null) {
@@ -110,16 +107,7 @@ const ProjectTile = memo(function ProjectTile({
         })
       }
 
-      if (USE_REACT_OVERLAYS) {
-        showProjectCard(p.id, buttonRef.current, cardProps)
-      } else {
-        showProjectPopover(p.id, buttonRef.current, cardProps)
-
-        // Register native-closed handler: reset timer state when card closes itself.
-        onNativePopoverClosed(popoverId, () => {
-          clearHoverTimer()
-        })
-      }
+      showProjectCard(p.id, buttonRef.current, cardProps)
     }, 150)
   }
 
@@ -127,11 +115,7 @@ const ProjectTile = memo(function ProjectTile({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      if (USE_REACT_OVERLAYS) {
-        hideOverlayCard(projectCardId(p.id))
-      } else {
-        hideNativePopover(popoverId)
-      }
+      hideOverlayCard(projectCardId(p.id))
     }, 80)
   }
 

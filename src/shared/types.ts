@@ -1003,7 +1003,7 @@ export type OverlayDescriptor = {
 
 // `invoke('overlay:showDescriptor', ...)` resolves at paint-ack, not at
 // dismissal — dismissal (user action, timeout, replacement) arrives later as
-// an `overlay:event` push, mirroring the chassis's showPopover/actionClicked split.
+// an `overlay:event` push.
 export type OverlayShowResult = { shown: boolean }
 
 // Pushed from main to the requesting (main) renderer: button clicks, cancel,
@@ -1045,12 +1045,8 @@ export type OverlayAck = {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay card kinds — hoverCard / detailsCard (U8: React migration of the
-// chassis 'hover'/'details' popovers). Props are serializable and reuse the
-// app's own GitStatus/GhPullRequest shapes directly rather than the chassis's
-// NSDictionary-flattened equivalents (HoverPopoverData/DetailsPopoverData in
-// nativePopover.ts) — those flattened shapes exist only because ObjC needed
-// primitives; the React kind can consume the real domain types.
+// Overlay card kinds — hoverCard / detailsCard. Props are serializable and
+// reuse the app's own GitStatus/GhPullRequest shapes directly.
 // ---------------------------------------------------------------------------
 
 export type OverlayCardGit = {
@@ -1090,10 +1086,9 @@ export type DetailsCardProps = {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay kind: projectCard — U8-adjacent React migration of the chassis
-// 'project' popover (addon.mm buildProjectCard). Same section order: header
-// (name + pinned chip), repo, path, workspace count, workspace list (up to 8
-// + "+K more"). Width target ~224px, matching the chassis card.
+// Overlay kind: projectCard. Section order: header (name + pinned chip),
+// repo, path, workspace count, workspace list (up to 8 + "+K more"). Width
+// target ~224px.
 // ---------------------------------------------------------------------------
 
 export type OverlayCardWorkspaceEntry = {
@@ -1113,10 +1108,7 @@ export type ProjectCardProps = {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay kind: confirmModal — Phase B React migration of the chassis
-// 'confirm' popover (addon.mm buildModalCard). Centered, takesFocus: true.
-// Mirrors ConfirmModalData/ConfirmModalButton/ConfirmModalResult in
-// nativePopover.ts exactly so callers don't need a second result shape.
+// Overlay kind: confirmModal. Centered, takesFocus: true.
 // ---------------------------------------------------------------------------
 
 export type ConfirmModalButtonStyle = 'default' | 'primary' | 'danger'

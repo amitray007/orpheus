@@ -5,8 +5,7 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
-import { showConfirmModal } from '@/lib/nativePopover'
-import { USE_REACT_OVERLAYS, showConfirmModalReact } from '@/lib/overlayClient'
+import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
@@ -1157,11 +1156,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // "branch is kept" confirm first; if the backend detects uncommitted
   // changes (wasDirty:true) it escalates to a "Remove anyway" confirm before
   // actually force-removing. Renders via the overlay layer's confirmModal
-  // kind (overlayClient.showConfirmModalReact) when USE_REACT_OVERLAYS, else
-  // the native chassis (showConfirmModal) — see
-  // docs/learnings/overlay-child-window-macos.md. Both share the exact same
-  // ConfirmModalResult shape, so the result-handling code below is identical
-  // either way.
+  // kind (overlayClient.showConfirmModalReact).
   const runWorktreeArchiveFlow = useCallback(
     async (workspace: WorkspaceRecord, projectId: string): Promise<void> => {
       // Cancel/error paths below don't run finishWorktreeArchive (which owns
@@ -1174,7 +1169,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
       }
 
-      const clean = await (USE_REACT_OVERLAYS ? showConfirmModalReact : showConfirmModal)({
+      const clean = await showConfirmModalReact({
         title: 'Remove worktree?',
         body: `Remove worktree ${workspace.worktreeBranch ?? ''}? The branch is kept.`,
         buttons: [
@@ -1190,7 +1185,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       const result = await window.api.workspaces.archive(workspace.id, { force: false })
       if (result.wasDirty) {
         // Backend says the worktree is dirty — escalate to the "remove anyway" confirm.
-        const dirty = await (USE_REACT_OVERLAYS ? showConfirmModalReact : showConfirmModal)({
+        const dirty = await showConfirmModalReact({
           title: 'Remove worktree?',
           body: `Remove worktree ${workspace.worktreeBranch ?? ''}? It has uncommitted changes.\nUncommitted changes will be lost. The branch is kept.`,
           buttons: [
@@ -1304,8 +1299,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // Project removal flow. Probes the project's worktree count so the "Also
   // delete worktrees" checkbox is only offered when relevant; escalates to a
   // "Delete anyway" confirm if the backend reports dirty worktrees blocking
-  // the first attempt. Same overlay-layer-vs-chassis branch as
-  // runWorktreeArchiveFlow above.
+  // the first attempt. Same confirm-modal pattern as runWorktreeArchiveFlow
+  // above.
   const handleRequestRemoveProject = useCallback(
     async (project: ProjectRecord): Promise<void> => {
       let worktreeCount = 0
@@ -1316,7 +1311,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         console.error('[dashboard] worktreeSummary failed', err)
       }
 
-      const first = await (USE_REACT_OVERLAYS ? showConfirmModalReact : showConfirmModal)({
+      const first = await showConfirmModalReact({
         title: 'Remove?',
         body: `${project.name} will be removed from Orpheus along with its workspaces and sessions. Files on disk are untouched. You can re-add the folder later.`,
         buttons: [
@@ -1348,7 +1343,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       if (!result.deleted && result.dirtyWorktrees > 0) {
         // Escalate: some worktrees are dirty — ask for force confirmation.
         const dirtyCount = result.dirtyWorktrees
-        const escalate = await (USE_REACT_OVERLAYS ? showConfirmModalReact : showConfirmModal)({
+        const escalate = await showConfirmModalReact({
           title: 'Remove worktrees with uncommitted changes?',
           body: `${dirtyCount} ${dirtyCount === 1 ? 'worktree has' : 'worktrees have'} uncommitted changes.\nUncommitted changes will be lost. Branches are kept.`,
           buttons: [
