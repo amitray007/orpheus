@@ -1,26 +1,37 @@
 // ---------------------------------------------------------------------------
 // src/main/overlayLayer.ts
 //
-// U4 — the single owner of the overlay WebContentsView: one pre-warmed,
-// transparent, always-`setVisible(true)` view kept above the terminal NSView
-// by the native addon (see packages/ghostty-surface/index.ts, "Overlay
-// registration, ordering, and first-responder primitives"). Hosts the show /
-// update / hide state machine described in the plan's HTD state-machine
-// paragraph and U4 approach section:
+// U4 — the single owner of the overlay host: a pre-warmed, transparent,
+// frameless CHILD BrowserWindow attached to the main window via `parent`.
+//
+// Why a child window and not a same-window WebContentsView: all Electron web
+// content in ONE window composites through a single native
+// ViewsCompositorSuperview, so a same-window WebContentsView can never render
+// above the native libghostty terminal NSView that the addon parents onto
+// that same window. A separate window has its OWN compositor and, attached
+// via `parent`, always stacks above the main window and moves with it on
+// macOS. Everything else here (overlay renderer, overlayApi bridge, state
+// machine, generations, exclusivity token, events) is unchanged from the
+// WebContentsView-hosted design.
+//
+// State machine (unchanged shape; registration handshake removed — see below):
 //
 //   unregistered -> idle -> pending(gen) -> visible(gen) -> exiting(gen) -> idle
 //   exiting(A) -> pending(B)   (an incoming show preempts the exit fade)
 //   idle/pending/visible/exiting -> recovering  (overlay renderer crash / nav)
 //   recovering -> idle                          (renderer ready ping)
-//   unregistered -> idle | unavailable          (registration handshake)
+//   unregistered -> idle | unavailable          (ONLY if child-window create/load fails)
 //   unavailable -> idle                         (ONLY via a fresh initOverlayLayer)
 //
-// "Idle" is bounds-based, not visibility-based: the view is `setVisible(true)`
-// exactly once at pre-warm and never hidden again — see KTD "Idle state is
-// bounds-based, not setVisible(false)". Hiding = bounds {0,0,0,0}.
+// There is no more addon-side registration handshake (beginOverlayRegistration
+// / commitOverlayRegistration / isOverlayRegistered / reassertOverlayOrder) —
+// those addon exports still exist but are no longer called from here; a
+// same-window-sibling ordering problem doesn't apply to a separate window.
+// 'unavailable' is now reached only if creating/loading the child window
+// itself fails.
 // ---------------------------------------------------------------------------
 
-import { BrowserWindow, WebContentsView, ipcMain, screen } from 'electron'
+import { BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import type {
@@ -49,7 +60,7 @@ type OverlayState =
 
 let win: BrowserWindow | null = null
 let addon: GhosttySurfaceAddon | null = null
-let view: WebContentsView | null = null
+let overlayWin: BrowserWindow | null = null
 
 // Cleanup callback for the geometry listeners wired onto the current `win`
 // (plan: "listeners on the window registered at init and cleaned on
@@ -120,17 +131,12 @@ const ANCHOR_SHADOW_MARGIN = 24
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function viewAlive(): boolean {
-  return !!view && !view.webContents.isDestroyed()
+function overlayAlive(): boolean {
+  return !!overlayWin && !overlayWin.isDestroyed()
 }
 
 function winAlive(): boolean {
   return !!win && !win.isDestroyed()
-}
-
-function zeroBounds(): void {
-  if (!viewAlive()) return
-  view!.setBounds({ x: 0, y: 0, width: 0, height: 0 })
 }
 
 function clearPendingShowTimer(): void {
@@ -172,6 +178,11 @@ function runFocusRestoreChain(hadTakesFocus: boolean): void {
   addon.setOverlayFocusSuppressed(false)
   const shouldRestore = hadTakesFocus || addon.isOverlayFirstResponder()
   if (!shouldRestore) return
+  // Re-key the main window first so the subsequent restore chain (which
+  // operates on the MAIN window's native first responder / webContents) has
+  // a focused window to act on — the overlay's own child window currently
+  // holds key-window status when hadTakesFocus.
+  if (hadTakesFocus && winAlive()) win!.focus()
   const restored = addon.restoreOverlayFirstResponder()
   if (restored) return
   const focusedTerminal = deps?.focusActiveWorkspaceTerminal() ?? false
@@ -180,30 +191,32 @@ function runFocusRestoreChain(hadTakesFocus: boolean): void {
 }
 
 // ---------------------------------------------------------------------------
-// Geometry
+// Geometry (screen coordinates — the overlay is now a separate top-level
+// window, so all bounds must be in SCREEN space, not contentView-relative
+// DIPs as when it was a WebContentsView child).
 // ---------------------------------------------------------------------------
 
-function getWindowContentSize(): { width: number; height: number } {
-  if (!winAlive()) return { width: 0, height: 0 }
-  const b = win!.getContentBounds()
-  return { width: b.width, height: b.height }
+function getWindowContentBounds(): { x: number; y: number; width: number; height: number } {
+  if (!winAlive()) return { x: 0, y: 0, width: 0, height: 0 }
+  return win!.getContentBounds()
 }
 
-/** Compute the target bounds (DIPs relative to contentView) for the current descriptor. */
-function computeBounds(descriptor: OverlayDescriptor): {
+/** Compute the target bounds (SCREEN coordinates) for the current descriptor. */
+function computeScreenBounds(descriptor: OverlayDescriptor): {
   x: number
   y: number
   width: number
   height: number
 } {
-  const { width, height } = getWindowContentSize()
+  const content = getWindowContentBounds()
   if (descriptor.placement.mode === 'centered') {
-    return { x: 0, y: 0, width, height }
+    return { x: content.x, y: content.y, width: content.width, height: content.height }
   }
   // Anchored: grow anchorRect by the shadow margin, multiply by the main
   // window's zoom factor (anchorRect comes from the main renderer's DOM —
-  // see plan KTD on getBoundingClientRect() * getZoomFactor()), then clamp to
-  // the window's content bounds.
+  // see plan KTD on getBoundingClientRect() * getZoomFactor()), clamp to the
+  // window's content bounds, then offset by the content bounds' screen
+  // origin to land in screen coordinates.
   const zoom = winAlive() ? win!.webContents.getZoomFactor() : 1
   const anchor = descriptor.placement.anchorRect
   let x = anchor.x * zoom - ANCHOR_SHADOW_MARGIN
@@ -213,44 +226,28 @@ function computeBounds(descriptor: OverlayDescriptor): {
 
   if (x < 0) x = 0
   if (y < 0) y = 0
-  if (x + w > width) w = Math.max(0, width - x)
-  if (y + h > height) h = Math.max(0, height - y)
+  if (x + w > content.width) w = Math.max(0, content.width - x)
+  if (y + h > content.height) h = Math.max(0, content.height - y)
 
-  return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) }
-}
-
-function applyCurrentBounds(): void {
-  if (!viewAlive() || !currentDescriptor) return
-  view!.setBounds(computeBounds(currentDescriptor))
-}
-
-// Electron re-stacks its own contentView children (the main window's
-// WebContentsView and this overlay WebContentsView) at boot/show/focus, and
-// can land the overlay BELOW the main web-contents view — which, since the
-// main BrowserWindow is opaque, makes the overlay (and anything the addon
-// sinks just below it, e.g. terminals) invisible. Calling
-// `contentView.addChildView(view)` again on an already-attached view is
-// Electron's own sanctioned, compositing-safe reorder: it moves the view to
-// the TOP of Electron's children through Chromium's ViewsHostable machinery
-// (the documented replacement for the removed setTopBrowserView API). The
-// native addon must NEVER re-add this NSView itself — that bypasses
-// Chromium's compositor bookkeeping and breaks rendering; only this
-// Electron-side re-add is safe.
-function raiseOverlayView(): void {
-  if (!winAlive() || !viewAlive()) return
-  try {
-    win!.contentView.addChildView(view!)
-  } catch (err) {
-    console.error('[overlayLayer] raiseOverlayView failed:', err)
+  return {
+    x: Math.round(content.x + x),
+    y: Math.round(content.y + y),
+    width: Math.round(w),
+    height: Math.round(h)
   }
 }
 
+function applyCurrentBounds(): void {
+  if (!overlayAlive() || !currentDescriptor) return
+  overlayWin!.setBounds(computeScreenBounds(currentDescriptor))
+}
+
 // ---------------------------------------------------------------------------
-// initOverlayLayer — construction + registration handshake
+// initOverlayLayer — construction of the child overlay window
 //
 // Re-entrant: called once per window (per plan, on `ready-to-show`). Tears
-// down prior view/state on each call so window recreation (dock-activate)
-// re-registers cleanly.
+// down prior overlay window/state on each call so window recreation
+// (dock-activate) re-attaches cleanly to the new parent.
 // ---------------------------------------------------------------------------
 
 export function initOverlayLayer(
@@ -260,20 +257,20 @@ export function initOverlayLayer(
 ): void {
   // Idempotency guard (per-window): 'ready-to-show' can refire for the SAME
   // BrowserWindow — e.g. backgroundThrottling: false on the main window means
-  // each new overlay WebContentsView's first paint re-triggers 'ready-to-show'.
-  // If we're already initialized for this exact window and the view is still
-  // alive, skip the teardown/reconstruct entirely; otherwise every refire
-  // tears down + recreates the view, which itself re-triggers the event —
-  // a self-sustaining loop. Re-init must still proceed for a genuinely new
-  // BrowserWindow instance (window recreation) or a dead view.
-  if (win === window && state !== 'unregistered' && viewAlive()) {
+  // each new overlay window's first paint can re-trigger 'ready-to-show'. If
+  // we're already initialized for this exact window and the child window is
+  // still alive, skip the teardown/reconstruct entirely; otherwise every
+  // refire tears down + recreates the child window, which itself re-triggers
+  // the event — a self-sustaining loop. Re-init must still proceed for a
+  // genuinely new BrowserWindow instance (window recreation) or a dead child.
+  if (win === window && state !== 'unregistered' && overlayAlive()) {
     console.log(
       '[overlayLayer] init skipped — already initialized for this window (ready-to-show refire)'
     )
     return
   }
 
-  // Tear down any prior view/state (window recreation path).
+  // Tear down any prior child window/state (window recreation path).
   clearPendingShowTimer()
   clearPendingExitTimer()
   pendingShow = null
@@ -287,79 +284,78 @@ export function initOverlayLayer(
     geometryListenersCleanup()
     geometryListenersCleanup = null
   }
-  // Fully dispose the old view (if any) so recreated windows don't leak a
-  // renderer process: detach from its (possibly still-alive, e.g. old-window)
-  // contentView, then close its webContents.
-  if (view && !view.webContents.isDestroyed()) {
-    const oldWin = win
-    const oldView = view
+  if (overlayAlive()) {
     try {
-      if (oldWin && !oldWin.isDestroyed()) {
-        oldWin.contentView.removeChildView(oldView)
-      }
+      overlayWin!.destroy()
     } catch (err) {
-      console.error('[overlayLayer] removeChildView on old view failed:', err)
-    }
-    try {
-      oldView.webContents.close()
-    } catch (err) {
-      console.error('[overlayLayer] closing old view webContents failed:', err)
+      console.error('[overlayLayer] destroying old overlay window failed:', err)
     }
   }
-  view = null
+  overlayWin = null
 
   win = window
   addon = ghosttyAddon
   deps = layerDeps
   state = 'unregistered'
 
-  const overlayView = new WebContentsView({
-    webPreferences: {
-      preload: join(__dirname, '../preload/overlay.js'),
-      sandbox: false,
-      backgroundThrottling: false
-    }
-  })
-  view = overlayView
-
-  // Transparency recipe (KTD): setBackgroundColor before loadURL.
-  overlayView.setBackgroundColor('#00000000')
-
-  wireOverlayWebContentsListeners(overlayView)
-
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    overlayView.webContents.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`)
-  } else {
-    overlayView.webContents.loadFile(join(__dirname, '../renderer/overlay.html'))
-  }
-
-  // Registration handshake — must happen in one synchronous JS turn.
-  addon.beginOverlayRegistration(win.getNativeWindowHandle())
-  win.contentView.addChildView(overlayView)
-  const committed = addon.commitOverlayRegistration()
-
-  if (!committed) {
+  try {
+    overlayWin = new BrowserWindow({
+      parent: win,
+      show: false,
+      frame: false,
+      transparent: true,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      focusable: true,
+      skipTaskbar: true,
+      roundedCorners: false,
+      backgroundColor: '#00000000',
+      webPreferences: {
+        preload: join(__dirname, '../preload/overlay.js'),
+        sandbox: false,
+        backgroundThrottling: false
+      }
+    })
+  } catch (err) {
     state = 'unavailable'
+    overlayWin = null
     console.error(
-      '[overlayLayer] registration failed — overlay unavailable, chassis fallback remains'
+      '[overlayLayer] child window creation failed — overlay unavailable, chassis fallback remains:',
+      err
     )
-    // Never call setVisible/focus on the view again per plan; park it at
-    // zero bounds so it can't intercept input even though it's unregistered.
-    overlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     return
   }
 
-  overlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-  overlayView.setVisible(true)
+  wireOverlayWebContentsListeners(overlayWin)
+
+  try {
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      overlayWin.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`)
+    } else {
+      overlayWin.loadFile(join(__dirname, '../renderer/overlay.html'))
+    }
+  } catch (err) {
+    state = 'unavailable'
+    console.error(
+      '[overlayLayer] child window load failed — overlay unavailable, chassis fallback remains:',
+      err
+    )
+    try {
+      overlayWin.destroy()
+    } catch {
+      /* already gone */
+    }
+    overlayWin = null
+    return
+  }
+
   state = 'idle'
 
   wireWindowGeometryListeners(win)
-
-  // Freshly registered — make sure the overlay lands above the main WCV
-  // (Electron may have re-stacked children during the addChildView above)
-  // and that the addon sinks the terminal back below it.
-  raiseOverlayView()
-  addon?.reassertOverlayOrder()
 
   // Push current theme immediately once the view exists (also re-sent on the
   // renderer's `ready` ping and embedded in every show message — see
@@ -369,12 +365,12 @@ export function initOverlayLayer(
 
 // ---------------------------------------------------------------------------
 // overlayRenderer:* ipcMain.on registrations (sends, not invokes — scoped to
-// the single overlay WebContentsView; no sender check for now since there is
-// exactly one overlay view per the plan's "one pre-warmed overlay view" model)
+// the single overlay window; no sender check for now since there is exactly
+// one overlay window per the plan's "one pre-warmed overlay view" model)
 // ---------------------------------------------------------------------------
 
-function wireOverlayWebContentsListeners(overlayView: WebContentsView): void {
-  const wc = overlayView.webContents
+function wireOverlayWebContentsListeners(window: BrowserWindow): void {
+  const wc = window.webContents
 
   wc.on('did-finish-load', () => {
     initialLoadDone = true
@@ -400,15 +396,14 @@ function enterRecovering(reason: string): void {
   resolvePendingExit()
   currentDescriptor = null
   overlayTokenHeld = false
-  if (viewAlive()) {
+  if (overlayAlive()) {
     try {
-      view!.webContents.reload()
+      overlayWin!.webContents.reload()
     } catch (err) {
       console.error('[overlayLayer] reload after recovering failed:', err)
     }
-    view!.setBackgroundColor('#00000000')
+    overlayWin!.hide()
   }
-  zeroBounds()
 }
 
 // Registers the ipcMain.on handlers used by the overlay renderer. Called once
@@ -450,7 +445,7 @@ function handleAckPainted(ack: OverlayAck): void {
   pendingShow = null
 
   if (ack.error) {
-    zeroBounds()
+    if (overlayAlive()) overlayWin!.hide()
     releaseToken()
     state = 'idle'
     currentDescriptor = null
@@ -459,14 +454,10 @@ function handleAckPainted(ack: OverlayAck): void {
   }
 
   state = 'visible'
-  if (currentDescriptor?.takesFocus && viewAlive()) {
-    view!.webContents.focus()
+  if (currentDescriptor?.takesFocus && overlayAlive()) {
+    overlayWin!.show()
+    overlayWin!.webContents.focus()
     addon?.setOverlayFocusSuppressed(true)
-    // Chromium/Electron can re-stack their own child views on focus; raise
-    // the overlay back to the top via Electron first, then let the addon
-    // sink the terminal below it. Safe and cheap to call unconditionally here.
-    raiseOverlayView()
-    addon?.reassertOverlayOrder()
   }
   p.resolve({ shown: true })
 }
@@ -475,15 +466,16 @@ function handleReportSize(report: OverlaySizeReport): void {
   if (report.generation !== currentGeneration) return
   if (!currentDescriptor || currentDescriptor.id !== report.id) return
   if (currentDescriptor.placement.mode !== 'anchored') return // centered overlays ignore reportSize
-  if (!viewAlive()) return
+  if (!overlayAlive()) return
 
-  const base = computeBounds(currentDescriptor)
-  const { width: winW, height: winH } = getWindowContentSize()
+  const base = computeScreenBounds(currentDescriptor)
+  const content = getWindowContentBounds()
   let w = report.w
   let h = report.h
-  if (base.x + w > winW) w = Math.max(0, winW - base.x)
-  if (base.y + h > winH) h = Math.max(0, winH - base.y)
-  view!.setBounds({ x: base.x, y: base.y, width: Math.round(w), height: Math.round(h) })
+  if (base.x - content.x + w > content.width) w = Math.max(0, content.width - (base.x - content.x))
+  if (base.y - content.y + h > content.height)
+    h = Math.max(0, content.height - (base.y - content.y))
+  overlayWin!.setBounds({ x: base.x, y: base.y, width: Math.round(w), height: Math.round(h) })
 }
 
 function handleOverlayRendererEvent(event: OverlayEvent): void {
@@ -517,42 +509,44 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
   }
 
   const onEnterFullScreen = (): void => {
-    // KTD: reassert order after events known to reshuffle native subviews,
-    // not just on the next idle->pending show. Raise the overlay above the
-    // main WCV via Electron first, then let the addon sink the terminal.
-    raiseOverlayView()
-    addon?.reassertOverlayOrder()
-    if (state !== 'visible' && state !== 'pending') return
-    if (!currentDescriptor) return
-    if (currentDescriptor.placement.mode === 'centered') {
-      applyCurrentBounds()
-    } else {
+    // Child windows don't reliably follow their parent into a fullscreen
+    // Space on macOS (a fullscreen window gets its own Space; a child
+    // BrowserWindow is not guaranteed to be moved into that Space with it).
+    // Rather than try to chase the parent across Spaces, force-hide any
+    // active overlay on both fullscreen transitions — same policy on enter
+    // and leave. This is a known limitation to revisit in the verification
+    // sweep (U6) if fullscreen + overlay turns out to be a common pairing.
+    console.log('[overlayLayer] enter-full-screen — force-hiding overlay (known limitation)')
+    if (state === 'visible' || state === 'pending' || state === 'exiting') {
       forceHide('fullscreen-enter')
     }
   }
 
   const onLeaveFullScreen = (): void => {
-    raiseOverlayView()
-    addon?.reassertOverlayOrder()
-    if (state === 'visible' || state === 'pending') {
-      if (currentDescriptor?.placement.mode === 'centered') {
-        applyCurrentBounds()
-        // Mirror the ~250ms stale-bounds resync workaround index.ts already
-        // uses for the main window's own bounds-save logic after leave-full-screen.
-        setTimeout(() => {
-          if (winAlive() && (state === 'visible' || state === 'pending')) {
-            raiseOverlayView()
-            addon?.reassertOverlayOrder()
-            applyCurrentBounds()
-          }
-        }, 250)
-      } else if (currentDescriptor) {
-        forceHide('fullscreen-leave')
-      }
+    console.log('[overlayLayer] leave-full-screen — force-hiding overlay (known limitation)')
+    if (state === 'visible' || state === 'pending' || state === 'exiting') {
+      forceHide('fullscreen-leave')
     }
   }
 
   const onMove = (): void => {
+    // On macOS, a child BrowserWindow attached via `parent` moves with its
+    // parent automatically (the OS handles this at the window-server level)
+    // — so, unlike the old WebContentsView host, we do NOT strictly need to
+    // recompute bounds here for attachment to hold. Still, recompute centered
+    // bounds on 'move' as a cheap self-heal in case the parent's content
+    // bounds size/origin drifts (e.g. a move that coincides with a display
+    // change) — this is defensive, not required for the child to keep
+    // tracking the parent.
+    if (
+      (state === 'visible' || state === 'pending') &&
+      currentDescriptor?.placement.mode === 'centered'
+    ) {
+      applyCurrentBounds()
+    }
+
+    // Anchored overlays: preserve the existing display-scale-change dismissal
+    // check (monitor change while an anchored overlay is open).
     if (state !== 'visible' && state !== 'pending') return
     if (!currentDescriptor || currentDescriptor.placement.mode !== 'anchored') return
     if (currentScaleFactor === null) return
@@ -563,39 +557,35 @@ function wireWindowGeometryListeners(window: BrowserWindow): void {
     }
   }
 
-  // DevTools dock-mode changes reshuffle native subviews (KTD); the
-  // detach-mode toggle used by `window:openDevTools` doesn't affect
-  // `contentView` layout, but a future docked mode would, and this is a
-  // cheap no-op self-heal either way. Docked-mode changes WITHIN an already-
-  // open DevTools panel emit no event — a known dev-only gap (KTD).
-  const onDevToolsOpened = (): void => {
-    addon?.reassertOverlayOrder()
-  }
-  const onDevToolsClosed = (): void => {
-    addon?.reassertOverlayOrder()
-  }
-
   window.on('resize', onResize)
   window.on('enter-full-screen', onEnterFullScreen)
   window.on('leave-full-screen', onLeaveFullScreen)
   window.on('move', onMove)
-  window.webContents.on('devtools-opened', onDevToolsOpened)
-  window.webContents.on('devtools-closed', onDevToolsClosed)
 
   const cleanup = (): void => {
     window.removeListener('resize', onResize)
     window.removeListener('enter-full-screen', onEnterFullScreen)
     window.removeListener('leave-full-screen', onLeaveFullScreen)
     window.removeListener('move', onMove)
-    if (!window.webContents.isDestroyed()) {
-      window.webContents.removeListener('devtools-opened', onDevToolsOpened)
-      window.webContents.removeListener('devtools-closed', onDevToolsClosed)
-    }
   }
   geometryListenersCleanup = cleanup
   window.once('closed', () => {
     cleanup()
     if (geometryListenersCleanup === cleanup) geometryListenersCleanup = null
+    // Parent window gone — destroy the child window and clear state. A fresh
+    // initOverlayLayer(newWindow, ...) call will recreate everything.
+    if (overlayAlive()) {
+      try {
+        overlayWin!.destroy()
+      } catch (err) {
+        console.error('[overlayLayer] destroying overlay window on parent close failed:', err)
+      }
+    }
+    overlayWin = null
+    win = null
+    state = 'unregistered'
+    currentDescriptor = null
+    overlayTokenHeld = false
   })
 }
 
@@ -623,7 +613,7 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
   if (state === 'unavailable' || state === 'recovering' || state === 'unregistered') {
     throw new Error(`[overlayLayer] cannot show overlay while state is '${state}'`)
   }
-  if (!viewAlive() || !winAlive()) {
+  if (!overlayAlive() || !winAlive()) {
     throw new Error('[overlayLayer] cannot show overlay — view or window destroyed')
   }
 
@@ -665,19 +655,38 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
     addon?.saveOverlayFirstResponder()
   }
 
-  // Raise the overlay above the main WCV via Electron's own re-stacking API
-  // first, THEN let the addon sink the terminal back below it.
-  raiseOverlayView()
-  addon?.reassertOverlayOrder()
-
   if (winAlive()) {
     currentScaleFactor = screen.getDisplayMatching(win!.getBounds()).scaleFactor
   }
 
   state = 'pending'
+
+  // Order matters here: set bounds first, then show the (now correctly
+  // positioned) window, THEN send the descriptor — so the renderer's first
+  // paint happens while the window is already visible on screen, rather than
+  // painting into a hidden window and hoping the ack still arrives. This
+  // sidesteps any question of whether a hidden BrowserWindow's renderer
+  // continues to produce rAF frames (the historical Electron #44590 concern
+  // for hidden webContents) — backgroundThrottling: false is kept as a
+  // belt-and-suspenders measure, but visibility no longer gates the paint.
   applyCurrentBounds()
 
-  view!.webContents.send('overlayRenderer:show', {
+  // Tooltip-class overlays (acceptsClicks === false, e.g. hover cards) must
+  // never intercept mouse input even though they're visible — route mouse
+  // events through to whatever is beneath instead of relying on geometry
+  // alone.
+  overlayWin!.setIgnoreMouseEvents(!descriptor.acceptsClicks)
+
+  if (descriptor.takesFocus) {
+    // Focus-taking overlays (confirm modals, palette) become the key window.
+    overlayWin!.show()
+  } else {
+    // Non-focus-taking overlays (cards/tooltips) must never steal key-window
+    // status from the main window.
+    overlayWin!.showInactive()
+  }
+
+  overlayWin!.webContents.send('overlayRenderer:show', {
     descriptor,
     generation: gen,
     theme: currentTheme
@@ -687,7 +696,7 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
     const timeout = setTimeout(() => {
       if (pendingShow?.generation !== gen) return
       pendingShow = null
-      zeroBounds()
+      if (overlayAlive()) overlayWin!.hide()
       releaseToken()
       state = 'idle'
       currentDescriptor = null
@@ -705,8 +714,8 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
 export function updateOverlay(id: string, props: Record<string, unknown>): void {
   if (!currentDescriptor || currentDescriptor.id !== id) return // silently dropped — expected race
   if (state !== 'pending' && state !== 'visible') return
-  if (!viewAlive()) return
-  view!.webContents.send('overlayRenderer:update', {
+  if (!overlayAlive()) return
+  overlayWin!.webContents.send('overlayRenderer:update', {
     id,
     generation: currentGeneration,
     props
@@ -725,8 +734,8 @@ export async function hideOverlay(id: string): Promise<void> {
   const gen = currentGeneration
   state = 'exiting'
 
-  if (viewAlive()) {
-    view!.webContents.send('overlayRenderer:hide', { id, generation: gen })
+  if (overlayAlive()) {
+    overlayWin!.webContents.send('overlayRenderer:hide', { id, generation: gen })
   }
 
   await new Promise<void>((resolve) => {
@@ -745,7 +754,10 @@ export async function hideOverlay(id: string): Promise<void> {
   // current show and still in 'exiting'.
   if (currentDescriptor?.id !== id || state !== 'exiting') return
 
-  zeroBounds()
+  if (overlayAlive()) {
+    overlayWin!.setIgnoreMouseEvents(false)
+    overlayWin!.hide()
+  }
   state = 'idle'
   currentDescriptor = null
   releaseToken()
@@ -762,9 +774,9 @@ export function forceHide(reason: string): void {
   clearPendingExitTimer()
   resolvePendingExit()
 
-  if (wasActive && viewAlive()) {
+  if (wasActive && overlayAlive()) {
     try {
-      view!.webContents.send('overlayRenderer:hide', {
+      overlayWin!.webContents.send('overlayRenderer:hide', {
         id: currentDescriptor?.id ?? '',
         generation: currentGeneration
       })
@@ -773,7 +785,10 @@ export function forceHide(reason: string): void {
     }
   }
 
-  zeroBounds()
+  if (overlayAlive()) {
+    overlayWin!.setIgnoreMouseEvents(false)
+    overlayWin!.hide()
+  }
   if (state !== 'unavailable' && state !== 'unregistered' && state !== 'recovering') {
     state = 'idle'
   }
@@ -801,8 +816,9 @@ export function isInteractiveOverlayVisible(): boolean {
 }
 
 export function focusOverlay(): void {
-  if (!viewAlive()) return
-  view!.webContents.focus()
+  if (!overlayAlive()) return
+  overlayWin!.focus()
+  overlayWin!.webContents.focus()
 }
 
 // ---------------------------------------------------------------------------
@@ -810,8 +826,8 @@ export function focusOverlay(): void {
 // ---------------------------------------------------------------------------
 
 function sendThemeToView(): void {
-  if (!viewAlive()) return
-  view!.webContents.send('overlayRenderer:theme', currentTheme)
+  if (!overlayAlive()) return
+  overlayWin!.webContents.send('overlayRenderer:theme', currentTheme)
 }
 
 export function setOverlayTheme(theme: string): void {
