@@ -154,10 +154,9 @@ static std::string g_visibleWorkspaceId;
 static void reconcileSurface(const std::string& workspaceId, NSView* contentView, bool forceWake);
 static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake);
 
-// Forward declarations for the overlay registration/ordering primitives
-// (defined near ensureBackstopView) so reconcileSurface's terminal attach
-// sites can consult overlay state before choosing insertion order.
-static BOOL isOverlayRegistered(void);
+// Forward declaration for the overlay ordering self-heal (defined near
+// ensureBackstopView) so reconcileSurface's terminal attach sites can call it
+// after choosing insertion order.
 static void reassertOverlayOrder(void);
 
 @implementation OrpheusGhosttyView
@@ -2581,38 +2580,35 @@ static NSView* ensureBackstopView(NSView* contentView) {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay registration, ordering, and first-responder primitives (U1).
+// Overlay ordering and first-responder primitives.
 //
-// The overlay is a WebContentsView's NSView, added by the JS side directly to
-// contentView (main.ts owns creation/addChildView — this addon never creates
-// it). We can't be handed the overlay's NSView pointer directly over NAPI
-// (Electron doesn't expose one), so registration works by DIFFING
-// contentView.subviews before/after the JS side adds it: begin() snapshots
-// the current subviews, the JS caller then does addChildView, and commit()
-// finds the one new subview and holds a __weak ref to it.
-//
-// Re-entrant by design (NOT dispatch_once like installBackstop/ensureBackstopView):
-// the BrowserWindow — and therefore contentView and the overlay NSView — is
-// recreated on dock-activate (src/main/index.ts app.on('activate')), so a
-// second begin/commit cycle for the new window must fully replace the old
-// registration rather than being a permanent one-shot.
+// U1 originally registered the overlay's NSView (a WebContentsView added by
+// the JS side directly to contentView) via a begin/commit subview-diff
+// handshake, so this layer could track it as a same-window sibling. The
+// overlay has since moved to a separate child BrowserWindow (own compositor,
+// stacks above the main window natively) — a same-window-sibling registration
+// no longer applies, so that handshake (beginOverlayRegistration /
+// commitOverlayRegistration / isOverlayRegistered) is retired. What remains:
+// reassertOverlayOrder's self-heal for OUR OWN views (backstop + terminal
+// ordering, unrelated to the overlay) and the focus-chain primitives below,
+// which read g_overlayView/g_overlayContentView defensively (nil in the
+// child-window architecture, since nothing sets them anymore) and degrade to
+// safe no-ops.
 // ---------------------------------------------------------------------------
 
-// contentView captured at beginOverlayRegistration time; also the "is this
-// registration still for the current window" check in commit/reassert.
+// contentView the overlay machinery last operated against. Now only ever read
+// (never written — the same-window registration handshake that used to set
+// this is retired; the overlay is a separate child BrowserWindow in the
+// current architecture), so this stays nil. Kept because reassertOverlayOrder
+// and dumpContentViewStack still read it defensively (nil short-circuits both
+// to no-ops).
 static NSView* __weak g_overlayContentView = nil;
 
-// Subview snapshot taken at begin() — compared against contentView.subviews
-// at commit() time to find the newly-added overlay view. NSArray copy (not a
-// live reference to contentView.subviews) so mutations after begin() don't
-// change what we diff against.
-static NSArray<NSView*>* __strong g_overlaySnapshot = nil;
-
-// The registered overlay NSView. __weak: if the WebContentsView is destroyed
-// out from under us (window close/recreate without a fresh begin/commit,
-// crash-recovery reload of the whole window), this simply reads nil and
-// isOverlayRegistered() correctly reports false instead of holding a
-// dangling pointer alive.
+// The overlay NSView, if one is ever registered. Now only ever read (never
+// written — see g_overlayContentView above), so this stays nil in the
+// child-window architecture. Kept because the focus primitives
+// (isOverlayFirstResponder / save/restoreOverlayFirstResponder) and
+// dumpContentViewStack still read it; a nil value makes them safe no-ops.
 static NSView* __weak g_overlayView = nil;
 
 // True while a takesFocus overlay is visible — gates reconcileSurface's
@@ -2630,94 +2626,6 @@ static bool g_overlayFocusSuppressed = false;
 // destroyed out from under us (surface teardown) reads nil, and restoring
 // nil is a safe no-op.
 static NSResponder* __weak g_overlaySavedFirstResponder = nil;
-
-// NAPI: beginOverlayRegistration(handle) → void
-//
-// Bridges the window handle to contentView (same Buffer→NSView* pattern as
-// InstallBackstop) and snapshots contentView.subviews so a following
-// commitOverlayRegistration() can diff for the newly-added overlay view.
-// Re-entrant: clears any prior registration state first, so calling this
-// again (window recreated on dock-activate) discards the old __weak refs
-// instead of leaving them around to fight the new registration.
-static Napi::Value BeginOverlayRegistration(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsBuffer()) {
-        Napi::TypeError::New(env, "beginOverlayRegistration requires a window handle buffer")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    Napi::Buffer<uint8_t> handleBuf = info[0].As<Napi::Buffer<uint8_t>>();
-    void* rawHandle = nullptr;
-    size_t copyLen = std::min(handleBuf.ByteLength(), sizeof(rawHandle));
-    memcpy(&rawHandle, handleBuf.Data(), copyLen);
-    NSView* contentView = (__bridge NSView*)rawHandle;
-    if (!contentView) return env.Undefined();
-
-    // Clear prior registration state up front — re-entrant, not one-shot.
-    g_overlayView = nil;
-    g_overlaySnapshot = nil;
-
-    g_overlayContentView = contentView;
-    g_overlaySnapshot = [contentView.subviews copy];
-
-    NSLog(@"[ghostty-surface] beginOverlayRegistration: snapshotted %lu subviews",
-          (unsigned long)g_overlaySnapshot.count);
-    return env.Undefined();
-}
-
-// NAPI: commitOverlayRegistration() → boolean
-//
-// Diffs contentView.subviews (now) against the begin()-time snapshot.
-// Exactly one new subview → that's the overlay WebContentsView's NSView;
-// store a __weak ref and return true. Zero or multiple new subviews means
-// the JS-side addChildView call raced with something else adding/removing
-// subviews between begin() and commit() (or didn't happen at all) — log
-// loudly with the count so it's diagnosable, leave no registration, and
-// return false so the TS caller can retry or fall back.
-static Napi::Value CommitOverlayRegistration(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-
-    NSView* contentView = g_overlayContentView;
-    if (!contentView || !g_overlaySnapshot) {
-        NSLog(@"[ghostty-surface] commitOverlayRegistration: no beginOverlayRegistration in progress");
-        return Napi::Boolean::New(env, false);
-    }
-
-    NSMutableArray<NSView*>* added = [NSMutableArray array];
-    for (NSView* sub in contentView.subviews) {
-        if (![g_overlaySnapshot containsObject:sub]) {
-            [added addObject:sub];
-        }
-    }
-
-    if (added.count != 1) {
-        NSLog(@"[ghostty-surface] commitOverlayRegistration: expected exactly 1 new subview, found %lu — "
-              @"leaving overlay unregistered",
-              (unsigned long)added.count);
-        g_overlaySnapshot = nil;
-        return Napi::Boolean::New(env, false);
-    }
-
-    g_overlayView = added.firstObject;
-    g_overlaySnapshot = nil;
-    NSLog(@"[ghostty-surface] commitOverlayRegistration: registered overlay view %@", g_overlayView);
-    return Napi::Boolean::New(env, true);
-}
-
-// NAPI: isOverlayRegistered() → boolean
-//
-// True iff the weak overlay ref is still alive AND still parented under the
-// contentView it was registered against (guards the window-recreation
-// window where a stale ref could otherwise report a false positive).
-static BOOL isOverlayRegistered(void) {
-    NSView* overlayView = g_overlayView;
-    NSView* contentView = g_overlayContentView;
-    return overlayView != nil && contentView != nil && overlayView.superview == contentView;
-}
-
-static Napi::Value IsOverlayRegistered(const Napi::CallbackInfo& info) {
-    return Napi::Boolean::New(info.Env(), isOverlayRegistered());
-}
 
 // topmostViewsCompositorView — find the highest-index (topmost-in-z-order)
 // subview of contentView that is Chromium's single window-wide compositor
@@ -2741,11 +2649,13 @@ static NSView* topmostViewsCompositorView(NSView* contentView) {
     return compositorView;
 }
 
-// dumpContentViewStack — unconditional diagnostic NSLog of every contentView
-// subview in z-order (index 0 = bottom), one line each, so overlay/terminal/
-// main-WCV ordering bugs are diagnosable from Console.app without attaching a
-// debugger. Called at the top of reassertOverlayOrder() on every invocation;
-// that function only runs on shows/reconciles, so volume is low.
+// dumpContentViewStack — diagnostic NSLog of every contentView subview in
+// z-order (index 0 = bottom), one line each, so overlay/terminal/main-WCV
+// ordering bugs are diagnosable from Console.app without attaching a
+// debugger. Called from reassertOverlayOrder() only alongside an actual
+// correction (not on every invocation — reconcileSurface calls reassert on
+// every re-show/kick, and dumping the full stack on all of those would be
+// production log noise for the overwhelmingly common already-correct case).
 static void dumpContentViewStack(NSView* contentView) {
     if (!contentView) return;
     NSView* overlayView = g_overlayView;
@@ -2795,7 +2705,6 @@ static void dumpContentViewStack(NSView* contentView) {
 // detach/re-attach breaks its compositing — the Electron #44652 class of bug).
 static void reassertOverlayOrder(void) {
     NSView* contentView = g_overlayContentView;
-    dumpContentViewStack(contentView);
     if (!contentView) return;
 
     // Rule 1: sink our backstop back to index 0 if Chromium moved it up.
@@ -2803,6 +2712,7 @@ static void reassertOverlayOrder(void) {
         if (![sub isKindOfClass:[OrpheusBackstopView class]]) continue;
         NSUInteger idx = [contentView.subviews indexOfObject:sub];
         if (idx == 0) break;
+        dumpContentViewStack(contentView);  // log the stack once, alongside the correction
         [sub removeFromSuperview];
         [contentView addSubview:sub positioned:NSWindowBelow relativeTo:nil];
         NSLog(@"[ghostty-surface] reassertOverlayOrder: corrected backstop view (was index=%lu) back to index 0",
@@ -2824,6 +2734,8 @@ static void reassertOverlayOrder(void) {
         if (termIndex == NSNotFound || compositorIndex == NSNotFound) continue;
         if (termIndex > compositorIndex) continue;  // already above — fine
 
+        dumpContentViewStack(contentView);  // log the stack once, alongside the correction
+
         NSWindow* win = termView.window;
         BOOL wasFirstResponder = (win != nil && win.firstResponder == termView);
 
@@ -2837,10 +2749,10 @@ static void reassertOverlayOrder(void) {
     }
 }
 
-static Napi::Value ReassertOverlayOrder(const Napi::CallbackInfo& info) {
-    reassertOverlayOrder();
-    return info.Env().Undefined();
-}
+// No NAPI wrapper: reassertOverlayOrder is internal-only now (called from
+// reconcileSurface). It used to also be exposed to TS for callers to trigger
+// after events known to reshuffle native subviews, but nothing calls it from
+// TS anymore — grep confirms no src/ callers.
 
 // NAPI: setOverlayFocusSuppressed(suppressed) → void
 //
@@ -6999,10 +6911,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("sendInput",                Napi::Function::New(env, SendInput));
     exports.Set("sendKeys",                 Napi::Function::New(env, SendKeys));
     exports.Set("reloadGhosttyConfig",      Napi::Function::New(env, ReloadGhosttyConfig));
-    exports.Set("beginOverlayRegistration",   Napi::Function::New(env, BeginOverlayRegistration));
-    exports.Set("commitOverlayRegistration",  Napi::Function::New(env, CommitOverlayRegistration));
-    exports.Set("isOverlayRegistered",        Napi::Function::New(env, IsOverlayRegistered));
-    exports.Set("reassertOverlayOrder",       Napi::Function::New(env, ReassertOverlayOrder));
     exports.Set("setOverlayFocusSuppressed",  Napi::Function::New(env, SetOverlayFocusSuppressed));
     exports.Set("saveOverlayFirstResponder",  Napi::Function::New(env, SaveOverlayFirstResponder));
     exports.Set("restoreOverlayFirstResponder", Napi::Function::New(env, RestoreOverlayFirstResponder));

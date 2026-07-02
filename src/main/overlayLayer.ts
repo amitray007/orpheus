@@ -25,10 +25,12 @@
 //
 // There is no more addon-side registration handshake (beginOverlayRegistration
 // / commitOverlayRegistration / isOverlayRegistered / reassertOverlayOrder) —
-// those addon exports still exist but are no longer called from here; a
-// same-window-sibling ordering problem doesn't apply to a separate window.
-// 'unavailable' is now reached only if creating/loading the child window
-// itself fails.
+// those addon exports have been removed entirely; a same-window-sibling
+// ordering problem doesn't apply to a separate window. The addon still runs
+// its own internal ordering self-heal for its own views (backstop + terminal
+// vs. the web compositor), but that's unrelated to the overlay and not
+// TS-triggerable. 'unavailable' is now reached only if creating/loading the
+// child window itself fails.
 // ---------------------------------------------------------------------------
 
 import { BrowserWindow, ipcMain, screen } from 'electron'

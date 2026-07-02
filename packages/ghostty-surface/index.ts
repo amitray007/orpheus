@@ -207,44 +207,18 @@ export type GhosttySurfaceAddon = {
   }) => void
 
   // ---------------------------------------------------------------------------
-  // Overlay registration, ordering, and first-responder primitives
-  // (Phase A — the overlay WebContentsView kept above the terminal NSView)
+  // Overlay first-responder primitives (child-window era)
+  //
+  // The overlay used to be a same-window WebContentsView sibling, tracked via
+  // a begin/commit registration handshake plus a `reassertOverlayOrder` call
+  // exposed to TS so callers could trigger the ordering self-heal directly.
+  // The overlay is now a separate child BrowserWindow with its own compositor
+  // (stacks above the main window natively), so that registration/ordering
+  // surface is gone — the ordering self-heal is purely internal to the addon
+  // now (still runs, just not TS-triggerable). What remains addon-side and
+  // TS-facing is the focus-chain handoff below, used when a takesFocus
+  // overlay is dismissed.
   // ---------------------------------------------------------------------------
-
-  /**
-   * Begin overlay registration for the given native window handle: bridges
-   * the handle to `contentView` and snapshots its current subviews. Call
-   * this BEFORE the caller adds the overlay WebContentsView's NSView (e.g.
-   * via `addChildView`), then call `commitOverlayRegistration` after.
-   * Re-entrant — safe (and required) to call again when the BrowserWindow is
-   * recreated (e.g. dock-activate); each call discards prior registration
-   * state rather than being a permanent one-shot.
-   */
-  beginOverlayRegistration: (handle: Buffer) => void
-
-  /**
-   * Complete overlay registration: diffs `contentView.subviews` against the
-   * snapshot taken by `beginOverlayRegistration`. Exactly one new subview is
-   * treated as the overlay view and registered; returns `true`. Zero or more
-   * than one new subview leaves no registration and returns `false` (the
-   * native side logs the count for diagnosis).
-   */
-  commitOverlayRegistration: () => boolean
-
-  /**
-   * True iff the overlay view is registered and still parented under the
-   * contentView it was registered against.
-   */
-  isOverlayRegistered: () => boolean
-
-  /**
-   * Re-raise the registered overlay above the terminal (or any other view)
-   * if something has been ordered above it in `contentView.subviews`. Cheap
-   * no-op when the order is already correct. Call after events known to
-   * reshuffle native subviews (fullscreen enter/exit, DevTools dock toggle)
-   * as a self-heal for ordering regressions.
-   */
-  reassertOverlayOrder: () => void
 
   /**
    * Gate the terminal's mount-time / re-show `makeFirstResponder` calls.
