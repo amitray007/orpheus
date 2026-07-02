@@ -2869,7 +2869,24 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     // Initialize / migrate the SQLite database early, before any IPC can fire.
-    getDb()
+    // Every other startup step here is try/catch-wrapped with console.error,
+    // but this one is the most upstream: a migration throw must not silently
+    // kill the app with no window and no visible error (the uncaughtException
+    // handler is logging-only). Fail fast and visibly instead — a half-migrated
+    // DB must not run a half-app.
+    try {
+      getDb()
+    } catch (err) {
+      console.error('[startup] database migration failed:', err)
+      dialog.showErrorBox(
+        'Orpheus — Database Error',
+        'The database could not be migrated to the latest version and the app cannot start safely.\n\n' +
+          'Your data has not been modified. A backup may exist alongside the database file.\n\n' +
+          String(err instanceof Error ? err.message : err)
+      )
+      app.exit(1)
+      return
+    }
     startDiagnostics()
     syncDiagFlags()
 
