@@ -53,7 +53,7 @@ jobs:
         # past the pre-push baseline (183 warnings at time of writing). Lower
         # this number as warnings are cleaned up; never raise it without
         # reviewing what regressed.
-        run: bunx eslint . --max-warnings=183
+        run: bunx eslint . --max-warnings=171
 
       - name: Format check
         run: bun run format:check
