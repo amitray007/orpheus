@@ -15,6 +15,7 @@ import {
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
@@ -1012,7 +1013,9 @@ export function Sidebar({
     Map<string, Map<string, number>>
   >(new Map())
   // Stale threshold from AppUiState (default matches original hardcoded 60 min)
-  const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
+  const [staleAfterMinutes, setStaleAfterMinutes] = useState<number>(
+    UI_STATE_DEFAULTS.staleAfterMinutes
+  )
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string> | null>(null)

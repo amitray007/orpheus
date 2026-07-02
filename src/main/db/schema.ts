@@ -447,6 +447,7 @@ export const schema: SchemaDef = {
       // Sidebar behavior preferences (v12)
       pinned_section_visible: bool('pinned_section_visible', '1'),
       workspace_count_inline: bool('workspace_count_inline', '1'),
+      // mirrors UI_STATE_DEFAULTS.sidebarWidth / SIDEBAR_WIDTH_MIN..MAX in src/shared/uiStateDefaults.ts
       sidebar_width: {
         type: 'INTEGER',
         notNull: true,
@@ -458,8 +459,10 @@ export const schema: SchemaDef = {
       launch_at_login: bool('launch_at_login', '0'),
       global_hotkey: { type: 'TEXT', notNull: true, default: "''" },
       // Archive cap (v25)
+      // mirrors UI_STATE_DEFAULTS.archivedWorkspaceLimit in src/shared/uiStateDefaults.ts
       archived_workspace_limit: { type: 'INTEGER', notNull: true, default: '20' },
       // Status polling preferences (v42)
+      // mirrors UI_STATE_DEFAULTS.statusPollIntervalSec in src/shared/uiStateDefaults.ts
       status_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '1800' },
       mute_status_notifications: bool('mute_status_notifications', '0'),
       // Workspace footer visibility (v45)
@@ -512,6 +515,7 @@ export const schema: SchemaDef = {
         check: enumCheck('sound_pack', SOUND_PACK)
       },
       auto_check_updates: bool('auto_check_updates', '1'),
+      // mirrors UI_STATE_DEFAULTS.staleAfterMinutes in src/shared/uiStateDefaults.ts
       stale_after_minutes: { type: 'INTEGER', notNull: true, default: '60' },
       updated_at: INTEGER_NOT_NULL
     }

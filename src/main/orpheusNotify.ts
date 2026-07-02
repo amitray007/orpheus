@@ -10,6 +10,7 @@ import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { stageActivityUpdate } from './activitySink'
+import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -120,7 +121,7 @@ function clearAutoCloseWatchdog(workspaceId: string): void {
 function armIdleWatchdog(workspaceId: string): void {
   clearIdleWatchdog(workspaceId)
   if (cachedStaleMinutes === null) {
-    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? 60
+    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   }
   const minutes = cachedStaleMinutes
   if (minutes <= 0) return

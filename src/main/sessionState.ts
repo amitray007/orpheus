@@ -18,6 +18,7 @@ import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -530,7 +531,8 @@ async function reconcile(): Promise<void> {
         let mapped: WorkspaceStatus
         if (rawStatus === 'idle') {
           const idleDuration = Date.now() - (session?.statusUpdatedAt ?? Date.now())
-          const threshold = (getAppUiState().staleAfterMinutes ?? 60) * 60_000
+          const threshold =
+            (getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes) * 60_000
           mapped = idleDuration >= threshold ? 'idle' : 'awaiting_input'
         } else if (rawStatus === 'waiting') {
           mapped = 'attention'

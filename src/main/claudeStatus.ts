@@ -7,6 +7,7 @@ import type {
   ClaudeStatusIndicator,
   ClaudeStatusComponentStatus
 } from '../shared/types'
+import { UI_STATE_DEFAULTS, VALID_STATUS_POLL_INTERVALS_SEC } from '../shared/uiStateDefaults'
 import { Notification } from 'electron'
 
 // ---------------------------------------------------------------------------
@@ -22,12 +23,11 @@ const FETCH_TIMEOUT_MS = 8_000
 const INITIAL_DELAY_MS = 3_000
 
 /** Allowed poll intervals (seconds). */
-const VALID_INTERVALS_SEC = [300, 600, 900, 1800, 3600, 7200, 10800] as const
-const DEFAULT_INTERVAL_SEC = 1800
+const DEFAULT_INTERVAL_SEC = UI_STATE_DEFAULTS.statusPollIntervalSec
 
 function validateIntervalSec(sec: number | undefined): number {
   if (!sec) return DEFAULT_INTERVAL_SEC
-  return (VALID_INTERVALS_SEC as readonly number[]).includes(sec) ? sec : DEFAULT_INTERVAL_SEC
+  return VALID_STATUS_POLL_INTERVALS_SEC.includes(sec) ? sec : DEFAULT_INTERVAL_SEC
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ function toComponentStatus(raw: string): ClaudeStatusComponentStatus {
     'major_outage',
     'under_maintenance'
   ]
-  return (known.find((k) => k === raw) ?? 'operational') as ClaudeStatusComponentStatus
+  return known.find((k) => k === raw) ?? 'operational'
 }
 
 /**
@@ -126,7 +126,7 @@ function toComponentStatus(raw: string): ClaudeStatusComponentStatus {
  */
 function toIndicator(raw: string | undefined): ClaudeStatusIndicator {
   const known: ClaudeStatusIndicator[] = ['none', 'minor', 'major', 'critical', 'maintenance']
-  return (known.find((k) => k === raw) ?? 'none') as ClaudeStatusIndicator
+  return known.find((k) => k === raw) ?? 'none'
 }
 
 /**

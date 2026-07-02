@@ -33,6 +33,7 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
@@ -1418,7 +1419,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       <TopBar
         onToggleCollapsed={handleToggleSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        sidebarWidth={uiState?.sidebarWidth ?? 256}
+        sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -1433,7 +1434,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           expandedProjectIds={expandedProjectIds}
           workspacesByProject={workspacesByProject}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
-          sidebarWidth={uiState?.sidebarWidth ?? 256}
+          sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           pinnedItems={pinnedItems}
           onSelectProject={handleSelectProject}

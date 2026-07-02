@@ -7,6 +7,7 @@
  */
 
 import type { AppUiState } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import type { View } from './MainContent'
 import type { SidebarActiveView } from './Sidebar'
 
@@ -30,11 +31,11 @@ export const DEFAULT_UI_STATE_FALLBACK: AppUiState = {
   openAtLastView: true,
   pinnedSectionVisible: true,
   workspaceCountInline: true,
-  sidebarWidth: 256,
+  sidebarWidth: UI_STATE_DEFAULTS.sidebarWidth,
   defaultProjectExpanded: false,
   launchAtLogin: false,
   globalHotkey: '',
-  archivedWorkspaceLimit: 20,
+  archivedWorkspaceLimit: UI_STATE_DEFAULTS.archivedWorkspaceLimit,
   hooksIntegrationEnabled: false,
   notifyAttention: true,
   notifyStop: true,
@@ -43,7 +44,7 @@ export const DEFAULT_UI_STATE_FALLBACK: AppUiState = {
   notifySuppressWhenFocused: false,
   notifyMaxAttentionRepeats: 5,
   inProgressWatchdogSec: 120,
-  staleAfterMinutes: 60,
+  staleAfterMinutes: UI_STATE_DEFAULTS.staleAfterMinutes,
   autoCloseAfterMinutes: 120,
   diagError: true,
   diagLifecycle: false,
@@ -57,7 +58,7 @@ export const DEFAULT_UI_STATE_FALLBACK: AppUiState = {
   playInteractionSounds: true,
   soundPack: 'core',
   autoCheckUpdates: true,
-  statusPollIntervalSec: 1800,
+  statusPollIntervalSec: UI_STATE_DEFAULTS.statusPollIntervalSec,
   muteStatusNotifications: false,
   showWorkspaceFooter: true,
   updatedAt: 0
