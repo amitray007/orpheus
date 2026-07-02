@@ -298,9 +298,10 @@ const GROUPS: SectionGroup[] = [
 // SettingsView — two-pane shell: internal nav + section content
 // ---------------------------------------------------------------------------
 
-export function SettingsView(): React.JSX.Element {
-  // Default to Orpheus → General (the first section in the first group).
-  const [activeId, setActiveId] = useState<SectionId>('orpheus-appearance')
+export function SettingsView({ section }: { section?: SectionId }): React.JSX.Element {
+  // Default to Orpheus → General (the first section in the first group), unless a
+  // deep-link target section was supplied (e.g. opening directly on Updates).
+  const [activeId, setActiveId] = useState<SectionId>(section ?? 'orpheus-appearance')
   const [query, setQuery] = useState('')
   const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
@@ -311,6 +312,15 @@ export function SettingsView(): React.JSX.Element {
   const ActiveComponent = active.Component
 
   const results = query.trim() ? searchSettings(query, SETTINGS_SEARCH_INDEX) : []
+
+  // Re-navigate when the deep-link target changes (e.g. the sidebar update
+  // control is clicked again while Settings is already open). Mirroring the
+  // incoming prop into local nav state is the intended behavior here.
+  /* eslint-disable react-hooks/set-state-in-effect -- deep-link prop mirrored into local nav state */
+  useEffect(() => {
+    if (section) setActiveId(section)
+  }, [section])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {

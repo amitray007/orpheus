@@ -1,19 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import { Terminal as TerminalIcon, Gear, ArrowBendUpLeft, Cpu, Info } from '@phosphor-icons/react'
+import {
+  Terminal as TerminalIcon,
+  Gear,
+  ArrowBendUpLeft,
+  Cpu,
+  Info,
+  GitBranch
+} from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
 import {
-  showDetailsPopover,
-  updateDetailsPopover,
-  hideNativePopover,
-  onNativePopoverClosed,
-  gitStatusToNative,
-  prToNative
-} from '@/lib/nativePopover'
-import type { DetailsPopoverData } from '@/lib/nativePopover'
+  showDetailsCard,
+  updateDetailsCard,
+  hideOverlayCard,
+  detailsCardId,
+  onCardPointer,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
 import type { ContextBudgetInfo } from './workspaceTitleBar.helpers'
 
@@ -192,24 +200,38 @@ export function WorkspaceTitleBar({
     }
   }
 
+  function updateDetails(patch: Partial<DetailsCardProps>): void {
+    updateDetailsCard(detailsCardId(workspace.id), patch)
+  }
+
+  function hideDetailsCard(): void {
+    hideOverlayCard(detailsCardId(workspace.id))
+  }
+
   function openDetailsPopover(): void {
     if (!detailsButtonRef.current) return
 
     // Build initial data with whatever is synchronously available.
-    const initialData: DetailsPopoverData = {
-      pr: prToNative(pr ?? null),
-      git: gitStatus ? gitStatusToNative(gitStatus) : undefined,
-      cwd: workspace.cwd,
+    // For worktree workspaces, enrich the cwd line with the parent repo path
+    // so the Details popover surfaces both the worktree location and its parent.
+    const cwdDisplay = workspace.worktreeParentCwd
+      ? `${workspace.worktreeParentCwd}\n↳ worktree: ${workspace.cwd}`
+      : workspace.cwd
+
+    const initialProps: DetailsCardProps = {
+      pr: prToCard(pr ?? null),
+      git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
+      cwd: cwdDisplay,
       contextLoading: true,
       costLoading: true
     }
-    showDetailsPopover(workspace.id, detailsButtonRef.current, initialData, pr ?? null)
+    showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
 
     // ── Async: context budget ────────────────────────────────────────────────
     const cacheKey = `${workspace.id}:${workspace.claudeSessionId ?? ''}`
     const cached = contextBudgetCache.get(cacheKey)
     if (cached) {
-      updateDetailsPopover(workspace.id, {
+      updateDetails({
         model: modelLabel(cached.modelId),
         contextLoading: false
       })
@@ -236,7 +258,7 @@ export function WorkspaceTitleBar({
             const ctxText = usage
               ? `${shortTokens(usage.lastTurnContextTokens)} / ${shortTokens(result.contextBudget)} · ${Math.round(usage.usedPct)}%`
               : shortTokens(result.contextBudget)
-            updateDetailsPopover(workspace.id, {
+            updateDetails({
               model: modelLabel(result.modelId),
               contextText: ctxText,
               contextLoading: false
@@ -244,7 +266,7 @@ export function WorkspaceTitleBar({
           })
       })
       .catch(() => {
-        updateDetailsPopover(workspace.id, { contextLoading: false })
+        updateDetails({ contextLoading: false })
       })
 
     // ── Async: cost ──────────────────────────────────────────────────────────
@@ -253,16 +275,16 @@ export function WorkspaceTitleBar({
       .then((result) => {
         if (result.ok && result.value != null) {
           const cost = result.value as SessionCost
-          updateDetailsPopover(workspace.id, {
+          updateDetails({
             cost: `$${cost.usd.toFixed(2)}`,
             costLoading: false
           })
         } else {
-          updateDetailsPopover(workspace.id, { costLoading: false })
+          updateDetails({ costLoading: false })
         }
       })
       .catch(() => {
-        updateDetailsPopover(workspace.id, { costLoading: false })
+        updateDetails({ costLoading: false })
       })
   }
 
@@ -278,7 +300,7 @@ export function WorkspaceTitleBar({
     clearDetailsHoverTimer()
     detailsHoverTimerRef.current = setTimeout(() => {
       detailsHoverTimerRef.current = null
-      hideNativePopover(workspace.id)
+      hideDetailsCard()
     }, 80)
   }
 
@@ -286,19 +308,26 @@ export function WorkspaceTitleBar({
   useEffect(() => {
     return () => {
       clearDetailsHoverTimer()
-      hideNativePopover(workspace.id)
+      hideDetailsCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on the Details button re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself — the overlay card emits mouseenter/mouseleave, so cancel the
+  // close timer on enter and re-arm it (same 80ms) on leave.
   useEffect(() => {
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearDetailsHoverTimer()
+    const unregister = onCardPointer(detailsCardId(workspace.id), {
+      onEnter: clearDetailsHoverTimer,
+      onLeave: () => {
+        detailsHoverTimerRef.current = setTimeout(() => {
+          detailsHoverTimerRef.current = null
+          hideDetailsCard()
+        }, 80)
+      }
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   // Resolve parent name for the "forked from" chip
@@ -344,6 +373,17 @@ export function WorkspaceTitleBar({
         >
           <ArrowBendUpLeft size={9} className="flex-shrink-0" />
           {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
+        </span>
+      )}
+
+      {/* Worktree chip — shown when this workspace is a git worktree */}
+      {workspace.worktreeParentCwd && (
+        <span
+          className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-text-muted bg-surface-overlay/50 border border-border-default/40"
+          title={`Worktree branch: ${workspace.worktreeBranch ?? 'unknown'}\nParent repo: ${workspace.worktreeParentCwd}`}
+        >
+          <GitBranch size={9} className="flex-shrink-0" />
+          {`Worktree · ${workspace.worktreeBranch ?? 'worktree'}`}
         </span>
       )}
 

@@ -8,9 +8,28 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
+import {
+  showConfirmModalReact,
+  getActiveConfirmOverlayId,
+  hideConfirmOverlay,
+  showNoticeBanner,
+  hideOverlayCard,
+  noticeBannerId
+} from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
+
+// Worktree reconcile error shape returned by terminal:mount (formerly imported
+// from the now-removed React WorktreeErrorCard component — the error card is
+// now a native confirm modal; see the effect below).
+export type WorktreeErrorKind = 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
+
+export interface WorktreeError {
+  kind: WorktreeErrorKind
+  message: string
+  conflictPath?: string
+}
 
 interface WorkspaceViewProps {
   workspace: WorkspaceRecord
@@ -59,6 +78,22 @@ export function WorkspaceView({
   const [remountKey, setRemountKey] = useState(0)
   // Drawer: null = closed; 'status' | 'overrides' = open on that tab
   const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
+  // Worktree reconcile error — set when terminal:mount returns worktreeError.
+  // While non-null, a native confirm modal is shown (see the effect below)
+  // instead of mounting the terminal surface.
+  const [worktreeError, setWorktreeError] = useState<WorktreeError | null>(null)
+  // convertingRef — true while a convertToLocal IPC is in-flight; guards against
+  // double-conversion (the native modal dismisses on click, so re-entrancy would
+  // only happen from a rapid double-click before the promise resolves).
+  const convertingRef = useRef(false)
+  // pendingCwdOverrideRef — holds the fresh cwd returned by convertToLocal so the
+  // re-mount triggered by bumping remountKey uses the updated repo-root path rather
+  // than the stale workspace.cwd prop (which propagates via workspaces:changed only
+  // after the IPC resolves, potentially after the effect closure has already closed
+  // over the old value). Cleared (set to null) once consumed by doMount.
+  const pendingCwdOverrideRef = useRef<string | null>(null)
+  // One-time notice from a successful mount (e.g. "started fresh on branch X").
+  const [notice, setNotice] = useState<string | null>(null)
   // Where to portal the workspace title bar — slot lives in TopBar.
   const [titleBarHost, setTitleBarHost] = useState<HTMLElement | null>(null)
 
@@ -105,6 +140,160 @@ export function WorkspaceView({
   }, [workspace.id])
 
   const handleCloseDrawer = useCallback(() => setDrawer(null), [])
+
+  // --- Worktree error card callbacks ---
+
+  /** Retry mount after a worktree reconcile error by bumping the remount key. */
+  const handleWorktreeRetry = useCallback(() => {
+    setWorktreeError(null)
+    setRemountKey((k) => k + 1)
+  }, [])
+
+  /** Reveal the conflict path (or worktree parent) in Finder. */
+  const handleWorktreeOpenLocation = useCallback((p: string) => {
+    void window.api.shell.revealInFinder(p).catch((e) => {
+      console.error('[WorkspaceView] revealInFinder failed:', e)
+    })
+  }, [])
+
+  /**
+   * Convert a worktree workspace to a local workspace (non-destructive), then
+   * re-mount at the repo root. The IPC returns the updated WorkspaceRecord; we
+   * stash its cwd in pendingCwdOverrideRef so the re-mount (triggered by bumping
+   * remountKey) uses the fresh repo-root path instead of the stale workspace.cwd
+   * prop (which only updates when the workspaces:changed broadcast propagates
+   * through Dashboard state — potentially after the mount effect closure has
+   * already been created with the old value).
+   *
+   * The `convertingRef` guard prevents double-conversion if triggered twice
+   * before the IPC resolves.
+   */
+  const handleWorktreeConvertToLocal = useCallback(() => {
+    if (convertingRef.current) return
+    convertingRef.current = true
+    void window.api.workspaces
+      .convertToLocal(workspace.id)
+      .then((updated) => {
+        // Stash the fresh cwd BEFORE bumping remountKey so the mount effect
+        // closure created on the next render can read it via the ref.
+        pendingCwdOverrideRef.current = updated.cwd
+        setWorktreeError(null)
+        setRemountKey((k) => k + 1)
+      })
+      .catch((e) => {
+        console.error('[WorkspaceView] convertToLocal failed:', e)
+      })
+      .finally(() => {
+        convertingRef.current = false
+      })
+  }, [workspace.id])
+
+  // Supplementary detail per error kind — mirrors the copy that used to live
+  // in the (now-removed) React WorktreeErrorCard.
+  const WORKTREE_ERROR_DETAIL: Record<WorktreeErrorKind, string> = {
+    checkedOutElsewhere:
+      'Convert to local to use this workspace from the repository root instead, or check out a different branch in the conflicting location and retry.',
+    corruptDir:
+      'The worktree directory is in an unrecoverable state. Retry to attempt re-creation, or convert to local to continue from the repository root.',
+    parentGone:
+      'The parent repository could not be found. Convert to local to detach from the worktree configuration.'
+  }
+
+  // Worktree reconcile error card. Fires whenever terminal:mount returns a
+  // worktreeError (surface not mounted). Rendered above the live libghostty
+  // surface via the overlay layer's confirmModal kind
+  // (overlayClient.showConfirmModalReact) — see
+  // docs/learnings/overlay-child-window-macos.md. All three actions
+  // (Retry / Open location / Convert to local) resolve the modal and perform
+  // their action; re-opening the workspace re-triggers this effect if the
+  // underlying problem persists.
+  useEffect(() => {
+    if (!active || !worktreeError) return
+
+    let cancelled = false
+    const revealPath = worktreeError.conflictPath ?? workspace.worktreeParentCwd ?? undefined
+    const detail = WORKTREE_ERROR_DETAIL[worktreeError.kind]
+    const body = detail ? `${worktreeError.message}\n\n${detail}` : worktreeError.message
+
+    void showConfirmModalReact({
+      title: 'Worktree unavailable',
+      body,
+      buttons: [
+        { id: 'retry', label: 'Retry', style: 'primary' },
+        ...(revealPath ? [{ id: 'openLocation', label: 'Open location' }] : []),
+        { id: 'convertToLocal', label: 'Convert to local' }
+      ]
+    }).then((result) => {
+      if (cancelled) return
+      switch (result.buttonId) {
+        case 'retry':
+          handleWorktreeRetry()
+          break
+        case 'openLocation':
+          // Doesn't remount (worktreeError stays set, no re-mount effect fires
+          // to re-focus) — re-assert focus now that the modal is closed so the
+          // (still error-carded) workspace doesn't end up out of focus.
+          if (revealPath) handleWorktreeOpenLocation(revealPath)
+          handleFocusTerminal()
+          break
+        case 'convertToLocal':
+          handleWorktreeConvertToLocal()
+          break
+        default:
+          // Escape/backdrop cancel — leave worktreeError set; the user can
+          // re-trigger by navigating away and back, which re-fires this effect.
+          // No remount follows this path, so re-assert focus on this (still
+          // active, still error-carded) workspace's terminal ourselves —
+          // otherwise the modal's stolen first responder is never returned.
+          handleFocusTerminal()
+          break
+      }
+    })
+    // Capture the synthetic modal id synchronously right after opening it
+    // (showConfirmModalReact sets its "active" tracker before returning) so
+    // cleanup below can address exactly this modal, not whatever happens to
+    // be active later.
+    const confirmOverlayId = getActiveConfirmOverlayId()
+
+    return () => {
+      cancelled = true
+      // Actively dismiss the modal this effect opened. Without this, navigating
+      // away (workspace switch/unmount) while the modal is still open left it
+      // orphaned: the card + dimmed backdrop stayed on screen blocking input,
+      // and the JS promise never resolved (its handler entry leaked). Idempotent
+      // — a no-op if the modal already settled (button click / Escape /
+      // backdrop) before cleanup ran.
+      if (confirmOverlayId) {
+        hideConfirmOverlay(confirmOverlayId)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleWorktree*/handleFocusTerminal callbacks are stable (workspace.id-scoped); re-running this effect on their identity churn would re-show the modal spuriously
+  }, [active, worktreeError, workspace.worktreeParentCwd])
+
+  // Auto-dismiss the one-time notice after 6 seconds.
+  useEffect(() => {
+    if (!notice) return
+    const id = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(id)
+  }, [notice])
+
+  // Notice banner overlay: renders via the overlay layer's noticeBanner
+  // kind rather than an in-window absolute-positioned <div>, which would sit
+  // inside the terminal host and risk occlusion by the live libghostty
+  // surface — see docs/learnings/overlay-child-window-macos.md. Anchored to
+  // the terminal container's own rect; the banner kind renders bottom-up
+  // (bottom-4 left-1/2 -translate-x-1/2 equivalent), so anchoring to the
+  // container with preferredSide 'top' (i.e. grow from the container's
+  // bounds) reproduces the same on-screen position. Display duration is
+  // driven entirely by this effect (same 6s the `notice` state itself uses,
+  // via the timer above) — the kind has no internal timer.
+  useEffect(() => {
+    if (!active || !notice) return
+    const el = containerRef.current
+    if (!el) return
+    showNoticeBanner(workspace.id, el, { message: notice })
+    return () => hideOverlayCard(noticeBannerId(workspace.id))
+  }, [active, notice, workspace.id])
 
   const requestRemount = useCallback(() => {
     const el = containerRef.current
@@ -175,7 +364,11 @@ export function WorkspaceView({
     mountedRef.current = true
 
     const workspaceId = workspace.id
-    const cwd = workspace.cwd
+    // Prefer pendingCwdOverrideRef when set (populated by convertToLocal so the
+    // re-mount uses the returned repo-root cwd rather than the stale prop value).
+    // Consume and clear immediately so it doesn't leak into later mounts.
+    const cwd = pendingCwdOverrideRef.current ?? workspace.cwd
+    pendingCwdOverrideRef.current = null
 
     // rAF guard for resize coalescing
     let resizeRafId: number | null = null
@@ -207,6 +400,18 @@ export function WorkspaceView({
       )
       try {
         const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
+        if ('worktreeError' in result) {
+          // Worktree reconcile failed — surface not mounted; show the error card.
+          console.warn('[WorkspaceView] worktree reconcile error:', result.worktreeError)
+          setWorktreeError(result.worktreeError)
+          return
+        }
+        // Success path — clear any prior reconcile error.
+        setWorktreeError(null)
+        // Surface a one-time notice if the backend emitted one (e.g. "started fresh on branch X").
+        if (result.notice) {
+          setNotice(result.notice)
+        }
         surfaceCreatedRef.current = true
         // Guard: if the user navigated away while mount was resolving, hide
         // immediately so the surface doesn't draw while inactive.
@@ -418,6 +623,12 @@ export function WorkspaceView({
     if (!effectStateRef.current) return
     if (isClosed) return
 
+    // Clear any stale worktree error before attempting re-mount so the user sees
+    // a clean loading state instead of a stale error card flashing during a now-
+    // succeeding reconcile.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional pre-mount reset, not a cascading update; cleared once before the rAF that initiates the IPC
+    setWorktreeError(null)
+
     let rafId: number | null = null
     rafId = requestAnimationFrame(() => {
       rafId = null
@@ -486,6 +697,21 @@ export function WorkspaceView({
               workspaceId,
               durationMs: Math.round(performance.now() - t0)
             })
+            if ('worktreeError' in result) {
+              // Worktree reconcile failed — surface not mounted; show the error card.
+              console.warn(
+                '[WorkspaceView] worktree reconcile error (re-mount):',
+                result.worktreeError
+              )
+              setWorktreeError(result.worktreeError)
+              return
+            }
+            // Success path — clear any prior reconcile error.
+            setWorktreeError(null)
+            // Surface a one-time notice if the backend emitted one.
+            if (result.notice) {
+              setNotice(result.notice)
+            }
             surfaceCreatedRef.current = true
             // Guard: if the user navigated away while re-mount was resolving, hide
             // immediately so the surface doesn't draw while inactive.
@@ -558,6 +784,15 @@ export function WorkspaceView({
                 onFocusTerminal={handleFocusTerminal}
               />
             )}
+            {/* Worktree reconcile error — shown as a confirm modal via the overlay
+                layer (see the effect above) instead of an in-window React
+                overlay, so it renders above the libghostty terminal surface
+                without being occluded — see
+                docs/learnings/overlay-child-window-macos.md. */}
+            {/* One-time notice banner (e.g. "started fresh on branch X") — shown
+                briefly after a successful mount and auto-dismissed after 6 s,
+                rendered via the overlay-layer effect above (noticeBanner kind,
+                anchored to this container). */}
           </div>
 
           <WorkspaceFooter

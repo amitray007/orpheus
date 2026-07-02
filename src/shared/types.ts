@@ -119,7 +119,39 @@ export type WorkspaceRecord = {
   forkedFromSessionId: string | null
   /** Last terminal title seen before the workspace was closed (v58). */
   lastTitle: string | null
+  /** Parent workspace ID for lineage tracking; null for root workspaces (v64). */
+  parentWorkspaceId: string | null
+  /** Repo root this worktree branches from; null for a plain workspace (v64). */
+  worktreeParentCwd: string | null
+  /** Branch checked out in this worktree; null for a plain workspace (v64). */
+  worktreeBranch: string | null
 }
+
+/** Params for creating a worktree-backed workspace (v64). When `branch` is
+ *  omitted/blank, the handler defaults it to `worktree-<slug-of-name>`. */
+export type CreateWorktreeParams = { name: string; branch?: string }
+
+/**
+ * Return type of `terminal:mount`.
+ *
+ * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a
+ * worktree was recreated with a new branch the optional `notice` carries a
+ * one-time human-readable message the renderer should surface.
+ *
+ * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
+ * cannot proceed (bad state that needs user intervention). The surface is NOT
+ * mounted; the renderer should show an error card instead.
+ */
+export type TerminalMountResult =
+  | { workspaceId: string; created: boolean; notice?: string }
+  | {
+      workspaceId: string
+      worktreeError: {
+        kind: 'checkedOutElsewhere' | 'corruptDir' | 'parentGone'
+        message: string
+        conflictPath?: string
+      }
+    }
 
 // For Pinned section: a pinned workspace with its project for context
 export type PinnedItem = {
@@ -443,6 +475,10 @@ export type ClaudeGlobalSettings = {
 
   // Env-var controls (v52) — Memory & Context
   additionalDirsClaudeMd: boolean
+
+  // Guardrail settings (v64) — spawn caps for workspace lineage
+  maxWorkspaceDepth: number
+  maxWorkspaceChildren: number
 
   updatedAt: number
 }
@@ -927,3 +963,203 @@ export type HealthReport = {
   hooks: HealthProbe & { enabled: boolean; installed: number }
   dataDir: HealthProbe
 }
+
+// ---------------------------------------------------------------------------
+// Overlay layer (React overlays above the terminal NSView)
+// ---------------------------------------------------------------------------
+
+export type OverlayPlacement =
+  | {
+      mode: 'anchored'
+      /** DIPs relative to `contentView`, top-left origin (see plan HTD note on zoomFactor). */
+      anchorRect: { x: number; y: number; w: number; h: number }
+      preferredSide?: 'top' | 'bottom' | 'left' | 'right'
+    }
+  | { mode: 'centered' }
+
+export type OverlayDescriptor = {
+  id: string
+  kind: string
+  placement: OverlayPlacement
+  props: Record<string, unknown>
+  /**
+   * Card is clickable (e.g. PR chip, hover card) without stealing keyboard
+   * focus from the terminal. Independent of `takesFocus` — a card can accept
+   * clicks and still never become first responder.
+   */
+  acceptsClicks: boolean
+  /**
+   * Only confirm/palette-class overlays take focus. When true, main saves the
+   * terminal's first responder at token acquisition and restores it on hide.
+   */
+  takesFocus: boolean
+  /**
+   * When set, main auto-hides this (anchored) overlay if the owning
+   * workspace unmounts or is destroyed — a backstop independent of the
+   * caller's own anchor-tracking cleanup.
+   */
+  ownerWorkspaceId?: string
+}
+
+// `invoke('overlay:showDescriptor', ...)` resolves at paint-ack, not at
+// dismissal — dismissal (user action, timeout, replacement) arrives later as
+// an `overlay:event` push.
+export type OverlayShowResult = { shown: boolean }
+
+// Pushed from main to the requesting (main) renderer: button clicks, cancel,
+// mouseenter/mouseleave (hover bridge), and the terminal exit-fade-complete signal.
+export type OverlayEvent = {
+  overlayId: string
+  kind: string
+  type: string
+  payload?: Record<string, unknown>
+}
+
+// --- Overlay-renderer-side messages (main -> overlay WebContentsView) ---
+
+export type OverlayShowMessage = {
+  descriptor: OverlayDescriptor
+  /** Monotonic per-show generation; stale acks/updates/events are dropped by main. */
+  generation: number
+  theme: string
+}
+
+export type OverlayUpdateMessage = {
+  id: string
+  generation: number
+  props: Record<string, unknown>
+}
+
+export type OverlaySizeReport = {
+  id: string
+  generation: number
+  w: number
+  h: number
+}
+
+export type OverlayAck = {
+  id: string
+  generation: number
+  /** Set when the kind's error boundary caught a render failure. */
+  error?: string
+}
+
+// ---------------------------------------------------------------------------
+// Overlay card kinds — hoverCard / detailsCard. Props are serializable and
+// reuse the app's own GitStatus/GhPullRequest shapes directly.
+// ---------------------------------------------------------------------------
+
+export type OverlayCardGit = {
+  branch: string
+  detached: boolean
+  summary: string
+  insertions: number
+  deletions: number
+}
+
+export type OverlayCardPr = {
+  number: number
+  state: GhPullRequestState
+  check: 'ok' | 'fail' | 'pending' | 'none'
+  url?: string
+}
+
+export type HoverCardProps = {
+  title: string
+  activityLabel: string
+  activityState: WorkspaceActivityDetail
+  relativeTime: string
+  git?: OverlayCardGit
+  pr?: OverlayCardPr
+  cwd?: string
+}
+
+export type DetailsCardProps = {
+  pr?: OverlayCardPr
+  model?: string
+  contextText?: string
+  contextLoading?: boolean
+  cost?: string
+  costLoading?: boolean
+  git?: OverlayCardGit
+  cwd?: string
+}
+
+// ---------------------------------------------------------------------------
+// Overlay kind: projectCard. Section order: header (name + pinned chip),
+// repo, path, workspace count, workspace list (up to 8 + "+K more"). Width
+// target ~224px.
+// ---------------------------------------------------------------------------
+
+export type OverlayCardWorkspaceEntry = {
+  name: string
+  state: WorkspaceActivityDetail
+}
+
+export type ProjectCardProps = {
+  name: string
+  pinned: boolean
+  /** "owner/repo" when GitHub-linked, else absent. */
+  repo?: string
+  path: string
+  workspaceCount: number
+  /** Capped to 8 entries by the caller; overflow renders as "+K more". */
+  workspaces: OverlayCardWorkspaceEntry[]
+}
+
+// ---------------------------------------------------------------------------
+// Overlay kind: confirmModal. Centered, takesFocus: true.
+// ---------------------------------------------------------------------------
+
+export type ConfirmModalButtonStyle = 'default' | 'primary' | 'danger'
+
+export type ConfirmModalButton = {
+  id: string
+  label: string
+  style?: ConfirmModalButtonStyle
+}
+
+export type ConfirmModalProps = {
+  title: string
+  body: string
+  buttons: ConfirmModalButton[]
+  checkbox?: { id: string; label: string; checked: boolean }
+}
+
+export type ConfirmModalResult = { buttonId: string; checkboxChecked: boolean }
+
+// ---------------------------------------------------------------------------
+// Overlay kind: noticeBanner — U9 React migration of WorkspaceView's one-time
+// notice banner. Non-interactive (acceptsClicks: false, takesFocus: false),
+// anchored to the terminal host, auto-hidden by the call site's own timer
+// (the kind itself has no internal timer — main renderer owns display
+// duration exactly like the chassis-free `notice` state did).
+// ---------------------------------------------------------------------------
+
+export type NoticeBannerProps = {
+  message: string
+}
+
+// ---------------------------------------------------------------------------
+// Overlay kinds: chipTooltip / chipPrompt — U9 React migration of the footer
+// ActionChip's two in-page `Overlay` usages (`ChipTooltip` component,
+// `PromptPopover` component in ActionChip.tsx), both of which opened
+// bottom-full (upward into the terminal rect) and were occluded by the live
+// terminal. Anchored to the chip element, preferredSide 'top', matching the
+// original upward-opening placement.
+// ---------------------------------------------------------------------------
+
+/** Transient hover-label card — non-interactive, matches today's tooltip styling. */
+export type ChipTooltipProps = {
+  text: string
+}
+
+/** Interactive prompt popover — same fields/labels/order as PromptDescriptor[]. */
+export type ChipPromptProps = {
+  prompts: PromptDescriptor[]
+  /** Pre-filled default values (already placeholder-expanded by the caller). */
+  values: Record<string, string>
+}
+
+/** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
+export type ChipPromptResult = { values: Record<string, string> } | null

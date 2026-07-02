@@ -11,6 +11,7 @@ import type {
   WorkspaceRecord,
   WorkspaceStatus,
   WorkspaceActivityDetail,
+  CreateWorktreeParams,
   PinnedItem,
   ClaudeGlobalSettings,
   ClaudeGlobalSettingsPatch,
@@ -51,7 +52,10 @@ import type {
   DiagEvent,
   HealthReport,
   KeepAwakeState,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  OverlayDescriptor,
+  OverlayShowResult,
+  OverlayEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -60,7 +64,9 @@ type TerminalRect = { x: number; y: number; w: number; h: number }
 const api = {
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths')
+    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths'),
+    offeredModes: (projectId: string): Promise<{ local: boolean; worktree: boolean }> =>
+      ipcRenderer.invoke('app:offeredModes', { projectId })
   },
   window: {
     openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
@@ -133,24 +139,6 @@ const api = {
       ): void => cb(data)
       ipcRenderer.on('terminal:liveness', listener)
       return () => ipcRenderer.removeListener('terminal:liveness', listener)
-    },
-    // Native popover chassis (Phase A)
-    showPopover: (
-      workspaceId: string,
-      kind: string,
-      anchorRect: { x: number; y: number; w: number; h: number },
-      data: Record<string, unknown>,
-      fontDir?: string
-    ): Promise<void> =>
-      ipcRenderer.invoke('terminal:showPopover', { workspaceId, kind, anchorRect, data, fontDir }),
-    updatePopover: (workspaceId: string, data: Record<string, unknown>): Promise<void> =>
-      ipcRenderer.invoke('terminal:updatePopover', { workspaceId, data }),
-    hidePopover: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:hidePopover', { workspaceId }),
-    onPopoverAction: (cb: (e: { identifier: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { identifier: string }): void => cb(e)
-      ipcRenderer.on('popover:actionClicked', listener)
-      return () => ipcRenderer.removeListener('popover:actionClicked', listener)
     }
   },
   config: {
@@ -164,7 +152,17 @@ const api = {
     add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
     pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
     open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('projects:remove', { id }),
+    remove: (
+      id: string,
+      opts: { deleteWorktrees?: boolean; force?: boolean } = {}
+    ): Promise<{ deleted: boolean; dirtyWorktrees: number }> =>
+      ipcRenderer.invoke('projects:remove', {
+        id,
+        deleteWorktrees: opts.deleteWorktrees ?? false,
+        force: opts.force ?? false
+      }),
+    worktreeSummary: (projectId: string): Promise<{ count: number }> =>
+      ipcRenderer.invoke('projects:worktreeSummary', { projectId }),
     rename: (id: string, name: string): Promise<void> =>
       ipcRenderer.invoke('projects:rename', { id, name }),
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
@@ -212,6 +210,8 @@ const api = {
       ipcRenderer.invoke('sessions:listForProjectPaged', req),
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+    resumeInWorktreeWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('sessions:resumeInWorktreeWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
       ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),
@@ -226,12 +226,21 @@ const api = {
       ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
     create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:create', args),
+    createWorktree: (projectId: string, params: CreateWorktreeParams): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:createWorktree', { projectId, params }),
     open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
     // "Archive" is a hard delete in v34+. The IPC name + label stay for
     // user-facing continuity even though there's no soft-archive anymore.
-    archive: (id: string): Promise<void> => ipcRenderer.invoke('workspaces:archive', { id }),
+    // For worktree-backed workspaces, pass force:true to override a dirty check.
+    // Returns { archived, wasDirty } — if wasDirty:true and archived:false,
+    // the caller should confirm and re-invoke with force:true.
+    archive: (
+      id: string,
+      opts: { force?: boolean } = {}
+    ): Promise<{ archived: boolean; wasDirty: boolean }> =>
+      ipcRenderer.invoke('workspaces:archive', { id, force: opts.force ?? false }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:rename', { id, name }),
     reorder: (projectId: string, orderedIds: string[]): Promise<void> =>
@@ -293,9 +302,11 @@ const api = {
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    onNavigateTo: (cb: (workspaceId: string) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string }): void =>
-        cb(e.workspaceId)
+    onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; projectId?: string }
+      ): void => cb(e.workspaceId, e.projectId)
       ipcRenderer.on('workspace:navigateTo', listener)
       return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
     },
@@ -329,7 +340,23 @@ const api = {
         cb(payload)
       ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
       return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
-    }
+    },
+    onWorkspaceRequestOpen: (
+      cb: (e: { workspaceId: string; focus: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _evt: IpcRendererEvent,
+        e: { workspaceId: string; focus?: boolean }
+      ): void => cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
+      ipcRenderer.on('workspace:requestOpen', listener)
+      return () => ipcRenderer.removeListener('workspace:requestOpen', listener)
+    },
+    convertToLocal: (id: string): Promise<WorkspaceRecord> =>
+      ipcRenderer.invoke('workspaces:convertToLocal', { id })
+  },
+  worktrees: {
+    branchExists: (projectId: string, branch: string): Promise<boolean> =>
+      ipcRenderer.invoke('worktrees:branchExists', { projectId, branch })
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
@@ -368,6 +395,15 @@ const api = {
       patch: ClaudeWorkspaceSettingsOverrides
     ): Promise<ClaudeWorkspaceSettings> =>
       ipcRenderer.invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
+  },
+  orpheusConfig: {
+    get: (projectId: string): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      ipcRenderer.invoke('orpheusConfig:get', { projectId }),
+    setOverride: (
+      projectId: string,
+      patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
+    ): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
+      ipcRenderer.invoke('orpheusConfig:setOverride', { projectId, patch })
   },
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
@@ -657,6 +693,18 @@ const api = {
       const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
       ipcRenderer.on('keepAwake:state', handler)
       return () => ipcRenderer.removeListener('keepAwake:state', handler)
+    }
+  },
+  overlay: {
+    show: (descriptor: OverlayDescriptor): Promise<OverlayShowResult> =>
+      ipcRenderer.invoke('overlay:showDescriptor', { descriptor }),
+    update: (id: string, props: Record<string, unknown>): Promise<void> =>
+      ipcRenderer.invoke('overlay:update', { id, props }),
+    hide: (id: string): Promise<void> => ipcRenderer.invoke('overlay:hide', { id }),
+    onEvent: (cb: (e: OverlayEvent) => void): (() => void) => {
+      const listener = (_evt: IpcRendererEvent, e: OverlayEvent): void => cb(e)
+      ipcRenderer.on('overlay:event', listener)
+      return () => ipcRenderer.removeListener('overlay:event', listener)
     }
   }
 }

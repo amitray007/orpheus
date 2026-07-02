@@ -3,11 +3,13 @@ import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
 import { Eyebrow } from './settings/primitives'
-
-const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
+import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getPrSnapshot } from '@/lib/prStore'
+import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+
+const SettingsView = lazy(() => import('./SettingsView').then((m) => ({ default: m.SettingsView })))
 
 // ---------------------------------------------------------------------------
 // LRU keep-alive list — up to N workspace IDs remain mounted simultaneously.
@@ -46,7 +48,7 @@ export type View =
   | { kind: 'project'; projectId: string }
   | { kind: 'sessions' }
   | { kind: 'workspace'; workspaceId: string; projectId: string }
-  | { kind: 'settings' }
+  | { kind: 'settings'; section?: SettingsSectionId }
 
 // ---------------------------------------------------------------------------
 // MainContent
@@ -138,7 +140,7 @@ export function MainContent({
   if (view.kind === 'settings') {
     return (
       <Suspense fallback={null}>
-        <SettingsView />
+        <SettingsView section={view.section} />
       </Suspense>
     )
   }
@@ -158,6 +160,21 @@ export function MainContent({
 
   if (view.kind === 'workspace') {
     if (!workspace || !project) {
+      // Distinguish "still loading this project's workspaces" from "genuinely
+      // absent". workspacesForProject === null means the lazy fetch for this
+      // project hasn't resolved yet (e.g. navigating from a notification click
+      // to a not-yet-opened project) — show a neutral loading frame rather than
+      // a spurious "not found" flash. Once the list is fetched (non-null) and
+      // the workspace is still missing (or the project row is missing), surface
+      // the real not-found placeholder.
+      const stillLoading = !!project && workspacesForProject === null
+      if (stillLoading) {
+        return (
+          <div className="flex flex-col gap-6">
+            <SessionListSkeleton />
+          </div>
+        )
+      }
       return (
         <div className="flex flex-col gap-6">
           <PlaceholderSection title="Workspace not found" />

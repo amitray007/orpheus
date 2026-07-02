@@ -11,8 +11,10 @@ import {
   Archive,
   Gear,
   GitFork,
-  PushPin
+  PushPin,
+  ArrowFatLineUp
 } from '@phosphor-icons/react'
+import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
@@ -26,10 +28,22 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  showHoverCard,
+  hideOverlayCard,
+  hoverCardId,
+  onCardPointer,
+  activityToState,
+  activityToLabel,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { HoverCardProps } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
 import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
+import { NewWorkspaceMenu } from './NewWorkspaceMenu'
+import { nextWorkspaceName } from './dashboard.helpers'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -199,10 +213,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const hasDetail = gitStatus !== null || pr != null
 
-  // Native popover: only allowed when inactive, not renaming, and has data.
+  // Hover card: only allowed when inactive, not renaming, and has data.
   const cardAllowed = hasDetail && !renaming && !active
 
-  // Ref to the row element used as anchor for the native popover.
+  // Ref to the row element used as anchor for the hover card.
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
@@ -215,22 +229,32 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     }
   }
 
+  function hideHoverCard(): void {
+    hideOverlayCard(hoverCardId(workspace.id))
+  }
+
   function handleRowMouseEnter(): void {
     if (!cardAllowed) return
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
       if (!rowRef.current || !cardAllowed) return
-      showHoverPopover(
-        workspace.id,
-        rowRef.current,
-        gitStatus,
-        pr,
-        dn.text,
-        activity,
+      // For worktree workspaces, annotate cwd with the parent repo path so
+      // the hover popover surfaces the worktree context alongside the cwd.
+      const popoverCwd =
+        workspace.worktreeParentCwd && workspace.worktreeBranch
+          ? `${workspace.cwd} (${workspace.worktreeBranch})`
+          : workspace.cwd
+      const cardProps: HoverCardProps = {
+        title: dn.text,
+        activityLabel: activityToLabel(activity),
+        activityState: activityToState(activity),
         relativeTime,
-        workspace.cwd
-      )
+        git: gitStatusToCard(gitStatus),
+        pr: prToCard(pr),
+        cwd: popoverCwd
+      }
+      showHoverCard(workspace.id, rowRef.current, cardProps)
     }, 120)
   }
 
@@ -238,7 +262,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }, 80)
   }
 
@@ -247,27 +271,37 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   useEffect(() => {
     if (!cardAllowed) {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardAllowed, workspace.id])
 
   // Clean up on unmount.
   useEffect(() => {
     return () => {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on this row re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself, so moving from the row into the card doesn't close-timer it out.
+  // The overlay card emits mouseenter/mouseleave (OverlayRoot's card
+  // wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
+  // leave.
   useEffect(() => {
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearHoverTimer()
+    const unregister = onCardPointer(hoverCardId(workspace.id), {
+      onEnter: clearHoverTimer,
+      onLeave: () => {
+        hoverTimerRef.current = setTimeout(() => {
+          hoverTimerRef.current = null
+          hideHoverCard()
+        }, 80)
+      }
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   return (
@@ -362,6 +396,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
                   aria-label="forked workspace"
                 />
               )}
+              {/* Worktree badge — after fork badge */}
+              {!renaming && <WorktreeBadge workspace={workspace} />}
             </span>
           </span>
         </button>
@@ -477,14 +513,17 @@ const PinnedRow = memo(function PinnedRow({
           )}
         </span>
         <span className="flex flex-col gap-0.5 min-w-0 flex-1">
-          <span
-            className={[
-              'text-xs truncate leading-tight',
-              dn.muted ? 'text-text-muted italic' : ''
-            ].join(' ')}
-            title={dn.text}
-          >
-            {dn.text}
+          <span className="flex items-center gap-1 min-w-0">
+            <span
+              className={[
+                'text-xs truncate leading-tight',
+                dn.muted ? 'text-text-muted italic' : ''
+              ].join(' ')}
+              title={dn.text}
+            >
+              {dn.text}
+            </span>
+            <WorktreeBadge workspace={workspace} />
           </span>
           <span className="text-[11px] text-text-muted truncate leading-tight">{project.name}</span>
         </span>
@@ -746,18 +785,21 @@ const ProjectRow = memo(function ProjectRow({
           <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
             {/* Add workspace — visible on hover */}
             {hovered && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onAddWorkspace()
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-                title="New workspace"
-                aria-label="New workspace"
+              <NewWorkspaceMenu
+                projectId={project.id}
+                defaultName={nextWorkspaceName(workspaces)}
+                onCreateLocal={() => onAddWorkspace()}
+                onCreated={(ws) => onSelectWorkspace(ws.id)}
               >
-                <Plus size={14} weight="bold" />
-              </button>
+                <button
+                  type="button"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                  title="New workspace"
+                  aria-label="New workspace"
+                >
+                  <Plus size={14} weight="bold" />
+                </button>
+              </NewWorkspaceMenu>
             )}
 
             {/* Expand/collapse chevron */}
@@ -788,15 +830,22 @@ const ProjectRow = memo(function ProjectRow({
 
       {/* Nested workspace rows */}
       {expanded && workspaces.length === 0 && (
-        <button
-          type="button"
-          onClick={onAddWorkspace}
-          className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          aria-label="Add workspace"
+        <NewWorkspaceMenu
+          projectId={project.id}
+          defaultName={nextWorkspaceName(workspaces)}
+          onCreateLocal={() => onAddWorkspace()}
+          onCreated={(ws) => onSelectWorkspace(ws.id)}
+          className="w-full mt-0.5"
         >
-          <Plus size={12} />
-          <span>Add workspace</span>
-        </button>
+          <button
+            type="button"
+            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            aria-label="Add workspace"
+          >
+            <Plus size={12} />
+            <span>Add workspace</span>
+          </button>
+        </NewWorkspaceMenu>
       )}
       {expanded && workspaces.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5">
@@ -884,6 +933,9 @@ interface SidebarProps {
   onSelectProject: (id: string) => void
   onSelectNav: (view: 'sessions') => void
   onSelectSettings: () => void
+  onOpenUpdates: () => void
+  updateAvailable: boolean
+  updateLatest: string | null
   onAddProject: () => void
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
@@ -921,6 +973,9 @@ export function Sidebar({
   onSelectProject,
   onSelectNav,
   onSelectSettings,
+  onOpenUpdates,
+  updateAvailable,
+  updateLatest,
   onAddProject,
   addingProject = false,
   onToggleProjectExpand,
@@ -1193,6 +1248,10 @@ export function Sidebar({
     </button>
   )
 
+  const updateTitle = updateLatest
+    ? `Update available — v${updateLatest.startsWith('v') ? updateLatest.slice(1) : updateLatest}`
+    : 'Update available'
+
   return (
     <SidebarBoundsContext.Provider value={sidebarRef}>
       <aside
@@ -1335,14 +1394,64 @@ export function Sidebar({
           )}
         </div>
 
-        {/* Bottom: Settings */}
-        <NavItem
-          Icon={Gear}
-          label="Settings"
-          active={activeView === 'settings'}
-          collapsed={collapsed}
-          onClick={onSelectSettings}
-        />
+        {/* Bottom: Settings (+ update indicator when a newer build is available) */}
+        {!updateAvailable ? (
+          <NavItem
+            Icon={Gear}
+            label="Settings"
+            active={activeView === 'settings'}
+            collapsed={collapsed}
+            onClick={onSelectSettings}
+          />
+        ) : collapsed ? (
+          <div className="flex flex-col gap-1">
+            <NavItem
+              Icon={Gear}
+              label="Settings"
+              active={activeView === 'settings'}
+              collapsed={collapsed}
+              onClick={onSelectSettings}
+            />
+            <button
+              type="button"
+              className={[
+                'w-full flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
+                'text-accent bg-transparent hover:bg-accent/15',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+              ].join(' ')}
+              onClick={onOpenUpdates}
+              title={updateTitle}
+              aria-label="Update available — open Updates settings"
+            >
+              <ArrowFatLineUp size={20} weight="bold" />
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-6 gap-1">
+            <div className="col-span-5">
+              <NavItem
+                Icon={Gear}
+                label="Settings"
+                active={activeView === 'settings'}
+                collapsed={collapsed}
+                onClick={onSelectSettings}
+              />
+            </div>
+            <button
+              type="button"
+              className={[
+                'col-span-1 flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
+                'text-accent bg-transparent hover:bg-accent/15',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+              ].join(' ')}
+              onClick={onOpenUpdates}
+              title={updateTitle}
+              aria-label="Update available — open Updates settings"
+            >
+              <ArrowFatLineUp size={20} weight="bold" />
+            </button>
+          </div>
+        )}
       </aside>
     </SidebarBoundsContext.Provider>
   )

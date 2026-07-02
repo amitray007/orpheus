@@ -3,7 +3,10 @@ import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-const orpheusMode = (process.env.ORPHEUS_MODE ?? 'production') as 'development' | 'production'
+const orpheusMode = (process.env.ORPHEUS_MODE ?? 'production') as
+  | 'development'
+  | 'production'
+  | 'worktree'
 
 export default defineConfig({
   main: {
@@ -11,7 +14,16 @@ export default defineConfig({
       __ORPHEUS_MODE__: JSON.stringify(orpheusMode)
     }
   },
-  preload: {},
+  preload: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/preload/index.ts'),
+          overlay: resolve('src/preload/overlay.ts')
+        }
+      }
+    }
+  },
   renderer: {
     define: {
       __ORPHEUS_MODE__: JSON.stringify(orpheusMode)
@@ -26,7 +38,13 @@ export default defineConfig({
     plugins: [tailwindcss(), react()],
     build: {
       minify: 'esbuild',
-      sourcemap: false
+      sourcemap: false,
+      rollupOptions: {
+        input: {
+          index: resolve('src/renderer/index.html'),
+          overlay: resolve('src/renderer/overlay.html')
+        }
+      }
     }
   }
 })

@@ -15,6 +15,7 @@ import type {
 import { getClaudeProjectSettings } from './claudeProjectSettings'
 import { getClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
 import { getWorkspace } from './workspaces'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // One-way-true cache for session JSONL existence checks.
 // Key: `${cwd}:${sessionId}`. Once a JSONL is confirmed to exist (true), it
@@ -25,11 +26,11 @@ import { getWorkspace } from './workspaces'
 const sessionJsonlExistsCache = new Map<string, true>()
 
 // Returns true if claude's transcript file for this session already exists on
-// disk. The path follows claude's encoding: slashes in the cwd become dashes.
+// disk. The path follows claude's encoding: slashes AND dots become dashes.
 function sessionJsonlExists(cwd: string, sessionId: string): boolean {
   const key = `${cwd}:${sessionId}`
   if (sessionJsonlExistsCache.has(key)) return true
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = encodePathToClaudeDir(cwd)
   const path = nodePath.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`)
   try {
     const exists = fs.statSync(path).isFile()
@@ -150,6 +151,9 @@ type ClaudeSettingsRow = {
   disable_advisor_tool: number
   screen_reader: number
   additional_dirs_claude_md: number
+  // Guardrail settings (v64)
+  max_workspace_depth: number | null
+  max_workspace_children: number | null
   updated_at: number
 }
 
@@ -291,6 +295,9 @@ function rowToRecord(row: ClaudeSettingsRow): ClaudeGlobalSettings {
     disableAdvisorTool: row.disable_advisor_tool === 1,
     screenReader: row.screen_reader === 1,
     additionalDirsClaudeMd: row.additional_dirs_claude_md === 1,
+    // Guardrail settings (v64) — apply defaults when null (pre-v64 rows)
+    maxWorkspaceDepth: row.max_workspace_depth ?? 3,
+    maxWorkspaceChildren: row.max_workspace_children ?? 10,
     updatedAt: row.updated_at
   }
 }
@@ -585,6 +592,18 @@ function validatePatch(patch: ClaudeGlobalSettingsPatch): void {
     const v = patch.exitAfterStopDelay
     if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
       throw new Error('claudeSettings: exitAfterStopDelay must be a non-negative integer or null')
+    }
+  }
+  if ('maxWorkspaceDepth' in patch) {
+    const v = patch.maxWorkspaceDepth
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+      throw new Error('claudeSettings: maxWorkspaceDepth must be a positive integer')
+    }
+  }
+  if ('maxWorkspaceChildren' in patch) {
+    const v = patch.maxWorkspaceChildren
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+      throw new Error('claudeSettings: maxWorkspaceChildren must be a positive integer')
     }
   }
   if ('customEnvVars' in patch) {
@@ -1142,7 +1161,10 @@ export function updateClaudeGlobalSettings(patch: ClaudeGlobalSettingsPatch): Cl
     disableArtifact: 'disable_artifact',
     disableAdvisorTool: 'disable_advisor_tool',
     screenReader: 'screen_reader',
-    additionalDirsClaudeMd: 'additional_dirs_claude_md'
+    additionalDirsClaudeMd: 'additional_dirs_claude_md',
+    // Guardrail settings (v64)
+    maxWorkspaceDepth: 'max_workspace_depth',
+    maxWorkspaceChildren: 'max_workspace_children'
   }
 
   const setClauses: string[] = []

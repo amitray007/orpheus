@@ -28,12 +28,15 @@
     "build": "bun run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps && bash scripts/fetch-libghostty.sh",
     "install:mac": "node scripts/install-mac.mjs --dev",
+    "install:mac-wt": "node scripts/install-mac.mjs --wt",
     "install:mac-prod": "node scripts/install-mac.mjs",
     "build:native": "node scripts/build-native.mjs",
     "build:unpack": "bun run build:dev",
-    "build:dev": "bun run build:native && ORPHEUS_MODE=development bun run build && GOMAXPROCS=1 bunx electron-builder --config electron-builder-dev.yml --dir && bun run install:mac",
+    "build:cli": "bunx esbuild packages/orpheus-cli/src/cli.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --outfile=packages/orpheus-cli/dist/cli.cjs",
+    "build:dev": "bun run build:native && bun run build:cli && ORPHEUS_MODE=development bun run build && GOMAXPROCS=1 bunx electron-builder --config electron-builder-dev.yml --dir && bun run install:mac",
+    "build:wt": "bun run build:native && ORPHEUS_MODE=worktree bun run build && GOMAXPROCS=1 bunx electron-builder --config electron-builder-wt.yml --dir && bun run install:mac-wt",
     "build:win": "bun run build && electron-builder --win",
-    "build:mac": "electron-vite build && GOMAXPROCS=1 electron-builder --mac && bun run install:mac-prod",
+    "build:mac": "bun run build:cli && electron-vite build && GOMAXPROCS=1 electron-builder --mac && bun run install:mac-prod",
     "build:linux": "electron-vite build && electron-builder --linux",
     "fetch:libghostty": "bash scripts/fetch-libghostty.sh",
     "bump:libghostty": "bun scripts/bump-libghostty.mjs",
@@ -50,7 +53,8 @@
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
     "geist": "^1.7.0",
-    "minidenticons": "^4.2.1"
+    "minidenticons": "^4.2.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

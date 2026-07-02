@@ -5,6 +5,7 @@ import { createWorkspace } from './workspaces'
 import { refreshGithubData } from './githubAvatar'
 import * as nodePath from 'node:path'
 import { invalidateClaudeProjectSettingsCache } from './claudeProjectSettings'
+import { encodePathToClaudeDir } from './claudeProjectDir'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -91,8 +92,8 @@ export function addProject(path: string): ProjectRecord {
 
   const id = crypto.randomUUID()
   const name = nodePath.basename(path)
-  // Encode absolute path to Claude Code's directory-name format: replace / with -
-  const claudeEncodedName = path.replace(/\//g, '-')
+  // Encode absolute path to Claude Code's directory-name format: slashes and dots -> dashes (see claudeProjectDir.ts).
+  const claudeEncodedName = encodePathToClaudeDir(path)
   const addedAt = Date.now()
 
   // Insert project + default workspace atomically.
@@ -135,6 +136,13 @@ export function openProject(id: string): ProjectRecord {
   return rowToRecord(row)
 }
 
+/** Fetch a single project by id without touching last_opened_at. */
+export function getProject(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row ? rowToRecord(row) : null
+}
+
 export function deleteProject(id: string): void {
   const db = getDb()
   // ON DELETE CASCADE in the schema removes associated workspaces and sessions.
@@ -152,6 +160,12 @@ export function renameProject(id: string, name: string): void {
 export function setProjectExpandedInSidebar(id: string, expanded: boolean): void {
   const db = getDb()
   db.prepare('UPDATE projects SET expanded_in_sidebar = ? WHERE id = ?').run(expanded ? 1 : 0, id)
+}
+
+export function getProjectById(id: string): ProjectRecord | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined
+  return row != null ? rowToRecord(row) : null
 }
 
 export function setProjectPinned(id: string, pinned: boolean): ProjectRecord {

@@ -32,7 +32,13 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult, GitStatus, HealthReport } from '../shared/types'
+import type {
+  DoctorResult,
+  GitStatus,
+  HealthReport,
+  CreateWorktreeParams,
+  TerminalMountResult
+} from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -49,12 +55,26 @@ import {
   listProjects,
   addProject,
   openProject,
+  getProject,
   deleteProject,
   renameProject,
   setProjectExpandedInSidebar,
   reorderProjects,
   setProjectPinned
 } from './projects'
+import {
+  resolveMainWorktree,
+  withRepoLock,
+  createWorktree,
+  removeWorktree,
+  isWorktreeDirty,
+  worktreeSlug,
+  readWorktreeBaseRef,
+  branchExists,
+  NotAGitRepoError,
+  reconcileWorktree
+} from './worktrees'
+import { resolveOfferedModes, resolveWorkspacesConfig, writeProjectOverride } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
@@ -62,6 +82,7 @@ import {
   listAllSessions,
   setSessionStatus,
   createWorkspaceResumingSession,
+  createWorktreeResumingSession,
   refreshSessionMetadata,
   deleteSession,
   getContextBudget
@@ -80,7 +101,11 @@ import {
   listAllPinned,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
-  resetTransientStatusesOnStartup
+  resetTransientStatusesOnStartup,
+  setWorkspaceCwd,
+  convertWorktreeToLocal,
+  countWorktreeWorkspaces,
+  listWorktreeWorkspaces
 } from './workspaces'
 import {
   getClaudeGlobalSettings,
@@ -228,6 +253,20 @@ import {
   startKeepAwakeTimer
 } from './powerAwake'
 import type { KeepAwakeBaseMode } from '../shared/types'
+import { startCommandServer } from './commandServer'
+import type { CommandServerDeps } from './commandServer'
+import {
+  initOverlayLayer,
+  registerOverlayRendererIpc,
+  showOverlay,
+  updateOverlay,
+  hideOverlay,
+  isInteractiveOverlayVisible,
+  focusOverlay,
+  forceHideOwnedBy,
+  setOverlayTheme
+} from './overlayLayer'
+import type { OverlayDescriptor } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -242,6 +281,7 @@ const dirtyWorkspaces = new Set<string>()
 const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
+let commandServer: { sockPath: string; token: string; close: () => void } | null = null
 let sessionStateService: { stop: () => void } | null = null
 let powerAwakeCleanup: (() => void) | null = null
 
@@ -286,6 +326,19 @@ function getMainWindow(): BrowserWindow | null {
   // Fallback — should only happen if the window was destroyed unexpectedly.
   mainWindowRef = BrowserWindow.getAllWindows()[0] ?? null
   return mainWindowRef
+}
+
+// Ask the renderer to open (and mount) the given workspace. Mirrors the
+// pattern used by other main→renderer signals (e.g. workspace:activityBatch,
+// workspace:navigateTo).
+//
+// `focus` controls whether the renderer NAVIGATES the UI to this workspace
+// (handleSelectWorkspace: setView + mount) or performs a BACKGROUND MOUNT
+// (mount the terminal surface so it becomes injectable, without changing
+// what the user is looking at). Defaults to true so existing callers that
+// don't pass it keep the pre-existing "always navigate" behavior.
+function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
+  getMainWindow()?.webContents.send('workspace:requestOpen', { workspaceId, focus })
 }
 
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
@@ -338,87 +391,6 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     isDark: true,
     tintAlpha: 0.35
   }
-}
-
-// ---------------------------------------------------------------------------
-// Popover theme palettes — separate from loading overlay (different token set:
-// no backdrop/tintAlpha; adds textMuted + accent).
-// surface-overlay tokens are the solid card background for the 3 themes.
-// ---------------------------------------------------------------------------
-type PopoverThemePalette = {
-  card: [number, number, number]
-  textPrimary: [number, number, number]
-  textSecondary: [number, number, number]
-  textMuted: [number, number, number]
-  border: [number, number, number]
-  accent: [number, number, number]
-  isDark: boolean
-}
-
-const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
-  midnight: {
-    card: [0x1c, 0x1c, 0x1f], // surface-overlay: slightly lighter than page bg
-    textPrimary: [0xf4, 0xf4, 0xf5], // zinc-100
-    textSecondary: [0xa1, 0xa1, 0xaa], // zinc-400
-    textMuted: [0x71, 0x71, 0x7a], // zinc-500
-    border: [0x3f, 0x3f, 0x46], // zinc-700 (border-white/10 approximation on dark)
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  },
-  daylight: {
-    card: [0xff, 0xff, 0xff], // white
-    textPrimary: [0x18, 0x18, 0x1b], // zinc-900
-    textSecondary: [0x52, 0x52, 0x5b], // zinc-600
-    textMuted: [0xa1, 0xa1, 0xaa], // zinc-400
-    border: [0xe4, 0xe4, 0xe7], // zinc-200
-    accent: [0x25, 0x63, 0xeb], // blue-600
-    isDark: false
-  },
-  eclipse: {
-    card: [0x10, 0x10, 0x10], // near-black surface
-    textPrimary: [0xff, 0xff, 0xff],
-    textSecondary: [0xb4, 0xb4, 0xb4],
-    textMuted: [0x71, 0x71, 0x71],
-    border: [0x2a, 0x2a, 0x2a],
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  }
-}
-
-let popoverWired = false
-
-// PR URL per workspace, captured when a popover is shown so the popover
-// action callback can open it directly via shell.openExternal — avoids the
-// fragile renderer round-trip whose Map entry is cleared before the click.
-const popoverPrUrlByWorkspace = new Map<string, string>()
-
-function applyPopoverTheme(theme: Theme): void {
-  if (!terminalAddon) return
-  const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
-  terminalAddon.setPopoverTheme(palette)
-  console.log('[popover] theme applied:', theme)
-}
-
-function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
-  if (popoverWired) return
-  popoverWired = true
-  const currentTheme = getAppUiState().theme as Theme
-  addon.setPopoverTheme(POPOVER_THEME_PALETTES[currentTheme] ?? POPOVER_THEME_PALETTES.midnight)
-  // Wire the action callback: fires when a clickable element (Phase B: PR chip)
-  // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
-  addon.setPopoverActionCallback((identifier: string) => {
-    console.log('[popover] action callback:', identifier)
-    // Open the PR directly from main on a PR-chip click — the renderer Map that
-    // used to hold the URL is cleared before the click lands, so main owns this.
-    if (identifier.endsWith('::pr')) {
-      const wsId = identifier.slice(0, identifier.lastIndexOf('::'))
-      const url = popoverPrUrlByWorkspace.get(wsId)
-      if (url) shell.openExternal(url)
-    }
-    // Phase B: parse identifier and route action (e.g. open PR URL).
-    // For now, broadcast to renderer so it can handle it.
-    getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
-  })
 }
 
 function applyLoadingOverlayTheme(theme: Theme): void {
@@ -563,6 +535,8 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
 }
 
 function performClose(id: string): WorkspaceRecord | undefined {
+  // NOTE: close keeps the worktree on disk (reconciled on next open); only
+  // archive/project-delete tears it down. Do NOT add worktree removal here.
   const ws = getWorkspace(id)
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
@@ -576,6 +550,37 @@ function performClose(id: string): WorkspaceRecord | undefined {
   }
   teardownWorkspaceResources(id, ws?.cwd ?? null)
   return closeWorkspace(id, lastTitle)
+}
+
+async function performArchive(
+  id: string,
+  force: boolean = false
+): Promise<{ archived: boolean; wasDirty: boolean }> {
+  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
+  const ws = getWorkspace(id)
+  // Run archiveWorkspace FIRST. For worktree-backed workspaces with a dirty
+  // worktree and force=false it returns { archived: false, wasDirty: true }
+  // without touching the DB row — in that case we must NOT destroy the surface
+  // so the workspace terminal stays alive for the user.
+  const result = await archiveWorkspace(id, force)
+  if (!result.archived) {
+    // Dirty worktree without force — row and surface are intact; caller should
+    // show a confirm dialog and re-invoke with force:true.
+    return result
+  }
+  // Archive succeeded: destroy the libghostty surface now that the DB row is
+  // gone. Silently no-ops when the terminal was never mounted.
+  if (terminalAddon) {
+    try {
+      terminalAddon.destroy(id)
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  // Evict all per-workspace in-memory state via the unified teardown so
+  // archived workspaces don't leak into any runtime cache.
+  teardownWorkspaceResources(id, ws?.cwd ?? null)
+  return result
 }
 
 function recomputeDirty(): void {
@@ -673,6 +678,23 @@ app.on('before-quit', () => {
   isQuitting = true
 })
 
+// Focuses the currently-viewed workspace's terminal via the addon. Shared by
+// the `terminal:focus` IPC handler's internal logic and overlayLayer's
+// hide-flow focus-restore fallback chain (which knows "the active workspace"
+// but not a specific workspaceId to target). Returns false when there's no
+// currently-viewed workspace so callers can continue their own fallback chain.
+function focusWorkspaceTerminal(): boolean {
+  try {
+    const ws = getCurrentlyViewedWorkspace()
+    if (!ws) return false
+    loadTerminalAddon().focus(ws)
+    return true
+  } catch (err) {
+    console.error('[lifecycle] focusWorkspaceTerminal failed:', err)
+    return false
+  }
+}
+
 function kickActiveTerminal(): void {
   try {
     // Use the in-memory currently-viewed workspace (no SQLite dependency, so
@@ -681,6 +703,13 @@ function kickActiveTerminal(): void {
     // so it wakes even when the terminal was frozen / input was stuck.
     const ws = getCurrentlyViewedWorkspace()
     if (!ws) return
+    // While a takesFocus overlay is pending/visible, refocus the overlay
+    // instead of yanking focus back to the terminal underneath it (R6/R7).
+    if (isInteractiveOverlayVisible()) {
+      console.log('[lifecycle] terminal kick (wake) — overlay has focus, refocusing overlay')
+      focusOverlay()
+      return
+    }
     console.log('[lifecycle] terminal kick (wake)')
     loadTerminalAddon().focus(ws)
   } catch (err) {
@@ -777,6 +806,15 @@ function createWindow(): void {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
+    }
+    try {
+      initOverlayLayer(mainWindow, loadTerminalAddon(), {
+        getMainWindow,
+        focusActiveWorkspaceTerminal: focusWorkspaceTerminal
+      })
+      setOverlayTheme(getAppUiState().theme as Theme)
+    } catch (err) {
+      console.error('[overlayLayer] init failed:', err)
     }
     if (isDev) {
       mainWindow.setTitle(app.getName())
@@ -1080,6 +1118,29 @@ handle('app:getPaths', () => ({
   logs: app.getPath('logs')
 }))
 
+// Which workspace-creation modes the UI should offer for this project. Computes
+// is-git-repo authoritatively (resolveMainWorktree throws NotAGitRepoError for a
+// non-git cwd) and narrows the resolver result to the bare {local, worktree} the
+// renderer needs. Non-NotAGitRepo errors propagate.
+handle('app:offeredModes', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`app:offeredModes: project not found: ${projectId}`)
+
+  let isGit = true
+  try {
+    await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      isGit = false
+    } else {
+      throw err
+    }
+  }
+
+  const modes = await resolveOfferedModes(project.path, isGit)
+  return { local: modes.local, worktree: modes.worktree }
+})
+
 handle('window:openDevTools', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
@@ -1112,24 +1173,77 @@ handle('projects:pickAndAdd', async () => {
 
 handle('projects:open', (_e, { id }: { id: string }) => openProject(id))
 
-handle('projects:remove', (_e, { id }: { id: string }) => {
-  // Enumerate workspaces before the cascade-delete removes the rows so we can
-  // tear down each one's in-memory state and native surface. The renderer
-  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
-  // self-sufficient even when called directly (double-cleanup is safe — all
-  // teardown operations are idempotent).
-  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
-  for (const ws of workspacesToRemove) {
-    if (terminalAddon) {
-      try {
-        terminalAddon.destroy(ws.id)
-      } catch {
-        // Surface not mounted or already destroyed — ignore.
+handle(
+  'projects:remove',
+  async (
+    _e,
+    {
+      id,
+      deleteWorktrees = false,
+      force = false
+    }: { id: string; deleteWorktrees?: boolean; force?: boolean }
+  ): Promise<{ deleted: boolean; dirtyWorktrees: number }> => {
+    // Optional worktree teardown before cascade-delete.
+    // Must happen before deleteProject() so we still have workspace rows to query.
+    if (deleteWorktrees) {
+      const worktreeWorkspaces = listWorktreeWorkspaces(id)
+
+      // ── Phase 1 (pre-check, NO removal): count dirty worktrees ───────────
+      // Check dirtiness WITHOUT removing anything. If any are dirty and the
+      // caller hasn't set force, return early having removed NOTHING — so the
+      // user can cancel the confirmation without losing clean worktrees.
+      if (!force) {
+        let dirtyCount = 0
+        for (const ws of worktreeWorkspaces) {
+          const dirty = await isWorktreeDirty(ws.cwd)
+          if (dirty) dirtyCount++
+        }
+        if (dirtyCount > 0) {
+          return { deleted: false, dirtyWorktrees: dirtyCount }
+        }
+      }
+
+      // ── Phase 2 (removal): only reached when dirtyCount===0 or force ─────
+      // Remove each worktree best-effort; log non-fatal errors and continue so
+      // a single failure does not leave the project permanently undeletable.
+      for (const ws of worktreeWorkspaces) {
+        try {
+          await withRepoLock(ws.worktreeParentCwd, () =>
+            removeWorktree({ path: ws.cwd, force, repoRoot: ws.worktreeParentCwd })
+          )
+        } catch (err) {
+          console.warn(
+            `[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`,
+            err instanceof Error ? err.message : String(err)
+          )
+          // Continue — best-effort removal; don't abort the whole delete.
+        }
       }
     }
-    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+
+    // Enumerate workspaces before the cascade-delete removes the rows so we can
+    // tear down each one's in-memory state and native surface. The renderer
+    // pre-destroys surfaces via terminal:destroy, but projects:remove must be
+    // self-sufficient even when called directly (double-cleanup is safe — all
+    // teardown operations are idempotent).
+    const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
+    for (const ws of workspacesToRemove) {
+      if (terminalAddon) {
+        try {
+          terminalAddon.destroy(ws.id)
+        } catch {
+          // Surface not mounted or already destroyed — ignore.
+        }
+      }
+      teardownWorkspaceResources(ws.id, ws.cwd ?? null)
+    }
+    deleteProject(id)
+    return { deleted: true, dirtyWorktrees: 0 }
   }
-  deleteProject(id)
+)
+
+handle('projects:worktreeSummary', (_e, { projectId }: { projectId: string }) => {
+  return { count: countWorktreeWorkspaces(projectId) }
 })
 
 handle('projects:rename', (_e, { id, name }: { id: string; name: string }) =>
@@ -1150,28 +1264,104 @@ handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: s
   createWorkspace(args)
 )
 
+// Create a worktree-backed workspace. Async + git-first transaction order:
+// resolve repo root → authoritatively enforce the offered-modes config →
+// (under the per-repo mutex) decide new-vs-existing branch → create the git
+// worktree → insert the DB row, rolling the worktree back if the insert fails.
+// Nothing is persisted until the worktree exists, and a failed insert leaves no
+// orphaned worktree behind.
+handle(
+  'workspaces:createWorktree',
+  async (_e, { projectId, params }: { projectId: string; params: CreateWorktreeParams }) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
+
+    // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
+    // worktree workspaces are impossible there, so reject with a clear message.
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch (err) {
+      if (err instanceof NotAGitRepoError) {
+        throw new Error(
+          `Cannot create a worktree workspace: ${project.path} is not a git repository`
+        )
+      }
+      throw err
+    }
+
+    // Authoritative enforcement (spec §7.2): re-read the offered modes in the
+    // main process and reject if worktree creation is disabled by config. The
+    // UI gate is advisory; this is the real gate.
+    const modes = await resolveOfferedModes(project.path, true)
+    if (!modes.worktree) {
+      throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
+    }
+
+    const slug = worktreeSlug(params.name)
+    const branch = params.branch?.trim() || `worktree-${slug}`
+
+    return withRepoLock(repoRoot, async () => {
+      const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
+      const baseRef = await readWorktreeBaseRef()
+
+      // If createWorktree throws, propagate — no DB row has been inserted yet.
+      const { path: worktreePath, branch: finalBranch } = await createWorktree({
+        repoRoot,
+        slug,
+        branch,
+        mode,
+        baseRef
+      })
+
+      try {
+        // createWorkspace broadcasts workspaces:created internally (same as the
+        // normal create path), so no separate broadcast is needed here.
+        return createWorkspace({
+          projectId,
+          name: params.name,
+          cwd: worktreePath,
+          worktreeParentCwd: repoRoot,
+          worktreeBranch: finalBranch
+        })
+      } catch (rowErr) {
+        // Roll back the freshly created worktree so a failed insert can't leak a
+        // dangling worktree. Force-remove since it's brand new (no user changes).
+        try {
+          await removeWorktree({ path: worktreePath, force: true })
+        } catch {
+          // Best-effort rollback; surface the original insert error regardless.
+        }
+        throw rowErr
+      }
+    })
+  }
+)
+
+// Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
+handle(
+  'worktrees:branchExists',
+  async (_e, { projectId, branch }: { projectId: string; branch: string }) => {
+    const project = getProject(projectId)
+    if (!project) return false
+    let repoRoot: string
+    try {
+      repoRoot = await resolveMainWorktree(project.path)
+    } catch {
+      return false
+    }
+    return branchExists(repoRoot, branch)
+  }
+)
+
 handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
 
 handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
   setWorkspacePinned(id, pinned)
 )
 
-handle('workspaces:archive', (_e, { id }: { id: string }) => {
-  // Capture cwd before the DB row is gone so teardown can stop the git watcher.
-  const ws = getWorkspace(id)
-  // Destroy the libghostty surface so the NSView is freed before the DB row
-  // disappears. Silently no-ops when the terminal was never mounted.
-  if (terminalAddon) {
-    try {
-      terminalAddon.destroy(id)
-    } catch {
-      // Surface not mounted or already destroyed — ignore.
-    }
-  }
-  archiveWorkspace(id)
-  // Evict all per-workspace in-memory state via the unified teardown so
-  // archived workspaces don't leak into any runtime cache.
-  teardownWorkspaceResources(id, ws?.cwd ?? null)
+handle('workspaces:archive', async (_e, { id, force = false }: { id: string; force?: boolean }) => {
+  return await performArchive(id, force)
 })
 
 handle('workspace:close', (_e, { id }: { id: string }) => {
@@ -1191,6 +1381,11 @@ handle('workspace:reopen', (_e, { id }: { id: string }) => {
 handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
   renameWorkspace(id, name)
 )
+
+// Convert a worktree-backed workspace to a plain local workspace (non-destructive:
+// does NOT delete the branch or worktree directory). Sets cwd = worktreeParentCwd
+// and nulls the worktree fields, then broadcasts workspaces:changed.
+handle('workspaces:convertToLocal', (_e, { id }: { id: string }) => convertWorktreeToLocal(id))
 
 handle(
   'workspaces:reorder',
@@ -1232,6 +1427,12 @@ handle(
   'sessions:resumeInNewWorkspace',
   (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
     createWorkspaceResumingSession(projectId, sessionId)
+)
+
+handle(
+  'sessions:resumeInWorktreeWorkspace',
+  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
+    createWorktreeResumingSession(projectId, sessionId)
 )
 
 handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
@@ -1421,6 +1622,32 @@ handle(
 )
 
 // ---------------------------------------------------------------------------
+// Orpheus project config IPC (.orpheus/config.yml)
+// ---------------------------------------------------------------------------
+
+handle('orpheusConfig:get', async (_e, { projectId }: { projectId: string }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`orpheusConfig:get: project not found: ${projectId}`)
+  return resolveWorkspacesConfig(project.path)
+})
+
+handle(
+  'orpheusConfig:setOverride',
+  async (
+    _e,
+    {
+      projectId,
+      patch
+    }: { projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }
+  ) => {
+    const project = getProject(projectId)
+    if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
+    await writeProjectOverride(project.path, patch)
+    return resolveWorkspacesConfig(project.path)
+  }
+)
+
+// ---------------------------------------------------------------------------
 // Diagnostics IPC
 // ---------------------------------------------------------------------------
 
@@ -1545,7 +1772,7 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) {
     applyLoadingOverlayTheme(patch.theme as Theme)
-    applyPopoverTheme(patch.theme as Theme)
+    setOverlayTheme(patch.theme as Theme)
   }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -1853,11 +2080,10 @@ handle(
       scaleFactor,
       cwd
     }: { workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }
-  ): Promise<{ workspaceId: string; created: boolean }> => {
+  ): Promise<TerminalMountResult> => {
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
-    ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const nativeHandle = win.getNativeWindowHandle()
@@ -1865,6 +2091,55 @@ handle(
     // Look up the workspace's projectId for per-project override resolution
     const ws = getWorkspace(workspaceId)
     const projectId = ws?.projectId
+
+    // ── Worktree reconcile (heal-on-mount) ─────────────────────────────────
+    // For worktree-backed workspaces, reconcile the worktree state BEFORE any
+    // native surface operation. This detects and heals stale/missing worktrees.
+    //
+    // We show the loading overlay FIRST (before the potentially multi-second
+    // git operations) so the user never sees a blank pane.
+    //
+    // reconcileWorktree NEVER throws — it returns { ok: false } on all error
+    // paths. If reconcile fails, we return the error without mounting and
+    // without touching the surface, leaving it retryable.
+    let reconcileNotice: string | undefined
+    let effectiveCwd = cwd
+    if (ws?.worktreeParentCwd != null && ws.worktreeBranch != null) {
+      showLoadingOverlay(workspaceId, { title: 'Preparing worktree…' })
+      let r: Awaited<ReturnType<typeof reconcileWorktree>>
+      try {
+        r = await reconcileWorktree({
+          cwd: ws.cwd,
+          worktreeParentCwd: ws.worktreeParentCwd,
+          worktreeBranch: ws.worktreeBranch
+        })
+      } catch (err) {
+        // reconcileWorktree guarantees no throws, but guard anyway so a bug
+        // there cannot propagate to an unrecoverable blank surface.
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: {
+            kind: 'parentGone',
+            message: `Worktree reconcile threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`
+          }
+        }
+      }
+      if (!r.ok) {
+        hideLoadingOverlay(workspaceId)
+        return {
+          workspaceId,
+          worktreeError: { kind: r.kind, message: r.message, conflictPath: r.conflictPath }
+        }
+      }
+      // Reconcile succeeded. Use the reconciled path as mount cwd; if the
+      // worktree was recreated at a suffixed path (slug-2), persist the new cwd.
+      if (r.path !== ws.cwd) {
+        setWorkspaceCwd(workspaceId, r.path)
+      }
+      effectiveCwd = r.path
+      reconcileNotice = r.notice
+    }
 
     // Close the cold-mount PATH race: if the boot-time shell-path spawn hasn't
     // settled yet, await it now so buildMountEnv can inject ORPHEUS_USER_PATH
@@ -1883,7 +2158,13 @@ handle(
         buildResult = diag.span(
           'launch.compose',
           { workspaceId, projectId: projectId ?? null },
-          () => buildMountEnv(workspaceId, projectId, notifyServer?.sockPath)
+          () =>
+            buildMountEnv(
+              workspaceId,
+              projectId,
+              notifyServer?.sockPath,
+              commandServer ?? undefined
+            )
         )
       } catch (err) {
         logDiagMain({
@@ -1913,7 +2194,7 @@ handle(
           workspaceId,
           rect,
           scaleFactor,
-          cwd,
+          cwd: effectiveCwd,
           command,
           env: surfaceEnv
         })
@@ -1983,6 +2264,13 @@ handle(
         }, 10000)
         overlayFallbackTimers.set(workspaceId, t)
       }
+    } else {
+      // Surface already existed (re-attach). If a worktree workspace showed the
+      // "Preparing worktree…" overlay before reconcile, clear it now — claude is
+      // already running and no boot sequence is pending.
+      // hideLoadingOverlay is a safe no-op when no overlay is active, so this
+      // is unconditional and handles the non-worktree re-mount path too.
+      hideLoadingOverlay(workspaceId)
     }
 
     // Snapshot the composed launch so we can detect settings drift later.
@@ -1998,11 +2286,11 @@ handle(
 
     // Start (or re-join) the fs.watch watcher for this workspace's git repo so
     // status is pushed on change instead of polled every 30s.
-    if (cwd) {
-      startGitWatch(workspaceId, cwd, e.sender)
+    if (effectiveCwd) {
+      startGitWatch(workspaceId, effectiveCwd, e.sender)
     }
 
-    return result
+    return reconcileNotice != null ? { ...result, notice: reconcileNotice } : result
   }
 )
 
@@ -2029,6 +2317,9 @@ handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => 
     })
     throw err
   }
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive its parent surface.
+  forceHideOwnedBy(workspaceId)
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -2058,49 +2349,6 @@ handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void =>
     event: DIAG_EVENTS.TERMINAL_FOCUS_RECLAIMED,
     workspaceId
   })
-})
-
-// ---------------------------------------------------------------------------
-// Native popover IPC handlers (Phase A chassis)
-// ---------------------------------------------------------------------------
-
-handle(
-  'terminal:showPopover',
-  (
-    _e,
-    {
-      workspaceId,
-      kind,
-      anchorRect,
-      data
-    }: {
-      workspaceId: string
-      kind: string
-      anchorRect: { x: number; y: number; w: number; h: number }
-      data: Record<string, unknown>
-    }
-  ): void => {
-    const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
-    if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
-    const addon = loadTerminalAddon()
-    // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
-    // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
-    const fontDir = app.isPackaged ? join(process.resourcesPath, 'fonts') : undefined
-    addon.showPopover(workspaceId, kind, anchorRect, data, fontDir)
-  }
-)
-
-handle(
-  'terminal:updatePopover',
-  (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
-    const addon = loadTerminalAddon()
-    addon.updatePopover(workspaceId, data)
-  }
-)
-
-handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
-  const addon = loadTerminalAddon()
-  addon.hidePopover(workspaceId)
 })
 
 handle('terminal:getSurfacePhase', (_e, { workspaceId }: { workspaceId: string }): string => {
@@ -2165,6 +2413,9 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
   }
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive the destroyed surface.
+  forceHideOwnedBy(workspaceId)
   // Tear down the git watcher for this workspace (ref-counted: only closes
   // underlying fs.watch when the last subscriber for this cwd is removed).
   const wsForGit = getWorkspace(workspaceId)
@@ -2192,6 +2443,74 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
     workspaceId
   })
 })
+
+// ---------------------------------------------------------------------------
+// Overlay layer IPC (React overlays above the terminal)
+// ---------------------------------------------------------------------------
+
+handle('overlay:showDescriptor', (_e, { descriptor }: { descriptor: OverlayDescriptor }) =>
+  showOverlay(descriptor)
+)
+
+handle(
+  'overlay:update',
+  (_e, { id, props }: { id: string; props: Record<string, unknown> }): void =>
+    updateOverlay(id, props)
+)
+
+handle('overlay:hide', (_e, { id }: { id: string }) => hideOverlay(id))
+
+// ipcMain.on registrations for the overlayRenderer:* channels (sends from the
+// overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.
+// Registered once here at module init (process-global by channel name).
+registerOverlayRendererIpc()
+
+// ---------------------------------------------------------------------------
+// resolveNamedKey — map CLI key names to TerminalSendKeyDescriptor
+//
+// Maps common human-readable key names (used by `ws send --key`) to the
+// macOS virtual key codes that TerminalSendKeyDescriptor expects.
+// kVK constants from <Carbon/Carbon.h>.
+// ---------------------------------------------------------------------------
+
+const NAMED_KEY_MAP: Record<string, TerminalSendKeyDescriptor> = {
+  // Return / Enter
+  enter: { keycode: 0x24, mods: 0 },
+  return: { keycode: 0x24, mods: 0 },
+  // Escape
+  escape: { keycode: 0x35, mods: 0 },
+  esc: { keycode: 0x35, mods: 0 },
+  // Arrows
+  up: { keycode: 0x7e, mods: 0 },
+  down: { keycode: 0x7d, mods: 0 },
+  left: { keycode: 0x7b, mods: 0 },
+  right: { keycode: 0x7c, mods: 0 },
+  // Tab
+  tab: { keycode: 0x30, mods: 0 },
+  // Backspace / Delete
+  backspace: { keycode: 0x33, mods: 0 },
+  delete: { keycode: 0x33, mods: 0 },
+  // Space
+  space: { keycode: 0x31, mods: 0 }
+}
+
+function resolveNamedKey(name: string): TerminalSendKeyDescriptor | null {
+  return NAMED_KEY_MAP[name.toLowerCase()] ?? null
+}
+
+// ---------------------------------------------------------------------------
+// delay / SUBMIT_DELAY_MS — bridge the text-ingest race between staging text
+// (ghostty_surface_text, via terminalActions.sendInput/sendKeys) and
+// submitting it (ghostty_surface_key Return, via terminalActions.submit).
+// Those are two different libghostty code paths, and claude's full-screen TUI
+// reads the PTY asynchronously — it needs a brief moment to ingest the
+// just-committed text before a Return keypress means anything. Firing Return
+// synchronously right after the text commit races ahead of that ingestion, so
+// the line visibly sits in the input box without being submitted. 150ms is
+// imperceptible to a human but ample for the TUI's read loop (terminal
+// paste-then-submit automation typically needs 50-200ms).
+const SUBMIT_DELAY_MS = 150
+const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 // ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
@@ -2359,189 +2678,540 @@ handle('keepAwake:startTimer', (_e, minutes: number) => startKeepAwakeTimer(minu
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
-app.whenReady().then(() => {
-  // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
-  // This is a no-op after the first call (getUserShellPath caches internally).
-  void diag
-    .trace('startup.shell_path', {}, async () => {
-      const resolvedPath = await getUserShellPath()
-      if (!resolvedPath) {
-        logDiagMain({
-          category: 'anomaly',
-          level: 'warn',
-          event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
-        })
-      }
-    })
-    .catch(() => {
-      /* swallow — getUserShellPath already logs errors internally */
-    })
 
-  electronApp.setAppUserModelId(APP_ID)
-
-  // Event-loop delay monitor — logs p99 and max lag every 10s so we have
-  // data on whether a future utilityProcess migration is worth the cost.
-  // All output is [perf]-tagged for easy grep/removal later.
-  {
-    const eld = monitorEventLoopDelay({ resolution: 10 })
-    eld.enable()
-    setInterval(() => {
-      console.log(
-        '[perf] eventloop p99=%dms max=%dms',
-        Math.round(eld.percentile(99) / 1e6),
-        Math.round(eld.max / 1e6)
-      )
-      eld.reset()
-    }, 10_000).unref()
-  }
-
-  // Initialize / migrate the SQLite database early, before any IPC can fire.
-  getDb()
-  startDiagnostics()
-  syncDiagFlags()
-
-  // Boot Quick Actions registry — registers all action descriptors so they're
-  // available before any IPC can invoke them.
-  bootActions()
-
-  // Seed default footer actions on first install (idempotent: no-op if rows exist).
-  try {
-    seedDefaultFooterActions()
-  } catch (err) {
-    console.error('[footerActions] failed to seed defaults:', err)
-  }
-
-  // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
-  refreshFromModelsDev().catch(() => {})
-
-  // Clear stale in_progress / attention statuses left over from a prior
-  // session (crash, hard quit). Without this, the WorkspaceView would show a
-  // forever-spinning "thinking" indicator until a fresh activity event lands.
-  try {
-    const cleared = resetTransientStatusesOnStartup()
-    if (cleared > 0) {
-      console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
-    }
-  } catch (err) {
-    console.error('[startup] failed to clear stale activity statuses:', err)
-  }
-
-  // Seed the in-memory workspaceTitles map from the DB so the sidebar /
-  // workspace header can show the last observed prompt title immediately on
-  // launch — without waiting for Claude to re-emit an OSC title.
-  try {
-    for (const { id, title } of getAllWorkspaceLastTitles()) {
-      workspaceTitles.set(id, title)
-    }
-  } catch (err) {
-    console.error('[startup] failed to seed workspaceTitles from DB:', err)
-  }
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
+// Single-instance lock — acquired before any heavy init so a second launch
+// exits cleanly without starting the command server, DB writers, etc.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  // Register second-instance handler BEFORE whenReady so it is in place by
+  // the time a racing second launch fires the event on us.
+  app.on('second-instance', () => {
+    // The CLI (or user) re-launched while the app is already running.
+    // Surface the existing main window instead of starting a new instance.
+    const win = getMainWindow()
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
   })
 
-  createWindow()
-
-  // Kick the active terminal on system wake events so the CVDisplayLink
-  // restarts after display sleep / screen lock / user-switch.
-  powerMonitor.on('resume', kickActiveTerminal)
-  powerMonitor.on('unlock-screen', kickActiveTerminal)
-  if (process.platform === 'darwin') {
-    powerMonitor.on('user-did-become-active', kickActiveTerminal)
-  }
-
-  // Apply OS-level settings after the window exists (hotkey callback needs it)
-  try {
-    const state = getAppUiState()
-    applyLaunchAtLogin(state.launchAtLogin)
-    applyGlobalHotkey(state.globalHotkey)
-  } catch (err) {
-    console.error('[startup] failed to apply launch/hotkey settings:', err)
-  }
-
-  // Start the update auto-check loop (30s initial delay, then every 6h).
-  // Gated internally on the autoCheckUpdates setting.
-  startAutoCheckLoop()
-
-  // Start the Claude service-status poller (3s initial delay, then per user setting).
-  // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
-  startStatusPoller()
-
-  // Defer notify server + hook reconcile until after the first frame — keeps
-  // createWindow() hot so the UI appears faster on launch.
-  setImmediate(() => {
-    // Wire up the activity batch channel regardless of hook integration state —
-    // the batch listener is always needed for file-based status updates.
-    onActivityBatch((updates) => {
-      const win = getMainWindow()
-      if (!win) return
-      win.webContents.send('workspace:activityBatch', updates)
-      // Push canInject state for each workspace that changed activity so the
-      // renderer chips don't need to poll terminal:canInject every second.
-      // Use the authoritative terminalActions.canInject() so 'attention' and
-      // any future status additions are handled identically to the IPC handler.
-      for (const { workspaceId } of updates) {
-        if (!win.webContents.isDestroyed()) {
-          win.webContents.send('terminal:canInjectChanged', {
-            workspaceId,
-            canInject: terminalActions.canInject(workspaceId)
+  app.whenReady().then(() => {
+    // Fire shell PATH resolution immediately so doctor:check doesn't block on first call.
+    // This is a no-op after the first call (getUserShellPath caches internally).
+    void diag
+      .trace('startup.shell_path', {}, async () => {
+        const resolvedPath = await getUserShellPath()
+        if (!resolvedPath) {
+          logDiagMain({
+            category: 'anomaly',
+            level: 'warn',
+            event: DIAG_EVENTS.STARTUP_SHELL_PATH_UNRESOLVED
           })
         }
+      })
+      .catch(() => {
+        /* swallow — getUserShellPath already logs errors internally */
+      })
+
+    electronApp.setAppUserModelId(APP_ID)
+
+    // Event-loop delay monitor — logs p99 and max lag every 10s so we have
+    // data on whether a future utilityProcess migration is worth the cost.
+    // All output is [perf]-tagged for easy grep/removal later.
+    {
+      const eld = monitorEventLoopDelay({ resolution: 10 })
+      eld.enable()
+      setInterval(() => {
+        console.log(
+          '[perf] eventloop p99=%dms max=%dms',
+          Math.round(eld.percentile(99) / 1e6),
+          Math.round(eld.max / 1e6)
+        )
+        eld.reset()
+      }, 10_000).unref()
+    }
+
+    // Initialize / migrate the SQLite database early, before any IPC can fire.
+    getDb()
+    startDiagnostics()
+    syncDiagFlags()
+
+    // Boot Quick Actions registry — registers all action descriptors so they're
+    // available before any IPC can invoke them.
+    bootActions()
+
+    // Seed default footer actions on first install (idempotent: no-op if rows exist).
+    try {
+      seedDefaultFooterActions()
+    } catch (err) {
+      console.error('[footerActions] failed to seed defaults:', err)
+    }
+
+    // Refresh model pricing from models.dev — fire-and-forget, never blocks boot.
+    refreshFromModelsDev().catch(() => {})
+
+    // Clear stale in_progress / attention statuses left over from a prior
+    // session (crash, hard quit). Without this, the WorkspaceView would show a
+    // forever-spinning "thinking" indicator until a fresh activity event lands.
+    try {
+      const cleared = resetTransientStatusesOnStartup()
+      if (cleared > 0) {
+        console.log('[startup] cleared', cleared, 'stale workspace activity statuses')
+      }
+    } catch (err) {
+      console.error('[startup] failed to clear stale activity statuses:', err)
+    }
+
+    // Seed the in-memory workspaceTitles map from the DB so the sidebar /
+    // workspace header can show the last observed prompt title immediately on
+    // launch — without waiting for Claude to re-emit an OSC title.
+    try {
+      for (const { id, title } of getAllWorkspaceLastTitles()) {
+        workspaceTitles.set(id, title)
+      }
+    } catch (err) {
+      console.error('[startup] failed to seed workspaceTitles from DB:', err)
+    }
+
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
+    })
+
+    createWindow()
+
+    // Kick the active terminal on system wake events so the CVDisplayLink
+    // restarts after display sleep / screen lock / user-switch.
+    powerMonitor.on('resume', kickActiveTerminal)
+    powerMonitor.on('unlock-screen', kickActiveTerminal)
+    if (process.platform === 'darwin') {
+      powerMonitor.on('user-did-become-active', kickActiveTerminal)
+    }
+
+    // Apply OS-level settings after the window exists (hotkey callback needs it)
+    try {
+      const state = getAppUiState()
+      applyLaunchAtLogin(state.launchAtLogin)
+      applyGlobalHotkey(state.globalHotkey)
+    } catch (err) {
+      console.error('[startup] failed to apply launch/hotkey settings:', err)
+    }
+
+    // Start the update auto-check loop (30s initial delay, then every 6h).
+    // Gated internally on the autoCheckUpdates setting.
+    startAutoCheckLoop()
+
+    // Start the Claude service-status poller (3s initial delay, then per user setting).
+    // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
+    startStatusPoller()
+
+    // Defer notify server + hook reconcile until after the first frame — keeps
+    // createWindow() hot so the UI appears faster on launch.
+    setImmediate(() => {
+      // Wire up the activity batch channel regardless of hook integration state —
+      // the batch listener is always needed for file-based status updates.
+      onActivityBatch((updates) => {
+        const win = getMainWindow()
+        if (!win) return
+        win.webContents.send('workspace:activityBatch', updates)
+        // Push canInject state for each workspace that changed activity so the
+        // renderer chips don't need to poll terminal:canInject every second.
+        // Use the authoritative terminalActions.canInject() so 'attention' and
+        // any future status additions are handled identically to the IPC handler.
+        for (const { workspaceId } of updates) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send('terminal:canInjectChanged', {
+              workspaceId,
+              canInject: terminalActions.canInject(workspaceId)
+            })
+          }
+        }
+      })
+
+      // Declarative hook reconcile: enabled → start server + install hooks;
+      // disabled (default) → remove any previously-installed managed hooks and
+      // do NOT start the socket server.
+      reconcileHooks()
+
+      // Start the command server unconditionally — the CLI shouldn't depend on
+      // hooks being enabled. Provides a request/response channel for CLI workspace
+      // actions (create, archive, close, reopen, rename, whoami.resolve).
+      if (!commandServer) {
+        try {
+          const cmdDeps: CommandServerDeps = {
+            destroySurface: (workspaceId) => {
+              if (terminalAddon) {
+                try {
+                  terminalAddon.destroy(workspaceId)
+                } catch {
+                  // Surface not mounted or already destroyed — ignore.
+                }
+              }
+            },
+            teardownWorkspaceResources,
+            performClose: (workspaceId) => performClose(workspaceId),
+            performArchive: (workspaceId) => performArchive(workspaceId, true),
+            requestOpenWorkspace,
+            openAndSeed: async (
+              workspaceId: string,
+              taskText: string,
+              focus: boolean = true,
+              submit: boolean = true
+            ): Promise<string | null> => {
+              // Ask the renderer to open + mount the workspace. focus=true (default)
+              // navigates the UI there (the normal nav path); focus=false performs a
+              // background mount — the surface becomes injectable without stealing
+              // the user's view.
+              requestOpenWorkspace(workspaceId, focus)
+              // Poll with a bounded timeout (25 s) for THREE conditions:
+              //   1. getSurfacePhase() confirms an actual mounted surface (not 'none') —
+              //      QA fix #3: a brand-new workspace has no activityMap entry yet, and
+              //      getWorkspaceActivity() defaults an absent entry to 'idle', so
+              //      canInject() alone reports "injectable" on the very first poll tick,
+              //      before requestOpenWorkspace() has actually finished mounting the NSView.
+              //   2. terminalActions.canInject() — status is 'idle' or 'awaiting_input'.
+              //   3. isWorkspaceSessionReady() — CLAUDE ITSELF has booted and registered
+              //      its ~/.claude/sessions/<pid>.json (status busy/idle/waiting). For a
+              //      FRESHLY-CREATED workspace the terminal surface mounts within ~100ms,
+              //      but claude takes several seconds to launch + reach its interactive
+              //      prompt. Without this check, injection races ahead of claude's boot —
+              //      the text lands in an empty shell (or before claude's TUI is reading
+              //      input) and is silently lost: no transcript is ever written, even
+              //      though this function reports success. This was the root cause of
+              //      `ws new --task` reporting seedWarning:null while producing no
+              //      transcript and leaving status at awaiting_input forever.
+              //
+              // TIMEOUT: bumped from 10 s → 25 s. The old timeout only had to cover
+              // surface-mount time (~100ms); now the poll also waits out claude's full
+              // boot + session-registration sequence, which can take 3-8 s in practice
+              // (binary launch, MCP/tool init, session file write). 25 s leaves generous
+              // headroom over the observed worst case without hanging indefinitely.
+              const POLL_INTERVAL_MS = 300
+              const TIMEOUT_MS = 25_000
+              const deadline = Date.now() + TIMEOUT_MS
+              let injectable = false
+              while (Date.now() < deadline) {
+                let mounted = false
+                try {
+                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                  mounted = phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                } catch {
+                  mounted = false
+                }
+                if (
+                  mounted &&
+                  terminalActions.canInject(workspaceId) &&
+                  isWorkspaceSessionReady(workspaceId)
+                ) {
+                  injectable = true
+                  break
+                }
+                await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+              }
+              if (!injectable) {
+                return (
+                  `seed-timeout: claude did not become ready within ${Math.round(TIMEOUT_MS / 1000)}s; ` +
+                  'task not injected. The workspace was created but claude may still be booting ' +
+                  '— open it manually and paste the task text once it reaches the prompt.'
+                )
+              }
+              const addon = loadTerminalAddon()
+              const inputResult = terminalActions.sendInput(addon, workspaceId, taskText)
+              if (!inputResult.ok) {
+                return `seed-failed: could not send task text — ${inputResult.error ?? 'unknown error'}`
+              }
+              // submit=false: caller wants the task STAGED (typed into claude's input
+              // box) but not sent — e.g. for review/editing before the user presses
+              // Enter themselves. Skip the delay + submit entirely; the text sitting
+              // in the input box is the desired end state, not an intermediate one.
+              if (!submit) {
+                return null
+              }
+              // sendInput (ghostty_surface_text) and submit (ghostty_surface_key,
+              // a synthetic Return) are two different libghostty code paths. Claude's
+              // full-screen TUI reads the PTY asynchronously, so it needs a moment to
+              // ingest the just-committed text before a Return keypress is meaningful.
+              // Firing Return microseconds later races ahead of that ingestion and the
+              // line never actually submits — the text just sits in the input box.
+              // SUBMIT_DELAY_MS bridges that gap: imperceptible to a human, ample for
+              // the TUI's read loop (terminal paste-then-submit automation typically
+              // needs 50-200ms; 150 is a safe middle).
+              await delay(SUBMIT_DELAY_MS)
+              const submitResult = terminalActions.submit(addon, workspaceId)
+              if (!submitResult.ok) {
+                // If the workspace flipped to 'busy' during the delay, that most
+                // likely means claude already started processing the text we just
+                // staged (canInject() — and therefore submit — goes false the moment
+                // status leaves idle/awaiting_input). Treat this as a soft signal
+                // rather than a hard failure: the submit may well have raced a
+                // status flip caused by the text itself landing. Only a genuine,
+                // non-busy failure is reported as an error.
+                if (submitResult.code === 'busy') {
+                  return `seed-submit-busy: text was sent; workspace became busy before the explicit submit — it may have already been submitted`
+                }
+                return `seed-submit-failed: text was sent but submit failed — ${submitResult.error ?? 'unknown error'}`
+              }
+              return null
+            },
+            sendToWorkspace: async (
+              workspaceId: string,
+              payload: { text?: string; submit?: boolean; key?: string },
+              focus: boolean = true
+            ): Promise<{ ok: boolean; error?: string }> => {
+              // QA #7 fix — verified root cause: terminalActions.canInject() reads
+              // getWorkspaceActivity(), which defaults to 'idle' for ANY workspace with
+              // no in-memory activity entry (orpheusNotify.ts: `activityMap.get(id) ??
+              // 'idle'`) — including a workspace whose surface was never mounted, or one
+              // that is closedAt-closed. So `!canInject(workspaceId)` was FALSE for an
+              // unopened workspace (it looked injectable), the auto-open branch below was
+              // skipped entirely, and the raw addon call failed with the unhelpful
+              // 'No terminal surface for workspace' (code: 'not_found').
+              //
+              // Fix, two parts:
+              //  (a) up front, if the workspace is known-closed (closedAt != null), always
+              //      go through the open+poll path — closedAt is an authoritative DB
+              //      signal that canInject's in-memory default can't see.
+              //  (b) defense in depth: after the open+poll path (or when skipped because
+              //      canInject looked true), if the actual send/key/submit call comes back
+              //      with code 'not_found' (surface genuinely not mounted), open the
+              //      workspace and retry once — this covers the exact false-'idle' case
+              //      above for a workspace that was never mounted at all, not just closed.
+              //
+              // QA fix #3 — the poll itself had the SAME stale-default bug it was meant to
+              // fix: openAndWaitInjectable() polled ONLY terminalActions.canInject(), which
+              // is the same activityMap-defaults-to-'idle' check from (a) above. So the very
+              // first poll iteration after requestOpenWorkspace() (fired but not yet actually
+              // mounted the NSView) already reported "injectable" — the loop exited after 0ms
+              // of real waiting, attemptSend() ran immediately against a not-yet-mounted
+              // surface, got 'not_found', and even the (b) retry-once repeated the exact same
+              // instant-false-positive poll. Net effect: `ws send` on a closed/unmounted
+              // workspace failed ~100% of the time regardless of --submit — the reported
+              // "text-only reports sent:true before the surface exists" asymmetry didn't
+              // reproduce directly (both paths shared attemptSend and failed identically),
+              // but the underlying not-ready detection was broken for both, which is the
+              // real bug worth fixing here: the poll must confirm a surface ACTUALLY exists
+              // via the addon's authoritative getSurfacePhase() (not the activity-map
+              // default) before considering the workspace injectable.
+              const POLL_INTERVAL_MS = 300
+              const TIMEOUT_MS = 10_000
+              const ACTIONABLE_ERROR_SUFFIX =
+                ' — run: orpheus ws open ' +
+                workspaceId +
+                ' (or it will be opened automatically; retry the send after it starts)'
+
+              /**
+               * True only when the addon reports an actual mounted surface for this
+               * workspace ('hidden' | 'attached' | 'visible') — 'none' (never mounted)
+               * and 'freeing' (being torn down) are NOT ready. This is the authoritative
+               * truth query; unlike terminalActions.canInject() it cannot be fooled by
+               * the activity map's 'idle' default for a workspace with no activity entry.
+               */
+              function hasMountedSurface(): boolean {
+                try {
+                  const phase = loadTerminalAddon().getSurfacePhase(workspaceId)
+                  return phase === 'hidden' || phase === 'attached' || phase === 'visible'
+                } catch {
+                  return false
+                }
+              }
+
+              async function openAndWaitInjectable(): Promise<boolean> {
+                requestOpenWorkspace(workspaceId, focus)
+                const deadline = Date.now() + TIMEOUT_MS
+                while (Date.now() < deadline) {
+                  if (hasMountedSurface() && terminalActions.canInject(workspaceId)) return true
+                  await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+                }
+                return false
+              }
+
+              const ws = getWorkspace(workspaceId)
+              if (ws == null) {
+                return { ok: false, error: `workspace not found: ${workspaceId}` }
+              }
+
+              // (a) Known-closed, or no confirmed mounted surface yet, or the in-memory
+              // canInject default can't be trusted — don't trust it; always open + wait.
+              if (
+                ws.closedAt != null ||
+                !hasMountedSurface() ||
+                !terminalActions.canInject(workspaceId)
+              ) {
+                const injectable = await openAndWaitInjectable()
+                if (!injectable) {
+                  return {
+                    ok: false,
+                    error:
+                      'workspace not ready: the surface did not become injectable within 10 s.' +
+                      ACTIONABLE_ERROR_SUFFIX
+                  }
+                }
+              }
+
+              const addon = loadTerminalAddon()
+
+              // Runs one full text/key/submit pass. Returns the first failure (if any).
+              // Note: `wasStaged` tracks whether this pass wrote text/keys into the PTY
+              // before any submit — used below to decide whether a 'busy' submit result
+              // is a soft (likely-already-submitted) signal rather than a hard failure.
+              async function attemptSend(): Promise<{
+                ok: boolean
+                error?: string
+                notFound?: boolean
+                softBusy?: boolean
+              }> {
+                let wasStaged = false
+                if (payload.text != null && payload.text !== '') {
+                  const inputResult = terminalActions.sendInput(addon, workspaceId, payload.text)
+                  if (!inputResult.ok) {
+                    return {
+                      ok: false,
+                      notFound: inputResult.code === 'not_found',
+                      error: `send-text failed: ${inputResult.error ?? 'unknown error'}`
+                    }
+                  }
+                  wasStaged = true
+                }
+                if (payload.key != null && payload.key !== '') {
+                  const keyDescriptor = resolveNamedKey(payload.key)
+                  if (keyDescriptor == null) {
+                    return { ok: false, error: `unknown key name: "${payload.key}"` }
+                  }
+                  const keysResult = terminalActions.sendKeys(addon, workspaceId, [keyDescriptor])
+                  if (!keysResult.ok) {
+                    return {
+                      ok: false,
+                      notFound: keysResult.code === 'not_found',
+                      error: `send-key failed: ${keysResult.error ?? 'unknown error'}`
+                    }
+                  }
+                  wasStaged = true
+                }
+                if (payload.submit === true) {
+                  // sendInput/sendKeys (text/key commit) and submit (a synthetic Return
+                  // key event) are two different libghostty code paths. Claude's
+                  // full-screen TUI reads the PTY asynchronously, so it needs a moment
+                  // to ingest the just-staged text/key before Return is meaningful —
+                  // firing it immediately races ahead of that ingestion and the line
+                  // never actually submits. Only wait when something was actually
+                  // staged this pass; a submit with no preceding text/key doesn't need
+                  // the ingest gap.
+                  if (wasStaged) {
+                    await delay(SUBMIT_DELAY_MS)
+                  }
+                  const submitResult = terminalActions.submit(addon, workspaceId)
+                  if (!submitResult.ok) {
+                    if (wasStaged && submitResult.code === 'busy') {
+                      // The workspace flipped to 'busy' during the delay — most likely
+                      // claude already started processing the text/key we just staged
+                      // (canInject/submit go false the moment status leaves
+                      // idle/awaiting_input). Treat as a soft signal, not a hard
+                      // failure: the content may well have already been submitted.
+                      return { ok: true, softBusy: true }
+                    }
+                    return {
+                      ok: false,
+                      notFound: submitResult.code === 'not_found',
+                      error: `submit failed: ${submitResult.error ?? 'unknown error'}`
+                    }
+                  }
+                }
+                return { ok: true }
+              }
+
+              const firstAttempt = await attemptSend()
+              if (firstAttempt.ok) {
+                if (firstAttempt.softBusy) {
+                  return {
+                    ok: true,
+                    error:
+                      'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                  }
+                }
+                return { ok: true }
+              }
+
+              // (b) Defense in depth: the surface genuinely isn't mounted despite
+              // canInject saying otherwise (stale/defaulted activity). Open + wait, then
+              // retry exactly once before giving up with an actionable error.
+              if (firstAttempt.notFound === true) {
+                const injectable = await openAndWaitInjectable()
+                if (injectable) {
+                  const retryAttempt = await attemptSend()
+                  if (retryAttempt.ok) {
+                    if (retryAttempt.softBusy) {
+                      return {
+                        ok: true,
+                        error:
+                          'submit-busy: text/key was sent; workspace became busy before the explicit submit — it may have already been submitted'
+                      }
+                    }
+                    return { ok: true }
+                  }
+                  return { ok: false, error: retryAttempt.error ?? 'send failed' }
+                }
+                return {
+                  ok: false,
+                  error: `workspace not open${ACTIONABLE_ERROR_SUFFIX}`
+                }
+              }
+
+              return { ok: false, error: firstAttempt.error ?? 'send failed' }
+            }
+          }
+          commandServer = startCommandServer(cmdDeps)
+        } catch (err) {
+          console.error('[commandServer] failed to start:', err)
+        }
+      }
+
+      setAutoCloseHandler((workspaceId) => {
+        performClose(workspaceId)
+      })
+
+      // Pre-load the native terminal addon during idle time so the first
+      // terminal:mount call doesn't pay the dlopen stall (50–300ms).
+      // loadTerminalAddon() is idempotent — if already loaded it returns early.
+      try {
+        loadTerminalAddon()
+      } catch {
+        // Failure is non-fatal here; terminal:mount will surface the error when needed.
+      }
+
+      // Start shadow-mode session state service (Phase 1 — observes and logs only)
+      try {
+        sessionStateService = startSessionStateService()
+      } catch (err) {
+        console.error('[sessionState] failed to start:', err)
+      }
+
+      try {
+        powerAwakeCleanup = startPowerAwake(getMainWindow)
+      } catch (err) {
+        console.error('[powerAwake] failed to start:', err)
       }
     })
 
-    // Declarative hook reconcile: enabled → start server + install hooks;
-    // disabled (default) → remove any previously-installed managed hooks and
-    // do NOT start the socket server.
-    reconcileHooks()
-
-    setAutoCloseHandler((workspaceId) => {
-      performClose(workspaceId)
+    app.on('activate', function () {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      else kickActiveTerminal()
     })
-
-    // Pre-load the native terminal addon during idle time so the first
-    // terminal:mount call doesn't pay the dlopen stall (50–300ms).
-    // loadTerminalAddon() is idempotent — if already loaded it returns early.
-    try {
-      loadTerminalAddon()
-    } catch {
-      // Failure is non-fatal here; terminal:mount will surface the error when needed.
-    }
-
-    // Start shadow-mode session state service (Phase 1 — observes and logs only)
-    try {
-      sessionStateService = startSessionStateService()
-    } catch (err) {
-      console.error('[sessionState] failed to start:', err)
-    }
-
-    try {
-      powerAwakeCleanup = startPowerAwake(getMainWindow)
-    } catch (err) {
-      console.error('[powerAwake] failed to start:', err)
-    }
   })
 
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    else kickActiveTerminal()
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
+    notifyServer?.close()
+    commandServer?.close()
+    sessionStateService?.stop()
+    powerAwakeCleanup?.()
+    stopStatusPoller()
+    stopAutoCheckLoop()
+    stopAllGitWatches()
+    stopDiagnostics()
   })
-})
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll()
-  notifyServer?.close()
-  sessionStateService?.stop()
-  powerAwakeCleanup?.()
-  stopStatusPoller()
-  stopAutoCheckLoop()
-  stopAllGitWatches()
-  stopDiagnostics()
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit()
+    }
+  })
+} // end single-instance else block

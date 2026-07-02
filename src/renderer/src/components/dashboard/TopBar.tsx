@@ -784,12 +784,12 @@ export function TopBar({
         {/* Keep awake chip — immediately after status chip */}
         <KeepAwakeChip sidebarWidth={sidebarWidth} />
 
-        {__ORPHEUS_MODE__ === 'development' && (
+        {__ORPHEUS_MODE__ !== 'production' && (
           <span
             className="ml-2 px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-widest uppercase rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 leading-none flex-shrink-0"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            DEV
+            {__ORPHEUS_MODE__ === 'worktree' ? 'WT' : 'DEV'}
           </span>
         )}
 

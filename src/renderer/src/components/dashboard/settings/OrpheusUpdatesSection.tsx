@@ -176,7 +176,7 @@ function LogDisclosure({ log }: { log: string[] }): React.JSX.Element {
 
 // ---------------------------------------------------------------------------
 // Dev-only debug seam — step through states without a real update
-// Gated strictly: only renders when __ORPHEUS_MODE__ === 'development'
+// Gated strictly: only renders when __ORPHEUS_MODE__ !== 'production'
 // ---------------------------------------------------------------------------
 
 const fakeLog = [
@@ -191,7 +191,7 @@ function DevStateControls({
 }: {
   onSet: (s: UpdateState) => void
 }): React.JSX.Element | null {
-  if (__ORPHEUS_MODE__ !== 'development') return null
+  if (__ORPHEUS_MODE__ === 'production') return null
 
   return (
     <div className="mt-3 p-2 border border-dashed border-border-default rounded text-xs text-text-muted flex flex-wrap gap-1">
