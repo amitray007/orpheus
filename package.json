@@ -5,6 +5,10 @@
   "description": "A Mac IDE built around Claude Code",
   "author": "Amit Ray <hey@amitray.dev>",
   "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "bun@1.3.10",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/amitray007/orpheus.git"
