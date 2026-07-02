@@ -353,3 +353,81 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
 
   console.log('✓ convergence')
 }
+
+const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
+  await import('../src/main/db/data-steps.ts')
+
+{
+  const dsdb = new Database(':memory:')
+  ensureLedger(dsdb)
+  // a v45 DB already ran the v28 remap → seeded as applied, must NOT re-run
+  seedLedgerFromLegacy(dsdb, 45)
+  assert.ok(
+    dsdb.prepare("SELECT 1 FROM applied_data_steps WHERE name='workspace-status-remap'").get()
+  )
+
+  // a v21 DB missed the v28 remap → not seeded → will run
+  const dsdb2 = new Database(':memory:')
+  ensureLedger(dsdb2)
+  seedLedgerFromLegacy(dsdb2, 21)
+  assert.ok(
+    !dsdb2.prepare("SELECT 1 FROM applied_data_steps WHERE name='workspace-status-remap'").get()
+  )
+
+  // a fresh DB (legacyVersion 0): the 5 legacy transforms are pre-marked
+  // applied (nothing legacy to fix on a brand-new schema), but the
+  // alwaysRun 'keep-awake-seed' step is NOT pre-marked — it must still get
+  // a real run so the default row gets inserted.
+  const dsdb3 = new Database(':memory:')
+  ensureLedger(dsdb3)
+  seedLedgerFromLegacy(dsdb3, 0)
+  const legacyStepNames = dataSteps.filter((s) => !s.alwaysRun).map((s) => s.name)
+  assert.equal(legacyStepNames.length, 5, 'expected exactly 5 non-alwaysRun legacy transforms')
+  for (const name of legacyStepNames) {
+    assert.ok(
+      dsdb3.prepare('SELECT 1 FROM applied_data_steps WHERE name = ?').get(name),
+      `fresh install should pre-mark '${name}' as applied`
+    )
+  }
+  assert.ok(
+    !dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='keep-awake-seed'").get(),
+    'alwaysRun step must NOT be pre-marked applied on a fresh install'
+  )
+
+  // Exercise the alwaysRun step on the fresh DB: it needs keep_awake_settings
+  // to exist first (schema.ts owns structure; this data step only seeds the
+  // default row).
+  dsdb3.exec(`CREATE TABLE keep_awake_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
+    display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
+    timer_minutes INTEGER NOT NULL DEFAULT 120
+  )`)
+  runDataSteps(dsdb3, { preRebuild: false })
+  runDataSteps(dsdb3, { preRebuild: true })
+  const seededRow = dsdb3
+    .prepare('SELECT mode, display_on, timer_minutes FROM keep_awake_settings WHERE id = 1')
+    .get() as {
+    mode: string
+    display_on: number
+    timer_minutes: number
+  }
+  assert.deepEqual(seededRow, { mode: 'auto', display_on: 0, timer_minutes: 120 })
+  assert.ok(
+    dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='keep-awake-seed'").get(),
+    'keep-awake-seed must be recorded in the ledger after running'
+  )
+
+  // Running again must be a no-op (ledger prevents re-run / duplicate INSERT
+  // OR IGNORE would be harmless anyway, but confirm the ledger gate works).
+  const rowCountBefore = (
+    dsdb3.prepare('SELECT COUNT(*) c FROM keep_awake_settings').get() as { c: number }
+  ).c
+  runDataSteps(dsdb3, { preRebuild: false })
+  const rowCountAfter = (
+    dsdb3.prepare('SELECT COUNT(*) c FROM keep_awake_settings').get() as { c: number }
+  ).c
+  assert.equal(rowCountBefore, rowCountAfter)
+
+  console.log('✓ data-steps')
+}
