@@ -255,6 +255,18 @@ import {
 import type { KeepAwakeBaseMode } from '../shared/types'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
+import {
+  initOverlayLayer,
+  registerOverlayRendererIpc,
+  showOverlay,
+  updateOverlay,
+  hideOverlay,
+  isInteractiveOverlayVisible,
+  focusOverlay,
+  forceHideOwnedBy,
+  setOverlayTheme
+} from './overlayLayer'
+import type { OverlayDescriptor } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -379,87 +391,6 @@ const THEME_PALETTES: Record<Theme, LoadingThemePalette> = {
     isDark: true,
     tintAlpha: 0.35
   }
-}
-
-// ---------------------------------------------------------------------------
-// Popover theme palettes — separate from loading overlay (different token set:
-// no backdrop/tintAlpha; adds textMuted + accent).
-// surface-overlay tokens are the solid card background for the 3 themes.
-// ---------------------------------------------------------------------------
-type PopoverThemePalette = {
-  card: [number, number, number]
-  textPrimary: [number, number, number]
-  textSecondary: [number, number, number]
-  textMuted: [number, number, number]
-  border: [number, number, number]
-  accent: [number, number, number]
-  isDark: boolean
-}
-
-const POPOVER_THEME_PALETTES: Record<Theme, PopoverThemePalette> = {
-  midnight: {
-    card: [0x1c, 0x1c, 0x1f], // surface-overlay: slightly lighter than page bg
-    textPrimary: [0xf4, 0xf4, 0xf5], // zinc-100
-    textSecondary: [0xa1, 0xa1, 0xaa], // zinc-400
-    textMuted: [0x71, 0x71, 0x7a], // zinc-500
-    border: [0x3f, 0x3f, 0x46], // zinc-700 (border-white/10 approximation on dark)
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  },
-  daylight: {
-    card: [0xff, 0xff, 0xff], // white
-    textPrimary: [0x18, 0x18, 0x1b], // zinc-900
-    textSecondary: [0x52, 0x52, 0x5b], // zinc-600
-    textMuted: [0xa1, 0xa1, 0xaa], // zinc-400
-    border: [0xe4, 0xe4, 0xe7], // zinc-200
-    accent: [0x25, 0x63, 0xeb], // blue-600
-    isDark: false
-  },
-  eclipse: {
-    card: [0x10, 0x10, 0x10], // near-black surface
-    textPrimary: [0xff, 0xff, 0xff],
-    textSecondary: [0xb4, 0xb4, 0xb4],
-    textMuted: [0x71, 0x71, 0x71],
-    border: [0x2a, 0x2a, 0x2a],
-    accent: [0x60, 0xa5, 0xfa], // blue-400
-    isDark: true
-  }
-}
-
-let popoverWired = false
-
-// PR URL per workspace, captured when a popover is shown so the popover
-// action callback can open it directly via shell.openExternal — avoids the
-// fragile renderer round-trip whose Map entry is cleared before the click.
-const popoverPrUrlByWorkspace = new Map<string, string>()
-
-function applyPopoverTheme(theme: Theme): void {
-  if (!terminalAddon) return
-  const palette = POPOVER_THEME_PALETTES[theme] ?? POPOVER_THEME_PALETTES.midnight
-  terminalAddon.setPopoverTheme(palette)
-  console.log('[popover] theme applied:', theme)
-}
-
-function ensurePopoverWiring(addon: GhosttySurfaceAddon): void {
-  if (popoverWired) return
-  popoverWired = true
-  const currentTheme = getAppUiState().theme as Theme
-  addon.setPopoverTheme(POPOVER_THEME_PALETTES[currentTheme] ?? POPOVER_THEME_PALETTES.midnight)
-  // Wire the action callback: fires when a clickable element (Phase B: PR chip)
-  // inside a native popover is tapped. The identifier encodes "workspaceId::elementId".
-  addon.setPopoverActionCallback((identifier: string) => {
-    console.log('[popover] action callback:', identifier)
-    // Open the PR directly from main on a PR-chip click — the renderer Map that
-    // used to hold the URL is cleared before the click lands, so main owns this.
-    if (identifier.endsWith('::pr')) {
-      const wsId = identifier.slice(0, identifier.lastIndexOf('::'))
-      const url = popoverPrUrlByWorkspace.get(wsId)
-      if (url) shell.openExternal(url)
-    }
-    // Phase B: parse identifier and route action (e.g. open PR URL).
-    // For now, broadcast to renderer so it can handle it.
-    getMainWindow()?.webContents.send('popover:actionClicked', { identifier })
-  })
 }
 
 function applyLoadingOverlayTheme(theme: Theme): void {
@@ -747,6 +678,23 @@ app.on('before-quit', () => {
   isQuitting = true
 })
 
+// Focuses the currently-viewed workspace's terminal via the addon. Shared by
+// the `terminal:focus` IPC handler's internal logic and overlayLayer's
+// hide-flow focus-restore fallback chain (which knows "the active workspace"
+// but not a specific workspaceId to target). Returns false when there's no
+// currently-viewed workspace so callers can continue their own fallback chain.
+function focusWorkspaceTerminal(): boolean {
+  try {
+    const ws = getCurrentlyViewedWorkspace()
+    if (!ws) return false
+    loadTerminalAddon().focus(ws)
+    return true
+  } catch (err) {
+    console.error('[lifecycle] focusWorkspaceTerminal failed:', err)
+    return false
+  }
+}
+
 function kickActiveTerminal(): void {
   try {
     // Use the in-memory currently-viewed workspace (no SQLite dependency, so
@@ -755,6 +703,13 @@ function kickActiveTerminal(): void {
     // so it wakes even when the terminal was frozen / input was stuck.
     const ws = getCurrentlyViewedWorkspace()
     if (!ws) return
+    // While a takesFocus overlay is pending/visible, refocus the overlay
+    // instead of yanking focus back to the terminal underneath it (R6/R7).
+    if (isInteractiveOverlayVisible()) {
+      console.log('[lifecycle] terminal kick (wake) — overlay has focus, refocusing overlay')
+      focusOverlay()
+      return
+    }
     console.log('[lifecycle] terminal kick (wake)')
     loadTerminalAddon().focus(ws)
   } catch (err) {
@@ -851,6 +806,15 @@ function createWindow(): void {
       loadTerminalAddon().installBackstop(mainWindow.getNativeWindowHandle())
     } catch (err) {
       console.error('[lifecycle] installBackstop failed:', err)
+    }
+    try {
+      initOverlayLayer(mainWindow, loadTerminalAddon(), {
+        getMainWindow,
+        focusActiveWorkspaceTerminal: focusWorkspaceTerminal
+      })
+      setOverlayTheme(getAppUiState().theme as Theme)
+    } catch (err) {
+      console.error('[overlayLayer] init failed:', err)
     }
     if (isDev) {
       mainWindow.setTitle(app.getName())
@@ -1808,7 +1772,7 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
   if (patch.theme !== undefined) {
     applyLoadingOverlayTheme(patch.theme as Theme)
-    applyPopoverTheme(patch.theme as Theme)
+    setOverlayTheme(patch.theme as Theme)
   }
   if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
   if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
@@ -2120,7 +2084,6 @@ handle(
     const addon = loadTerminalAddon()
     ensureTitleCallback(addon)
     ensureLoadingOverlayWiring(addon)
-    ensurePopoverWiring(addon)
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('terminal:mount — no BrowserWindow for sender')
     const nativeHandle = win.getNativeWindowHandle()
@@ -2354,6 +2317,9 @@ handle('terminal:hide', (_e, { workspaceId }: { workspaceId: string }): void => 
     })
     throw err
   }
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive its parent surface.
+  forceHideOwnedBy(workspaceId)
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -2383,49 +2349,6 @@ handle('terminal:focus', (_e, { workspaceId }: { workspaceId: string }): void =>
     event: DIAG_EVENTS.TERMINAL_FOCUS_RECLAIMED,
     workspaceId
   })
-})
-
-// ---------------------------------------------------------------------------
-// Native popover IPC handlers (Phase A chassis)
-// ---------------------------------------------------------------------------
-
-handle(
-  'terminal:showPopover',
-  (
-    _e,
-    {
-      workspaceId,
-      kind,
-      anchorRect,
-      data
-    }: {
-      workspaceId: string
-      kind: string
-      anchorRect: { x: number; y: number; w: number; h: number }
-      data: Record<string, unknown>
-    }
-  ): void => {
-    const prUrl = typeof data.prUrl === 'string' ? data.prUrl : undefined
-    if (prUrl && isSafeExternalUrl(prUrl)) popoverPrUrlByWorkspace.set(workspaceId, prUrl)
-    const addon = loadTerminalAddon()
-    // Resolve the Geist font directory: packaged → Contents/Resources/fonts,
-    // dev → node_modules/geist/dist/fonts (native fallback handles this when omitted).
-    const fontDir = app.isPackaged ? join(process.resourcesPath, 'fonts') : undefined
-    addon.showPopover(workspaceId, kind, anchorRect, data, fontDir)
-  }
-)
-
-handle(
-  'terminal:updatePopover',
-  (_e, { workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }): void => {
-    const addon = loadTerminalAddon()
-    addon.updatePopover(workspaceId, data)
-  }
-)
-
-handle('terminal:hidePopover', (_e, { workspaceId }: { workspaceId: string }): void => {
-  const addon = loadTerminalAddon()
-  addon.hidePopover(workspaceId)
 })
 
 handle('terminal:getSurfacePhase', (_e, { workspaceId }: { workspaceId: string }): string => {
@@ -2490,6 +2413,9 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
   }
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
+  // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
+  // workspace so it doesn't outlive the destroyed surface.
+  forceHideOwnedBy(workspaceId)
   // Tear down the git watcher for this workspace (ref-counted: only closes
   // underlying fs.watch when the last subscriber for this cwd is removed).
   const wsForGit = getWorkspace(workspaceId)
@@ -2517,6 +2443,27 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
     workspaceId
   })
 })
+
+// ---------------------------------------------------------------------------
+// Overlay layer IPC (React overlays above the terminal)
+// ---------------------------------------------------------------------------
+
+handle('overlay:showDescriptor', (_e, { descriptor }: { descriptor: OverlayDescriptor }) =>
+  showOverlay(descriptor)
+)
+
+handle(
+  'overlay:update',
+  (_e, { id, props }: { id: string; props: Record<string, unknown> }): void =>
+    updateOverlay(id, props)
+)
+
+handle('overlay:hide', (_e, { id }: { id: string }) => hideOverlay(id))
+
+// ipcMain.on registrations for the overlayRenderer:* channels (sends from the
+// overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.
+// Registered once here at module init (process-global by channel name).
+registerOverlayRendererIpc()
 
 // ---------------------------------------------------------------------------
 // resolveNamedKey — map CLI key names to TerminalSendKeyDescriptor

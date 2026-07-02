@@ -28,7 +28,17 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
-import { showHoverPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  showHoverCard,
+  hideOverlayCard,
+  hoverCardId,
+  onCardPointer,
+  activityToState,
+  activityToLabel,
+  gitStatusToCard,
+  prToCard
+} from '@/lib/overlayClient'
+import type { HoverCardProps } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
 import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
@@ -203,10 +213,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   const hasDetail = gitStatus !== null || pr != null
 
-  // Native popover: only allowed when inactive, not renaming, and has data.
+  // Hover card: only allowed when inactive, not renaming, and has data.
   const cardAllowed = hasDetail && !renaming && !active
 
-  // Ref to the row element used as anchor for the native popover.
+  // Ref to the row element used as anchor for the hover card.
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
@@ -217,6 +227,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
       clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = null
     }
+  }
+
+  function hideHoverCard(): void {
+    hideOverlayCard(hoverCardId(workspace.id))
   }
 
   function handleRowMouseEnter(): void {
@@ -231,16 +245,16 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         workspace.worktreeParentCwd && workspace.worktreeBranch
           ? `${workspace.cwd} (${workspace.worktreeBranch})`
           : workspace.cwd
-      showHoverPopover(
-        workspace.id,
-        rowRef.current,
-        gitStatus,
-        pr,
-        dn.text,
-        activity,
+      const cardProps: HoverCardProps = {
+        title: dn.text,
+        activityLabel: activityToLabel(activity),
+        activityState: activityToState(activity),
         relativeTime,
-        popoverCwd
-      )
+        git: gitStatusToCard(gitStatus),
+        pr: prToCard(pr),
+        cwd: popoverCwd
+      }
+      showHoverCard(workspace.id, rowRef.current, cardProps)
     }, 120)
   }
 
@@ -248,7 +262,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }, 80)
   }
 
@@ -257,27 +271,37 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   useEffect(() => {
     if (!cardAllowed) {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardAllowed, workspace.id])
 
   // Clean up on unmount.
   useEffect(() => {
     return () => {
       clearHoverTimer()
-      hideNativePopover(workspace.id)
+      hideHoverCard()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
-  // Hover-bridge: when the native card closes itself via NSTrackingArea
-  // mouseExited (pointer left the card without returning to the trigger),
-  // reset our open-state by cancelling any pending timers. This ensures a
-  // subsequent hover on this row re-opens the card cleanly.
+  // Hover-bridge: keep the card open while the pointer is over the card
+  // itself, so moving from the row into the card doesn't close-timer it out.
+  // The overlay card emits mouseenter/mouseleave (OverlayRoot's card
+  // wrapper) — cancel the close timer on enter, re-arm it (same 80ms) on
+  // leave.
   useEffect(() => {
-    const unregister = onNativePopoverClosed(workspace.id, () => {
-      clearHoverTimer()
+    const unregister = onCardPointer(hoverCardId(workspace.id), {
+      onEnter: clearHoverTimer,
+      onLeave: () => {
+        hoverTimerRef.current = setTimeout(() => {
+          hoverTimerRef.current = null
+          hideHoverCard()
+        }, 80)
+      }
     })
     return unregister
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.id])
 
   return (
@@ -811,10 +835,11 @@ const ProjectRow = memo(function ProjectRow({
           defaultName={nextWorkspaceName(workspaces)}
           onCreateLocal={() => onAddWorkspace()}
           onCreated={(ws) => onSelectWorkspace(ws.id)}
+          className="w-full mt-0.5"
         >
           <button
             type="button"
-            className="w-full h-8 flex items-center justify-start gap-2 pl-8 pr-2 mt-0.5 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
             aria-label="Add workspace"
           >
             <Plus size={12} />

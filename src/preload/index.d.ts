@@ -51,7 +51,10 @@ import type {
   DiagEvent,
   HealthReport,
   KeepAwakeState,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  OverlayDescriptor,
+  OverlayShowResult,
+  OverlayEvent
 } from '../shared/types'
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
@@ -104,17 +107,6 @@ declare global {
             occluded: boolean
           }) => void
         ) => () => void
-        // Native popover chassis (Phase A)
-        showPopover: (
-          workspaceId: string,
-          kind: string,
-          anchorRect: { x: number; y: number; w: number; h: number },
-          data: Record<string, unknown>,
-          fontDir?: string
-        ) => Promise<void>
-        updatePopover: (workspaceId: string, data: Record<string, unknown>) => Promise<void>
-        hidePopover: (workspaceId: string) => Promise<void>
-        onPopoverAction: (cb: (e: { identifier: string }) => void) => () => void
       }
       config: {
         openFolder: () => Promise<string | null>
@@ -424,6 +416,12 @@ declare global {
         setDisplayOn: (on: boolean) => Promise<KeepAwakeState>
         startTimer: (minutes: number) => Promise<KeepAwakeState>
         onState: (cb: (state: KeepAwakeState) => void) => () => void
+      }
+      overlay: {
+        show: (descriptor: OverlayDescriptor) => Promise<OverlayShowResult>
+        update: (id: string, props: Record<string, unknown>) => Promise<void>
+        hide: (id: string) => Promise<void>
+        onEvent: (cb: (e: OverlayEvent) => void) => () => void
       }
     }
   }

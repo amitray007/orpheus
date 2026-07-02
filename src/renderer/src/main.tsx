@@ -5,11 +5,13 @@ import { createRoot } from 'react-dom/client'
 import App from '@/App'
 import { DiagConsole } from '@/components/diag/DiagConsole'
 import { installRendererErrorCapture } from '@/lib/diag'
+import { initOverlayDevTest } from '@/lib/overlayDevTest'
 
 const isDiagConsole = new URLSearchParams(location.search).get('view') === 'diag-console'
 
 if (!isDiagConsole) {
   installRendererErrorCapture()
+  initOverlayDevTest()
 }
 
 createRoot(document.getElementById('root')!).render(

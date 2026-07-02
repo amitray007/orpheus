@@ -148,63 +148,53 @@ export type GhosttySurfaceAddon = {
   getSurfacePhase: (workspaceId: string) => string
 
   // ---------------------------------------------------------------------------
-  // Native popover chassis (Phase A — generic info-card over terminal)
+  // Overlay first-responder primitives (child-window era)
+  //
+  // The overlay used to be a same-window WebContentsView sibling, tracked via
+  // a begin/commit registration handshake plus a `reassertOverlayOrder` call
+  // exposed to TS so callers could trigger the ordering self-heal directly.
+  // The overlay is now a separate child BrowserWindow with its own compositor
+  // (stacks above the main window natively), so that registration/ordering
+  // surface is gone — the ordering self-heal is purely internal to the addon
+  // now (still runs, just not TS-triggerable). What remains addon-side and
+  // TS-facing is the focus-chain handoff below, used when a takesFocus
+  // overlay is dismissed.
   // ---------------------------------------------------------------------------
 
   /**
-   * Show a native popover card above the terminal for the given workspace.
-   * The card is positioned relative to anchorRect (CSS px from getBoundingClientRect)
-   * and clamped to stay on-screen.
-   *
-   * @param workspaceId  opaque surface identifier
-   * @param kind         'details' (252px) | 'hover' (224px)
-   * @param anchorRect   bounding rect of the trigger element in CSS px (top-left origin)
-   * @param data         generic data object (Phase B populates real fields)
-   * @param fontDir      optional: absolute path to Geist fonts directory.
-   *                     Packaged: path.join(process.resourcesPath, 'fonts')
-   *                     Dev:      resolved from node_modules by native fallback when omitted
+   * Gate the terminal's mount-time / re-show `makeFirstResponder` calls.
+   * While `suppressed` is true, those calls are skipped so a visible
+   * `takesFocus` overlay never has keyboard focus yanked away by a terminal
+   * attach/re-show happening underneath it.
    */
-  showPopover: (
-    workspaceId: string,
-    kind: string,
-    anchorRect: { x: number; y: number; w: number; h: number },
-    data: Record<string, unknown>,
-    fontDir?: string
-  ) => void
+  setOverlayFocusSuppressed: (suppressed: boolean) => void
 
   /**
-   * Update the content of an already-visible popover in place.
-   * Used for the Details card's async fields (cost, context, usage).
-   * Phase A: no-op stub.
+   * Save the window's current first responder into a slot dedicated to the
+   * overlay layer's focus handoff. Refuses to overwrite the slot when the
+   * current first responder is the overlay view itself (or a descendant of
+   * it) — this is what keys the save to token acquisition rather than to
+   * each individual overlay show.
    */
-  updatePopover: (workspaceId: string, data: Record<string, unknown>) => void
+  saveOverlayFirstResponder: () => void
 
   /**
-   * Hide and remove the popover for the given workspace.
-   * Fades out 100ms then removes from superview. Idempotent.
+   * Restore the first responder saved by `saveOverlayFirstResponder`, if it
+   * is still valid (non-nil, still attached to the same window). Clears the
+   * saved slot either way. Returns `true` on a successful restore, `false`
+   * if there was nothing valid to restore — the caller should then run its
+   * own fallback chain (e.g. focus the active workspace's terminal, then the
+   * main webContents).
    */
-  hidePopover: (workspaceId: string) => void
+  restoreOverlayFirstResponder: () => boolean
 
   /**
-   * Register a callback fired when a clickable element inside a popover is
-   * activated (Phase B: PR chip). The identifier string encodes
-   * "workspaceId::elementId" for routing.
+   * True iff the window's current first responder is the registered overlay
+   * view or a descendant of it. Intended to be checked on every overlay hide
+   * (not just modal-class overlays) since any click on an `acceptsClicks`
+   * overlay can move first responder there.
    */
-  setPopoverActionCallback: (cb: (identifier: string) => void) => void
-
-  /**
-   * Push a color palette to native popovers for theme alignment.
-   * RGB values are 0–255 integers. Call on startup and on theme change.
-   */
-  setPopoverTheme: (colors: {
-    card: [number, number, number]
-    textPrimary: [number, number, number]
-    textSecondary: [number, number, number]
-    textMuted: [number, number, number]
-    border: [number, number, number]
-    accent: [number, number, number]
-    isDark: boolean
-  }) => void
+  isOverlayFirstResponder: () => boolean
 }
 
 // ---------------------------------------------------------------------------

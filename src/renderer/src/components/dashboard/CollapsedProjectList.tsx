@@ -3,7 +3,12 @@ import { memo, useRef } from 'react'
 import { Plus, PushPin } from '@phosphor-icons/react'
 import type { ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { Identicon } from '../Identicon'
-import { showProjectPopover, hideNativePopover, onNativePopoverClosed } from '@/lib/nativePopover'
+import {
+  showProjectCard,
+  hideOverlayCard,
+  projectCardId,
+  type ProjectCardProps
+} from '@/lib/overlayClient'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
@@ -35,7 +40,7 @@ function toPopoverState(
 }
 
 // ---------------------------------------------------------------------------
-// ProjectTile — one icon button with native popover hover behavior
+// ProjectTile — one icon button with overlay-card hover behavior
 // ---------------------------------------------------------------------------
 
 interface ProjectTileProps {
@@ -57,7 +62,6 @@ const ProjectTile = memo(function ProjectTile({
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const popoverId = `proj:${p.id}`
 
   function clearHoverTimer(): void {
     if (hoverTimerRef.current !== null) {
@@ -78,7 +82,7 @@ const ProjectTile = memo(function ProjectTile({
       const activeWorkspaces = workspaces.filter((w) => w.archivedAt === null)
       const capped = activeWorkspaces.slice(0, 8)
 
-      showProjectPopover(p.id, buttonRef.current, {
+      const cardProps: ProjectCardProps = {
         name: p.name,
         pinned: p.pinnedAt != null,
         repo: p.githubOwner && p.githubRepo ? `${p.githubOwner}/${p.githubRepo}` : undefined,
@@ -101,12 +105,9 @@ const ProjectTile = memo(function ProjectTile({
             state: toPopoverState(activityMap.get(w.id))
           }
         })
-      })
+      }
 
-      // Register native-closed handler: reset timer state when card closes itself.
-      onNativePopoverClosed(popoverId, () => {
-        clearHoverTimer()
-      })
+      showProjectCard(p.id, buttonRef.current, cardProps)
     }, 150)
   }
 
@@ -114,7 +115,7 @@ const ProjectTile = memo(function ProjectTile({
     clearHoverTimer()
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
-      hideNativePopover(popoverId)
+      hideOverlayCard(projectCardId(p.id))
     }, 80)
   }
 

@@ -439,16 +439,18 @@ export function NewWorkspaceMenu({
   const overlayStyle: React.CSSProperties | undefined = clampedPos ?? anchorPos ?? undefined
 
   return (
-    <div ref={wrapperRef} className={['relative inline-flex', className].filter(Boolean).join(' ')}>
+    <div ref={wrapperRef} className={['relative flex', className].filter(Boolean).join(' ')}>
       {/* Trigger wrapper — intercepts clicks before they reach the inner button.
           onMouseDown stops propagation so the SAME click that opens the menu
           isn't also seen by Overlay's document-level outside-mousedown listener
           (which would otherwise fire onDismiss for the trigger's own mousedown,
-          since the trigger sits outside the portaled Overlay's ref). */}
+          since the trigger sits outside the portaled Overlay's ref). flex-1 so
+          the trigger (and the button inside it) can stretch to fill a
+          full-width wrapper — inline-flex would shrink both to content size. */}
       <div
         onClick={handleTriggerClick}
         onMouseDown={(e) => e.stopPropagation()}
-        className="inline-flex"
+        className="flex flex-1"
       >
         {children}
       </div>
