@@ -498,3 +498,211 @@ const { runMigrations } = await import('../src/main/db/cutover.ts')
 
   console.log('✓ cutover')
 }
+
+// ---------------------------------------------------------------------------
+// backup-path: exercises the real on-disk backup path, which every OTHER
+// harness section above skips (they all use ':memory:' or a fresh-install
+// DB, so `skipBackup` was always true and VACUUM INTO / backupBefore never
+// actually ran). This is the root cause the reviewed bugs hid behind: FIX 1
+// (VACUUM-in-open-transaction), FIX 2 (stale .bak crash-loop), FIX 4
+// (legacyVersion===0 wrongly skipping backups on already-cutover on-disk
+// DBs) are all only reachable via a REAL dbPath + a NON-fresh DB.
+// ---------------------------------------------------------------------------
+{
+  // --- (1) mixed addColumn + rebuildTable on a real, non-fresh on-disk DB -
+  // Exercises FIX 1 (commitIfNeeded() before VACUUM INTO — addColumn runs
+  // first and leaves inTxn=true, then rebuildTable's backup check must flush
+  // it before VACUUM) and FIX 4 (backup must NOT be skipped just because
+  // legacyVersion is 0 — this DB has pre-existing tables, i.e. it's not a
+  // fresh install, even though we pass legacyVersion: 0 to mimic an
+  // already-cutover on-disk DB on a later boot).
+  const dir1 = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-backup-path-1-'))
+  const dbPath1 = path.join(dir1, 'orpheus.sqlite')
+  const bpdb1 = new Database(dbPath1)
+  bpdb1.exec('PRAGMA journal_mode = WAL')
+
+  // Pre-existing user table (proves this is NOT a fresh install) with an
+  // 'in_review' row that will force a rebuild of `bp_workspaces` (CHECK
+  // change) alongside an addColumn on a sibling table (`bp_projects`).
+  bpdb1.exec(`CREATE TABLE bp_projects (id TEXT PRIMARY KEY, name TEXT NOT NULL)`)
+  bpdb1.exec("INSERT INTO bp_projects (id, name) VALUES ('p1', 'proj')")
+  bpdb1.exec(`CREATE TABLE bp_workspaces (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'idle'
+      CHECK (status IN ('in_progress','in_review','idle','archived')))`)
+  bpdb1.exec("INSERT INTO bp_workspaces (id, status) VALUES ('w1', 'idle')")
+
+  const bpSchema1 = {
+    bp_projects: {
+      // `added_at` is new → addColumn op, planned+executed BEFORE the
+      // rebuildTable op below (engine.ts buckets createTable/addColumn first).
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', added_at: 'INTEGER' }
+    },
+    bp_workspaces: {
+      // CHECK narrows (drops 'in_review') → forces rebuildTable.
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        status: {
+          type: 'TEXT',
+          notNull: true,
+          default: "'idle'",
+          check: "CHECK (status IN ('in_progress','idle','archived'))"
+        }
+      },
+      normalizeOnRebuild: {
+        status: "CASE WHEN status IN ('in_progress','idle','archived') THEN status ELSE 'idle' END"
+      }
+    }
+  }
+
+  const plan1 = planSync(bpdb1, bpSchema1)
+  assert.ok(
+    plan1.some((op) => op.kind === 'addColumn' && op.table === 'bp_projects'),
+    'backup-path fixture (1): expected an addColumn op'
+  )
+  assert.ok(
+    plan1.some((op) => op.kind === 'rebuildTable' && op.table === 'bp_workspaces'),
+    'backup-path fixture (1): expected a rebuildTable op'
+  )
+
+  // Must NOT throw "cannot VACUUM from within a transaction" (FIX 1).
+  assert.doesNotThrow(() => {
+    sync(bpdb1, bpSchema1, { dbPath: dbPath1, legacyVersion: 0 })
+  }, 'sync() must not throw when a prior addColumn leaves a transaction open before a rebuildTable backup')
+
+  // Backup must have been taken (FIX 4 — non-fresh on-disk DB, even at
+  // legacyVersion 0, must still be backed up before the destructive rebuild).
+  const bakPath1 = `${dbPath1}.bak-0`
+  assert.ok(
+    fs.existsSync(bakPath1),
+    'backup-path: expected a .bak file, backup must not be skipped'
+  )
+
+  bpdb1.close()
+  fs.rmSync(dir1, { recursive: true, force: true })
+
+  // --- (2) crash-loop simulation: a stale .bak already exists at the target
+  // path (from a prior failed migration attempt) — must NOT throw "output
+  // file already exists" (FIX 2).
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-backup-path-2-'))
+  const dbPath2 = path.join(dir2, 'orpheus.sqlite')
+  const bpdb2 = new Database(dbPath2)
+  bpdb2.exec('PRAGMA journal_mode = WAL')
+  bpdb2.exec(`CREATE TABLE bp2_t (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'idle'
+    CHECK (status IN ('a','b')))`)
+  bpdb2.exec("INSERT INTO bp2_t (id, status) VALUES ('x', 'a')")
+
+  const bpSchema2 = {
+    bp2_t: {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        status: { type: 'TEXT', notNull: true, default: "'idle'", check: "CHECK (status IN ('a'))" }
+      },
+      normalizeOnRebuild: { status: "CASE WHEN status IN ('a') THEN status ELSE 'a' END" }
+    }
+  }
+
+  // Pre-create a stale .bak at the exact path sync() will compute (dbPath2,
+  // legacyVersion 7) — simulates a crash after a prior run's backup but
+  // before convergence completed.
+  const staleBakPath = `${dbPath2}.bak-7`
+  fs.writeFileSync(staleBakPath, 'stale-leftover-from-a-crashed-migration')
+  assert.ok(fs.existsSync(staleBakPath))
+
+  assert.doesNotThrow(() => {
+    sync(bpdb2, bpSchema2, { dbPath: dbPath2, legacyVersion: 7 })
+  }, 'sync() must not throw "output file already exists" when a stale .bak pre-exists at the target path')
+
+  // The stale placeholder must have been replaced by a real VACUUM INTO
+  // snapshot (a real sqlite file, not the literal placeholder text written
+  // above).
+  const bakContents = fs.readFileSync(staleBakPath)
+  assert.ok(
+    bakContents.toString('utf8', 0, 16) !== 'stale-leftover-f',
+    'stale .bak must have been overwritten with a real backup'
+  )
+
+  bpdb2.close()
+  fs.rmSync(dir2, { recursive: true, force: true })
+
+  // --- (3) undeclared live column survives a rebuild triggered by a sibling
+  // CHECK change (FIX 3) ---------------------------------------------------
+  const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-backup-path-3-'))
+  const dbPath3 = path.join(dir3, 'orpheus.sqlite')
+  const bpdb3 = new Database(dbPath3)
+  bpdb3.exec('PRAGMA journal_mode = WAL')
+  // `legacy_note` is NOT declared in the desired schema below, and NOT in
+  // dropColumns — diff.ts's contract says it must be left alone (no op) even
+  // though the table rebuilds for an unrelated reason (status CHECK change).
+  bpdb3.exec(`CREATE TABLE bp3_t (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','in_review','archived')),
+    legacy_note TEXT)`)
+  bpdb3.exec(
+    "INSERT INTO bp3_t (id, status, legacy_note) VALUES ('r1', 'in_review', 'important-legacy-data')"
+  )
+
+  const bpSchema3 = {
+    bp3_t: {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        status: {
+          type: 'TEXT',
+          notNull: true,
+          default: "'idle'",
+          check: "CHECK (status IN ('idle','archived'))"
+        }
+        // legacy_note intentionally absent, and no dropColumns entry for it.
+      },
+      normalizeOnRebuild: {
+        status: "CASE WHEN status IN ('idle','archived') THEN status ELSE 'idle' END"
+      }
+    }
+  }
+
+  const plan3 = planSync(bpdb3, bpSchema3)
+  assert.ok(
+    plan3.some((op) => op.kind === 'rebuildTable' && op.table === 'bp3_t'),
+    'backup-path fixture (3): expected a rebuildTable op'
+  )
+
+  sync(bpdb3, bpSchema3, { dbPath: dbPath3, legacyVersion: 0 })
+
+  const survivorRow = bpdb3
+    .prepare('SELECT status, legacy_note FROM bp3_t WHERE id = ?')
+    .get('r1') as {
+    status: string
+    legacy_note: string | null
+  }
+  assert.equal(survivorRow.status, 'idle', 'backup-path (3): status must have been normalized')
+  assert.equal(
+    survivorRow.legacy_note,
+    'important-legacy-data',
+    'backup-path (3): undeclared live column data must survive the rebuild (FIX 3)'
+  )
+
+  bpdb3.close()
+  fs.rmSync(dir3, { recursive: true, force: true })
+
+  // --- (4) DEFAULT-only drift triggers a rebuild (FIX 5) ------------------
+  const dpdb = new Database(':memory:')
+  dpdb.exec(`CREATE TABLE bp4_t (id TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'off')`)
+  const bpSchema4 = {
+    bp4_t: {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        // Same type/notNull/pk/check as live — ONLY the default differs.
+        mode: { type: 'TEXT', notNull: true, default: "'on'" }
+      }
+    }
+  }
+  const plan4 = planSync(dpdb, bpSchema4)
+  assert.deepEqual(
+    plan4,
+    [{ kind: 'rebuildTable', table: 'bp4_t', reason: 'mode DEFAULT differs' }],
+    'backup-path (4): a DEFAULT-only drift must plan a rebuildTable'
+  )
+  dpdb.close()
+
+  console.log('✓ backup-path')
+}

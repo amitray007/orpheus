@@ -19,6 +19,18 @@ function backupBefore(db: Database.Database, dbPath: string, legacyVersion: numb
     return backupPath
   }
 
+  // VACUUM INTO throws "output file already exists" if the target is already
+  // on disk. A stray file here means a prior migration attempt crashed after
+  // taking this exact backup but before reaching convergence (the cleanup in
+  // onCleanBoot/sweepOrphans only runs post-convergence, so it never got a
+  // chance to sweep this one) — on the next boot we'd recompute this same
+  // path and VACUUM INTO would throw forever, boot-crash-looping. It's safe
+  // to discard: we're about to write a fresh backup of the current
+  // pre-migration state anyway.
+  if (fs.existsSync(backupPath)) {
+    fs.rmSync(backupPath, { force: true })
+  }
+
   const escapedPath = backupPath.replace(/'/g, "''")
   db.exec(`VACUUM INTO '${escapedPath}'`)
 

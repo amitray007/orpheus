@@ -17,6 +17,28 @@ function columnHasDefault(def: ColumnDef): boolean {
   return def.default !== undefined
 }
 
+// Render a standalone column-definition fragment (name + type + NOT NULL +
+// default) for a LIVE column, so it can be appended to the shadow __new
+// table via ALTER TABLE ... ADD COLUMN. Used only for "carry-over" columns —
+// live columns that are undeclared in `desired` and not in `dropColumns`,
+// which diff.ts's contract says must be left alone (never silently dropped),
+// even when the table happens to rebuild for an unrelated reason (e.g. a
+// CHECK change on a sibling column). We don't have the column's original
+// CHECK/PK text handy from LiveColumn (it only exposes type/notNull/dflt),
+// so this reconstructs a best-effort def from live introspection — enough to
+// preserve the column and its data, which is the load-bearing guarantee.
+function renderCarryOverColumnFragment(col: {
+  name: string
+  type: string
+  notNull: boolean
+  dflt: string | null
+}): string {
+  let out = `"${col.name}" ${col.type}`
+  if (col.notNull) out += ' NOT NULL'
+  if (col.dflt !== null) out += ` DEFAULT ${col.dflt}`
+  return out
+}
+
 // Perform SQLite's documented 12-step "rebuild" procedure to change a table's
 // structure in place while preserving data: create a shadow table with the
 // desired shape, copy rows across (applying any normalizeOnRebuild coercions
@@ -60,8 +82,28 @@ function rebuildTable(
     const desiredColumnNames = Object.keys(desired.columns)
     const shared = desiredColumnNames.filter((col) => liveColumnNames.has(col))
 
-    const insertColumns = shared.map((col) => `"${col}"`).join(', ')
-    const selectExprs = shared
+    // Carry-over columns: live columns that are UNDECLARED in `desired` and
+    // NOT in `desired.dropColumns`. diff.ts's contract for these is "no op
+    // at all" (see diff.ts's dropColumns handling) — a stray live column is
+    // left alone. But if the table rebuilds for any other reason, the
+    // shadow-table swap would otherwise drop it (and its data) silently,
+    // since it's absent from the desired CREATE. Preserve it by adding it to
+    // the shadow table via ALTER TABLE before the INSERT, using its live
+    // type/notNull/default as a best-effort reconstruction.
+    const dropColumns = new Set(desired.dropColumns ?? [])
+    const carryOverColumns = live.columns.filter(
+      (c) => !desiredColumnNames.includes(c.name) && !dropColumns.has(c.name)
+    )
+    for (const col of carryOverColumns) {
+      db.exec(`ALTER TABLE "${newTableName}" ADD COLUMN ${renderCarryOverColumnFragment(col)}`)
+    }
+
+    const allCopyColumns = [...shared, ...carryOverColumns.map((c) => c.name)]
+
+    const insertColumns = allCopyColumns.map((col) => `"${col}"`).join(', ')
+    // Carry-over columns have no normalizeOnRebuild entry (they're not part
+    // of `desired` at all) — copy verbatim.
+    const selectExprs = allCopyColumns
       .map((col) => desired.normalizeOnRebuild?.[col] ?? `"${col}"`)
       .join(', ')
     const insertSql = `INSERT INTO "${newTableName}" (${insertColumns}) SELECT ${selectExprs} FROM "${name}"`

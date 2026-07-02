@@ -2,11 +2,25 @@ import type Database from 'better-sqlite3'
 import type { ColumnDef, SchemaDef } from './types'
 import type { LiveTable } from './introspect'
 import type { PlanOp } from './diff'
-import { introspectTable } from './introspect'
+import { introspectTable, listTables } from './introspect'
 import { diffTable } from './diff'
 import { renderCreateTable, renderIndex } from './render'
 import { backupBefore } from './backup'
 import { rebuildTable } from './rebuild'
+
+// A DB counts as a "fresh install" (safe to skip the pre-destructive-op
+// backup) only when it has NO pre-existing user tables at all. This is
+// deliberately NOT the same thing as `legacyVersion === 0`: after the first
+// cutover drops the schema_version table, every subsequent boot of an
+// already-converged DB also detects legacyVersion 0 — but that DB has real
+// user tables (and potentially secrets), so a later schema evolution on it
+// must still be backed up before any destructive op. `applied_data_steps` is
+// the migration engine's own bookkeeping table (see data-steps.ts) — its
+// presence alone doesn't count as "has user data", so it's excluded here too.
+function isFreshInstall(db: Database.Database): boolean {
+  const tables = listTables(db).filter((t) => t !== 'applied_data_steps' && t !== 'schema_version')
+  return tables.length === 0
+}
 
 // Mirrors render.ts's private renderColumn — kept local (not exported from
 // render.ts) so engine.ts can emit a single ALTER TABLE ... ADD COLUMN
@@ -73,7 +87,8 @@ function planSync(db: Database.Database, schema: SchemaDef): PlanOp[] {
 // Execute the reconciliation plan against the live DB inside a single
 // transaction. Logs each op (structurally only — {table, kind}, never the
 // full op) before executing it. Takes a single pre-destructive-op backup
-// (unless dbPath is ':memory:' or legacyVersion is 0).
+// (unless dbPath is ':memory:' or the DB is a fresh install with no
+// pre-existing user tables — see isFreshInstall()).
 function sync(
   db: Database.Database,
   schema: SchemaDef,
@@ -85,7 +100,13 @@ function sync(
 ): void {
   const plan = planSync(db, schema)
 
-  const skipBackup = opts.dbPath === ':memory:' || opts.legacyVersion === 0
+  // Skip the backup only for an in-memory DB (nothing durable to protect) or
+  // a genuinely fresh install (no pre-existing user tables — nothing to lose
+  // yet). Do NOT key this off legacyVersion === 0: that's also true for any
+  // already-cutover on-disk DB (schema_version is dropped post-cutover), so
+  // using it here would skip backups for real user data on every later
+  // schema evolution. See isFreshInstall() above.
+  const skipBackup = opts.dbPath === ':memory:' || isFreshInstall(db)
   let backedUp = false
 
   // rebuildTable() manages its own BEGIN/COMMIT/ROLLBACK transaction
@@ -128,6 +149,14 @@ function sync(
   try {
     for (const op of plan) {
       if (!backedUp && !skipBackup && (op.kind === 'rebuildTable' || op.kind === 'dropColumn')) {
+        // VACUUM INTO (inside backupBefore) is forbidden while a transaction
+        // is open. A prior addColumn/createTable op in this same loop may
+        // have left `inTxn` true via beginIfNeeded(). Flush it first — this
+        // is safe: VACUUM INTO is a read-only snapshot, and committing
+        // pending DDL before snapshotting is the correct order anyway (the
+        // backup should reflect the DB state right before the destructive
+        // op, including any DDL that already landed this run).
+        commitIfNeeded()
         backupBefore(db, opts.dbPath, opts.legacyVersion)
         backedUp = true
       }

@@ -14,6 +14,7 @@ interface ResolvedColumn {
   notNull: boolean
   pk: boolean
   check: string | null
+  default: string | null
 }
 
 // SQLite type-affinity classes: normalize case + common aliases so cosmetic
@@ -40,6 +41,28 @@ function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim()
 }
 
+// Normalize a DEFAULT value for comparison between our schema DSL's rendered
+// text and SQLite's own canonical rendering (via PRAGMA table_info's
+// dflt_value). SQLite re-renders literals in its own form (e.g. it may
+// strip/normalize surrounding whitespace, and represents string literals
+// with single quotes) — normalize both sides the same way so cosmetic
+// differences don't false-trigger a rebuild:
+//   - trim outer whitespace
+//   - collapse internal whitespace
+//   - strip one layer of enclosing parens some SQLite versions add around
+//     non-literal expressions (e.g. "(0)")
+function normalizeDefault(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null
+  let s = normalizeWhitespace(raw)
+  // Strip a single layer of enclosing parens, e.g. "(0)" -> "0", but leave
+  // multi-token expressions like "(strftime('%s','now'))" whose outer parens
+  // SQLite also normalizes away consistently in dflt_value — safe to strip
+  // in both cases since both sides go through this same function.
+  const parenMatch = s.match(/^\((.*)\)$/)
+  if (parenMatch) s = normalizeWhitespace(parenMatch[1])
+  return s
+}
+
 // Parse a bare-string ColumnDef (e.g. "TEXT PRIMARY KEY", "INTEGER") into its
 // resolved shape. Pragmatic, regex-based — not a full SQL parser. Handles the
 // fragments the schema DSL actually uses: leading type token, PRIMARY KEY,
@@ -52,7 +75,14 @@ function parseStringColumnDef(def: string): ResolvedColumn {
   const notNull = /\bNOT\s+NULL\b/i.test(trimmed)
   const checkMatch = trimmed.match(/\bCHECK\s*(\([\s\S]*\))/i)
   const check = checkMatch ? normalizeWhitespace(checkMatch[1]) : null
-  return { type, notNull, pk, check }
+  // DEFAULT ... runs up to the next recognized keyword (NOT/CHECK/PRIMARY) or
+  // end of string. Handles quoted-string, numeric, and parenthesized-
+  // expression defaults.
+  const defaultMatch = trimmed.match(
+    /\bDEFAULT\s+('(?:[^']|'')*'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+)/i
+  )
+  const defaultValue = defaultMatch ? normalizeDefault(defaultMatch[1]) : null
+  return { type, notNull, pk, check, default: defaultValue }
 }
 
 function resolveColumnDef(def: ColumnDef): ResolvedColumn {
@@ -66,7 +96,8 @@ function resolveColumnDef(def: ColumnDef): ResolvedColumn {
     type: def.type,
     notNull: !!def.notNull,
     pk: !!def.primaryKey,
-    check: check ? normalizeWhitespace(check) : null
+    check: check ? normalizeWhitespace(check) : null,
+    default: normalizeDefault(def.default)
   }
 }
 
@@ -207,6 +238,12 @@ function diffTable(name: string, desired: TableDef, live: LiveTable | null): Pla
     const desiredCheck = resolved.check
     if ((desiredCheck ?? null) !== (liveCheck ?? null)) {
       rebuildReason = `${colName} CHECK differs`
+      continue
+    }
+
+    const liveDefault = normalizeDefault(liveCol.dflt)
+    if (resolved.default !== liveDefault) {
+      rebuildReason = `${colName} DEFAULT differs`
       continue
     }
   }

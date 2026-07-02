@@ -77,12 +77,27 @@ function runMigrations(db: Database.Database, opts: { dbPath: string }): void {
   //    this is the ordering the pre-v28 in_review hazard depends on. A step
   //    can legitimately fail here with a CHECK-constraint error if it writes
   //    a value the live (not-yet-widened) CHECK doesn't accept yet; that's
-  //    tolerated because sync()'s rebuild + normalizeOnRebuild (step 4) is
-  //    the guaranteed backstop. Any other failure is a real bug — rethrow.
+  //    tolerated (LOGGED, not silently swallowed) because sync()'s rebuild +
+  //    normalizeOnRebuild (step 4) is the guaranteed backstop, and step 4b
+  //    below retries this exact step once the CHECK has widened. Any other
+  //    failure is a real bug — rethrow immediately.
+  //
+  //    The tolerance here is deliberately narrow: it only prevents a
+  //    known-benign CHECK failure from aborting the cutover early. It does
+  //    NOT mean the failure is invisible — it's logged so a genuine bug
+  //    hiding behind a CHECK error isn't silently lost. And if the retry in
+  //    step 4b fails AGAIN with the same step, THAT failure is not caught
+  //    here at all — it propagates out of runDataSteps(), because a step
+  //    that still can't write after the CHECK was widened is a real bug, not
+  //    the known hazard.
   try {
     runDataSteps(db, { preRebuild: true })
   } catch (err) {
     if (!isCheckConstraintError(err)) throw err
+    console.warn(
+      '[db/cutover] preRebuild data step hit a CHECK constraint failure before sync() widened the schema — tolerating and retrying after sync (step 4b). If this step fails again post-sync, that error will propagate.',
+      err instanceof Error ? err.message : err
+    )
   }
 
   // 4. Converge the schema structurally (create/add/rebuild/index ops).
