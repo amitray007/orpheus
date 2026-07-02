@@ -44,6 +44,16 @@ function bool(name: string, def: '0' | '1' = '0'): ColumnDef {
   }
 }
 
+// A normalizeOnRebuild CASE expression that coerces an out-of-range enum
+// value to `fallback` (the column's own DEFAULT) during a rebuild's
+// shadow-table copy. Built from the same shared enum array the CHECK itself
+// is built from, so the IN-list can never drift from enumCheck's. Mirrors
+// the hand-written CASE expressions already used for workspaces.status /
+// sessions.status / keep_awake_settings.mode.
+function enumCoerce(col: string, values: readonly string[], fallback: string): string {
+  return `CASE WHEN ${col} IN (${values.map((v) => `'${v}'`).join(', ')}) THEN ${col} ELSE '${fallback}' END`
+}
+
 export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
   // projects
@@ -118,7 +128,7 @@ export const schema: SchemaDef = {
       // archived historically, but keep a coercion in case a future rebuild
       // is triggered against a drifted live row so unknown values don't
       // block convergence.
-      status: `CASE WHEN status IN (${SESSION_STATUS.map((v) => `'${v}'`).join(', ')}) THEN status ELSE 'in_review' END`
+      status: enumCoerce('status', SESSION_STATUS, 'in_review')
     }
   },
 
@@ -327,6 +337,22 @@ export const schema: SchemaDef = {
       additional_dirs_claude_md: bool('additional_dirs_claude_md', '0'),
       ghostty_config_json: { type: 'TEXT', notNull: true, default: "'{}'" },
       updated_at: 'INTEGER NOT NULL'
+    },
+    normalizeOnRebuild: {
+      // Defensive backstop for a table holding plaintext secrets (id=1
+      // singleton): if a pre-existing DB somehow has an out-of-range enum
+      // value in one of these columns (e.g. a legacy column added via ALTER
+      // before it had a CHECK), a rebuild's shadow-table copy would throw
+      // "CHECK constraint failed" and brick app startup with no fallback.
+      // Coerce out-of-range values to each column's own DEFAULT instead —
+      // mirrors workspaces.status's existing backstop.
+      permission_mode: enumCoerce('permission_mode', PERMISSION_MODE, 'default'),
+      effort: enumCoerce('effort', EFFORT, 'auto'),
+      output_style: enumCoerce('output_style', OUTPUT_STYLE, 'default'),
+      tui_mode: enumCoerce('tui_mode', TUI_MODE, 'default'),
+      editor_mode: enumCoerce('editor_mode', EDITOR_MODE, 'normal'),
+      log_level: enumCoerce('log_level', LOG_LEVEL, 'info'),
+      cloud_provider: enumCoerce('cloud_provider', CLOUD_PROVIDER, 'anthropic')
     }
   },
 
@@ -588,7 +614,7 @@ export const schema: SchemaDef = {
       // No historical CHECK drift observed for this table (introduced at
       // v62 already at its final shape), but provide a safe coercion in
       // case a future rebuild encounters an unknown value.
-      mode: `CASE WHEN mode IN (${KEEP_AWAKE_MODE.map((v) => `'${v}'`).join(', ')}) THEN mode ELSE 'auto' END`
+      mode: enumCoerce('mode', KEEP_AWAKE_MODE, 'auto')
     }
   }
 }
