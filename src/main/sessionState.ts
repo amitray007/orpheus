@@ -24,7 +24,7 @@ import { DIAG_EVENTS } from '../shared/diagEvents'
 // ---------------------------------------------------------------------------
 
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions')
-const KNOWN_GOOD_VERSIONS = new Set(['2.1.190'])
+const KNOWN_GOOD_VERSIONS = new Set(['2.1.190', '2.1.198'])
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +78,8 @@ let stopped = false
 
 /** Tracks filenames that have already emitted a parse-error warning; cleared when file becomes valid or disappears. */
 const knownBadSessionFiles = new Set<string>()
+/** Tracks claude versions that have already emitted an unknown-version warning; never cleared (bounded by distinct versions seen). */
+const warnedVersions = new Set<string>()
 /** Tracks pids that have already emitted a dead-pid warning. Pids are recycled OS-wide but accumulation is bounded. */
 const deadPidReported = new Set<number>()
 
@@ -327,7 +329,8 @@ async function reconcile(): Promise<void> {
       if (!parsed.sessionId) continue
 
       // Check for unknown versions
-      if (!KNOWN_GOOD_VERSIONS.has(parsed.version)) {
+      if (!KNOWN_GOOD_VERSIONS.has(parsed.version) && !warnedVersions.has(parsed.version)) {
+        warnedVersions.add(parsed.version)
         console.warn(
           `[sessionState] warning: unknown claude version "${parsed.version}" in session file (pid=${parsed.pid} sessionId=${parsed.sessionId})`
         )
