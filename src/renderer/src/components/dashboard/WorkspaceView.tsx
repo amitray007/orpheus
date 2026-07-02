@@ -194,8 +194,11 @@ export function WorkspaceView({
 
   // Native-modal-driven worktree reconcile error card. Fires whenever
   // terminal:mount returns a worktreeError (surface not mounted). Rendered
-  // through the native chassis (not a React <div>) so it can't be occluded by
-  // a live libghostty surface even if the user navigates back to one.
+  // through the native chassis (not an in-window React <div>, which would be
+  // occluded by a live libghostty surface — see
+  // docs/learnings/overlay-child-window-macos.md) even if the user navigates
+  // back to one. This predates the child-window overlay layer and is the
+  // USE_REACT_OVERLAYS=false fallback pending migration.
   // All three actions (Retry / Open location / Convert to local) resolve the
   // modal and perform their action; re-opening the workspace re-triggers this
   // effect if the underlying problem persists.
@@ -761,8 +764,12 @@ export function WorkspaceView({
               />
             )}
             {/* Worktree reconcile error — shown as a NATIVE confirm modal (see the
-                effect above) instead of a React overlay, so it renders above the
-                libghostty terminal surface and can't be occluded. */}
+                effect above) instead of an in-window React overlay, so it renders
+                above the libghostty terminal surface without being occluded. The
+                child-window overlay layer (overlayClient.ts) is the current
+                mechanism for React UI above the terminal; this native modal is
+                the legacy USE_REACT_OVERLAYS=false fallback pending migration —
+                see docs/learnings/overlay-child-window-macos.md. */}
             {/* One-time notice banner (e.g. "started fresh on branch X") — shown
                 briefly after a successful mount and auto-dismissed after 6 s. */}
             {active && notice && (

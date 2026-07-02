@@ -341,8 +341,12 @@ export function hideNativePopover(workspaceId: string): void {
 
 // ── Native confirm modal ─────────────────────────────────────────────────────
 //
-// Renders a centered, dimmed, native modal ABOVE the terminal surface (React
-// modals get occluded by the live libghostty NSView; this chassis doesn't).
+// Renders a centered, dimmed, native modal ABOVE the terminal surface. In-window
+// React modals get occluded by the live libghostty NSView (still true — see
+// docs/learnings/overlay-child-window-macos.md); the current fix for that is
+// the child-window React overlay layer (overlayClient.ts), not this native
+// chassis. This modal predates that layer and is kept as the
+// USE_REACT_OVERLAYS=false fallback pending migration.
 // Each call gets its own synthetic workspaceId ("modal:<uuid>") so concurrent
 // modals (unlikely, but not disallowed) never collide with each other or with
 // real workspace popover actions.

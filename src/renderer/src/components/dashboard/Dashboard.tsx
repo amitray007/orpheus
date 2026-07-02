@@ -1156,8 +1156,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // cases). Shows the "branch is kept" confirm first; if the backend detects
   // uncommitted changes (wasDirty:true) it escalates to a "Remove anyway"
   // confirm before actually force-removing. Both confirms render via the
-  // native chassis (showConfirmModal) so they're never occluded by the
-  // libghostty terminal surface.
+  // native chassis (showConfirmModal), which is not occluded by the
+  // libghostty terminal surface. That chassis predates the child-window React
+  // overlay layer (overlayClient.ts) and is now the USE_REACT_OVERLAYS=false
+  // fallback pending migration — see
+  // docs/learnings/overlay-child-window-macos.md.
   const runWorktreeArchiveFlow = useCallback(
     async (workspace: WorkspaceRecord, projectId: string): Promise<void> => {
       // Cancel/error paths below don't run finishWorktreeArchive (which owns
@@ -1465,8 +1468,12 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
         <main
           className={
-            // Workspace view: terminal always sits above web layer (native z-order),
-            // so this container stays transparent to let the NSView paint through.
+            // Workspace view: the libghostty terminal NSView always sits above
+            // this window's web layer (native z-order), so this container stays
+            // transparent to let it paint through. React UI that needs to sit
+            // above the terminal uses the child-window overlay layer
+            // (overlayClient.ts) instead — see
+            // docs/learnings/overlay-child-window-macos.md.
             mainContainerClassName(view.kind)
           }
         >
