@@ -13,6 +13,7 @@ import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
+import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
@@ -756,39 +757,39 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // success so a cancelled mid-flight fetch retries on re-mount.
     const missing = workspaces.filter((w) => !hasFetchedRef.current!.has(w.id))
 
-    // Git + PR: concurrent per-workspace using Promise.allSettled
+    // Git + PR: concurrent per-workspace, capped at 5 in-flight to avoid
+    // unbounded subprocess fan-out (via mapWithConcurrency) when a project
+    // has many workspaces.
     if (missing.length > 0) {
-      Promise.allSettled(
-        missing.map(async (ws) => {
-          let status: GitStatus | null = null
-          try {
-            status = await window.api.git.status(ws.cwd)
-            if (!cancelled) {
-              // Mark as fetched only after a successful response so a
-              // cancelled mid-flight fetch retries on re-mount.
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, status)
-            }
-          } catch (err) {
-            console.error('[dashboard] git status failed for', ws.id, err)
-            if (!cancelled) {
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, null)
-            }
+      mapWithConcurrency(missing, 5, async (ws) => {
+        let status: GitStatus | null = null
+        try {
+          status = await window.api.git.status(ws.cwd)
+          if (!cancelled) {
+            // Mark as fetched only after a successful response so a
+            // cancelled mid-flight fetch retries on re-mount.
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, status)
           }
-          if (status?.branch) {
-            try {
-              const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
-              if (!cancelled) setPr(ws.id, pr)
-            } catch (err) {
-              console.error('[dashboard] gh pr lookup failed for', ws.id, err)
-              if (!cancelled) setPr(ws.id, null)
-            }
-          } else {
+        } catch (err) {
+          console.error('[dashboard] git status failed for', ws.id, err)
+          if (!cancelled) {
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, null)
+          }
+        }
+        if (status?.branch) {
+          try {
+            const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
+            if (!cancelled) setPr(ws.id, pr)
+          } catch (err) {
+            console.error('[dashboard] gh pr lookup failed for', ws.id, err)
             if (!cancelled) setPr(ws.id, null)
           }
-        })
-      ).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
+        } else {
+          if (!cancelled) setPr(ws.id, null)
+        }
+      }).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
     }
 
     // Titles: seed from getTitle for all workspaces in this poll key

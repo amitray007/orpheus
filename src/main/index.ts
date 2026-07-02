@@ -1335,11 +1335,8 @@ handle(
       // caller hasn't set force, return early having removed NOTHING — so the
       // user can cancel the confirmation without losing clean worktrees.
       if (!force) {
-        let dirtyCount = 0
-        for (const ws of worktreeWorkspaces) {
-          const dirty = await isWorktreeDirty(ws.cwd)
-          if (dirty) dirtyCount++
-        }
+        const results = await Promise.all(worktreeWorkspaces.map((ws) => isWorktreeDirty(ws.cwd)))
+        const dirtyCount = results.filter(Boolean).length
         if (dirtyCount > 0) {
           return { deleted: false, dirtyWorktrees: dirtyCount }
         }

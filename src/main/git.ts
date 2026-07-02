@@ -296,43 +296,48 @@ async function refreshGitForDir(dir: string): Promise<void> {
   if (entry.clients.size === 0) return
 
   // Re-run git status for each client workspace; detect branch changes and
-  // refresh PRs if the branch flipped.
+  // refresh PRs if the branch flipped. Each client is independent (keyed by
+  // its own workspaceId/webContents), so fan these out in parallel instead
+  // of serializing one git subprocess round-trip per client.
+  // also addresses PERF-5
   const clientList = Array.from(entry.clients.entries())
-  for (const [workspaceId, client] of clientList) {
-    const { cwd, webContents, lastBranch } = client
-    if (webContents.isDestroyed()) continue
+  await Promise.all(
+    clientList.map(async ([workspaceId, client]) => {
+      const { cwd, webContents, lastBranch } = client
+      if (webContents.isDestroyed()) return
 
-    let status: GitStatus | null = null
-    try {
-      status = await getGitStatus(cwd)
-    } catch {
-      // git may be unavailable or cwd may have been deleted — skip
-    }
-
-    if (!webContents.isDestroyed() && status !== null) {
-      webContents.send('git:statusChanged', { workspaceId, status })
-    }
-
-    // If branch changed, also refresh the PR
-    const newBranch = status?.branch ?? null
-    if (newBranch !== lastBranch) {
-      client.lastBranch = newBranch
-      if (newBranch) {
-        getPrForBranch(cwd, newBranch)
-          .then((pr) => {
-            if (!webContents.isDestroyed()) {
-              webContents.send('github:prChanged', { workspaceId, pr })
-            }
-          })
-          .catch(() => {
-            /* gh unavailable — ignore */
-          })
-      } else if (!webContents.isDestroyed()) {
-        // Detached HEAD or no branch — clear the PR chip
-        webContents.send('github:prChanged', { workspaceId, pr: null })
+      let status: GitStatus | null = null
+      try {
+        status = await getGitStatus(cwd)
+      } catch {
+        // git may be unavailable or cwd may have been deleted — skip
       }
-    }
-  }
+
+      if (!webContents.isDestroyed() && status !== null) {
+        webContents.send('git:statusChanged', { workspaceId, status })
+      }
+
+      // If branch changed, also refresh the PR
+      const newBranch = status?.branch ?? null
+      if (newBranch !== lastBranch) {
+        client.lastBranch = newBranch
+        if (newBranch) {
+          getPrForBranch(cwd, newBranch)
+            .then((pr) => {
+              if (!webContents.isDestroyed()) {
+                webContents.send('github:prChanged', { workspaceId, pr })
+              }
+            })
+            .catch(() => {
+              /* gh unavailable — ignore */
+            })
+        } else if (!webContents.isDestroyed()) {
+          // Detached HEAD or no branch — clear the PR chip
+          webContents.send('github:prChanged', { workspaceId, pr: null })
+        }
+      }
+    })
+  )
 }
 
 function scheduleRefresh(dir: string): void {
