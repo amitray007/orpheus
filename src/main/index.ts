@@ -607,7 +607,7 @@ function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
   const re = /(?:^|\s)--([a-zA-Z-]+)(?:\s+(\S+))?/g
   let match: RegExpExecArray | null
   while ((match = re.exec(flags)) !== null) {
-    tokens.push({ name: match[1] as string, raw: match[0].trim() })
+    tokens.push({ name: match[1], raw: match[0].trim() })
   }
   return tokens
 }
@@ -635,6 +635,45 @@ function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
 // since nothing else diverged) value, so patched === fresh. If something else
 // DID change, that other token is deliberately reverted to OLD's stale value,
 // so patched !== fresh and recomputeDirty() below still correctly flags it.
+// Reconstructs `fresh.flags` with every flag NAME other than `flagName`
+// restored to its OLD token text wherever old and fresh disagree (including
+// one side having the flag and the other not). `flagName` itself is always
+// left as fresh's value. See `setWorkspaceSettingAndSuppressDirty` for why.
+function reconcileFlagsExceptTarget(
+  oldFlags: string,
+  freshFlags: string,
+  flagName: 'model' | 'effort'
+): string {
+  const oldByName = new Map(parseFlagTokens(oldFlags).map((t) => [t.name, t.raw]))
+  const freshByName = new Map(parseFlagTokens(freshFlags).map((t) => [t.name, t.raw]))
+  const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
+
+  let patchedFlags = freshFlags
+  for (const name of allNames) {
+    if (name === flagName) continue // leave fresh's value — this is the wanted change
+    const oldRaw = oldByName.get(name)
+    const freshRaw = freshByName.get(name)
+    if (oldRaw === freshRaw) continue // unchanged — nothing to restore
+
+    if (freshRaw !== undefined && oldRaw !== undefined) {
+      // Present in both, but differing value — replace fresh's token text
+      // with old's token text.
+      patchedFlags = patchedFlags.replace(freshRaw, oldRaw)
+    } else if (freshRaw !== undefined && oldRaw === undefined) {
+      // Fresh has it, old didn't — remove fresh's token.
+      patchedFlags = patchedFlags.replace(freshRaw, '').trim()
+    } else if (oldRaw !== undefined && freshRaw === undefined) {
+      // Old had it, fresh doesn't — append old's token back (exact insertion
+      // position doesn't matter: this branch only runs when some OTHER flag
+      // already changed, which already makes patched !== fresh, satisfying
+      // the invariant regardless of where we splice it back in).
+      patchedFlags = `${patchedFlags} ${oldRaw}`.trim()
+    }
+  }
+  // Normalize whitespace left behind by removals/replacements.
+  return patchedFlags.replace(/\s+/g, ' ').trim()
+}
+
 function setWorkspaceSettingAndSuppressDirty(
   workspaceId: string,
   patch: Partial<{ model: string; effort: ClaudeEffort }>,
@@ -649,38 +688,7 @@ function setWorkspaceSettingAndSuppressDirty(
       // Recompose fresh — this reflects the NEW value (already persisted
       // above) plus whatever ELSE currently differs from the snapshot.
       const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
-
-      const oldTokens = parseFlagTokens(snap.flags)
-      const freshTokens = parseFlagTokens(fresh.flags)
-      const oldByName = new Map(oldTokens.map((t) => [t.name, t.raw]))
-      const freshByName = new Map(freshTokens.map((t) => [t.name, t.raw]))
-
-      const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
-      let patchedFlags = fresh.flags
-      for (const name of allNames) {
-        if (name === flagName) continue // leave fresh's value — this is the wanted change
-        const oldRaw = oldByName.get(name)
-        const freshRaw = freshByName.get(name)
-        if (oldRaw === freshRaw) continue // unchanged — nothing to restore
-
-        if (freshRaw !== undefined && oldRaw !== undefined) {
-          // Present in both, but differing value — replace fresh's token text
-          // with old's token text.
-          patchedFlags = patchedFlags.replace(freshRaw, oldRaw)
-        } else if (freshRaw !== undefined && oldRaw === undefined) {
-          // Fresh has it, old didn't — remove fresh's token.
-          patchedFlags = patchedFlags.replace(freshRaw, '').trim()
-        } else if (oldRaw !== undefined && freshRaw === undefined) {
-          // Old had it, fresh doesn't — append old's token back (exact
-          // insertion position doesn't matter: this branch only runs when
-          // some OTHER flag already changed, which already makes
-          // patched !== fresh, satisfying the invariant regardless of where
-          // we splice it back in).
-          patchedFlags = `${patchedFlags} ${oldRaw}`.trim()
-        }
-      }
-      // Normalize whitespace left behind by removals/replacements.
-      patchedFlags = patchedFlags.replace(/\s+/g, ' ').trim()
+      const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
 
       // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
       launchSnapshots.set(workspaceId, { ...snap, flags: patchedFlags })
