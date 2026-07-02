@@ -1,1 +1,1 @@
-bun run typecheck && bunx eslint . --cache --max-warnings=169 && bunx prettier --check .
+bun run typecheck && bunx eslint . --cache --max-warnings=160 && bunx prettier --check .
