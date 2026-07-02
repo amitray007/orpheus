@@ -79,6 +79,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const selectedProjectIdRef = useRef<string | null>(null)
   const workspacesByProjectRef = useRef<Record<string, WorkspaceRecord[]>>({})
   const projectsRef = useRef<ProjectRecord[]>([])
+  // Per-project monotonic request counter so an in-flight fetchWorkspacesForProject
+  // call that resolves after a newer call for the same project can't clobber the
+  // fresher result (or wrongly blank the list on a stale error). Written directly,
+  // not mirrored from state — no useLayoutEffect sync needed.
+  const fetchSeqRef = useRef<Record<string, number>>({})
   // Stable callback ref — lets the zero-dep onNavigateTo effect always call
   // the latest handleSelectWorkspace without re-subscribing on every render.
   const handleSelectWorkspaceRef = useRef<(workspaceId: string, projectId: string) => void>(
@@ -283,11 +288,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // requiring this effect to re-subscribe on every render.
   useEffect(() => {
     return window.api.workspaces.onArchived(({ workspaceId, projectId }) => {
-      // Remove the workspace from local cache.
+      // Remove the workspace from local cache. Also captures the post-removal
+      // list via a plain closure variable so the nav side-effects below can
+      // read the up-to-date remaining list without depending on ref timing
+      // (workspacesByProjectRef only syncs via useLayoutEffect after commit,
+      // so it may still be stale at this point in the same tick). Assigning a
+      // local `let` inside the updater is a pure, idempotent operation (safe
+      // under StrictMode double-invocation) — no side effects run inside it.
+      let remainingAfterRemoval: WorkspaceRecord[] = []
       setWorkspacesByProject((prev) => {
         const list = prev[projectId]
         if (!list) return prev
         const next = list.filter((w) => w.id !== workspaceId)
+        remainingAfterRemoval = next
         return { ...prev, [projectId]: next }
       })
       // De-race: if this client's own archive flow (finishWorktreeArchive /
@@ -304,32 +317,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
       // If this was the active workspace, navigate to a fallback.
       if (!wasLocallyOwned && selectedWorkspaceIdRef.current === workspaceId) {
-        setWorkspacesByProject((prev) => {
-          const remaining = (prev[projectId] ?? []).filter((w) => w.id !== workspaceId)
-          if (remaining.length > 0) {
-            // Navigate to the first remaining workspace in the project.
-            const next = remaining[0]
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(next.id)
-            setView({ kind: 'workspace', workspaceId: next.id, projectId })
-            window.api.uiState
-              .update({
-                lastViewKind: 'workspace',
-                lastProjectId: projectId,
-                lastWorkspaceId: next.id
-              })
-              .catch(console.error)
-          } else {
-            // No workspaces left — go to the project view.
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(null)
-            setView({ kind: 'project', projectId })
-            window.api.uiState
-              .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
-              .catch(console.error)
-          }
-          return prev // no change — already updated above
-        })
+        const remaining = remainingAfterRemoval
+        if (remaining.length > 0) {
+          // Navigate to the first remaining workspace in the project.
+          const next = remaining[0]
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(next.id)
+          setView({ kind: 'workspace', workspaceId: next.id, projectId })
+          window.api.uiState
+            .update({
+              lastViewKind: 'workspace',
+              lastProjectId: projectId,
+              lastWorkspaceId: next.id
+            })
+            .catch(console.error)
+        } else {
+          // No workspaces left — go to the project view.
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(null)
+          setView({ kind: 'project', projectId })
+          window.api.uiState
+            .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
+            .catch(console.error)
+        }
       }
       // Clear any stale entries for the deleted workspace from all stores.
       deleteActivity(workspaceId)
@@ -370,12 +380,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // archivedAt at render time. One source of truth — keeps ProjectView in
   // sync when the sidebar mutates workspace state.
   const fetchWorkspacesForProject = useCallback(async (projectId: string): Promise<void> => {
+    const seq = (fetchSeqRef.current[projectId] = (fetchSeqRef.current[projectId] ?? 0) + 1)
     try {
       const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
+      if (seq !== fetchSeqRef.current[projectId]) return
       setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
     } catch (err) {
+      if (seq !== fetchSeqRef.current[projectId]) return
       console.error('[dashboard] failed to load workspaces for', projectId, err)
-      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
+      // Do NOT clobber with [] — keep previously-loaded data, just log.
     }
   }, [])
 
