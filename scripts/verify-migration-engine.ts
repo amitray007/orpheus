@@ -706,3 +706,98 @@ const { runMigrations } = await import('../src/main/db/cutover.ts')
 
   console.log('✓ backup-path')
 }
+
+// ---------------------------------------------------------------------------
+// backup-atomic: exercises FIX A directly — backupBefore() must write to a
+// temp path and only rename over the target on success, so a stale-but-good
+// `.bak-*` from a prior crashed migration is never destroyed by a new backup
+// attempt that itself fails partway (disk full / EIO / permissions). Two
+// cases: (1) VACUUM INTO fails (forced via an unwritable directory) → the
+// pre-existing stale .bak must survive UNCHANGED and no .tmp-* leftover must
+// remain; (2) the success path — a stale .bak is atomically replaced with
+// fresh content and no .tmp-* leftover remains (already partly covered by
+// backup-path case (2), re-asserted here directly against backupBefore()).
+// ---------------------------------------------------------------------------
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-backup-atomic-'))
+  const dbPath = path.join(dir, 'orpheus.sqlite')
+  const abdb = new Database(dbPath)
+  abdb.exec('PRAGMA journal_mode = WAL')
+  abdb.exec("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('x')")
+
+  // Pre-existing stale backup — the only recovery point from a prior crashed
+  // migration attempt.
+  const staleBakPath = `${dbPath}.bak-9`
+  const staleContent = 'stale-but-good-recovery-point'
+  fs.writeFileSync(staleBakPath, staleContent)
+
+  // Force VACUUM INTO to fail by making the directory unwritable, so the tmp
+  // file backupBefore() tries to create there cannot be written.
+  fs.chmodSync(dir, 0o555)
+  let threw = false
+  try {
+    backupBefore(abdb, dbPath, 9)
+  } catch {
+    threw = true
+  } finally {
+    // Restore write permission so we can clean up / inspect the directory.
+    fs.chmodSync(dir, 0o755)
+  }
+  assert.ok(
+    threw,
+    'backup-atomic: backupBefore must throw when VACUUM INTO cannot write its tmp target'
+  )
+
+  // The stale recovery point must be completely untouched.
+  assert.ok(
+    fs.existsSync(staleBakPath),
+    'backup-atomic: the stale .bak must still exist after a failed backup attempt'
+  )
+  assert.equal(
+    fs.readFileSync(staleBakPath, 'utf8'),
+    staleContent,
+    'backup-atomic: the stale .bak content must be unchanged after a failed backup attempt'
+  )
+
+  // No tmp leftover from the failed attempt.
+  const leftoverTmp = fs.readdirSync(dir).filter((f) => f.includes('.tmp-'))
+  assert.deepEqual(
+    leftoverTmp,
+    [],
+    'backup-atomic: no .tmp-* leftover after a failed backup attempt'
+  )
+
+  abdb.close()
+  fs.rmSync(dir, { recursive: true, force: true })
+
+  // --- success path: stale .bak correctly replaced via tmp+rename ----------
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-backup-atomic-ok-'))
+  const dbPath2 = path.join(dir2, 'orpheus.sqlite')
+  const abdb2 = new Database(dbPath2)
+  abdb2.exec('PRAGMA journal_mode = WAL')
+  abdb2.exec("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('y')")
+
+  const staleBakPath2 = `${dbPath2}.bak-9`
+  fs.writeFileSync(staleBakPath2, 'stale-leftover-from-a-crashed-migration')
+
+  const bak = backupBefore(abdb2, dbPath2, 9)
+  assert.equal(bak, staleBakPath2)
+  assert.ok(fs.existsSync(bak), 'backup-atomic: new backup must exist at the target path')
+
+  const newContent = fs.readFileSync(bak)
+  assert.ok(
+    newContent.toString('utf8', 0, 16) !== 'stale-leftover-f',
+    'backup-atomic: stale .bak must be replaced by a real VACUUM snapshot'
+  )
+  const readonlyDb2 = new DatabaseSync(bak, { readOnly: true })
+  assert.equal((readonlyDb2.prepare('SELECT COUNT(*) c FROM t').get() as { c: number }).c, 1)
+  readonlyDb2.close()
+
+  const leftoverTmp2 = fs.readdirSync(dir2).filter((f) => f.includes('.tmp-'))
+  assert.deepEqual(leftoverTmp2, [], 'backup-atomic: no .tmp-* leftover after a successful backup')
+
+  abdb2.close()
+  fs.rmSync(dir2, { recursive: true, force: true })
+
+  console.log('✓ backup-atomic')
+}

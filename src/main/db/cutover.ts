@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3'
+import type { DbLike } from './types'
 import type { PlanOp } from './diff'
 import { sync, planSync } from './engine'
 import { schema } from './schema'
@@ -46,7 +46,7 @@ function isCheckConstraintError(err: unknown): boolean {
  * Detects the legacy `schema_version` a pre-existing DB is stuck at, or 0 for
  * a fresh install / a DB that never had a schema_version table.
  */
-function detectLegacyVersion(db: Database.Database): number {
+function detectLegacyVersion(db: DbLike): number {
   const tableRow = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'")
     .get()
@@ -63,7 +63,7 @@ function detectLegacyVersion(db: Database.Database): number {
  * against an already-converged DB is a no-op (planSync comes back empty, no
  * data step re-runs because the ledger already has every step recorded).
  */
-function runMigrations(db: Database.Database, opts: { dbPath: string }): void {
+function runMigrations(db: DbLike, opts: { dbPath: string }): void {
   // 1. Detect the legacy version this DB is stuck at (0 = fresh install or
   //    already-cutover DB with no schema_version table).
   const legacyVersion = detectLegacyVersion(db)

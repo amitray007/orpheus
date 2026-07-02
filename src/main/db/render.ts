@@ -35,4 +35,4 @@ function renderIndex(table: string, name: string, def: IndexDef): string {
   return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${table}(${columns.join(', ')})${where ? ' WHERE ' + where : ''}`
 }
 
-export { enumCheck, renderCreateTable, renderIndex }
+export { enumCheck, renderColumn, renderCreateTable, renderIndex }

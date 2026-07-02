@@ -1,5 +1,4 @@
-import type Database from 'better-sqlite3'
-import type { ColumnDef, TableDef } from './types'
+import type { ColumnDef, DbLike, TableDef } from './types'
 import type { LiveTable } from './introspect'
 import { renderCreateTable, renderIndex } from './render'
 
@@ -46,12 +45,7 @@ function renderCarryOverColumnFragment(col: {
 // the shadow into place, and recreate indexes. Runs inside its own
 // transaction with foreign_keys disabled for the duration, per SQLite's
 // guidance for schema changes that touch FK-related tables.
-function rebuildTable(
-  db: Database.Database,
-  name: string,
-  desired: TableDef,
-  live: LiveTable
-): void {
+function rebuildTable(db: DbLike, name: string, desired: TableDef, live: LiveTable): void {
   // NOT-NULL guard: fail fast, before touching any SQL, if a newly-required
   // column has no way to be populated for existing rows.
   const liveColumnNames = new Set(live.columns.map((c) => c.name))

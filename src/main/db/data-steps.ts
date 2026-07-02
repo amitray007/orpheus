@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
+import type { DbLike } from './types'
 
 // ---------------------------------------------------------------------------
 // Named, run-once data transforms + ledger.
@@ -40,17 +41,6 @@ interface DataStep {
    */
   alwaysRun?: boolean
   run: (db: DbLike) => void
-}
-
-// Minimal shape both better-sqlite3's Database and node:sqlite's
-// DatabaseSync satisfy — avoids importing either concrete type here.
-interface DbLike {
-  exec(sql: string): unknown
-  prepare(sql: string): {
-    run(...params: unknown[]): unknown
-    all(...params: unknown[]): unknown[]
-    get(...params: unknown[]): unknown
-  }
 }
 
 const dataSteps: DataStep[] = [

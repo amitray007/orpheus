@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3'
+import type { DbLike } from './types'
 
 interface LiveColumn {
   name: string
@@ -35,7 +35,7 @@ interface PragmaIndexListRow {
   unique: number
 }
 
-function introspectTable(db: Database.Database, name: string): LiveTable | null {
+function introspectTable(db: DbLike, name: string): LiveTable | null {
   const tableRow = db
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
     .get(name) as { sql: string } | undefined
@@ -62,7 +62,7 @@ function introspectTable(db: Database.Database, name: string): LiveTable | null 
   return { name, columns, createSql: tableRow.sql, indexes }
 }
 
-function listTables(db: Database.Database): string[] {
+function listTables(db: DbLike): string[] {
   const rows = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all() as { name: string }[]

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type Database from 'better-sqlite3'
+import type { DbLike } from './types'
 
 // Idempotency guard: within a single process run, never re-run VACUUM INTO
 // for a path we've already backed up (e.g. if backupBefore is called more
@@ -12,27 +12,35 @@ const backedUpThisRun = new Set<string>()
 // failed/aborted migration can be recovered from a known-good pre-migration
 // copy. Runs on the main thread deliberately — migrations must not proceed
 // until the backup is durably on disk.
-function backupBefore(db: Database.Database, dbPath: string, legacyVersion: number): string {
+function backupBefore(db: DbLike, dbPath: string, legacyVersion: number): string {
   const backupPath = `${dbPath}.bak-${legacyVersion}`
 
   if (backedUpThisRun.has(backupPath)) {
     return backupPath
   }
 
-  // VACUUM INTO throws "output file already exists" if the target is already
-  // on disk. A stray file here means a prior migration attempt crashed after
-  // taking this exact backup but before reaching convergence (the cleanup in
-  // onCleanBoot/sweepOrphans only runs post-convergence, so it never got a
-  // chance to sweep this one) — on the next boot we'd recompute this same
-  // path and VACUUM INTO would throw forever, boot-crash-looping. It's safe
-  // to discard: we're about to write a fresh backup of the current
-  // pre-migration state anyway.
-  if (fs.existsSync(backupPath)) {
-    fs.rmSync(backupPath, { force: true })
+  // Write to a temp path first and only rename over `backupPath` once VACUUM
+  // INTO has succeeded. This guarantees a stale-but-good backup from a prior
+  // crashed migration is never destroyed before a new one is durably on
+  // disk: if VACUUM INTO fails partway (disk full, EIO, ...), the rename is
+  // never reached and the old `.bak-*` — the only recovery point — survives
+  // untouched. renameSync atomically replaces any existing file at
+  // `backupPath` on POSIX, so this also subsumes the old up-front
+  // fs.rmSync(backupPath) cleanup.
+  const tmpPath = `${backupPath}.tmp-${process.pid}`
+
+  // VACUUM INTO throws "output file already exists" if the target is
+  // already on disk. A stray tmp file here would only come from a prior
+  // crash mid-VACUUM under the same pid (rare, but possible after a pid
+  // wraparound) — safe to discard since we're about to write a fresh one.
+  if (fs.existsSync(tmpPath)) {
+    fs.rmSync(tmpPath, { force: true })
   }
 
-  const escapedPath = backupPath.replace(/'/g, "''")
-  db.exec(`VACUUM INTO '${escapedPath}'`)
+  const escapedTmpPath = tmpPath.replace(/'/g, "''")
+  db.exec(`VACUUM INTO '${escapedTmpPath}'`)
+
+  fs.renameSync(tmpPath, backupPath)
 
   backedUpThisRun.add(backupPath)
   return backupPath

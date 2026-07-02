@@ -1,10 +1,9 @@
-import type Database from 'better-sqlite3'
-import type { ColumnDef, SchemaDef } from './types'
+import type { DbLike, SchemaDef } from './types'
 import type { LiveTable } from './introspect'
 import type { PlanOp } from './diff'
 import { introspectTable, listTables } from './introspect'
 import { diffTable } from './diff'
-import { renderCreateTable, renderIndex } from './render'
+import { renderColumn, renderCreateTable, renderIndex } from './render'
 import { backupBefore } from './backup'
 import { rebuildTable } from './rebuild'
 
@@ -17,24 +16,9 @@ import { rebuildTable } from './rebuild'
 // must still be backed up before any destructive op. `applied_data_steps` is
 // the migration engine's own bookkeeping table (see data-steps.ts) — its
 // presence alone doesn't count as "has user data", so it's excluded here too.
-function isFreshInstall(db: Database.Database): boolean {
+function isFreshInstall(db: DbLike): boolean {
   const tables = listTables(db).filter((t) => t !== 'applied_data_steps' && t !== 'schema_version')
   return tables.length === 0
-}
-
-// Mirrors render.ts's private renderColumn — kept local (not exported from
-// render.ts) so engine.ts can emit a single ALTER TABLE ... ADD COLUMN
-// fragment without depending on render.ts's internals.
-function renderColumnFragment(colName: string, def: ColumnDef): string {
-  if (typeof def === 'string') {
-    return `${colName} ${def}`
-  }
-  let out = `${colName} ${def.type}`
-  if (def.primaryKey) out += ' PRIMARY KEY'
-  if (def.notNull) out += ' NOT NULL'
-  if (def.default !== undefined) out += ` DEFAULT ${def.default}`
-  if (def.check) out += ` ${def.check}`
-  return out
 }
 
 // Compute the full reconciliation plan for `schema` against the live DB:
@@ -47,7 +31,7 @@ function renderColumnFragment(colName: string, def: ColumnDef): string {
 //   5. dropColumn
 // This trivially satisfies "dropIndex before dropColumn on the same table"
 // since all dropIndex ops precede all dropColumn ops globally.
-function planSync(db: Database.Database, schema: SchemaDef): PlanOp[] {
+function planSync(db: DbLike, schema: SchemaDef): PlanOp[] {
   const allOps: PlanOp[] = []
   for (const [name, def] of Object.entries(schema)) {
     const live: LiveTable | null = introspectTable(db, name)
@@ -90,7 +74,7 @@ function planSync(db: Database.Database, schema: SchemaDef): PlanOp[] {
 // (unless dbPath is ':memory:' or the DB is a fresh install with no
 // pre-existing user tables — see isFreshInstall()).
 function sync(
-  db: Database.Database,
+  db: DbLike,
   schema: SchemaDef,
   opts: {
     dbPath: string
@@ -183,7 +167,7 @@ function sync(
         case 'addColumn': {
           beginIfNeeded()
           const colDef = schema[op.table].columns[op.column]
-          const fragment = renderColumnFragment(op.column, colDef)
+          const fragment = renderColumn(op.column, colDef)
           db.exec(`ALTER TABLE "${op.table}" ADD COLUMN ${fragment}`)
           break
         }
