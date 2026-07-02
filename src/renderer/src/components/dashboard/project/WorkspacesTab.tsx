@@ -1,6 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   DotsThree,
   MagnifyingGlass,
@@ -14,7 +13,7 @@ import type { GitStatus, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
-import { Eyebrow, Select } from '../settings/primitives'
+import { Eyebrow, RenameInput, Select } from '../settings/primitives'
 import { resolveWorkspaceName } from '../resolveWorkspaceName'
 import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
@@ -98,38 +97,6 @@ interface WorkspacesTabProps {
   onResumedInWorkspace: (workspace: WorkspaceRecord) => void
 }
 
-// Small component so useFocusOnMount fires when the rename input mounts
-function WorkspaceRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  className
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label="Rename workspace"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      className={className}
-    />
-  )
-}
-
 // ---------------------------------------------------------------------------
 // WorkspaceNameCell — isolated sub-component so useWorkspaceActivity is called
 // as a proper hook (not inside a DataTable render callback). Re-renders only
@@ -177,7 +144,8 @@ const WorkspaceNameCell = memo(function WorkspaceNameCell({
         )}
       </span>
       {renamingId === ws.id ? (
-        <WorkspaceRenameInput
+        <RenameInput
+          ariaLabel="Rename workspace"
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
           onKeyDown={(e) => {

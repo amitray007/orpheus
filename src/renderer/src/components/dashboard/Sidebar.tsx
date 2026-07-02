@@ -1,6 +1,5 @@
 import type React from 'react'
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   Circle,
   Kanban,
@@ -44,6 +43,7 @@ import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
 import { NewWorkspaceMenu } from './NewWorkspaceMenu'
 import { nextWorkspaceName } from './dashboard.helpers'
+import { RenameInput } from './settings/primitives'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -71,43 +71,6 @@ interface WorkspaceRowProps {
   onArchive: () => void
   onClose: () => void
   onTogglePin: () => void
-}
-
-// Small component so useFocusOnMount fires when the rename input mounts
-function WorkspaceRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  onMouseDown,
-  className,
-  ariaLabel
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  onMouseDown: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-  ariaLabel: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label={ariaLabel}
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      onMouseDown={onMouseDown}
-      className={className}
-    />
-  )
 }
 
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
@@ -364,7 +327,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             {/* Title area */}
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {renaming ? (
-                <WorkspaceRenameInput
+                <RenameInput
                   ariaLabel="Rename workspace"
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
@@ -601,38 +564,6 @@ interface ProjectRowProps {
   onWorkspaceDragEnd: () => void
 }
 
-// Small component so useFocusOnMount fires when the project rename input mounts
-function ProjectRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  className
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label="Rename project"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      className={className}
-    />
-  )
-}
-
 const ProjectRow = memo(function ProjectRow({
   project,
   active,
@@ -806,7 +737,8 @@ const ProjectRow = memo(function ProjectRow({
             )}
           </span>
           {renaming ? (
-            <ProjectRenameInput
+            <RenameInput
+              ariaLabel="Rename project"
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {

@@ -4,10 +4,49 @@ import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
 import { playSound } from '../../../lib/sound'
+import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
 // ---------------------------------------------------------------------------
 // Shared form primitives for Settings sections
 // ---------------------------------------------------------------------------
+
+// Small, focus-on-mount text input shared by the workspace/project rename UIs
+// in Sidebar and WorkspacesTab.
+export function RenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  onMouseDown,
+  className,
+  ariaLabel
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  onMouseDown?: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+  ariaLabel: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      className={className}
+    />
+  )
+}
 
 export interface SettingRowProps {
   label: string
