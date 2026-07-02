@@ -1,4 +1,4 @@
-import type { ColumnDef, SchemaDef } from './types'
+import type { ColumnDef, SchemaDef, TableDef } from './types'
 import { enumCheck } from './render'
 
 // Shared enum arrays — exported for reuse by app code (renderer/main) so the
@@ -59,6 +59,25 @@ function enumCoerce(col: string, values: readonly string[], fallback: string): s
 const TEXT_PK = 'TEXT PRIMARY KEY NOT NULL'
 const TEXT_NOT_NULL = 'TEXT NOT NULL'
 const INTEGER_NOT_NULL = 'INTEGER NOT NULL'
+
+// footer_actions_project and footer_actions_workspace share an identical
+// columns shape apart from which parent id column they scope to — factor it
+// out so the two tables can't drift from each other on edits.
+function footerActionsColumns(parentIdCol: string): TableDef['columns'] {
+  return {
+    id: 'TEXT PRIMARY KEY',
+    [parentIdCol]: TEXT_NOT_NULL,
+    label: TEXT_NOT_NULL,
+    icon: 'TEXT',
+    action_id: TEXT_NOT_NULL,
+    params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
+    visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
+    position: INTEGER_NOT_NULL,
+    created_at: INTEGER_NOT_NULL,
+    updated_at: INTEGER_NOT_NULL,
+    prompts_json: 'TEXT'
+  }
+}
 
 export const schema: SchemaDef = {
   // ---------------------------------------------------------------------
@@ -570,19 +589,7 @@ export const schema: SchemaDef = {
   // footer_actions_project
   // ---------------------------------------------------------------------
   footer_actions_project: {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      project_id: TEXT_NOT_NULL,
-      label: TEXT_NOT_NULL,
-      icon: 'TEXT',
-      action_id: TEXT_NOT_NULL,
-      params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
-      visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
-      position: INTEGER_NOT_NULL,
-      created_at: INTEGER_NOT_NULL,
-      updated_at: INTEGER_NOT_NULL,
-      prompts_json: 'TEXT'
-    },
+    columns: footerActionsColumns('project_id'),
     foreignKeys: [{ columns: ['project_id'], ref: 'projects(id)', onDelete: 'CASCADE' }],
     indexes: {
       idx_footer_actions_project_project_id: ['project_id']
@@ -593,19 +600,7 @@ export const schema: SchemaDef = {
   // footer_actions_workspace
   // ---------------------------------------------------------------------
   footer_actions_workspace: {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      workspace_id: TEXT_NOT_NULL,
-      label: TEXT_NOT_NULL,
-      icon: 'TEXT',
-      action_id: TEXT_NOT_NULL,
-      params_json: { type: 'TEXT', notNull: true, default: "'{}'" },
-      visible_when: { type: 'TEXT', notNull: true, default: "'always'" },
-      position: INTEGER_NOT_NULL,
-      created_at: INTEGER_NOT_NULL,
-      updated_at: INTEGER_NOT_NULL,
-      prompts_json: 'TEXT'
-    },
+    columns: footerActionsColumns('workspace_id'),
     foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
     indexes: {
       idx_footer_actions_workspace_workspace_id: ['workspace_id']
