@@ -80,7 +80,10 @@ import {
   FileCode,
   // Quick action chips (Chunk 2)
   ArrowsInLineHorizontal,
-  CurrencyDollar
+  CurrencyDollar,
+  CaretUp,
+  // Quick action chips (Chunk 3)
+  Sliders
 } from '@phosphor-icons/react'
 
 type PhosphorIcon = React.ComponentType<{
@@ -171,7 +174,10 @@ const ICON_MAP: Record<string, PhosphorIcon> = {
   FileCode,
   // Quick action chips (Chunk 2)
   ArrowsInLineHorizontal,
-  CurrencyDollar
+  CurrencyDollar,
+  CaretUp,
+  // Quick action chips (Chunk 3)
+  Sliders
 }
 
 interface IconByNameProps {

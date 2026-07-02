@@ -1178,3 +1178,17 @@ export type ChipPromptProps = {
 
 /** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipPromptResult = { values: Record<string, string> } | null
+
+/** One selectable item in a chip dropdown (e.g. a model option). */
+export type ChipDropdownItem = { value: string; label: string; sublabel?: string }
+
+/** Interactive dropdown/list popover — opens upward from its anchor chip. */
+export type ChipDropdownProps = {
+  items: ChipDropdownItem[]
+  /** Currently-selected value, to render an active/check state on that row. */
+  selectedValue?: string
+  title?: string
+}
+
+/** Resolves on row click/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
+export type ChipDropdownResult = { kind: 'select'; value: string } | null

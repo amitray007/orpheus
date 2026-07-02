@@ -472,10 +472,17 @@ const DEFAULT_SEEDS: Array<{
     visibleWhen: 'always'
   },
   {
-    label: '/model',
+    label: 'Model',
     icon: 'Robot',
-    actionId: 'terminal.sendInput',
-    params: { text: '/model', submit: true },
+    actionId: 'footer.modelSelect',
+    params: {},
+    visibleWhen: 'always'
+  },
+  {
+    label: 'Effort',
+    icon: 'Sliders',
+    actionId: 'footer.effortSelect',
+    params: {},
     visibleWhen: 'always'
   },
   {
