@@ -28,3 +28,4 @@ tmp/
 # Local planning/session artifacts — contain machine-specific paths
 docs/superpowers/
 .superpowers/
+.gstack/
