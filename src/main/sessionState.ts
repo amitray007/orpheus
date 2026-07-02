@@ -250,6 +250,12 @@ function _startWatcher(): void {
     })
     watcher.on('error', (err) => {
       console.warn('[sessionState] fs.watch error — falling back to interval-only:', err)
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.SESSION_WATCH_FALLBACK,
+        data: { err: String(err) }
+      })
       if (watcher) {
         watcher.close()
         watcher = null
@@ -260,6 +266,12 @@ function _startWatcher(): void {
       '[sessionState] could not watch sessions dir — falling back to interval-only:',
       err
     )
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_WATCH_FALLBACK,
+      data: { err: String(err) }
+    })
   }
 }
 
@@ -289,6 +301,12 @@ async function _runReconcile(): Promise<void> {
     await reconcile()
   } catch (err) {
     console.warn('[sessionState] reconcile error:', err)
+    logDiagMain({
+      category: 'error',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
+      data: { err: String(err) }
+    })
   } finally {
     reconcileRunning = false
     if (dirty && !stopped) {
@@ -400,6 +418,12 @@ async function reconcile(): Promise<void> {
       .all() as typeof workspaceRows
   } catch (err) {
     console.warn('[sessionState] failed to query workspaces:', err)
+    logDiagMain({
+      category: 'error',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 

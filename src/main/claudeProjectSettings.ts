@@ -1,4 +1,6 @@
 import { getDb } from './db'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 import type {
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
@@ -17,8 +19,15 @@ function rowToRecord(row: Row): ClaudeProjectSettings {
   try {
     const parsed = JSON.parse(row.overrides_json)
     if (parsed && typeof parsed === 'object') overrides = parsed
-  } catch {
+  } catch (err) {
     // corrupt JSON; treat as empty
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.OVERRIDES_PARSE_FAILED,
+      message: 'corrupt overrides_json',
+      data: { id: row.project_id, err: String(err) }
+    })
   }
   return { projectId: row.project_id, overrides, updatedAt: row.updated_at }
 }

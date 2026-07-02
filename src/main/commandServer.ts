@@ -4,6 +4,8 @@ import * as nodePath from 'node:path'
 import * as crypto from 'node:crypto'
 import { app } from 'electron'
 import { getDb } from './db'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 import {
   createWorkspace,
   getWorkspace,
@@ -1201,9 +1203,15 @@ export function startCommandServer(deps: CommandServerDeps): {
             }
           }
         }
-      } catch {
+      } catch (err) {
         // Outer catch: unexpected error in the request handler — swallow to
         // prevent an unhandled rejection from crashing the process.
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.CMD_SERVER_HANDLER_FAILED,
+          data: { err: String(err) }
+        })
       }
     })
 

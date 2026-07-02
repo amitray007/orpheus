@@ -211,6 +211,13 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     setWorkspaceStatus(workspaceId, status)
   } catch (err) {
     console.warn('[orpheusNotify] setWorkspaceStatus failed for', workspaceId, err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.STATUS_PERSIST_FAILED,
+      workspaceId,
+      data: { err: String(err) }
+    })
   }
   notifyForTransition(workspaceId, prev, status)
 
@@ -358,6 +365,12 @@ export function ensureManagedHooks(): void {
         '[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:',
         err
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_INSTALL_FAILED,
+        data: { err: String(err) }
+      })
       return
     }
   }
@@ -470,6 +483,12 @@ export function uninstallManagedHooks(): void {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return // nothing to clean
     console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -480,11 +499,22 @@ export function uninstallManagedHooks(): void {
       console.warn(
         '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED
+      })
       return
     }
     parsed = p as Record<string, unknown>
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -550,6 +580,12 @@ export function uninstallManagedHooks(): void {
     fs.renameSync(tmp, settingsPath)
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
   }
 }
 
