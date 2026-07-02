@@ -50,7 +50,7 @@ export type CommandContext = {
  * how its value is described in usage (valueHint), what happens if you don't
  * pass it (default), and any extra behavioral caveat (notes). This is the
  * single source of truth consumed by both the parser (via flagType()) and
- * the help renderers (cli.ts commandHelp, help-model.ts).
+ * the help renderers (command-help.ts commandHelp, help-model.ts).
  */
 export type FlagSpec = {
   /** Parser-relevant kind — same meaning as the legacy FlagDeclarations value. */
