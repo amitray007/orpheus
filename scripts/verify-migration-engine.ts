@@ -1,6 +1,9 @@
 import assert from 'node:assert'
 import { register } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 // src/main/db/*.ts files use extensionless relative imports (required to
 // typecheck under this repo's `moduleResolution: bundler` tsconfig — see
@@ -148,4 +151,21 @@ const { rebuildTable } = await import('../src/main/db/rebuild.ts')
   ])
   assert.equal((rdb.prepare('SELECT COUNT(*) c FROM workspaces').get() as any).c, 2)
   console.log('✓ rebuild')
+}
+
+const { backupBefore } = await import('../src/main/db/backup.ts')
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-'))
+  const dbPath = path.join(dir, 'orpheus.sqlite')
+  const bdb = new Database(dbPath)
+  bdb.exec('PRAGMA journal_mode = WAL')
+  bdb.exec("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('x')")
+  const bak = backupBefore(bdb, dbPath, 63)
+  assert.ok(fs.existsSync(bak), 'backup file exists')
+  const readonlyDb = new DatabaseSync(bak, { readOnly: true })
+  assert.equal((readonlyDb.prepare('SELECT COUNT(*) c FROM t').get() as any).c, 1)
+  readonlyDb.close()
+  bdb.close()
+  console.log('✓ backup')
 }
