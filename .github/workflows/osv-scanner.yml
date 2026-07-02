@@ -1,0 +1,34 @@
+name: OSV Scanner
+
+# Dependency vulnerability scanning against bun.lock via google/osv-scanner
+# (bun.lock is an officially supported lockfile format — see
+# https://google.github.io/osv-scanner/supported-languages-and-lockfiles/,
+# "Javascript" row lists bun.lock). Uses the upstream reusable workflow
+# (osv-scanner-reusable.yml) pinned to a commit SHA rather than a moving tag,
+# same discipline as the regular actions pinned elsewhere in this repo.
+
+on:
+  pull_request:
+    branches: [staging]
+  push:
+    branches: [main, staging]
+  schedule:
+    - cron: '0 9 * * 1' # Mondays 09:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osv-scanner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      scan-args: |-
+        --lockfile=bun.lock
