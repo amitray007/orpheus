@@ -6,21 +6,21 @@ Orpheus bundles or links the following third-party components. Their licenses an
 
 ## Summary Table
 
-| Component                          | What it is / where it ships                                                                                                                                 | License                                                           |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| libghostty                         | Prebuilt static library embedded in the native terminal addon (`packages/ghostty-native`); repackaged from the Ghostty project via `Lakr233/libghostty-spm` | MIT                                                               |
-| Ghostty color themes               | Theme files under `resources/ghostty/ghostty/themes/`; sourced from iTerm2-Color-Schemes                                                                    | MIT                                                               |
-| JetBrains Mono (Nerd Font-patched) | Font embedded inside libghostty                                                                                                                             | SIL Open Font License 1.1 (OFL-1.1)                               |
-| Geist Sans & Geist Mono            | Fonts from the `geist` npm package, bundled to `Resources/fonts`                                                                                            | SIL Open Font License 1.1 (OFL-1.1)                               |
-| Ghostty shell-integration scripts  | Shell scripts under `resources/ghostty/ghostty/shell-integration/`; derived from the Kitty terminal                                                         | GPL-3.0                                                           |
-| Electron                           | Application runtime bundling Chromium and Node.js                                                                                                           | MIT (Electron); BSD-3-Clause and others (Chromium); MIT (Node.js) |
-| MIT-licensed npm dependencies      | `better-sqlite3`, `@floating-ui/react`, `@phosphor-icons/react`, `@web-kits/audio`, `minidenticons`, `@electron-toolkit/preload`, `@electron-toolkit/utils` | MIT                                                               |
+| Component                          | What it is / where it ships                                                                                                                                  | License                                                           |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| libghostty                         | Prebuilt static library embedded in the native terminal addon (`packages/ghostty-surface`); repackaged from the Ghostty project via `Lakr233/libghostty-spm` | MIT                                                               |
+| Ghostty color themes               | Theme files under `resources/ghostty/ghostty/themes/`; sourced from iTerm2-Color-Schemes                                                                     | MIT                                                               |
+| JetBrains Mono (Nerd Font-patched) | Font embedded inside libghostty                                                                                                                              | SIL Open Font License 1.1 (OFL-1.1)                               |
+| Geist Sans & Geist Mono            | Fonts from the `geist` npm package, bundled to `Resources/fonts`                                                                                             | SIL Open Font License 1.1 (OFL-1.1)                               |
+| Ghostty shell-integration scripts  | Shell scripts under `resources/ghostty/ghostty/shell-integration/`; derived from the Kitty terminal                                                          | GPL-3.0                                                           |
+| Electron                           | Application runtime bundling Chromium and Node.js                                                                                                            | MIT (Electron); BSD-3-Clause and others (Chromium); MIT (Node.js) |
+| MIT-licensed npm dependencies      | `better-sqlite3`, `@phosphor-icons/react`, `@web-kits/audio`, `minidenticons`, `@electron-toolkit/utils`                                                     | MIT                                                               |
 
 ---
 
 ## 1. libghostty
 
-**What it is:** A prebuilt static library (`vendor/GhosttyKit.xcframework`) embedded in the native terminal addon at `packages/ghostty-native`. It is repackaged by the [`Lakr233/libghostty-spm`](https://github.com/Lakr233/libghostty-spm) project from the upstream [Ghostty](https://github.com/ghostty-org/ghostty) terminal emulator. This MIT grant also covers the bundled terminfo entry (`xterm-ghostty`) and the upstream source of the color themes.
+**What it is:** A prebuilt static library (`vendor/GhosttyKit.xcframework`) embedded in the native terminal addon at `packages/ghostty-surface`. It is repackaged by the [`Lakr233/libghostty-spm`](https://github.com/Lakr233/libghostty-spm) project from the upstream [Ghostty](https://github.com/ghostty-org/ghostty) terminal emulator. This MIT grant also covers the bundled terminfo entry (`xterm-ghostty`) and the upstream source of the color themes.
 
 **Copyright:** © 2024 Mitchell Hashimoto and Ghostty contributors
 
@@ -108,15 +108,13 @@ Full license text:
 
 The following runtime npm packages ship inside the packaged application and are all distributed under the MIT License.
 
-| Package                     | Description                                   |
-| --------------------------- | --------------------------------------------- |
-| `better-sqlite3`            | Fast synchronous SQLite3 bindings for Node.js |
-| `@floating-ui/react`        | Floating UI positioning library for React     |
-| `@phosphor-icons/react`     | Phosphor icon set for React                   |
-| `@web-kits/audio`           | Web audio utilities                           |
-| `minidenticons`             | Lightweight identicon generator               |
-| `@electron-toolkit/preload` | Electron preload script utilities             |
-| `@electron-toolkit/utils`   | Electron main-process utilities               |
+| Package                   | Description                                   |
+| ------------------------- | --------------------------------------------- |
+| `better-sqlite3`          | Fast synchronous SQLite3 bindings for Node.js |
+| `@phosphor-icons/react`   | Phosphor icon set for React                   |
+| `@web-kits/audio`         | Web audio utilities                           |
+| `minidenticons`           | Lightweight identicon generator               |
+| `@electron-toolkit/utils` | Electron main-process utilities               |
 
 **License for all of the above:** MIT
 

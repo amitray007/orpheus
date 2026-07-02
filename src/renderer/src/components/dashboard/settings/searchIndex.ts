@@ -1268,8 +1268,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     sectionLabel: 'Appearance',
     settingId: 'color-theme',
     label: 'Color theme',
-    description:
-      'Dark is the only available theme for now. Light and System auto-switch are planned.',
+    description: 'Choose a color theme: Midnight (dark), Daylight (light), or Eclipse.',
     mapsTo: [],
     keywords: [
       'theme',

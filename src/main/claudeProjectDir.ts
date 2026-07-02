@@ -3,8 +3,8 @@
  * format that Claude Code uses under ~/.claude/projects/.
  *
  * Claude replaces BOTH '/' AND '.' with '-'.  For example:
- *   /Users/maverick/.claude/worktrees/xterm-experiment
- *   →  -Users-maverick--claude-worktrees-xterm-experiment
+ *   /Users/you/.claude/worktrees/my-feature
+ *   →  -Users-you--claude-worktrees-my-feature
  *
  * Normal project paths (no dots in path components) happen to work with a
  * slash-only replace, but worktree paths go through '.claude/worktrees/' so
