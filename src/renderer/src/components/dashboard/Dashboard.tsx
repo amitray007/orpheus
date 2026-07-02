@@ -172,45 +172,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // NOTE: depends on main-layer onActivityBatch — wired via frozen contract:
   // channel `workspace:activityBatch`, payload Array<{workspaceId,status,detail}>,
   // preload window.api.workspaces.onActivityBatch.
-  // Falls back to onActivityChanged if the batched API isn't available yet.
   useEffect(() => {
-    const api = window.api.workspaces as typeof window.api.workspaces & {
-      onActivityBatch?: (
-        cb: (
-          batch: Array<{
-            workspaceId: string
-            status: import('@shared/types').WorkspaceStatus
-            detail: import('@shared/types').WorkspaceActivityDetail
-          }>
-        ) => void
-      ) => () => void
-    }
-
-    if (typeof api.onActivityBatch === 'function') {
-      return api.onActivityBatch((batch) => {
-        // Sound effects: play on first status transition per batch
-        for (const { workspaceId, detail } of batch) {
-          const prevDetail = getActivitySnapshot().get(workspaceId)
-          if (prevDetail !== detail) {
-            if (detail === 'ready') playSound('ding')
-            else if (detail === 'attention') playSound('notification')
-          }
+    return window.api.workspaces.onActivityBatch((batch) => {
+      // Sound effects: play on first status transition per batch
+      for (const { workspaceId, detail } of batch) {
+        const prevDetail = getActivitySnapshot().get(workspaceId)
+        if (prevDetail !== detail) {
+          if (detail === 'ready') playSound('ding')
+          else if (detail === 'attention') playSound('notification')
         }
-        setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
-        const now = Date.now()
-        for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
-      })
-    }
-
-    // Fallback: legacy per-event channel (used until main-layer lands onActivityBatch)
-    return window.api.workspaces.onActivityChanged((e) => {
-      const prevDetail = getActivitySnapshot().get(e.workspaceId)
-      if (prevDetail !== e.detail) {
-        if (e.detail === 'ready') playSound('ding')
-        else if (e.detail === 'attention') playSound('notification')
       }
-      setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
-      bumpActivityTime(e.workspaceId, Date.now())
+      setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
+      const now = Date.now()
+      for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
     })
   }, [])
 

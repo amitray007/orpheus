@@ -183,13 +183,6 @@ declare global {
         onTitleChanged: (
           cb: (e: { workspaceId: string; title: string | null }) => void
         ) => () => void
-        onActivityChanged: (
-          cb: (e: {
-            workspaceId: string
-            status: WorkspaceStatus
-            detail: WorkspaceActivityDetail
-          }) => void
-        ) => () => void
         onActivityBatch: (
           cb: (
             updates: Array<{

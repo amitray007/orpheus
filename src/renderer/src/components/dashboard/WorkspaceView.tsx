@@ -112,8 +112,8 @@ export function WorkspaceView({
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
-  // Replaces the old onActivityChanged subscription that was registering
-  // a duplicate listener on top of Dashboard's.
+  // Reads from the store that Dashboard's single onActivityBatch subscription
+  // populates, rather than registering a second listener here.
   const storeDetail = useWorkspaceActivity(workspace.id)
 
   // detail: prefer live store value; fall back to initialDetail (seed from Dashboard

@@ -266,20 +266,6 @@ const api = {
       ipcRenderer.on('workspace:titleChanged', listener)
       return () => ipcRenderer.removeListener('workspace:titleChanged', listener)
     },
-    onActivityChanged: (
-      cb: (e: {
-        workspaceId: string
-        status: WorkspaceStatus
-        detail: WorkspaceActivityDetail
-      }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; status: WorkspaceStatus; detail: WorkspaceActivityDetail }
-      ): void => cb(e)
-      ipcRenderer.on('workspace:activityChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:activityChanged', listener)
-    },
     onActivityBatch: (
       cb: (
         updates: Array<{
