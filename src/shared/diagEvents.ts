@@ -47,7 +47,8 @@ export const DIAG_EVENTS = {
   // main-process failure wiring (Phase 3)
   STATUS_PERSIST_FAILED: 'status.persist_failed',
   OVERRIDES_PARSE_FAILED: 'overrides.parse_failed',
-  CMD_SERVER_HANDLER_FAILED: 'cmd_server.handler_failed'
+  CMD_SERVER_HANDLER_FAILED: 'cmd_server.handler_failed',
+  WORKTREE_REMOVAL_FAILED: 'worktree.removal_failed'
 } as const
 
 export type DiagEventKey = (typeof DIAG_EVENTS)[keyof typeof DIAG_EVENTS]

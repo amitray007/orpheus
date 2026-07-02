@@ -533,6 +533,12 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   if (workspaceTitles.delete(workspaceId)) {
     getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
   }
+  const overlayTimer = overlayFallbackTimers.get(workspaceId)
+  if (overlayTimer) {
+    clearTimeout(overlayTimer)
+    overlayFallbackTimers.delete(workspaceId)
+  }
+  injectLocks.delete(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
 }
 
@@ -1358,10 +1364,16 @@ handle(
             removeWorktree({ path: ws.cwd, force, repoRoot: ws.worktreeParentCwd })
           )
         } catch (err) {
-          console.warn(
-            `[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`,
-            err instanceof Error ? err.message : String(err)
-          )
+          const message = err instanceof Error ? err.message : String(err)
+          logDiagMain({
+            category: 'error',
+            level: 'error',
+            event: DIAG_EVENTS.WORKTREE_REMOVAL_FAILED,
+            workspaceId: ws.id,
+            message: `non-fatal error removing worktree at ${ws.cwd}: ${message}`,
+            data: { cwd: ws.cwd }
+          })
+          console.warn(`[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`, message)
           // Continue — best-effort removal; don't abort the whole delete.
         }
       }
