@@ -24,7 +24,10 @@ import type {
   ProjectCardProps,
   ConfirmModalProps,
   ConfirmModalResult,
-  NoticeBannerProps
+  NoticeBannerProps,
+  ChipTooltipProps,
+  ChipPromptProps,
+  ChipPromptResult
 } from '@shared/types'
 
 export const USE_REACT_OVERLAYS = true
@@ -34,7 +37,10 @@ export type {
   DetailsCardProps,
   ProjectCardProps,
   ConfirmModalProps,
-  ConfirmModalResult
+  ConfirmModalResult,
+  ChipTooltipProps,
+  ChipPromptProps,
+  ChipPromptResult
 }
 
 // ── Activity state mapping (same vocabulary as nativePopover.ts) ───────────
@@ -120,6 +126,17 @@ interface ConfirmHandlers {
 
 const confirmSettlers = new Map<string, ConfirmHandlers>()
 
+// Per-id chipPrompt event handlers (submit/cancel only — no button/checkbox
+// vocabulary), routed by the same `ensureRouter` listener below. A given
+// overlay id is never in more than one of handlersById/confirmSettlers/
+// chipPromptSettlers.
+interface ChipPromptHandlers {
+  onSubmit: (values: Record<string, string>) => void
+  onCancel: () => void
+}
+
+const chipPromptSettlers = new Map<string, ChipPromptHandlers>()
+
 let routerInitialized = false
 
 function ensureRouter(): void {
@@ -143,6 +160,23 @@ function ensureRouter(): void {
         }
         case 'cancel':
           confirmHandlers.onCancel()
+          break
+        default:
+          break
+      }
+      return
+    }
+
+    const chipPromptHandlers = chipPromptSettlers.get(e.overlayId)
+    if (chipPromptHandlers) {
+      switch (e.type) {
+        case 'submit': {
+          const payload = e.payload as { values: Record<string, string> } | undefined
+          chipPromptHandlers.onSubmit(payload?.values ?? {})
+          break
+        }
+        case 'cancel':
+          chipPromptHandlers.onCancel()
           break
         default:
           break
@@ -423,4 +457,115 @@ export function showNoticeBanner(
 
 export function noticeBannerId(workspaceId: string): string {
   return `notice:${workspaceId}`
+}
+
+// ── Chip tooltip / prompt (footer ActionChip, U9) ───────────────────────────
+//
+// The footer ActionChip's two overlay usages both opened bottom-full
+// (upward into the terminal rect) via the in-page `Overlay` component and
+// were occluded by the live terminal (docs/learnings/overlay-child-window-
+// macos.md — same-window DOM can never paint above the terminal NSView).
+// Both migrate here as anchored, preferredSide 'top' descriptors (same
+// upward-opening direction as the chassis-free markup they replace).
+
+export function chipTooltipId(actionId: string): string {
+  return `chipTooltip:${actionId}`
+}
+
+/**
+ * Shows (or replaces) the transient hover-label above an ActionChip.
+ * Non-interactive — never emits events; the call site hides it directly
+ * (hideOverlayCard) on its own timer/mouseleave, same as the chassis-free
+ * `ChipTooltip` component's setTimeout-driven hide.
+ */
+export function showChipTooltip(
+  id: string,
+  anchorRect: { x: number; y: number; w: number; h: number },
+  props: ChipTooltipProps,
+  ownerWorkspaceId?: string
+): void {
+  ensureRouter()
+  const descriptor: OverlayDescriptor = {
+    id,
+    kind: 'chipTooltip',
+    placement: { mode: 'anchored', anchorRect, preferredSide: 'top' },
+    props: props as unknown as Record<string, unknown>,
+    acceptsClicks: false,
+    takesFocus: false,
+    ownerWorkspaceId
+  }
+  void window.api.overlay.show(descriptor).catch(() => {})
+}
+
+export function chipPromptId(actionId: string): string {
+  return `chipPrompt:${actionId}`
+}
+
+// Force-cancel hooks for still-pending chip prompts, keyed by overlay id —
+// lets hideChipPrompt (outside-click / blur at the call site) settle the
+// promise as null instead of just hiding the window and leaving the await
+// hanging forever (unlike hideConfirmOverlay, which is only ever called from
+// an unmount cleanup that no longer cares about the result).
+const chipPromptForceCancel = new Map<string, () => void>()
+
+/**
+ * Shows the interactive prompt popover above an ActionChip and resolves once
+ * the user submits or cancels. Mirrors showConfirmModalReact's settle
+ * contract exactly: NEVER rejects — Cancel click, Escape (global takesFocus
+ * handler in OverlayRoot, plus the kind's own input keydown), outside-click/
+ * blur (via hideChipPrompt), or an overlay:show IPC failure all resolve
+ * `null`. Apply/Enter resolves `{ values }` with the latest in-popover edits.
+ */
+export function showChipPrompt(
+  id: string,
+  anchorRect: { x: number; y: number; w: number; h: number },
+  props: ChipPromptProps,
+  ownerWorkspaceId?: string
+): Promise<ChipPromptResult> {
+  ensureRouter()
+
+  return new Promise<ChipPromptResult>((resolve) => {
+    let settled = false
+    const settle = (result: ChipPromptResult): void => {
+      if (settled) return
+      settled = true
+      chipPromptSettlers.delete(id)
+      chipPromptForceCancel.delete(id)
+      void window.api.overlay.hide(id).catch(() => {})
+      resolve(result)
+    }
+
+    chipPromptSettlers.set(id, {
+      onSubmit: (values) => settle({ values }),
+      onCancel: () => settle(null)
+    })
+    chipPromptForceCancel.set(id, () => settle(null))
+
+    const descriptor: OverlayDescriptor = {
+      id,
+      kind: 'chipPrompt',
+      placement: { mode: 'anchored', anchorRect, preferredSide: 'top' },
+      props: props as unknown as Record<string, unknown>,
+      acceptsClicks: true,
+      takesFocus: true,
+      ownerWorkspaceId
+    }
+
+    void window.api.overlay.show(descriptor).catch(() => {
+      settle(null)
+    })
+  })
+}
+
+/**
+ * Actively dismiss a still-pending chip prompt (outside-click / blur at the
+ * call site) and settle its promise as `null`. No-op if already settled.
+ */
+export function hideChipPrompt(id: string): void {
+  const forceCancel = chipPromptForceCancel.get(id)
+  if (forceCancel) {
+    forceCancel()
+  } else {
+    void window.api.overlay.hide(id).catch(() => {})
+  }
 }

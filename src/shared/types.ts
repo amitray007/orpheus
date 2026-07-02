@@ -1147,3 +1147,27 @@ export type ConfirmModalResult = { buttonId: string; checkboxChecked: boolean }
 export type NoticeBannerProps = {
   message: string
 }
+
+// ---------------------------------------------------------------------------
+// Overlay kinds: chipTooltip / chipPrompt — U9 React migration of the footer
+// ActionChip's two in-page `Overlay` usages (`ChipTooltip` component,
+// `PromptPopover` component in ActionChip.tsx), both of which opened
+// bottom-full (upward into the terminal rect) and were occluded by the live
+// terminal. Anchored to the chip element, preferredSide 'top', matching the
+// original upward-opening placement.
+// ---------------------------------------------------------------------------
+
+/** Transient hover-label card — non-interactive, matches today's tooltip styling. */
+export type ChipTooltipProps = {
+  text: string
+}
+
+/** Interactive prompt popover — same fields/labels/order as PromptDescriptor[]. */
+export type ChipPromptProps = {
+  prompts: PromptDescriptor[]
+  /** Pre-filled default values (already placeholder-expanded by the caller). */
+  values: Record<string, string>
+}
+
+/** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
+export type ChipPromptResult = { values: Record<string, string> } | null

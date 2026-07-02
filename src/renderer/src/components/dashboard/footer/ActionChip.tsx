@@ -6,6 +6,15 @@ import { expandPlaceholders } from '../../../lib/footerPlaceholders'
 import { DotmFooterLoader } from '../../ui/dotm-footer-loader'
 import { IconByName } from './iconMap'
 import { Overlay } from '@/components/ui/Overlay'
+import {
+  USE_REACT_OVERLAYS,
+  showChipTooltip,
+  hideOverlayCard,
+  chipTooltipId,
+  showChipPrompt,
+  hideChipPrompt,
+  chipPromptId
+} from '@/lib/overlayClient'
 
 // ─── ChipButton ───────────────────────────────────────────────────────────────
 
@@ -215,15 +224,24 @@ export function ActionChip({
   const [canInject, setCanInject] = useState(true)
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Clear pending tooltip timer on unmount to avoid setState on unmounted component.
+  // Anchor element for the overlay-layer tooltip/prompt (U9) — the chip's own
+  // wrapper div, same element the in-page Overlay positioned itself against
+  // via `absolute bottom-full` when USE_REACT_OVERLAYS is false.
+  const chipRef = useRef<HTMLDivElement>(null)
+  const tooltipOverlayId = useMemo(() => chipTooltipId(actionId), [actionId])
+  const promptOverlayId = useMemo(() => chipPromptId(actionId), [actionId])
+
+  // Clear pending tooltip timer + hide any live overlay tooltip on unmount to
+  // avoid setState on unmounted component / a stranded overlay window.
   useEffect(() => {
     return () => {
       if (tooltipTimer.current) {
         clearTimeout(tooltipTimer.current)
         tooltipTimer.current = null
       }
+      if (USE_REACT_OVERLAYS) hideOverlayCard(tooltipOverlayId)
     }
-  }, [])
+  }, [tooltipOverlayId])
 
   // Prompt popover state
   const [showPrompt, setShowPrompt] = useState(false)
@@ -280,35 +298,48 @@ export function ActionChip({
   const notApplicable = enabled === false
   const isDisabled = disabled || notApplicable
 
-  const showTooltip = useCallback((msg: string) => {
-    setTooltip(msg)
-    if (tooltipTimer.current) clearTimeout(tooltipTimer.current)
-    tooltipTimer.current = setTimeout(() => setTooltip(null), 2500)
-  }, [])
+  const showTooltip = useCallback(
+    (msg: string) => {
+      if (tooltipTimer.current) clearTimeout(tooltipTimer.current)
+
+      if (USE_REACT_OVERLAYS) {
+        if (chipRef.current) {
+          const r = chipRef.current.getBoundingClientRect()
+          showChipTooltip(
+            tooltipOverlayId,
+            { x: r.left, y: r.top, w: r.width, h: r.height },
+            { text: msg },
+            workspaceId
+          )
+        }
+        tooltipTimer.current = setTimeout(() => hideOverlayCard(tooltipOverlayId), 2500)
+        return
+      }
+
+      setTooltip(msg)
+      tooltipTimer.current = setTimeout(() => setTooltip(null), 2500)
+    },
+    [tooltipOverlayId, workspaceId]
+  )
 
   const placeholderCtx = useMemo(
     () => ({ sessionId, workspaceId, cwd, workspaceName }),
     [sessionId, workspaceId, cwd, workspaceName]
   )
 
-  /** Open the prompt popover, pre-filling defaults with expanded placeholders. */
-  const openPromptPopover = useCallback((): void => {
-    if (!prompts || prompts.length === 0) return
-    const defaults: Record<string, string> = {}
-    for (const p of prompts) {
-      defaults[p.key] = p.default ? expandPlaceholders(p.default, placeholderCtx) : ''
-    }
-    setPromptValues(defaults)
-    setShowPrompt(true)
-    // Focus the first input after the popover renders
-    setTimeout(() => promptInputRef.current?.focus(), 0)
-  }, [prompts, placeholderCtx])
-
   const invokeAction = useCallback(
     async (overrideParams?: Record<string, unknown>): Promise<void> => {
       playSound('click')
       setInFlight(true)
-      setTooltip(null)
+      if (tooltipTimer.current) {
+        clearTimeout(tooltipTimer.current)
+        tooltipTimer.current = null
+      }
+      if (USE_REACT_OVERLAYS) {
+        hideOverlayCard(tooltipOverlayId)
+      } else {
+        setTooltip(null)
+      }
 
       const effectiveParams = overrideParams ?? params
 
@@ -364,8 +395,70 @@ export function ActionChip({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actionId, params, workspaceId, sessionId, cwd, workspaceName, onForkSuccess, showTooltip]
+    [
+      actionId,
+      params,
+      workspaceId,
+      sessionId,
+      cwd,
+      workspaceName,
+      onForkSuccess,
+      showTooltip,
+      tooltipOverlayId
+    ]
   )
+
+  /** Open the prompt popover, pre-filling defaults with expanded placeholders. */
+  const openPromptPopover = useCallback((): void => {
+    if (!prompts || prompts.length === 0) return
+    const defaults: Record<string, string> = {}
+    for (const p of prompts) {
+      defaults[p.key] = p.default ? expandPlaceholders(p.default, placeholderCtx) : ''
+    }
+
+    if (USE_REACT_OVERLAYS) {
+      if (!chipRef.current) return
+      const r = chipRef.current.getBoundingClientRect()
+      setShowPrompt(true)
+      showChipPrompt(
+        promptOverlayId,
+        { x: r.left, y: r.top, w: r.width, h: r.height },
+        { prompts, values: defaults },
+        workspaceId
+      )
+        .then((res) => {
+          setShowPrompt(false)
+          if (!res) return // Cancel/Escape/outside-click/IPC failure
+          const merged: Record<string, unknown> = { ...params }
+          for (const p of prompts) {
+            merged[p.key] = res.values[p.key] ?? ''
+          }
+          return invokeAction(merged)
+        })
+        .catch((e) => console.error('[ActionChip] prompt invoke failed', e))
+      return
+    }
+
+    setPromptValues(defaults)
+    setShowPrompt(true)
+    // Focus the first input after the popover renders
+    setTimeout(() => promptInputRef.current?.focus(), 0)
+  }, [prompts, placeholderCtx, promptOverlayId, workspaceId, params, invokeAction])
+
+  // Outside-click dismissal while the overlay chipPrompt is open (U9): the
+  // popover now lives in a separate child BrowserWindow, so the main
+  // renderer's document-level listener never sees clicks landing INSIDE the
+  // popover — only clicks in the main window (including the terminal) reach
+  // here, which is exactly the "outside" set for this popover. Mirrors the
+  // in-page Overlay component's own document 'mousedown' dismissal contract.
+  useEffect(() => {
+    if (!USE_REACT_OVERLAYS || !showPrompt) return
+    const onPointerDown = (): void => {
+      hideChipPrompt(promptOverlayId)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [showPrompt, promptOverlayId])
 
   const handlePromptSubmit = useCallback((): void => {
     if (!prompts || prompts.length === 0) return
@@ -400,7 +493,11 @@ export function ActionChip({
     if (prompts && prompts.length > 0) {
       if (showPrompt) {
         // Second click while popover is open → dismiss
-        setShowPrompt(false)
+        if (USE_REACT_OVERLAYS) {
+          hideChipPrompt(promptOverlayId)
+        } else {
+          setShowPrompt(false)
+        }
         return
       }
       openPromptPopover()
@@ -416,7 +513,8 @@ export function ActionChip({
     showPrompt,
     openPromptPopover,
     invokeAction,
-    showTooltip
+    showTooltip,
+    promptOverlayId
   ])
 
   // Wrap in a stable void callback so ChipButton.memo sees a stable reference.
@@ -425,7 +523,7 @@ export function ActionChip({
   }, [handleClick])
 
   return (
-    <div className="relative flex-shrink-0">
+    <div ref={chipRef} className="relative flex-shrink-0">
       <ChipButton
         inFlight={inFlight}
         isDisabled={isDisabled}
@@ -436,19 +534,23 @@ export function ActionChip({
         onClick={handleChipClick}
       />
 
-      {/* Prompt popover — appears above the chip when the action needs user input */}
-      <PromptPopover
-        open={showPrompt}
-        prompts={prompts}
-        promptValues={promptValues}
-        promptInputRef={promptInputRef}
-        onDismiss={closePrompt}
-        onChangeValue={handlePromptChange}
-        onSubmit={handlePromptSubmit}
-      />
+      {!USE_REACT_OVERLAYS && (
+        <>
+          {/* Prompt popover — appears above the chip when the action needs user input */}
+          <PromptPopover
+            open={showPrompt}
+            prompts={prompts}
+            promptValues={promptValues}
+            promptInputRef={promptInputRef}
+            onDismiss={closePrompt}
+            onChangeValue={handlePromptChange}
+            onSubmit={handlePromptSubmit}
+          />
 
-      {/* Tooltip */}
-      <ChipTooltip tooltip={tooltip} showPrompt={showPrompt} />
+          {/* Tooltip */}
+          <ChipTooltip tooltip={tooltip} showPrompt={showPrompt} />
+        </>
+      )}
     </div>
   )
 }
