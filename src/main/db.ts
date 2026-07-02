@@ -85,7 +85,7 @@ const WORKSPACES_SCHEMA_SQL = `
 const CLAUDE_SETTINGS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS claude_global_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    model TEXT NOT NULL DEFAULT 'sonnet',
+    model TEXT NOT NULL DEFAULT 'opus',
     permission_mode TEXT NOT NULL DEFAULT 'default'
       CHECK (permission_mode IN ('default', 'acceptEdits', 'plan', 'bypassPermissions')),
     effort TEXT NOT NULL DEFAULT 'auto'
