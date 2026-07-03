@@ -1,86 +1,116 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/TerminalTab.tsx
 //
-// U6b (P2) — the Workbench Terminal tab's real body: ONE plain $SHELL
-// libghostty surface, mounted beside claude's via the native addon's slot
-// model proven in U6a (docs/learnings/native-multisurface-investigation.md
-// §1 — any workspaceId prefixed `workbench:` routes to the Workbench slot and
-// coexists with claude's surface without evicting it).
+// U8 (P3) — generalizes U6b's single $SHELL surface into a STRIP of ad-hoc
+// terminals (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md U8;
+// docs/brainstorms/2026-07-02-workbench-panes-requirements.md §5.2). Each
+// terminal is its own libghostty surface, keyed
+// `workbench:<workspaceId>:<terminalId>` by the main-process handler (U8's
+// generalization of U6b's `workbench:<workspaceId>`); the native addon
+// treats any `workbench:`-prefixed id as belonging to the single Workbench
+// slot, so mounting terminal B auto-evicts (hides, does not destroy)
+// whichever terminal was visible — exactly "one visible at a time" for
+// free, with NO addon changes (docs/learnings/native-multisurface-
+// investigation.md §1).
 //
-// Scope (U6b, per docs/plans/2026-07-02-001-feat-workbench-panes-plan.md U8):
-// exactly one shell, not a tab strip of many (that's U8) and not the
-// Commands library (U11/U12). The mount/resize/hide lifecycle here
-// deliberately mirrors WorkspaceView.tsx's containerRef + getBoundingClientRect
-// -> IPC -> addon pattern (the DOM->IPC->native rect path is CSS pixels
-// relative to the contentView, NOT screen coordinates — see the
-// investigation doc §6 — so this must NOT reuse overlayLayer.ts's coordinate
-// math).
+// Terminal list/active-id state is ephemeral component state (persistence
+// across navigation is a deliberately deferred future task — see the plan).
+// Empty-state policy: there is always >=1 terminal — closing the last one
+// immediately respawns a fresh "Terminal 1" (see closeTerminal below).
 //
-// Lifecycle:
-//   - Mounts (workbench:mount) whenever `active` transitions to true —
-//     including the FIRST such transition, whether that happens on initial
-//     render (Terminal tab already selected + Workbench already open) or
-//     later (component rendered inactive first — e.g. Workbench dormant —
-//     then activated by opening/selecting the tab). ONE effect below owns
-//     every active-becomes-true / active-becomes-false transition uniformly;
-//     there is no separate "first mount" special case that can fall out of
-//     sync with the steady-state toggle path.
-//   - Resizes (workbench:resize, rAF-coalesced) via a ResizeObserver on the
-//     host div, attached only while active.
-//   - Hides (workbench:hide) when `active` becomes false (tab switched away,
-//     or the Workbench closes to dormant) — NEVER destroyed on a mere tab
-//     switch, so the shell session survives navigating away and back
-//     (hide != destroy, R10).
-//   - Destroyed only in a SEPARATE, `[]`-keyed effect's cleanup — i.e. only
-//     on this component's own unmount (owning WorkspaceView torn down). If
-//     unmount races an in-flight mount(), the mount's completion handler
-//     checks `unmountedRef` and issues the destroy itself once the promise
-//     resolves, so a surface can never be left dangling in the addon.
-//     Keeping destroy in its own effect (rather than in the active-toggle
-//     effect's cleanup) means there is exactly ONE call site that can ever
-//     destroy the surface — no ambiguity from React's cleanup ordering
-//     across two effects.
+// Lifecycle (generalizes U6b's active-toggle / unmount-destroy split):
+//   - A single host div is reused for whichever terminal is active — on an
+//     active-terminal switch we hide the outgoing key and mount/show the
+//     incoming key into the same rect (the addon's slot-eviction means the
+//     explicit hide is belt-and-suspenders, not load-bearing).
+//   - The active-effect below owns workbench:mount/resize/hide for both (a)
+//     the Terminal tab's own active/inactive transitions (mirrors U6b
+//     exactly) and (b) switching which terminal is active while the tab
+//     itself stays active.
+//   - Closing a terminal (✕) destroys ONLY that terminal's key immediately
+//     (whether or not it's the active one) — no hide/destroy race, since a
+//     background terminal's surface isn't part of the active mount cycle.
+//   - Unmounting TerminalTab (owning WorkspaceView torn down) destroys ALL
+//     terminals' keys — generalizing U6b's own single-key unmount effect.
+//     The unmountedRef race guard from U6b is preserved for the currently-
+//     active terminal's in-flight mount.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
+import { TerminalStrip, type TerminalStripTerminal } from './TerminalStrip'
 
 export interface TerminalTabProps {
-  /** The owning claude workspace's id. The native surface is keyed
-   *  `workbench:<workspaceId>` by the main-process handler. */
+  /** The owning claude workspace's id. Each terminal's native surface is
+   *  keyed `workbench:<workspaceId>:<terminalId>` by the main-process
+   *  handler. */
   workspaceId: string
   /** True when this tab body should be live: the Terminal tab is the active
    *  Workbench tab AND the Workbench is open or expanded. */
   active: boolean
 }
 
+interface TerminalModel {
+  id: number
+  label: string
+}
+
+const FIRST_TERMINAL: TerminalModel = { id: 1, label: 'Terminal 1' }
+
+/** Picks which terminal becomes active after closing `closedId` out of
+ *  `terminals` (the list BEFORE removal) — the right neighbor, else the
+ *  left, matching §5.2's "closing active activates neighbor". Pure helper
+ *  so closeTerminal's body stays under the complexity ceiling. */
+function neighborAfterClose(terminals: readonly TerminalModel[], closedId: number): number | null {
+  const idx = terminals.findIndex((t) => t.id === closedId)
+  if (idx === -1) return null
+  if (idx + 1 < terminals.length) return terminals[idx + 1].id
+  if (idx - 1 >= 0) return terminals[idx - 1].id
+  return null
+}
+
 export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  // createdRef — true once workbench:mount has resolved at least once for
-  // this workspaceId. Read by the unmount-destroy effect to decide whether a
-  // destroy call is actually needed.
-  const createdRef = useRef(false)
-  // unmountedRef — flips true in the destroy effect's cleanup. Consulted by
-  // an in-flight mount()'s .then() so a mount that resolves AFTER unmount
-  // destroys the surface itself instead of leaking it (the destroy effect's
-  // cleanup runs synchronously and cannot destroy a surface that doesn't
-  // exist yet at that point).
-  const unmountedRef = useRef(false)
+  const [terminals, setTerminals] = useState<TerminalModel[]>([FIRST_TERMINAL])
+  const [activeTerminalId, setActiveTerminalId] = useState(FIRST_TERMINAL.id)
+  // Monotonic terminal-id counter — never reused after a close, per §5.2.
+  const nextIdRef = useRef(FIRST_TERMINAL.id + 1)
 
-  // Activate/deactivate effect — owns workbench:mount / workbench:resize /
-  // workbench:hide for every `active` transition, first-or-not.
+  // createdKeysRef — the set of terminal ids whose surface has actually been
+  // mounted at least once (generalizes U6b's single createdRef boolean).
+  // Consulted so destroy() is only called for keys the addon actually knows
+  // about, and so a switch-in mounts a fresh surface vs. re-attaching one.
+  const createdKeysRef = useRef<Set<number>>(new Set())
+  // unmountedRef — see U6b's TerminalTab for the race this guards: an
+  // in-flight mount() resolving after this component (or the Workbench tab)
+  // has torn down must destroy the surface itself instead of leaking it.
+  const unmountedRef = useRef(false)
+  // activeTerminalIdRef mirrors activeTerminalId for use inside
+  // closeTerminal (a useCallback with stable deps, so it would otherwise
+  // close over a stale `activeTerminalId`). Updated in an effect — never
+  // during render — per the rules-of-hooks (refs are write-outside-render).
+  const activeTerminalIdRef = useRef(activeTerminalId)
+  useEffect(() => {
+    activeTerminalIdRef.current = activeTerminalId
+  }, [activeTerminalId])
+
+  // Activate/deactivate + switch-terminal effect — owns workbench:mount /
+  // workbench:resize / workbench:hide for every `active` transition AND
+  // every `activeTerminalId` change while active, mirroring U6b's single
+  // effect but keyed per-terminal.
   useEffect(() => {
     let resizeRafId: number | null = null
     let pendingRect: { x: number; y: number; w: number; h: number } | null = null
     let pendingSf = 1
     let ro: ResizeObserver | null = null
     let mountRafId: number | null = null
+    const terminalId = activeTerminalId
 
     const flushResize = (): void => {
       resizeRafId = null
       if (!pendingRect) return
       window.api.workbench
-        .resize(workspaceId, pendingRect, pendingSf)
+        .resize(workspaceId, pendingRect, pendingSf, terminalId)
         .catch((e) => console.error('[TerminalTab] resize failed:', e))
       pendingRect = null
     }
@@ -109,7 +139,7 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
 
     if (active) {
       // rAF so the container has laid out before we measure it (matches
-      // WorkspaceView.tsx's mount-effect pattern).
+      // WorkspaceView.tsx's mount-effect pattern, preserved from U6b).
       mountRafId = requestAnimationFrame(() => {
         mountRafId = null
         const el = containerRef.current
@@ -123,16 +153,15 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
           h: Math.round(rect.height)
         }
         window.api.workbench
-          .mount(workspaceId, termRect, scaleFactor)
+          .mount(workspaceId, termRect, scaleFactor, terminalId)
           .then(() => {
-            createdRef.current = true
+            createdKeysRef.current.add(terminalId)
             if (unmountedRef.current) {
-              // Component was torn down while this mount was in flight — the
-              // destroy effect's cleanup already ran and saw createdRef as
-              // false, so it couldn't destroy anything. Do it now so the
-              // surface never outlives this component.
+              // Torn down while this mount was in flight — destroy the
+              // surface this mount just created/re-attached instead of
+              // leaking it (mirrors U6b's post-unmount destroy path).
               window.api.workbench
-                .destroy(workspaceId)
+                .destroy(workspaceId, terminalId)
                 .catch((e) => console.error('[TerminalTab] post-unmount destroy failed:', e))
               return
             }
@@ -140,36 +169,58 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
           })
           .catch((e) => console.error('[TerminalTab] mount failed:', e))
       })
-    } else if (createdRef.current) {
-      // Deactivating an already-created surface (tab switched away, or the
-      // Workbench closed to dormant) — hide, don't destroy (R10).
-      window.api.workbench
-        .hide(workspaceId)
-        .catch((e) => console.error('[TerminalTab] hide failed:', e))
     }
+    // No `else` branch here for the deactivate case — see the cleanup
+    // below, which uniformly hides `terminalId` whenever THIS run was the
+    // one that made it visible, covering both "tab deactivated" and
+    // "switched to a different terminal" with a single code path (rather
+    // than one hide in the body and a second, redundant one in cleanup).
 
     return () => {
       if (mountRafId !== null) cancelAnimationFrame(mountRafId)
       if (resizeRafId !== null) cancelAnimationFrame(resizeRafId)
       ro?.disconnect()
       pendingRect = null
+      // Hide `terminalId` if THIS run made it visible (active was true)
+      // and it actually got mounted. Fires on: switching to a different
+      // terminal while the tab stays active, OR the tab itself
+      // deactivating (tab switched away, Workbench closed to dormant) —
+      // both are just "this run's active terminal is no longer the shown
+      // one," which is exactly what a cleanup-of-the-outgoing-run means.
+      // hide, never destroy (R10) — the shell stays alive in the background.
+      // createdKeysRef is a plain mutable data ref (not a DOM ref) — reading
+      // its LIVE value at cleanup time is exactly the intended design (it
+      // reflects whatever workbench:mount calls have resolved so far), so
+      // the lint's "may have changed by cleanup time" warning is expected
+      // and safe to disable here.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (active && createdKeysRef.current.has(terminalId)) {
+        window.api.workbench
+          .hide(workspaceId, terminalId)
+          .catch((e) => console.error('[TerminalTab] hide failed:', e))
+      }
     }
-    // Re-runs on every `active` transition — this is intentionally the ONLY
-    // effect that mounts/hides/resizes; it does not destroy (see the
-    // separate unmount-only effect below), so there is exactly one call
-    // site for each native action, regardless of how many times `active`
-    // toggles or in what order React runs cleanups.
-  }, [active, workspaceId])
+    // Re-runs on every `active` OR `activeTerminalId` transition — this is
+    // intentionally the ONLY effect that mounts/hides/resizes.
+  }, [active, workspaceId, activeTerminalId])
 
   // True teardown — a SEPARATE `[]`-keyed effect so its cleanup fires only
   // on this component's own unmount (owning WorkspaceView torn down), never
-  // on a mere active/inactive toggle above.
+  // on an active/inactive or active-terminal toggle above. Destroys EVERY
+  // terminal's surface, not just the active one.
   useEffect(() => {
     return () => {
       unmountedRef.current = true
-      if (createdRef.current) {
+      // Intentionally reads the LIVE set at true-unmount time (not a value
+      // captured when this effect was set up, which would just be the
+      // initial empty set) — every terminal ever mounted over this
+      // component's whole lifetime must be destroyed here, however many
+      // were opened/closed in between. createdKeysRef is a plain data ref,
+      // not a DOM ref, so the lint's node-ref caveat doesn't apply.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      for (const terminalId of createdKeysRef.current) {
         window.api.workbench
-          .destroy(workspaceId)
+          .destroy(workspaceId, terminalId)
           .catch((e) => console.error('[TerminalTab] destroy failed:', e))
       }
     }
@@ -178,12 +229,74 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const spawnTerminal = useCallback((): void => {
+    const id = nextIdRef.current
+    nextIdRef.current += 1
+    setTerminals((prev) => [...prev, { id, label: `Terminal ${id}` }])
+    setActiveTerminalId(id)
+  }, [])
+
+  const closeTerminal = useCallback(
+    (id: number): void => {
+      // Destroy this terminal's surface immediately, regardless of whether
+      // it's the active one — a background terminal isn't part of the
+      // active-effect's mount/hide cycle above, so nothing else will ever
+      // clean it up.
+      if (createdKeysRef.current.has(id)) {
+        createdKeysRef.current.delete(id)
+        window.api.workbench
+          .destroy(workspaceId, id)
+          .catch((e) => console.error('[TerminalTab] close destroy failed:', e))
+      }
+
+      setTerminals((prev) => {
+        const closingActive = id === activeTerminalIdRef.current
+        const next = prev.filter((t) => t.id !== id)
+
+        if (next.length === 0) {
+          // Empty-state policy: never show an empty strip — respawn a fresh
+          // Terminal 1 immediately (monotonic id, so it's a NEW surface key
+          // even if the counter happens to land back on 1's old slot; the
+          // old key was already destroyed above).
+          const freshId = nextIdRef.current
+          nextIdRef.current += 1
+          setActiveTerminalId(freshId)
+          return [{ id: freshId, label: `Terminal ${freshId}` }]
+        }
+
+        if (closingActive) {
+          setActiveTerminalId(neighborAfterClose(prev, id) ?? next[0].id)
+        }
+        return next
+      })
+    },
+    [workspaceId]
+  )
+
+  const stripTerminals: TerminalStripTerminal[] = terminals.map((t) => ({
+    id: t.id,
+    label: t.label
+  }))
+
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 min-w-0 relative"
-      // Transparent host — the opaque libghostty NSView paints through, same
-      // convention as WorkspaceView.tsx's terminal container.
-    />
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+      <div className="h-6 flex-shrink-0 border-b border-border-default">
+        <TerminalStrip
+          terminals={stripTerminals}
+          activeTerminalId={activeTerminalId}
+          onSelect={setActiveTerminalId}
+          onClose={closeTerminal}
+          onSpawn={spawnTerminal}
+        />
+      </div>
+      <div
+        ref={containerRef}
+        className="flex-1 min-w-0 min-h-0 relative"
+        // Transparent host — the opaque libghostty NSView paints through,
+        // same convention as WorkspaceView.tsx's terminal container. Only
+        // ONE terminal's surface is ever visible at a time (the addon's
+        // slot model), so a single shared host div suffices for all of them.
+      />
+    </div>
   )
 }

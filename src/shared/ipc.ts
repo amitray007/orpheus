@@ -367,22 +367,27 @@ export interface InvokeChannelMap {
   'terminal:submit': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:clearInput': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:canInject': { req: [{ workspaceId: string }]; res: boolean }
-  // Workbench Terminal-tab surface (U6b) — mounts ONE plain $SHELL surface
+  // Workbench Terminal-tab surface(s). U6b mounted ONE plain $SHELL surface
   // per claude workspace, keyed `workbench:<workspaceId>` in the native addon
   // (see docs/learnings/native-multisurface-investigation.md §1 for the slot
-  // model this relies on). `workspaceId` here is always the OWNING claude
-  // workspace's id, not the derived slot key — the main-process handler
-  // derives the slot key internally.
+  // model this relies on). U8 (P3) generalizes this to a STRIP of N ad-hoc
+  // terminals per claude workspace: the optional `terminalId` (a renderer-
+  // owned monotonic counter, omitted for the U6b single-shell call sites)
+  // keys the addon slot as `workbench:<workspaceId>:<terminalId>` — still
+  // prefixed `workbench:`, so it still routes to the single-visible
+  // Workbench slot and auto-evicts whichever sibling terminal was visible.
+  // `workspaceId` here is always the OWNING claude workspace's id (used for
+  // the cwd lookup) — never the derived slot key.
   'workbench:mount': {
-    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number; terminalId?: number }]
     res: { workspaceId: string; created: boolean }
   }
   'workbench:resize': {
-    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number; terminalId?: number }]
     res: void
   }
-  'workbench:hide': { req: [{ workspaceId: string }]; res: void }
-  'workbench:destroy': { req: [{ workspaceId: string }]; res: void }
+  'workbench:hide': { req: [{ workspaceId: string; terminalId?: number }]; res: void }
+  'workbench:destroy': { req: [{ workspaceId: string; terminalId?: number }]; res: void }
   'overlay:showDescriptor': { req: [{ descriptor: OverlayDescriptor }]; res: OverlayShowResult }
   'overlay:update': { req: [{ id: string; props: Record<string, unknown> }]; res: void }
   'overlay:hide': { req: [{ id: string }]; res: void }

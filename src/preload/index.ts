@@ -151,21 +151,31 @@ const api = {
       }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
   },
-  // Workbench Terminal-tab surface (U6b) — a single plain-$SHELL libghostty
-  // surface per claude workspace, keyed `workbench:<workspaceId>` in the
-  // native addon. `workspaceId` here is always the owning claude workspace's
-  // id (the main process derives the slot key internally).
+  // Workbench Terminal-tab surface(s) — plain-$SHELL libghostty surfaces
+  // scoped to a claude workspace, keyed `workbench:<workspaceId>` (single
+  // shell, U6b) or `workbench:<workspaceId>:<terminalId>` (a strip of ad-hoc
+  // terminals, U8) in the native addon. `workspaceId` here is always the
+  // owning claude workspace's id (the main process derives the slot key
+  // internally); `terminalId` is the renderer's monotonic per-terminal id,
+  // omitted for a single-shell caller.
   workbench: {
     mount: (
       workspaceId: string,
       rect: TerminalRect,
-      scaleFactor: number
+      scaleFactor: number,
+      terminalId?: number
     ): Promise<{ workspaceId: string; created: boolean }> =>
-      invoke('workbench:mount', { workspaceId, rect, scaleFactor }),
-    resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
-      invoke('workbench:resize', { workspaceId, rect, scaleFactor }),
-    hide: (workspaceId: string): Promise<void> => invoke('workbench:hide', { workspaceId }),
-    destroy: (workspaceId: string): Promise<void> => invoke('workbench:destroy', { workspaceId })
+      invoke('workbench:mount', { workspaceId, rect, scaleFactor, terminalId }),
+    resize: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      terminalId?: number
+    ): Promise<void> => invoke('workbench:resize', { workspaceId, rect, scaleFactor, terminalId }),
+    hide: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:hide', { workspaceId, terminalId }),
+    destroy: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:destroy', { workspaceId, terminalId })
   },
   config: {
     openFolder: (): Promise<string | null> => invoke('config:openFolder')

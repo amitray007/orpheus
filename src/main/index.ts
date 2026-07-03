@@ -1326,28 +1326,35 @@ handle('terminal:getSurfacePhase', (_e, { workspaceId }) => {
 })
 
 // ---------------------------------------------------------------------------
-// Workbench Terminal-tab IPC — U6b (P2)
+// Workbench Terminal-tab IPC — U6b (P2), generalized to a strip in U8 (P3)
 //
-// Mounts ONE plain interactive login shell ($SHELL, not orpheus-claude.sh)
-// per claude workspace, surfaced inside the Workbench's Terminal tab. This is
+// Mounts plain interactive login shells ($SHELL, not orpheus-claude.sh) per
+// claude workspace, surfaced inside the Workbench's Terminal tab. This is
 // the minimal U7 (generalized launch composer): no claudeSettings layering,
 // no worktree reconcile, no activity pipeline — just a real shell at the
 // workspace's cwd. It reuses the native addon's slot model proven in U6a:
-// keying the surface `workbench:<claudeWorkspaceId>` routes it to the
-// Workbench slot, so it coexists with claude's `workspaceId`-keyed surface
-// without evicting it (see docs/learnings/native-multisurface-investigation.md §1).
+// keying the surface `workbench:<claudeWorkspaceId>[:<terminalId>]` routes
+// it to the single Workbench slot, so it coexists with claude's
+// `workspaceId`-keyed surface without evicting it, AND any two ad-hoc
+// terminals under the same claude workspace auto-evict one another within
+// that slot (see docs/learnings/native-multisurface-investigation.md §1) —
+// exactly the "one visible at a time" behavior U8's tab strip needs, for
+// free, with no addon changes.
 //
-// Only one workbench surface exists per claude workspace — the Terminal tab
-// (U8) will generalize this to a tab strip of many; for U6b there is exactly
-// one shell, reused across open<->expanded (hide, not destroy) and destroyed
-// only when the owning claude workspace itself is torn down.
+// `terminalId` is the renderer's own monotonic per-terminal counter (U8);
+// omitted, the slot key collapses back to U6b's single-shell form so old
+// call sites are unaffected. `workspaceId` passed to getWorkspace() below is
+// always the plain claude workspace id — never the derived slot key — so
+// the cwd lookup is unaffected by how many terminals the caller has open.
 // ---------------------------------------------------------------------------
 
-function workbenchSlotId(claudeWorkspaceId: string): string {
-  return `workbench:${claudeWorkspaceId}`
+function workbenchSlotId(claudeWorkspaceId: string, terminalId?: number): string {
+  return terminalId === undefined
+    ? `workbench:${claudeWorkspaceId}`
+    : `workbench:${claudeWorkspaceId}:${terminalId}`
 }
 
-handle('workbench:mount', (e, { workspaceId, rect, scaleFactor }) => {
+handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) => {
   const addon = loadTerminalAddon()
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) throw new Error('workbench:mount — no BrowserWindow for sender')
@@ -1362,7 +1369,7 @@ handle('workbench:mount', (e, { workspaceId, rect, scaleFactor }) => {
   // unset in the main process environment.
   const shell = process.env['SHELL'] || '/bin/zsh'
 
-  const slotId = workbenchSlotId(workspaceId)
+  const slotId = workbenchSlotId(workspaceId, terminalId)
   const result = addon.mount(nativeHandle, {
     workspaceId: slotId,
     rect,
@@ -1386,19 +1393,19 @@ handle('workbench:mount', (e, { workspaceId, rect, scaleFactor }) => {
   return { workspaceId, created: result.created }
 })
 
-handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
+handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor, terminalId }): void => {
   const addon = loadTerminalAddon()
-  addon.resize(workbenchSlotId(workspaceId), rect, scaleFactor)
+  addon.resize(workbenchSlotId(workspaceId, terminalId), rect, scaleFactor)
 })
 
-handle('workbench:hide', (_e, { workspaceId }): void => {
+handle('workbench:hide', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
-  addon.hide(workbenchSlotId(workspaceId))
+  addon.hide(workbenchSlotId(workspaceId, terminalId))
 })
 
-handle('workbench:destroy', (_e, { workspaceId }): void => {
+handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
-  addon.destroy(workbenchSlotId(workspaceId))
+  addon.destroy(workbenchSlotId(workspaceId, terminalId))
 })
 
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
