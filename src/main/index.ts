@@ -73,17 +73,8 @@ import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
-import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
-import {
-  bootActions,
-  invoke as actionsInvoke,
-  list as actionsList,
-  getAuditHistory,
-  setTerminalAddonRef,
-  startSubscription,
-  stopSubscription,
-  registerWebContentsCleanup
-} from './actions/index'
+import type { TerminalSendKeyDescriptor } from '../shared/types'
+import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
 import { refreshFromModelsDev } from './pricing'
@@ -145,6 +136,7 @@ import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
 import { registerSessionsIpc } from './ipc/sessions'
 import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
+import { registerActionsIpc } from './ipc/actions'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1501,29 +1493,7 @@ handle('terminal:canInject', (_e, { workspaceId }): boolean => {
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------
 
-handle('actions:invoke', (_e, { actionId, params, workspaceId, consumerHint }) => {
-  const invocation: ActionInvocation = { id: actionId, params, workspaceId }
-  return actionsInvoke(invocation, consumerHint ?? 'ipc')
-})
-
-handle('actions:list', () => actionsList())
-
-handle('actions:history', (_e, { workspaceId, limit }) => getAuditHistory(workspaceId, limit))
-
-handle('actions:subscribe', (e, { subscriptionId, actionId, params, workspaceId }) => {
-  const win = BrowserWindow.fromWebContents(e.sender)
-  startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send(PUSH_CHANNELS.actionsSubscriptionUpdate, { subscriptionId, value })
-    }
-  })
-  return { ok: true as const }
-})
-
-handle('actions:unsubscribe', (_e, { subscriptionId }) => {
-  stopSubscription(subscriptionId)
-  return { ok: true as const }
-})
+registerActionsIpc()
 
 registerFooterActionsIpc()
 
