@@ -56,7 +56,7 @@ import {
   NotAGitRepoError,
   reconcileWorktree
 } from './worktrees'
-import { resolveOfferedModes, resolveWorkspacesConfig, writeProjectOverride } from './orpheusConfig'
+import { resolveOfferedModes } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
   listSessionsForProject,
@@ -188,6 +188,7 @@ import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerMiscIpc } from './ipc/misc'
+import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1442,22 +1443,7 @@ handle('workspace:getEffectiveEffort', (_e, args) => {
   return { effort: m ? m[1] : '' }
 })
 
-// ---------------------------------------------------------------------------
-// Orpheus project config IPC (.orpheus/config.yml)
-// ---------------------------------------------------------------------------
-
-handle('orpheusConfig:get', async (_e, { projectId }) => {
-  const project = getProject(projectId)
-  if (!project) throw new Error(`orpheusConfig:get: project not found: ${projectId}`)
-  return resolveWorkspacesConfig(project.path)
-})
-
-handle('orpheusConfig:setOverride', async (_e, { projectId, patch }) => {
-  const project = getProject(projectId)
-  if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
-  await writeProjectOverride(project.path, patch)
-  return resolveWorkspacesConfig(project.path)
-})
+registerOrpheusConfigIpc({ getProject })
 
 // ---------------------------------------------------------------------------
 // Diagnostics IPC
