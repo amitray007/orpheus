@@ -139,11 +139,7 @@ import type { ClaudeLaunch } from './claudeSettings'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
-import {
-  writeGhosttyConfigFile,
-  getGhosttyUserConfig,
-  updateGhosttyUserConfig
-} from './ghosttyConfig'
+import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
 import {
   bootActions,
@@ -194,6 +190,7 @@ import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
+import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1412,9 +1409,13 @@ handle('claudeSettings:update', (_e, patch) => {
 
 // ---------------------------------------------------------------------------
 // Ghostty Settings IPC
+//
+// ghosttySettings:get is extracted to ipc/ghosttySettings.ts.
+// ghosttySettings:update stays here — it depends on loadTerminalAddon(),
+// the private native-addon singleton loader (deferred terminal domain).
 // ---------------------------------------------------------------------------
 
-handle('ghosttySettings:get', () => getGhosttyUserConfig())
+registerGhosttySettingsIpc()
 
 handle('ghosttySettings:update', (_e, patch) => {
   const result = updateGhosttyUserConfig(patch)
