@@ -61,6 +61,8 @@
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
     "@phosphor-icons/react": "^2.1.10",
+    "@pierre/diffs": "1.2.12",
+    "@pierre/trees": "1.0.0-beta.5",
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
     "geist": "^1.7.0",
