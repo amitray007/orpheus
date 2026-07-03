@@ -391,8 +391,11 @@ async function reconcile(): Promise<void> {
   const newMap = new Map<string, LiveSession>()
   const lastGoodMap = new Map<string, LiveSession>(liveSessionMap) // keep old for fallback
 
-  // Prune parse-error dedup set for files that are no longer present
-  for (const f of knownBadSessionFiles) if (!files.includes(f)) knownBadSessionFiles.delete(f)
+  // Prune parse-error dedup set for files that are no longer present.
+  // Build a Set once so the prune is O(bad + files) instead of O(bad × files)
+  // (files.includes() was a linear scan per bad entry).
+  const filesSet = new Set(files)
+  for (const f of knownBadSessionFiles) if (!filesSet.has(f)) knownBadSessionFiles.delete(f)
 
   for (const filename of files) {
     const filePath = path.join(SESSIONS_DIR, filename)
@@ -605,6 +608,18 @@ async function reconcile(): Promise<void> {
   }
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
+  }
+
+  // Prune the dead-pid dedup set: once a pid's session file is gone AND the
+  // process is dead, the merge step above (line ~453) stops carrying it
+  // forward in liveSessionMap, so it will never be re-checked by the loop —
+  // without this, deadPidReported would grow unboundedly across the app's
+  // lifetime as workspaces cycle through claude sessions/pids. Keep only
+  // pids that are still tracked by a live (or last-good-fallback) session.
+  const livePids = new Set<number>()
+  for (const session of liveSessionMap.values()) livePids.add(session.pid)
+  for (const pid of deadPidReported) {
+    if (!livePids.has(pid)) deadPidReported.delete(pid)
   }
 
   // Emit perf span only when reconcile is slow (>20 ms threshold) to avoid flooding.

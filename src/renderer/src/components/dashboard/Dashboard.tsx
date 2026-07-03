@@ -16,6 +16,7 @@ import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
+import { clearLiveChipCache } from './footer/liveChipCache'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
   viewToSidebarActiveView,
@@ -341,6 +342,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
     })
   }, [])
@@ -1080,6 +1082,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       try {
         // "Archive" is a hard delete now (v34+). The DB row is gone after this.
@@ -1118,6 +1121,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       playSound('archive')
       await fetchWorkspacesForProject(projectId)
@@ -1238,6 +1242,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deletePr(ws.id)
         hasFetchedRef.current!.delete(ws.id)
         clearFooterActionsCache(ws.id)
+        clearLiveChipCache(ws.id)
         clearContextBudgetCache(ws.id)
       }
       setProjects((arr) => arr.filter((p) => p.id !== target.id))
