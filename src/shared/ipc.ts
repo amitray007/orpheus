@@ -78,7 +78,10 @@ import type {
   TerminalMountResult,
   TerminalSendKeyDescriptor,
   OverlayDescriptor,
-  OverlayShowResult
+  OverlayShowResult,
+  AppUiStatePatch,
+  ContextMenuNativeItem,
+  DetectedApp
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -94,6 +97,10 @@ import type {
 export interface InvokeChannelMap {
   'app:getVersion': { req: []; res: string }
   'app:getPaths': { req: []; res: { userData: string; logs: string } }
+  'app:offeredModes': {
+    req: [{ projectId: string }]
+    res: { local: boolean; worktree: boolean }
+  }
   'projects:list': { req: []; res: ProjectRecord[] }
   'pins:listAll': { req: []; res: PinnedItem[] }
   'doctor:check': { req: []; res: DoctorResult }
@@ -363,6 +370,18 @@ export interface InvokeChannelMap {
   'overlay:showDescriptor': { req: [{ descriptor: OverlayDescriptor }]; res: OverlayShowResult }
   'overlay:update': { req: [{ id: string; props: Record<string, unknown> }]; res: void }
   'overlay:hide': { req: [{ id: string }]; res: void }
+  'uiState:get': { req: []; res: AppUiState }
+  'uiState:update': { req: [AppUiStatePatch]; res: AppUiState }
+  'hooks:setEnabled': { req: [boolean]; res: { enabled: boolean } }
+  'hooks:getStatus': { req: []; res: { enabled: boolean; installed: number } }
+  'notifications:test': { req: []; res: void }
+  'contextMenu:show': { req: [ContextMenuNativeItem[]]; res: string | null }
+  'shell:revealInFinder': { req: [{ path: string }]; res: void }
+  'shell:openInEditor': { req: [{ path: string }]; res: void }
+  'shell:openTerminal': { req: [{ path: string }]; res: void }
+  'shell:copyToClipboard': { req: [{ text: string }]; res: void }
+  'shell:listEditorApps': { req: []; res: DetectedApp[] }
+  'shell:listTerminalApps': { req: []; res: DetectedApp[] }
   // … migrated domain-by-domain in follow-up commits.
 }
 

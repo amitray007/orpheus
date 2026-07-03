@@ -93,7 +93,7 @@ const api = {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),
     offeredModes: (projectId: string): Promise<{ local: boolean; worktree: boolean }> =>
-      ipcRenderer.invoke('app:offeredModes', { projectId })
+      invoke('app:offeredModes', { projectId })
   },
   window: {
     openDevTools: (): Promise<void> => invoke('window:openDevTools'),
@@ -365,9 +365,8 @@ const api = {
       invoke('orpheusConfig:setOverride', { projectId, patch })
   },
   uiState: {
-    get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
-    update: (patch: AppUiStatePatch): Promise<AppUiState> =>
-      ipcRenderer.invoke('uiState:update', patch),
+    get: (): Promise<AppUiState> => invoke('uiState:get'),
+    update: (patch: AppUiStatePatch): Promise<AppUiState> => invoke('uiState:update', patch),
     onChanged: (cb: (state: AppUiState) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.uiStateChanged, cb)
   },
@@ -400,16 +399,12 @@ const api = {
     ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb)
   },
   shell: {
-    revealInFinder: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:revealInFinder', { path }),
-    openInEditor: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:openInEditor', { path }),
-    openTerminal: (path: string): Promise<void> =>
-      ipcRenderer.invoke('shell:openTerminal', { path }),
-    copyToClipboard: (text: string): Promise<void> =>
-      ipcRenderer.invoke('shell:copyToClipboard', { text }),
-    listEditorApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listEditorApps'),
-    listTerminalApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listTerminalApps')
+    revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),
+    openInEditor: (path: string): Promise<void> => invoke('shell:openInEditor', { path }),
+    openTerminal: (path: string): Promise<void> => invoke('shell:openTerminal', { path }),
+    copyToClipboard: (text: string): Promise<void> => invoke('shell:copyToClipboard', { text }),
+    listEditorApps: (): Promise<DetectedApp[]> => invoke('shell:listEditorApps'),
+    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps')
   },
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> => invoke('mcp:listServers'),
@@ -470,10 +465,10 @@ const api = {
   },
   contextMenu: {
     show: (items: ContextMenuNativeItem[]): Promise<string | null> =>
-      ipcRenderer.invoke('contextMenu:show', items)
+      invoke('contextMenu:show', items)
   },
   notifications: {
-    test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
+    test: (): Promise<void> => invoke('notifications:test')
   },
   updates: {
     check: (): Promise<UpdateCheckResult> => invoke('updates:check'),
@@ -578,9 +573,8 @@ const api = {
   },
   hooks: {
     setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>
-      ipcRenderer.invoke('hooks:setEnabled', enabled),
-    getStatus: (): Promise<{ enabled: boolean; installed: number }> =>
-      ipcRenderer.invoke('hooks:getStatus')
+      invoke('hooks:setEnabled', enabled),
+    getStatus: (): Promise<{ enabled: boolean; installed: number }> => invoke('hooks:getStatus')
   },
   health: {
     get: (): Promise<HealthReport> => invoke('health:get')
