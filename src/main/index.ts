@@ -33,82 +33,25 @@ import type { DoctorResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
 import { getDb } from './db'
+import { getProject } from './projects'
+import { reconcileWorktree } from './worktrees'
 import {
-  listProjects,
-  addProject,
-  openProject,
-  getProject,
-  deleteProject,
-  renameProject,
-  setProjectExpandedInSidebar,
-  reorderProjects,
-  setProjectPinned
-} from './projects'
-import {
-  resolveMainWorktree,
-  withRepoLock,
-  createWorktree,
-  removeWorktree,
-  isWorktreeDirty,
-  worktreeSlug,
-  readWorktreeBaseRef,
-  branchExists,
-  NotAGitRepoError,
-  reconcileWorktree
-} from './worktrees'
-import { resolveOfferedModes } from './orpheusConfig'
-import { refreshGithubData } from './githubAvatar'
-import {
-  listSessionsForProject,
-  listSessionsForProjectPaged,
-  listAllSessions,
-  setSessionStatus,
-  createWorkspaceResumingSession,
-  createWorktreeResumingSession,
-  refreshSessionMetadata,
-  deleteSession,
-  getContextBudget
-} from './sessions'
-import {
-  listWorkspacesForProject,
-  createWorkspace,
-  openWorkspace,
   getWorkspace,
-  setWorkspacePinned,
   archiveWorkspace,
   closeWorkspace,
-  reopenWorkspace,
-  renameWorkspace,
-  reorderWorkspaces,
   setWorkspaceLastTitle,
   getAllWorkspaceLastTitles,
   resetTransientStatusesOnStartup,
-  setWorkspaceCwd,
-  convertWorktreeToLocal,
-  countWorktreeWorkspaces,
-  listWorktreeWorkspaces
+  setWorkspaceCwd
 } from './workspaces'
-import {
-  getClaudeGlobalSettings,
-  updateClaudeGlobalSettings,
-  composeClaudeLaunch
-} from './claudeSettings'
-import { getClaudeProjectSettings, updateClaudeProjectSettings } from './claudeProjectSettings'
-import {
-  getClaudeWorkspaceSettings,
-  updateClaudeWorkspaceSettings,
-  invalidateClaudeWorkspaceSettingsCache
-} from './claudeWorkspaceSettings'
+import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
   ensureManagedHooks,
   uninstallManagedHooks,
-  countManagedHooks,
   clearWorkspaceActivity,
-  invalidateWatchdogCache,
-  getWorkspaceActivity,
   setAutoCloseHandler
 } from './orpheusNotify'
 import {
@@ -123,30 +66,15 @@ import {
   cancelAttentionRetry
 } from './osNotifications'
 import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
-import { startStatusPoller, stopStatusPoller, rescheduleStatusPoll } from './claudeStatus'
+import { startStatusPoller, stopStatusPoller } from './claudeStatus'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
-import type {
-  AppUiStatePatch,
-  ClaudeWorkspaceSettings,
-  ClaudeEffort,
-  WorkspaceRecord
-} from '../shared/types'
-import type { ClaudeLaunch } from './claudeSettings'
+import type { WorkspaceRecord } from '../shared/types'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
-import type { TerminalSendKeyDescriptor, ActionInvocation } from '../shared/types'
-import {
-  bootActions,
-  invoke as actionsInvoke,
-  list as actionsList,
-  getAuditHistory,
-  setTerminalAddonRef,
-  startSubscription,
-  stopSubscription,
-  registerWebContentsCleanup
-} from './actions/index'
+import type { TerminalSendKeyDescriptor } from '../shared/types'
+import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
 import { refreshFromModelsDev } from './pricing'
@@ -155,7 +83,6 @@ import {
   stopDiagnostics,
   logDiagMain,
   ingestDiagEvent,
-  setDiagCategoryFlags,
   diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
@@ -165,15 +92,27 @@ import type { CommandServerDeps } from './commandServer'
 import {
   initOverlayLayer,
   registerOverlayRendererIpc,
-  showOverlay,
-  updateOverlay,
-  hideOverlay,
   isInteractiveOverlayVisible,
   focusOverlay,
   forceHideOwnedBy,
   setOverlayTheme
 } from './overlayLayer'
 import { PUSH_CHANNELS } from '../shared/ipc'
+import {
+  configureWorkspaceResources,
+  setLaunchSnapshot,
+  deleteLaunchSnapshot,
+  setDirty,
+  getTitle,
+  setTitle,
+  deleteTitle,
+  seedTitle,
+  setOverlayFallbackTimer,
+  clearOverlayFallbackTimer,
+  takeOverlayFallbackTimer,
+  withInjectLock,
+  teardownWorkspaceState
+} from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
@@ -187,20 +126,17 @@ import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
+import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
+import { registerWorktreesIpc } from './ipc/worktrees'
+import { registerHooksIpc } from './ipc/hooks'
+import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
+import { registerSessionsIpc } from './ipc/sessions'
+import { registerProjectsIpc } from './ipc/projects'
+import { registerWorkspacesIpc } from './ipc/workspaces'
+import { registerActionsIpc } from './ipc/actions'
+import { registerOverlayIpc } from './ipc/overlay'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
-
-// ---------------------------------------------------------------------------
-// Launch snapshot + dirty tracking
-// ---------------------------------------------------------------------------
-
-// Keyed by workspaceId — snapshot of the ClaudeLaunch used at terminal:mount time.
-const launchSnapshots = new Map<string, ClaudeLaunch>()
-const dirtyWorkspaces = new Set<string>()
-
-// Fallback auto-hide timers for loading overlays — ensures a stuck overlay
-// is always dismissed even if claude never registers a session file.
-const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let commandServer: { sockPath: string; token: string; close: () => void } | null = null
@@ -262,9 +198,6 @@ function getMainWindow(): BrowserWindow | null {
 function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
   getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceRequestOpen, { workspaceId, focus })
 }
-
-// Keyed by workspaceId — most recent terminal title from OSC 0/2.
-const workspaceTitles = new Map<string, string>()
 
 let titleCallbackRegistered = false
 let loadingOverlayWired = false
@@ -360,14 +293,14 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
 
     // Skip if nothing changed — guards the per-frame spinner churn.
-    if (workspaceTitles.get(workspaceId) === (cleaned ?? undefined)) return
-    if (!cleaned && !workspaceTitles.has(workspaceId)) return
+    if (getTitle(workspaceId) === (cleaned ?? undefined)) return
+    if (!cleaned && getTitle(workspaceId) === undefined) return
 
     console.log('[title] native fired', { workspaceId, raw: title, cleaned })
     if (cleaned) {
-      workspaceTitles.set(workspaceId, cleaned)
+      setTitle(workspaceId, cleaned)
     } else {
-      workspaceTitles.delete(workspaceId)
+      deleteTitle(workspaceId)
     }
     // Persist so the next launch can seed from the DB and the sidebar/header
     // shows the prior title instead of the default workspace name.
@@ -376,10 +309,6 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     } catch (err) {
       console.error('[title] failed to persist last_title', err)
     }
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: cleaned
-    })
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
     getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalSleepStateChanged, {
@@ -411,29 +340,6 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   }
 }
 
-function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
-  if (a.flags !== b.flags || a.settingsJson !== b.settingsJson) return false
-  const ak = Object.keys(a.env).sort()
-  const bk = Object.keys(b.env).sort()
-  if (ak.length !== bk.length) return false
-  for (let i = 0; i < ak.length; i++) {
-    if (ak[i] !== bk[i]) return false
-    if (a.env[ak[i]] !== b.env[ak[i]]) return false
-  }
-  return true
-}
-
-function broadcastDirty(workspaceId: string, dirty: boolean): void {
-  getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceDirtyChanged, { workspaceId, dirty })
-}
-
-function setDirty(workspaceId: string, dirty: boolean): void {
-  const was = dirtyWorkspaces.has(workspaceId)
-  if (dirty) dirtyWorkspaces.add(workspaceId)
-  else dirtyWorkspaces.delete(workspaceId)
-  if (was !== dirty) broadcastDirty(workspaceId, dirty)
-}
-
 // ---------------------------------------------------------------------------
 // Unified per-workspace teardown
 // ---------------------------------------------------------------------------
@@ -446,25 +352,15 @@ function setDirty(workspaceId: string, dirty: boolean): void {
 // Do NOT call on terminal:destroy alone, because destroy is also issued during
 // live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
 function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  // The 5-map registry slice (launchSnapshots, dirty, titles, overlay
+  // fallback timers, injectLocks) lives in workspaceResources.ts, which
+  // stays a leaf with no knowledge of these cross-module concerns.
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   clearWorkspaceActivity(workspaceId)
-  launchSnapshots.delete(workspaceId)
-  if (dirtyWorkspaces.delete(workspaceId)) broadcastDirty(workspaceId, false)
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
-  if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: null
-    })
-  }
-  const overlayTimer = overlayFallbackTimers.get(workspaceId)
-  if (overlayTimer) {
-    clearTimeout(overlayTimer)
-    overlayFallbackTimers.delete(workspaceId)
-  }
-  injectLocks.delete(workspaceId)
+  teardownWorkspaceState(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
 }
 
@@ -474,7 +370,7 @@ function performClose(id: string): WorkspaceRecord | undefined {
   const ws = getWorkspace(id)
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
-  const lastTitle = workspaceTitles.get(id) ?? null
+  const lastTitle = getTitle(id) ?? null
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
@@ -514,132 +410,6 @@ async function performArchive(
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
-  return result
-}
-
-function recomputeDirty(): void {
-  if (launchSnapshots.size === 0) return
-  // Fetch global settings once — shared across all workspaces in the loop.
-  // Each composeClaudeLaunch would otherwise run a redundant DB read.
-  const globalSettings = getClaudeGlobalSettings()
-  for (const [workspaceId, snap] of launchSnapshots.entries()) {
-    const ws = getWorkspace(workspaceId)
-    if (!ws) {
-      // Workspace was archived/removed while a snapshot was still tracked
-      // (e.g. archived mid-mount) — evict the stale entry instead of
-      // leaving it around forever.
-      launchSnapshots.delete(workspaceId)
-      setDirty(workspaceId, false)
-      continue
-    }
-    const fresh = composeClaudeLaunch(ws.projectId, workspaceId, globalSettings)
-    setDirty(workspaceId, !launchEquals(snap, fresh))
-  }
-}
-
-// Tokenizes a composed `flags` string into `{ name, raw }` pairs, one per
-// `--flag [value]` occurrence. `raw` is the exact matched substring (leading
-// whitespace trimmed) so tokens can be spliced back into a flags string
-// losslessly — e.g. "--model claude-opus-4-8" or "--debug" (no value).
-function parseFlagTokens(flags: string): Array<{ name: string; raw: string }> {
-  const tokens: Array<{ name: string; raw: string }> = []
-  const re = /(?:^|\s)--([a-zA-Z-]+)(?:\s+(\S+))?/g
-  let match: RegExpExecArray | null
-  while ((match = re.exec(flags)) !== null) {
-    tokens.push({ name: match[1], raw: match[0].trim() })
-  }
-  return tokens
-}
-
-// Persists a model/effort change made via a footer dropdown chip (Model or
-// Effort) AND neutralizes the resulting dirty delta for JUST that ONE flag
-// dimension of the launch snapshot — because `/model <value>` or
-// `/effort <value>` is typed into the terminal live by the caller immediately
-// after this resolves, the running claude process already reflects the new
-// value, so the stored snapshot must be updated to match reality without
-// touching any OTHER pending genuine dirty delta (e.g. if the user separately
-// changed permission-mode and hasn't restarted yet, that delta must still
-// show "Restart to apply" afterwards).
-//
-// Algorithm (position-independent, multi-flag-safe — "reconstruct from
-// fresh"): start from `fresh.flags` (guarantees compose's own deterministic
-// token ordering), then for every flag NAME other than `flagName` whose token
-// differs between the OLD snapshot and FRESH (including one having it and the
-// other not), rewrite the working string so that name's token matches OLD's
-// value again — i.e. undo everything fresh changed EXCEPT the one flag we
-// intentionally want reflected. The `flagName` token itself is always left as
-// fresh's value. This guarantees `launchEquals(patchedSnapshot, fresh)` is
-// true iff `flagName` was the ONLY thing that changed since mount: if nothing
-// else changed, every non-`flagName` token is restored to OLD's (== fresh's,
-// since nothing else diverged) value, so patched === fresh. If something else
-// DID change, that other token is deliberately reverted to OLD's stale value,
-// so patched !== fresh and recomputeDirty() below still correctly flags it.
-// Reconstructs `fresh.flags` with every flag NAME other than `flagName`
-// restored to its OLD token text wherever old and fresh disagree (including
-// one side having the flag and the other not). `flagName` itself is always
-// left as fresh's value. See `setWorkspaceSettingAndSuppressDirty` for why.
-function reconcileFlagsExceptTarget(
-  oldFlags: string,
-  freshFlags: string,
-  flagName: 'model' | 'effort'
-): string {
-  const oldByName = new Map(parseFlagTokens(oldFlags).map((t) => [t.name, t.raw]))
-  const freshByName = new Map(parseFlagTokens(freshFlags).map((t) => [t.name, t.raw]))
-  const allNames = new Set([...oldByName.keys(), ...freshByName.keys()])
-
-  let patchedFlags = freshFlags
-  for (const name of allNames) {
-    if (name === flagName) continue // leave fresh's value — this is the wanted change
-    const oldRaw = oldByName.get(name)
-    const freshRaw = freshByName.get(name)
-    if (oldRaw === freshRaw) continue // unchanged — nothing to restore
-
-    if (freshRaw !== undefined && oldRaw !== undefined) {
-      // Present in both, but differing value — replace fresh's token text
-      // with old's token text.
-      patchedFlags = patchedFlags.replace(freshRaw, oldRaw)
-    } else if (freshRaw !== undefined && oldRaw === undefined) {
-      // Fresh has it, old didn't — remove fresh's token.
-      patchedFlags = patchedFlags.replace(freshRaw, '').trim()
-    } else if (oldRaw !== undefined && freshRaw === undefined) {
-      // Old had it, fresh doesn't — append old's token back (exact insertion
-      // position doesn't matter: this branch only runs when some OTHER flag
-      // already changed, which already makes patched !== fresh, satisfying
-      // the invariant regardless of where we splice it back in).
-      patchedFlags = `${patchedFlags} ${oldRaw}`.trim()
-    }
-  }
-  // Normalize whitespace left behind by removals/replacements.
-  return patchedFlags.replace(/\s+/g, ' ').trim()
-}
-
-function setWorkspaceSettingAndSuppressDirty(
-  workspaceId: string,
-  patch: Partial<{ model: string; effort: ClaudeEffort }>,
-  flagName: 'model' | 'effort'
-): ClaudeWorkspaceSettings {
-  const result = updateClaudeWorkspaceSettings(workspaceId, patch)
-
-  const snap = launchSnapshots.get(workspaceId)
-  if (snap) {
-    const ws = getWorkspace(workspaceId)
-    if (ws) {
-      // Recompose fresh — this reflects the NEW value (already persisted
-      // above) plus whatever ELSE currently differs from the snapshot.
-      const fresh = composeClaudeLaunch(ws.projectId, workspaceId)
-      const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
-
-      // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
-      launchSnapshots.set(workspaceId, { ...snap, flags: patchedFlags })
-    }
-  }
-
-  // Recompute dirty for ALL workspaces (cheap, existing behavior) — now that
-  // the target flag's dimension of this workspace's snapshot matches fresh,
-  // only a GENUINE pre-existing divergence (unrelated to flagName) would
-  // still flag dirty.
-  recomputeDirty()
-
   return result
 }
 
@@ -1096,258 +866,39 @@ registerMiscIpc({ getProject })
 // Projects IPC
 // ---------------------------------------------------------------------------
 
-handle('projects:list', () => listProjects())
-
-handle('projects:add', (_e, { path }) => addProject(path))
-
-handle('projects:pickAndAdd', async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory', 'createDirectory', 'promptToCreate']
-  })
-  if (result.canceled || !result.filePaths[0]) return null
-  const chosen = result.filePaths[0]
-  console.log('[orpheus] project folder selected:', chosen)
-  return addProject(chosen)
-})
-
-handle('projects:open', (_e, { id }) => openProject(id))
-
-handle('projects:remove', async (_e, { id, deleteWorktrees = false, force = false }) => {
-  // Optional worktree teardown before cascade-delete.
-  // Must happen before deleteProject() so we still have workspace rows to query.
-  if (deleteWorktrees) {
-    const worktreeWorkspaces = listWorktreeWorkspaces(id)
-
-    // ── Phase 1 (pre-check, NO removal): count dirty worktrees ───────────
-    // Check dirtiness WITHOUT removing anything. If any are dirty and the
-    // caller hasn't set force, return early having removed NOTHING — so the
-    // user can cancel the confirmation without losing clean worktrees.
-    if (!force) {
-      const results = await Promise.all(worktreeWorkspaces.map((ws) => isWorktreeDirty(ws.cwd)))
-      const dirtyCount = results.filter(Boolean).length
-      if (dirtyCount > 0) {
-        return { deleted: false, dirtyWorktrees: dirtyCount }
-      }
-    }
-
-    // ── Phase 2 (removal): only reached when dirtyCount===0 or force ─────
-    // Remove each worktree best-effort; log non-fatal errors and continue so
-    // a single failure does not leave the project permanently undeletable.
-    for (const ws of worktreeWorkspaces) {
-      try {
-        await withRepoLock(ws.worktreeParentCwd, () =>
-          removeWorktree({ path: ws.cwd, force, repoRoot: ws.worktreeParentCwd })
-        )
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        logDiagMain({
-          category: 'error',
-          level: 'error',
-          event: DIAG_EVENTS.WORKTREE_REMOVAL_FAILED,
-          workspaceId: ws.id,
-          message: `non-fatal error removing worktree at ${ws.cwd}: ${message}`,
-          data: { cwd: ws.cwd }
-        })
-        console.warn(`[projects:remove] non-fatal error removing worktree at ${ws.cwd}:`, message)
-        // Continue — best-effort removal; don't abort the whole delete.
-      }
-    }
-  }
-
-  // Enumerate workspaces before the cascade-delete removes the rows so we can
-  // tear down each one's in-memory state and native surface. The renderer
-  // pre-destroys surfaces via terminal:destroy, but projects:remove must be
-  // self-sufficient even when called directly (double-cleanup is safe — all
-  // teardown operations are idempotent).
-  const workspacesToRemove = listWorkspacesForProject(id, { scope: 'all' })
-  for (const ws of workspacesToRemove) {
+registerProjectsIpc({
+  destroySurface: (workspaceId) => {
     if (terminalAddon) {
       try {
-        terminalAddon.destroy(ws.id)
+        terminalAddon.destroy(workspaceId)
       } catch {
         // Surface not mounted or already destroyed — ignore.
       }
     }
-    teardownWorkspaceResources(ws.id, ws.cwd ?? null)
-  }
-  deleteProject(id)
-  return { deleted: true, dirtyWorktrees: 0 }
+  },
+  teardownWorkspaceResources
 })
-
-handle('projects:worktreeSummary', (_e, { projectId }) => {
-  return { count: countWorktreeWorkspaces(projectId) }
-})
-
-handle('projects:rename', (_e, { id, name }) => renameProject(id, name))
 
 // ---------------------------------------------------------------------------
 // Workspaces IPC
 // ---------------------------------------------------------------------------
 
-handle('workspaces:listForProject', (_e, { projectId, scope }) =>
-  listWorkspacesForProject(projectId, { scope })
-)
+registerWorktreesIpc()
 
-handle('workspaces:create', (_e, args) => createWorkspace(args))
-
-// Create a worktree-backed workspace. Async + git-first transaction order:
-// resolve repo root → authoritatively enforce the offered-modes config →
-// (under the per-repo mutex) decide new-vs-existing branch → create the git
-// worktree → insert the DB row, rolling the worktree back if the insert fails.
-// Nothing is persisted until the worktree exists, and a failed insert leaves no
-// orphaned worktree behind.
-handle('workspaces:createWorktree', async (_e, { projectId, params }) => {
-  const project = getProject(projectId)
-  if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
-
-  // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
-  // worktree workspaces are impossible there, so reject with a clear message.
-  let repoRoot: string
-  try {
-    repoRoot = await resolveMainWorktree(project.path)
-  } catch (err) {
-    if (err instanceof NotAGitRepoError) {
-      throw new Error(`Cannot create a worktree workspace: ${project.path} is not a git repository`)
-    }
-    throw err
-  }
-
-  // Authoritative enforcement (spec §7.2): re-read the offered modes in the
-  // main process and reject if worktree creation is disabled by config. The
-  // UI gate is advisory; this is the real gate.
-  const modes = await resolveOfferedModes(project.path, true)
-  if (!modes.worktree) {
-    throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
-  }
-
-  const slug = worktreeSlug(params.name)
-  const branch = params.branch?.trim() || `worktree-${slug}`
-
-  return withRepoLock(repoRoot, async () => {
-    const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
-    const baseRef = await readWorktreeBaseRef()
-
-    // If createWorktree throws, propagate — no DB row has been inserted yet.
-    const { path: worktreePath, branch: finalBranch } = await createWorktree({
-      repoRoot,
-      slug,
-      branch,
-      mode,
-      baseRef
-    })
-
-    try {
-      // createWorkspace broadcasts workspaces:created internally (same as the
-      // normal create path), so no separate broadcast is needed here.
-      return createWorkspace({
-        projectId,
-        name: params.name,
-        cwd: worktreePath,
-        worktreeParentCwd: repoRoot,
-        worktreeBranch: finalBranch
-      })
-    } catch (rowErr) {
-      // Roll back the freshly created worktree so a failed insert can't leak a
-      // dangling worktree. Force-remove since it's brand new (no user changes).
-      try {
-        await removeWorktree({ path: worktreePath, force: true })
-      } catch {
-        // Best-effort rollback; surface the original insert error regardless.
-      }
-      throw rowErr
-    }
-  })
-})
-
-// Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
-handle('worktrees:branchExists', async (_e, { projectId, branch }) => {
-  const project = getProject(projectId)
-  if (!project) return false
-  let repoRoot: string
-  try {
-    repoRoot = await resolveMainWorktree(project.path)
-  } catch {
-    return false
-  }
-  return branchExists(repoRoot, branch)
-})
-
-handle('workspaces:open', (_e, { id }) => openWorkspace(id))
-
-handle('workspaces:setPinned', (_e, { id, pinned }) => setWorkspacePinned(id, pinned))
-
-handle('workspaces:archive', async (_e, { id, force = false }) => {
-  return await performArchive(id, force)
-})
-
-handle('workspace:close', (_e, { id }) => {
-  const status = getWorkspaceActivity(id)
-  if (status === 'in_progress') {
-    return { ok: false as const, error: 'busy' as const }
-  }
-  const workspace = performClose(id)
-  return { ok: true as const, workspace: workspace ?? null }
-})
-
-handle('workspace:reopen', (_e, { id }) => {
-  const workspace = reopenWorkspace(id)
-  return { ok: true as const, workspace: workspace ?? null }
-})
-
-handle('workspaces:rename', (_e, { id, name }) => renameWorkspace(id, name))
-
-// Convert a worktree-backed workspace to a plain local workspace (non-destructive:
-// does NOT delete the branch or worktree directory). Sets cwd = worktreeParentCwd
-// and nulls the worktree fields, then broadcasts workspaces:changed.
-handle('workspaces:convertToLocal', (_e, { id }) => convertWorktreeToLocal(id))
-
-handle('workspaces:reorder', (_e, { projectId, orderedIds }) =>
-  reorderWorkspaces(projectId, orderedIds)
-)
-
-handle('workspace:isDirty', (_e, { workspaceId }) => dirtyWorkspaces.has(workspaceId))
+registerWorkspacesIpc({ performArchive, performClose })
 
 // ---------------------------------------------------------------------------
-// Sessions IPC
+// Sessions IPC — extracted to ipc/sessions.ts.
 // ---------------------------------------------------------------------------
 
-handle('sessions:listForProject', (_e, { projectId, includeArchived }) =>
-  listSessionsForProject(projectId, { includeArchived })
-)
-
-handle('sessions:listAll', (_e, opts) => listAllSessions(opts))
-
-handle('sessions:setStatus', (_e, { id, status }) => setSessionStatus(id, status))
-
-handle('sessions:listForProjectPaged', (_e, req) => listSessionsForProjectPaged(req))
-
-handle('sessions:resumeInNewWorkspace', (_e, { sessionId, projectId }) =>
-  createWorkspaceResumingSession(projectId, sessionId)
-)
-
-handle('sessions:resumeInWorktreeWorkspace', (_e, { sessionId, projectId }) =>
-  createWorktreeResumingSession(projectId, sessionId)
-)
-
-handle('sessions:refreshMetadata', async (_e, { projectId }) => {
-  await refreshSessionMetadata(projectId)
-})
-
-handle('sessions:delete', (_e, { id }) => deleteSession(id))
-
-handle('sessions:getContextBudget', (_e, { workspaceId }) => getContextBudget(workspaceId))
+registerSessionsIpc()
 
 // ---------------------------------------------------------------------------
-// Claude Settings IPC
+// Claude Settings IPC (global + per-project + per-workspace + footer
+// Model/Effort chips) — extracted to ipc/claudeSettings.ts.
 // ---------------------------------------------------------------------------
 
-handle('claudeSettings:get', () => getClaudeGlobalSettings())
-
-handle('claudeSettings:update', (_e, patch) => {
-  const result = updateClaudeGlobalSettings(patch)
-  recomputeDirty()
-  return result
-})
+registerClaudeSettingsIpc()
 
 // ---------------------------------------------------------------------------
 // Ghostty Settings IPC
@@ -1380,69 +931,6 @@ registerClaudeHooksIpc()
 
 registerClaudeAuthIpc()
 
-// ---------------------------------------------------------------------------
-// Per-project Claude Settings IPC
-// ---------------------------------------------------------------------------
-
-handle('claudeProjectSettings:get', (_e, { projectId }) => getClaudeProjectSettings(projectId))
-
-handle('claudeProjectSettings:update', (_e, args) => {
-  const result = updateClaudeProjectSettings(args.projectId, args.patch)
-  recomputeDirty()
-  return result
-})
-
-// ---------------------------------------------------------------------------
-// Per-workspace Claude Settings IPC
-// ---------------------------------------------------------------------------
-
-handle('claudeWorkspaceSettings:get', (_e, { workspaceId }) =>
-  getClaudeWorkspaceSettings(workspaceId)
-)
-
-handle('claudeWorkspaceSettings:update', (_e, args) => {
-  const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
-  recomputeDirty()
-  return result
-})
-
-// Footer Model chip: persist a model override and suppress the resulting
-// dirty delta (the chip also injects `/model <value>` into the terminal live
-// right after this resolves, so the running process already matches — see
-// setWorkspaceSettingAndSuppressDirty above).
-handle('workspace:setModel', (_e, args) => {
-  return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { model: args.model }, 'model')
-})
-
-// Footer Model chip: read the TRUE effective model a workspace would launch
-// with right now (workspace override → project override → global setting),
-// by reusing composeClaudeLaunch verbatim — the single source of truth for
-// launch composition — instead of duplicating its resolution precedence.
-handle('workspace:getEffectiveModel', (_e, args) => {
-  const ws = getWorkspace(args.workspaceId)
-  const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-  const m = launch.flags.match(/^--model\s+(\S+)/)
-  return { model: m ? m[1] : '' }
-})
-
-// Footer Effort chip: persist an effort override and suppress the resulting
-// dirty delta (the chip also injects `/effort <value>` into the terminal live
-// right after this resolves, so the running process already matches — see
-// setWorkspaceSettingAndSuppressDirty above).
-handle('workspace:setEffort', (_e, args) => {
-  return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { effort: args.effort }, 'effort')
-})
-
-// Footer Effort chip: read the TRUE effective effort a workspace would launch
-// with right now, by reusing composeClaudeLaunch verbatim. Not anchored to
-// start-of-string (unlike model) because --effort is not always flagParts[0].
-handle('workspace:getEffectiveEffort', (_e, args) => {
-  const ws = getWorkspace(args.workspaceId)
-  const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
-  const m = launch.flags.match(/(?:^|\s)--effort\s+(\S+)/)
-  return { effort: m ? m[1] : '' }
-})
-
 registerOrpheusConfigIpc({ getProject })
 
 // ---------------------------------------------------------------------------
@@ -1457,39 +945,11 @@ ipcMain.on('diag:event', (_e, evt) => {
 // UI State IPC
 // ---------------------------------------------------------------------------
 
-handle('uiState:get', () => getAppUiState())
-
-function syncDiagFlags(): void {
-  const s = getAppUiState()
-  setDiagCategoryFlags({
-    error: s.diagError,
-    lifecycle: s.diagLifecycle,
-    perf: s.diagPerf,
-    anomaly: s.diagAnomaly,
-    trace: s.diagTrace
-  })
-}
-
-handle('uiState:update', (_e, patch: AppUiStatePatch) => {
-  const result = updateAppUiState(patch)
-  if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
-  if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
-  if (patch.theme !== undefined) {
-    applyLoadingOverlayTheme(patch.theme)
-    setOverlayTheme(patch.theme)
-  }
-  if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
-  if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
-  if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
-  if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
-  syncDiagFlags()
-  // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
-  // can react without polling.
-  const win = getMainWindow()
-  if (win && !win.isDestroyed()) {
-    win.webContents.send(PUSH_CHANNELS.uiStateChanged, result)
-  }
-  return result
+registerUiStateIpc({
+  getMainWindow,
+  applyLaunchAtLogin,
+  applyGlobalHotkey,
+  applyLoadingOverlayTheme
 })
 
 ipcMain.on(
@@ -1507,31 +967,11 @@ ipcMain.on(
 // Hooks integration IPC
 // ---------------------------------------------------------------------------
 
-handle('hooks:setEnabled', (_e, enabled: boolean) => {
-  updateAppUiState({ hooksIntegrationEnabled: enabled })
-  reconcileHooks()
-  return { enabled }
-})
-
-handle('hooks:getStatus', () => {
-  const enabled = getAppUiState().hooksIntegrationEnabled
-  const installed = countManagedHooks()
-  return { enabled, installed }
-})
+registerHooksIpc({ reconcileHooks })
 
 registerSystemIpc({ getAppUiState })
 
 registerUpdatesIpc()
-
-handle('projects:setExpandedInSidebar', (_e, { id, expanded }) =>
-  setProjectExpandedInSidebar(id, expanded)
-)
-
-handle('projects:reorder', (_e, { orderedIds }) => reorderProjects(orderedIds))
-
-handle('projects:setPinned', (_e, { id, pinned }) => setProjectPinned(id, pinned))
-
-handle('projects:refreshGithub', (_e, projectId) => refreshGithubData(projectId))
 
 handle('doctor:check', async (): Promise<DoctorResult> => {
   const { installed, version, path: claudePath } = await checkClaude()
@@ -1767,10 +1207,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     } else {
       // Fallback: ensure the overlay is always dismissed after 10s even if
       // claude never registers a session file (e.g. auth failure, crash).
-      const prev = overlayFallbackTimers.get(workspaceId)
-      if (prev) clearTimeout(prev)
       const t = setTimeout(() => {
-        overlayFallbackTimers.delete(workspaceId)
+        // Self-deleting: this callback is running because the timer already
+        // fired, so remove the map entry directly (takeOverlayFallbackTimer)
+        // rather than clearOverlayFallbackTimer, which would call
+        // clearTimeout on an already-fired timer — harmless on Node, but
+        // semantically wrong for a timer that's mid-callback.
+        takeOverlayFallbackTimer(workspaceId)
         logDiagMain({
           category: 'anomaly',
           level: 'warn',
@@ -1780,7 +1223,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
         })
         hideLoadingOverlay(workspaceId)
       }, 10000)
-      overlayFallbackTimers.set(workspaceId, t)
+      setOverlayFallbackTimer(workspaceId, t)
     }
   } else {
     // Surface already existed (re-attach). If a worktree workspace showed the
@@ -1792,7 +1235,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   }
 
   // Snapshot the composed launch so we can detect settings drift later.
-  launchSnapshots.set(workspaceId, launch)
+  setLaunchSnapshot(workspaceId, launch)
   setDirty(workspaceId, false)
 
   // Push the current canInject state so the renderer chip gets an immediate
@@ -1815,11 +1258,7 @@ handle('terminal:hide', (_e, { workspaceId }): void => {
   const addon = loadTerminalAddon()
   // If the user navigates away mid-boot, dismiss the overlay so it doesn't
   // outlive its parent surface in the contentView.
-  const fallback = overlayFallbackTimers.get(workspaceId)
-  if (fallback) {
-    clearTimeout(fallback)
-    overlayFallbackTimers.delete(workspaceId)
-  }
+  clearOverlayFallbackTimer(workspaceId)
   hideLoadingOverlay(workspaceId)
   try {
     addon.hide(workspaceId)
@@ -1913,24 +1352,18 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
-  const fallbackTimer = overlayFallbackTimers.get(workspaceId)
-  if (fallbackTimer) {
-    clearTimeout(fallbackTimer)
-    overlayFallbackTimers.delete(workspaceId)
-  }
+  //
+  // Deliberately a SUBSET of teardownWorkspaceState's 5 maps — NOT that
+  // helper — because live restart must NOT evict injectLocks (an in-flight
+  // inject must keep its lock across the surface bounce). Uses the
+  // registry's granular per-map accessors instead.
+  clearOverlayFallbackTimer(workspaceId)
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
-  launchSnapshots.delete(workspaceId)
-  if (dirtyWorkspaces.delete(workspaceId)) {
-    broadcastDirty(workspaceId, false)
-  }
+  deleteLaunchSnapshot(workspaceId)
+  setDirty(workspaceId, false)
   // Clear title and notify renderer so stale claude titles don't linger
-  if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: null
-    })
-  }
+  deleteTitle(workspaceId)
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
@@ -1968,11 +1401,7 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
 // Overlay layer IPC (React overlays above the terminal)
 // ---------------------------------------------------------------------------
 
-handle('overlay:showDescriptor', (_e, { descriptor }) => showOverlay(descriptor))
-
-handle('overlay:update', (_e, { id, props }): void => updateOverlay(id, props))
-
-handle('overlay:hide', (_e, { id }) => hideOverlay(id))
+registerOverlayIpc()
 
 // ipcMain.on registrations for the overlayRenderer:* channels (sends from the
 // overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.
@@ -2027,35 +1456,6 @@ const SUBMIT_DELAY_MS = 150
 const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 // ---------------------------------------------------------------------------
-// Per-workspace injection mutex (RACE-10) — mirrors withRepoLock's
-// promise-chain pattern (worktrees.ts) but keyed by workspaceId, a separate
-// lock domain. Without this, two concurrent CLI injections into the SAME
-// workspace (e.g. two `ws send` calls) can interleave their
-// sendInput/sendKeys → delay → submit sequences: A stages text, B stages
-// text, A submits (submitting A+B concatenated), B submits into a now-empty
-// input box. Serialising the stage-then-submit critical section per
-// workspace prevents that interleaving while leaving unrelated workspaces
-// fully concurrent.
-// ---------------------------------------------------------------------------
-const injectLocks = new Map<string, Promise<unknown>>()
-function withInjectLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = injectLocks.get(workspaceId) ?? Promise.resolve()
-  const next = prev.then(
-    () => fn(),
-    () => fn()
-  )
-  // Store a silent version so map entry errors don't surface as unhandled rejections
-  injectLocks.set(
-    workspaceId,
-    next.then(
-      () => undefined,
-      () => undefined
-    )
-  )
-  return next
-}
-
-// ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
 // ---------------------------------------------------------------------------
 
@@ -2087,33 +1487,9 @@ handle('terminal:canInject', (_e, { workspaceId }): boolean => {
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------
 
-handle('actions:invoke', (_e, { actionId, params, workspaceId, consumerHint }) => {
-  const invocation: ActionInvocation = { id: actionId, params, workspaceId }
-  return actionsInvoke(invocation, consumerHint ?? 'ipc')
-})
-
-handle('actions:list', () => actionsList())
-
-handle('actions:history', (_e, { workspaceId, limit }) => getAuditHistory(workspaceId, limit))
-
-handle('actions:subscribe', (e, { subscriptionId, actionId, params, workspaceId }) => {
-  const win = BrowserWindow.fromWebContents(e.sender)
-  startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send(PUSH_CHANNELS.actionsSubscriptionUpdate, { subscriptionId, value })
-    }
-  })
-  return { ok: true as const }
-})
-
-handle('actions:unsubscribe', (_e, { subscriptionId }) => {
-  stopSubscription(subscriptionId)
-  return { ok: true as const }
-})
+registerActionsIpc()
 
 registerFooterActionsIpc()
-
-handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(workspaceId) ?? null)
 
 registerKeepAwakeIpc()
 
@@ -2200,6 +1576,13 @@ if (!app.requestSingleInstanceLock()) {
       startDiagnostics()
       syncDiagFlags()
 
+      // Wire the workspaceResources registry's main→renderer broadcast bridge
+      // once at boot (mirrors configureLoadingOverlay's injection pattern) —
+      // keeps workspaceResources.ts a leaf with no import back on index.ts.
+      configureWorkspaceResources({
+        broadcast: (channel, payload) => getMainWindow()?.webContents.send(channel, payload)
+      })
+
       // Boot Quick Actions registry — registers all action descriptors so they're
       // available before any IPC can invoke them.
       bootActions()
@@ -2231,7 +1614,7 @@ if (!app.requestSingleInstanceLock()) {
       // launch — without waiting for Claude to re-emit an OSC title.
       try {
         for (const { id, title } of getAllWorkspaceLastTitles()) {
-          workspaceTitles.set(id, title)
+          seedTitle(id, title)
         }
       } catch (err) {
         console.error('[startup] failed to seed workspaceTitles from DB:', err)

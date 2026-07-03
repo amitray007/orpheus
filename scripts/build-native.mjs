@@ -9,6 +9,40 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
+// Self-healing guard: the packaged app needs two native artifacts that are
+// normally produced by `postinstall` (`electron-builder install-app-deps` +
+// `fetch:libghostty`). A `bun install --ignore-scripts` skips that postinstall,
+// leaving `better-sqlite3`'s prebuilt binding and the libghostty xcframework
+// absent — the app then builds but crashes at startup with "Could not locate
+// the bindings file" / missing `ghostty.h`. Rather than fail cryptically later,
+// detect and repair those two here so a local `build:unpack` is self-healing on
+// an --ignore-scripts install. (CI/release use a full install, so this is a
+// fast no-op there.)
+{
+  const { existsSync } = await import('fs')
+  const sqliteBinding = resolve(
+    ROOT,
+    'node_modules/better-sqlite3/build/Release/better_sqlite3.node'
+  )
+  if (!existsSync(sqliteBinding)) {
+    console.warn(
+      '[build-native] better-sqlite3 native binding missing (postinstall was skipped) — running `electron-builder install-app-deps`'
+    )
+    execSync('bunx electron-builder install-app-deps', { cwd: ROOT, stdio: 'inherit' })
+  }
+
+  const ghosttyHeader = resolve(
+    ROOT,
+    'vendor/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h'
+  )
+  if (!existsSync(ghosttyHeader)) {
+    console.warn(
+      '[build-native] libghostty xcframework missing (postinstall was skipped) — running `fetch:libghostty`'
+    )
+    execSync('bash scripts/fetch-libghostty.sh', { cwd: ROOT, stdio: 'inherit' })
+  }
+}
+
 // Each entry is the path to a package dir that contains a binding.gyp.
 const TARGETS = ['packages/ghostty-surface']
 
