@@ -181,7 +181,7 @@ function indicatorLabel(indicator: ClaudeStatusIndicator): string {
 // Fetch
 // ---------------------------------------------------------------------------
 
-export async function fetchStatusSnapshot(): Promise<ClaudeStatusSnapshot> {
+async function fetchStatusSnapshot(): Promise<ClaudeStatusSnapshot> {
   const version = app.getVersion()
   const res = await fetch(STATUS_SUMMARY_URL, {
     headers: { 'User-Agent': `Orpheus/${version} (status check)` },

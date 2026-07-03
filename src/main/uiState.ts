@@ -259,11 +259,6 @@ function validatePatch(patch: AppUiStatePatch): void {
 
 let cachedState: AppUiState | null = null
 
-/** Invalidate the in-memory cache (call after external mutations, e.g. in tests). */
-export function invalidateAppUiStateCache(): void {
-  cachedState = null
-}
-
 export function getAppUiState(): AppUiState {
   if (cachedState !== null) return cachedState
   const db = getDb()

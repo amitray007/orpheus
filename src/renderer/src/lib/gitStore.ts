@@ -6,7 +6,6 @@
  * API:
  *   setGitStatus(workspaceId, status)   — set a single key (no-op on identity or shallow-field match)
  *   deleteGitStatus(workspaceId)        — remove a key (e.g. on archive)
- *   getGitSnapshot()                    — read the full map (no subscription)
  *   useGitStatus(workspaceId)           — hook: subscribe to ONE key only
  */
 
@@ -40,11 +39,6 @@ export function setGitStatus(workspaceId: string, status: GitStatus | null): voi
 /** Remove a workspace's git status entry (e.g. on archive). */
 export function deleteGitStatus(workspaceId: string): void {
   store.remove(workspaceId)
-}
-
-/** Returns a stable snapshot reference of the current store state. */
-export function getGitSnapshot(): ReadonlyMap<string, GitStatus | null> {
-  return store.getSnapshot()
 }
 
 /**

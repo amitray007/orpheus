@@ -192,7 +192,7 @@ function runOutdated(
  *   "  #####      ##                             5.6%  --:--"  (curl bar)
  *   "Already downloaded: …"  (cached; skip % extraction)
  */
-export function parseBrewLine(
+function parseBrewLine(
   line: string,
   prevPhase: UpdatePhase
 ): { phase: UpdatePhase; percent: number | null } {

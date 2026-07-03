@@ -927,7 +927,7 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
  * IMPORTANT: only deletes DB rows — JSONL files on disk are never touched.
  * Returns the number of rows deleted.
  */
-export function pruneOldSessions(projectId: string, max: number): number {
+function pruneOldSessions(projectId: string, max: number): number {
   const db = getDb()
 
   const { total } = db

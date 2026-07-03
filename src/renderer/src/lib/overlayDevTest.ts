@@ -101,11 +101,6 @@ function onKeyDown(e: KeyboardEvent): void {
   void runStep()
 }
 
-/** Cycles the overlay dev-test matrix — same behavior as the Cmd+Shift+Alt+O shortcut. */
-export function cycleOverlayDevTest(): void {
-  void runStep()
-}
-
 function onOverlayEvent(event: OverlayEvent): void {
   console.log(`${LOG_PREFIX} event`, event)
   if (event.overlayId !== lastShownId) return

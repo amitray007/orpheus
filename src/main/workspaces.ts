@@ -72,22 +72,6 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
   }
 }
 
-/**
- * Get the forked_from_session_id for a workspace (Plan A fork support).
- * Returns null when the column doesn't exist yet (pre-v43 DBs) or has no value.
- */
-export function getWorkspaceForkedFromSessionId(id: string): string | null {
-  const db = getDb()
-  try {
-    const row = db.prepare('SELECT forked_from_session_id FROM workspaces WHERE id = ?').get(id) as
-      | { forked_from_session_id: string | null }
-      | undefined
-    return row?.forked_from_session_id ?? null
-  } catch {
-    return null
-  }
-}
-
 function rowToProjectRecord(row: ProjectRow): ProjectRecord {
   return {
     id: row.id,

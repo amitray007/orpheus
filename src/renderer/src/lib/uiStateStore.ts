@@ -13,7 +13,6 @@
  * API:
  *   useUiState()            — hook: subscribe to the whole AppUiState value
  *   updateUiState(patch)    — optimistic patch + persist via IPC
- *   getUiStateSnapshot()    — read the current value without subscribing
  */
 
 import { useSyncExternalStore } from 'react'
@@ -82,16 +81,6 @@ export function updateUiState(patch: AppUiStatePatch): void {
     .catch((err) => {
       console.error('[uiStateStore] uiState update failed', err)
     })
-}
-
-// ---------------------------------------------------------------------------
-// Public read / snapshot API
-// ---------------------------------------------------------------------------
-
-/** Returns the current AppUiState snapshot without subscribing (null until the initial fetch resolves). */
-export function getUiStateSnapshot(): AppUiState | null {
-  ensureStarted()
-  return state
 }
 
 // ---------------------------------------------------------------------------
