@@ -101,7 +101,6 @@ import {
   invalidateClaudeWorkspaceSettingsCache
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
-import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
 import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
@@ -209,6 +208,7 @@ import { registerUpdatesIpc } from './ipc/updates'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
+import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1450,15 +1450,7 @@ registerClaudeAgentsIpc()
 
 registerClaudeHooksIpc()
 
-// ---------------------------------------------------------------------------
-// Claude Auth IPC
-// ---------------------------------------------------------------------------
-
-handle('claudeAuth:get', () => getClaudeAuthState())
-
-handle('claudeAuth:update', (_e, patch) => updateClaudeAuth(patch))
-
-handle('claudeAuth:testConnection', () => testAnthropicConnection())
+registerClaudeAuthIpc()
 
 // ---------------------------------------------------------------------------
 // Per-project Claude Settings IPC
