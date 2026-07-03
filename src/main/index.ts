@@ -156,18 +156,7 @@ import {
   registerWebContentsCleanup
 } from './actions/index'
 import { evictAccumulator } from './actions/session'
-import {
-  listGlobal as listGlobalFooterActions,
-  listForProject as listProjectFooterActions,
-  listForWorkspace as listWorkspaceFooterActions,
-  listMerged as listMergedFooterActions,
-  create as createFooterAction,
-  update as updateFooterAction,
-  remove as removeFooterAction,
-  reorder as reorderFooterActions,
-  seedDefaultFooterActions,
-  resetToDefaults as resetFooterActionsToDefaults
-} from './footerActions'
+import { seedDefaultFooterActions } from './footerActions'
 import { refreshFromModelsDev } from './pricing'
 import {
   startDiagnostics,
@@ -209,6 +198,7 @@ import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
+import { registerFooterActionsIpc } from './ipc/footerActions'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -2212,35 +2202,7 @@ handle('actions:unsubscribe', (_e, { subscriptionId }) => {
   return { ok: true as const }
 })
 
-// ---------------------------------------------------------------------------
-// Footer actions — phase 3a: CRUD + merge IPC surface
-// ---------------------------------------------------------------------------
-
-handle('footerActions:listMerged', (_e, { workspaceId }) => listMergedFooterActions(workspaceId))
-
-handle('footerActions:listAtScope', (_e, { scope, scopeId }) => {
-  if (scope === 'global') return listGlobalFooterActions()
-  if (scope === 'project') return listProjectFooterActions(scopeId ?? '')
-  return listWorkspaceFooterActions(scopeId ?? '')
-})
-
-handle('footerActions:create', (_e, { scope, scopeId, draft }) =>
-  createFooterAction(scope, scopeId, draft)
-)
-
-handle('footerActions:update', (_e, { id, patch }) => updateFooterAction(id, patch))
-
-handle('footerActions:remove', (_e, { id }) => {
-  removeFooterAction(id)
-})
-
-handle('footerActions:reorder', (_e, { scope, scopeId, orderedIds }) =>
-  reorderFooterActions(scope, scopeId, orderedIds)
-)
-
-handle('footerActions:resetDefaults', () => {
-  resetFooterActionsToDefaults()
-})
+registerFooterActionsIpc()
 
 handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(workspaceId) ?? null)
 
