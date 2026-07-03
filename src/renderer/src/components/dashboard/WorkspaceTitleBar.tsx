@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import {
-  Terminal as TerminalIcon,
-  Gear,
-  ArrowBendUpLeft,
-  Info,
-  GitBranch,
-  SquaresFour,
-  CaretLeft
-} from '@phosphor-icons/react'
+import { ArrowBendUpLeft, GitBranch, SquaresFour, CaretLeft } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
@@ -70,53 +62,39 @@ function shortTokens(n: number): string {
 
 interface WorkspaceTitleBarProps {
   workspace: WorkspaceRecord
-  drawer: null | 'status' | 'overrides'
-  onSetDrawer: (drawer: null | 'status' | 'overrides') => void
   pr?: GhPullRequest | null
   /** All workspaces — used to resolve the parent workspace name for forked-from chip. */
   allWorkspaces?: WorkspaceRecord[]
-  /** Workbench feature flag (U2/U3, docs/plans/2026-07-02-001-feat-workbench-panes-plan.md).
-   *  When false (default) this component renders byte-for-byte as it did before U3 —
-   *  terminal icon, separate Details button, Gear "Workspace Settings" button.
-   *  When true it renders the three-section layout: Claude glyph, title-hover
-   *  details (dirty chip included), no gear, and a "Workbench" button stub. */
-  workbenchEnabled?: boolean
   /** Restarts the workspace to apply pending settings changes — same handler
-   *  WorkspaceDrawer's "Restart to apply" button uses. Only consulted on the
-   *  workbenchEnabled path, where the dirty chip re-homes into the details
-   *  popover instead of the (removed) gear's drawer. */
+   *  WorkspaceDrawer's (preserved, no longer mounted) "Restart to apply" button
+   *  used. The dirty chip re-homes into the title-hover details popover. */
   onRestart?: () => void
 }
 
 export function WorkspaceTitleBar({
   workspace,
-  drawer,
-  onSetDrawer,
   pr,
   allWorkspaces,
-  workbenchEnabled = false,
   onRestart
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
   const detailsButtonRef = useRef<HTMLElement>(null)
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
   const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
-  // U4 — the shared Workbench state machine. Only actually provided (non-null)
-  // when workbenchEnabled, via WorkbenchProvider in WorkspaceView; safe to
-  // call unconditionally (reads a context that's null on the flag-off path).
+  // The shared Workbench state machine, provided via WorkbenchProvider in
+  // WorkspaceView.
   const workbenchApi = useWorkbenchApi()
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
 
-  // Dirty ("Restart to apply") state — only tracked/surfaced on the
-  // workbenchEnabled path, where it re-homes into the title-hover details
+  // Dirty ("Restart to apply") state — surfaced in the title-hover details
   // popover instead of the (removed) gear's WorkspaceDrawer. Mirrors the
-  // polling + push pattern WorkspaceDrawer uses for the same state.
+  // polling + push pattern WorkspaceDrawer (preserved, no longer mounted)
+  // uses for the same state.
   const [isDirty, setIsDirty] = useState(false)
 
   useEffect(() => {
-    if (!workbenchEnabled) return
     const workspaceId = workspace.id
     let cancelled = false
     window.api.workspaces
@@ -134,14 +112,13 @@ export function WorkspaceTitleBar({
       cancelled = true
       unsub()
     }
-  }, [workbenchEnabled, workspace.id])
+  }, [workspace.id])
 
   // Keep the open details popover's dirty chip in sync if isDirty changes
   // while the popover is already showing.
   useEffect(() => {
-    if (!workbenchEnabled) return
     updateDetailsCard(detailsCardId(workspace.id), { isDirty })
-  }, [isDirty, workbenchEnabled, workspace.id])
+  }, [isDirty, workspace.id])
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -187,9 +164,7 @@ export function WorkspaceTitleBar({
       cwd: cwdDisplay,
       contextLoading: true,
       costLoading: true,
-      // Dirty/"Restart to apply" only ever surfaces here on the
-      // workbenchEnabled path (U3) — isDirty stays false/unset otherwise.
-      isDirty: workbenchEnabled ? isDirty : undefined
+      isDirty
     }
     showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
 
@@ -274,17 +249,17 @@ export function WorkspaceTitleBar({
   // Hover-bridge: keep the card open while the pointer is over the card
   // itself — the overlay card emits mouseenter/mouseleave, so cancel the
   // close timer on enter and re-arm it (same 80ms) on leave. Also registers
-  // the "Restart to apply" click the card emits (workbenchEnabled path only,
-  // U3) — the dirty chip re-homes here since the gear/drawer is removed.
+  // the "Restart to apply" click the card emits — the dirty chip re-homes
+  // here since the gear/drawer is removed.
   useEffect(() => {
     const unregister = onCardPointer(detailsCardId(workspace.id), {
       onEnter: hoverCard.clearTimer,
       onLeave: () => hoverCard.armClose(hideDetailsCard),
-      onRestart: workbenchEnabled ? () => onRestart?.() : undefined
+      onRestart: () => onRestart?.()
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspace.id, workbenchEnabled, onRestart])
+  }, [workspace.id, onRestart])
 
   // Resolve parent name for the "forked from" chip
   const forkedFromSessionId = workspace.forkedFromSessionId ?? null
@@ -300,8 +275,7 @@ export function WorkspaceTitleBar({
       ? `${workspace.name} — ${terminalTitle}`
       : workspace.name
 
-  // Shared "extra chips" (PR / forked-from / worktree) — identical on both
-  // the flag-off and flag-on paths.
+  // "Extra chips" (PR / forked-from / worktree).
   const chips = (
     <>
       {pr && (
@@ -332,137 +306,82 @@ export function WorkspaceTitleBar({
     </>
   )
 
-  // ── Flag ON — three-section layout ──────────────────────────────────────
+  // ── Three-section layout ─────────────────────────────────────────────────
   // Section 1 (icons over the sidebar) lives in TopBar itself; this
   // component only ever renders sections 2 (title, over Claude) + 3 (the
-  // Workbench button, over the Workbench frame). Details moves to title
-  // hover; the gear + its drawer trigger are removed entirely.
-  if (workbenchEnabled) {
-    // Section 2 becomes the "◂ Claude" restore control while the Workbench
-    // is expanded (docs/brainstorms/2026-07-02-workbench-panes-requirements.md
-    // §4) — clicking it is one of the two ways to land back in 'open'
-    // (mirrors the ⤡ toggle in WorkbenchPanel's header).
-    const isExpanded = workbenchApi?.state === 'expanded'
+  // Workbench button, over the Workbench frame). Details lives on title
+  // hover; there is no gear/Workspace Settings button.
+  //
+  // Section 2 becomes the "◂ Claude" restore control while the Workbench is
+  // expanded (docs/brainstorms/2026-07-02-workbench-panes-requirements.md
+  // §4) — clicking it is one of the two ways to land back in 'open' (mirrors
+  // the ⤡ toggle in WorkbenchPanel's header).
+  const isExpanded = workbenchApi?.state === 'expanded'
 
-    return (
-      <div
-        className="flex items-center gap-2 min-w-0 flex-1 px-3"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      >
-        {isExpanded ? (
-          <button
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => workbenchApi?.restoreToOpen()}
-            title="Restore Claude"
-            aria-label="Restore Claude"
-            className={[
-              'flex items-center gap-1.5 px-1.5 py-0.5 -mx-1.5 rounded-sm text-xs font-medium flex-shrink-0',
-              'transition-colors duration-150',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-              'text-accent hover:bg-surface-overlay/60'
-            ].join(' ')}
-          >
-            <CaretLeft size={12} />
-            <span>Claude</span>
-          </button>
-        ) : (
-          <>
-            <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
-            <span
-              ref={detailsButtonRef}
-              tabIndex={0}
-              role="button"
-              aria-label={`Details for ${titleText}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onMouseEnter={handleDetailsMouseEnter}
-              onMouseLeave={handleDetailsMouseLeave}
-              onFocus={handleDetailsMouseEnter}
-              onBlur={handleDetailsMouseLeave}
-              title={titleTooltip}
-              className="text-xs font-medium text-text-primary truncate cursor-default rounded-sm hover:bg-surface-overlay/60 px-0.5 -mx-0.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-            >
-              {titleText}
-            </span>
-
-            {chips}
-          </>
-        )}
-
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => workbenchApi?.toggle()}
-            title="Workbench"
-            aria-label="Workbench"
-            aria-expanded={workbenchApi ? workbenchApi.state !== 'dormant' : false}
-            className={[
-              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
-              'transition-colors duration-150',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-              workbenchApi && workbenchApi.state !== 'dormant'
-                ? 'bg-surface-overlay text-text-primary'
-                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-            ].join(' ')}
-          >
-            <SquaresFour size={14} />
-            <span>Workbench</span>
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Flag OFF (default) — unchanged from pre-U3 behavior ─────────────────
   return (
     <div
       className="flex items-center gap-2 min-w-0 flex-1 px-3"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
-      <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-      <span className="text-xs font-medium text-text-primary truncate" title={titleTooltip}>
-        {titleText}
-      </span>
+      {isExpanded ? (
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => workbenchApi?.restoreToOpen()}
+          title="Restore Claude"
+          aria-label="Restore Claude"
+          className={[
+            'flex items-center gap-1.5 px-1.5 py-0.5 -mx-1.5 rounded-sm text-xs font-medium flex-shrink-0',
+            'transition-colors duration-150',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+            'text-accent hover:bg-surface-overlay/60'
+          ].join(' ')}
+        >
+          <CaretLeft size={12} />
+          <span>Claude</span>
+        </button>
+      ) : (
+        <>
+          <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
+          <span
+            ref={detailsButtonRef}
+            tabIndex={0}
+            role="button"
+            aria-label={`Details for ${titleText}`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseEnter={handleDetailsMouseEnter}
+            onMouseLeave={handleDetailsMouseLeave}
+            onFocus={handleDetailsMouseEnter}
+            onBlur={handleDetailsMouseLeave}
+            title={titleTooltip}
+            className="text-xs font-medium text-text-primary truncate cursor-default rounded-sm hover:bg-surface-overlay/60 px-0.5 -mx-0.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          >
+            {titleText}
+          </span>
 
-      {chips}
+          {chips}
+        </>
+      )}
 
       <div className="ml-auto flex items-center gap-1">
         <button
           type="button"
-          ref={detailsButtonRef as React.Ref<HTMLButtonElement>}
           onMouseDown={(e) => e.stopPropagation()}
-          onMouseEnter={handleDetailsMouseEnter}
-          onMouseLeave={handleDetailsMouseLeave}
-          title="Details"
-          aria-label="Details"
+          onClick={() => workbenchApi?.toggle()}
+          title="Workbench"
+          aria-label="Workbench"
+          aria-expanded={workbenchApi ? workbenchApi.state !== 'dormant' : false}
           className={[
             'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
             'transition-colors duration-150',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
-          ].join(' ')}
-        >
-          <Info size={14} />
-          <span>Details</span>
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => onSetDrawer(drawer === 'overrides' ? null : 'overrides')}
-          title="Workspace Settings"
-          aria-label="Workspace Settings"
-          className={[
-            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
-            'transition-colors duration-150',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-            drawer === 'overrides'
+            workbenchApi && workbenchApi.state !== 'dormant'
               ? 'bg-surface-overlay text-text-primary'
               : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
           ].join(' ')}
         >
-          <Gear size={14} />
-          <span>Workspace Settings</span>
+          <SquaresFour size={14} />
+          <span>Workbench</span>
         </button>
       </div>
     </div>

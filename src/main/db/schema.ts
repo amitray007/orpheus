@@ -424,7 +424,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // app_ui_state (34 columns in the fresh-install constant + drift columns
+  // app_ui_state (33 columns in the fresh-install constant + drift columns
   // that were also folded back into it)
   // ---------------------------------------------------------------------
   app_ui_state: {
@@ -451,8 +451,6 @@ export const schema: SchemaDef = {
       // Sidebar behavior preferences (v12)
       pinned_section_visible: bool('pinned_section_visible', '1'),
       workspace_count_inline: bool('workspace_count_inline', '1'),
-      // Workbench feature flag (Workbench & Panes plan, U2) — default 0 (off)
-      workbench_enabled: bool('workbench_enabled', '0'),
       // mirrors UI_STATE_DEFAULTS.sidebarWidth / SIDEBAR_WIDTH_MIN..MAX in src/shared/uiStateDefaults.ts
       sidebar_width: {
         type: 'INTEGER',
@@ -524,7 +522,13 @@ export const schema: SchemaDef = {
       // mirrors UI_STATE_DEFAULTS.staleAfterMinutes in src/shared/uiStateDefaults.ts
       stale_after_minutes: { type: 'INTEGER', notNull: true, default: '60' },
       updated_at: INTEGER_NOT_NULL
-    }
+    },
+    // workbench_enabled (Workbench feature flag) was removed once the
+    // Workbench became always-on. Listed here (rather than just omitted from
+    // `columns` above) so the declarative engine actually drops it via
+    // ALTER TABLE ... DROP COLUMN on existing DBs — omitting a column from
+    // `columns` alone leaves it as a tolerated stray live column forever.
+    dropColumns: ['workbench_enabled']
   },
 
   // ---------------------------------------------------------------------

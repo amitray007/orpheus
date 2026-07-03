@@ -37,8 +37,6 @@ type AppUiStateRow = {
   // Sidebar behavior preferences (v12)
   pinned_section_visible: number
   workspace_count_inline: number
-  // Workbench feature flag — default 0 (off)
-  workbench_enabled: number
   sidebar_width: number
   default_project_expanded: number
   // Launch + hotkey (v18)
@@ -119,8 +117,6 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Sidebar behavior preferences (v12)
     pinnedSectionVisible: (row.pinned_section_visible ?? 1) === 1,
     workspaceCountInline: (row.workspace_count_inline ?? 1) === 1,
-    // Workbench feature flag — default false (off)
-    workbenchEnabled: (row.workbench_enabled ?? 0) === 1,
     sidebarWidth: clampedWidth,
     defaultProjectExpanded: (row.default_project_expanded ?? 0) === 1,
     // Launch + hotkey (v18)
@@ -295,8 +291,6 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Sidebar behavior preferences (v12)
     pinnedSectionVisible: 'pinned_section_visible',
     workspaceCountInline: 'workspace_count_inline',
-    // Workbench feature flag
-    workbenchEnabled: 'workbench_enabled',
     sidebarWidth: 'sidebar_width',
     defaultProjectExpanded: 'default_project_expanded',
     // Launch + hotkey (v18)
