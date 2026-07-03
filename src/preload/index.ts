@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
+import type { InvokeChannel, Req, Res, PushChannel, PushPayload } from '../shared/ipc'
 import type {
   DetectedApp,
   DoctorResult,
@@ -61,17 +62,45 @@ import type {
 
 type TerminalRect = { x: number; y: number; w: number; h: number }
 
+// ---------------------------------------------------------------------------
+// Generic typed IPC helpers (DUP-3 chunk A). `invoke` and `subscribe` are
+// typed against the shared ChannelMap (src/shared/ipc.ts) for channels that
+// have been migrated into it; both also accept a plain `string` fallback so
+// unmigrated wrappers below keep compiling unchanged.
+// ---------------------------------------------------------------------------
+
+function invoke<C extends InvokeChannel>(channel: C, ...args: Req<C>): Promise<Res<C>>
+function invoke(channel: string, ...args: unknown[]): Promise<unknown>
+function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+  return ipcRenderer.invoke(channel, ...args)
+}
+
+// Exported (rather than left module-private) because chunk A intentionally
+// stops short of migrating the 25 `ipcRenderer.on` push listeners below —
+// that mechanical dedup lands in the next commit — so nothing in this file
+// calls `subscribe` yet.
+export function subscribe<C extends PushChannel>(
+  channel: C,
+  cb: (payload: PushPayload<C>) => void
+): () => void
+export function subscribe(channel: string, cb: (payload: unknown) => void): () => void
+export function subscribe(channel: string, cb: (payload: unknown) => void): () => void {
+  const listener = (_evt: IpcRendererEvent, payload: unknown): void => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
+
 // Custom APIs for renderer
 const api = {
   app: {
-    getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-    getPaths: (): Promise<{ userData: string; logs: string }> => ipcRenderer.invoke('app:getPaths'),
+    getVersion: (): Promise<string> => invoke('app:getVersion'),
+    getPaths: (): Promise<{ userData: string; logs: string }> => invoke('app:getPaths'),
     offeredModes: (projectId: string): Promise<{ local: boolean; worktree: boolean }> =>
       ipcRenderer.invoke('app:offeredModes', { projectId })
   },
   window: {
-    openDevTools: (): Promise<void> => ipcRenderer.invoke('window:openDevTools'),
-    reload: (): Promise<void> => ipcRenderer.invoke('window:reload')
+    openDevTools: (): Promise<void> => invoke('window:openDevTools'),
+    reload: (): Promise<void> => invoke('window:reload')
   },
   debug: {
     onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) => {
@@ -146,10 +175,10 @@ const api = {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
   },
   doctor: {
-    check: (): Promise<DoctorResult> => ipcRenderer.invoke('doctor:check')
+    check: (): Promise<DoctorResult> => invoke('doctor:check')
   },
   projects: {
-    list: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('projects:list'),
+    list: (): Promise<ProjectRecord[]> => invoke('projects:list'),
     add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
     pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
     open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
@@ -367,7 +396,7 @@ const api = {
       ipcRenderer.invoke('worktrees:branchExists', { projectId, branch })
   },
   pins: {
-    listAll: (): Promise<PinnedItem[]> => ipcRenderer.invoke('pins:listAll')
+    listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')
   },
   claudeSettings: {
     get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
@@ -669,7 +698,7 @@ const api = {
       ipcRenderer.invoke('hooks:getStatus')
   },
   health: {
-    get: (): Promise<HealthReport> => ipcRenderer.invoke('health:get')
+    get: (): Promise<HealthReport> => invoke('health:get')
   },
   diag: {
     event: (evt: DiagEvent): void => {

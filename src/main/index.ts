@@ -269,6 +269,7 @@ import {
   setOverlayTheme
 } from './overlayLayer'
 import type { OverlayDescriptor } from '../shared/types'
+import type { InvokeChannel, Req, Res } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1169,6 +1170,19 @@ async function checkClaude(): Promise<{
 // as PERF_IPC_ROUNDTRIP, captures and re-throws errors as ERROR_IPC_FAIL.
 // ---------------------------------------------------------------------------
 
+// Overload 1: channel is a key of InvokeChannelMap — args/return are typed
+// against the shared ChannelMap (src/shared/ipc.ts).
+function handle<C extends InvokeChannel>(
+  channel: C,
+  fn: (e: Electron.IpcMainInvokeEvent, ...args: Req<C>) => Res<C> | Promise<Res<C>>
+): void
+// Overload 2: permissive fallback for the ~100+ channels not yet migrated
+// into InvokeChannelMap — zero behavior change, zero migration forced.
+function handle(
+  channel: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
+  fn: (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any
+): void
 function handle(
   channel: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
