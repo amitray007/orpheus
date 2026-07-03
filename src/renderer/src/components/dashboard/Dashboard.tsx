@@ -882,7 +882,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       const result = await window.api.projects.pickAndAdd()
       if (result) {
         playSound('success')
-        setProjects((arr) => [result, ...arr.filter((p) => p.id !== result.id)])
+        setProjects((arr) => {
+          const rest = arr.filter((p) => p.id !== result.id)
+          // New projects are always unpinned, so insert after the pinned
+          // prefix (top of the unpinned tier) instead of the very front.
+          const firstUnpinnedIndex = rest.findIndex((p) => p.pinnedAt == null)
+          const insertAt = firstUnpinnedIndex === -1 ? rest.length : firstUnpinnedIndex
+          return [...rest.slice(0, insertAt), result, ...rest.slice(insertAt)]
+        })
         // Fetch the auto-created Default workspace directly so we can navigate
         // into it. fetchWorkspacesForProject only writes state and doesn't
         // return the workspaces, hence the inline call here.
