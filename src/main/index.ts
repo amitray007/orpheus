@@ -156,16 +156,7 @@ import {
   rescheduleStatusPoll
 } from './claudeStatus'
 import { showContextMenu } from './contextMenu'
-import {
-  revealInFinder,
-  openInEditor,
-  openTerminal,
-  copyToClipboard,
-  listEditorApps,
-  listTerminalApps,
-  getUserShellPath,
-  getCachedShellPath
-} from './shellHelpers'
+import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type {
   AppUiStatePatch,
   ClaudeWorkspaceSettings,
@@ -242,8 +233,9 @@ import {
 } from './overlayLayer'
 import { PUSH_CHANNELS } from '../shared/ipc'
 import { handle } from './ipc/handle'
-import { assertAbsolutePath, assertManagedConfigPath, isSafeExternalUrl } from './ipc/validate'
+import { assertManagedConfigPath, isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
+import { registerShellIpc } from './ipc/shell'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1941,27 +1933,7 @@ handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
 
 registerGitIpc()
 
-// ---------------------------------------------------------------------------
-// Shell helpers IPC
-// ---------------------------------------------------------------------------
-
-handle('shell:revealInFinder', (_e, { path: filePath }: { path: string }) => {
-  assertAbsolutePath(filePath, 'path')
-  return revealInFinder(filePath)
-})
-handle('shell:openInEditor', (_e, { path: filePath }: { path: string }) => {
-  assertAbsolutePath(filePath, 'path')
-  const state = getAppUiState()
-  return openInEditor(filePath, state.preferredEditorApp ?? undefined)
-})
-handle('shell:openTerminal', (_e, { path: filePath }: { path: string }) => {
-  assertAbsolutePath(filePath, 'path')
-  const state = getAppUiState()
-  return openTerminal(filePath, state.preferredTerminalApp ?? undefined)
-})
-handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
-handle('shell:listEditorApps', () => listEditorApps())
-handle('shell:listTerminalApps', () => listTerminalApps())
+registerShellIpc({ getAppUiState })
 
 // ---------------------------------------------------------------------------
 // Terminal IPC — ghostty-surface lifecycle
