@@ -60,7 +60,7 @@ const SMOKE_PATCH = `diff --git a/src/components/Button.tsx b/src/components/But
 index 1111111..2222222 100644
 --- a/src/components/Button.tsx
 +++ b/src/components/Button.tsx
-@@ -1,7 +1,9 @@
+@@ -1,5 +1,7 @@
  import type React from 'react'
 
 -export function Button(): React.JSX.Element {
