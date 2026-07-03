@@ -1841,27 +1841,18 @@ handle('workspace:getEffectiveEffort', (_e, args: { workspaceId: string }) => {
 // Orpheus project config IPC (.orpheus/config.yml)
 // ---------------------------------------------------------------------------
 
-handle('orpheusConfig:get', async (_e, { projectId }: { projectId: string }) => {
+handle('orpheusConfig:get', async (_e, { projectId }) => {
   const project = getProject(projectId)
   if (!project) throw new Error(`orpheusConfig:get: project not found: ${projectId}`)
   return resolveWorkspacesConfig(project.path)
 })
 
-handle(
-  'orpheusConfig:setOverride',
-  async (
-    _e,
-    {
-      projectId,
-      patch
-    }: { projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }
-  ) => {
-    const project = getProject(projectId)
-    if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
-    await writeProjectOverride(project.path, patch)
-    return resolveWorkspacesConfig(project.path)
-  }
-)
+handle('orpheusConfig:setOverride', async (_e, { projectId, patch }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`orpheusConfig:setOverride: project not found: ${projectId}`)
+  await writeProjectOverride(project.path, patch)
+  return resolveWorkspacesConfig(project.path)
+})
 
 // ---------------------------------------------------------------------------
 // Diagnostics IPC

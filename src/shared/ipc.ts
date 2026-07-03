@@ -61,6 +61,15 @@ export interface InvokeChannelMap {
   'health:get': { req: []; res: HealthReport }
   'window:openDevTools': { req: []; res: void }
   'window:reload': { req: []; res: void }
+  'config:openFolder': { req: []; res: string | null }
+  'orpheusConfig:get': {
+    req: [{ projectId: string }]
+    res: { allowLocal: boolean; allowWorktree: boolean }
+  }
+  'orpheusConfig:setOverride': {
+    req: [{ projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }]
+    res: { allowLocal: boolean; allowWorktree: boolean }
+  }
   // … migrated domain-by-domain in follow-up commits.
 }
 

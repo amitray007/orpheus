@@ -147,7 +147,7 @@ const api = {
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
   },
   config: {
-    openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
+    openFolder: (): Promise<string | null> => invoke('config:openFolder')
   },
   doctor: {
     check: (): Promise<DoctorResult> => invoke('doctor:check')
@@ -348,12 +348,12 @@ const api = {
   },
   orpheusConfig: {
     get: (projectId: string): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
-      ipcRenderer.invoke('orpheusConfig:get', { projectId }),
+      invoke('orpheusConfig:get', { projectId }),
     setOverride: (
       projectId: string,
       patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }>
     ): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
-      ipcRenderer.invoke('orpheusConfig:setOverride', { projectId, patch })
+      invoke('orpheusConfig:setOverride', { projectId, patch })
   },
   uiState: {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
