@@ -191,7 +191,7 @@ import {
   clearOverlayFallbackTimer,
   takeOverlayFallbackTimer,
   withInjectLock,
-  deleteInjectLock
+  teardownWorkspaceState
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
@@ -435,16 +435,15 @@ function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
 // Do NOT call on terminal:destroy alone, because destroy is also issued during
 // live restarts (WorkspaceView.handleRestart) where the workspace stays alive.
 function teardownWorkspaceResources(workspaceId: string, cwd: string | null): void {
+  // The 5-map registry slice (launchSnapshots, dirty, titles, overlay
+  // fallback timers, injectLocks) lives in workspaceResources.ts, which
+  // stays a leaf with no knowledge of these cross-module concerns.
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   clearWorkspaceActivity(workspaceId)
-  deleteLaunchSnapshot(workspaceId)
-  setDirty(workspaceId, false)
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
-  deleteTitle(workspaceId)
-  clearOverlayFallbackTimer(workspaceId)
-  deleteInjectLock(workspaceId)
+  teardownWorkspaceState(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
 }
 
@@ -1892,6 +1891,11 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
+  //
+  // Deliberately a SUBSET of teardownWorkspaceState's 5 maps — NOT that
+  // helper — because live restart must NOT evict injectLocks (an in-flight
+  // inject must keep its lock across the surface bounce). Uses the
+  // registry's granular per-map accessors instead.
   clearOverlayFallbackTimer(workspaceId)
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
