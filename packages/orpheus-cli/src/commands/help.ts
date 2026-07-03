@@ -28,10 +28,12 @@
 import { registerCommand, getCommand } from '../registry.js'
 import { printError, printUsageError } from '../output.js'
 import { buildDocModel, renderDocModelAsText, renderDocModelAsMarkdown } from '../help-model.js'
-// commandHelp is cli.ts's rich single-command renderer (used by `<cmd> -h`).
+// commandHelp is the rich single-command renderer (used by `<cmd> -h`),
+// extracted to command-help.ts so this module doesn't need to import cli.ts
+// (cli.ts imports commands/* for registration, which would be circular).
 // Importing it here (rather than reimplementing) guarantees `orpheus help
 // <command>` and `orpheus <command> -h` can never show different content.
-import { commandHelp } from '../cli.js'
+import { commandHelp } from '../command-help.js'
 
 const VALID_FORMATS = ['text', 'md', 'json'] as const
 type Format = (typeof VALID_FORMATS)[number]

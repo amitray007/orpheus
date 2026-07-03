@@ -3,7 +3,12 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { getDb } from './db'
 import { getAppUiState } from './uiState'
-import { createWorkspace, getWorkspace, setWorkspaceClaudeSessionId } from './workspaces'
+import {
+  archivedAtForStatus,
+  createWorkspace,
+  getWorkspace,
+  setWorkspaceClaudeSessionId
+} from './workspaces'
 import { getPricing } from './pricing'
 import { composeClaudeLaunch, getClaudeGlobalSettings } from './claudeSettings'
 import { encodePathToClaudeDir } from './claudeProjectDir'
@@ -922,7 +927,7 @@ async function _refreshSessionMetadata(projectId: string): Promise<void> {
  * IMPORTANT: only deletes DB rows — JSONL files on disk are never touched.
  * Returns the number of rows deleted.
  */
-export function pruneOldSessions(projectId: string, max: number): number {
+function pruneOldSessions(projectId: string, max: number): number {
   const db = getDb()
 
   const { total } = db
@@ -1046,8 +1051,12 @@ export function listSessionsForProjectPaged(req: SessionsPagedRequest): Sessions
   const params: unknown[] = [req.projectId]
 
   if (req.search) {
-    conditions.push("LOWER(title) LIKE '%' || LOWER(?) || '%'")
-    params.push(req.search)
+    // Escape LIKE metacharacters (\, %, _) so user input can't inject
+    // wildcards; ASCII backslashes are unaffected by LOWER() so escaping
+    // before the LOWER() call is safe.
+    const escaped = req.search.replace(/[\\%_]/g, (ch) => '\\' + ch)
+    conditions.push("LOWER(title) LIKE '%' || LOWER(?) || '%' ESCAPE '\\'")
+    params.push(escaped)
   }
   if (req.dateFrom !== undefined) {
     conditions.push('updated_at >= ?')
@@ -1082,18 +1091,14 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
   const db = getDb()
   const now = Date.now()
 
-  if (status === 'archived') {
-    db.prepare(`UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`).run(
-      status,
-      now,
-      now,
-      id
-    )
-  } else {
-    db.prepare(
-      `UPDATE sessions SET status = ?, archived_at = NULL, updated_at = ? WHERE id = ?`
-    ).run(status, now, id)
-  }
+  // Unlike workspaces, sessions always overwrite archived_at to a fresh
+  // timestamp on (re-)archive (no COALESCE) and always bump updated_at.
+  db.prepare(`UPDATE sessions SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?`).run(
+    status,
+    archivedAtForStatus(status, now),
+    now,
+    id
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1232,13 +1237,13 @@ export async function createWorktreeResumingSession(
   const slug = worktreeSlug(branch)
 
   return withRepoLock(repoRoot, async () => {
-    const mode = (await branchExists(repoRoot, branch!)) ? 'existing' : 'new'
+    const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
     const baseRef = await readWorktreeBaseRef()
 
     const { path: worktreePath, branch: finalBranch } = await createWorktree({
       repoRoot,
       slug,
-      branch: branch!,
+      branch: branch,
       mode,
       baseRef
     })

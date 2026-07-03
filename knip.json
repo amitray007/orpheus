@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/main/index.ts",
+    "src/preload/index.ts",
+    "src/preload/overlay.ts",
+    "src/renderer/src/main.tsx",
+    "src/renderer/src/overlay/main.tsx",
+    "packages/orpheus-cli/src/cli.ts",
+    "packages/orpheus-cli/src/index.ts",
+    "packages/ghostty-surface/index.ts",
+    "scripts/build-native.mjs",
+    "scripts/bump-libghostty.mjs",
+    "scripts/check-overlay-discipline.mjs",
+    "scripts/install-mac.mjs",
+    "scripts/release.mjs",
+    "scripts/verify-contrast.mjs",
+    "scripts/diag.ts",
+    "electron.vite.config.ts"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}", "scripts/**/*.{mjs,ts}"],
+  "ignoreIssues": {
+    "src/renderer/src/components/ui/**": ["exports", "types", "nsExports", "nsTypes"]
+  }
+}

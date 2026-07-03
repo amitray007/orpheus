@@ -7,16 +7,18 @@ import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
-import { setAuthoritativeActiveWorkspace } from '@/lib/freezeWatchdog'
+import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
 import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
+import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
+import { clearLiveChipCache } from './footer/liveChipCache'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
-  DEFAULT_UI_STATE_FALLBACK,
   viewToSidebarActiveView,
   mainContainerClassName,
   nextWorkspaceName,
@@ -24,7 +26,6 @@ import {
   reorderWithTail
 } from './dashboard.helpers'
 import type {
-  AppUiState,
   PinnedItem,
   ProjectRecord,
   SessionRecord,
@@ -32,6 +33,7 @@ import type {
   GitStatus,
   GhPullRequest
 } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 
 const Sidebar = memo(SidebarBase)
 const MainContent = memo(MainContentBase)
@@ -44,8 +46,9 @@ interface DashboardProps {
 export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  // UI state hydration
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  // UI state — live subscription via the shared store (single get() + single
+  // onChanged() for the whole renderer; see lib/uiStateStore.ts).
+  const uiState = useUiState()
   const hydratedRef = useRef(false)
 
   // Projects state
@@ -79,6 +82,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const selectedProjectIdRef = useRef<string | null>(null)
   const workspacesByProjectRef = useRef<Record<string, WorkspaceRecord[]>>({})
   const projectsRef = useRef<ProjectRecord[]>([])
+  // Per-project monotonic request counter so an in-flight fetchWorkspacesForProject
+  // call that resolves after a newer call for the same project can't clobber the
+  // fresher result (or wrongly blank the list on a stale error). Written directly,
+  // not mirrored from state — no useLayoutEffect sync needed.
+  const fetchSeqRef = useRef<Record<string, number>>({})
   // Stable callback ref — lets the zero-dep onNavigateTo effect always call
   // the latest handleSelectWorkspace without re-subscribing on every render.
   const handleSelectWorkspaceRef = useRef<(workspaceId: string, projectId: string) => void>(
@@ -119,16 +127,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // IPC calls when the effect re-runs because workspacesPollKey changed.
   const hasFetchedRef = useRef<Set<string> | null>(null)
   if (hasFetchedRef.current === null) hasFetchedRef.current = new Set<string>()
-
-  useEffect(() => {
-    window.api.uiState
-      .get()
-      .then(setUiState)
-      .catch((err) => {
-        console.error('[dashboard] failed to load ui state', err)
-        setUiState(DEFAULT_UI_STATE_FALLBACK)
-      })
-  }, [])
 
   // Apply appearance data attributes to document root whenever uiState changes.
   // This drives [data-theme], [data-accent], and [data-font-scale] CSS selectors
@@ -172,45 +170,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // NOTE: depends on main-layer onActivityBatch — wired via frozen contract:
   // channel `workspace:activityBatch`, payload Array<{workspaceId,status,detail}>,
   // preload window.api.workspaces.onActivityBatch.
-  // Falls back to onActivityChanged if the batched API isn't available yet.
   useEffect(() => {
-    const api = window.api.workspaces as typeof window.api.workspaces & {
-      onActivityBatch?: (
-        cb: (
-          batch: Array<{
-            workspaceId: string
-            status: import('@shared/types').WorkspaceStatus
-            detail: import('@shared/types').WorkspaceActivityDetail
-          }>
-        ) => void
-      ) => () => void
-    }
-
-    if (typeof api.onActivityBatch === 'function') {
-      return api.onActivityBatch((batch) => {
-        // Sound effects: play on first status transition per batch
-        for (const { workspaceId, detail } of batch) {
-          const prevDetail = getActivitySnapshot().get(workspaceId)
-          if (prevDetail !== detail) {
-            if (detail === 'ready') playSound('ding')
-            else if (detail === 'attention') playSound('notification')
-          }
+    return window.api.workspaces.onActivityBatch((batch) => {
+      // Sound effects: play on first status transition per batch
+      for (const { workspaceId, detail } of batch) {
+        const prevDetail = getActivitySnapshot().get(workspaceId)
+        if (prevDetail !== detail) {
+          if (detail === 'ready') playSound('ding')
+          else if (detail === 'attention') playSound('notification')
         }
-        setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
-        const now = Date.now()
-        for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
-      })
-    }
-
-    // Fallback: legacy per-event channel (used until main-layer lands onActivityBatch)
-    return window.api.workspaces.onActivityChanged((e) => {
-      const prevDetail = getActivitySnapshot().get(e.workspaceId)
-      if (prevDetail !== e.detail) {
-        if (e.detail === 'ready') playSound('ding')
-        else if (e.detail === 'attention') playSound('notification')
       }
-      setActivityBatch([{ workspaceId: e.workspaceId, detail: e.detail }])
-      bumpActivityTime(e.workspaceId, Date.now())
+      setActivityBatch(batch.map(({ workspaceId, detail }) => ({ workspaceId, detail })))
+      const now = Date.now()
+      for (const { workspaceId } of batch) bumpActivityTime(workspaceId, now)
     })
   }, [])
 
@@ -309,11 +281,19 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // requiring this effect to re-subscribe on every render.
   useEffect(() => {
     return window.api.workspaces.onArchived(({ workspaceId, projectId }) => {
-      // Remove the workspace from local cache.
+      // Remove the workspace from local cache. Also captures the post-removal
+      // list via a plain closure variable so the nav side-effects below can
+      // read the up-to-date remaining list without depending on ref timing
+      // (workspacesByProjectRef only syncs via useLayoutEffect after commit,
+      // so it may still be stale at this point in the same tick). Assigning a
+      // local `let` inside the updater is a pure, idempotent operation (safe
+      // under StrictMode double-invocation) — no side effects run inside it.
+      let remainingAfterRemoval: WorkspaceRecord[] = []
       setWorkspacesByProject((prev) => {
         const list = prev[projectId]
         if (!list) return prev
         const next = list.filter((w) => w.id !== workspaceId)
+        remainingAfterRemoval = next
         return { ...prev, [projectId]: next }
       })
       // De-race: if this client's own archive flow (finishWorktreeArchive /
@@ -330,32 +310,29 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       }
       // If this was the active workspace, navigate to a fallback.
       if (!wasLocallyOwned && selectedWorkspaceIdRef.current === workspaceId) {
-        setWorkspacesByProject((prev) => {
-          const remaining = (prev[projectId] ?? []).filter((w) => w.id !== workspaceId)
-          if (remaining.length > 0) {
-            // Navigate to the first remaining workspace in the project.
-            const next = remaining[0]
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(next.id)
-            setView({ kind: 'workspace', workspaceId: next.id, projectId })
-            window.api.uiState
-              .update({
-                lastViewKind: 'workspace',
-                lastProjectId: projectId,
-                lastWorkspaceId: next.id
-              })
-              .catch(console.error)
-          } else {
-            // No workspaces left — go to the project view.
-            setSelectedProjectId(projectId)
-            setSelectedWorkspaceId(null)
-            setView({ kind: 'project', projectId })
-            window.api.uiState
-              .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
-              .catch(console.error)
-          }
-          return prev // no change — already updated above
-        })
+        const remaining = remainingAfterRemoval
+        if (remaining.length > 0) {
+          // Navigate to the first remaining workspace in the project.
+          const next = remaining[0]
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(next.id)
+          setView({ kind: 'workspace', workspaceId: next.id, projectId })
+          updateUiState({
+            lastViewKind: 'workspace',
+            lastProjectId: projectId,
+            lastWorkspaceId: next.id
+          })
+        } else {
+          // No workspaces left — go to the project view.
+          setSelectedProjectId(projectId)
+          setSelectedWorkspaceId(null)
+          setView({ kind: 'project', projectId })
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: projectId,
+            lastWorkspaceId: null
+          })
+        }
       }
       // Clear any stale entries for the deleted workspace from all stores.
       deleteActivity(workspaceId)
@@ -365,6 +342,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
     })
   }, [])
@@ -396,12 +374,15 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // archivedAt at render time. One source of truth — keeps ProjectView in
   // sync when the sidebar mutates workspace state.
   const fetchWorkspacesForProject = useCallback(async (projectId: string): Promise<void> => {
+    const seq = (fetchSeqRef.current[projectId] = (fetchSeqRef.current[projectId] ?? 0) + 1)
     try {
       const workspaces = await window.api.workspaces.listForProject(projectId, { scope: 'all' })
+      if (seq !== fetchSeqRef.current[projectId]) return
       setWorkspacesByProject((prev) => ({ ...prev, [projectId]: workspaces }))
     } catch (err) {
+      if (seq !== fetchSeqRef.current[projectId]) return
       console.error('[dashboard] failed to load workspaces for', projectId, err)
-      setWorkspacesByProject((prev) => ({ ...prev, [projectId]: [] }))
+      // Do NOT clobber with [] — keep previously-loaded data, just log.
     }
   }, [])
 
@@ -412,7 +393,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed((prev) => {
       const next = !prev
       playSound(next ? 'drawer-close' : 'drawer-open')
-      window.api.uiState.update({ sidebarCollapsed: next }).catch(console.error)
+      updateUiState({ sidebarCollapsed: next })
       return next
     })
   }, [])
@@ -456,19 +437,22 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
         // workspaces.open and uiState.update are independent DB writes — issue them
         // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
-        await Promise.all([
-          window.api.workspaces.open(workspaceId).then((updated) => {
+        // updateUiState() is fire-and-forget (own internal .catch), so only
+        // workspaces.open needs to be awaited/caught here.
+        updateUiState({
+          lastViewKind: 'workspace',
+          lastProjectId: projectId,
+          lastWorkspaceId: workspaceId
+        })
+        await window.api.workspaces
+          .open(workspaceId)
+          .then((updated) => {
             setWorkspacesByProject((prev) => ({
               ...prev,
               [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
             }))
-          }),
-          window.api.uiState.update({
-            lastViewKind: 'workspace',
-            lastProjectId: projectId,
-            lastWorkspaceId: workspaceId
           })
-        ]).catch(console.error)
+          .catch(console.error)
       })()
     },
     [fetchWorkspacesForProject]
@@ -566,6 +550,14 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         // away so it never becomes visible/steals draw time while the user is
         // looking at a different workspace (or no workspace at all).
         await window.api.terminal.hide(workspaceId).catch(() => {})
+        // RACE-3: addon.mount unconditionally promotes this background-mounted
+        // workspace to native visibility, transiently stealing it from whatever
+        // the user is actually looking at. Re-promote the viewed workspace.
+        const vid = selectedWorkspaceIdRef.current
+        if (vid && vid !== workspaceId) {
+          const remount = getActiveRemount()
+          if (remount) remount()
+        }
       } catch (err) {
         console.error('[dashboard] background mount failed:', err)
       }
@@ -608,9 +600,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         fetchWorkspacesForProject(id)
       }
       window.api.projects.open(id).catch(console.error)
-      window.api.uiState
-        .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
-        .catch(console.error)
+      updateUiState({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
     },
     [fetchWorkspacesForProject]
   )
@@ -619,9 +609,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setView({ kind: nav })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    window.api.uiState
-      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   // ---------------------------------------------------------------------------
@@ -769,39 +757,39 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // success so a cancelled mid-flight fetch retries on re-mount.
     const missing = workspaces.filter((w) => !hasFetchedRef.current!.has(w.id))
 
-    // Git + PR: concurrent per-workspace using Promise.allSettled
+    // Git + PR: concurrent per-workspace, capped at 5 in-flight to avoid
+    // unbounded subprocess fan-out (via mapWithConcurrency) when a project
+    // has many workspaces.
     if (missing.length > 0) {
-      Promise.allSettled(
-        missing.map(async (ws) => {
-          let status: GitStatus | null = null
-          try {
-            status = await window.api.git.status(ws.cwd)
-            if (!cancelled) {
-              // Mark as fetched only after a successful response so a
-              // cancelled mid-flight fetch retries on re-mount.
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, status)
-            }
-          } catch (err) {
-            console.error('[dashboard] git status failed for', ws.id, err)
-            if (!cancelled) {
-              hasFetchedRef.current!.add(ws.id)
-              setGitStatus(ws.id, null)
-            }
+      mapWithConcurrency(missing, 5, async (ws) => {
+        let status: GitStatus | null = null
+        try {
+          status = await window.api.git.status(ws.cwd)
+          if (!cancelled) {
+            // Mark as fetched only after a successful response so a
+            // cancelled mid-flight fetch retries on re-mount.
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, status)
           }
-          if (status?.branch) {
-            try {
-              const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
-              if (!cancelled) setPr(ws.id, pr)
-            } catch (err) {
-              console.error('[dashboard] gh pr lookup failed for', ws.id, err)
-              if (!cancelled) setPr(ws.id, null)
-            }
-          } else {
+        } catch (err) {
+          console.error('[dashboard] git status failed for', ws.id, err)
+          if (!cancelled) {
+            hasFetchedRef.current!.add(ws.id)
+            setGitStatus(ws.id, null)
+          }
+        }
+        if (status?.branch) {
+          try {
+            const pr = await window.api.github.prForBranch(ws.cwd, status.branch)
+            if (!cancelled) setPr(ws.id, pr)
+          } catch (err) {
+            console.error('[dashboard] gh pr lookup failed for', ws.id, err)
             if (!cancelled) setPr(ws.id, null)
           }
-        })
-      ).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
+        } else {
+          if (!cancelled) setPr(ws.id, null)
+        }
+      }).catch((err) => console.error('[dashboard] fetchMissing allSettled failed', err))
     }
 
     // Titles: seed from getTitle for all workspaces in this poll key
@@ -877,9 +865,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    window.api.uiState
-      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   const handleOpenUpdates = useCallback((): void => {
@@ -887,9 +873,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    window.api.uiState
-      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   const handleAddProject = useCallback(async (): Promise<void> => {
@@ -924,9 +908,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           setSelectedProjectId(result.id)
           setSelectedWorkspaceId(null)
           setView({ kind: 'project', projectId: result.id })
-          window.api.uiState
-            .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
-            .catch(console.error)
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: result.id,
+            lastWorkspaceId: null
+          })
         }
       }
     } catch (err) {
@@ -1096,6 +1082,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       try {
         // "Archive" is a hard delete now (v34+). The DB row is gone after this.
@@ -1134,6 +1121,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
+      clearLiveChipCache(workspaceId)
       clearContextBudgetCache(workspaceId)
       playSound('archive')
       await fetchWorkspacesForProject(projectId)
@@ -1254,6 +1242,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deletePr(ws.id)
         hasFetchedRef.current!.delete(ws.id)
         clearFooterActionsCache(ws.id)
+        clearLiveChipCache(ws.id)
         clearContextBudgetCache(ws.id)
       }
       setProjects((arr) => arr.filter((p) => p.id !== target.id))
@@ -1422,7 +1411,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       <TopBar
         onToggleCollapsed={handleToggleSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        sidebarWidth={uiState?.sidebarWidth ?? 256}
+        sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -1437,7 +1426,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           expandedProjectIds={expandedProjectIds}
           workspacesByProject={workspacesByProject}
           workspaceCountInline={uiState?.workspaceCountInline ?? true}
-          sidebarWidth={uiState?.sidebarWidth ?? 256}
+          sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
           fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
           pinnedItems={pinnedItems}
           onSelectProject={handleSelectProject}

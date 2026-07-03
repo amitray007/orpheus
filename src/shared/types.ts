@@ -132,11 +132,25 @@ export type WorkspaceRecord = {
 export type CreateWorktreeParams = { name: string; branch?: string }
 
 /**
+ * DIPs rect used to mount/resize a workspace's libghostty surface. Mirrors
+ * `SurfaceRect` in `packages/ghostty-surface/index.ts` (kept structurally
+ * identical there so that package stays free of `src/` imports) and the
+ * local `TerminalRect` aliases previously duplicated in
+ * `src/preload/index.ts` / `index.d.ts`.
+ */
+export type TerminalRect = { x: number; y: number; w: number; h: number }
+
+/**
  * Return type of `terminal:mount`.
  *
  * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a
  * worktree was recreated with a new branch the optional `notice` carries a
  * one-time human-readable message the renderer should surface.
+ *
+ * Aborted: `{ workspaceId, aborted: 'gone' }` — the workspace was archived
+ * or removed while the mount was in flight (e.g. mid worktree-reconcile or
+ * shell-path resolution). The surface was never touched; the renderer
+ * should treat this as a no-op, not an error.
  *
  * Failure: `{ workspaceId, worktreeError }` — reconcile determined the mount
  * cannot proceed (bad state that needs user intervention). The surface is NOT
@@ -144,6 +158,7 @@ export type CreateWorktreeParams = { name: string; branch?: string }
  */
 export type TerminalMountResult =
   | { workspaceId: string; created: boolean; notice?: string }
+  | { workspaceId: string; aborted: 'gone' }
   | {
       workspaceId: string
       worktreeError: {

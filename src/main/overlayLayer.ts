@@ -36,6 +36,7 @@
 import { BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type {
   OverlayDescriptor,
   OverlayShowResult,
@@ -562,7 +563,7 @@ function handleReportSize(report: OverlaySizeReport): void {
 
 function handleOverlayRendererEvent(event: OverlayEvent): void {
   // Forward verbatim to the main renderer.
-  deps?.getMainWindow()?.webContents.send('overlay:event', event)
+  deps?.getMainWindow()?.webContents.send(PUSH_CHANNELS.overlayEvent, event)
 
   // Resolve the hide()-side exit-wait promise, if one is pending for this id+gen.
   if (
@@ -705,7 +706,7 @@ export async function showOverlay(descriptor: OverlayDescriptor): Promise<Overla
   // Replacement semantics: settle the prior descriptor (if any) as dismissed
   // without waiting out its exit fade.
   if (!wasIdle && currentDescriptor) {
-    deps?.getMainWindow()?.webContents.send('overlay:event', {
+    deps?.getMainWindow()?.webContents.send(PUSH_CHANNELS.overlayEvent, {
       overlayId: currentDescriptor.id,
       kind: currentDescriptor.kind,
       type: 'dismissed'

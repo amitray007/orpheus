@@ -1,6 +1,7 @@
 import { exec } from 'node:child_process'
 import { BrowserWindow } from 'electron'
 import { getDb } from './db'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // Broadcast a partial update so the renderer can patch its local projects
 // state in-place without re-fetching the whole list. Sends only the four
@@ -13,7 +14,7 @@ function broadcastGithubUpdate(payload: {
   githubCheckedAt: number
 }): void {
   for (const w of BrowserWindow.getAllWindows()) {
-    w.webContents.send('projects:githubDataUpdated', payload)
+    w.webContents.send(PUSH_CHANNELS.projectsGithubDataUpdated, payload)
   }
 }
 

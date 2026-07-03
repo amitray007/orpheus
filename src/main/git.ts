@@ -4,6 +4,7 @@ import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
 import type { WebContents } from 'electron'
 import { getWorkspace } from './workspaces'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -296,43 +297,48 @@ async function refreshGitForDir(dir: string): Promise<void> {
   if (entry.clients.size === 0) return
 
   // Re-run git status for each client workspace; detect branch changes and
-  // refresh PRs if the branch flipped.
+  // refresh PRs if the branch flipped. Each client is independent (keyed by
+  // its own workspaceId/webContents), so fan these out in parallel instead
+  // of serializing one git subprocess round-trip per client.
+  // also addresses PERF-5
   const clientList = Array.from(entry.clients.entries())
-  for (const [workspaceId, client] of clientList) {
-    const { cwd, webContents, lastBranch } = client
-    if (webContents.isDestroyed()) continue
+  await Promise.all(
+    clientList.map(async ([workspaceId, client]) => {
+      const { cwd, webContents, lastBranch } = client
+      if (webContents.isDestroyed()) return
 
-    let status: GitStatus | null = null
-    try {
-      status = await getGitStatus(cwd)
-    } catch {
-      // git may be unavailable or cwd may have been deleted — skip
-    }
-
-    if (!webContents.isDestroyed() && status !== null) {
-      webContents.send('git:statusChanged', { workspaceId, status })
-    }
-
-    // If branch changed, also refresh the PR
-    const newBranch = status?.branch ?? null
-    if (newBranch !== lastBranch) {
-      client.lastBranch = newBranch
-      if (newBranch) {
-        getPrForBranch(cwd, newBranch)
-          .then((pr) => {
-            if (!webContents.isDestroyed()) {
-              webContents.send('github:prChanged', { workspaceId, pr })
-            }
-          })
-          .catch(() => {
-            /* gh unavailable — ignore */
-          })
-      } else if (!webContents.isDestroyed()) {
-        // Detached HEAD or no branch — clear the PR chip
-        webContents.send('github:prChanged', { workspaceId, pr: null })
+      let status: GitStatus | null = null
+      try {
+        status = await getGitStatus(cwd)
+      } catch {
+        // git may be unavailable or cwd may have been deleted — skip
       }
-    }
-  }
+
+      if (!webContents.isDestroyed() && status !== null) {
+        webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+      }
+
+      // If branch changed, also refresh the PR
+      const newBranch = status?.branch ?? null
+      if (newBranch !== lastBranch) {
+        client.lastBranch = newBranch
+        if (newBranch) {
+          getPrForBranch(cwd, newBranch)
+            .then((pr) => {
+              if (!webContents.isDestroyed()) {
+                webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+              }
+            })
+            .catch(() => {
+              /* gh unavailable — ignore */
+            })
+        } else if (!webContents.isDestroyed()) {
+          // Detached HEAD or no branch — clear the PR chip
+          webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
+        }
+      }
+    })
+  )
 }
 
 function scheduleRefresh(dir: string): void {
@@ -395,13 +401,14 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // rev-parse was in flight (stopGitWatch already ran and had nothing to
       // clean up). Registering a watcher now would leak FSWatcher handles.
       if (webContents.isDestroyed()) return
-      if (!getWorkspace(workspaceId)) return
+      const w = getWorkspace(workspaceId)
+      if (!w || w.closedAt != null) return
 
       const rel = stdout.trim()
       const gitDir = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel)
 
-      // Use the resolved absolute git dir as the dedup key (handles worktrees
-      // where multiple cwds share the same .git dir).
+      // Dedup key is the resolved absolute cwd (one watcher entry per cwd).
+      // Distinct worktrees keep separate entries even when they share a .git dir.
       const dir = nodePath.resolve(cwd)
 
       let entry = gitWatchers.get(dir)
@@ -420,7 +427,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
         getGitStatus(cwd)
           .then((status) => {
             if (!webContents.isDestroyed() && status !== null) {
-              webContents.send('git:statusChanged', { workspaceId, status })
+              webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             }
           })
           .catch(() => {
@@ -437,7 +444,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       getGitStatus(cwd)
         .then((status) => {
           if (!webContents.isDestroyed() && status !== null) {
-            webContents.send('git:statusChanged', { workspaceId, status })
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             const branch = status.branch
             if (branch) {
               const client = entry?.clients.get(workspaceId)
@@ -445,7 +452,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
               getPrForBranch(cwd, branch)
                 .then((pr) => {
                   if (!webContents.isDestroyed()) {
-                    webContents.send('github:prChanged', { workspaceId, pr })
+                    webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
                   }
                 })
                 .catch(() => {

@@ -10,6 +10,7 @@ import type { WorkspaceStatus, WorkspaceActivityDetail } from '../shared/types'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { stageActivityUpdate } from './activitySink'
+import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 
 export type WorkspaceActivityEvent =
   | 'session-start'
@@ -120,7 +121,7 @@ function clearAutoCloseWatchdog(workspaceId: string): void {
 function armIdleWatchdog(workspaceId: string): void {
   clearIdleWatchdog(workspaceId)
   if (cachedStaleMinutes === null) {
-    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? 60
+    cachedStaleMinutes = getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   }
   const minutes = cachedStaleMinutes
   if (minutes <= 0) return
@@ -211,6 +212,13 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
     setWorkspaceStatus(workspaceId, status)
   } catch (err) {
     console.warn('[orpheusNotify] setWorkspaceStatus failed for', workspaceId, err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.STATUS_PERSIST_FAILED,
+      workspaceId,
+      data: { err: String(err) }
+    })
   }
   notifyForTransition(workspaceId, prev, status)
 
@@ -350,6 +358,18 @@ export function ensureManagedHooks(): void {
     const p = JSON.parse(raw)
     if (typeof p === 'object' && p !== null && !Array.isArray(p)) {
       parsed = p as Record<string, unknown>
+    } else {
+      // Valid JSON but not a plain object (array/string/number/null) — bail
+      // without writing so we don't clobber whatever this file legitimately is.
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.MANAGED_HOOKS_BAILED_NONOBJECT
+      })
+      console.warn(
+        '[orpheusNotify] ~/.claude/settings.json is valid JSON but not an object — skipping hook install to avoid clobbering it'
+      )
+      return
     }
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code
@@ -358,8 +378,15 @@ export function ensureManagedHooks(): void {
         '[orpheusNotify] could not read ~/.claude/settings.json — skipping hook install:',
         err
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_INSTALL_FAILED,
+        data: { err: String(err) }
+      })
       return
     }
+    // ENOENT: parsed stays {} — proceed to create fresh.
   }
 
   if (
@@ -470,6 +497,12 @@ export function uninstallManagedHooks(): void {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return // nothing to clean
     console.warn('[orpheusNotify] uninstallManagedHooks: could not read settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -480,11 +513,22 @@ export function uninstallManagedHooks(): void {
       console.warn(
         '[orpheusNotify] uninstallManagedHooks: settings.json is not an object — skipping'
       )
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED
+      })
       return
     }
     parsed = p as Record<string, unknown>
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to parse settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -550,6 +594,12 @@ export function uninstallManagedHooks(): void {
     fs.renameSync(tmp, settingsPath)
   } catch (err) {
     console.warn('[orpheusNotify] uninstallManagedHooks: failed to write settings.json:', err)
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.HOOK_UNINSTALL_FAILED,
+      data: { err: String(err) }
+    })
   }
 }
 

@@ -27,3 +27,5 @@ open "/Applications/Orpheus Dev.app"
 Sanity-check after build: `pgrep -lf "Orpheus Dev.app/Contents/MacOS/Orpheus Dev" | head -1`
 
 Never run `bun run dev` (electron-vite dev mode) or the production build (`bun run build:mac`). See CLAUDE.md for the rationale and full command reference.
+
+Before considering non-trivial work done, run `bun run check` (typecheck + lint + duplication + architecture gates) — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full quality-gate list.

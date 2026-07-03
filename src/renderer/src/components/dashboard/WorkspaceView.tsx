@@ -18,7 +18,11 @@ import {
 } from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
-import { setActiveWatchdogWorkspace } from '@/lib/freezeWatchdog'
+import {
+  setActiveWatchdogWorkspace,
+  getActiveWatchdogWorkspace,
+  getActiveRemount
+} from '@/lib/freezeWatchdog'
 
 // Worktree reconcile error shape returned by terminal:mount (formerly imported
 // from the now-removed React WorktreeErrorCard component — the error card is
@@ -112,8 +116,8 @@ export function WorkspaceView({
 
   // Activity status and detail from the per-key store — re-renders only when
   // THIS workspace's activity changes (not when any other workspace fires).
-  // Replaces the old onActivityChanged subscription that was registering
-  // a duplicate listener on top of Dashboard's.
+  // Reads from the store that Dashboard's single onActivityBatch subscription
+  // populates, rather than registering a second listener here.
   const storeDetail = useWorkspaceActivity(workspace.id)
 
   // detail: prefer live store value; fall back to initialDetail (seed from Dashboard
@@ -400,6 +404,11 @@ export function WorkspaceView({
       )
       try {
         const result = await window.api.terminal.mount(workspaceId, termRect, scaleFactor, cwd)
+        if ('aborted' in result) {
+          // Workspace was archived/removed while the mount was in flight —
+          // nothing to do, surface was never touched.
+          return
+        }
         if ('worktreeError' in result) {
           // Worktree reconcile failed — surface not mounted; show the error card.
           console.warn('[WorkspaceView] worktree reconcile error:', result.worktreeError)
@@ -419,6 +428,15 @@ export function WorkspaceView({
           window.api.terminal
             .hide(workspaceId)
             .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
+          // RACE-2: this mount is stale (user switched away while it resolved).
+          // The native addon's mount unconditionally promotes this workspace to
+          // visible, which can steal visibility from whichever workspace the
+          // user actually activated in the meantime. Re-promote it.
+          const activeId = getActiveWatchdogWorkspace()
+          if (activeId && activeId !== workspaceId) {
+            const remount = getActiveRemount()
+            if (remount) remount()
+          }
           return
         }
         console.log(
@@ -697,6 +715,11 @@ export function WorkspaceView({
               workspaceId,
               durationMs: Math.round(performance.now() - t0)
             })
+            if ('aborted' in result) {
+              // Workspace was archived/removed while the mount was in flight —
+              // nothing to do, surface was never touched.
+              return
+            }
             if ('worktreeError' in result) {
               // Worktree reconcile failed — surface not mounted; show the error card.
               console.warn(
@@ -719,6 +742,14 @@ export function WorkspaceView({
               window.api.terminal
                 .hide(workspaceId)
                 .catch((e) => console.error('[WorkspaceView] post-mount hide failed:', e))
+              // RACE-2: stale mount — the user switched away while it resolved.
+              // Re-promote the actually-active workspace's surface, since this
+              // mount's addon.mount call unconditionally stole native visibility.
+              const activeId = getActiveWatchdogWorkspace()
+              if (activeId && activeId !== workspaceId) {
+                const remount = getActiveRemount()
+                if (remount) remount()
+              }
               return
             }
             console.log(

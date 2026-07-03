@@ -4,6 +4,8 @@ import * as nodePath from 'node:path'
 import * as crypto from 'node:crypto'
 import { app } from 'electron'
 import { getDb } from './db'
+import { logDiagMain } from './diagnostics'
+import { DIAG_EVENTS } from '../shared/diagEvents'
 import {
   createWorkspace,
   getWorkspace,
@@ -14,7 +16,7 @@ import {
 } from './workspaces'
 import { getClaudeGlobalSettings } from './claudeSettings'
 import { updateClaudeWorkspaceSettings } from './claudeWorkspaceSettings'
-import { getProjectById } from './projects'
+import { getProject } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
@@ -363,7 +365,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         // listChildWorkspaces from a live parent), so no per-id existence check
         // is needed here — only the root needed the explicit check above.
         for (let i = subtreeIds.length - 1; i >= 0; i--) {
-          await deps.performArchive(subtreeIds[i]!)
+          await deps.performArchive(subtreeIds[i])
         }
 
         return { archived: true, count: subtreeIds.length }
@@ -496,7 +498,7 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       }
       const ws = getWorkspace(workspaceId)
       if (!ws) throw new Error(`workspace not found: ${workspaceId}`)
-      const project = getProjectById(ws.projectId)
+      const project = getProject(ws.projectId)
       return {
         workspaceId,
         projectId: ws.projectId,
@@ -505,6 +507,91 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTTP plumbing — auth + body read, used by both /subscribe and /cmd.
+// ---------------------------------------------------------------------------
+
+/**
+ * Constant-time bearer-token check shared by /subscribe and /cmd. Writes a
+ * 401 JSON response and returns false on any failure (missing header, wrong
+ * length, or mismatched bytes); returns true (writes nothing) on success.
+ *
+ * Behavior-identical to both endpoints' original inline checks: a missing/
+ * non-string header is rejected without any buffer comparison, and length is
+ * checked before timingSafeEqual (which throws on a length mismatch) so a
+ * short-circuited `false` — not an early accept — is what decides length
+ * mismatches.
+ */
+function authenticate(req: http.IncomingMessage, res: http.ServerResponse, token: string): boolean {
+  const incomingToken = req.headers['x-orpheus-token']
+  if (typeof incomingToken !== 'string') {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+    return false
+  }
+  const incomingBuf = Buffer.from(incomingToken, 'utf-8')
+  const expectedBuf = Buffer.from(token, 'utf-8')
+  const tokenValid =
+    incomingBuf.length === expectedBuf.length && crypto.timingSafeEqual(incomingBuf, expectedBuf)
+  if (!tokenValid) {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+    return false
+  }
+  return true
+}
+
+/**
+ * Read+accumulate the request body, enforcing BODY_SIZE_LIMIT. Unified on
+ * /cmd's STRICTER original behavior (a safe hardening — see the Batch 2
+ * commit message):
+ *   - Upfront Content-Length check: if the header already declares a size
+ *     over the limit, reject immediately with 413 before reading any bytes.
+ *     /subscribe previously lacked this pre-check.
+ *   - Streaming guard: if accumulated bytes exceed the limit mid-stream,
+ *     destroy the request AND respond 413. /subscribe previously destroyed
+ *     the request on overflow but never wrote a response (the connection was
+ *     just dropped, leaving the client to observe a reset rather than a
+ *     structured 413).
+ * Resolves to the concatenated body Buffer on success, or null if the
+ * request was rejected (a response has already been written/ended in that
+ * case — callers must return without writing anything further).
+ */
+function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const contentLength = parseInt(req.headers['content-length'] ?? '0', 10)
+    if (!isNaN(contentLength) && contentLength > BODY_SIZE_LIMIT) {
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'request too large' }))
+      resolve(null)
+      return
+    }
+
+    const chunks: Buffer[] = []
+    let accumulated = 0
+    let oversized = false
+
+    req.on('data', (chunk: Buffer) => {
+      if (oversized) return
+      accumulated += chunk.length
+      if (accumulated > BODY_SIZE_LIMIT) {
+        oversized = true
+        req.destroy()
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'request too large' }))
+        resolve(null)
+        return
+      }
+      chunks.push(chunk)
+    })
+
+    req.on('end', () => {
+      if (oversized) return // already responded
+      resolve(Buffer.concat(chunks))
+    })
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -564,517 +651,403 @@ export function startCommandServer(deps: CommandServerDeps): {
 
   let listening = false
 
-  const server = http.createServer((req, res) => {
-    // --------------------------------------------------------------------------
-    // POST /subscribe — long-lived streaming subscription endpoint (U11)
-    // --------------------------------------------------------------------------
-    if (req.method === 'POST' && req.url === '/subscribe') {
-      // --- Token authentication (same as /cmd) ---
-      const incomingToken = req.headers['x-orpheus-token']
-      if (typeof incomingToken !== 'string') {
-        res.writeHead(401, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
-        return
-      }
-      const incomingBuf = Buffer.from(incomingToken, 'utf-8')
-      const expectedBuf = Buffer.from(token, 'utf-8')
-      const tokenValid =
-        incomingBuf.length === expectedBuf.length &&
-        crypto.timingSafeEqual(incomingBuf, expectedBuf)
-      if (!tokenValid) {
-        res.writeHead(401, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
-        return
-      }
+  // --------------------------------------------------------------------------
+  // POST /subscribe — long-lived streaming subscription endpoint (U11)
+  // --------------------------------------------------------------------------
+  function handleSubscribe(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!authenticate(req, res, token)) return
 
-      // --- Concurrent subscription cap ---
-      if (activeSubscriptionCount >= MAX_CONCURRENT_SUBSCRIPTIONS) {
-        res.writeHead(429, { 'Content-Type': 'application/json' })
-        res.end(
-          JSON.stringify({
-            ok: false,
-            error: `too many concurrent subscriptions (max ${MAX_CONCURRENT_SUBSCRIPTIONS})`
-          })
-        )
-        return
-      }
-      activeSubscriptionCount++
+    // --- Concurrent subscription cap ---
+    if (activeSubscriptionCount >= MAX_CONCURRENT_SUBSCRIPTIONS) {
+      res.writeHead(429, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: `too many concurrent subscriptions (max ${MAX_CONCURRENT_SUBSCRIPTIONS})`
+        })
+      )
+      return
+    }
+    activeSubscriptionCount++
 
-      // --- Read body ---
-      const subChunks: Buffer[] = []
-      let subAccumulated = 0
-      let subOversized = false
-
-      req.on('data', (chunk: Buffer) => {
-        if (subOversized) return
-        subAccumulated += chunk.length
-        if (subAccumulated > BODY_SIZE_LIMIT) {
-          subOversized = true
-          req.destroy()
-          return
+    req.on('error', () => {
+      if (!res.writableEnded) {
+        try {
+          res.end()
+        } catch {
+          /* ignore */
         }
-        subChunks.push(chunk)
+      }
+    })
+
+    void (async () => {
+      const raw = await readBody(req, res)
+      if (raw == null) return // readBody already responded (413)
+
+      let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
+      try {
+        body = JSON.parse(raw.toString('utf-8')) as {
+          workspaceIds?: unknown
+          timeoutMs?: unknown
+          until?: unknown
+        }
+      } catch {
+        if (!res.writableEnded) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
+        }
+        return
+      }
+
+      const workspaceIds = Array.isArray(body.workspaceIds)
+        ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : []
+
+      if (workspaceIds.length === 0) {
+        if (!res.writableEnded) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'workspaceIds must be a non-empty string[]' }))
+        }
+        return
+      }
+
+      // --until — how specific a terminal state the caller wants to block for.
+      // 'done' (default) preserves the historical behavior exactly: any non-running
+      // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
+      // 'input' blocks past awaiting_input/idle until the workspace is genuinely
+      // blocked on the user. 'idle' blocks past awaiting_input until the workspace
+      // is fully idle. The CLI already validates this client-side (exit 2 on a bad
+      // value), so an invalid/missing value here just falls back to the default
+      // rather than erroring the whole subscription.
+      const until: UntilMode =
+        typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
+
+      // Server-side timeout policy:
+      //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
+      //   - Explicit caller value: respected up to 1 hour hard cap
+      //   - 1 hour cap still accessible for callers that explicitly opt in
+      const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
+      const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+      const requestedTimeout =
+        typeof body.timeoutMs === 'number' && body.timeoutMs > 0
+          ? body.timeoutMs
+          : SERVER_DEFAULT_TIMEOUT_MS
+      const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
+
+      // Start streaming response — keep connection open
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache'
       })
 
-      req.on('end', async () => {
-        if (subOversized) return
+      // Track which workspace ids have resolved to a terminal reason
+      const resolved = new Map<string, string>() // workspaceId → reason
 
-        let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
-        try {
-          body = JSON.parse(Buffer.concat(subChunks).toString('utf-8')) as {
-            workspaceIds?: unknown
-            timeoutMs?: unknown
-            until?: unknown
-          }
-        } catch {
-          if (!res.writableEnded) {
-            res.writeHead(400, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
-          }
-          return
+      // Track workspaces that have been observed alive at least once (busy/idle/waiting).
+      // Used to distinguish "not yet started" (grace period) from "truly died": a workspace
+      // is only mapped to 'died' when it transitions from a known-alive state to unknown.
+      // This prevents ws-wait from falsely dying for a just-created workspace whose session
+      // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
+      const everSeenAlive = new Set<string>()
+
+      // NOT-FOUND VALIDATION (QA fix — `ws wait <nonexistent-id>` was resolving as
+      // 'died', conflating "genuinely dead" with "never existed"). Validate every
+      // requested id against the DB RIGHT NOW, before any grace-window/deriveReason
+      // machinery runs. A null getWorkspace() here means the id never existed at
+      // subscribe time — resolve it immediately as 'not-found' and never enter the
+      // wait loop for it. This also guards a multi-id batch: `ws wait <real> <fake>`
+      // must report the fake id as 'not-found' without blocking or poisoning the
+      // real id's eventual 'done'/'died'/etc — each id resolves independently via
+      // the `resolved` map, so marking the fake one here just removes it from every
+      // later loop (`checkAllResolved`, the observer, the initial-check loop, and the
+      // timeout sweep all skip ids already in `resolved`).
+      for (const workspaceId of workspaceIds) {
+        if (getWorkspace(workspaceId) == null) {
+          resolved.set(workspaceId, 'not-found')
+          writeFrame({ id: workspaceId, reason: 'not-found', status: 'unknown' })
+        }
+      }
+
+      // GRACE WINDOW (fixes: `ws send --submit` immediately followed by `ws wait`
+      // reporting 'died' for a workspace that is actively booting/running).
+      //
+      // Root cause: right after `ws send --submit`, claude has just rewritten its
+      // ~/.claude/sessions/<pid>.json to 'busy', but sessionState.ts's fs.watch +
+      // 75ms debounce + reconcile() hasn't run yet, so liveSessionMap (and therefore
+      // getWorkspaceFileInfo) still reads 'unknown'. The DB workspace.status is ALSO
+      // stale at that instant (setStatusFromFile hasn't committed the busy transition
+      // yet), so the old code fell through every DB-status branch to a final `died`.
+      //
+      // Fix, in order:
+      //   1. Never trust a single 'unknown' read — force a synchronous reconcile
+      //      (forceReconcile) and re-derive from a fresh read before concluding
+      //      anything terminal. This closes the debounce gap directly.
+      //   2. Cross-check with a second, independent ground-truth source
+      //      (getWorkspaceFileStatusSync — reads the session file straight off disk,
+      //      bypassing liveSessionMap entirely) in case the map is still cold even
+      //      after a forced reconcile (e.g. the file only appeared mid-reconcile).
+      //   3. For the first SUBSCRIPTION_GRACE_MS of a subscription's lifetime, an
+      //      'unknown' status that survives both ground-truth checks is treated as
+      //      "still starting/transitioning", never 'died'. A workspace that was just
+      //      sent input needs a moment for claude to flush its status file; this is
+      //      exactly that moment.
+      //   4. 'died' is only ever concluded once the grace window has elapsed AND the
+      //      ground-truth re-reads still can't find a live session — i.e. genuinely
+      //      dead (session file gone / pid not alive), not just "the debounced cache
+      //      hasn't caught up yet".
+      const SUBSCRIPTION_GRACE_MS = 5000
+      const subscriptionStartedAt = Date.now()
+
+      // Derive terminal exit reason for a workspace from its live session file info.
+      // Returns '' (empty string) when the workspace is still busy (not yet terminal).
+      // Async: may force a reconcile() pass to get a ground-truth read before
+      // concluding 'died' (see grace-window comment above).
+      //
+      // STARTUP GRACE: 'unknown' is only terminal ('died') when everSeenAlive contains
+      // the workspace id — meaning it was previously observed alive and then disappeared.
+      // If the workspace has never been seen alive, 'unknown' is treated as non-terminal
+      // (the session file simply hasn't been written yet). The subscription timeout is the
+      // backstop for a workspace that never starts.
+      //
+      // DB CROSS-CHECK (QA #4 — false 'died' on a just-completed turn):
+      // getWorkspaceFileInfo can legitimately read 'unknown' for a workspace that is
+      // very much alive/finished-cleanly: the window between claude finishing a turn
+      // (session file rewritten to 'idle'/'waiting') and sessionState.ts's fs.watch
+      // debounce settling can transiently drop liveSessionMap's view of the session,
+      // or the on-disk file can be caught mid-write. Naively mapping every 'unknown'
+      // (once everSeenAlive) to 'died' meant a workspace that had just gone
+      // awaiting_input got misreported as 'died' on the FIRST wait, only to read
+      // correctly as 'done' on a re-run once the race settled.
+      //
+      // Fix: before concluding 'died' for fileStatus === 'unknown', consult the
+      // persisted DB workspace.status (the same field the GUI and `ws status` read).
+      // That status is written synchronously by setStatusFromFile → dispatch →
+      // setWorkspaceStatus, so it reflects the *last known-good* transition even
+      // during a session-file read race:
+      //   - workspace missing entirely (row deleted)          → 'died' if it was ever
+      //     seen alive during this subscription (genuinely destroyed mid-wait), else
+      //     'not-found' (it never existed in the first place — though the subscribe-
+      //     start validation above should have already caught that case before this
+      //     function is ever called for it; this branch is a defensive fallback for
+      //     an id that somehow slipped past, e.g. a race with the DB row appearing
+      //     and then vanishing between the start-of-subscribe check and here).
+      //   - archivedAt != null                                → died (workspace is gone)
+      //   - closedAt != null (deliberately closed by the user/CLI) → died (not live)
+      //   - status === 'awaiting_input' or status === 'idle'  → 'done' — the DB already
+      //     recorded the terminal, non-died outcome of the turn; surface that instead
+      //     of re-deriving from a momentarily-stale file.
+      //   - status === 'attention'                             → blocked-permission/input,
+      //     derived from the DB's own detail (file's waitingFor is unavailable, so we
+      //     fall back to blocked-input, the more common case).
+      //   - status === 'in_progress'                           → still live, not yet
+      //     terminal — 'unknown' here is the read race described above; keep waiting.
+      // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
+      // live nor a resolvable terminal state) do we force a ground-truth reconcile and,
+      // failing that, apply the grace window before ever concluding 'died'.
+      async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
+        const info = getWorkspaceFileInfo(workspaceId)
+        const fileStatus = info.status
+        const waitingFor = info.waitingFor ?? ''
+
+        if (fileStatus === 'busy' || fileStatus === 'idle' || fileStatus === 'waiting') {
+          everSeenAlive.add(workspaceId)
         }
 
-        const workspaceIds = Array.isArray(body.workspaceIds)
-          ? (body.workspaceIds as unknown[]).filter((x): x is string => typeof x === 'string')
-          : []
+        if (fileStatus === 'unknown') {
+          const ws = getWorkspace(workspaceId)
 
-        if (workspaceIds.length === 0) {
-          if (!res.writableEnded) {
-            res.writeHead(400, { 'Content-Type': 'application/json' })
-            res.end(
-              JSON.stringify({ ok: false, error: 'workspaceIds must be a non-empty string[]' })
-            )
+          if (ws == null) {
+            // Workspace row is gone entirely — cannot be live. Distinguish
+            // "never existed" from "existed and was destroyed": if this
+            // subscription never observed the workspace alive, treat it as
+            // 'not-found' rather than 'died' (matches the subscribe-start
+            // validation above). Otherwise it was alive and is now genuinely
+            // gone → 'died'.
+            return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
           }
-          return
-        }
-
-        // --until — how specific a terminal state the caller wants to block for.
-        // 'done' (default) preserves the historical behavior exactly: any non-running
-        // state (awaiting_input, idle, blocked-permission, blocked-input) resolves.
-        // 'input' blocks past awaiting_input/idle until the workspace is genuinely
-        // blocked on the user. 'idle' blocks past awaiting_input until the workspace
-        // is fully idle. The CLI already validates this client-side (exit 2 on a bad
-        // value), so an invalid/missing value here just falls back to the default
-        // rather than erroring the whole subscription.
-        const until: UntilMode =
-          typeof body.until === 'string' && isValidUntilMode(body.until) ? body.until : 'done'
-
-        // Server-side timeout policy:
-        //   - Default (timeoutMs omitted or zero): 5 minutes (300 000 ms)
-        //   - Explicit caller value: respected up to 1 hour hard cap
-        //   - 1 hour cap still accessible for callers that explicitly opt in
-        const SERVER_MAX_TIMEOUT_MS = 60 * 60 * 1000
-        const SERVER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
-        const requestedTimeout =
-          typeof body.timeoutMs === 'number' && body.timeoutMs > 0
-            ? body.timeoutMs
-            : SERVER_DEFAULT_TIMEOUT_MS
-        const effectiveTimeoutMs = Math.min(requestedTimeout, SERVER_MAX_TIMEOUT_MS)
-
-        // Start streaming response — keep connection open
-        res.writeHead(200, {
-          'Content-Type': 'application/x-ndjson',
-          'Transfer-Encoding': 'chunked',
-          'Cache-Control': 'no-cache'
-        })
-
-        // Track which workspace ids have resolved to a terminal reason
-        const resolved = new Map<string, string>() // workspaceId → reason
-
-        // Track workspaces that have been observed alive at least once (busy/idle/waiting).
-        // Used to distinguish "not yet started" (grace period) from "truly died": a workspace
-        // is only mapped to 'died' when it transitions from a known-alive state to unknown.
-        // This prevents ws-wait from falsely dying for a just-created workspace whose session
-        // file hasn't appeared yet (startup race: ws new --task → ws wait <id> → 'died').
-        const everSeenAlive = new Set<string>()
-
-        // NOT-FOUND VALIDATION (QA fix — `ws wait <nonexistent-id>` was resolving as
-        // 'died', conflating "genuinely dead" with "never existed"). Validate every
-        // requested id against the DB RIGHT NOW, before any grace-window/deriveReason
-        // machinery runs. A null getWorkspace() here means the id never existed at
-        // subscribe time — resolve it immediately as 'not-found' and never enter the
-        // wait loop for it. This also guards a multi-id batch: `ws wait <real> <fake>`
-        // must report the fake id as 'not-found' without blocking or poisoning the
-        // real id's eventual 'done'/'died'/etc — each id resolves independently via
-        // the `resolved` map, so marking the fake one here just removes it from every
-        // later loop (`checkAllResolved`, the observer, the initial-check loop, and the
-        // timeout sweep all skip ids already in `resolved`).
-        for (const workspaceId of workspaceIds) {
-          if (getWorkspace(workspaceId) == null) {
-            resolved.set(workspaceId, 'not-found')
-            writeFrame({ id: workspaceId, reason: 'not-found', status: 'unknown' })
+          if (ws.archivedAt != null) {
+            // Archived — teardown already happened; treat as died (not a live wait target).
+            return 'died'
           }
-        }
-
-        // GRACE WINDOW (fixes: `ws send --submit` immediately followed by `ws wait`
-        // reporting 'died' for a workspace that is actively booting/running).
-        //
-        // Root cause: right after `ws send --submit`, claude has just rewritten its
-        // ~/.claude/sessions/<pid>.json to 'busy', but sessionState.ts's fs.watch +
-        // 75ms debounce + reconcile() hasn't run yet, so liveSessionMap (and therefore
-        // getWorkspaceFileInfo) still reads 'unknown'. The DB workspace.status is ALSO
-        // stale at that instant (setStatusFromFile hasn't committed the busy transition
-        // yet), so the old code fell through every DB-status branch to a final `died`.
-        //
-        // Fix, in order:
-        //   1. Never trust a single 'unknown' read — force a synchronous reconcile
-        //      (forceReconcile) and re-derive from a fresh read before concluding
-        //      anything terminal. This closes the debounce gap directly.
-        //   2. Cross-check with a second, independent ground-truth source
-        //      (getWorkspaceFileStatusSync — reads the session file straight off disk,
-        //      bypassing liveSessionMap entirely) in case the map is still cold even
-        //      after a forced reconcile (e.g. the file only appeared mid-reconcile).
-        //   3. For the first SUBSCRIPTION_GRACE_MS of a subscription's lifetime, an
-        //      'unknown' status that survives both ground-truth checks is treated as
-        //      "still starting/transitioning", never 'died'. A workspace that was just
-        //      sent input needs a moment for claude to flush its status file; this is
-        //      exactly that moment.
-        //   4. 'died' is only ever concluded once the grace window has elapsed AND the
-        //      ground-truth re-reads still can't find a live session — i.e. genuinely
-        //      dead (session file gone / pid not alive), not just "the debounced cache
-        //      hasn't caught up yet".
-        const SUBSCRIPTION_GRACE_MS = 5000
-        const subscriptionStartedAt = Date.now()
-
-        // Derive terminal exit reason for a workspace from its live session file info.
-        // Returns '' (empty string) when the workspace is still busy (not yet terminal).
-        // Async: may force a reconcile() pass to get a ground-truth read before
-        // concluding 'died' (see grace-window comment above).
-        //
-        // STARTUP GRACE: 'unknown' is only terminal ('died') when everSeenAlive contains
-        // the workspace id — meaning it was previously observed alive and then disappeared.
-        // If the workspace has never been seen alive, 'unknown' is treated as non-terminal
-        // (the session file simply hasn't been written yet). The subscription timeout is the
-        // backstop for a workspace that never starts.
-        //
-        // DB CROSS-CHECK (QA #4 — false 'died' on a just-completed turn):
-        // getWorkspaceFileInfo can legitimately read 'unknown' for a workspace that is
-        // very much alive/finished-cleanly: the window between claude finishing a turn
-        // (session file rewritten to 'idle'/'waiting') and sessionState.ts's fs.watch
-        // debounce settling can transiently drop liveSessionMap's view of the session,
-        // or the on-disk file can be caught mid-write. Naively mapping every 'unknown'
-        // (once everSeenAlive) to 'died' meant a workspace that had just gone
-        // awaiting_input got misreported as 'died' on the FIRST wait, only to read
-        // correctly as 'done' on a re-run once the race settled.
-        //
-        // Fix: before concluding 'died' for fileStatus === 'unknown', consult the
-        // persisted DB workspace.status (the same field the GUI and `ws status` read).
-        // That status is written synchronously by setStatusFromFile → dispatch →
-        // setWorkspaceStatus, so it reflects the *last known-good* transition even
-        // during a session-file read race:
-        //   - workspace missing entirely (row deleted)          → 'died' if it was ever
-        //     seen alive during this subscription (genuinely destroyed mid-wait), else
-        //     'not-found' (it never existed in the first place — though the subscribe-
-        //     start validation above should have already caught that case before this
-        //     function is ever called for it; this branch is a defensive fallback for
-        //     an id that somehow slipped past, e.g. a race with the DB row appearing
-        //     and then vanishing between the start-of-subscribe check and here).
-        //   - archivedAt != null                                → died (workspace is gone)
-        //   - closedAt != null (deliberately closed by the user/CLI) → died (not live)
-        //   - status === 'awaiting_input' or status === 'idle'  → 'done' — the DB already
-        //     recorded the terminal, non-died outcome of the turn; surface that instead
-        //     of re-deriving from a momentarily-stale file.
-        //   - status === 'attention'                             → blocked-permission/input,
-        //     derived from the DB's own detail (file's waitingFor is unavailable, so we
-        //     fall back to blocked-input, the more common case).
-        //   - status === 'in_progress'                           → still live, not yet
-        //     terminal — 'unknown' here is the read race described above; keep waiting.
-        // Only when NONE of the above apply (e.g. the DB row's status is somehow neither
-        // live nor a resolvable terminal state) do we force a ground-truth reconcile and,
-        // failing that, apply the grace window before ever concluding 'died'.
-        async function deriveReason(workspaceId: string, fromTransition: boolean): Promise<string> {
-          const info = getWorkspaceFileInfo(workspaceId)
-          const fileStatus = info.status
-          const waitingFor = info.waitingFor ?? ''
-
-          if (fileStatus === 'busy' || fileStatus === 'idle' || fileStatus === 'waiting') {
-            everSeenAlive.add(workspaceId)
+          if (ws.closedAt != null) {
+            // Deliberately closed — not live, but not a crash either. 'died' is the
+            // closest terminal bucket ws-wait has; the caller closed it on purpose.
+            return 'died'
           }
-
-          if (fileStatus === 'unknown') {
-            const ws = getWorkspace(workspaceId)
-
-            if (ws == null) {
-              // Workspace row is gone entirely — cannot be live. Distinguish
-              // "never existed" from "existed and was destroyed": if this
-              // subscription never observed the workspace alive, treat it as
-              // 'not-found' rather than 'died' (matches the subscribe-start
-              // validation above). Otherwise it was alive and is now genuinely
-              // gone → 'died'.
-              return everSeenAlive.has(workspaceId) ? 'died' : 'not-found'
-            }
-            if (ws.archivedAt != null) {
-              // Archived — teardown already happened; treat as died (not a live wait target).
-              return 'died'
-            }
-            if (ws.closedAt != null) {
-              // Deliberately closed — not live, but not a crash either. 'died' is the
-              // closest terminal bucket ws-wait has; the caller closed it on purpose.
-              return 'died'
-            }
-            if (ws.status === 'awaiting_input' || ws.status === 'idle') {
-              // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
-              // via setStatusFromFile before this file read raced past it. Report the
-              // real outcome — never 'died' — even though the file momentarily reads
-              // 'unknown'.
-              return 'done'
-            }
-            if (ws.status === 'attention') {
-              // DB says the workspace is blocked on something; file's waitingFor detail
-              // isn't available in this race, so default to the more common case.
-              return waitingFor.toLowerCase().includes('permission')
-                ? 'blocked-permission'
-                : 'blocked-input'
-            }
-            if (ws.status === 'in_progress') {
-              // DB says the workspace is still actively running — 'unknown' here is a
-              // transient file-read race, not a death. Keep waiting.
-              return ''
-            }
-
-            // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
-            // (refreshes liveSessionMap from disk right now, not on the next debounce
-            // tick) and re-read. If the workspace is actually busy/idle/waiting, use
-            // that — it was never dead, just a cold cache.
-            await forceReconcile()
-            const refreshedInfo = getWorkspaceFileInfo(workspaceId)
-            if (refreshedInfo.status === 'busy') {
-              everSeenAlive.add(workspaceId)
-              return ''
-            }
-            if (refreshedInfo.status === 'idle') {
-              everSeenAlive.add(workspaceId)
-              return 'done'
-            }
-            if (refreshedInfo.status === 'waiting') {
-              everSeenAlive.add(workspaceId)
-              const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
-              return refreshedWaitingFor.includes('permission')
-                ? 'blocked-permission'
-                : 'blocked-input'
-            }
-
-            // Second, independent ground-truth source: read the session file straight
-            // off disk, bypassing liveSessionMap entirely, in case the map is still
-            // cold even right after a forced reconcile (e.g. the file only appeared
-            // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
-            const syncStatus = getWorkspaceFileStatusSync(workspaceId)
-            if (syncStatus === 'busy') {
-              everSeenAlive.add(workspaceId)
-              return ''
-            }
-            if (syncStatus === 'idle') {
-              everSeenAlive.add(workspaceId)
-              return 'done'
-            }
-            if (syncStatus === 'waiting') {
-              everSeenAlive.add(workspaceId)
-              return 'blocked-input'
-            }
-
-            // Still genuinely unknown after BOTH ground-truth refreshes. Only now
-            // consider 'died' — and only once the subscription's startup grace window
-            // has elapsed. A workspace that was just created/sent-to is transitioning;
-            // giving it a few seconds to flush its first status file prevents the
-            // false-died race this fix targets.
-            const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
-            if (withinGraceWindow) {
-              return '' // still within grace — not yet terminal
-            }
-
-            // Genuine death = confirmed gone even after ground-truth refresh, AND
-            // either this is a real transition event (the workspace was live and its
-            // status observably changed) or it was previously seen alive and has now
-            // disappeared. Otherwise (initial check, workspace never observed alive,
-            // grace window elapsed with no session ever appearing) keep waiting — the
-            // subscription timeout is the backstop for a workspace that never starts.
-            if (fromTransition || everSeenAlive.has(workspaceId)) {
-              return 'died'
-            }
-            return '' // startup grace — not yet terminal
-          }
-          if (fileStatus === 'idle') {
+          if (ws.status === 'awaiting_input' || ws.status === 'idle') {
+            // The DB already recorded the turn's terminal outcome (awaiting_input/idle)
+            // via setStatusFromFile before this file read raced past it. Report the
+            // real outcome — never 'died' — even though the file momentarily reads
+            // 'unknown'.
             return 'done'
           }
-          if (fileStatus === 'waiting') {
-            if (waitingFor.toLowerCase().includes('permission')) {
-              return 'blocked-permission'
-            }
-            return 'blocked-input'
+          if (ws.status === 'attention') {
+            // DB says the workspace is blocked on something; file's waitingFor detail
+            // isn't available in this race, so default to the more common case.
+            return waitingFor.toLowerCase().includes('permission')
+              ? 'blocked-permission'
+              : 'blocked-input'
           }
-          // fileStatus === 'busy' — still running; not yet terminal
-          return ''
-        }
-
-        // Apply the caller's --until mode to a raw reason from deriveReason().
-        //
-        // deriveReason() always computes the DEFAULT ('done') notion of terminal —
-        // the workspace stopped running for ANY reason (awaiting_input, idle, or
-        // blocked-*). --until narrows what counts as resolved for a 'done' reason
-        // specifically; blocked-permission/blocked-input/died/not-found are always
-        // terminal in every mode (a dead/missing/timed-out/blocked-on-user workspace
-        // always resolves, regardless of --until).
-        //
-        // 'input' mode: a raw 'done' means the workspace reached awaiting_input/idle
-        // WITHOUT being blocked on the user — that's exactly what 'input' mode wants
-        // to wait PAST. So 'done' is downgraded to '' (keep waiting) under 'input'.
-        //
-        // 'idle' mode: a raw 'done' could mean either awaiting_input (turn-end, but
-        // not fully settled) or idle (fully settled) — deriveReason() collapses both
-        // into 'done'. To distinguish them we consult the DB's own workspace.status
-        // column (WorkspaceStatus has distinct 'awaiting_input' and 'idle' values;
-        // see getWorkspace()/rowToWorkspaceRecord in workspaces.ts), which is the same
-        // source deriveReason() itself already falls back to during its race-window
-        // handling. Only a DB status of exactly 'idle' resolves under 'idle' mode;
-        // 'awaiting_input' (or anything else) is downgraded to '' (keep waiting).
-        function applyUntilFilter(reason: string, workspaceId: string): string {
-          if (reason !== 'done') return reason // blocked-*/died/not-found always terminal
-
-          if (until === 'done') return reason // default — unchanged behavior
-
-          if (until === 'input') {
-            // 'done' here means non-blocked (awaiting_input/idle) — not what 'input' wants.
+          if (ws.status === 'in_progress') {
+            // DB says the workspace is still actively running — 'unknown' here is a
+            // transient file-read race, not a death. Keep waiting.
             return ''
           }
 
-          // until === 'idle': only a genuine DB status of 'idle' counts.
-          const ws = getWorkspace(workspaceId)
-          if (ws?.status === 'idle') return 'done'
-          return '' // awaiting_input (or unresolved) — keep waiting
+          // GROUND TRUTH before any 'died' conclusion: force a synchronous reconcile
+          // (refreshes liveSessionMap from disk right now, not on the next debounce
+          // tick) and re-read. If the workspace is actually busy/idle/waiting, use
+          // that — it was never dead, just a cold cache.
+          await forceReconcile()
+          const refreshedInfo = getWorkspaceFileInfo(workspaceId)
+          if (refreshedInfo.status === 'busy') {
+            everSeenAlive.add(workspaceId)
+            return ''
+          }
+          if (refreshedInfo.status === 'idle') {
+            everSeenAlive.add(workspaceId)
+            return 'done'
+          }
+          if (refreshedInfo.status === 'waiting') {
+            everSeenAlive.add(workspaceId)
+            const refreshedWaitingFor = (refreshedInfo.waitingFor ?? '').toLowerCase()
+            return refreshedWaitingFor.includes('permission')
+              ? 'blocked-permission'
+              : 'blocked-input'
+          }
+
+          // Second, independent ground-truth source: read the session file straight
+          // off disk, bypassing liveSessionMap entirely, in case the map is still
+          // cold even right after a forced reconcile (e.g. the file only appeared
+          // mid-reconcile, or the pid/sessionId pairing hasn't been observed yet).
+          const syncStatus = getWorkspaceFileStatusSync(workspaceId)
+          if (syncStatus === 'busy') {
+            everSeenAlive.add(workspaceId)
+            return ''
+          }
+          if (syncStatus === 'idle') {
+            everSeenAlive.add(workspaceId)
+            return 'done'
+          }
+          if (syncStatus === 'waiting') {
+            everSeenAlive.add(workspaceId)
+            return 'blocked-input'
+          }
+
+          // Still genuinely unknown after BOTH ground-truth refreshes. Only now
+          // consider 'died' — and only once the subscription's startup grace window
+          // has elapsed. A workspace that was just created/sent-to is transitioning;
+          // giving it a few seconds to flush its first status file prevents the
+          // false-died race this fix targets.
+          const withinGraceWindow = Date.now() - subscriptionStartedAt < SUBSCRIPTION_GRACE_MS
+          if (withinGraceWindow) {
+            return '' // still within grace — not yet terminal
+          }
+
+          // Genuine death = confirmed gone even after ground-truth refresh, AND
+          // either this is a real transition event (the workspace was live and its
+          // status observably changed) or it was previously seen alive and has now
+          // disappeared. Otherwise (initial check, workspace never observed alive,
+          // grace window elapsed with no session ever appearing) keep waiting — the
+          // subscription timeout is the backstop for a workspace that never starts.
+          if (fromTransition || everSeenAlive.has(workspaceId)) {
+            return 'died'
+          }
+          return '' // startup grace — not yet terminal
+        }
+        if (fileStatus === 'idle') {
+          return 'done'
+        }
+        if (fileStatus === 'waiting') {
+          if (waitingFor.toLowerCase().includes('permission')) {
+            return 'blocked-permission'
+          }
+          return 'blocked-input'
+        }
+        // fileStatus === 'busy' — still running; not yet terminal
+        return ''
+      }
+
+      // Apply the caller's --until mode to a raw reason from deriveReason().
+      //
+      // deriveReason() always computes the DEFAULT ('done') notion of terminal —
+      // the workspace stopped running for ANY reason (awaiting_input, idle, or
+      // blocked-*). --until narrows what counts as resolved for a 'done' reason
+      // specifically; blocked-permission/blocked-input/died/not-found are always
+      // terminal in every mode (a dead/missing/timed-out/blocked-on-user workspace
+      // always resolves, regardless of --until).
+      //
+      // 'input' mode: a raw 'done' means the workspace reached awaiting_input/idle
+      // WITHOUT being blocked on the user — that's exactly what 'input' mode wants
+      // to wait PAST. So 'done' is downgraded to '' (keep waiting) under 'input'.
+      //
+      // 'idle' mode: a raw 'done' could mean either awaiting_input (turn-end, but
+      // not fully settled) or idle (fully settled) — deriveReason() collapses both
+      // into 'done'. To distinguish them we consult the DB's own workspace.status
+      // column (WorkspaceStatus has distinct 'awaiting_input' and 'idle' values;
+      // see getWorkspace()/rowToWorkspaceRecord in workspaces.ts), which is the same
+      // source deriveReason() itself already falls back to during its race-window
+      // handling. Only a DB status of exactly 'idle' resolves under 'idle' mode;
+      // 'awaiting_input' (or anything else) is downgraded to '' (keep waiting).
+      function applyUntilFilter(reason: string, workspaceId: string): string {
+        if (reason !== 'done') return reason // blocked-*/died/not-found always terminal
+
+        if (until === 'done') return reason // default — unchanged behavior
+
+        if (until === 'input') {
+          // 'done' here means non-blocked (awaiting_input/idle) — not what 'input' wants.
+          return ''
         }
 
-        function isTerminalReason(reason: string): boolean {
-          return (
-            reason === 'done' ||
-            reason === 'blocked-permission' ||
-            reason === 'blocked-input' ||
-            reason === 'died' ||
-            reason === 'not-found'
-          )
-        }
+        // until === 'idle': only a genuine DB status of 'idle' counts.
+        const ws = getWorkspace(workspaceId)
+        if (ws?.status === 'idle') return 'done'
+        return '' // awaiting_input (or unresolved) — keep waiting
+      }
 
-        function writeFrame(frame: Record<string, unknown>): void {
-          if (!res.writableEnded) {
-            try {
-              res.write(JSON.stringify(frame) + '\n')
-            } catch {
-              /* client disconnected */
-            }
+      function isTerminalReason(reason: string): boolean {
+        return (
+          reason === 'done' ||
+          reason === 'blocked-permission' ||
+          reason === 'blocked-input' ||
+          reason === 'died' ||
+          reason === 'not-found'
+        )
+      }
+
+      function writeFrame(frame: Record<string, unknown>): void {
+        if (!res.writableEnded) {
+          try {
+            res.write(JSON.stringify(frame) + '\n')
+          } catch {
+            /* client disconnected */
           }
         }
+      }
 
-        function checkAllResolved(): boolean {
-          return workspaceIds.every((id) => resolved.has(id))
-        }
+      function checkAllResolved(): boolean {
+        return workspaceIds.every((id) => resolved.has(id))
+      }
 
-        // Cleanup state — must be called on EVERY exit path to prevent observer leaks
-        let unsubscribe: (() => void) | null = null
-        let timeoutHandle: NodeJS.Timeout | null = null
-        let cleanedUp = false
+      // Cleanup state — must be called on EVERY exit path to prevent observer leaks
+      let unsubscribe: (() => void) | null = null
+      let timeoutHandle: NodeJS.Timeout | null = null
+      let cleanedUp = false
 
-        function cleanup(): void {
-          if (cleanedUp) return
-          cleanedUp = true
-          activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
-          if (timeoutHandle != null) {
-            clearTimeout(timeoutHandle)
-            timeoutHandle = null
-          }
-          // Unregister the status observer — CRITICAL leak prevention
-          if (unsubscribe != null) {
-            unsubscribe()
-            unsubscribe = null
-          }
-          if (!res.writableEnded) {
-            try {
-              res.end()
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-
-        // Register status change observer for the requested workspace ids.
-        // onWorkspaceStatusChange returns the unsubscribe function.
-        // We derive the reason from getWorkspaceFileInfo, so the old/new status
-        // args are unused — omit them (a narrower callback is assignable).
-        // deriveReason is async (it may force a reconcile pass for ground truth), but
-        // onWorkspaceStatusChange's observer callback is synchronous by type. Fire the
-        // async work from inside a void-returning wrapper; resolved.has(workspaceId) is
-        // re-checked after the await resolves to guard against another observer firing
-        // (or the initial check completing) while this one was awaiting forceReconcile.
-        unsubscribe = onWorkspaceStatusChange((workspaceId) => {
-          if (!workspaceIds.includes(workspaceId)) return
-          if (resolved.has(workspaceId)) return
-
-          void (async () => {
-            // fromTransition=true: this is a real status-change event, so 'unknown'
-            // means the workspace was alive and its session file just disappeared → 'died'.
-            const rawReason = await deriveReason(workspaceId, true)
-            if (resolved.has(workspaceId)) return // resolved by another path while awaiting
-            // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
-            // blocked-*/died/not-found pass through unchanged in every mode.
-            const reason = applyUntilFilter(rawReason, workspaceId)
-            if (!isTerminalReason(reason)) return // still busy, not yet terminal per --until
-
-            resolved.set(workspaceId, reason)
-            const info = getWorkspaceFileInfo(workspaceId)
-            writeFrame({ id: workspaceId, reason, status: info.status })
-
-            if (checkAllResolved()) {
-              cleanup()
-            }
-          })()
-        })
-
-        // Initial check: emit immediately for any workspace already in a terminal state.
-        // This handles the case where a workspace was already idle/waiting before subscribe.
-        // fromTransition=false: use startup grace — 'unknown' here means the session file
-        // hasn't been written yet (workspace just created), not that the process died.
-        // Sequential await (not Promise.all) keeps this simple; each iteration is cheap
-        // unless it hits the forceReconcile ground-truth path, and even then bounded.
-        for (const workspaceId of workspaceIds) {
-          if (resolved.has(workspaceId)) continue
-          const rawReason = await deriveReason(workspaceId, false)
-          if (resolved.has(workspaceId)) continue // resolved by a transition while awaiting
-          // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
-          const reason = applyUntilFilter(rawReason, workspaceId)
-          if (isTerminalReason(reason)) {
-            resolved.set(workspaceId, reason)
-            const info = getWorkspaceFileInfo(workspaceId)
-            writeFrame({ id: workspaceId, reason, status: info.status })
-          }
-        }
-
-        if (checkAllResolved()) {
-          cleanup()
-          return
-        }
-
-        // Arm server-side timeout — fires if not all ids resolve within effectiveTimeoutMs.
-        timeoutHandle = setTimeout(() => {
+      function cleanup(): void {
+        if (cleanedUp) return
+        cleanedUp = true
+        activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+        if (timeoutHandle != null) {
+          clearTimeout(timeoutHandle)
           timeoutHandle = null
-          // Emit timeout frames for any still-unresolved ids
-          for (const workspaceId of workspaceIds) {
-            if (!resolved.has(workspaceId)) {
-              resolved.set(workspaceId, 'timeout')
-              writeFrame({ id: workspaceId, reason: 'timeout', status: 'unknown' })
-            }
-          }
-          cleanup()
-        }, effectiveTimeoutMs)
-
-        // Client disconnect cleanup — CRITICAL: unsubscribe must fire here too
-        req.on('close', () => {
-          cleanup()
-        })
-
-        req.on('error', () => {
-          cleanup()
-        })
-      })
-
-      req.on('error', () => {
+        }
+        // Unregister the status observer — CRITICAL leak prevention
+        if (unsubscribe != null) {
+          unsubscribe()
+          unsubscribe = null
+        }
         if (!res.writableEnded) {
           try {
             res.end()
@@ -1082,72 +1055,108 @@ export function startCommandServer(deps: CommandServerDeps): {
             /* ignore */
           }
         }
+      }
+
+      // Register status change observer for the requested workspace ids.
+      // onWorkspaceStatusChange returns the unsubscribe function.
+      // We derive the reason from getWorkspaceFileInfo, so the old/new status
+      // args are unused — omit them (a narrower callback is assignable).
+      // deriveReason is async (it may force a reconcile pass for ground truth), but
+      // onWorkspaceStatusChange's observer callback is synchronous by type. Fire the
+      // async work from inside a void-returning wrapper; resolved.has(workspaceId) is
+      // re-checked after the await resolves to guard against another observer firing
+      // (or the initial check completing) while this one was awaiting forceReconcile.
+      unsubscribe = onWorkspaceStatusChange((workspaceId) => {
+        if (!workspaceIds.includes(workspaceId)) return
+        if (resolved.has(workspaceId)) return
+
+        void (async () => {
+          // fromTransition=true: this is a real status-change event, so 'unknown'
+          // means the workspace was alive and its session file just disappeared → 'died'.
+          const rawReason = await deriveReason(workspaceId, true)
+          if (resolved.has(workspaceId)) return // resolved by another path while awaiting
+          // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+          // blocked-*/died/not-found pass through unchanged in every mode.
+          const reason = applyUntilFilter(rawReason, workspaceId)
+          if (!isTerminalReason(reason)) return // still busy, not yet terminal per --until
+
+          resolved.set(workspaceId, reason)
+          const info = getWorkspaceFileInfo(workspaceId)
+          writeFrame({ id: workspaceId, reason, status: info.status })
+
+          if (checkAllResolved()) {
+            cleanup()
+          }
+        })()
       })
 
-      return
-    }
+      // Initial check: emit immediately for any workspace already in a terminal state.
+      // This handles the case where a workspace was already idle/waiting before subscribe.
+      // fromTransition=false: use startup grace — 'unknown' here means the session file
+      // hasn't been written yet (workspace just created), not that the process died.
+      // Sequential await (not Promise.all) keeps this simple; each iteration is cheap
+      // unless it hits the forceReconcile ground-truth path, and even then bounded.
+      for (const workspaceId of workspaceIds) {
+        if (resolved.has(workspaceId)) continue
+        const rawReason = await deriveReason(workspaceId, false)
+        if (resolved.has(workspaceId)) continue // resolved by a transition while awaiting
+        // Narrow a raw 'done' per the caller's --until mode (see applyUntilFilter).
+        const reason = applyUntilFilter(rawReason, workspaceId)
+        if (isTerminalReason(reason)) {
+          resolved.set(workspaceId, reason)
+          const info = getWorkspaceFileInfo(workspaceId)
+          writeFrame({ id: workspaceId, reason, status: info.status })
+        }
+      }
 
-    // Only accept POST /cmd — anything else gets a 404.
-    if (req.method !== 'POST' || req.url !== '/cmd') {
-      res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'not found' }))
-      return
-    }
-
-    // --- Token authentication (constant-time comparison) ---
-    const incomingToken = req.headers['x-orpheus-token']
-    if (typeof incomingToken !== 'string') {
-      // Missing token — reject without any comparison.
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
-      return
-    }
-    const incomingBuf = Buffer.from(incomingToken, 'utf-8')
-    const expectedBuf = Buffer.from(token, 'utf-8')
-    // Guard: timingSafeEqual throws if the two buffers differ in length,
-    // so we check lengths first and short-circuit as false (not as an early accept).
-    const tokenValid =
-      incomingBuf.length === expectedBuf.length && crypto.timingSafeEqual(incomingBuf, expectedBuf)
-    if (!tokenValid) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
-      return
-    }
-
-    // --- Body-size cap (checked early via Content-Length, then guarded on stream) ---
-    const contentLength = parseInt(req.headers['content-length'] ?? '0', 10)
-    if (!isNaN(contentLength) && contentLength > BODY_SIZE_LIMIT) {
-      res.writeHead(413, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'request too large' }))
-      return
-    }
-
-    const chunks: Buffer[] = []
-    let accumulated = 0
-    let oversized = false
-
-    req.on('data', (chunk: Buffer) => {
-      if (oversized) return
-      accumulated += chunk.length
-      if (accumulated > BODY_SIZE_LIMIT) {
-        // Streaming body exceeded the cap — abort and respond.
-        oversized = true
-        req.destroy()
-        res.writeHead(413, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'request too large' }))
+      if (checkAllResolved()) {
+        cleanup()
         return
       }
-      chunks.push(chunk)
-    })
 
-    req.on('end', async () => {
-      if (oversized) return // already responded
+      // Arm server-side timeout — fires if not all ids resolve within effectiveTimeoutMs.
+      timeoutHandle = setTimeout(() => {
+        timeoutHandle = null
+        // Emit timeout frames for any still-unresolved ids
+        for (const workspaceId of workspaceIds) {
+          if (!resolved.has(workspaceId)) {
+            resolved.set(workspaceId, 'timeout')
+            writeFrame({ id: workspaceId, reason: 'timeout', status: 'unknown' })
+          }
+        }
+        cleanup()
+      }, effectiveTimeoutMs)
 
+      // Client disconnect cleanup — CRITICAL: unsubscribe must fire here too
+      req.on('close', () => {
+        cleanup()
+      })
+
+      req.on('error', () => {
+        cleanup()
+      })
+    })()
+  }
+
+  // --------------------------------------------------------------------------
+  // POST /cmd — one-shot request/response command dispatch
+  // --------------------------------------------------------------------------
+  function handleCmd(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    dispatch: Record<string, DispatchFn>
+  ): void {
+    if (!authenticate(req, res, token)) return
+
+    void (async () => {
       try {
+        const raw = await readBody(req, res)
+        if (raw == null) return // readBody already responded (413)
+
         // --- Parse JSON body ---
         let body: CmdBody
         try {
-          body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as CmdBody
+          body = JSON.parse(raw.toString('utf-8')) as CmdBody
         } catch {
           if (!res.writableEnded) {
             try {
@@ -1166,8 +1175,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         const handlerCandidate = Object.prototype.hasOwnProperty.call(dispatch, action)
           ? dispatch[action]
           : undefined
-        const handler =
-          typeof handlerCandidate === 'function' ? (handlerCandidate as DispatchFn) : undefined
+        const handler = typeof handlerCandidate === 'function' ? handlerCandidate : undefined
         if (!handler) {
           if (!res.writableEnded) {
             try {
@@ -1202,15 +1210,37 @@ export function startCommandServer(deps: CommandServerDeps): {
             }
           }
         }
-      } catch {
+      } catch (err) {
         // Outer catch: unexpected error in the request handler — swallow to
         // prevent an unhandled rejection from crashing the process.
+        logDiagMain({
+          category: 'error',
+          level: 'error',
+          event: DIAG_EVENTS.CMD_SERVER_HANDLER_FAILED,
+          data: { err: String(err) }
+        })
       }
-    })
+    })()
 
     req.on('error', () => {
       // Connection reset or early destroy — nothing to respond to.
     })
+  }
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/subscribe') {
+      handleSubscribe(req, res)
+      return
+    }
+
+    // Only accept POST /cmd — anything else gets a 404.
+    if (req.method !== 'POST' || req.url !== '/cmd') {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'not found' }))
+      return
+    }
+
+    handleCmd(req, res, dispatch)
   })
 
   server.setTimeout(30000)

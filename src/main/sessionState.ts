@@ -1,5 +1,5 @@
 /**
- * sessionState.ts — Shadow-mode session state service (Phase 1)
+ * sessionState.ts — session state service
  *
  * Watches ~/.claude/sessions/<pid>.json files written by the claude CLI and
  * drives workspace status transitions. This module is the SOLE authority for
@@ -18,13 +18,14 @@ import type { WorkspaceStatus } from '../shared/types'
 import { getUserShellPath } from './shellHelpers'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
+import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions')
-const KNOWN_GOOD_VERSIONS = new Set(['2.1.190'])
+const KNOWN_GOOD_VERSIONS = new Set(['2.1.190', '2.1.198'])
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,13 +72,36 @@ const readySignaled = new Set<string>()
 let reconcileRunning = false
 let dirty = false
 
+/**
+ * Re-entrancy guard scoped specifically to forceReconcile's synchronous
+ * call chain (forceReconcile → reconcile → setStatusFromFile/dispatch →
+ * some observer → forceReconcile again, before the first call returns).
+ * Deliberately separate from reconcileRunning/dirty above, which guards
+ * the async fs.watch debounce path (scheduleReconcile → _runReconcile) —
+ * forceReconcile must keep its direct-call/fresh-read contract and not be
+ * folded into that single-flight queue.
+ */
+let reconcileInProgress = false
+
 let watcher: fs.FSWatcher | null = null
 let debounceTimer: NodeJS.Timeout | null = null
 let intervalHandle: NodeJS.Timeout | null = null
 let stopped = false
 
+/**
+ * PERF-6: the interval backstop widens once the fs.watch() watcher is up —
+ * at that point the interval only needs to catch watcher gaps, not carry the
+ * whole reconcile cadence. If the watcher was never started, or its 'error'
+ * handler tears it down later (see _startWatcher), we fall back to the tight
+ * interval since it's then the ONLY reconcile trigger.
+ */
+const INTERVAL_WATCHER_HEALTHY_MS = 15_000
+const INTERVAL_FALLBACK_MS = 2_500
+
 /** Tracks filenames that have already emitted a parse-error warning; cleared when file becomes valid or disappears. */
 const knownBadSessionFiles = new Set<string>()
+/** Tracks claude versions that have already emitted an unknown-version warning; never cleared (bounded by distinct versions seen). */
+const warnedVersions = new Set<string>()
 /** Tracks pids that have already emitted a dead-pid warning. Pids are recycled OS-wide but accumulation is bounded. */
 const deadPidReported = new Set<number>()
 
@@ -167,6 +191,24 @@ export function getWorkspaceFileInfo(workspaceId: string): {
   return result
 }
 
+/**
+ * Self-rescheduling interval backstop. Runs _runReconcile() then re-arms
+ * itself at INTERVAL_WATCHER_HEALTHY_MS when `watcher` is non-null (fs.watch
+ * confirmed up), or INTERVAL_FALLBACK_MS when it's null (never started, or
+ * torn down after an 'error' — see _startWatcher). Re-evaluated on every
+ * tick so a watcher that dies mid-run drops back to fast polling on the
+ * very next cycle.
+ */
+function scheduleIntervalBackstop(): void {
+  if (stopped) return
+  const delay = watcher ? INTERVAL_WATCHER_HEALTHY_MS : INTERVAL_FALLBACK_MS
+  intervalHandle = setTimeout(() => {
+    void _runReconcile().finally(() => {
+      scheduleIntervalBackstop()
+    })
+  }, delay)
+}
+
 export function startSessionStateService(): { stop: () => void } {
   stopped = false
 
@@ -178,10 +220,16 @@ export function startSessionStateService(): { stop: () => void } {
     console.log(`[sessionState] ${SESSIONS_DIR} not found — falling back to interval-only polling`)
   }
 
-  // Interval backstop regardless of watcher
-  intervalHandle = setInterval(() => {
-    scheduleReconcile()
-  }, 2500)
+  // Interval backstop regardless of watcher. Calls _runReconcile directly
+  // (not scheduleReconcile) — _runReconcile already single-flights via
+  // reconcileRunning/dirty, so this is safe, and it avoids the interval
+  // resetting the 75ms debounce timer under event storms (which could
+  // otherwise starve reconcile).
+  //
+  // Self-rescheduling (not a fixed setInterval) so the delay can widen once
+  // the watcher is confirmed healthy, and narrow back down if the watcher
+  // later dies (its 'error' handler nulls `watcher` — see _startWatcher).
+  scheduleIntervalBackstop()
 
   // Initial reconcile
   scheduleReconcile()
@@ -204,7 +252,7 @@ export function startSessionStateService(): { stop: () => void } {
         debounceTimer = null
       }
       if (intervalHandle) {
-        clearInterval(intervalHandle)
+        clearTimeout(intervalHandle)
         intervalHandle = null
       }
       if (watcher) {
@@ -220,7 +268,13 @@ export function getLiveSessionState(): Map<string, LiveSession> {
 }
 
 export async function forceReconcile(): Promise<void> {
-  return reconcile()
+  if (reconcileInProgress) return
+  reconcileInProgress = true
+  try {
+    await reconcile()
+  } finally {
+    reconcileInProgress = false
+  }
 }
 
 export function setSessionReadyHandler(fn: (workspaceId: string) => void): void {
@@ -248,6 +302,12 @@ function _startWatcher(): void {
     })
     watcher.on('error', (err) => {
       console.warn('[sessionState] fs.watch error — falling back to interval-only:', err)
+      logDiagMain({
+        category: 'anomaly',
+        level: 'warn',
+        event: DIAG_EVENTS.SESSION_WATCH_FALLBACK,
+        data: { err: String(err) }
+      })
       if (watcher) {
         watcher.close()
         watcher = null
@@ -258,6 +318,12 @@ function _startWatcher(): void {
       '[sessionState] could not watch sessions dir — falling back to interval-only:',
       err
     )
+    logDiagMain({
+      category: 'anomaly',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_WATCH_FALLBACK,
+      data: { err: String(err) }
+    })
   }
 }
 
@@ -287,6 +353,12 @@ async function _runReconcile(): Promise<void> {
     await reconcile()
   } catch (err) {
     console.warn('[sessionState] reconcile error:', err)
+    logDiagMain({
+      category: 'error',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
+      data: { err: String(err) }
+    })
   } finally {
     reconcileRunning = false
     if (dirty && !stopped) {
@@ -300,6 +372,9 @@ async function _runReconcile(): Promise<void> {
 // Core reconcile
 // ---------------------------------------------------------------------------
 
+// INVARIANT: reconcile() must stay await-free between its liveSessionMap/lastRawActed
+// reads and writes; forceReconcile guards against re-entrancy but provides no
+// protection if an await is introduced here.
 async function reconcile(): Promise<void> {
   const t0 = Date.now()
   // 1. Read all session files
@@ -316,8 +391,11 @@ async function reconcile(): Promise<void> {
   const newMap = new Map<string, LiveSession>()
   const lastGoodMap = new Map<string, LiveSession>(liveSessionMap) // keep old for fallback
 
-  // Prune parse-error dedup set for files that are no longer present
-  for (const f of knownBadSessionFiles) if (!files.includes(f)) knownBadSessionFiles.delete(f)
+  // Prune parse-error dedup set for files that are no longer present.
+  // Build a Set once so the prune is O(bad + files) instead of O(bad × files)
+  // (files.includes() was a linear scan per bad entry).
+  const filesSet = new Set(files)
+  for (const f of knownBadSessionFiles) if (!filesSet.has(f)) knownBadSessionFiles.delete(f)
 
   for (const filename of files) {
     const filePath = path.join(SESSIONS_DIR, filename)
@@ -327,7 +405,8 @@ async function reconcile(): Promise<void> {
       if (!parsed.sessionId) continue
 
       // Check for unknown versions
-      if (!KNOWN_GOOD_VERSIONS.has(parsed.version)) {
+      if (!KNOWN_GOOD_VERSIONS.has(parsed.version) && !warnedVersions.has(parsed.version)) {
+        warnedVersions.add(parsed.version)
         console.warn(
           `[sessionState] warning: unknown claude version "${parsed.version}" in session file (pid=${parsed.pid} sessionId=${parsed.sessionId})`
         )
@@ -397,6 +476,12 @@ async function reconcile(): Promise<void> {
       .all() as typeof workspaceRows
   } catch (err) {
     console.warn('[sessionState] failed to query workspaces:', err)
+    logDiagMain({
+      category: 'error',
+      level: 'warn',
+      event: DIAG_EVENTS.SESSION_RECONCILE_FAILED,
+      data: { err: String(err) }
+    })
     return
   }
 
@@ -479,7 +564,8 @@ async function reconcile(): Promise<void> {
         let mapped: WorkspaceStatus
         if (rawStatus === 'idle') {
           const idleDuration = Date.now() - (session?.statusUpdatedAt ?? Date.now())
-          const threshold = (getAppUiState().staleAfterMinutes ?? 60) * 60_000
+          const threshold =
+            (getAppUiState().staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes) * 60_000
           mapped = idleDuration >= threshold ? 'idle' : 'awaiting_input'
         } else if (rawStatus === 'waiting') {
           mapped = 'attention'
@@ -522,6 +608,18 @@ async function reconcile(): Promise<void> {
   }
   for (const key of readySignaled) {
     if (!activeWorkspaceIds.has(key)) readySignaled.delete(key)
+  }
+
+  // Prune the dead-pid dedup set: once a pid's session file is gone AND the
+  // process is dead, the merge step above (line ~453) stops carrying it
+  // forward in liveSessionMap, so it will never be re-checked by the loop —
+  // without this, deadPidReported would grow unboundedly across the app's
+  // lifetime as workspaces cycle through claude sessions/pids. Keep only
+  // pids that are still tracked by a live (or last-good-fallback) session.
+  const livePids = new Set<number>()
+  for (const session of liveSessionMap.values()) livePids.add(session.pid)
+  for (const pid of deadPidReported) {
+    if (!livePids.has(pid)) deadPidReported.delete(pid)
   }
 
   // Emit perf span only when reconcile is slow (>20 ms threshold) to avoid flooding.

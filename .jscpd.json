@@ -1,0 +1,14 @@
+{
+  "minTokens": 70,
+  "format": ["typescript", "tsx", "javascript"],
+  "path": ["src", "packages/orpheus-cli"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/out/**",
+    "packages/ghostty-surface/**",
+    "src/renderer/src/components/ui/**"
+  ],
+  "reporters": ["console"],
+  "threshold": 2.4
+}

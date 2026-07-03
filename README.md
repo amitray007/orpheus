@@ -59,8 +59,13 @@ open "/Applications/Orpheus Dev.app"
 | Command                    | What it does                                                                |
 | -------------------------- | --------------------------------------------------------------------------- |
 | `bun run typecheck`        | Type-check main process, preload, shared types, and renderer                |
-| `bun run lint`             | ESLint over the workspace (flat config)                                     |
+| `bun run lint`             | ESLint over the workspace (flat config, `--max-warnings=146` ratchet in CI) |
 | `bun run format`           | Prettier — also enforced by `pre-commit` (lint-staged) and `pre-push` hooks |
+| `bun run check`            | Aggregate gate: typecheck + lint + `check:dup` + `check:arch`               |
+| `bun run check:dup`        | `jscpd` duplication scan (2.4% threshold)                                   |
+| `bun run check:arch`       | dependency-cruiser — no circular imports, layer rules enforced              |
+| `bun run check:dead`       | `knip` unused-export scan (advisory)                                        |
+| `bun run test:db`          | DB migration engine assertion harness (CI-gated on `src/main/db/**`)        |
 | `bun run build:native`     | Rebuild only the native ghostty NAPI addon                                  |
 | `bun run fetch:libghostty` | Re-fetch the pinned `GhosttyKit.xcframework` (also runs as `postinstall`)   |
 
@@ -86,12 +91,11 @@ Commits must follow [Conventional Commits](https://www.conventionalcommits.org/)
 Before opening a PR, these must pass locally:
 
 ```bash
-bun run typecheck
-bun run lint
+bun run check        # typecheck + lint + check:dup + check:arch
 bun run format
 ```
 
-**There are no automated tests.** CI runs typecheck and lint only. Manual verification against `Orpheus Dev.app` is the current quality gate — be honest in your PR description about what you tested.
+CI runs typecheck, lint (with a `--max-warnings=146` ratchet that only goes down), format checks, duplication/architecture checks (`jscpd`/dependency-cruiser), a DB-migration smoke test, plus CodeQL static analysis and dependency vulnerability scanning. There's a real test suite for the DB migration engine (`bun run test:db`), but no general UI/unit test runner yet — manual verification against `Orpheus Dev.app` still covers most flows, so be honest in your PR description about what you tested.
 
 ## Support
 

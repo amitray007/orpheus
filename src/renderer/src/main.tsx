@@ -3,6 +3,7 @@ import './assets/main.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from '@/App'
+import { AppErrorBoundary } from '@/components/AppErrorBoundary'
 import { DiagConsole } from '@/components/diag/DiagConsole'
 import { installRendererErrorCapture } from '@/lib/diag'
 import { initOverlayDevTest } from '@/lib/overlayDevTest'
@@ -15,5 +16,13 @@ if (!isDiagConsole) {
 }
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>{isDiagConsole ? <DiagConsole /> : <App />}</StrictMode>
+  <StrictMode>
+    {isDiagConsole ? (
+      <DiagConsole />
+    ) : (
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
+    )}
+  </StrictMode>
 )

@@ -1,6 +1,5 @@
 import type React from 'react'
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
-import { useFocusOnMount } from '@/lib/useFocusOnMount'
 import {
   Circle,
   Kanban,
@@ -16,6 +15,7 @@ import {
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { ProjectListSkeleton } from '../Skeleton'
 import { Identicon } from '../Identicon'
 import { ContextMenu } from '../ContextMenu'
@@ -28,6 +28,9 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useUiState } from '@/lib/uiStateStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
+import { useInlineRename } from '@/lib/useInlineRename'
 import {
   showHoverCard,
   hideOverlayCard,
@@ -44,6 +47,7 @@ import { NavItem, SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
 import { NewWorkspaceMenu } from './NewWorkspaceMenu'
 import { nextWorkspaceName } from './dashboard.helpers'
+import { RenameInput } from './settings/primitives'
 
 // ---------------------------------------------------------------------------
 // Workspace sub-row (nested inside expanded project row)
@@ -73,43 +77,6 @@ interface WorkspaceRowProps {
   onTogglePin: () => void
 }
 
-// Small component so useFocusOnMount fires when the rename input mounts
-function WorkspaceRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  onMouseDown,
-  className,
-  ariaLabel
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  onMouseDown: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-  ariaLabel: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label={ariaLabel}
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      onMouseDown={onMouseDown}
-      className={className}
-    />
-  )
-}
-
 const WorkspaceSubRow = memo(function WorkspaceSubRow({
   workspace,
   active,
@@ -134,7 +101,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(workspace.name)
+  const rename = useInlineRename(workspace.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
@@ -148,8 +115,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when renaming mode activates
-    if (renaming) setRenameValue(displayName)
+    if (renaming) rename.seed(displayName)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])
 
@@ -188,13 +154,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   ]
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== workspace.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
-    setRenameValue(workspace.name) // reset so a future rename starts clean
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== workspace.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
   // Freshness display — live activity time wins; jsonl mtime is the fallback for
@@ -220,14 +183,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  function clearHoverTimer(): void {
-    if (hoverTimerRef.current !== null) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
-  }
+  const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
 
   function hideHoverCard(): void {
     hideOverlayCard(hoverCardId(workspace.id))
@@ -235,9 +191,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   function handleRowMouseEnter(): void {
     if (!cardAllowed) return
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
+    hoverCard.handleMouseEnter(() => {
       if (!rowRef.current || !cardAllowed) return
       // For worktree workspaces, annotate cwd with the parent repo path so
       // the hover popover surfaces the worktree context alongside the cwd.
@@ -255,22 +209,18 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         cwd: popoverCwd
       }
       showHoverCard(workspace.id, rowRef.current, cardProps)
-    }, 120)
+    })
   }
 
   function handleRowMouseLeave(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
-      hideHoverCard()
-    }, 80)
+    hoverCard.handleMouseLeave(hideHoverCard)
   }
 
   // If the card is allowed but the row becomes active / renaming / loses detail,
   // close it immediately so it never sits over a live terminal.
   useEffect(() => {
     if (!cardAllowed) {
-      clearHoverTimer()
+      hoverCard.clearTimer()
       hideHoverCard()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -279,7 +229,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Clean up on unmount.
   useEffect(() => {
     return () => {
-      clearHoverTimer()
+      hoverCard.clearTimer()
       hideHoverCard()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -292,13 +242,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // leave.
   useEffect(() => {
     const unregister = onCardPointer(hoverCardId(workspace.id), {
-      onEnter: clearHoverTimer,
-      onLeave: () => {
-        hoverTimerRef.current = setTimeout(() => {
-          hoverTimerRef.current = null
-          hideHoverCard()
-        }, 80)
-      }
+      onEnter: hoverCard.clearTimer,
+      onLeave: () => hoverCard.armClose(hideHoverCard)
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -364,10 +309,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
             {/* Title area */}
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {renaming ? (
-                <WorkspaceRenameInput
+                <RenameInput
                   ariaLabel="Rename workspace"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
+                  value={rename.value}
+                  onChange={(e) => rename.setValue(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleRenameCommit()
                     if (e.key === 'Escape') onCancelRename()
@@ -601,38 +546,6 @@ interface ProjectRowProps {
   onWorkspaceDragEnd: () => void
 }
 
-// Small component so useFocusOnMount fires when the project rename input mounts
-function ProjectRenameInput({
-  value,
-  onChange,
-  onKeyDown,
-  onBlur,
-  onClick,
-  className
-}: {
-  value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
-  onBlur: () => void
-  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
-  className: string
-}): React.JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null)
-  useFocusOnMount(ref)
-  return (
-    <input
-      ref={ref}
-      aria-label="Rename project"
-      value={value}
-      onChange={onChange}
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      onClick={onClick}
-      className={className}
-    />
-  )
-}
-
 const ProjectRow = memo(function ProjectRow({
   project,
   active,
@@ -675,15 +588,15 @@ const ProjectRow = memo(function ProjectRow({
   onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(project.name)
+  const rename = useInlineRename(project.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [revealExtra, setRevealExtra] = useState(0)
   const sidebarBoundsRef = useSidebarBounds()
 
   // Sync rename input when project name changes externally (useEffect avoids render-time setState)
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
-    if (!renaming) setRenameValue(project.name)
+    if (!renaming) rename.seed(project.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.name, renaming])
 
   // Collapse the revealed-extra count when the project is collapsed, so
@@ -764,12 +677,10 @@ const ProjectRow = memo(function ProjectRow({
   ]
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== project.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== project.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
   return (
@@ -806,9 +717,10 @@ const ProjectRow = memo(function ProjectRow({
             )}
           </span>
           {renaming ? (
-            <ProjectRenameInput
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
+            <RenameInput
+              ariaLabel="Rename project"
+              value={rename.value}
+              onChange={(e) => rename.setValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleRenameCommit()
                 if (e.key === 'Escape') onCancelRename()
@@ -1080,7 +992,10 @@ export function Sidebar({
     Map<string, Map<string, number>>
   >(new Map())
   // Stale threshold from AppUiState (default matches original hardcoded 60 min)
-  const [staleAfterMinutes, setStaleAfterMinutes] = useState(60)
+  // — reads through the shared live store; falls back to the canonical
+  // default until the initial uiState.get() resolves.
+  const liveUiState = useUiState()
+  const staleAfterMinutes = liveUiState?.staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string> | null>(null)
@@ -1123,13 +1038,6 @@ export function Sidebar({
         .catch((err) => console.error('[sidebar] sessions load failed for', projectId, err))
     }
   }, [projects])
-
-  // Subscribe to staleAfterMinutes from AppUiState
-  useEffect(() => {
-    void window.api.uiState.get().then((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    const unsub = window.api.uiState.onChanged((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    return unsub
-  }, [])
 
   // Tick nowMs once per minute so freshness labels refresh without per-row timers
   useEffect(() => {

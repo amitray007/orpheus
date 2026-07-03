@@ -4,10 +4,49 @@ import { Overlay } from '@/components/ui/Overlay'
 import { X, Plus, CaretDown, Check } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS, CLAUDE_MODEL_ALIAS_START_INDEX } from '@shared/types'
 import { playSound } from '../../../lib/sound'
+import { useFocusOnMount } from '@/lib/useFocusOnMount'
 
 // ---------------------------------------------------------------------------
 // Shared form primitives for Settings sections
 // ---------------------------------------------------------------------------
+
+// Small, focus-on-mount text input shared by the workspace/project rename UIs
+// in Sidebar and WorkspacesTab.
+export function RenameInput({
+  value,
+  onChange,
+  onKeyDown,
+  onBlur,
+  onClick,
+  onMouseDown,
+  className,
+  ariaLabel
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  onClick: (e: React.MouseEvent<HTMLInputElement>) => void
+  onMouseDown?: (e: React.MouseEvent<HTMLInputElement>) => void
+  className: string
+  ariaLabel: string
+}): React.JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useFocusOnMount(ref)
+  return (
+    <input
+      ref={ref}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      className={className}
+    />
+  )
+}
 
 export interface SettingRowProps {
   label: string
@@ -504,6 +543,19 @@ export interface RuleListEditorProps {
   mapsTo?: string | string[]
 }
 
+// Each row needs a stable identity independent of its string value/position —
+// index keys would make React reuse/misplace input DOM nodes (and their focus/
+// selection state) across reorders. crypto.randomUUID() gives each row a
+// value-independent id, generated once per item and threaded alongside it.
+interface RuleRow {
+  id: string
+  value: string
+}
+
+function toRows(values: string[]): RuleRow[] {
+  return values.map((value) => ({ id: crypto.randomUUID(), value }))
+}
+
 export function RuleListEditor({
   value,
   onChange,
@@ -512,7 +564,11 @@ export function RuleListEditor({
   mapsTo
 }: RuleListEditorProps): React.JSX.Element {
   const chips = mapsTo ? (Array.isArray(mapsTo) ? mapsTo : [mapsTo]) : []
-  const [localItems, setLocalItems] = useState<string[]>(value)
+  const [localItems, setLocalItems] = useState<RuleRow[]>(() => toRows(value))
+  // Container ref — scopes addItem's focus query to THIS editor instance so
+  // multiple RuleListEditor mounts (e.g. ClaudePermissionsSection's 4 rule
+  // lists) never steal focus across each other.
+  const containerRef = useRef<HTMLDivElement>(null)
   // Keep in sync with external changes (e.g. initial load)
   // Only update if external value reference changed and we're not mid-edit
   const prevValueRef = useRef(value)
@@ -521,46 +577,47 @@ export function RuleListEditor({
     // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track previous value
     prevValueRef.current = value
     // Only sync if our local state doesn't match — this avoids fighting user edits
-    if (JSON.stringify(localItems) !== JSON.stringify(value)) {
-      setLocalItems(value)
+    if (JSON.stringify(localItems.map((r) => r.value)) !== JSON.stringify(value)) {
+      setLocalItems(toRows(value))
     }
   }
 
   function updateItem(idx: number, text: string): void {
     const next = [...localItems]
-    next[idx] = text
+    next[idx] = { ...next[idx], value: text }
     setLocalItems(next)
   }
 
   function commitItem(idx: number): void {
-    const trimmed = localItems[idx].trim()
-    const filtered = localItems.flatMap((item, i) => {
-      const v = i === idx ? trimmed : item
-      return v !== '' ? [v] : []
+    const trimmed = localItems[idx].value.trim()
+    const filteredRows = localItems.flatMap((row, i) => {
+      const v = i === idx ? trimmed : row.value
+      return v !== '' ? [{ ...row, value: v }] : []
     })
-    setLocalItems(filtered)
-    onChange(filtered)
+    setLocalItems(filteredRows)
+    onChange(filteredRows.map((r) => r.value))
   }
 
   function removeItem(idx: number): void {
     const next = localItems.filter((_, i) => i !== idx)
     setLocalItems(next)
-    onChange(next)
+    onChange(next.map((r) => r.value))
   }
 
   function addItem(): void {
-    const next = [...localItems, '']
+    const next = [...localItems, { id: crypto.randomUUID(), value: '' }]
     setLocalItems(next)
-    // Focus the new input on next tick
+    // Focus the new input on next tick — scoped to this editor's own
+    // container so it can never reach into a sibling RuleListEditor.
     setTimeout(() => {
-      const inputs = document.querySelectorAll<HTMLInputElement>('[data-rule-input]')
-      const last = inputs[inputs.length - 1]
+      const inputs = containerRef.current?.querySelectorAll<HTMLInputElement>('[data-rule-input]')
+      const last = inputs?.[inputs.length - 1]
       if (last) last.focus()
     }, 0)
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div ref={containerRef} className="flex flex-col gap-1.5">
       {label && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-medium text-text-primary">{label}</span>
@@ -576,13 +633,13 @@ export function RuleListEditor({
       )}
       {localItems.length > 0 && (
         <div className="flex flex-col gap-1">
-          {localItems.map((item, idx) => (
-            <div key={idx} className="flex items-center gap-1.5">
+          {localItems.map((row, idx) => (
+            <div key={row.id} className="flex items-center gap-1.5">
               <input
                 data-rule-input
                 type="text"
                 aria-label="Rule"
-                value={item}
+                value={row.value}
                 onChange={(e) => updateItem(idx, e.target.value)}
                 onBlur={() => commitItem(idx)}
                 onKeyDown={(e) => {

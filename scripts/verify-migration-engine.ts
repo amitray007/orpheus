@@ -499,6 +499,40 @@ const { schema, WORKSPACE_STATUS } = await import('../src/main/db/schema.ts')
     assert.equal(settings.low_power_mode, 1)
   }
 
+  // --- Fixture (d): app_ui_state singleton default -------------------------
+  // app_ui_state has no data-step seed (unlike e.g. keep-awake-seed) — the
+  // singleton row is inserted by application code, not the migration engine.
+  // This fixture builds a fresh schema-synced DB, inserts the singleton row
+  // with no explicit last_view_kind (relying purely on the column's DEFAULT
+  // clause), and asserts it lands on 'sessions' (not the legacy 'dashboard'
+  // default) — plus that the DB is structurally converged + idempotent.
+  {
+    const adb = new Database(':memory:')
+    sync(adb, schema, { dbPath: ':memory:', legacyVersion: 0 })
+
+    assert.deepEqual(normalizedShape(adb), refShape, 'app_ui_state fixture did not converge')
+
+    // updated_at has no DEFAULT clause (INTEGER_NOT_NULL) so it must be
+    // supplied explicitly; last_view_kind is deliberately omitted to exercise
+    // its DEFAULT clause.
+    adb.exec('INSERT INTO app_ui_state (id, updated_at) VALUES (1, 0)')
+    const row = adb.prepare('SELECT last_view_kind FROM app_ui_state WHERE id = 1').get() as {
+      last_view_kind: string
+    }
+    assert.equal(
+      row.last_view_kind,
+      'sessions',
+      `expected last_view_kind DEFAULT to be 'sessions', got '${row.last_view_kind}'`
+    )
+
+    assert.deepEqual(
+      planSync(adb, schema),
+      [],
+      'app_ui_state fixture not idempotent after converge'
+    )
+  }
+
+  console.log('✓ app_ui_state converges (last_view_kind defaults to sessions, idempotent)')
   console.log('✓ convergence')
 }
 

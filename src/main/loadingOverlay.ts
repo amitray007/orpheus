@@ -66,6 +66,10 @@ export function show(workspaceId: string, copy: LoadingCopy): void {
   if (existing && existing.state !== 'idle') {
     // Re-show during an active overlay: just update copy, don't reset start time.
     existing.copy = copy
+    if (existing.pendingHide) {
+      clearTimeout(existing.pendingHide)
+      existing.pendingHide = null
+    }
     setOverlay(workspaceId, mapState(existing.state), copy)
     return
   }

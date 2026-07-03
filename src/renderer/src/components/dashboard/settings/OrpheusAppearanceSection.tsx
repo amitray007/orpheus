@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, Theme, AccentColor, UiFontScale, SoundPack } from '@shared/types'
+import type { AppUiStatePatch, Theme, AccentColor, UiFontScale, SoundPack } from '@shared/types'
 import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
-import { playSound, setSoundPack } from '../../../lib/sound'
+import { playSound } from '../../../lib/sound'
+import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // OrpheusAppearanceSection — theme, accent color, font size, sound
@@ -48,66 +48,16 @@ const SOUND_PACK_OPTIONS: { value: SoundPack; label: string }[] = [
 ]
 
 export function OrpheusAppearanceSection(): React.JSX.Element {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const uiState = useUiState()
 
-  useEffect(() => {
-    let cancelled = false
-    window.api.uiState
-      .get()
-      .then((s) => {
-        if (!cancelled) setUiState(s)
-      })
-      .catch((err) => {
-        console.error('[settings] failed to load uiState', err)
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  function patch(p: Partial<AppUiState>): void {
-    if (!uiState) return
-    const next = { ...uiState, ...p }
-    setUiState(next)
-
-    // Apply to document root immediately so theme/accent/scale switches feel
-    // instant. Dashboard.tsx also applies on its own uiState load (for the
-    // mount-time / cross-launch case) — both writers stay in sync.
-    const root = document.documentElement
-    // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
-    if ('theme' in p && next.theme) root.dataset.theme = next.theme
-    if ('accentColor' in p) {
-      // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
-      if (next.accentColor) root.dataset.accent = next.accentColor
-      // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
-      else delete root.dataset.accent
-    }
-    // eslint-disable-next-line react-hooks/immutability -- mutating DOM dataset, not React state
-    if ('uiFontScale' in p && next.uiFontScale) root.dataset.fontScale = next.uiFontScale
-
-    window.api.uiState.update(p).catch((err) => {
-      console.error('[settings] uiState update failed; refetching to reconcile', err)
-      window.api.uiState
-        .get()
-        .then((s) => setUiState(s))
-        .catch(console.error)
-    })
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col gap-6 max-w-2xl">
-        <div>
-          <SectionTitle>Appearance</SectionTitle>
-          <p className="text-xs text-text-muted mt-1">
-            Theme, accent color, and font size scale for the Orpheus UI.
-          </p>
-        </div>
-        <p className="text-sm text-red-400">Failed to load settings: {error}</p>
-      </div>
-    )
+  function patch(p: AppUiStatePatch): void {
+    // Optimistic local set (for instant control feedback) happens inside
+    // updateUiState() itself. The document-root
+    // [data-theme]/[data-accent]/[data-font-scale] dataset write lives in
+    // ONE place — Dashboard.tsx's effect, driven by the same live
+    // uiStateStore this component patches — so it applies here too via the
+    // store's onChanged push, without a second imperative DOM writer.
+    updateUiState(p)
   }
 
   if (!uiState) {
@@ -278,8 +228,10 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
               options={SOUND_PACK_OPTIONS}
               value={(uiState.soundPack ?? 'core') as SoundPack}
               onChange={(v) => {
+                // No manual setSoundPack() bridge here — Dashboard.tsx's live
+                // uiStateStore subscription bridges uiState.soundPack into the
+                // sound module for the whole app; patch() below is enough.
                 patch({ soundPack: v })
-                setSoundPack(v)
                 playSound('toggle-on')
               }}
               ariaLabel="Sound pack"

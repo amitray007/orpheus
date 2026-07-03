@@ -1,17 +1,13 @@
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import type {
-  AppUiState,
-  FooterActionDescriptor,
-  FooterActionScope,
-  ProjectRecord
-} from '@shared/types'
+import type { FooterActionDescriptor, FooterActionScope, ProjectRecord } from '@shared/types'
 import { Eyebrow, SettingRow, Toggle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ConfirmModal } from '../../ConfirmModal'
 import { IconByName } from '../footer/iconMap'
 import { playSound } from '../../../lib/sound'
 import { FooterActionEditor } from './footer/FooterActionEditor'
+import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // OrpheusFooterSection — Workspace Footer settings (phase 4)
@@ -397,7 +393,7 @@ const EditorPane = memo(function EditorPane({
 // ---------------------------------------------------------------------------
 
 export function OrpheusFooterSection(): React.JSX.Element {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -429,26 +425,28 @@ export function OrpheusFooterSection(): React.JSX.Element {
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [resetting, setResetting] = useState(false)
 
-  // Bootstrap: load uiState + the full projects list so the user can pick
-  // which project to author against. Default-select the last-opened project
-  // if it still exists; otherwise fall back to the first project (if any).
+  // Bootstrap: load the full projects list once uiState is available (from
+  // the live store) so the user can pick which project to author against.
+  // Default-select the last-opened project if it still exists; otherwise
+  // fall back to the first project (if any).
+  const defaultProjectPickedRef = useRef(false)
   useEffect(() => {
+    if (!uiState) return
     let cancelled = false
 
     async function boot(): Promise<void> {
       try {
-        const [s, projectsList] = await Promise.all([
-          window.api.uiState.get(),
-          window.api.projects.list()
-        ])
+        const projectsList = await window.api.projects.list()
         if (cancelled) return
-        setUiState(s)
         setProjects(projectsList)
 
-        const lastPid = s.lastProjectId
-        const defaultProj =
-          (lastPid && projectsList.find((p) => p.id === lastPid)) ?? projectsList[0] ?? null
-        if (defaultProj) setProjectId(defaultProj.id)
+        if (!defaultProjectPickedRef.current) {
+          defaultProjectPickedRef.current = true
+          const lastPid = uiState!.lastProjectId
+          const defaultProj =
+            (lastPid && projectsList.find((p) => p.id === lastPid)) ?? projectsList[0] ?? null
+          if (defaultProj) setProjectId(defaultProj.id)
+        }
 
         setLoading(false)
       } catch (err) {
@@ -463,7 +461,8 @@ export function OrpheusFooterSection(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run boot when uiState first becomes available (guarded by defaultProjectPickedRef); re-running on every live uiState push would clobber the projects fetch in flight
+  }, [uiState !== null])
 
   // Load actions whenever scope changes
   useEffect(() => {
@@ -505,17 +504,9 @@ export function OrpheusFooterSection(): React.JSX.Element {
       .catch(() => setActionsLoading(false))
   }, [scope, projectId])
 
-  const toggleFooter = useCallback(
-    (v: boolean): void => {
-      if (!uiState) return
-      setUiState({ ...uiState, showWorkspaceFooter: v })
-      window.api.uiState.update({ showWorkspaceFooter: v }).catch((err) => {
-        console.error('[settings] showWorkspaceFooter update failed', err)
-        window.api.uiState.get().then(setUiState).catch(console.error)
-      })
-    },
-    [uiState]
-  )
+  const toggleFooter = useCallback((v: boolean): void => {
+    updateUiState({ showWorkspaceFooter: v })
+  }, [])
 
   const handleResetDefaults = useCallback(async (): Promise<void> => {
     setResetting(true)

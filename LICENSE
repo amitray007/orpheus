@@ -18,6 +18,18 @@ copyright holder (hey@amitray.dev):
   5. Using the name "Orpheus", the project's branding, or any associated assets
      in any product or service.
 
+Permitted Use — Official Binaries
+
+Notwithstanding clause 1 above, any person is granted permission to install and
+run official binary releases of this software, for personal use, when obtained
+solely through the project's official distribution channels (the official
+Homebrew tap or GitHub Releases published by the copyright holder). This grant
+covers installing and running the official binary only — it does not extend to
+building the software from source for anything beyond personal evaluation, nor
+does it modify or waive clauses 2 through 5 above (copying, modifying,
+distributing, or rebranding the source or the binary remain prohibited without
+prior written permission).
+
 To request permission for any use beyond reading the source code, contact:
   Amit Ray — hey@amitray.dev
 

@@ -222,6 +222,13 @@ export async function readWorktreeBaseRef(): Promise<'fresh' | 'head'> {
  *
  * Runs `git -C <path> status --porcelain` and returns true if output is
  * non-empty.
+ *
+ * Fail-safe on error: only a genuinely-gone directory or a path that isn't a
+ * git repo is treated as clean (removal may proceed — there's nothing there
+ * to lose). Any other failure (timeout, lock contention, permission error,
+ * missing git binary, corrupt repo, etc.) is treated as DIRTY so removal is
+ * blocked without --force, rather than silently deleting a worktree whose
+ * real state we couldn't read.
  */
 export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
   try {
@@ -229,11 +236,22 @@ export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
       timeout: 10000
     })
     return stdout.trim().length > 0
-  } catch {
-    // Missing dir, not a git repo, or other error — treat as clean so removal
-    // can proceed (the directory is gone or already invalid).
-    return false
+  } catch (err) {
+    return !isGenuinelyGoneOrNotARepo(err)
   }
+}
+
+/**
+ * Narrows a failed `git status` invocation to the "safe to treat as clean"
+ * cases: the git binary itself is missing (Node-level ENOENT), or git ran
+ * and reported the directory is gone / not a git repo. Everything else
+ * (timeouts, locks, permissions, corrupt repos, ...) is NOT genuinely gone.
+ */
+function isGenuinelyGoneOrNotARepo(err: unknown): boolean {
+  const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : undefined
+  if (code === 'ENOENT') return true
+  const stderr = getStderr(err)
+  return /not a git repository|no such file or directory|cannot change to/i.test(stderr)
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +741,7 @@ function parseWorktreeAddError(err: unknown, branch: string, worktreePath: strin
  */
 function getStderr(err: unknown): string {
   if (err && typeof err === 'object' && 'stderr' in err) {
-    return String((err as { stderr: unknown }).stderr)
+    return String(err.stderr)
   }
   return String(err)
 }

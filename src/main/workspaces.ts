@@ -3,6 +3,7 @@ import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -69,22 +70,6 @@ function rowToWorkspaceRecord(row: WorkspaceRow): WorkspaceRecord {
     parentWorkspaceId: row.parent_workspace_id ?? null,
     worktreeParentCwd: row.worktree_parent_cwd ?? null,
     worktreeBranch: row.worktree_branch ?? null
-  }
-}
-
-/**
- * Get the forked_from_session_id for a workspace (Plan A fork support).
- * Returns null when the column doesn't exist yet (pre-v43 DBs) or has no value.
- */
-export function getWorkspaceForkedFromSessionId(id: string): string | null {
-  const db = getDb()
-  try {
-    const row = db.prepare('SELECT forked_from_session_id FROM workspaces WHERE id = ?').get(id) as
-      | { forked_from_session_id: string | null }
-      | undefined
-    return row?.forked_from_session_id ?? null
-  } catch {
-    return null
   }
 }
 
@@ -168,7 +153,7 @@ function sanitizeWorkspaceName(name: string): string {
 function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:created', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesCreated, { workspace })
     }
   }
 }
@@ -176,7 +161,7 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:changed', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesChanged, { workspace })
     }
   }
 }
@@ -184,7 +169,7 @@ function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceArchived(workspaceId: string, projectId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:archived', { workspaceId, projectId })
+      win.webContents.send(PUSH_CHANNELS.workspacesArchived, { workspaceId, projectId })
     }
   }
 }
@@ -466,6 +451,18 @@ export function resetTransientStatusesOnStartup(): number {
   return res.changes
 }
 
+/**
+ * Decide the archived_at column value when a workspace/session status changes.
+ * Returns null when leaving/not-in the archived state (clears the timestamp).
+ * Returns the provided `now` when entering archived. Callers decide whether to
+ * COALESCE with any existing archived_at (workspaces preserve the original
+ * archive time; sessions overwrite) — this helper only centralizes the
+ * status→archived_at branch that both sites previously hand-rolled.
+ */
+export function archivedAtForStatus(status: string, now: number): number | null {
+  return status === 'archived' ? now : null
+}
+
 export function setWorkspaceStatus(id: string, status: WorkspaceStatus): WorkspaceRecord {
   if (!VALID_STATUSES.includes(status)) {
     throw new Error(`Invalid status: ${status}`)
@@ -475,11 +472,14 @@ export function setWorkspaceStatus(id: string, status: WorkspaceStatus): Workspa
   // transitioning AWAY from 'archived' clears it.
   let row: WorkspaceRow | undefined
   if (status === 'archived') {
+    // COALESCE preserves the original archived_at on idempotent re-archive;
+    // archivedAtForStatus('archived', now) is just `now` here, used only as
+    // the COALESCE fallback for a first-time archive.
     row = db
       .prepare(
         'UPDATE workspaces SET status = ?, archived_at = COALESCE(archived_at, ?) WHERE id = ? RETURNING *'
       )
-      .get(status, Date.now(), id) as WorkspaceRow | undefined
+      .get(status, archivedAtForStatus(status, Date.now()), id) as WorkspaceRow | undefined
   } else {
     row = db
       .prepare('UPDATE workspaces SET status = ?, archived_at = NULL WHERE id = ? RETURNING *')

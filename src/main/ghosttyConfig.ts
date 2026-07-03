@@ -48,7 +48,7 @@ export function updateGhosttyUserConfig(patch: Partial<GhosttyUserConfig>): Ghos
  * Serialize a GhosttyUserConfig into ghostty config-file text.
  * Format: `key = value` lines (unquoted). Keybinds: `keybind = trigger=action`.
  */
-export function serializeGhosttyConfig(cfg: GhosttyUserConfig): string {
+function serializeGhosttyConfig(cfg: GhosttyUserConfig): string {
   const lines: string[] = [GHOSTTY_CONFIG_HEADER]
   for (const [key, value] of Object.entries(cfg.settings)) {
     if (typeof value === 'boolean') {

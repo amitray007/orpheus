@@ -8,6 +8,12 @@ import type {
   UiFontScale,
   SoundPack
 } from '../shared/types'
+import {
+  UI_STATE_DEFAULTS,
+  VALID_STATUS_POLL_INTERVALS_SEC,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX
+} from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -89,8 +95,8 @@ type AppUiStateRow = {
 
 function rowToRecord(row: AppUiStateRow): AppUiState {
   // Clamp sidebar_width to valid range at read time — guards against manual DB edits
-  const rawWidth = row.sidebar_width ?? 256
-  const clampedWidth = Math.min(480, Math.max(200, rawWidth))
+  const rawWidth = row.sidebar_width ?? UI_STATE_DEFAULTS.sidebarWidth
+  const clampedWidth = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, rawWidth))
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
     // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
@@ -117,7 +123,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     launchAtLogin: (row.launch_at_login ?? 0) === 1,
     globalHotkey: row.global_hotkey ?? '',
     // Archive cap (v25)
-    archivedWorkspaceLimit: row.archived_workspace_limit ?? 20,
+    archivedWorkspaceLimit:
+      row.archived_workspace_limit ?? UI_STATE_DEFAULTS.archivedWorkspaceLimit,
     // Hooks integration (v60) — default false (off)
     hooksIntegrationEnabled: (row.hooks_integration_enabled ?? 0) === 1,
     // Notification preferences (v29)
@@ -128,7 +135,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     notifySuppressWhenFocused: (row.notify_suppress_when_focused ?? 0) === 1,
     notifyMaxAttentionRepeats: row.notify_max_attention_repeats ?? 5,
     inProgressWatchdogSec: row.in_progress_watchdog_sec ?? 120,
-    staleAfterMinutes: row.stale_after_minutes ?? 60,
+    staleAfterMinutes: row.stale_after_minutes ?? UI_STATE_DEFAULTS.staleAfterMinutes,
     autoCloseAfterMinutes: row.auto_close_after_minutes ?? 120,
     // App picker preferences (v32) — undefined when column absent (old DB pre-migration)
     preferredEditorApp: row.preferred_editor_app ?? null,
@@ -148,7 +155,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Updates (v40) — default true
     autoCheckUpdates: (row.auto_check_updates ?? 1) === 1,
     // Status polling preferences (v42)
-    statusPollIntervalSec: row.status_poll_interval_sec ?? 1800,
+    statusPollIntervalSec: row.status_poll_interval_sec ?? UI_STATE_DEFAULTS.statusPollIntervalSec,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
@@ -184,7 +191,7 @@ const VALID_SOUND_PACKS: SoundPack[] = [
 // Allowed values for the status poller interval. Must stay in sync with the
 // Select options surfaced in OrpheusStatusSection.tsx (5/10/15/30 min,
 // 1/2/3 hr) so the UI never offers a value the validator rejects.
-const VALID_STATUS_POLL_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800] as const
+const VALID_STATUS_POLL_INTERVALS = VALID_STATUS_POLL_INTERVALS_SEC
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -203,36 +210,31 @@ function validatePatch(patch: AppUiStatePatch): void {
     }
   }
   if ('theme' in patch && patch.theme !== undefined) {
-    if (!VALID_THEMES.includes(patch.theme as Theme)) {
+    if (!VALID_THEMES.includes(patch.theme)) {
       throw new Error(`uiState: theme must be one of ${VALID_THEMES.join(', ')}`)
     }
   }
   if ('accentColor' in patch && patch.accentColor !== undefined) {
-    if (
-      patch.accentColor !== null &&
-      !VALID_ACCENT_COLORS.includes(patch.accentColor as AccentColor)
-    ) {
+    if (patch.accentColor !== null && !VALID_ACCENT_COLORS.includes(patch.accentColor)) {
       throw new Error(
         `uiState: accentColor must be one of ${VALID_ACCENT_COLORS.join(', ')} or null`
       )
     }
   }
   if ('uiFontScale' in patch && patch.uiFontScale !== undefined) {
-    if (!VALID_FONT_SCALES.includes(patch.uiFontScale as UiFontScale)) {
+    if (!VALID_FONT_SCALES.includes(patch.uiFontScale)) {
       throw new Error(`uiState: uiFontScale must be one of ${VALID_FONT_SCALES.join(', ')}`)
     }
   }
   if ('soundPack' in patch && patch.soundPack !== undefined) {
-    if (!VALID_SOUND_PACKS.includes(patch.soundPack as SoundPack)) {
+    if (!VALID_SOUND_PACKS.includes(patch.soundPack)) {
       throw new Error(`uiState: soundPack must be one of ${VALID_SOUND_PACKS.join(', ')}`)
     }
   }
   if ('statusPollIntervalSec' in patch && patch.statusPollIntervalSec !== undefined) {
     if (
       typeof patch.statusPollIntervalSec !== 'number' ||
-      !VALID_STATUS_POLL_INTERVALS.includes(
-        patch.statusPollIntervalSec as (typeof VALID_STATUS_POLL_INTERVALS)[number]
-      )
+      !VALID_STATUS_POLL_INTERVALS.includes(patch.statusPollIntervalSec)
     ) {
       throw new Error(
         `uiState: statusPollIntervalSec must be one of ${VALID_STATUS_POLL_INTERVALS.join(', ')}`
@@ -256,11 +258,6 @@ function validatePatch(patch: AppUiStatePatch): void {
 // ---------------------------------------------------------------------------
 
 let cachedState: AppUiState | null = null
-
-/** Invalidate the in-memory cache (call after external mutations, e.g. in tests). */
-export function invalidateAppUiStateCache(): void {
-  cachedState = null
-}
 
 export function getAppUiState(): AppUiState {
   if (cachedState !== null) return cachedState

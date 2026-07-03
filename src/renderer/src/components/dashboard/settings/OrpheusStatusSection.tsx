@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import type { AppUiState, ClaudeStatusSnapshot } from '@shared/types'
+import { UI_STATE_DEFAULTS, VALID_STATUS_POLL_INTERVALS_SEC } from '@shared/uiStateDefaults'
 import { SettingRow, Toggle, Select, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { ArrowSquareOut } from '@phosphor-icons/react'
@@ -113,18 +114,25 @@ function handleOpenPage(): void {
 // OrpheusStatusSection
 // ---------------------------------------------------------------------------
 
-const POLL_INTERVAL_OPTIONS = [
-  { value: '300', label: '5 minutes' },
-  { value: '600', label: '10 minutes' },
-  { value: '900', label: '15 minutes' },
-  { value: '1800', label: '30 minutes' },
-  { value: '3600', label: '1 hour' },
-  { value: '7200', label: '2 hours' },
-  { value: '10800', label: '3 hours' }
-] as const
+// Human-readable labels have no numeric source and must stay hand-authored;
+// the set of valid values itself derives from the shared constant so the two
+// can never drift out of sync.
+const POLL_INTERVAL_LABELS: Record<number, string> = {
+  300: '5 minutes',
+  600: '10 minutes',
+  900: '15 minutes',
+  1800: '30 minutes',
+  3600: '1 hour',
+  7200: '2 hours',
+  10800: '3 hours'
+}
+const POLL_INTERVAL_OPTIONS = VALID_STATUS_POLL_INTERVALS_SEC.map((sec) => ({
+  value: String(sec),
+  label: POLL_INTERVAL_LABELS[sec]
+}))
 
-type PollIntervalValue = (typeof POLL_INTERVAL_OPTIONS)[number]['value']
-const DEFAULT_POLL_INTERVAL: PollIntervalValue = '1800'
+type PollIntervalValue = string
+const DEFAULT_POLL_INTERVAL: PollIntervalValue = String(UI_STATE_DEFAULTS.statusPollIntervalSec)
 
 export function OrpheusStatusSection(): React.JSX.Element {
   const [uiState, setUiState] = useState<AppUiState | null>(null)
@@ -355,7 +363,7 @@ export function OrpheusStatusSection(): React.JSX.Element {
             description="How often Orpheus polls status.claude.com for live service health."
           >
             <Select
-              options={POLL_INTERVAL_OPTIONS as unknown as { value: string; label: string }[]}
+              options={POLL_INTERVAL_OPTIONS}
               value={validPollInterval}
               onChange={(v) => patch({ statusPollIntervalSec: parseInt(v, 10) })}
               ariaLabel="Status check interval"
