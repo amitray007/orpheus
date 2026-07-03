@@ -102,7 +102,6 @@ import {
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
-import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
 import { onActivityBatch } from './activitySink'
 import {
   startNotifyServer,
@@ -202,13 +201,14 @@ import {
 } from './overlayLayer'
 import { PUSH_CHANNELS } from '../shared/ipc'
 import { handle } from './ipc/handle'
-import { assertManagedConfigPath, isSafeExternalUrl } from './ipc/validate'
+import { isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
 import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
+import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1448,24 +1448,7 @@ registerMcpIpc()
 
 registerClaudeAgentsIpc()
 
-// ---------------------------------------------------------------------------
-// Claude Hooks IPC
-// ---------------------------------------------------------------------------
-
-handle('claudeHooks:list', () => listClaudeHooks())
-handle('claudeHooks:openFile', async (_e, { filePath }) => {
-  assertManagedConfigPath(filePath, 'filePath')
-  await shell.openPath(filePath)
-})
-handle('claudeHooks:add', (_e, draft) => addHook(draft))
-handle('claudeHooks:update', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
-})
-handle('claudeHooks:delete', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
-})
+registerClaudeHooksIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC
