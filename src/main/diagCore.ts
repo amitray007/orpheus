@@ -45,7 +45,7 @@ export function setDiagCategoryFlags(flags: {
   categoryFlags = flags
 }
 
-export function isCategoryEnabled(c: DiagCategory): boolean {
+function isCategoryEnabled(c: DiagCategory): boolean {
   return categoryFlags[c] === true
 }
 
@@ -57,34 +57,14 @@ function pushRing(evt: DiagEvent): void {
   ring.push(evt)
 }
 
-export const diagSubscribers = new Set<(e: DiagEvent) => void>()
+const diagSubscribers = new Set<(e: DiagEvent) => void>()
 
 export function subscribeDiag(fn: (e: DiagEvent) => void): () => void {
   diagSubscribers.add(fn)
   return () => diagSubscribers.delete(fn)
 }
 
-export function subscribeTrace(fn: (rec: TraceRecord) => void): () => void {
-  return subscribeDiag((e) => {
-    if (e.category === 'trace') {
-      fn({
-        ts: e.ts,
-        kind: (e.kind as TraceRecord['kind']) ?? 'event',
-        name: e.name ?? e.event,
-        traceId: e.traceId ?? '',
-        spanId: e.spanId ?? '',
-        parentSpanId: e.parentSpanId ?? null,
-        durationMs: e.durationMs ?? null,
-        level: e.level,
-        workspaceId: e.workspaceId ?? null,
-        sessionId: e.sessionId ?? null,
-        data: e.data ?? null
-      })
-    }
-  })
-}
-
-export function fanOut(evt: DiagEvent): void {
+function fanOut(evt: DiagEvent): void {
   if (isCategoryEnabled(evt.category)) {
     pushRing(evt)
   }
@@ -139,7 +119,7 @@ export function ingestDiagEvent(evt: DiagEvent): void {
 }
 
 // ── Trace context (main owns it via AsyncLocalStorage) ──────────────────────
-export const traceStore = new AsyncLocalStorage<TraceContext>()
+const traceStore = new AsyncLocalStorage<TraceContext>()
 
 function emitTrace(rec: TraceRecord): void {
   try {
@@ -188,8 +168,7 @@ export const diag = {
     attrs: Record<string, unknown> | undefined,
     fn: (s: Span) => Promise<T> | T
   ): Promise<T> {
-    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0)
-      return fn(NOOP_SPAN) as Promise<T>
+    if (!isCategoryEnabled('trace') && diagSubscribers.size === 0) return fn(NOOP_SPAN)
     const span = startSpan(name, attrs)
     try {
       return await traceStore.run(span.ctx, () => fn(span))

@@ -16,7 +16,6 @@
     "scripts/release.mjs",
     "scripts/verify-contrast.mjs",
     "scripts/diag.ts",
-    "scripts/smoke-db-migrations.ts",
     "electron.vite.config.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}", "scripts/**/*.{mjs,ts}"],

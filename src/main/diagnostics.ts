@@ -5,18 +5,7 @@ import { ringLength, drainRing, getDiagDropped } from './diagCore'
 
 // Re-export the full in-memory event bus API so all callers that currently
 // import from './diagnostics' continue to work without any path changes.
-export {
-  setDiagCategoryFlags,
-  isCategoryEnabled,
-  logDiagMain,
-  ingestDiagEvent,
-  subscribeDiag,
-  subscribeTrace,
-  fanOut,
-  diagSubscribers,
-  traceStore,
-  diag
-} from './diagCore'
+export { setDiagCategoryFlags, logDiagMain, ingestDiagEvent, subscribeDiag, diag } from './diagCore'
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const ROW_CAP = 50_000
