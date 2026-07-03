@@ -176,8 +176,6 @@ import {
   getCachedShellPath
 } from './shellHelpers'
 import type {
-  SessionStatus,
-  SessionsPagedRequest,
   ClaudeGlobalSettingsPatch,
   AppUiStatePatch,
   ClaudeProjectSettingsOverrides,
@@ -1548,43 +1546,31 @@ handle('pins:listAll', () => listAllPinned())
 // Sessions IPC
 // ---------------------------------------------------------------------------
 
-handle(
-  'sessions:listForProject',
-  (_e, { projectId, includeArchived }: { projectId: string; includeArchived?: boolean }) =>
-    listSessionsForProject(projectId, { includeArchived })
+handle('sessions:listForProject', (_e, { projectId, includeArchived }) =>
+  listSessionsForProject(projectId, { includeArchived })
 )
 
-handle('sessions:listAll', (_e, opts?: { status?: SessionStatus }) => listAllSessions(opts))
+handle('sessions:listAll', (_e, opts) => listAllSessions(opts))
 
-handle('sessions:setStatus', (_e, { id, status }: { id: string; status: SessionStatus }) =>
-  setSessionStatus(id, status)
+handle('sessions:setStatus', (_e, { id, status }) => setSessionStatus(id, status))
+
+handle('sessions:listForProjectPaged', (_e, req) => listSessionsForProjectPaged(req))
+
+handle('sessions:resumeInNewWorkspace', (_e, { sessionId, projectId }) =>
+  createWorkspaceResumingSession(projectId, sessionId)
 )
 
-handle('sessions:listForProjectPaged', (_e, req: SessionsPagedRequest) =>
-  listSessionsForProjectPaged(req)
+handle('sessions:resumeInWorktreeWorkspace', (_e, { sessionId, projectId }) =>
+  createWorktreeResumingSession(projectId, sessionId)
 )
 
-handle(
-  'sessions:resumeInNewWorkspace',
-  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
-    createWorkspaceResumingSession(projectId, sessionId)
-)
-
-handle(
-  'sessions:resumeInWorktreeWorkspace',
-  (_e, { sessionId, projectId }: { sessionId: string; projectId: string }) =>
-    createWorktreeResumingSession(projectId, sessionId)
-)
-
-handle('sessions:refreshMetadata', async (_e, { projectId }: { projectId: string }) => {
+handle('sessions:refreshMetadata', async (_e, { projectId }) => {
   await refreshSessionMetadata(projectId)
 })
 
-handle('sessions:delete', (_e, { id }: { id: string }) => deleteSession(id))
+handle('sessions:delete', (_e, { id }) => deleteSession(id))
 
-handle('sessions:getContextBudget', (_e, { workspaceId }: { workspaceId: string }) =>
-  getContextBudget(workspaceId)
-)
+handle('sessions:getContextBudget', (_e, { workspaceId }) => getContextBudget(workspaceId))
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC

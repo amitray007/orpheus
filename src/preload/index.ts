@@ -190,23 +190,22 @@ const api = {
     listForProject: (
       projectId: string,
       options?: { includeArchived?: boolean }
-    ): Promise<SessionRecord[]> =>
-      ipcRenderer.invoke('sessions:listForProject', { projectId, ...options }),
+    ): Promise<SessionRecord[]> => invoke('sessions:listForProject', { projectId, ...options }),
     listAll: (opts?: { status?: SessionStatus }): Promise<SessionRecord[]> =>
-      ipcRenderer.invoke('sessions:listAll', opts),
+      invoke('sessions:listAll', opts),
     setStatus: (id: string, status: SessionStatus): Promise<void> =>
-      ipcRenderer.invoke('sessions:setStatus', { id, status }),
+      invoke('sessions:setStatus', { id, status }),
     listForProjectPaged: (req: SessionsPagedRequest): Promise<SessionsPagedResult> =>
-      ipcRenderer.invoke('sessions:listForProjectPaged', req),
+      invoke('sessions:listForProjectPaged', req),
     resumeInNewWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
+      invoke('sessions:resumeInNewWorkspace', { sessionId, projectId }),
     resumeInWorktreeWorkspace: (sessionId: string, projectId: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('sessions:resumeInWorktreeWorkspace', { sessionId, projectId }),
+      invoke('sessions:resumeInWorktreeWorkspace', { sessionId, projectId }),
     refreshMetadata: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('sessions:refreshMetadata', { projectId }),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('sessions:delete', { id }),
+      invoke('sessions:refreshMetadata', { projectId }),
+    delete: (id: string): Promise<void> => invoke('sessions:delete', { id }),
     getContextBudget: (workspaceId: string): Promise<{ contextBudget: number; modelId: string }> =>
-      ipcRenderer.invoke('sessions:getContextBudget', { workspaceId })
+      invoke('sessions:getContextBudget', { workspaceId })
   },
   workspaces: {
     listForProject: (

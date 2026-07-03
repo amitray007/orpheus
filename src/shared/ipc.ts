@@ -42,7 +42,11 @@ import type {
   OverlayEvent,
   CreateWorktreeParams,
   ClaudeWorkspaceSettings,
-  ClaudeEffort
+  ClaudeEffort,
+  SessionRecord,
+  SessionStatus,
+  SessionsPagedRequest,
+  SessionsPagedResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -141,6 +145,27 @@ export interface InvokeChannelMap {
     res: ClaudeWorkspaceSettings
   }
   'workspace:getEffectiveEffort': { req: [{ workspaceId: string }]; res: { effort: string } }
+  'sessions:listForProject': {
+    req: [{ projectId: string; includeArchived?: boolean }]
+    res: SessionRecord[]
+  }
+  'sessions:listAll': { req: [{ status?: SessionStatus } | undefined]; res: SessionRecord[] }
+  'sessions:setStatus': { req: [{ id: string; status: SessionStatus }]; res: void }
+  'sessions:listForProjectPaged': { req: [SessionsPagedRequest]; res: SessionsPagedResult }
+  'sessions:resumeInNewWorkspace': {
+    req: [{ sessionId: string; projectId: string }]
+    res: WorkspaceRecord
+  }
+  'sessions:resumeInWorktreeWorkspace': {
+    req: [{ sessionId: string; projectId: string }]
+    res: WorkspaceRecord
+  }
+  'sessions:refreshMetadata': { req: [{ projectId: string }]; res: void }
+  'sessions:delete': { req: [{ id: string }]; res: void }
+  'sessions:getContextBudget': {
+    req: [{ workspaceId: string }]
+    res: { contextBudget: number; modelId: string }
+  }
   // … migrated domain-by-domain in follow-up commits.
 }
 
