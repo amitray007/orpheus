@@ -14,80 +14,40 @@
  *   usePr(workspaceId)       — hook: subscribe to ONE key only
  */
 
-import { useCallback, useSyncExternalStore } from 'react'
 import type { GhPullRequest } from '@shared/types'
+import { createPerKeyStore } from './createPerKeyStore'
 
-// ---------------------------------------------------------------------------
-// Internal state — module-level so it lives outside React's render cycle
-// ---------------------------------------------------------------------------
-
-const store = new Map<string, GhPullRequest | null>()
-
-// Per-key listeners: each workspaceId has its own Set of notify fns so that
-// a write to key A only wakes up subscribers of key A.
-const listeners = new Map<string, Set<() => void>>()
-
-function notify(workspaceId: string): void {
-  listeners.get(workspaceId)?.forEach((fn) => fn())
-}
-
-function subscribe(workspaceId: string, fn: () => void): () => void {
-  let set = listeners.get(workspaceId)
-  if (!set) {
-    set = new Set()
-    listeners.set(workspaceId, set)
-  }
-  set.add(fn)
-  return () => {
-    set!.delete(fn)
-    if (set!.size === 0) listeners.delete(workspaceId)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Public write API
-// ---------------------------------------------------------------------------
+// Shallow-field equality — prevents spurious subscriber notifications when
+// IPC returns a structurally identical PR object (new object reference, same
+// content). Matches the original field list exactly.
+const store = createPerKeyStore<GhPullRequest | null>({
+  equals: (prev, next) =>
+    prev != null &&
+    next != null &&
+    prev.number === next.number &&
+    prev.state === next.state &&
+    prev.title === next.title &&
+    prev.reviewDecision === next.reviewDecision &&
+    prev.checks === next.checks
+})
 
 /** Update a single workspace's PR (null = no PR for this branch).
  *  No-op on identity match OR when all displayed fields are equal — prevents
  *  spurious subscriber notifications when IPC returns a structurally identical
  *  PR object (new object reference, same content). */
 export function setPr(workspaceId: string, pr: GhPullRequest | null): void {
-  const prev = store.get(workspaceId)
-  if (prev === pr) return
-  if (
-    prev != null &&
-    pr != null &&
-    prev.number === pr.number &&
-    prev.state === pr.state &&
-    prev.title === pr.title &&
-    prev.reviewDecision === pr.reviewDecision &&
-    prev.checks === pr.checks
-  )
-    return
   store.set(workspaceId, pr)
-  notify(workspaceId)
 }
 
 /** Remove a workspace's PR entry (e.g. on archive). */
 export function deletePr(workspaceId: string): void {
-  if (!store.has(workspaceId)) return
-  store.delete(workspaceId)
-  notify(workspaceId)
+  store.remove(workspaceId)
 }
-
-// ---------------------------------------------------------------------------
-// Public read / snapshot API
-// ---------------------------------------------------------------------------
 
 /** Returns a stable snapshot reference of the current store state. */
 export function getPrSnapshot(): ReadonlyMap<string, GhPullRequest | null> {
-  return store
+  return store.getSnapshot()
 }
-
-// ---------------------------------------------------------------------------
-// React hook — subscribes only to the given workspaceId key
-// ---------------------------------------------------------------------------
 
 /**
  * Subscribe to a single workspace's GitHub PR.
@@ -98,14 +58,5 @@ export function getPrSnapshot(): ReadonlyMap<string, GhPullRequest | null> {
  * fetch confirmed no PR exists for this workspace's branch.
  */
 export function usePr(workspaceId: string): GhPullRequest | null {
-  // Wrap the subscribe arg in useCallback so useSyncExternalStore receives the
-  // same function reference across parent re-renders (only re-subscribes when
-  // workspaceId changes). Without this, a new arrow would be created every render,
-  // causing useSyncExternalStore to unsubscribe and resubscribe on every parent render.
-  const subscribeForKey = useCallback((fn: () => void) => subscribe(workspaceId, fn), [workspaceId])
-  return useSyncExternalStore(
-    subscribeForKey,
-    () => store.get(workspaceId) ?? null,
-    () => store.get(workspaceId) ?? null // server snapshot — same in Electron context
-  )
+  return store.useKey(workspaceId) ?? null
 }
