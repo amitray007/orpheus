@@ -96,7 +96,6 @@ import {
   ensureManagedHooks,
   uninstallManagedHooks,
   clearWorkspaceActivity,
-  invalidateWatchdogCache,
   getWorkspaceActivity,
   setAutoCloseHandler
 } from './orpheusNotify'
@@ -112,9 +111,9 @@ import {
   cancelAttentionRetry
 } from './osNotifications'
 import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
-import { startStatusPoller, stopStatusPoller, rescheduleStatusPoll } from './claudeStatus'
+import { startStatusPoller, stopStatusPoller } from './claudeStatus'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
-import type { AppUiStatePatch, WorkspaceRecord } from '../shared/types'
+import type { WorkspaceRecord } from '../shared/types'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
 import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
@@ -138,7 +137,6 @@ import {
   stopDiagnostics,
   logDiagMain,
   ingestDiagEvent,
-  setDiagCategoryFlags,
   diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
@@ -189,6 +187,7 @@ import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
 import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerHooksIpc } from './ipc/hooks'
+import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1202,39 +1201,11 @@ ipcMain.on('diag:event', (_e, evt) => {
 // UI State IPC
 // ---------------------------------------------------------------------------
 
-handle('uiState:get', () => getAppUiState())
-
-function syncDiagFlags(): void {
-  const s = getAppUiState()
-  setDiagCategoryFlags({
-    error: s.diagError,
-    lifecycle: s.diagLifecycle,
-    perf: s.diagPerf,
-    anomaly: s.diagAnomaly,
-    trace: s.diagTrace
-  })
-}
-
-handle('uiState:update', (_e, patch: AppUiStatePatch) => {
-  const result = updateAppUiState(patch)
-  if (patch.launchAtLogin !== undefined) applyLaunchAtLogin(patch.launchAtLogin)
-  if (patch.globalHotkey !== undefined) applyGlobalHotkey(patch.globalHotkey)
-  if (patch.theme !== undefined) {
-    applyLoadingOverlayTheme(patch.theme)
-    setOverlayTheme(patch.theme)
-  }
-  if (patch.inProgressWatchdogSec !== undefined) invalidateWatchdogCache()
-  if (patch.staleAfterMinutes !== undefined) invalidateWatchdogCache()
-  if (patch.autoCloseAfterMinutes !== undefined) invalidateWatchdogCache()
-  if (patch.statusPollIntervalSec !== undefined) rescheduleStatusPoll()
-  syncDiagFlags()
-  // Broadcast the updated state so renderer subscribers (e.g. WorkspaceFooter)
-  // can react without polling.
-  const win = getMainWindow()
-  if (win && !win.isDestroyed()) {
-    win.webContents.send(PUSH_CHANNELS.uiStateChanged, result)
-  }
-  return result
+registerUiStateIpc({
+  getMainWindow,
+  applyLaunchAtLogin,
+  applyGlobalHotkey,
+  applyLoadingOverlayTheme
 })
 
 ipcMain.on(
