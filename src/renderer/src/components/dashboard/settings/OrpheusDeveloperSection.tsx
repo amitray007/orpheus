@@ -1,7 +1,10 @@
 import type React from 'react'
-import { SettingRow, SectionTitle, Eyebrow } from './primitives'
+import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
 
 export function OrpheusDeveloperSection(): React.JSX.Element {
+  const uiState = useUiState()
+
   return (
     <div className="flex flex-col gap-10 max-w-2xl">
       <div>
@@ -46,6 +49,23 @@ export function OrpheusDeveloperSection(): React.JSX.Element {
             >
               Reload
             </button>
+          </SettingRow>
+        </div>
+      </section>
+
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Experimental</Eyebrow>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Workbench"
+            description="Mounts the (currently empty) Workbench panel seam in the workspace view. No visible UI yet — wireframe lands in follow-up units."
+            mapsTo="workbenchEnabled"
+          >
+            <Toggle
+              value={uiState?.workbenchEnabled ?? false}
+              onChange={(v) => updateUiState({ workbenchEnabled: v })}
+              ariaLabel="Workbench"
+            />
           </SettingRow>
         </div>
       </section>

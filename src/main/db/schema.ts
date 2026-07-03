@@ -424,7 +424,7 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // app_ui_state (33 columns in the fresh-install constant + drift columns
+  // app_ui_state (34 columns in the fresh-install constant + drift columns
   // that were also folded back into it)
   // ---------------------------------------------------------------------
   app_ui_state: {
@@ -451,6 +451,8 @@ export const schema: SchemaDef = {
       // Sidebar behavior preferences (v12)
       pinned_section_visible: bool('pinned_section_visible', '1'),
       workspace_count_inline: bool('workspace_count_inline', '1'),
+      // Workbench feature flag (Workbench & Panes plan, U2) — default 0 (off)
+      workbench_enabled: bool('workbench_enabled', '0'),
       // mirrors UI_STATE_DEFAULTS.sidebarWidth / SIDEBAR_WIDTH_MIN..MAX in src/shared/uiStateDefaults.ts
       sidebar_width: {
         type: 'INTEGER',

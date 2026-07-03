@@ -216,6 +216,9 @@ export type AppUiState = {
   workspaceCountInline: boolean
   sidebarWidth: number
   defaultProjectExpanded: boolean
+  // Workbench feature flag — default false (off); gates the Workbench mount
+  // point in WorkspaceView (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md, U2).
+  workbenchEnabled: boolean
   // Launch + hotkey (v18)
   launchAtLogin: boolean
   globalHotkey: string

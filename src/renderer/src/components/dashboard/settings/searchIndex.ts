@@ -1837,6 +1837,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     mapsTo: [],
     keywords: ['reload', 'renderer reload', 'hard reload', 'refresh renderer', 'dev reload']
   },
+  {
+    sectionId: 'orpheus-developer',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Developer',
+    settingId: 'workbench-enabled',
+    label: 'Workbench',
+    description: 'Mounts the (currently empty) Workbench panel seam in the workspace view.',
+    mapsTo: ['workbenchEnabled'],
+    keywords: ['workbench', 'panes', 'panel', 'experimental', 'feature flag']
+  },
 
   // ---------------------------------------------------------------------------
   // Orpheus › About Orpheus (section-level)

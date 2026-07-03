@@ -8,6 +8,7 @@ import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
+import { WorkbenchPanel } from '../workbench/WorkbenchPanel'
 import {
   showConfirmModalReact,
   getActiveConfirmOverlayId,
@@ -17,6 +18,7 @@ import {
   noticeBannerId
 } from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
+import { useUiState } from '@/lib/uiStateStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import {
   setActiveWatchdogWorkspace,
@@ -63,6 +65,11 @@ export function WorkspaceView({
   allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  // Workbench feature flag (default false/off) — see docs/plans/2026-07-02-001-
+  // feat-workbench-panes-plan.md (U2). When off, nothing below reads or renders
+  // any different than before this flag existed.
+  const uiState = useUiState()
+  const workbenchEnabled = uiState?.workbenchEnabled ?? false
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
   // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
@@ -848,6 +855,13 @@ export function WorkspaceView({
             />
           </div>
         )}
+
+        {/* Workbench mount point (U2, flagged off by default) — an empty seam
+            for U3/U4/U5 to build into. WorkbenchPanel itself renders null, so
+            this has no visible or layout effect regardless of the flag; the
+            flag check is kept here too so nothing downstream ever mounts
+            when workbenchEnabled is false. */}
+        {workbenchEnabled && <WorkbenchPanel />}
       </div>
     </>
   )
