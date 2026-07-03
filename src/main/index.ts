@@ -137,21 +137,8 @@ import {
   fireTestNotification,
   cancelAttentionRetry
 } from './osNotifications'
-import {
-  checkForUpdates,
-  installUpdate,
-  relaunchApp,
-  startAutoCheckLoop,
-  stopAutoCheckLoop,
-  getUpdateSnapshot
-} from './updates'
-import {
-  getStatusSnapshot,
-  startStatusPoller,
-  stopStatusPoller,
-  refreshStatusNow,
-  rescheduleStatusPoll
-} from './claudeStatus'
+import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
+import { startStatusPoller, stopStatusPoller, rescheduleStatusPoll } from './claudeStatus'
 import { showContextMenu } from './contextMenu'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type {
@@ -230,6 +217,7 @@ import { assertManagedConfigPath, isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
+import { registerUpdatesIpc } from './ipc/updates'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1696,30 +1684,7 @@ handle('notifications:test', () => {
 
 registerSystemIpc({ getAppUiState })
 
-// ---------------------------------------------------------------------------
-// Updates IPC
-// ---------------------------------------------------------------------------
-
-handle('updates:check', () => checkForUpdates())
-handle('updates:install', () => {
-  installUpdate()
-})
-handle('updates:restart', () => {
-  relaunchApp()
-})
-handle('updates:getState', () => getUpdateSnapshot())
-
-// ---------------------------------------------------------------------------
-// Claude status IPC
-// ---------------------------------------------------------------------------
-
-handle('status:get', () => getStatusSnapshot())
-handle('status:refresh', async () => refreshStatusNow())
-handle('status:openPage', () => {
-  shell.openExternal('https://status.claude.com').catch((err) => {
-    console.warn('[status] openExternal failed:', err)
-  })
-})
+registerUpdatesIpc()
 
 handle('projects:setExpandedInSidebar', (_e, { id, expanded }) =>
   setProjectExpandedInSidebar(id, expanded)
