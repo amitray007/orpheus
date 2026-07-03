@@ -55,11 +55,16 @@ export function WorkbenchPanel(): React.JSX.Element | null {
     beginDividerDrag(e, claudeWidth + frameWidth)
   }
 
-  // U6 WIRING POINT: when `expanded` is true, the claude native surface
-  // should be hidden (via terminal:hide) here — or reframed to zero width —
-  // instead of merely being visually covered by this frame growing over its
-  // DOM column. For U4 the native surface is left running untouched; only
-  // the DOM geometry below reflects the expanded state.
+  // U6 WIRING POINT: when `expanded` is true, the claude native surface must
+  // be HIDDEN (via terminal:hide / addon.hide) here — NOT resized toward zero
+  // width. Hiding removes the surface from view while preserving it intact at
+  // its last size; resizing a surface with large scrollback down to ~0px would
+  // force libghostty to reflow the whole buffer to a degenerate size, which is
+  // expensive and risks renderer/memory pressure. Restore on collapse re-shows
+  // the surface verbatim (hide != destroy, lossless). For U4 the native surface
+  // is left running untouched; only the DOM geometry below reflects the
+  // expanded state — and the claude DOM column collapsing to 0 here is harmless
+  // because the native view ignores DOM width; U6 owns the real hide.
   return (
     <>
       {!expanded && (
