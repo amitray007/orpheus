@@ -617,6 +617,11 @@ const api = {
   }
 }
 
+// DUP-3 finalize: the single source of truth for the renderer-facing
+// `window.api` shape. `src/preload/index.d.ts` derives `Window.api` from
+// this type instead of hand-maintaining a parallel twin — see that file.
+export type OrpheusApi = typeof api
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.

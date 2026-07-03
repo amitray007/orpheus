@@ -56,11 +56,13 @@ function AppErrorCard({ error }: { error: string }): React.JSX.Element {
     window.api.diag
       .export({ sinceMs: Date.now() - 86_400_000 })
       .then((res) => {
-        if (res.error && res.error !== 'canceled') {
-          setStatus('error')
-          setExportMessage(res.error)
-        } else if (res.error === 'canceled') {
-          setStatus('idle')
+        if (!res.ok) {
+          if (res.error === 'canceled') {
+            setStatus('idle')
+          } else {
+            setStatus('error')
+            setExportMessage(res.error)
+          }
         } else {
           setStatus('done')
           setExportMessage(res.txtPath ?? res.path ?? null)
