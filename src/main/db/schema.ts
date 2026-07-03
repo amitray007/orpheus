@@ -1,5 +1,5 @@
 import type { ColumnDef, SchemaDef, TableDef } from './types'
-import { enumCheck } from './render'
+import { enumCheck, enumClause } from './render'
 
 // Shared enum arrays — exported for reuse by app code (renderer/main) so the
 // set of valid values lives in exactly one place. Values copied verbatim from
@@ -502,7 +502,7 @@ export const schema: SchemaDef = {
       },
       accent_color: {
         type: 'TEXT',
-        check: `CHECK (accent_color IS NULL OR ${enumCheck('accent_color', ACCENT_COLOR).replace('CHECK ', '')})`
+        check: `CHECK (accent_color IS NULL OR (${enumClause('accent_color', ACCENT_COLOR)}))`
       },
       ui_font_scale: {
         type: 'TEXT',

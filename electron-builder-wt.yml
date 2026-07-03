@@ -38,13 +38,6 @@ extraResources:
     to: fonts/geist-mono
     filter:
       - '*.ttf'
-win:
-  executableName: Orpheus WT
-nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
 mac:
   icon: build/icon-dev.icns
   entitlementsInherit: build/entitlements.mac.plist

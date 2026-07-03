@@ -60,13 +60,6 @@ extraResources:
   # Lives at Contents/Resources/cli/cli.cjs; executed by the bin/orpheus shim.
   - from: packages/orpheus-cli/dist/cli.cjs
     to: cli/cli.cjs
-win:
-  executableName: Orpheus
-nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:

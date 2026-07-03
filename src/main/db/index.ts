@@ -27,7 +27,15 @@ export function getDb(): Database.Database {
 
   // Run migrations via the declarative engine's cutover entry point. Pass the
   // dbPath already computed above so migrate() doesn't need to recompute it.
-  migrate(db, dbPath)
+  // If migration throws, close the handle before rethrowing — otherwise a
+  // subsequent getDb() call would open a second connection to the same file,
+  // leaking the first (never cached, never closed).
+  try {
+    migrate(db, dbPath)
+  } catch (err) {
+    db.close()
+    throw err
+  }
 
   _db = db
   return _db

@@ -602,6 +602,10 @@ function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<
 const MAX_CONCURRENT_SUBSCRIPTIONS = 32
 /** Current count of active /subscribe connections. */
 let activeSubscriptionCount = 0
+/** Guarded decrement — never lets the counter go negative. */
+function releaseSubscriptionSlot(): void {
+  activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1)
+}
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -669,8 +673,20 @@ export function startCommandServer(deps: CommandServerDeps): {
       return
     }
     activeSubscriptionCount++
+    // Guards against a double-release of this request's slot: the early
+    // req.on('error') below and the async IIFE's own validation-failure
+    // returns are mutually exclusive in practice (readBody never resolves
+    // once the socket has errored — see readBody's implementation), but the
+    // flag makes that guarantee explicit rather than relying on the timing.
+    let slotReleased = false
+    function releaseSlotOnce(): void {
+      if (slotReleased) return
+      slotReleased = true
+      releaseSubscriptionSlot()
+    }
 
     req.on('error', () => {
+      releaseSlotOnce()
       if (!res.writableEnded) {
         try {
           res.end()
@@ -682,7 +698,10 @@ export function startCommandServer(deps: CommandServerDeps): {
 
     void (async () => {
       const raw = await readBody(req, res)
-      if (raw == null) return // readBody already responded (413)
+      if (raw == null) {
+        releaseSlotOnce() // readBody already responded (413)
+        return
+      }
 
       let body: { workspaceIds?: unknown; timeoutMs?: unknown; until?: unknown }
       try {
@@ -692,6 +711,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           until?: unknown
         }
       } catch {
+        releaseSlotOnce()
         if (!res.writableEnded) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }))
@@ -704,6 +724,7 @@ export function startCommandServer(deps: CommandServerDeps): {
         : []
 
       if (workspaceIds.length === 0) {
+        releaseSlotOnce()
         if (!res.writableEnded) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: false, error: 'workspaceIds must be a non-empty string[]' }))

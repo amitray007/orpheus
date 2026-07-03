@@ -88,6 +88,17 @@ module.exports = {
       from: { path: '^src/preload' },
       to: { path: '^src/renderer' }
     },
+    {
+      name: 'preload-not-to-main',
+      severity: 'error',
+      comment:
+        'src/preload is the typed window.api.* bridge script exposed to the renderer via ' +
+        'contextBridge. It runs in a privileged-but-sandboxed context and must not import from ' +
+        'src/main, which owns SQLite/IPC-handler-internals/native-addon code that is not meant to ' +
+        'cross into the bridge — preload should only reach main indirectly, through ipcRenderer.',
+      from: { path: '^src/preload' },
+      to: { path: '^src/main' }
+    },
 
     {
       name: 'no-orphans',

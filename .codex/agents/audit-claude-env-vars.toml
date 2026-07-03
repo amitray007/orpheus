@@ -14,7 +14,7 @@ If a URL 404s or moves, fall back to crawling from the docs map.
 
 ## Repository state (where we wire things)
 
-- **Schema**: `src/main/db.ts` — `claude_global_settings` table. Current version is tracked in `CURRENT_VERSION`. Migrations follow a `try { db.exec("ALTER TABLE ...") } catch {}` pattern.
+- **Schema**: `src/main/db/schema.ts` — the declarative source of truth; `claude_global_settings` is a structured `TableDef`. To add a column, add it once to the table's `TableDef`; the reconciler in `src/main/db/engine.ts` diffs against the live DB and adds it on next boot. No version bump, no `ALTER TABLE`, no defensive migration block. One-off data backfills go in `src/main/db/data-steps.ts` as a named `DataStep`.
 - **Type**: `src/shared/types.ts` — `ClaudeGlobalSettings` interface. Fields are grouped by section comment.
 - **Compose**: `src/main/claudeSettings.ts` — `composeClaudeLaunch` returns `{ flags, settingsJson, env }`. The `env` block emits each var with `if (s.<field>) env['ENV_NAME'] = '1'` for booleans, `if (s.<field> !== null) env['ENV_NAME'] = String(s.<field>)` for numbers, `if (s.<field>) env['ENV_NAME'] = s.<field>` for strings. ALL new emissions must go BEFORE the `customEnvVars` merge so user overrides still win.
 - **Auth-specific env**: `src/main/claudeAuth.ts` — provider-routing + secret emissions live there.
@@ -70,14 +70,13 @@ If new vars were found, update `.claude/snapshots/env-vars.json` to add them wit
 
 If the user explicitly asks you to wire a new var:
 
-1. Add a column to the fresh-install `CLAUDE_SETTINGS_SCHEMA_SQL` block in `src/main/db.ts`. Bump `CURRENT_VERSION`.
-2. Add a migration block at the bottom with `try { db.exec("ALTER TABLE claude_global_settings ADD COLUMN <col> <type>") } catch {}`.
-3. Add the field to `ClaudeGlobalSettings` in `src/shared/types.ts`. Group under the matching section comment.
-4. Add to `ClaudeSettingsRow`, `rowToRecord`, `BOOLEAN_KEYS` / number validator / string validator in `validatePatch`, and `columnMap` in `src/main/claudeSettings.ts`.
-5. Add the env emission in `composeClaudeLaunch` before the customEnvVars merge.
-6. Add a `SettingRow` in the appropriate `Claude*Section.tsx` with the `mapsTo` chip. Use existing primitives (`Toggle`, `NumberInput`, plain `<input>` text). Match the existing visual rhythm.
-7. Update `.claude/snapshots/env-vars.json` to flip `wired: true` and remove the `note`.
-8. Run `bun run typecheck` and report any errors. Do not commit — let the parent agent / user commit.
+1. Add the column to the `claude_global_settings` `TableDef` in `src/main/db/schema.ts`. The engine (`src/main/db/engine.ts`) diffs schema.ts against the live DB and adds the column automatically on next boot — no version bump, no hand-written `ALTER TABLE`. If the change requires a one-off data backfill/transform, add a named `DataStep` to `src/main/db/data-steps.ts` instead of touching the column add itself.
+2. Add the field to `ClaudeGlobalSettings` in `src/shared/types.ts`. Group under the matching section comment.
+3. Add to `ClaudeSettingsRow`, `rowToRecord`, `BOOLEAN_KEYS` / number validator / string validator in `validatePatch`, and `columnMap` in `src/main/claudeSettings.ts`.
+4. Add the env emission in `composeClaudeLaunch` before the customEnvVars merge.
+5. Add a `SettingRow` in the appropriate `Claude*Section.tsx` with the `mapsTo` chip. Use existing primitives (`Toggle`, `NumberInput`, plain `<input>` text). Match the existing visual rhythm.
+6. Update `.claude/snapshots/env-vars.json` to flip `wired: true` and remove the `note`.
+7. Run `bun run typecheck` and report any errors. Do not commit — let the parent agent / user commit.
 
 ## Style + constraints
 

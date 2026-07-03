@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
 import type { DbLike } from './types'
+import { listTables } from './introspect'
 
 // ---------------------------------------------------------------------------
 // Named, run-once data transforms + ledger.
@@ -420,6 +421,24 @@ function stepHash(step: DataStep): string {
   return createHash('sha256').update(step.run.toString()).digest('hex')
 }
 
+// A DB counts as a "fresh install" (safe to blanket-pre-mark every legacy
+// data step as already-applied) only when it has NO pre-existing user
+// tables at all. This is deliberately NOT the same thing as
+// `legacyVersion === 0`: after the first cutover drops the schema_version
+// table, every subsequent boot of an already-converged DB also detects
+// legacyVersion 0 — but that DB has real user tables (and rows a *future*
+// data step may still need to touch), so a step added in a later release
+// must NOT be silently pre-marked applied just because this DB happens to
+// read legacyVersion 0. `applied_data_steps` itself doesn't count as "has
+// user data" (it's the ledger's own bookkeeping table), so it's excluded
+// here too. Mirrors `isFreshInstall` in engine.ts (kept local rather than
+// imported to avoid a cross-module private-helper dependency; both read the
+// same signal via introspect.ts's listTables()).
+function isFreshInstall(db: DbLike): boolean {
+  const tables = listTables(db).filter((t) => t !== 'applied_data_steps' && t !== 'schema_version')
+  return tables.length === 0
+}
+
 /**
  * Pre-marks steps as already-applied based on the legacy schema_version a
  * pre-existing DB is stuck at, so the engine never re-runs a transform that
@@ -428,9 +447,18 @@ function stepHash(step: DataStep): string {
  * - alwaysRun steps are NEVER pre-marked, on fresh (legacyVersion 0) or
  *   legacy (legacyVersion > 0) installs alike — they always get a real
  *   runDataSteps() pass.
- * - Fresh installs (legacyVersion 0): every OTHER step is pre-marked applied.
- *   A fresh schema is already structurally correct and has no legacy rows to
- *   fix, so these legacy data transforms are moot on a brand-new DB.
+ * - Fresh installs (legacyVersion 0 AND no pre-existing user tables): every
+ *   OTHER step is pre-marked applied. A fresh schema is already structurally
+ *   correct and has no legacy rows to fix, so these legacy data transforms
+ *   are moot on a brand-new DB.
+ * - Already-cutover installs (legacyVersion 0 but real user tables exist —
+ *   schema_version was dropped by a prior cutover): NOT treated as fresh.
+ *   Each step is pre-marked applied only if legacyVersion >= its
+ *   legacyThroughVersion, same as any other legacy install. Since a real
+ *   legacyVersion can never be >= a future step's legacyThroughVersion, a
+ *   brand-new data step added in a later release correctly falls through to
+ *   a real runDataSteps() pass on this DB's next boot, instead of being
+ *   silently marked applied without ever running.
  * - Legacy installs (legacyVersion > 0): a step is pre-marked applied iff
  *   legacyVersion >= step.legacyThroughVersion (the old migrate() would have
  *   already run that version block).
@@ -439,10 +467,11 @@ function seedLedgerFromLegacy(db: DbLike, legacyVersion: number): void {
   const insert = db.prepare(
     'INSERT OR IGNORE INTO applied_data_steps (name, hash, applied_at) VALUES (?, ?, ?)'
   )
+  const treatAsFresh = legacyVersion === 0 && isFreshInstall(db)
   const now = Date.now()
   for (const step of dataSteps) {
     if (step.alwaysRun) continue
-    const alreadyApplied = legacyVersion === 0 || legacyVersion >= step.legacyThroughVersion
+    const alreadyApplied = treatAsFresh || legacyVersion >= step.legacyThroughVersion
     if (alreadyApplied) {
       insert.run(step.name, stepHash(step), now)
     }

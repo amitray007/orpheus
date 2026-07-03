@@ -66,7 +66,7 @@ Add **one** pre-warmed, transparent `WebContentsView` (the **overlay layer**) to
 the existing `BrowserWindow.contentView` at startup. Never move the terminal or
 the main web layer. Final NSView stack, bottom→top:
 
-```
+```text
 backstop (index 0)
 → main WebContents (all existing React UI)
 → terminal NSView (live, opaque, untouched; its loading-overlay child renders with it)
@@ -299,9 +299,15 @@ main renderer keeps its existing Escape handling.
   input forwarding): per-pixel click-through, but synthetic input forwarding
   (IME, scroll momentum, cursor shapes, drag) is a consistency-bug farm.
   Rejected on the "no consistency issues" constraint.
-- **Child `NSWindow` / child `BrowserWindow`:** key-window flips dim the parent
-  chrome and cause focus flicker; fullscreen/Spaces edge cases. The same-window
-  `WebContentsView` is strictly better.
+- **Same-window `WebContentsView` sibling (original decision, superseded by
+  the 2026-07-02 amendment):** all of a window's web content composites
+  through one shared topmost NSView, so a sibling `WebContentsView` cannot
+  place pixels above the opaque terminal regardless of NSView ordering. The
+  amended host — a frameless transparent **child `BrowserWindow`**
+  (`parent: mainWindow`) — has its own compositor, so it renders above the
+  terminal unconditionally; `showInactive()` avoids the key-window flips/focus
+  flicker of a normal child window for card/tooltip classes, with
+  `show()+focus()` reserved for `takesFocus` modals.
 - **Snapshot-the-terminal-then-overlay:** violates the "terminal must stay
   live" constraint.
 

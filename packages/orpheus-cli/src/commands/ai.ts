@@ -47,7 +47,7 @@
 import { registerCommand } from '../registry.js'
 import { printUsageError } from '../output.js'
 import { buildDocModel } from '../help-model.js'
-import type { DocModel } from '../help-model.js'
+import type { DocModel, DocFlag } from '../help-model.js'
 
 const SKILL_FORMATS = ['md', 'text'] as const
 type SkillFormat = (typeof SKILL_FORMATS)[number]
@@ -65,11 +65,28 @@ function isValidSchemaFormat(v: string): v is SchemaFormat {
 // ai skill — curated playbook
 // ---------------------------------------------------------------------------
 
+/**
+ * Look up a flag definition by command + flag name in the doc model.
+ *
+ * Both `commandName` and `flagName` are always hardcoded literals at call
+ * sites in this file (this module generates docs from a fixed set of
+ * references, it never looks up a flag by user-provided/dynamic input) — so
+ * a miss here means a typo in one of those literals, not a legitimate
+ * "flag doesn't exist" case. Fail loudly rather than silently degrading the
+ * generated doc, so a typo'd reference breaks doc generation instead of
+ * quietly shipping wrong text.
+ */
+function findFlag(model: DocModel, commandName: string, flagName: string): DocFlag {
+  const cmd = model.commands.find((c) => c.name === commandName)
+  if (cmd == null) throw new Error(`Unknown command: "${commandName}"`)
+  const flag = cmd.flags.find((f) => f.name === flagName)
+  if (flag == null) throw new Error(`Unknown flag "${flagName}" for command "${commandName}"`)
+  return flag
+}
+
 /** Look up a flag's rendered label (e.g. '--until <mode>') from the doc model, for inline prose use. */
 function flagFacts(model: DocModel, commandName: string, flagName: string): string {
-  const cmd = model.commands.find((c) => c.name === commandName)
-  const flag = cmd?.flags.find((f) => f.name === flagName)
-  if (flag == null) return `--${flagName}`
+  const flag = findFlag(model, commandName, flagName)
   return flag.type === 'boolean'
     ? `--${flag.name}`
     : `--${flag.name} ${flag.valueHint ?? '<value>'}`
@@ -81,12 +98,8 @@ function flagFacts(model: DocModel, commandName: string, flagName: string): stri
  * (done|input|idle) [default: done]'.
  */
 function flagLine(model: DocModel, commandName: string, flagName: string): string {
-  const cmd = model.commands.find((c) => c.name === commandName)
-  const flag = cmd?.flags.find((f) => f.name === flagName)
-  if (flag == null) return `--${flagName}`
-  const label =
-    flag.type === 'boolean' ? `--${flag.name}` : `--${flag.name} ${flag.valueHint ?? '<value>'}`
-  const bits: string[] = [label]
+  const flag = findFlag(model, commandName, flagName)
+  const bits: string[] = [flagFacts(model, commandName, flagName)]
   if (flag.values != null) bits.push(`(${flag.values.join('|')})`)
   if (flag.default != null) bits.push(`[default: ${flag.default}]`)
   return bits.join(' ')

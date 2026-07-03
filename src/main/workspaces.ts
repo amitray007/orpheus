@@ -332,6 +332,7 @@ export async function archiveWorkspace(
     | undefined
 
   // Worktree teardown: must happen before the row DELETE.
+  let wasDirty = false
   if (ws?.worktree_parent_cwd) {
     const r = await withRepoLock(ws.worktree_parent_cwd, () =>
       removeWorktree({ path: ws.cwd, force })
@@ -341,6 +342,9 @@ export async function archiveWorkspace(
       return { archived: false, wasDirty: true }
     }
     // Either removed cleanly or forced (r.removed === true). Proceed to delete.
+    // Preserve wasDirty so a forced removal of a dirty worktree is still
+    // reported back to the caller on the success path.
+    wasDirty = r.wasDirty
   }
 
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
@@ -352,7 +356,7 @@ export async function archiveWorkspace(
   if (ws) {
     broadcastWorkspaceArchived(ws.id, ws.project_id)
   }
-  return { archived: true, wasDirty: false }
+  return { archived: true, wasDirty }
 }
 
 export function closeWorkspace(id: string, lastTitle: string | null): WorkspaceRecord | undefined {

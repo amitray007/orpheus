@@ -32,7 +32,9 @@ const WORKTREE_MARKER = '--claude-worktrees-'
 function worktreeSlugFromPath(jsonlPath: string): string | null {
   // jsonlPath = ~/.claude/projects/<encodedDir>/<sessionId>.jsonl
   // encodedDir for a worktree: ...<repoEncoded>--claude-worktrees-<slug>
-  const parts = jsonlPath.split('/')
+  // Split on both separators defensively; Orpheus is macOS-only today (this
+  // path is always POSIX in practice) but the split is free either way.
+  const parts = jsonlPath.split(/[/\\]/)
   // The encoded dir is the second-to-last segment (last is the .jsonl filename)
   const encodedDir = parts.length >= 2 ? parts[parts.length - 2] : ''
   const markerIdx = encodedDir.indexOf(WORKTREE_MARKER)

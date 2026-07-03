@@ -1,7 +1,11 @@
 import type { ColumnDef, IndexDef, TableDef } from './types'
 
+function enumClause(col: string, values: readonly string[]): string {
+  return `${col} IN (${values.map((v) => `'${v}'`).join(', ')})`
+}
+
 function enumCheck(col: string, values: readonly string[]): string {
-  return `CHECK (${col} IN (${values.map((v) => `'${v}'`).join(', ')}))`
+  return `CHECK (${enumClause(col, values)})`
 }
 
 function renderColumn(colName: string, def: ColumnDef): string {
@@ -35,4 +39,4 @@ function renderIndex(table: string, name: string, def: IndexDef): string {
   return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${table}(${columns.join(', ')})${where ? ' WHERE ' + where : ''}`
 }
 
-export { enumCheck, renderColumn, renderCreateTable, renderIndex }
+export { enumCheck, enumClause, renderColumn, renderCreateTable, renderIndex }

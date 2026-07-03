@@ -480,8 +480,9 @@ export async function removeWorktree(opts: RemoveWorktreeOpts): Promise<RemoveWo
     }
   }
 
-  const args = ['worktree', 'remove', worktreePath]
+  const args = ['worktree', 'remove']
   if (force) args.push('--force')
+  args.push(worktreePath)
 
   try {
     await execFile('git', ['-C', cwd, ...args], { timeout: 30000 })

@@ -84,12 +84,12 @@ export async function handleFork(
     const branch = `worktree-${slug}`
 
     return withRepoLock(repoRoot, async () => {
-      const mode = (await branchExists(repoRoot!, branch)) ? 'existing' : 'new'
+      const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
       const baseRef = await readWorktreeBaseRef()
 
       // Create the worktree first. If this throws, no DB row has been inserted.
       const { path: worktreePath, branch: finalBranch } = await createWorktree({
-        repoRoot: repoRoot!,
+        repoRoot: repoRoot,
         slug,
         branch,
         mode,
@@ -103,7 +103,7 @@ export async function handleFork(
           projectId: parent.projectId,
           name: newName,
           cwd: worktreePath,
-          worktreeParentCwd: repoRoot!,
+          worktreeParentCwd: repoRoot,
           worktreeBranch: finalBranch,
           forkedFromSessionId: parent.claudeSessionId
         })
@@ -169,7 +169,7 @@ export async function handleArchive(
   // Archive succeeded: destroy the surface now that the DB row is gone.
   // Silently no-ops when the terminal was never mounted.
   destroyAddonSurface(workspaceId)
-  return { ok: true, value: { wasDirty: false } }
+  return { ok: true, value: { wasDirty: result.wasDirty } }
 }
 
 // ---------------------------------------------------------------------------

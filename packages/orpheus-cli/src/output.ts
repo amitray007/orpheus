@@ -115,7 +115,7 @@ export function truncateForDisplay(value: string, maxWidth: number): string {
 export function printKeyValue(obj: Record<string, unknown>): void {
   const entries = Object.entries(obj)
   if (entries.length === 0) return
-  const maxKeyLen = Math.max(...entries.map(([k]) => k.length))
+  const maxKeyLen = entries.reduce((m, [k]) => (k.length > m ? k.length : m), 0)
   for (const [key, value] of entries) {
     const padded = key.padEnd(maxKeyLen)
     const val = value === null || value === undefined ? '(none)' : String(value)
@@ -148,7 +148,10 @@ export function printTable<T extends Record<string, unknown>>(
   // Compute column widths: max of header length, min width, and all cell values
   const widths: number[] = columns.map((col) => {
     const minW = col.width ?? col.header.length
-    const dataMax = Math.max(...rows.map((r) => String(r[col.key] ?? '').length))
+    const dataMax = rows.reduce((m, r) => {
+      const len = String(r[col.key] ?? '').length
+      return len > m ? len : m
+    }, 0)
     return Math.max(minW, col.header.length, dataMax)
   })
 
@@ -171,7 +174,7 @@ export function printTable<T extends Record<string, unknown>>(
 // Error output
 // ---------------------------------------------------------------------------
 
-/** Print a plain message to stderr (no prefix). */
+/** Print a plain message to stdout (no prefix). */
 export function printLines(...lines: string[]): void {
   for (const line of lines) {
     process.stdout.write(line + '\n')

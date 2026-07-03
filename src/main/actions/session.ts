@@ -24,7 +24,8 @@ import type {
   SessionMeta,
   SessionUsage,
   SessionCost,
-  SessionLastTurn
+  SessionLastTurn,
+  WorkspaceRecord
 } from '../../shared/types'
 import { getClaudeGlobalSettings } from '../claudeSettings'
 import { encodePathToClaudeDir } from '../claudeProjectDir'
@@ -76,6 +77,8 @@ export function invalidateSessionCache(workspaceId: string): void {
 export function evictAccumulator(workspaceId: string): void {
   accumulators.delete(workspaceId)
   parseCache.delete(workspaceId)
+  // Note: any inFlight entry for this workspace self-cleans via getParsed's
+  // own finally block once it settles — no explicit cleanup needed here.
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +178,10 @@ type AccumulatorState = {
 const MAX_TEXT_PREVIEW_BYTES = 4096
 
 const accumulators = new Map<string, AccumulatorState>()
+// Per-workspace promise chain — serializes concurrent getParsed() calls so
+// overlapping advanceAccumulator() passes never interleave writes to the
+// same shared AccumulatorState. See runAccumulatorPass()/getParsed() below.
+const inFlight = new Map<string, Promise<ParsedSession | null>>()
 
 function newAccumulator(): AccumulatorState {
   return {
@@ -570,16 +577,20 @@ function getEffectiveContextBudget(): number {
 // Shared parse entrypoint
 // ---------------------------------------------------------------------------
 
-async function getParsed(workspaceId: string): Promise<ParsedSession | null> {
-  // Short-circuit: TTL cache avoids even the stat() call during hot windows
+/** Critical section: get-or-create the shared accumulator, advance it from the
+ *  JSONL file, and derive+cache a ParsedSession. Callers MUST run this only
+ *  one-at-a-time per workspaceId (see getParsed's inFlight chain below) —
+ *  advanceAccumulator mutates shared AccumulatorState across await points, so
+ *  overlapping passes for the same workspace would interleave and corrupt it. */
+async function runAccumulatorPass(
+  workspaceId: string,
+  _ws: WorkspaceRecord,
+  jsonlPath: string
+): Promise<ParsedSession | null> {
+  // Re-check: a prior pass in the same chain may have just refreshed the
+  // cache while this call was waiting its turn — skip a redundant re-read.
   const cached = getCached(workspaceId)
   if (cached) return cached
-
-  const ws = getWorkspace(workspaceId)
-  if (!ws?.claudeSessionId) return null
-
-  const jsonlPath = getJsonlPath(ws.cwd, ws.claudeSessionId)
-  if (!fs.existsSync(jsonlPath)) return null
 
   try {
     let acc = accumulators.get(workspaceId)
@@ -597,6 +608,35 @@ async function getParsed(workspaceId: string): Promise<ParsedSession | null> {
   } catch (err) {
     console.error('[actions:session] parse failed', { workspaceId, err })
     return null
+  }
+}
+
+async function getParsed(workspaceId: string): Promise<ParsedSession | null> {
+  // Short-circuit: TTL cache avoids even the stat() call during hot windows
+  const cached = getCached(workspaceId)
+  if (cached) return cached
+
+  const ws = getWorkspace(workspaceId)
+  if (!ws?.claudeSessionId) return null
+
+  const jsonlPath = getJsonlPath(ws.cwd, ws.claudeSessionId)
+  if (!fs.existsSync(jsonlPath)) return null
+
+  // Serialize concurrent callers for this workspace: chain onto whatever is
+  // already in flight so each call gets its own fresh pass after the prior
+  // one settles (success or failure), never a raw interleave of two passes
+  // sharing the same AccumulatorState.
+  const prior = inFlight.get(workspaceId) ?? Promise.resolve(null)
+  const next = prior.then(
+    () => runAccumulatorPass(workspaceId, ws, jsonlPath),
+    () => runAccumulatorPass(workspaceId, ws, jsonlPath)
+  )
+  inFlight.set(workspaceId, next)
+
+  try {
+    return await next
+  } finally {
+    if (inFlight.get(workspaceId) === next) inFlight.delete(workspaceId)
   }
 }
 
