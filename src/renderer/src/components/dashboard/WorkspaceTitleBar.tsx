@@ -393,7 +393,7 @@ export function WorkspaceTitleBar({
           <button
             type="button"
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => workbenchApi?.open()}
+            onClick={() => workbenchApi?.toggle()}
             title="Workbench"
             aria-label="Workbench"
             aria-expanded={workbenchApi ? workbenchApi.state !== 'dormant' : false}
