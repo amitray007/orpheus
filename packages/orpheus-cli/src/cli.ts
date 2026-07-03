@@ -93,7 +93,7 @@ import * as net from 'node:net'
 import { AppNotRunningError, CommandError } from './socket-client.js'
 import { OrpheusDataNotFoundError, openDb } from './reads/db.js'
 import { resolveContext, ProjectNotFoundError } from './context.js'
-import { getCmdSockPath } from './paths.js'
+import { getCmdSockPath, resolveAppName } from './paths.js'
 import {
   setJsonMode,
   printError,
@@ -378,13 +378,6 @@ function fullParse(argv: string[]): ParseResult {
 // ---------------------------------------------------------------------------
 // Auto-launch
 // ---------------------------------------------------------------------------
-
-/** Detect the app name from the same env var used by paths.ts */
-function resolveAppName(): string {
-  const variant = process.env.ORPHEUS_DATA_VARIANT
-  if (variant === 'dev') return 'Orpheus Dev'
-  return 'Orpheus'
-}
 
 /**
  * Probe whether the command socket is reachable by attempting a TCP connection.

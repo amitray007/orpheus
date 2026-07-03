@@ -105,6 +105,12 @@ registerCommand('help', {
       if (format === 'json') {
         const model = buildDocModel()
         const cmd = model.commands.find((c) => c.name === resolved)
+        if (cmd == null) {
+          printError(`internal error: command "${resolved}" missing from doc model`, {
+            exitCode: 1
+          })
+          return
+        }
         process.stdout.write(JSON.stringify(cmd, null, 2) + '\n')
         return
       }

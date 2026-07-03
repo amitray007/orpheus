@@ -319,12 +319,14 @@ export function subscribe(
 
   let reqRef: http.ClientRequest | null = null
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  let closed = false
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve
   })
 
   function teardown(): void {
+    closed = true
     if (timeoutHandle != null) {
       clearTimeout(timeoutHandle)
       timeoutHandle = null
@@ -343,6 +345,7 @@ export function subscribe(
   // Kick off the connection asynchronously (subscribe is not async itself so
   // the caller can get the close handle synchronously before the socket opens).
   process.nextTick(() => {
+    if (closed) return
     const sockPath = getCmdSockPath()
     const bodyStr = JSON.stringify(payload)
 

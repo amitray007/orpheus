@@ -25,7 +25,7 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-function resolveAppName(): string {
+export function resolveAppName(): string {
   const variant = process.env.ORPHEUS_DATA_VARIANT
   if (variant === 'dev') return 'Orpheus Dev'
   // "prod" or anything else → production name

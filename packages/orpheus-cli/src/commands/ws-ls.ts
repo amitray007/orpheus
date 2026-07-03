@@ -244,24 +244,6 @@ registerCommand('ws ls', {
 
         const callerWsId = process.env.ORPHEUS_WORKSPACE_ID
 
-        type WsRow = {
-          id: string
-          name: string
-          status: string
-          parentWorkspaceId: string
-          isOwnedChild: string
-        }
-
-        const rows: WsRow[] = workspaces.map((ws) => ({
-          id: ws.id,
-          // Truncated for pretty/table display only — the --json branch below
-          // calls displayNameOf() directly and emits the full, untruncated value.
-          name: truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH),
-          status: effectiveStatus(ws),
-          parentWorkspaceId: ws.parentWorkspaceId ?? '',
-          isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
-        }))
-
         if (ctx.jsonMode) {
           printResult(
             workspaces.map((ws) => ({
@@ -275,6 +257,24 @@ registerCommand('ws ls', {
             }))
           )
         } else {
+          type WsRow = {
+            id: string
+            name: string
+            status: string
+            parentWorkspaceId: string
+            isOwnedChild: string
+          }
+
+          const rows: WsRow[] = workspaces.map((ws) => ({
+            id: ws.id,
+            // Truncated for pretty/table display only — the --json branch above
+            // calls displayNameOf() directly and emits the full, untruncated value.
+            name: truncateForDisplay(displayNameOf(ws, db, projectCache), MAX_NAME_COL_WIDTH),
+            status: effectiveStatus(ws),
+            parentWorkspaceId: ws.parentWorkspaceId ?? '',
+            isOwnedChild: callerWsId != null && ws.parentWorkspaceId === callerWsId ? 'yes' : ''
+          }))
+
           // NAME has no explicit `width` floor here: printTable's width is a
           // *minimum* (it expands to fit the widest cell), and the `name`
           // values are already truncated to MAX_NAME_COL_WIDTH above, so the

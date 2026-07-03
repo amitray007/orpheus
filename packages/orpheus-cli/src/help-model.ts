@@ -174,7 +174,7 @@ export const ENV_VARS: DocEnvVar[] = [
 // Model builder
 // ---------------------------------------------------------------------------
 
-function synthesizeUsage(commandPath: string, descriptor: CommandDescriptor): string {
+export function synthesizeUsage(commandPath: string, descriptor: CommandDescriptor): string {
   if (descriptor.usage != null && descriptor.usage !== '') {
     return `orpheus ${descriptor.usage}`
   }

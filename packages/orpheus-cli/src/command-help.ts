@@ -8,6 +8,7 @@
 
 import type { CommandDescriptor, FlagSpec } from './registry.js'
 import { flagType, isFlagSpec } from './registry.js'
+import { synthesizeUsage } from './help-model.js'
 
 /**
  * Label used in the usage line / Flags heading for a single flag, e.g.
@@ -47,21 +48,7 @@ export function commandHelp(commandPath: string, descriptor: CommandDescriptor):
   if (descriptor.usage != null && descriptor.usage !== '') {
     lines.push(`  orpheus ${descriptor.usage}`)
   } else {
-    // Synthesize a usage line from declared arity.
-    const min = descriptor.minPositionals ?? 0
-    const max = descriptor.maxPositionals
-    const positionalHint: string[] = []
-    for (let idx = 0; idx < (max ?? min); idx++) {
-      const label = `arg${idx + 1}`
-      positionalHint.push(idx < min ? `<${label}>` : `[${label}]`)
-    }
-    if (max == null && min === 0 && positionalHint.length === 0) {
-      // Arity not declared — don't imply a fixed shape.
-      positionalHint.push('[args...]')
-    }
-    const flagHint =
-      descriptor.flags != null && Object.keys(descriptor.flags).length > 0 ? ' [flags]' : ''
-    lines.push(`  orpheus ${commandPath} ${positionalHint.join(' ')}${flagHint}`.trimEnd())
+    lines.push(`  ${synthesizeUsage(commandPath, descriptor)}`)
   }
 
   if (descriptor.argsSpec != null && descriptor.argsSpec.length > 0) {
