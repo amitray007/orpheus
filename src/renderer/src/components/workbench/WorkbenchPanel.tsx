@@ -19,9 +19,9 @@
 // today. U6 is where the native reframe/hide actually happens — see the
 // comment marker below. No real tab content yet (that's P3-P6).
 //
-// Rendered only when `workbenchEnabled` (gated at the WorkspaceView call
-// site) AND state !== 'dormant' (dormant is fully invisible per the state
-// table — no rail, no strip).
+// Always rendered (Workbench is always on); returns the dormant zero-width
+// placeholder when state === 'dormant' (dormant is fully invisible per the
+// state table — no rail, no strip).
 // ---------------------------------------------------------------------------
 
 import { useRef, useState } from 'react'

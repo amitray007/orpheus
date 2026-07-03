@@ -4,7 +4,6 @@ import type React from 'react'
 import type { GhPullRequest, WorkspaceRecord, WorkspaceActivityDetail } from '@shared/types'
 import { logDiag } from '@/lib/diag'
 import { DIAG_EVENTS } from '@shared/diagEvents'
-import { WorkspaceDrawer } from './WorkspaceDrawer'
 import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
@@ -20,7 +19,6 @@ import {
   noticeBannerId
 } from '@/lib/overlayClient'
 import { useWorkspaceActivity } from '@/lib/activityStore'
-import { useUiState } from '@/lib/uiStateStore'
 import { useTerminalSleeping } from '@/lib/sleepStore'
 import {
   setActiveWatchdogWorkspace,
@@ -46,9 +44,10 @@ interface WorkspaceViewProps {
    *  via terminal:hide so it stops drawing. When flipped to true the surface
    *  is re-attached via terminal:mount (fast rAF, no 75ms debounce). */
   active?: boolean
-  /** Last-seen activity detail from Dashboard's live cache; seeds the drawer
-   *  glyph on re-mount so a tool / compacting / asking sub-state survives a
-   *  navigation round-trip until the next hook event refreshes it. */
+  /** Last-seen activity detail from Dashboard's live cache; seeds the
+   *  footer's activity glyph on re-mount so a tool / compacting / asking
+   *  sub-state survives a navigation round-trip until the next hook event
+   *  refreshes it. */
   initialDetail?: WorkspaceActivityDetail
   /** Open PR for this workspace's current branch, fetched at Dashboard level. */
   pr?: GhPullRequest | null
@@ -67,17 +66,13 @@ export function WorkspaceView({
   allWorkspaces
 }: WorkspaceViewProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  // Workbench feature flag (default false/off) — see docs/plans/2026-07-02-001-
-  // feat-workbench-panes-plan.md (U2). When off, nothing below reads or renders
-  // any different than before this flag existed.
-  const uiState = useUiState()
-  const workbenchEnabled = uiState?.workbenchEnabled ?? false
-  // Workbench state machine (U4) — always called (hooks can't be
-  // conditional) but its keyboard listener is gated internally on the
-  // `enabled` arg, so flag-off binds nothing. The resulting api is only ever
-  // provided to children (via WorkbenchProvider) when workbenchEnabled, so
-  // WorkbenchPanel/WorkspaceTitleBar see a null context and no-op when off.
-  const workbenchApi = useWorkbenchState(workbenchEnabled)
+  // Workbench state machine (U4) — mounted once here, unconditionally, and
+  // shared with WorkbenchPanel + WorkspaceTitleBar via WorkbenchProvider
+  // below so they read/drive the same state. Keyed by workspace.id so the
+  // state/width survive this component unmounting when navigating to a
+  // project and back (see @/lib/workbenchStore for the full rationale) —
+  // each workspace independently remembers its own Workbench state.
+  const workbenchApi = useWorkbenchState(workspace.id)
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
   // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
@@ -95,8 +90,6 @@ export function WorkspaceView({
   // remountKey — incrementing this triggers the mount effect to re-run,
   // which tears down the old surface and boots a fresh one with new settings.
   const [remountKey, setRemountKey] = useState(0)
-  // Drawer: null = closed; 'status' | 'overrides' = open on that tab
-  const [drawer, setDrawer] = useState<null | 'status' | 'overrides'>(null)
   // Worktree reconcile error — set when terminal:mount returns worktreeError.
   // While non-null, a native confirm modal is shown (see the effect below)
   // instead of mounting the terminal surface.
@@ -140,10 +133,6 @@ export function WorkspaceView({
   // first hook event fires.
   const detail: WorkspaceActivityDetail | undefined = storeDetail ?? initialDetail
 
-  // Activity status (coarse) — derived from the detail for the drawer.
-  // Mirrors the mapping in orpheusNotify.ts / WorkspaceActivityDetail definitions.
-  const activity = workspace.status
-
   const handleRestart = useCallback(() => {
     window.api.terminal
       .destroy(workspace.id)
@@ -157,8 +146,6 @@ export function WorkspaceView({
   const handleFocusTerminal = useCallback(() => {
     void window.api.terminal.focus(workspace.id)
   }, [workspace.id])
-
-  const handleCloseDrawer = useCallback(() => setDrawer(null), [])
 
   // --- Worktree error card callbacks ---
 
@@ -504,8 +491,8 @@ export function WorkspaceView({
     }
 
     // ResizeObserver — fires when the div's intrinsic size changes.
-    // This fires automatically when the drawer opens/closes and changes the
-    // terminal host div's width via flex layout.
+    // This fires automatically when the Workbench panel opens/closes/expands
+    // and changes the terminal host div's width via flex layout.
     // Lifecycle: attached when the view becomes active, detached when inactive.
     let ro: ResizeObserver | null = null
     let boundWindowResize: (() => void) | null = null
@@ -797,11 +784,9 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, isClosed])
 
-  // Content row is identical whether or not the workbench is enabled, save
-  // for the trailing WorkbenchPanel + whether it (and the title bar) are
-  // wrapped in WorkbenchProvider. Built once here and optionally wrapped
-  // below, so the flag-off path renders EXACTLY the pre-U4 tree (no extra
-  // wrapper element, no provider).
+  // Content row: terminal host + the Workbench frame. Always wrapped in
+  // WorkbenchProvider (below) so the tree shape is stable across renders —
+  // there's no conditional branch that would remount the terminal subtree.
   const content = (
     <>
       {/* Only render the title bar portal when this workspace is active.
@@ -811,17 +796,14 @@ export function WorkspaceView({
         createPortal(
           <WorkspaceTitleBar
             workspace={workspace}
-            drawer={drawer}
-            onSetDrawer={setDrawer}
             pr={pr}
             allWorkspaces={allWorkspaces}
-            workbenchEnabled={workbenchEnabled}
             onRestart={handleRestart}
           />,
           titleBarHost
         )}
 
-      {/* Content row: terminal host + optional drawer */}
+      {/* Content row: terminal host + Workbench frame */}
       <div className="flex h-full min-h-0">
         {/* Terminal column: terminal host + footer strip */}
         <div data-workbench-claude-column className="flex-1 min-w-0 flex flex-col">
@@ -859,36 +841,15 @@ export function WorkspaceView({
           />
         </div>
 
-        {drawer !== null && (
-          <div className="w-80 flex-shrink-0 border-l border-border-default bg-surface-raised flex flex-col">
-            <WorkspaceDrawer
-              workspace={workspace}
-              activity={activity}
-              detail={detail}
-              onClose={handleCloseDrawer}
-              onRestart={handleRestart}
-            />
-          </div>
-        )}
-
-        {/* Workbench frame (U4, flagged off by default) — dormant/open/expanded
-            geometry driving a placeholder body. Only rendered when the flag is
-            on; the state machine (workbenchApi) is provided via
-            WorkbenchProvider just above this tree (see the wrap below), so
-            WorkbenchPanel and the title bar's "Workbench" button/section-2
-            restore control share one source of truth. */}
-        {workbenchEnabled && <WorkbenchPanel />}
+        {/* Workbench frame — dormant/open/expanded geometry driving the tab
+            content. The state machine (workbenchApi) is provided via
+            WorkbenchProvider just below, so WorkbenchPanel and the title
+            bar's "Workbench" button/section-2 restore control share one
+            source of truth. */}
+        <WorkbenchPanel />
       </div>
     </>
   )
 
-  // Flag OFF: render the content tree exactly as before U4 — no provider
-  // wrapper, no workbench context, byte-identical DOM.
-  if (!workbenchEnabled) {
-    return content
-  }
-
-  // Flag ON: provide the shared state machine to WorkbenchPanel + the title
-  // bar's Workbench button / section-2 restore control.
   return <WorkbenchProvider value={workbenchApi}>{content}</WorkbenchProvider>
 }

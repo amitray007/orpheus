@@ -20,14 +20,28 @@
 // this repo, see CLAUDE.md, so that script is a plain assert-based check
 // rather than a framework-based test — run via `bun run test:workbench`).
 //
-// State is EPHEMERAL (plain React state) for U4 — no persistence to the DB.
-// A later unit can persist width/last-state if desired.
+// State is EPHEMERAL for U4 — in-memory only, no persistence to the DB. The
+// storage itself lives in `@/lib/workbenchStore` (a per-workspace-id keyed
+// store, same idiom as sleepStore/activityStore) rather than local
+// `useState`, specifically so it SURVIVES `WorkspaceView` unmount/remount —
+// see that module's header comment for the full rationale. This hook still
+// owns all the transition logic (dispatch through the pure reducer below,
+// keyboard shortcuts, divider drag); only the state/width VALUES are sourced
+// from the keyed store. A later unit can persist width/last-state to the DB
+// if desired.
 // ---------------------------------------------------------------------------
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
+import {
+  DEFAULT_WORKBENCH_WIDTH,
+  useWorkbenchEntry,
+  setWorkbenchEntry,
+  nextLastMode,
+  type WorkbenchState
+} from '../../lib/workbenchStore'
 
-export type WorkbenchState = 'dormant' | 'open' | 'expanded'
+export type { WorkbenchState }
 
 export type WorkbenchAction =
   | { type: 'open' }
@@ -75,7 +89,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   }
 }
 
-export const DEFAULT_WORKBENCH_WIDTH = 460
+// Re-exported so existing importers (e.g. WorkbenchPanel.tsx) keep working
+// unchanged — the value itself now lives in workbenchStore.ts alongside the
+// per-workspace entry shape it defaults to.
+export { DEFAULT_WORKBENCH_WIDTH }
 // Floor chosen so the full Git · Terminal · Files · Panes tab row plus the
 // expand/collapse + close controls stay visible without the last tab ("Panes")
 // being clipped or scrolled behind the controls. Do not lower below this
@@ -112,25 +129,60 @@ export function useWorkbenchApi(): WorkbenchApi | null {
 }
 
 /**
- * The state machine hook. Mounted ONCE (in WorkspaceView, unconditionally —
- * hooks can't be called conditionally) and provided via WorkbenchProvider so
- * both WorkbenchPanel (the frame) and WorkspaceTitleBar (the "Workbench"
- * button + section-2 restore control) can read/drive the same state.
+ * The state machine hook. Mounted ONCE per workspace (in WorkspaceView,
+ * unconditionally) and provided via WorkbenchProvider so both WorkbenchPanel
+ * (the frame) and WorkspaceTitleBar (the "Workbench" button + section-2
+ * restore control) can read/drive the same state.
  *
- * `enabled` gates the keyboard listener (Cmd/Ctrl+\ toggle, Esc step-down):
- * when false (workbenchEnabled off), the keydown effect is a no-op and binds
- * NO window listener at all, per the flag-off byte-identical requirement —
- * WorkspaceView only ever wraps children in WorkbenchProvider when the flag
- * is on, so a disabled hook instance is never actually consulted, but the
- * `enabled` gate keeps the hook itself inert regardless.
+ * `workspaceId` selects which workspace's entry (state + width) this
+ * instance reads/writes in the shared keyed store (`@/lib/workbenchStore`) —
+ * that store, not local `useState`, is what survives `WorkspaceView`
+ * unmount/remount (e.g. navigating to a project and back). Two different
+ * workspaceIds are fully independent: each keeps its own entry.
+ *
+ * Always binds the keyboard listener (Cmd/Ctrl+\ toggle, Esc step-down) —
+ * the Workbench is always on, so there's no gate to consult.
  */
-export function useWorkbenchState(enabled: boolean): WorkbenchApi {
-  const [state, setState] = useState<WorkbenchState>('dormant')
-  const [width, setWidth] = useState(DEFAULT_WORKBENCH_WIDTH)
+export function useWorkbenchState(workspaceId: string): WorkbenchApi {
+  const { state, width, lastMode } = useWorkbenchEntry(workspaceId)
   const [isDraggingDivider, setIsDraggingDivider] = useState(false)
 
+  // Reads/writes always go through the store keyed by the CURRENT
+  // workspaceId — kept in a ref so callbacks below don't need to be
+  // recreated (and re-bind the keyboard listener) on every workspace switch,
+  // while still never writing into a stale workspace's slot.
+  const workspaceIdRef = useRef(workspaceId)
+  useEffect(() => {
+    workspaceIdRef.current = workspaceId
+  }, [workspaceId])
+
+  // Mirrors the entry so callbacks that need the LATEST state/width/lastMode
+  // (divider drag math, keyboard Esc gating, dormant->reopen restore) can
+  // read it without becoming stale or needing to be re-created every render.
+  const entryRef = useRef({ state, width, lastMode })
+  useEffect(() => {
+    entryRef.current = { state, width, lastMode }
+  }, [state, width, lastMode])
+
   const dispatch = useCallback((action: WorkbenchAction) => {
-    setState((prev) => workbenchReducer(prev, action))
+    const id = workspaceIdRef.current
+    const prevEntry = entryRef.current
+    let nextState = workbenchReducer(prevEntry.state, action)
+    // Reopening from dormant (via 'toggle' or 'open') should restore whichever
+    // non-dormant mode the workbench was last in, not hardcode 'open' — the
+    // pure reducer always returns 'open' here since it has no concept of
+    // lastMode; override its result at this layer only for the dormant->open
+    // edge, keeping workbenchReducer itself (and its exhaustive transition
+    // test) unchanged. Every other transition passes through untouched.
+    if (prevEntry.state === 'dormant' && (action.type === 'toggle' || action.type === 'open')) {
+      nextState = prevEntry.lastMode
+    }
+    if (nextState === prevEntry.state) return
+    setWorkbenchEntry(id, {
+      state: nextState,
+      width: prevEntry.width,
+      lastMode: nextLastMode(nextState, prevEntry.lastMode)
+    })
   }, [])
 
   const open = useCallback(() => dispatch({ type: 'open' }), [dispatch])
@@ -143,15 +195,9 @@ export function useWorkbenchState(enabled: boolean): WorkbenchApi {
   // Keyboard: Cmd/Ctrl+\ toggles open/closed; Esc steps down one level.
   // Esc only acts when the workbench isn't dormant, so it never steals Esc
   // from other UI (modals, etc.) while the workbench has nothing to step
-  // down from. stateRef is updated in an effect (not during render) to avoid
-  // the react-hooks/refs "don't mutate refs during render" rule.
-  const stateRef = useRef(state)
+  // down from. Reads entryRef.current (kept fresh above) rather than a
+  // separate ref so there's a single source of "latest state" to maintain.
   useEffect(() => {
-    stateRef.current = state
-  }, [state])
-
-  useEffect(() => {
-    if (!enabled) return
     function handleKeyDown(e: KeyboardEvent): void {
       const isToggleChord = (e.metaKey || e.ctrlKey) && e.key === '\\'
       if (isToggleChord) {
@@ -159,14 +205,14 @@ export function useWorkbenchState(enabled: boolean): WorkbenchApi {
         dispatch({ type: 'toggle' })
         return
       }
-      if (e.key === 'Escape' && stateRef.current !== 'dormant') {
+      if (e.key === 'Escape' && entryRef.current.state !== 'dormant') {
         e.preventDefault()
         dispatch({ type: 'stepDown' })
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [dispatch, enabled])
+  }, [dispatch])
 
   // Divider drag — tracks pointer position relative to the drag-start point,
   // converts to a new docked width, and snaps to 'expanded' past the
@@ -184,50 +230,60 @@ export function useWorkbenchState(enabled: boolean): WorkbenchApi {
   // now-unmounted component's setState.
   const cleanupDragRef = useRef<() => void>(() => {})
 
-  const beginDividerDrag = useCallback(
-    (startEvent: React.MouseEvent, availableWidth: number) => {
-      startEvent.preventDefault()
-      dragOriginRef.current = {
-        startX: startEvent.clientX,
-        startWidth: width,
-        availableWidth
-      }
-      setIsDraggingDivider(true)
+  const beginDividerDrag = useCallback((startEvent: React.MouseEvent, availableWidth: number) => {
+    startEvent.preventDefault()
+    dragOriginRef.current = {
+      startX: startEvent.clientX,
+      startWidth: entryRef.current.width,
+      availableWidth
+    }
+    setIsDraggingDivider(true)
 
-      function handleMouseMove(moveEvent: MouseEvent): void {
-        const { startX, startWidth, availableWidth: avail } = dragOriginRef.current
-        // Divider is dragged left (negative dx) to grow the workbench frame
-        // (frame is docked on the right), so width grows as clientX decreases.
-        const dx = moveEvent.clientX - startX
-        const nextWidth = startWidth - dx
-        const clamped = Math.min(Math.max(nextWidth, MIN_WORKBENCH_WIDTH), avail)
+    function handleMouseMove(moveEvent: MouseEvent): void {
+      const { startX, startWidth, availableWidth: avail } = dragOriginRef.current
+      // Divider is dragged left (negative dx) to grow the workbench frame
+      // (frame is docked on the right), so width grows as clientX decreases.
+      const dx = moveEvent.clientX - startX
+      const nextWidth = startWidth - dx
+      const clamped = Math.min(Math.max(nextWidth, MIN_WORKBENCH_WIDTH), avail)
 
-        if (avail > 0 && clamped / avail >= EXPAND_SNAP_FRACTION) {
-          setState((prev) => (prev === 'open' ? 'expanded' : prev))
-          return
-        }
-        // Dragging back below the threshold un-snaps expanded -> open, and
-        // keeps tracking the width for the open state.
-        setState((prev) => (prev === 'expanded' ? 'open' : prev))
-        setWidth(clamped)
-      }
+      const id = workspaceIdRef.current
+      const prevState = entryRef.current.state
+      const prevLastMode = entryRef.current.lastMode
 
-      function handleMouseUp(): void {
-        setIsDraggingDivider(false)
-        window.removeEventListener('mousemove', handleMouseMove)
-        window.removeEventListener('mouseup', handleMouseUp)
-        cleanupDragRef.current = () => {}
+      if (avail > 0 && clamped / avail >= EXPAND_SNAP_FRACTION) {
+        const snappedState = prevState === 'open' ? 'expanded' : prevState
+        setWorkbenchEntry(id, {
+          state: snappedState,
+          width: entryRef.current.width,
+          lastMode: nextLastMode(snappedState, prevLastMode)
+        })
+        return
       }
+      // Dragging back below the threshold un-snaps expanded -> open, and
+      // keeps tracking the width for the open state.
+      const unsnappedState = prevState === 'expanded' ? 'open' : prevState
+      setWorkbenchEntry(id, {
+        state: unsnappedState,
+        width: clamped,
+        lastMode: nextLastMode(unsnappedState, prevLastMode)
+      })
+    }
 
-      window.addEventListener('mousemove', handleMouseMove)
-      window.addEventListener('mouseup', handleMouseUp)
-      cleanupDragRef.current = () => {
-        window.removeEventListener('mousemove', handleMouseMove)
-        window.removeEventListener('mouseup', handleMouseUp)
-      }
-    },
-    [width]
-  )
+    function handleMouseUp(): void {
+      setIsDraggingDivider(false)
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+      cleanupDragRef.current = () => {}
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    cleanupDragRef.current = () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [])
 
   // Unmount safety net: if the hook owner unmounts mid-drag, remove any still-
   // active drag listeners rather than leaking them.
