@@ -154,30 +154,28 @@ const api = {
   },
   projects: {
     list: (): Promise<ProjectRecord[]> => invoke('projects:list'),
-    add: (path: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:add', { path }),
-    pickAndAdd: (): Promise<ProjectRecord | null> => ipcRenderer.invoke('projects:pickAndAdd'),
-    open: (id: string): Promise<ProjectRecord> => ipcRenderer.invoke('projects:open', { id }),
+    add: (path: string): Promise<ProjectRecord> => invoke('projects:add', { path }),
+    pickAndAdd: (): Promise<ProjectRecord | null> => invoke('projects:pickAndAdd'),
+    open: (id: string): Promise<ProjectRecord> => invoke('projects:open', { id }),
     remove: (
       id: string,
       opts: { deleteWorktrees?: boolean; force?: boolean } = {}
     ): Promise<{ deleted: boolean; dirtyWorktrees: number }> =>
-      ipcRenderer.invoke('projects:remove', {
+      invoke('projects:remove', {
         id,
         deleteWorktrees: opts.deleteWorktrees ?? false,
         force: opts.force ?? false
       }),
     worktreeSummary: (projectId: string): Promise<{ count: number }> =>
-      ipcRenderer.invoke('projects:worktreeSummary', { projectId }),
-    rename: (id: string, name: string): Promise<void> =>
-      ipcRenderer.invoke('projects:rename', { id, name }),
+      invoke('projects:worktreeSummary', { projectId }),
+    rename: (id: string, name: string): Promise<void> => invoke('projects:rename', { id, name }),
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
-      ipcRenderer.invoke('projects:setExpandedInSidebar', { id, expanded }),
-    reorder: (orderedIds: string[]): Promise<void> =>
-      ipcRenderer.invoke('projects:reorder', { orderedIds }),
+      invoke('projects:setExpandedInSidebar', { id, expanded }),
+    reorder: (orderedIds: string[]): Promise<void> => invoke('projects:reorder', { orderedIds }),
     setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
-      ipcRenderer.invoke('projects:setPinned', { id, pinned }),
+      invoke('projects:setPinned', { id, pinned }),
     refreshGithub: (projectId: string): Promise<void> =>
-      ipcRenderer.invoke('projects:refreshGithub', projectId),
+      invoke('projects:refreshGithub', projectId),
     onGithubDataUpdated: (
       cb: (e: {
         projectId: string

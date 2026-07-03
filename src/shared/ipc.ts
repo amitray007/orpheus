@@ -77,6 +77,22 @@ export interface InvokeChannelMap {
       | { ok: true; path: string; txtPath: string; jsonPath: string }
       | { ok: false; error: string }
   }
+  'projects:add': { req: [{ path: string }]; res: ProjectRecord }
+  'projects:pickAndAdd': { req: []; res: ProjectRecord | null }
+  'projects:open': { req: [{ id: string }]; res: ProjectRecord }
+  'projects:remove': {
+    req: [{ id: string; deleteWorktrees?: boolean; force?: boolean }]
+    res: { deleted: boolean; dirtyWorktrees: number }
+  }
+  'projects:worktreeSummary': { req: [{ projectId: string }]; res: { count: number } }
+  'projects:rename': { req: [{ id: string; name: string }]; res: void }
+  'projects:setExpandedInSidebar': {
+    req: [{ id: string; expanded: boolean }]
+    res: void
+  }
+  'projects:reorder': { req: [{ orderedIds: string[] }]; res: void }
+  'projects:setPinned': { req: [{ id: string; pinned: boolean }]; res: ProjectRecord }
+  'projects:refreshGithub': { req: [string]; res: void }
   // … migrated domain-by-domain in follow-up commits.
 }
 
