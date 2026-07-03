@@ -212,15 +212,14 @@ const api = {
     listForProject: (
       projectId: string,
       options?: { scope?: 'active' | 'archived' | 'all' }
-    ): Promise<WorkspaceRecord[]> =>
-      ipcRenderer.invoke('workspaces:listForProject', { projectId, ...options }),
+    ): Promise<WorkspaceRecord[]> => invoke('workspaces:listForProject', { projectId, ...options }),
     create: (args: { projectId: string; name: string; cwd: string }): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:create', args),
+      invoke('workspaces:create', args),
     createWorktree: (projectId: string, params: CreateWorktreeParams): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:createWorktree', { projectId, params }),
-    open: (id: string): Promise<WorkspaceRecord> => ipcRenderer.invoke('workspaces:open', { id }),
+      invoke('workspaces:createWorktree', { projectId, params }),
+    open: (id: string): Promise<WorkspaceRecord> => invoke('workspaces:open', { id }),
     setPinned: (id: string, pinned: boolean): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:setPinned', { id, pinned }),
+      invoke('workspaces:setPinned', { id, pinned }),
     // "Archive" is a hard delete in v34+. The IPC name + label stay for
     // user-facing continuity even though there's no soft-archive anymore.
     // For worktree-backed workspaces, pass force:true to override a dirty check.
@@ -230,17 +229,16 @@ const api = {
       id: string,
       opts: { force?: boolean } = {}
     ): Promise<{ archived: boolean; wasDirty: boolean }> =>
-      ipcRenderer.invoke('workspaces:archive', { id, force: opts.force ?? false }),
+      invoke('workspaces:archive', { id, force: opts.force ?? false }),
     rename: (id: string, name: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:rename', { id, name }),
+      invoke('workspaces:rename', { id, name }),
     reorder: (projectId: string, orderedIds: string[]): Promise<void> =>
-      ipcRenderer.invoke('workspaces:reorder', { projectId, orderedIds }),
-    isDirty: (id: string): Promise<boolean> =>
-      ipcRenderer.invoke('workspace:isDirty', { workspaceId: id }),
+      invoke('workspaces:reorder', { projectId, orderedIds }),
+    isDirty: (id: string): Promise<boolean> => invoke('workspace:isDirty', { workspaceId: id }),
     onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.workspaceDirtyChanged, cb),
     getTitle: (id: string): Promise<string | null> =>
-      ipcRenderer.invoke('workspace:getTitle', { workspaceId: id }),
+      invoke('workspace:getTitle', { workspaceId: id }),
     onTitleChanged: (
       cb: (e: { workspaceId: string; title: string | null }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.workspaceTitleChanged, cb),
@@ -262,12 +260,18 @@ const api = {
       subscribe(PUSH_CHANNELS.workspacesCreated, (e) => cb(e.workspace)),
     onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.workspacesArchived, cb),
+    // NOTE (MDB-9): the busy-reject leg was `{ ok: false, reason: 'busy' }`
+    // pre-migration -- renamed to `error` here to match the ActionResult
+    // convention (`ok` + `error`). The only renderer call site
+    // (Dashboard.tsx `workspaces.close(...).catch(...)`) discards the
+    // resolved value entirely, so this is a safe rename with no follow-up
+    // renderer changes required.
     close: (
       id: string
-    ): Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }> =>
-      ipcRenderer.invoke('workspace:close', { id }),
-    reopen: (id: string): Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }> =>
-      ipcRenderer.invoke('workspace:reopen', { id }),
+    ): Promise<{ ok: true; workspace: WorkspaceRecord | null } | { ok: false; error: 'busy' }> =>
+      invoke('workspace:close', { id }),
+    reopen: (id: string): Promise<{ ok: true; workspace: WorkspaceRecord | null }> =>
+      invoke('workspace:reopen', { id }),
     onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.workspacesChanged, cb),
     onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
@@ -279,32 +283,32 @@ const api = {
         cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
       ),
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
-      ipcRenderer.invoke('workspaces:convertToLocal', { id }),
+      invoke('workspaces:convertToLocal', { id }),
     // Footer Model chip: persists a model override and suppresses the
     // resulting dirty delta (see setWorkspaceModelAndSuppressDirty in
     // src/main/index.ts) since the caller injects `/model <value>` into the
     // terminal live right after this resolves.
     setModel: (workspaceId: string, model: string): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('workspace:setModel', { workspaceId, model }),
+      invoke('workspace:setModel', { workspaceId, model }),
     // Footer Model chip: reads the effective model a workspace would launch
     // with right now (workspace override → project override → global
     // setting), via composeClaudeLaunch — the single source of truth.
     getEffectiveModel: (workspaceId: string): Promise<{ model: string }> =>
-      ipcRenderer.invoke('workspace:getEffectiveModel', { workspaceId }),
+      invoke('workspace:getEffectiveModel', { workspaceId }),
     // Footer Effort chip: persists an effort override and suppresses the
     // resulting dirty delta (see setWorkspaceSettingAndSuppressDirty in
     // src/main/index.ts) since the caller injects `/effort <value>` into the
     // terminal live right after this resolves.
     setEffort: (workspaceId: string, effort: ClaudeEffort): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('workspace:setEffort', { workspaceId, effort }),
+      invoke('workspace:setEffort', { workspaceId, effort }),
     // Footer Effort chip: reads the effective effort a workspace would launch
     // with right now, via composeClaudeLaunch — the single source of truth.
     getEffectiveEffort: (workspaceId: string): Promise<{ effort: string }> =>
-      ipcRenderer.invoke('workspace:getEffectiveEffort', { workspaceId })
+      invoke('workspace:getEffectiveEffort', { workspaceId })
   },
   worktrees: {
     branchExists: (projectId: string, branch: string): Promise<boolean> =>
-      ipcRenderer.invoke('worktrees:branchExists', { projectId, branch })
+      invoke('worktrees:branchExists', { projectId, branch })
   },
   pins: {
     listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')

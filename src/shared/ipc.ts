@@ -39,7 +39,10 @@ import type {
   UpdateProgress,
   UpdateCheckResult,
   KeepAwakeState,
-  OverlayEvent
+  OverlayEvent,
+  CreateWorktreeParams,
+  ClaudeWorkspaceSettings,
+  ClaudeEffort
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -93,6 +96,51 @@ export interface InvokeChannelMap {
   'projects:reorder': { req: [{ orderedIds: string[] }]; res: void }
   'projects:setPinned': { req: [{ id: string; pinned: boolean }]; res: ProjectRecord }
   'projects:refreshGithub': { req: [string]; res: void }
+  'workspaces:listForProject': {
+    req: [{ projectId: string; scope?: 'active' | 'archived' | 'all' }]
+    res: WorkspaceRecord[]
+  }
+  'workspaces:create': {
+    req: [{ projectId: string; name: string; cwd: string }]
+    res: WorkspaceRecord
+  }
+  'workspaces:createWorktree': {
+    req: [{ projectId: string; params: CreateWorktreeParams }]
+    res: WorkspaceRecord
+  }
+  'worktrees:branchExists': { req: [{ projectId: string; branch: string }]; res: boolean }
+  'workspaces:open': { req: [{ id: string }]; res: WorkspaceRecord }
+  'workspaces:setPinned': { req: [{ id: string; pinned: boolean }]; res: WorkspaceRecord }
+  'workspaces:archive': {
+    req: [{ id: string; force?: boolean }]
+    res: { archived: boolean; wasDirty: boolean }
+  }
+  'workspace:close': {
+    req: [{ id: string }]
+    res: { ok: true; workspace: WorkspaceRecord | null } | { ok: false; error: 'busy' }
+  }
+  'workspace:reopen': {
+    req: [{ id: string }]
+    res: { ok: true; workspace: WorkspaceRecord | null }
+  }
+  'workspaces:rename': { req: [{ id: string; name: string }]; res: WorkspaceRecord }
+  'workspaces:convertToLocal': { req: [{ id: string }]; res: WorkspaceRecord }
+  'workspaces:reorder': {
+    req: [{ projectId: string; orderedIds: string[] }]
+    res: void
+  }
+  'workspace:isDirty': { req: [{ workspaceId: string }]; res: boolean }
+  'workspace:getTitle': { req: [{ workspaceId: string }]; res: string | null }
+  'workspace:setModel': {
+    req: [{ workspaceId: string; model: string }]
+    res: ClaudeWorkspaceSettings
+  }
+  'workspace:getEffectiveModel': { req: [{ workspaceId: string }]; res: { model: string } }
+  'workspace:setEffort': {
+    req: [{ workspaceId: string; effort: ClaudeEffort }]
+    res: ClaudeWorkspaceSettings
+  }
+  'workspace:getEffectiveEffort': { req: [{ workspaceId: string }]; res: { effort: string } }
   // … migrated domain-by-domain in follow-up commits.
 }
 

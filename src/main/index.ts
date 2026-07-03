@@ -32,13 +32,7 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type {
-  DoctorResult,
-  GitStatus,
-  HealthReport,
-  CreateWorktreeParams,
-  TerminalMountResult
-} from '../shared/types'
+import type { DoctorResult, GitStatus, HealthReport, TerminalMountResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -1421,15 +1415,11 @@ handle('projects:rename', (_e, { id, name }) => renameProject(id, name))
 // Workspaces IPC
 // ---------------------------------------------------------------------------
 
-handle(
-  'workspaces:listForProject',
-  (_e, { projectId, scope }: { projectId: string; scope?: 'active' | 'archived' | 'all' }) =>
-    listWorkspacesForProject(projectId, { scope })
+handle('workspaces:listForProject', (_e, { projectId, scope }) =>
+  listWorkspacesForProject(projectId, { scope })
 )
 
-handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: string }) =>
-  createWorkspace(args)
-)
+handle('workspaces:create', (_e, args) => createWorkspace(args))
 
 // Create a worktree-backed workspace. Async + git-first transaction order:
 // resolve repo root → authoritatively enforce the offered-modes config →
@@ -1437,132 +1427,116 @@ handle('workspaces:create', (_e, args: { projectId: string; name: string; cwd: s
 // worktree → insert the DB row, rolling the worktree back if the insert fails.
 // Nothing is persisted until the worktree exists, and a failed insert leaves no
 // orphaned worktree behind.
-handle(
-  'workspaces:createWorktree',
-  async (_e, { projectId, params }: { projectId: string; params: CreateWorktreeParams }) => {
-    const project = getProject(projectId)
-    if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
+handle('workspaces:createWorktree', async (_e, { projectId, params }) => {
+  const project = getProject(projectId)
+  if (!project) throw new Error(`workspaces:createWorktree: project not found: ${projectId}`)
 
-    // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
-    // worktree workspaces are impossible there, so reject with a clear message.
-    let repoRoot: string
-    try {
-      repoRoot = await resolveMainWorktree(project.path)
-    } catch (err) {
-      if (err instanceof NotAGitRepoError) {
-        throw new Error(
-          `Cannot create a worktree workspace: ${project.path} is not a git repository`
-        )
-      }
-      throw err
+  // Resolve the main worktree root. A non-git cwd throws NotAGitRepoError —
+  // worktree workspaces are impossible there, so reject with a clear message.
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(project.path)
+  } catch (err) {
+    if (err instanceof NotAGitRepoError) {
+      throw new Error(`Cannot create a worktree workspace: ${project.path} is not a git repository`)
     }
-
-    // Authoritative enforcement (spec §7.2): re-read the offered modes in the
-    // main process and reject if worktree creation is disabled by config. The
-    // UI gate is advisory; this is the real gate.
-    const modes = await resolveOfferedModes(project.path, true)
-    if (!modes.worktree) {
-      throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
-    }
-
-    const slug = worktreeSlug(params.name)
-    const branch = params.branch?.trim() || `worktree-${slug}`
-
-    return withRepoLock(repoRoot, async () => {
-      const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
-      const baseRef = await readWorktreeBaseRef()
-
-      // If createWorktree throws, propagate — no DB row has been inserted yet.
-      const { path: worktreePath, branch: finalBranch } = await createWorktree({
-        repoRoot,
-        slug,
-        branch,
-        mode,
-        baseRef
-      })
-
-      try {
-        // createWorkspace broadcasts workspaces:created internally (same as the
-        // normal create path), so no separate broadcast is needed here.
-        return createWorkspace({
-          projectId,
-          name: params.name,
-          cwd: worktreePath,
-          worktreeParentCwd: repoRoot,
-          worktreeBranch: finalBranch
-        })
-      } catch (rowErr) {
-        // Roll back the freshly created worktree so a failed insert can't leak a
-        // dangling worktree. Force-remove since it's brand new (no user changes).
-        try {
-          await removeWorktree({ path: worktreePath, force: true })
-        } catch {
-          // Best-effort rollback; surface the original insert error regardless.
-        }
-        throw rowErr
-      }
-    })
+    throw err
   }
-)
+
+  // Authoritative enforcement (spec §7.2): re-read the offered modes in the
+  // main process and reject if worktree creation is disabled by config. The
+  // UI gate is advisory; this is the real gate.
+  const modes = await resolveOfferedModes(project.path, true)
+  if (!modes.worktree) {
+    throw new Error('Worktree workspaces are disabled for this project by .orpheus/config.yml')
+  }
+
+  const slug = worktreeSlug(params.name)
+  const branch = params.branch?.trim() || `worktree-${slug}`
+
+  return withRepoLock(repoRoot, async () => {
+    const mode = (await branchExists(repoRoot, branch)) ? 'existing' : 'new'
+    const baseRef = await readWorktreeBaseRef()
+
+    // If createWorktree throws, propagate — no DB row has been inserted yet.
+    const { path: worktreePath, branch: finalBranch } = await createWorktree({
+      repoRoot,
+      slug,
+      branch,
+      mode,
+      baseRef
+    })
+
+    try {
+      // createWorkspace broadcasts workspaces:created internally (same as the
+      // normal create path), so no separate broadcast is needed here.
+      return createWorkspace({
+        projectId,
+        name: params.name,
+        cwd: worktreePath,
+        worktreeParentCwd: repoRoot,
+        worktreeBranch: finalBranch
+      })
+    } catch (rowErr) {
+      // Roll back the freshly created worktree so a failed insert can't leak a
+      // dangling worktree. Force-remove since it's brand new (no user changes).
+      try {
+        await removeWorktree({ path: worktreePath, force: true })
+      } catch {
+        // Best-effort rollback; surface the original insert error regardless.
+      }
+      throw rowErr
+    }
+  })
+})
 
 // Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
-handle(
-  'worktrees:branchExists',
-  async (_e, { projectId, branch }: { projectId: string; branch: string }) => {
-    const project = getProject(projectId)
-    if (!project) return false
-    let repoRoot: string
-    try {
-      repoRoot = await resolveMainWorktree(project.path)
-    } catch {
-      return false
-    }
-    return branchExists(repoRoot, branch)
+handle('worktrees:branchExists', async (_e, { projectId, branch }) => {
+  const project = getProject(projectId)
+  if (!project) return false
+  let repoRoot: string
+  try {
+    repoRoot = await resolveMainWorktree(project.path)
+  } catch {
+    return false
   }
-)
+  return branchExists(repoRoot, branch)
+})
 
-handle('workspaces:open', (_e, { id }: { id: string }) => openWorkspace(id))
+handle('workspaces:open', (_e, { id }) => openWorkspace(id))
 
-handle('workspaces:setPinned', (_e, { id, pinned }: { id: string; pinned: boolean }) =>
-  setWorkspacePinned(id, pinned)
-)
+handle('workspaces:setPinned', (_e, { id, pinned }) => setWorkspacePinned(id, pinned))
 
-handle('workspaces:archive', async (_e, { id, force = false }: { id: string; force?: boolean }) => {
+handle('workspaces:archive', async (_e, { id, force = false }) => {
   return await performArchive(id, force)
 })
 
-handle('workspace:close', (_e, { id }: { id: string }) => {
+handle('workspace:close', (_e, { id }) => {
   const status = getWorkspaceActivity(id)
   if (status === 'in_progress') {
-    return { ok: false as const, reason: 'busy' as const }
+    return { ok: false as const, error: 'busy' as const }
   }
   const workspace = performClose(id)
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-handle('workspace:reopen', (_e, { id }: { id: string }) => {
+handle('workspace:reopen', (_e, { id }) => {
   const workspace = reopenWorkspace(id)
   return { ok: true as const, workspace: workspace ?? null }
 })
 
-handle('workspaces:rename', (_e, { id, name }: { id: string; name: string }) =>
-  renameWorkspace(id, name)
-)
+handle('workspaces:rename', (_e, { id, name }) => renameWorkspace(id, name))
 
 // Convert a worktree-backed workspace to a plain local workspace (non-destructive:
 // does NOT delete the branch or worktree directory). Sets cwd = worktreeParentCwd
 // and nulls the worktree fields, then broadcasts workspaces:changed.
-handle('workspaces:convertToLocal', (_e, { id }: { id: string }) => convertWorktreeToLocal(id))
+handle('workspaces:convertToLocal', (_e, { id }) => convertWorktreeToLocal(id))
 
-handle(
-  'workspaces:reorder',
-  (_e, { projectId, orderedIds }: { projectId: string; orderedIds: string[] }) =>
-    reorderWorkspaces(projectId, orderedIds)
+handle('workspaces:reorder', (_e, { projectId, orderedIds }) =>
+  reorderWorkspaces(projectId, orderedIds)
 )
 
-handle('workspace:isDirty', (_e, { workspaceId }: { workspaceId: string }): boolean =>
-  dirtyWorkspaces.has(workspaceId)
-)
+handle('workspace:isDirty', (_e, { workspaceId }) => dirtyWorkspaces.has(workspaceId))
 
 // ---------------------------------------------------------------------------
 // Pins IPC
@@ -1792,7 +1766,7 @@ handle(
 // dirty delta (the chip also injects `/model <value>` into the terminal live
 // right after this resolves, so the running process already matches — see
 // setWorkspaceSettingAndSuppressDirty above).
-handle('workspace:setModel', (_e, args: { workspaceId: string; model: string }) => {
+handle('workspace:setModel', (_e, args) => {
   return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { model: args.model }, 'model')
 })
 
@@ -1800,7 +1774,7 @@ handle('workspace:setModel', (_e, args: { workspaceId: string; model: string }) 
 // with right now (workspace override → project override → global setting),
 // by reusing composeClaudeLaunch verbatim — the single source of truth for
 // launch composition — instead of duplicating its resolution precedence.
-handle('workspace:getEffectiveModel', (_e, args: { workspaceId: string }) => {
+handle('workspace:getEffectiveModel', (_e, args) => {
   const ws = getWorkspace(args.workspaceId)
   const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
   const m = launch.flags.match(/^--model\s+(\S+)/)
@@ -1811,14 +1785,14 @@ handle('workspace:getEffectiveModel', (_e, args: { workspaceId: string }) => {
 // dirty delta (the chip also injects `/effort <value>` into the terminal live
 // right after this resolves, so the running process already matches — see
 // setWorkspaceSettingAndSuppressDirty above).
-handle('workspace:setEffort', (_e, args: { workspaceId: string; effort: ClaudeEffort }) => {
+handle('workspace:setEffort', (_e, args) => {
   return setWorkspaceSettingAndSuppressDirty(args.workspaceId, { effort: args.effort }, 'effort')
 })
 
 // Footer Effort chip: read the TRUE effective effort a workspace would launch
 // with right now, by reusing composeClaudeLaunch verbatim. Not anchored to
 // start-of-string (unlike model) because --effort is not always flagParts[0].
-handle('workspace:getEffectiveEffort', (_e, args: { workspaceId: string }) => {
+handle('workspace:getEffectiveEffort', (_e, args) => {
   const ws = getWorkspace(args.workspaceId)
   const launch = composeClaudeLaunch(ws?.projectId, args.workspaceId)
   const m = launch.flags.match(/(?:^|\s)--effort\s+(\S+)/)
@@ -2906,11 +2880,7 @@ handle('footerActions:resetDefaults', () => {
   resetFooterActionsToDefaults()
 })
 
-handle(
-  'workspace:getTitle',
-  (_e, { workspaceId }: { workspaceId: string }): string | null =>
-    workspaceTitles.get(workspaceId) ?? null
-)
+handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(workspaceId) ?? null)
 
 // ---------------------------------------------------------------------------
 // Keep Awake IPC
