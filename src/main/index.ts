@@ -186,7 +186,10 @@ import {
   getTitle,
   setTitle,
   deleteTitle,
-  seedTitle
+  seedTitle,
+  setOverlayFallbackTimer,
+  clearOverlayFallbackTimer,
+  takeOverlayFallbackTimer
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
@@ -203,10 +206,6 @@ import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
-
-// Fallback auto-hide timers for loading overlays — ensures a stuck overlay
-// is always dismissed even if claude never registers a session file.
-const overlayFallbackTimers = new Map<string, NodeJS.Timeout>()
 
 let notifyServer: { sockPath: string; close: () => void } | null = null
 let commandServer: { sockPath: string; token: string; close: () => void } | null = null
@@ -442,11 +441,7 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   deleteTitle(workspaceId)
-  const overlayTimer = overlayFallbackTimers.get(workspaceId)
-  if (overlayTimer) {
-    clearTimeout(overlayTimer)
-    overlayFallbackTimers.delete(workspaceId)
-  }
+  clearOverlayFallbackTimer(workspaceId)
   injectLocks.delete(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
 }
@@ -1750,10 +1745,13 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
     } else {
       // Fallback: ensure the overlay is always dismissed after 10s even if
       // claude never registers a session file (e.g. auth failure, crash).
-      const prev = overlayFallbackTimers.get(workspaceId)
-      if (prev) clearTimeout(prev)
       const t = setTimeout(() => {
-        overlayFallbackTimers.delete(workspaceId)
+        // Self-deleting: this callback is running because the timer already
+        // fired, so remove the map entry directly (takeOverlayFallbackTimer)
+        // rather than clearOverlayFallbackTimer, which would call
+        // clearTimeout on an already-fired timer — harmless on Node, but
+        // semantically wrong for a timer that's mid-callback.
+        takeOverlayFallbackTimer(workspaceId)
         logDiagMain({
           category: 'anomaly',
           level: 'warn',
@@ -1763,7 +1761,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
         })
         hideLoadingOverlay(workspaceId)
       }, 10000)
-      overlayFallbackTimers.set(workspaceId, t)
+      setOverlayFallbackTimer(workspaceId, t)
     }
   } else {
     // Surface already existed (re-attach). If a worktree workspace showed the
@@ -1798,11 +1796,7 @@ handle('terminal:hide', (_e, { workspaceId }): void => {
   const addon = loadTerminalAddon()
   // If the user navigates away mid-boot, dismiss the overlay so it doesn't
   // outlive its parent surface in the contentView.
-  const fallback = overlayFallbackTimers.get(workspaceId)
-  if (fallback) {
-    clearTimeout(fallback)
-    overlayFallbackTimers.delete(workspaceId)
-  }
+  clearOverlayFallbackTimer(workspaceId)
   hideLoadingOverlay(workspaceId)
   try {
     addon.hide(workspaceId)
@@ -1896,11 +1890,7 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   //
   // Clean up surface-level mount state that is always safe to evict — it is
   // re-seeded by the next terminal:mount call in both scenarios.
-  const fallbackTimer = overlayFallbackTimers.get(workspaceId)
-  if (fallbackTimer) {
-    clearTimeout(fallbackTimer)
-    overlayFallbackTimers.delete(workspaceId)
-  }
+  clearOverlayFallbackTimer(workspaceId)
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   deleteLaunchSnapshot(workspaceId)
