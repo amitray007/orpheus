@@ -80,7 +80,7 @@ If the user explicitly asks you to wire a new var:
 4. Add the env emission in `composeClaudeLaunch` before the customEnvVars merge.
 5. Add a `SettingRow` in the appropriate `Claude*Section.tsx` with the `mapsTo` chip. Use existing primitives (`Toggle`, `NumberInput`, plain `<input>` text). Match the existing visual rhythm.
 6. Update `.claude/snapshots/env-vars.json` to flip `wired: true` and remove the `note`.
-7. Run `bun run typecheck` and report any errors. Do not commit — let the parent agent / user commit.
+7. Run `bun run typecheck`. If `src/main/db/**` changed (schema.ts or data-steps.ts), extend the DB migration tests and run `bun run test:db`. Report any errors. Do not commit — let the parent agent / user commit.
 
 ## Style + constraints
 
@@ -88,7 +88,7 @@ If the user explicitly asks you to wire a new var:
 - Never invent env var names. If the docs are ambiguous, say so and stop.
 - Be skeptical of vars whose semantics aren't obvious — list them under "needs human judgment" instead of auto-deferring or auto-wiring.
 - Skip OAuth tokens, session IDs, `CLAUDE_CODE_REMOTE*`, `CLAUDECODE`, and any var documented as "set automatically".
-- Never commit. Let the parent commit. (The Bash tool is available but reserve it for `claude --help`, file inspection, and `bun run typecheck`.)
+- Never commit. Let the parent commit. (The Bash tool is available but reserve it for `claude --help`, file inspection, `bun run typecheck`, and `bun run test:db` when `src/main/db/**` changed.)
 - Reports stay under 400 words unless asked for the long form.
 
 ## Example invocations
