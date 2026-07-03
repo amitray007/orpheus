@@ -356,10 +356,12 @@ export function renderDocModelAsText(model: DocModel): string {
  * Escape a value for safe placement inside a markdown table cell: a literal
  * `|` (e.g. a valueHint like `<id|name|path>`, or an enum values list joined
  * with ` | `) would otherwise be parsed as a column separator and corrupt the
- * table. Newlines are also flattened since a table cell must be single-line.
+ * table. Backslashes are escaped first so a literal `\` in the input can't
+ * collide with (or be mistaken for) the escaping we add for `|`. Newlines
+ * are also flattened since a table cell must be single-line.
  */
 function mdCell(value: string): string {
-  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 }
 
 /**

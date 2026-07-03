@@ -1201,6 +1201,7 @@ export function startCommandServer(deps: CommandServerDeps): {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
+          console.error('[commandServer] handler error:', err)
           if (!res.writableEnded) {
             try {
               res.writeHead(200, { 'Content-Type': 'application/json' })

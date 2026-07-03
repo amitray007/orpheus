@@ -13,7 +13,7 @@
  * clobber that managed copy, so it is locked behind ORPHEUS_ALLOW_PROD_INSTALL=1
  * and must be invoked deliberately. The agent/build loop never sets this flag.
  */
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -81,7 +81,7 @@ const target = `/Applications/${appName}`
 
 const isAppRunning = () => {
   try {
-    execSync(`pgrep -fl "/Applications/${appName}/Contents/MacOS/"`, { stdio: 'pipe' })
+    execFileSync('pgrep', ['-fl', `/Applications/${appName}/Contents/MacOS/`], { stdio: 'pipe' })
     return true
   } catch {
     return false
