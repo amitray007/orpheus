@@ -102,16 +102,6 @@ import {
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
-import {
-  listSlashCommands,
-  listSubagents,
-  addSlashCommand,
-  updateSlashCommand,
-  deleteSlashCommand,
-  addSubagent,
-  updateSubagent,
-  deleteSubagent
-} from './claudeAgents'
 import { listClaudeHooks, addHook, updateHook, deleteHook } from './claudeHooks'
 import { onActivityBatch } from './activitySink'
 import {
@@ -218,6 +208,7 @@ import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
 import { registerMcpIpc } from './ipc/mcp'
+import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1455,32 +1446,7 @@ handle('ghosttySettings:update', (_e, patch) => {
 
 registerMcpIpc()
 
-// ---------------------------------------------------------------------------
-// Claude Agents IPC
-// ---------------------------------------------------------------------------
-
-handle('claudeAgents:listSlashCommands', () => listSlashCommands())
-handle('claudeAgents:listSubagents', () => listSubagents())
-
-handle('claudeAgents:addSlashCommand', (_e, draft) => addSlashCommand(draft))
-handle('claudeAgents:updateSlashCommand', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return updateSlashCommand(args.filePath, args.draft)
-})
-handle('claudeAgents:deleteSlashCommand', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return deleteSlashCommand(args.filePath)
-})
-
-handle('claudeAgents:addSubagent', (_e, draft) => addSubagent(draft))
-handle('claudeAgents:updateSubagent', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return updateSubagent(args.filePath, args.draft)
-})
-handle('claudeAgents:deleteSubagent', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return deleteSubagent(args.filePath)
-})
+registerClaudeAgentsIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Hooks IPC
