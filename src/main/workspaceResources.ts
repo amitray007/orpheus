@@ -134,8 +134,7 @@ export function clearOverlayFallbackTimer(workspaceId: string): void {
  * fired: removes the map entry WITHOUT calling clearTimeout (the timer is
  * already firing/fired — clearing it again is a harmless no-op on Node's
  * Timeout, but doing so here would misleadingly suggest this path can cancel
- * a still-pending timer). Returns nothing; callers that need the timer value
- * for logging should read it before it fires via getOverlayFallbackTimer.
+ * a still-pending timer).
  */
 export function takeOverlayFallbackTimer(workspaceId: string): void {
   overlayFallbackTimers.delete(workspaceId)
