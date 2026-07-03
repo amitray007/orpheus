@@ -26,7 +26,10 @@ import {
 } from '../claudeSettings'
 import type { ClaudeLaunch } from '../claudeSettings'
 import { getClaudeProjectSettings, updateClaudeProjectSettings } from '../claudeProjectSettings'
-import { getClaudeWorkspaceSettings, updateClaudeWorkspaceSettings } from '../claudeWorkspaceSettings'
+import {
+  getClaudeWorkspaceSettings,
+  updateClaudeWorkspaceSettings
+} from '../claudeWorkspaceSettings'
 import type { ClaudeWorkspaceSettings, ClaudeEffort } from '../../shared/types'
 import {
   getLaunchSnapshot,

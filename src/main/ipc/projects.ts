@@ -26,7 +26,11 @@ import {
 } from '../projects'
 import { withRepoLock, removeWorktree, isWorktreeDirty } from '../worktrees'
 import { refreshGithubData } from '../githubAvatar'
-import { listWorkspacesForProject, countWorktreeWorkspaces, listWorktreeWorkspaces } from '../workspaces'
+import {
+  listWorkspacesForProject,
+  countWorktreeWorkspaces,
+  listWorktreeWorkspaces
+} from '../workspaces'
 import { logDiagMain } from '../diagnostics'
 import { DIAG_EVENTS } from '../../shared/diagEvents'
 import { handle } from './handle'
