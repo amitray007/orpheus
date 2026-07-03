@@ -34,16 +34,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { DoctorResult, HealthReport } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
-import {
-  getGitStatus,
-  listBranches,
-  listCommits,
-  countCommits,
-  startGitWatch,
-  stopGitWatch,
-  stopAllGitWatches
-} from './git'
-import { getPrForBranch } from './github'
+import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
 import { getDb } from './db'
 import {
   listProjects,
@@ -251,6 +242,8 @@ import {
 } from './overlayLayer'
 import { PUSH_CHANNELS } from '../shared/ipc'
 import { handle } from './ipc/handle'
+import { assertAbsolutePath, assertManagedConfigPath, isSafeExternalUrl } from './ipc/validate'
+import { registerGitIpc } from './ipc/git'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1152,59 +1145,6 @@ async function checkClaude(): Promise<{
 // IPC handlers
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// IPC input-validation helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Assert that `value` is a non-empty string and an absolute filesystem path.
- * Throws on any renderer-supplied value that isn't a clean absolute path.
- */
-function assertAbsolutePath(value: unknown, label: string): asserts value is string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`IPC validation: ${label} must be a non-empty string`)
-  }
-  if (!path.isAbsolute(value)) {
-    throw new Error(`IPC validation: ${label} must be an absolute path`)
-  }
-}
-
-/**
- * Assert that `value` is an absolute path confined to a legitimate Claude
- * config root: the user's home directory (for `~/.claude/...` / `~/.claude.json`)
- * or any registered project's directory (for project-scoped settings files).
- * Used for renderer-supplied config-file paths so a compromised renderer cannot
- * redirect a write/delete/open at an arbitrary system path.
- */
-function assertManagedConfigPath(value: unknown, label: string): asserts value is string {
-  assertAbsolutePath(value, label)
-  const v = value
-  const isUnder = (root: string): boolean => v === root || v.startsWith(root + path.sep)
-  if (isUnder(os.homedir())) return
-  for (const project of listProjects()) {
-    if (project.path && isUnder(project.path)) return
-  }
-  throw new Error(
-    `IPC validation: ${label} must be under the home directory or a registered project`
-  )
-}
-
-const ALLOWED_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
-
-/**
- * Return true iff `url` is safe to pass to shell.openExternal().
- * Only http, https, and mailto are permitted — blocks file:, javascript:, etc.
- */
-function isSafeExternalUrl(url: unknown): url is string {
-  if (typeof url !== 'string' || url.length === 0) return false
-  try {
-    const { protocol } = new URL(url)
-    return ALLOWED_EXTERNAL_SCHEMES.has(protocol)
-  } catch {
-    return false
-  }
-}
-
 handle('config:openFolder', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory', 'promptToCreate']
@@ -1999,29 +1939,7 @@ handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
   return showContextMenu(items, win)
 })
 
-// ---------------------------------------------------------------------------
-// Git IPC
-// ---------------------------------------------------------------------------
-
-handle('git:status', (_e, { cwd }) => getGitStatus(cwd))
-
-handle('git:branches', async (_e, { cwd }) => {
-  const result = await listBranches(cwd)
-  return result
-})
-
-handle('git:log', (_e, args) => listCommits(args.cwd, args))
-
-handle('git:count', async (_e, args) => {
-  const result = await countCommits(args.cwd, args)
-  return result
-})
-
-// ---------------------------------------------------------------------------
-// GitHub IPC — `gh` CLI passthrough; null on every failure mode.
-// ---------------------------------------------------------------------------
-
-handle('github:prForBranch', (_e, { cwd, branch }) => getPrForBranch(cwd, branch))
+registerGitIpc()
 
 // ---------------------------------------------------------------------------
 // Shell helpers IPC
