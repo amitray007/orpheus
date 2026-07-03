@@ -107,7 +107,7 @@ export function WorkbenchPanel(): React.JSX.Element | null {
       >
         <div className="flex items-center justify-between gap-2 h-8 px-2 border-b border-border-default flex-shrink-0">
           <WorkbenchTabStrip activeTab={activeTab} onChange={setActiveTab} />
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0 pl-2 border-l border-border-default">
             <button
               type="button"
               onClick={toggleExpand}

@@ -70,7 +70,11 @@ export function WorkbenchTabStrip({
   }
 
   return (
-    <div role="tablist" aria-label="Workbench tabs" className="flex items-center gap-0.5 min-w-0">
+    <div
+      role="tablist"
+      aria-label="Workbench tabs"
+      className="flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto no-scrollbar"
+    >
       {WORKBENCH_TABS.map(({ id, label, icon: Icon }) => {
         const isActive = id === activeTab
         return (

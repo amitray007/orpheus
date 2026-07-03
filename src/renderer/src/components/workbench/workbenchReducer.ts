@@ -76,7 +76,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 }
 
 export const DEFAULT_WORKBENCH_WIDTH = 460
-export const MIN_WORKBENCH_WIDTH = 320
+// Floor chosen so the full Git · Terminal · Files · Panes tab row plus the
+// expand/collapse + close controls stay visible without the last tab ("Panes")
+// being clipped or scrolled behind the controls. Do not lower below this
+// without shrinking the tab row.
+export const MIN_WORKBENCH_WIDTH = 400
 // Snap threshold: dragging the divider so the workbench frame would occupy
 // more than this fraction of the available (claude + workbench) width snaps
 // straight into 'expanded' instead of continuing to track the drag as a huge
