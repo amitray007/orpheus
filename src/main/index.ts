@@ -1326,73 +1326,79 @@ handle('terminal:getSurfacePhase', (_e, { workspaceId }) => {
 })
 
 // ---------------------------------------------------------------------------
-// TEMPORARY — U6a native multi-surface spike proof.
+// Workbench Terminal-tab IPC — U6b (P2)
 //
-// This handler exists SOLELY to prove, end-to-end, that the addon.mm slot
-// model (g_visibleBySlot, keyed by the "workbench:" workspaceId prefix) lets
-// a second libghostty surface be simultaneously visible + independently
-// focusable alongside claude's surface, without evicting it. It bypasses ALL
-// of the real terminal:mount machinery (worktree reconcile, claudeSettings
-// composition, workspace lookups, activity pipeline) on purpose — those are
-// out of scope for U6a (a native-layer spike) and belong to U6b/U7/U8, which
-// will replace this with a real workbench:* mount path once the launch
-// composer is generalized (U7) and the Terminal tab is built (U8).
+// Mounts ONE plain interactive login shell ($SHELL, not orpheus-claude.sh)
+// per claude workspace, surfaced inside the Workbench's Terminal tab. This is
+// the minimal U7 (generalized launch composer): no claudeSettings layering,
+// no worktree reconcile, no activity pipeline — just a real shell at the
+// workspace's cwd. It reuses the native addon's slot model proven in U6a:
+// keying the surface `workbench:<claudeWorkspaceId>` routes it to the
+// Workbench slot, so it coexists with claude's `workspaceId`-keyed surface
+// without evicting it (see docs/learnings/native-multisurface-investigation.md §1).
 //
-// dev-only: gated by isDev so it never ships in a packaged build. Remove this
-// handler + its ipc.ts channel entry once U6b lands its real equivalent.
+// Only one workbench surface exists per claude workspace — the Terminal tab
+// (U8) will generalize this to a tab strip of many; for U6b there is exactly
+// one shell, reused across open<->expanded (hide, not destroy) and destroyed
+// only when the owning claude workspace itself is torn down.
 // ---------------------------------------------------------------------------
-const DEV_WORKBENCH_PROBE_ID = 'workbench:u6a-spike-probe'
 
-handle('terminal:devWorkbenchProbe', (e, { action, rect }) => {
-  if (!isDev) {
-    return { ok: false, message: 'devWorkbenchProbe is dev-only' }
-  }
+function workbenchSlotId(claudeWorkspaceId: string): string {
+  return `workbench:${claudeWorkspaceId}`
+}
 
-  try {
-    const addon = loadTerminalAddon()
-    const win = BrowserWindow.fromWebContents(e.sender)
-    if (!win) return { ok: false, message: 'no BrowserWindow for sender' }
+handle('workbench:mount', (e, { workspaceId, rect, scaleFactor }) => {
+  const addon = loadTerminalAddon()
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('workbench:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
 
-    if (action === 'mount') {
-      const nativeHandle = win.getNativeWindowHandle()
-      // Disjoint rect: caller (devtools) supplies one; default to a small
-      // fixed box in the bottom-right corner so it visibly does not overlap
-      // the claude terminal column without any renderer wiring at all.
-      const probeRect = rect ?? { x: 640, y: 360, w: 360, h: 240 }
-      // A plain interactive login shell — NOT orpheus-claude.sh (that
-      // unconditionally execs `claude`; this proof is native-layer only and
-      // must not spawn a second claude session). /bin/zsh is always present.
-      const result = addon.mount(nativeHandle, {
-        workspaceId: DEV_WORKBENCH_PROBE_ID,
-        rect: probeRect,
-        scaleFactor: win.webContents.getZoomFactor() || 1,
-        cwd: process.env['HOME'],
-        command: '/bin/zsh',
-        env: {}
-      })
-      const phase = addon.getSurfacePhase(DEV_WORKBENCH_PROBE_ID)
-      return {
-        ok: true,
-        message: `mounted workbench probe (created=${result.created}) phase=${phase}`,
-        phase
-      }
-    }
-    if (action === 'hide') {
-      addon.hide(DEV_WORKBENCH_PROBE_ID)
-      const phase = addon.getSurfacePhase(DEV_WORKBENCH_PROBE_ID)
-      return { ok: true, message: `hid workbench probe phase=${phase}`, phase }
-    }
-    if (action === 'destroy') {
-      addon.destroy(DEV_WORKBENCH_PROBE_ID)
-      return { ok: true, message: 'destroyed workbench probe' }
-    }
-    return { ok: false, message: `unknown action: ${String(action)}` }
-  } catch (err) {
-    return {
-      ok: false,
-      message: `devWorkbenchProbe(${action}) threw: ${err instanceof Error ? err.message : String(err)}`
-    }
-  }
+  const ws = getWorkspace(workspaceId)
+  const cwd = ws?.cwd ?? process.env['HOME']
+
+  // Plain interactive login shell — NOT orpheus-claude.sh (that unconditionally
+  // execs `claude`; the Workbench Terminal tab must not spawn a second claude
+  // session). Falls back to /bin/zsh (always present on macOS) when $SHELL is
+  // unset in the main process environment.
+  const shell = process.env['SHELL'] || '/bin/zsh'
+
+  const slotId = workbenchSlotId(workspaceId)
+  const result = addon.mount(nativeHandle, {
+    workspaceId: slotId,
+    rect,
+    scaleFactor,
+    cwd,
+    command: shell,
+    env: {}
+  })
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_MOUNT,
+    workspaceId: slotId,
+    data: { created: result.created, workbench: true }
+  })
+  // Return the CALLER's workspaceId (the owning claude workspace), not the
+  // derived slotId — the slot key is an internal addon-routing detail.
+  // Callers that need to address the surface directly go through
+  // workbenchSlotId(...) themselves (or, more commonly, through the other
+  // workbench:* handlers here, which already derive it internally).
+  return { workspaceId, created: result.created }
+})
+
+handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
+  const addon = loadTerminalAddon()
+  addon.resize(workbenchSlotId(workspaceId), rect, scaleFactor)
+})
+
+handle('workbench:hide', (_e, { workspaceId }): void => {
+  const addon = loadTerminalAddon()
+  addon.hide(workbenchSlotId(workspaceId))
+})
+
+handle('workbench:destroy', (_e, { workspaceId }): void => {
+  const addon = loadTerminalAddon()
+  addon.destroy(workbenchSlotId(workspaceId))
 })
 
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {

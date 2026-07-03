@@ -139,15 +139,6 @@ const api = {
       workspaceId: string
     ): Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'> =>
       invoke('terminal:getSurfacePhase', { workspaceId }),
-    // TEMPORARY — U6a native multi-surface spike proof only (dev-only, main
-    // process no-ops outside isDev). Remove alongside the ipc.ts channel and
-    // index.ts handler once U6b lands the real workbench mount path. Call
-    // from devtools: `window.api.terminal.devWorkbenchProbe('mount')`.
-    devWorkbenchProbe: (
-      action: 'mount' | 'hide' | 'destroy',
-      rect?: TerminalRect
-    ): Promise<{ ok: boolean; message: string; phase?: string }> =>
-      invoke('terminal:devWorkbenchProbe', { action, rect }),
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),
@@ -159,6 +150,22 @@ const api = {
         occluded: boolean
       }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
+  },
+  // Workbench Terminal-tab surface (U6b) — a single plain-$SHELL libghostty
+  // surface per claude workspace, keyed `workbench:<workspaceId>` in the
+  // native addon. `workspaceId` here is always the owning claude workspace's
+  // id (the main process derives the slot key internally).
+  workbench: {
+    mount: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number
+    ): Promise<{ workspaceId: string; created: boolean }> =>
+      invoke('workbench:mount', { workspaceId, rect, scaleFactor }),
+    resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
+      invoke('workbench:resize', { workspaceId, rect, scaleFactor }),
+    hide: (workspaceId: string): Promise<void> => invoke('workbench:hide', { workspaceId }),
+    destroy: (workspaceId: string): Promise<void> => invoke('workbench:destroy', { workspaceId })
   },
   config: {
     openFolder: (): Promise<string | null> => invoke('config:openFolder')

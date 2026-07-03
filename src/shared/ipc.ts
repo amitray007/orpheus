@@ -367,16 +367,22 @@ export interface InvokeChannelMap {
   'terminal:submit': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:clearInput': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:canInject': { req: [{ workspaceId: string }]; res: boolean }
-  // TEMPORARY — U6a native multi-surface spike proof only. U6b replaces this
-  // with the real Workbench Terminal-tab mount/hide IPC (workbench:*); this
-  // channel exists solely to prove two libghostty surfaces (claude's + a
-  // throwaway "workbench:<id>"-slotted one) can be simultaneously visible in
-  // disjoint rects without evicting each other. Remove when U6b lands its own
-  // real mount path. dev-only: gated by isDev in the main-process handler.
-  'terminal:devWorkbenchProbe': {
-    req: [{ action: 'mount' | 'hide' | 'destroy'; rect?: TerminalRect }]
-    res: { ok: boolean; message: string; phase?: string }
+  // Workbench Terminal-tab surface (U6b) — mounts ONE plain $SHELL surface
+  // per claude workspace, keyed `workbench:<workspaceId>` in the native addon
+  // (see docs/learnings/native-multisurface-investigation.md §1 for the slot
+  // model this relies on). `workspaceId` here is always the OWNING claude
+  // workspace's id, not the derived slot key — the main-process handler
+  // derives the slot key internally.
+  'workbench:mount': {
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
+    res: { workspaceId: string; created: boolean }
   }
+  'workbench:resize': {
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
+    res: void
+  }
+  'workbench:hide': { req: [{ workspaceId: string }]; res: void }
+  'workbench:destroy': { req: [{ workspaceId: string }]; res: void }
   'overlay:showDescriptor': { req: [{ descriptor: OverlayDescriptor }]; res: OverlayShowResult }
   'overlay:update': { req: [{ id: string; props: Record<string, unknown> }]; res: void }
   'overlay:hide': { req: [{ id: string }]; res: void }
