@@ -88,6 +88,16 @@ let debounceTimer: NodeJS.Timeout | null = null
 let intervalHandle: NodeJS.Timeout | null = null
 let stopped = false
 
+/**
+ * PERF-6: the interval backstop widens once the fs.watch() watcher is up —
+ * at that point the interval only needs to catch watcher gaps, not carry the
+ * whole reconcile cadence. If the watcher was never started, or its 'error'
+ * handler tears it down later (see _startWatcher), we fall back to the tight
+ * interval since it's then the ONLY reconcile trigger.
+ */
+const INTERVAL_WATCHER_HEALTHY_MS = 15_000
+const INTERVAL_FALLBACK_MS = 2_500
+
 /** Tracks filenames that have already emitted a parse-error warning; cleared when file becomes valid or disappears. */
 const knownBadSessionFiles = new Set<string>()
 /** Tracks claude versions that have already emitted an unknown-version warning; never cleared (bounded by distinct versions seen). */
@@ -181,6 +191,24 @@ export function getWorkspaceFileInfo(workspaceId: string): {
   return result
 }
 
+/**
+ * Self-rescheduling interval backstop. Runs _runReconcile() then re-arms
+ * itself at INTERVAL_WATCHER_HEALTHY_MS when `watcher` is non-null (fs.watch
+ * confirmed up), or INTERVAL_FALLBACK_MS when it's null (never started, or
+ * torn down after an 'error' — see _startWatcher). Re-evaluated on every
+ * tick so a watcher that dies mid-run drops back to fast polling on the
+ * very next cycle.
+ */
+function scheduleIntervalBackstop(): void {
+  if (stopped) return
+  const delay = watcher ? INTERVAL_WATCHER_HEALTHY_MS : INTERVAL_FALLBACK_MS
+  intervalHandle = setTimeout(() => {
+    void _runReconcile().finally(() => {
+      scheduleIntervalBackstop()
+    })
+  }, delay)
+}
+
 export function startSessionStateService(): { stop: () => void } {
   stopped = false
 
@@ -197,9 +225,11 @@ export function startSessionStateService(): { stop: () => void } {
   // reconcileRunning/dirty, so this is safe, and it avoids the interval
   // resetting the 75ms debounce timer under event storms (which could
   // otherwise starve reconcile).
-  intervalHandle = setInterval(() => {
-    void _runReconcile()
-  }, 2500)
+  //
+  // Self-rescheduling (not a fixed setInterval) so the delay can widen once
+  // the watcher is confirmed healthy, and narrow back down if the watcher
+  // later dies (its 'error' handler nulls `watcher` — see _startWatcher).
+  scheduleIntervalBackstop()
 
   // Initial reconcile
   scheduleReconcile()
@@ -222,7 +252,7 @@ export function startSessionStateService(): { stop: () => void } {
         debounceTimer = null
       }
       if (intervalHandle) {
-        clearInterval(intervalHandle)
+        clearTimeout(intervalHandle)
         intervalHandle = null
       }
       if (watcher) {
