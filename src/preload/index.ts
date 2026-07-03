@@ -139,6 +139,15 @@ const api = {
       workspaceId: string
     ): Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'> =>
       invoke('terminal:getSurfacePhase', { workspaceId }),
+    // TEMPORARY — U6a native multi-surface spike proof only (dev-only, main
+    // process no-ops outside isDev). Remove alongside the ipc.ts channel and
+    // index.ts handler once U6b lands the real workbench mount path. Call
+    // from devtools: `window.api.terminal.devWorkbenchProbe('mount')`.
+    devWorkbenchProbe: (
+      action: 'mount' | 'hide' | 'destroy',
+      rect?: TerminalRect
+    ): Promise<{ ok: boolean; message: string; phase?: string }> =>
+      invoke('terminal:devWorkbenchProbe', { action, rect }),
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),

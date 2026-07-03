@@ -142,9 +142,51 @@ struct GhosttySurfaceEntry {
 // workspaceId → entry
 static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 
-// The workspace that should currently be visible+focused. At most one at a time
-// (single-BrowserWindow invariant — Orpheus runs one window).
-static std::string g_visibleWorkspaceId;
+// ---------------------------------------------------------------------------
+// U6a slot model — relaxes the single-visible invariant from "at most one
+// surface visible, period" to "at most one surface visible PER SLOT."
+//
+// A slot is a disjoint eviction scope: switching claude workspace A → B still
+// evicts A (same "claude" slot), but showing a Workbench surface must NOT
+// evict the currently-visible claude surface (different slot) — that's the
+// entire point of U6 (two surfaces coexisting in disjoint rects).
+//
+// Slot is derived from the workspaceId KEY ITSELF via a prefix convention —
+// this avoids changing the Mount/NAPI signature (no new "slot" param) for
+// this spike. Any workspaceId starting with "workbench:" is the "workbench"
+// slot; everything else (today: real workspace ids, i.e. claude surfaces) is
+// the "claude" slot. This generalizes cleanly to U12 (N panes) later: each
+// pane could get its own slot key prefix (e.g. "pane:<paneId>"), or panes
+// could share one "workbench" slot and rely on a tiling layout instead of
+// mutual exclusion — a decision left to U12, not made here.
+//
+// g_visibleBySlot["claude"]    = currently-visible claude workspaceId (or "")
+// g_visibleBySlot["workbench"] = currently-visible workbench surface id (or "")
+// ---------------------------------------------------------------------------
+static const char* kWorkbenchSlotPrefix = "workbench:";
+static const char* kClaudeSlot = "claude";
+static const char* kWorkbenchSlot = "workbench";
+
+static std::string slotForWorkspaceId(const std::string& workspaceId) {
+    if (workspaceId.rfind(kWorkbenchSlotPrefix, 0) == 0) {  // starts-with
+        return kWorkbenchSlot;
+    }
+    return kClaudeSlot;
+}
+
+// slot name → currently-visible workspaceId in that slot (empty = none visible).
+static std::map<std::string, std::string> g_visibleBySlot;
+
+// True if `workspaceId` is the currently-visible surface in its own slot.
+// This is the set-membership replacement for the old `g_visibleWorkspaceId ==
+// workspaceId` scalar-equality check — every one of the four call sites the
+// investigation identified (GetSurfacePhase, handleOcclusionChange, Hide,
+// Destroy) reads this instead.
+static bool isVisibleInOwnSlot(const std::string& workspaceId) {
+    const std::string slot = slotForWorkspaceId(workspaceId);
+    auto it = g_visibleBySlot.find(slot);
+    return it != g_visibleBySlot.end() && it->second == workspaceId;
+}
 
 // Forward declarations for reconcileSurface / setVisibleWorkspace so
 // handleOcclusionChange: (inside @implementation) can call them.
@@ -153,8 +195,10 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
 
 // Forward declaration for the overlay ordering self-heal (defined near
 // ensureBackstopView) so reconcileSurface's terminal attach sites can call it
-// after choosing insertion order.
-static void reassertOverlayOrder(void);
+// after choosing insertion order. Takes an explicit contentView (U6a: the
+// no-arg form that read the vestigial g_overlayContentView global is retired
+// — see the definition site for why).
+static void reassertOverlayOrderAgainst(NSView* contentView);
 
 @implementation OrpheusGhosttyView
 
@@ -1048,7 +1092,11 @@ static ghostty_input_mouse_button_e ghosttyButtonForNSEventNumber(NSInteger btn)
         // Window came to foreground: re-assert focus via reconciler.
         if (self.surface) {
             std::string wsId = [self.workspaceId UTF8String];
-            if (wsId == g_visibleWorkspaceId) {
+            // Slot-membership check (was scalar `wsId == g_visibleWorkspaceId`):
+            // re-assert on foreground-return for whichever surface is visible
+            // in ITS OWN slot, so a persistent second (e.g. Workbench) surface
+            // also recovers from background/display-sleep, not just claude's.
+            if (isVisibleInOwnSlot(wsId)) {
                 auto wit = g_surfaces.find(wsId);
                 if (wit != g_surfaces.end()) {
                     wit->second.liveTick++;
@@ -2521,19 +2569,20 @@ static NSView* ensureBackstopView(NSView* contentView) {
 // stacks above the main window natively) — a same-window-sibling registration
 // no longer applies, so that handshake (beginOverlayRegistration /
 // commitOverlayRegistration / isOverlayRegistered) is retired. What remains:
-// reassertOverlayOrder's self-heal for OUR OWN views (backstop + terminal
-// ordering, unrelated to the overlay) and the focus-chain primitives below,
-// which read g_overlayView/g_overlayContentView defensively (nil in the
-// child-window architecture, since nothing sets them anymore) and degrade to
-// safe no-ops.
+// reassertOverlayOrderAgainst's self-heal for OUR OWN views (backstop +
+// terminal ordering, unrelated to the overlay) and the focus-chain primitives
+// below, which read g_overlayView/g_overlayContentView defensively (nil in
+// the child-window architecture, since nothing sets them anymore) and
+// degrade to safe no-ops.
 // ---------------------------------------------------------------------------
 
 // contentView the overlay machinery last operated against. Now only ever read
 // (never written — the same-window registration handshake that used to set
 // this is retired; the overlay is a separate child BrowserWindow in the
-// current architecture), so this stays nil. Kept because reassertOverlayOrder
-// and dumpContentViewStack still read it defensively (nil short-circuits both
-// to no-ops).
+// current architecture), so this stays nil. Kept because dumpContentViewStack
+// still reads it defensively (nil short-circuits to a no-op) — U6a's
+// reassertOverlayOrderAgainst no longer reads this global; it takes an
+// explicit contentView argument instead (see that function's comment).
 static NSView* __weak g_overlayContentView = nil;
 
 // The overlay NSView, if one is ever registered. Now only ever read (never
@@ -2581,10 +2630,11 @@ static NSView* topmostViewsCompositorView(NSView* contentView) {
 // dumpContentViewStack — diagnostic NSLog of every contentView subview in
 // z-order (index 0 = bottom), one line each, so overlay/terminal/main-WCV
 // ordering bugs are diagnosable from Console.app without attaching a
-// debugger. Called from reassertOverlayOrder() only alongside an actual
-// correction (not on every invocation — reconcileSurface calls reassert on
-// every re-show/kick, and dumping the full stack on all of those would be
-// production log noise for the overwhelmingly common already-correct case).
+// debugger. Called from reassertOverlayOrderAgainst() only alongside an
+// actual correction (not on every invocation — reconcileSurface calls
+// reassert on every re-show/kick, and dumping the full stack on all of those
+// would be production log noise for the overwhelmingly common already-correct
+// case).
 static void dumpContentViewStack(NSView* contentView) {
     if (!contentView) return;
     NSView* overlayView = g_overlayView;
@@ -2632,8 +2682,22 @@ static void dumpContentViewStack(NSView* contentView) {
 //
 // The overlay view itself is never moved here (Chromium-managed WebContentsView;
 // detach/re-attach breaks its compositing — the Electron #44652 class of bug).
-static void reassertOverlayOrder(void) {
-    NSView* contentView = g_overlayContentView;
+//
+// U6a: takes an explicit `contentView` instead of reading the vestigial
+// g_overlayContentView global. That global is ALWAYS nil in the current
+// (child-BrowserWindow-overlay) architecture — nothing has written it since
+// the same-window overlay-registration handshake was retired — so the old
+// no-arg reassertOverlayOrder() silently no-op'd every single call in
+// production. Rule 2 (every terminal view stays above the web compositor) is
+// required for a persistent second (Workbench) surface to self-heal its
+// z-order the same way claude's surface already relies on, so this needed to
+// actually run. Rather than resurrect the retired same-window registration
+// mechanism to populate g_overlayContentView, the caller (reconcileSurface's
+// already-attached branch) passes the live contentView it already has direct
+// access to via entry.view.superview — no new global, no new registration
+// handshake, same two rules, same behavior for callers that still pass a
+// live contentView.
+static void reassertOverlayOrderAgainst(NSView* contentView) {
     if (!contentView) return;
 
     // Rule 1: sink our backstop back to index 0 if Chromium moved it up.
@@ -2678,10 +2742,10 @@ static void reassertOverlayOrder(void) {
     }
 }
 
-// No NAPI wrapper: reassertOverlayOrder is internal-only now (called from
-// reconcileSurface). It used to also be exposed to TS for callers to trigger
-// after events known to reshuffle native subviews, but nothing calls it from
-// TS anymore — grep confirms no src/ callers.
+// No NAPI wrapper: reassertOverlayOrderAgainst is internal-only now (called
+// from reconcileSurface). It used to also be exposed to TS for callers to
+// trigger after events known to reshuffle native subviews, but nothing calls
+// it from TS anymore — grep confirms no src/ callers.
 
 // NAPI: setOverlayFocusSuppressed(suppressed) → void
 //
@@ -2857,7 +2921,20 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
             // Self-heal (R5): this branch runs on every nav/kick/wake, so it's
             // the backstop for reordering triggers we don't have an explicit
             // event hook for — verify-and-repair overlay order unconditionally.
-            reassertOverlayOrder();
+            //
+            // U6a: reassertOverlayOrder() itself is dead code in production —
+            // it reads the vestigial g_overlayContentView global, which is
+            // ALWAYS nil now that the overlay moved to a separate child
+            // BrowserWindow (see that global's comment). A persistent second
+            // (Workbench) surface needs this self-heal to actually run, so we
+            // derive a live contentView reference right here instead of
+            // resurrecting the retired same-window overlay-registration
+            // mechanism: this branch only runs for an ALREADY-ATTACHED entry,
+            // so entry.view.superview IS the real contentView, unconditionally,
+            // independent of whatever the caller passed as the `contentView`
+            // parameter (several call sites pass nil here since it was
+            // previously unused on this path).
+            reassertOverlayOrderAgainst(entry.view.superview);
 
             // Sync makeFirstResponder for focus re-assertion. Suppressed while a
             // takesFocus overlay is visible (R6) — see the re-attach branch above.
@@ -2881,11 +2958,14 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 }
 
 // ---------------------------------------------------------------------------
-// setVisibleWorkspace — mutual-exclusion entry point for the one-visible
-// invariant. Marks the new workspace as desiredVisible=true and the previous
-// one as desiredVisible=false, then reconciles new FIRST (paint first frame)
-// then reconciles old (removeFromSuperview). Show-new-before-hide-old preserves
-// the backstop fix: no frame where neither surface is painted over the backstop.
+// setVisibleWorkspace — mutual-exclusion entry point for the one-visible-PER-
+// SLOT invariant (U6a). Marks the new workspace as desiredVisible=true and
+// evicts (desiredVisible=false) only the previously-visible surface IN THE
+// SAME SLOT — claude↔claude switching still evicts (same "claude" slot); a
+// Workbench surface becoming visible does NOT evict claude (different slot).
+// Reconciles new FIRST (paint first frame) then reconciles old
+// (removeFromSuperview). Show-new-before-hide-old preserves the backstop fix:
+// no frame where neither surface is painted over the backstop.
 //
 // contentView and forceWake are forwarded to reconcileSurface for the new
 // surface. forceWake=true triggers the force-toggle (wake/recovery); false uses
@@ -2893,7 +2973,8 @@ static void reconcileSurface(const std::string& workspaceId, NSView* contentView
 // passes forceWake=false (desiredVisible=false path ignores it).
 // ---------------------------------------------------------------------------
 static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentView, bool forceWake) {
-    std::string prevId = g_visibleWorkspaceId;
+    const std::string slot = slotForWorkspaceId(workspaceId);
+    std::string prevId = g_visibleBySlot[slot];  // "" if nothing visible in this slot yet
 
     // Mark new surface as desired visible.
     {
@@ -2903,13 +2984,15 @@ static void setVisibleWorkspace(const std::string& workspaceId, NSView* contentV
         }
     }
 
-    // Update the tracker.
-    g_visibleWorkspaceId = workspaceId;
+    // Update the slot's tracker. Other slots are untouched — this is the
+    // scoping fix: only the calling surface's OWN slot's previous occupant is
+    // evicted below, never a surface belonging to a different slot.
+    g_visibleBySlot[slot] = workspaceId;
 
     // Show new surface FIRST (paint before removing old).
     reconcileSurface(workspaceId, contentView, forceWake);
 
-    // Then hide the previous surface (if different).
+    // Then hide the previous surface in the SAME SLOT (if different).
     if (!prevId.empty() && prevId != workspaceId) {
         auto it = g_surfaces.find(prevId);
         if (it != g_surfaces.end()) {
@@ -3256,7 +3339,11 @@ static Napi::Value Mount(const Napi::CallbackInfo& info) {
     entry.generation    = createGen;
     g_surfaces[workspaceId] = entry;
     g_surfaceToWorkspaceId[surface] = workspaceId;
-    g_visibleWorkspaceId = workspaceId;
+    // Brand-new surface: mark visible in ITS OWN slot directly (no eviction —
+    // this path never had a "previous" surface to evict; that only happens
+    // via setVisibleWorkspace's re-attach branches). Slot-scoped so a
+    // brand-new Workbench surface doesn't clobber claude's slot tracker.
+    g_visibleBySlot[slotForWorkspaceId(workspaceId)] = workspaceId;
     // Bump per-entry liveTick AFTER entry is stored so g_surfaces lookup works
     g_surfaces[workspaceId].liveTick++;
     orpheusPushLiveness(workspaceId, false);
@@ -3309,8 +3396,15 @@ static Napi::Value Hide(const Napi::CallbackInfo& info) {
     NSLog(@"[ghostty-surface] hide workspaceId=%s", workspaceId.c_str());
 
     entry.desiredVisible = false;
-    if (g_visibleWorkspaceId == workspaceId) {
-        g_visibleWorkspaceId.clear();
+    // Clear only THIS id's slot (was global `g_visibleWorkspaceId.clear()`):
+    // hiding a Workbench surface must not clobber claude's visible tracker,
+    // and vice versa.
+    {
+        const std::string slot = slotForWorkspaceId(workspaceId);
+        auto sit = g_visibleBySlot.find(slot);
+        if (sit != g_visibleBySlot.end() && sit->second == workspaceId) {
+            sit->second.clear();
+        }
     }
     // reconcileSurface handles: set_focus(false), set_occlusion(false),
     // removeFromSuperview, isAttached=NO.
@@ -3565,8 +3659,15 @@ static Napi::Value Destroy(const Napi::CallbackInfo& info) {
     // lookup (e.g. hide() racing with archive) sees no entry.
     GhosttySurfaceEntry doomed = std::move(it->second);
     g_surfaces.erase(it);
-    if (g_visibleWorkspaceId == workspaceId) {
-        g_visibleWorkspaceId.clear();
+    // Clear only THIS id's slot (was global `g_visibleWorkspaceId.clear()`):
+    // destroying a Workbench surface must not clobber claude's visible
+    // tracker, and vice versa.
+    {
+        const std::string slot = slotForWorkspaceId(workspaceId);
+        auto sit = g_visibleBySlot.find(slot);
+        if (sit != g_visibleBySlot.end() && sit->second == workspaceId) {
+            sit->second.clear();
+        }
     }
     if (doomed.surface) {
         g_surfaceToWorkspaceId.erase(doomed.surface);
@@ -3821,8 +3922,14 @@ static Napi::Value GetSurfacePhase(const Napi::CallbackInfo& info) {
     if (!it->second.isAttached) {
         return Napi::String::New(env, "hidden");    // surface exists but detached/hidden
     }
-    if (g_visibleWorkspaceId == workspaceId) {
-        return Napi::String::New(env, "visible");   // attached AND the visible one
+    // Slot-membership check (was scalar `g_visibleWorkspaceId == workspaceId`):
+    // "visible" now means "attached AND the visible one IN ITS OWN SLOT" —
+    // this is what lets a claude surface and a Workbench surface both read
+    // back "visible" simultaneously (disjoint slots), while claude↔claude
+    // switching still yields exactly one "visible" claude id at a time
+    // (same slot, same eviction as before — see setVisibleWorkspace).
+    if (isVisibleInOwnSlot(workspaceId)) {
+        return Napi::String::New(env, "visible");   // attached AND the visible one (in its slot)
     }
     return Napi::String::New(env, "attached");      // attached but not the visible one
 }

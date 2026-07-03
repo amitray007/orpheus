@@ -1325,6 +1325,76 @@ handle('terminal:getSurfacePhase', (_e, { workspaceId }) => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// TEMPORARY — U6a native multi-surface spike proof.
+//
+// This handler exists SOLELY to prove, end-to-end, that the addon.mm slot
+// model (g_visibleBySlot, keyed by the "workbench:" workspaceId prefix) lets
+// a second libghostty surface be simultaneously visible + independently
+// focusable alongside claude's surface, without evicting it. It bypasses ALL
+// of the real terminal:mount machinery (worktree reconcile, claudeSettings
+// composition, workspace lookups, activity pipeline) on purpose — those are
+// out of scope for U6a (a native-layer spike) and belong to U6b/U7/U8, which
+// will replace this with a real workbench:* mount path once the launch
+// composer is generalized (U7) and the Terminal tab is built (U8).
+//
+// dev-only: gated by isDev so it never ships in a packaged build. Remove this
+// handler + its ipc.ts channel entry once U6b lands its real equivalent.
+// ---------------------------------------------------------------------------
+const DEV_WORKBENCH_PROBE_ID = 'workbench:u6a-spike-probe'
+
+handle('terminal:devWorkbenchProbe', (e, { action, rect }) => {
+  if (!isDev) {
+    return { ok: false, message: 'devWorkbenchProbe is dev-only' }
+  }
+
+  try {
+    const addon = loadTerminalAddon()
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return { ok: false, message: 'no BrowserWindow for sender' }
+
+    if (action === 'mount') {
+      const nativeHandle = win.getNativeWindowHandle()
+      // Disjoint rect: caller (devtools) supplies one; default to a small
+      // fixed box in the bottom-right corner so it visibly does not overlap
+      // the claude terminal column without any renderer wiring at all.
+      const probeRect = rect ?? { x: 640, y: 360, w: 360, h: 240 }
+      // A plain interactive login shell — NOT orpheus-claude.sh (that
+      // unconditionally execs `claude`; this proof is native-layer only and
+      // must not spawn a second claude session). /bin/zsh is always present.
+      const result = addon.mount(nativeHandle, {
+        workspaceId: DEV_WORKBENCH_PROBE_ID,
+        rect: probeRect,
+        scaleFactor: win.webContents.getZoomFactor() || 1,
+        cwd: process.env['HOME'],
+        command: '/bin/zsh',
+        env: {}
+      })
+      const phase = addon.getSurfacePhase(DEV_WORKBENCH_PROBE_ID)
+      return {
+        ok: true,
+        message: `mounted workbench probe (created=${result.created}) phase=${phase}`,
+        phase
+      }
+    }
+    if (action === 'hide') {
+      addon.hide(DEV_WORKBENCH_PROBE_ID)
+      const phase = addon.getSurfacePhase(DEV_WORKBENCH_PROBE_ID)
+      return { ok: true, message: `hid workbench probe phase=${phase}`, phase }
+    }
+    if (action === 'destroy') {
+      addon.destroy(DEV_WORKBENCH_PROBE_ID)
+      return { ok: true, message: 'destroyed workbench probe' }
+    }
+    return { ok: false, message: `unknown action: ${String(action)}` }
+  } catch (err) {
+    return {
+      ok: false,
+      message: `devWorkbenchProbe(${action}) threw: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+})
+
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
   const addon = loadTerminalAddon()
   try {
