@@ -77,6 +77,8 @@ Full license text: https://openfontlicense.org
 
 **Important GPL-3.0 notice:** These scripts are standalone programs that are sourced into the user's interactive shell at runtime. They are not linked into, compiled into, or incorporated as a library of Orpheus. Their distribution alongside Orpheus constitutes mere aggregation on storage media under GPLv3 §5, and does not place Orpheus itself under the GPL. The original file headers identifying the GPL-3.0 license are preserved in the distributed files.
 
+**Aggregation, not a derivative work:** these files are shipped verbatim as standalone data files — executed by the user's own shell at runtime, not compiled, linked into, or otherwise incorporated into the Orpheus application binary. Because they are a "separate and independent work" bundled onto the same storage medium, GPLv3 §5's mere-aggregation clause applies: they remain under GPL-3.0 in their own right and do not extend GPL terms to the rest of Orpheus. Their complete source is available as shipped, verbatim, under `resources/ghostty/`.
+
 Full license text: https://www.gnu.org/licenses/gpl-3.0.txt
 
 ---
