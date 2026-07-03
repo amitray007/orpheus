@@ -26,7 +26,7 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
 
   let i = 1
   while (i < lines.length && lines[i]?.trim() !== '---') {
-    const line = lines[i]!
+    const line = lines[i]
     const colonIdx = line.indexOf(':')
     if (colonIdx === -1) {
       i++
@@ -40,8 +40,8 @@ function parseFrontmatter(content: string): Record<string, string | string[]> {
     if (rest.trim() === '') {
       const items: string[] = []
       let j = i + 1
-      while (j < lines.length && /^ {2}- /.test(lines[j]!)) {
-        items.push(lines[j]!.replace(/^ {2}- /, '').trim())
+      while (j < lines.length && /^ {2}- /.test(lines[j])) {
+        items.push(lines[j].replace(/^ {2}- /, '').trim())
         j++
       }
       if (items.length > 0) {
@@ -97,7 +97,9 @@ function serializeFrontmatter(
       if (value === '') continue
       // Quote if contains colon or hash or starts with whitespace
       const needsQuotes = value.includes(':') || value.includes('#') || /^\s/.test(value)
-      const serialized = needsQuotes ? `"${value.replace(/"/g, '\\"')}"` : value
+      const serialized = needsQuotes
+        ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+        : value
       lines.push(`${key}: ${serialized}`)
     }
   }

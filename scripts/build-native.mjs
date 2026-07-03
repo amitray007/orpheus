@@ -2,7 +2,7 @@
 // Build all native Node.js addons using node-gyp targeting the packaged Electron ABI.
 // Add new addon packages to the TARGETS array.
 
-import { execSync } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -66,13 +66,13 @@ for (const target of TARGETS) {
     '--arch=arm64',
     `--python=${pythonBin}`,
     '--verbose'
-  ].join(' ')
+  ]
 
   try {
     // Step 1: clean + configure (generates the Makefile and build/ skeleton).
-    console.log(`[build-native] $ node-gyp rebuild (clean+configure) ${gypFlags}`)
-    execSync(`${gypBin} clean`, { cwd: pkgDir, stdio: 'inherit' })
-    execSync(`${gypBin} configure ${gypFlags}`, { cwd: pkgDir, stdio: 'inherit' })
+    console.log(`[build-native] $ node-gyp rebuild (clean+configure) ${gypFlags.join(' ')}`)
+    execFileSync(gypBin, ['clean'], { cwd: pkgDir, stdio: 'inherit' })
+    execFileSync(gypBin, ['configure', ...gypFlags], { cwd: pkgDir, stdio: 'inherit' })
 
     // Step 2: pre-create the .deps directory tree that clang's -MMD flag needs.
     // node-gyp's generated Makefile does NOT mkdir -p the .deps/ path before the
@@ -86,8 +86,8 @@ for (const target of TARGETS) {
 
     // Step 3: build (make). Force serial make (JOBS=1): even with the .deps dir
     // pre-created, parallel make can re-race on per-object dep dirs.
-    console.log(`[build-native] $ node-gyp build ${gypFlags}`)
-    execSync(`${gypBin} build ${gypFlags}`, {
+    console.log(`[build-native] $ node-gyp build ${gypFlags.join(' ')}`)
+    execFileSync(gypBin, ['build', ...gypFlags], {
       cwd: pkgDir,
       stdio: 'inherit',
       env: { ...process.env, JOBS: '1' }
