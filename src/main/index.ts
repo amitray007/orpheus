@@ -102,7 +102,6 @@ import {
 } from './claudeWorkspaceSettings'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { getClaudeAuthState, updateClaudeAuth, testAnthropicConnection } from './claudeAuth'
-import { listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer } from './mcp'
 import {
   listSlashCommands,
   listSubagents,
@@ -218,6 +217,7 @@ import { registerGitIpc } from './ipc/git'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
+import { registerMcpIpc } from './ipc/mcp'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -1453,20 +1453,7 @@ handle('ghosttySettings:update', (_e, patch) => {
   return result
 })
 
-// ---------------------------------------------------------------------------
-// MCP IPC
-// ---------------------------------------------------------------------------
-
-handle('mcp:listServers', () => listMcpServers())
-handle('mcp:add', (_e, draft) => addMcpServer(draft))
-handle('mcp:update', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return updateMcpServer(args.filePath, args.oldName, args.draft)
-})
-handle('mcp:delete', (_e, args) => {
-  assertManagedConfigPath(args.filePath, 'filePath')
-  return deleteMcpServer(args.filePath, args.name)
-})
+registerMcpIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Agents IPC
