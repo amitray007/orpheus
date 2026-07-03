@@ -9,7 +9,7 @@ import {
   GitMerge
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from '../WorktreeBadge'
-import type { GitStatus, WorkspaceRecord } from '@shared/types'
+import type { WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { DataTable, type DataTableColumn } from '../../DataTable'
 import { ActivityIndicator } from '../ActivityIndicator'
@@ -19,6 +19,7 @@ import { CommitsTab } from './CommitsTab'
 import { SessionsTab } from './SessionsTab'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
+import { useGitStatus } from '@/lib/gitStore'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -217,19 +218,16 @@ const WorkspacesFilterBar = memo(function WorkspacesFilterBar({
 })
 
 // ---------------------------------------------------------------------------
-// BranchCell — git branch display for a workspace row. Memo'd since `gs` only
-// changes when the background git-status fetch for that workspace completes.
+// BranchCell — git branch display for a workspace row. Subscribes directly to
+// the shared gitStore (per-key hook) so it re-renders only when THIS
+// workspace's git status changes — no local per-row fetch, no separate
+// gitByWs state to keep in sync with the global store's push updates.
 // For worktree workspaces, `worktreeBranch` is shown when git status is absent
 // so the branch column is always correct for worktrees.
 // ---------------------------------------------------------------------------
 
-const BranchCell = memo(function BranchCell({
-  gs,
-  ws
-}: {
-  gs: GitStatus | null | undefined
-  ws: WorkspaceRecord
-}): React.JSX.Element {
+const BranchCell = memo(function BranchCell({ ws }: { ws: WorkspaceRecord }): React.JSX.Element {
+  const gs = useGitStatus(ws.id)
   // Prefer live git status branch; fall back to stored worktreeBranch for worktrees.
   const branch = gs?.branch ?? (ws.worktreeParentCwd ? ws.worktreeBranch : null)
   if (!branch) return <span className="text-text-muted">—</span>
@@ -370,7 +368,6 @@ export function WorkspacesTab({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
-  const [gitByWs, setGitByWs] = useState<Record<string, GitStatus | null>>({})
   const [sessionStats, setSessionStats] = useState<
     Record<
       string,
@@ -388,27 +385,11 @@ export function WorkspacesTab({
     return () => clearTimeout(t)
   }, [search])
 
-  // Background git status for visible active rows.
-  useEffect(() => {
-    let cancelled = false
-    for (const ws of active) {
-      if (gitByWs[ws.id] !== undefined) continue
-      window.api.git
-        .status(ws.cwd)
-        .then((s) => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: s }))
-        })
-        .catch(() => {
-          if (cancelled) return
-          setGitByWs((prev) => ({ ...prev, [ws.id]: null }))
-        })
-    }
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active.map((w) => w.id).join('|')])
+  // Git status for visible active rows is served by the global gitStore
+  // (seeded + kept live by Dashboard's shared git:statusChanged push
+  // subscription and belt-and-suspenders imperative fetch). BranchCell calls
+  // useGitStatus directly, so no per-row fetch or local gitByWs state is
+  // needed here.
 
   // Terminal titles are now served by the global titleStore (seeded from Dashboard's
   // hoisted onTitleChanged subscription). WorkspaceNameCell calls useWorkspaceTitle
@@ -575,7 +556,7 @@ export function WorkspacesTab({
         key: 'branch',
         label: 'Branch',
         width: '140px',
-        render: (ws) => <BranchCell gs={gitByWs[ws.id]} ws={ws} />
+        render: (ws) => <BranchCell ws={ws} />
       },
       {
         key: 'messages',
@@ -601,7 +582,7 @@ export function WorkspacesTab({
         render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [gitByWs, renamingId, renameValue, sessionStats, commitRename]
+    [renamingId, renameValue, sessionStats, commitRename]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.
