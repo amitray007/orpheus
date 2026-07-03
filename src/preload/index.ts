@@ -467,10 +467,10 @@ const api = {
     test: (): Promise<void> => ipcRenderer.invoke('notifications:test')
   },
   updates: {
-    check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
-    install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
-    restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
-    getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke('updates:getState'),
+    check: (): Promise<UpdateCheckResult> => invoke('updates:check'),
+    install: (): Promise<void> => invoke('updates:install'),
+    restart: (): Promise<void> => invoke('updates:restart'),
+    getState: (): Promise<UpdateSnapshot> => invoke('updates:getState'),
     onProgress: (cb: (e: UpdateProgress) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.updatesProgress, cb),
     onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) =>
@@ -479,9 +479,9 @@ const api = {
       subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
   },
   status: {
-    get: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:get'),
-    refresh: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:refresh'),
-    openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
+    get: (): Promise<ClaudeStatusSnapshot> => invoke('status:get'),
+    refresh: (): Promise<ClaudeStatusSnapshot> => invoke('status:refresh'),
+    openPage: (): Promise<void> => invoke('status:openPage'),
     onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.statusChange, cb)
   },
@@ -490,18 +490,17 @@ const api = {
       invocation: { id: string; params: Record<string, unknown>; workspaceId: string },
       consumerHint?: string
     ): Promise<ActionResult> =>
-      ipcRenderer.invoke('actions:invoke', {
+      invoke('actions:invoke', {
         actionId: invocation.id,
         params: invocation.params,
         workspaceId: invocation.workspaceId,
         consumerHint: consumerHint ?? 'renderer'
       }),
 
-    list: (): Promise<Array<{ id: string; kind: ActionKind }>> =>
-      ipcRenderer.invoke('actions:list'),
+    list: (): Promise<Array<{ id: string; kind: ActionKind }>> => invoke('actions:list'),
 
     history: (workspaceId: string, limit?: number): Promise<ActionAuditEntry[]> =>
-      ipcRenderer.invoke('actions:history', { workspaceId, limit }),
+      invoke('actions:history', { workspaceId, limit }),
 
     subscribe: (
       actionId: string,
@@ -521,17 +520,20 @@ const api = {
       }
 
       ipcRenderer.on(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
-      const subP = ipcRenderer
-        .invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
-        .catch((e) => {
-          console.error('actions:subscribe failed', e)
-        })
+      const subP = invoke('actions:subscribe', {
+        subscriptionId,
+        actionId,
+        params,
+        workspaceId
+      }).catch((e) => {
+        console.error('actions:subscribe failed', e)
+      })
 
       return {
         dispose: () => {
           ipcRenderer.removeListener(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
           subP
-            .then(() => ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }))
+            .then(() => invoke('actions:unsubscribe', { subscriptionId }))
             .catch(() => {
               /* ignore cleanup errors */
             })
@@ -541,30 +543,29 @@ const api = {
   },
   footerActions: {
     listMerged: (workspaceId: string): Promise<FooterActionDescriptor[]> =>
-      ipcRenderer.invoke('footerActions:listMerged', { workspaceId }),
+      invoke('footerActions:listMerged', { workspaceId }),
 
     listAtScope: (scope: FooterActionScope, scopeId?: string): Promise<FooterActionDescriptor[]> =>
-      ipcRenderer.invoke('footerActions:listAtScope', { scope, scopeId }),
+      invoke('footerActions:listAtScope', { scope, scopeId }),
 
     create: (
       scope: FooterActionScope,
       scopeId: string | null,
       draft: FooterActionDraft
-    ): Promise<FooterActionDescriptor> =>
-      ipcRenderer.invoke('footerActions:create', { scope, scopeId, draft }),
+    ): Promise<FooterActionDescriptor> => invoke('footerActions:create', { scope, scopeId, draft }),
 
     update: (id: string, patch: Partial<FooterActionDraft>): Promise<FooterActionDescriptor> =>
-      ipcRenderer.invoke('footerActions:update', { id, patch }),
+      invoke('footerActions:update', { id, patch }),
 
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('footerActions:remove', { id }),
+    remove: (id: string): Promise<void> => invoke('footerActions:remove', { id }),
 
     reorder: (
       scope: FooterActionScope,
       scopeId: string | null,
       orderedIds: string[]
-    ): Promise<void> => ipcRenderer.invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
+    ): Promise<void> => invoke('footerActions:reorder', { scope, scopeId, orderedIds }),
 
-    resetDefaults: (): Promise<void> => ipcRenderer.invoke('footerActions:resetDefaults')
+    resetDefaults: (): Promise<void> => invoke('footerActions:resetDefaults')
   },
   hooks: {
     setEnabled: (enabled: boolean): Promise<{ enabled: boolean }> =>
@@ -593,13 +594,12 @@ const api = {
     > => invoke('diag:export', opts)
   },
   keepAwake: {
-    get: (): Promise<KeepAwakeState> => ipcRenderer.invoke('keepAwake:get'),
+    get: (): Promise<KeepAwakeState> => invoke('keepAwake:get'),
     setMode: (mode: KeepAwakeBaseMode): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:setMode', mode),
-    setDisplayOn: (on: boolean): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:setDisplayOn', on),
+      invoke('keepAwake:setMode', mode),
+    setDisplayOn: (on: boolean): Promise<KeepAwakeState> => invoke('keepAwake:setDisplayOn', on),
     startTimer: (minutes: number): Promise<KeepAwakeState> =>
-      ipcRenderer.invoke('keepAwake:startTimer', minutes),
+      invoke('keepAwake:startTimer', minutes),
     onState: (cb: (state: KeepAwakeState) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.keepAwakeState, cb)
   },

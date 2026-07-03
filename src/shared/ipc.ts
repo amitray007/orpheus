@@ -65,7 +65,15 @@ import type {
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
   GitBranchInfo,
-  GitCommit
+  GitCommit,
+  UpdateSnapshot,
+  ActionResult,
+  ActionKind,
+  ActionAuditEntry,
+  FooterActionScope,
+  FooterActionDraft,
+  FooterActionDescriptor,
+  KeepAwakeBaseMode
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -269,6 +277,61 @@ export interface InvokeChannelMap {
     res: number
   }
   'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
+  'updates:check': { req: []; res: UpdateCheckResult }
+  'updates:install': { req: []; res: void }
+  'updates:restart': { req: []; res: void }
+  'updates:getState': { req: []; res: UpdateSnapshot }
+  'status:get': { req: []; res: ClaudeStatusSnapshot }
+  'status:refresh': { req: []; res: ClaudeStatusSnapshot }
+  'status:openPage': { req: []; res: void }
+  'actions:invoke': {
+    req: [
+      {
+        actionId: string
+        params: Record<string, unknown>
+        workspaceId: string
+        consumerHint?: string
+      }
+    ]
+    res: ActionResult
+  }
+  'actions:list': { req: []; res: Array<{ id: string; kind: ActionKind }> }
+  'actions:history': { req: [{ workspaceId: string; limit?: number }]; res: ActionAuditEntry[] }
+  'actions:subscribe': {
+    req: [
+      {
+        subscriptionId: string
+        actionId: string
+        params: Record<string, unknown>
+        workspaceId: string
+      }
+    ]
+    res: { ok: true }
+  }
+  'actions:unsubscribe': { req: [{ subscriptionId: string }]; res: { ok: true } }
+  'footerActions:listMerged': { req: [{ workspaceId: string }]; res: FooterActionDescriptor[] }
+  'footerActions:listAtScope': {
+    req: [{ scope: FooterActionScope; scopeId?: string }]
+    res: FooterActionDescriptor[]
+  }
+  'footerActions:create': {
+    req: [{ scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }]
+    res: FooterActionDescriptor
+  }
+  'footerActions:update': {
+    req: [{ id: string; patch: Partial<FooterActionDraft> }]
+    res: FooterActionDescriptor
+  }
+  'footerActions:remove': { req: [{ id: string }]; res: void }
+  'footerActions:reorder': {
+    req: [{ scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }]
+    res: void
+  }
+  'footerActions:resetDefaults': { req: []; res: void }
+  'keepAwake:get': { req: []; res: KeepAwakeState }
+  'keepAwake:setMode': { req: [KeepAwakeBaseMode]; res: KeepAwakeState }
+  'keepAwake:setDisplayOn': { req: [boolean]; res: KeepAwakeState }
+  'keepAwake:startTimer': { req: [number]; res: KeepAwakeState }
   // … migrated domain-by-domain in follow-up commits.
 }
 

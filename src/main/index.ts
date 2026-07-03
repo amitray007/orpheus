@@ -215,7 +215,6 @@ import {
   seedDefaultFooterActions,
   resetToDefaults as resetFooterActionsToDefaults
 } from './footerActions'
-import type { FooterActionScope, FooterActionDraft } from '../shared/types'
 import { refreshFromModelsDev } from './pricing'
 import {
   startDiagnostics,
@@ -237,7 +236,6 @@ import {
   setKeepAwakeDisplayOn,
   startKeepAwakeTimer
 } from './powerAwake'
-import type { KeepAwakeBaseMode } from '../shared/types'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
 import {
@@ -2674,113 +2672,54 @@ handle('terminal:canInject', (_e, { workspaceId }: { workspaceId: string }): boo
 // Quick Actions — phase 2: registry IPC surface
 // ---------------------------------------------------------------------------
 
-handle(
-  'actions:invoke',
-  (
-    _e,
-    {
-      actionId,
-      params,
-      workspaceId,
-      consumerHint
-    }: {
-      actionId: string
-      params: Record<string, unknown>
-      workspaceId: string
-      consumerHint?: string
-    }
-  ) => {
-    const invocation: ActionInvocation = { id: actionId, params, workspaceId }
-    return actionsInvoke(invocation, consumerHint ?? 'ipc')
-  }
-)
+handle('actions:invoke', (_e, { actionId, params, workspaceId, consumerHint }) => {
+  const invocation: ActionInvocation = { id: actionId, params, workspaceId }
+  return actionsInvoke(invocation, consumerHint ?? 'ipc')
+})
 
 handle('actions:list', () => actionsList())
 
-handle('actions:history', (_e, { workspaceId, limit }: { workspaceId: string; limit?: number }) =>
-  getAuditHistory(workspaceId, limit)
-)
+handle('actions:history', (_e, { workspaceId, limit }) => getAuditHistory(workspaceId, limit))
 
-handle(
-  'actions:subscribe',
-  (
-    e,
-    {
-      subscriptionId,
-      actionId,
-      params,
-      workspaceId
-    }: {
-      subscriptionId: string
-      actionId: string
-      params: Record<string, unknown>
-      workspaceId: string
+handle('actions:subscribe', (e, { subscriptionId, actionId, params, workspaceId }) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(PUSH_CHANNELS.actionsSubscriptionUpdate, { subscriptionId, value })
     }
-  ) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(PUSH_CHANNELS.actionsSubscriptionUpdate, { subscriptionId, value })
-      }
-    })
-    return { ok: true }
-  }
-)
+  })
+  return { ok: true as const }
+})
 
-handle('actions:unsubscribe', (_e, { subscriptionId }: { subscriptionId: string }) => {
+handle('actions:unsubscribe', (_e, { subscriptionId }) => {
   stopSubscription(subscriptionId)
-  return { ok: true }
+  return { ok: true as const }
 })
 
 // ---------------------------------------------------------------------------
 // Footer actions — phase 3a: CRUD + merge IPC surface
 // ---------------------------------------------------------------------------
 
-handle('footerActions:listMerged', (_e, { workspaceId }: { workspaceId: string }) =>
-  listMergedFooterActions(workspaceId)
+handle('footerActions:listMerged', (_e, { workspaceId }) => listMergedFooterActions(workspaceId))
+
+handle('footerActions:listAtScope', (_e, { scope, scopeId }) => {
+  if (scope === 'global') return listGlobalFooterActions()
+  if (scope === 'project') return listProjectFooterActions(scopeId ?? '')
+  return listWorkspaceFooterActions(scopeId ?? '')
+})
+
+handle('footerActions:create', (_e, { scope, scopeId, draft }) =>
+  createFooterAction(scope, scopeId, draft)
 )
 
-handle(
-  'footerActions:listAtScope',
-  (_e, { scope, scopeId }: { scope: FooterActionScope; scopeId?: string }) => {
-    if (scope === 'global') return listGlobalFooterActions()
-    if (scope === 'project') return listProjectFooterActions(scopeId ?? '')
-    return listWorkspaceFooterActions(scopeId ?? '')
-  }
-)
+handle('footerActions:update', (_e, { id, patch }) => updateFooterAction(id, patch))
 
-handle(
-  'footerActions:create',
-  (
-    _e,
-    {
-      scope,
-      scopeId,
-      draft
-    }: { scope: FooterActionScope; scopeId: string | null; draft: FooterActionDraft }
-  ) => createFooterAction(scope, scopeId, draft)
-)
-
-handle(
-  'footerActions:update',
-  (_e, { id, patch }: { id: string; patch: Partial<FooterActionDraft> }) =>
-    updateFooterAction(id, patch)
-)
-
-handle('footerActions:remove', (_e, { id }: { id: string }) => {
+handle('footerActions:remove', (_e, { id }) => {
   removeFooterAction(id)
 })
 
-handle(
-  'footerActions:reorder',
-  (
-    _e,
-    {
-      scope,
-      scopeId,
-      orderedIds
-    }: { scope: FooterActionScope; scopeId: string | null; orderedIds: string[] }
-  ) => reorderFooterActions(scope, scopeId, orderedIds)
+handle('footerActions:reorder', (_e, { scope, scopeId, orderedIds }) =>
+  reorderFooterActions(scope, scopeId, orderedIds)
 )
 
 handle('footerActions:resetDefaults', () => {
@@ -2794,9 +2733,9 @@ handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(worksp
 // ---------------------------------------------------------------------------
 
 handle('keepAwake:get', () => getKeepAwakeState())
-handle('keepAwake:setMode', (_e, mode: KeepAwakeBaseMode) => setKeepAwakeMode(mode))
-handle('keepAwake:setDisplayOn', (_e, on: boolean) => setKeepAwakeDisplayOn(on))
-handle('keepAwake:startTimer', (_e, minutes: number) => startKeepAwakeTimer(minutes))
+handle('keepAwake:setMode', (_e, mode) => setKeepAwakeMode(mode))
+handle('keepAwake:setDisplayOn', (_e, on) => setKeepAwakeDisplayOn(on))
+handle('keepAwake:startTimer', (_e, minutes) => startKeepAwakeTimer(minutes))
 
 // ---------------------------------------------------------------------------
 // App lifecycle
