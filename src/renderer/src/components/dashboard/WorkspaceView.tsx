@@ -9,6 +9,8 @@ import { WorkspaceTitleBar } from './WorkspaceTitleBar'
 import { WorkspaceFooter } from './footer/WorkspaceFooter'
 import { WorkspaceTerminalOverlays } from './WorkspaceTerminalOverlays'
 import { WorkbenchPanel } from '../workbench/WorkbenchPanel'
+import { WorkbenchProvider } from '../workbench/WorkbenchProvider'
+import { useWorkbenchState } from '../workbench/workbenchReducer'
 import {
   showConfirmModalReact,
   getActiveConfirmOverlayId,
@@ -70,6 +72,12 @@ export function WorkspaceView({
   // any different than before this flag existed.
   const uiState = useUiState()
   const workbenchEnabled = uiState?.workbenchEnabled ?? false
+  // Workbench state machine (U4) — always called (hooks can't be
+  // conditional) but its keyboard listener is gated internally on the
+  // `enabled` arg, so flag-off binds nothing. The resulting api is only ever
+  // provided to children (via WorkbenchProvider) when workbenchEnabled, so
+  // WorkbenchPanel/WorkspaceTitleBar see a null context and no-op when off.
+  const workbenchApi = useWorkbenchState(workbenchEnabled)
   // mountedRef guards against double-mount in React StrictMode (first-create path).
   const mountedRef = useRef(false)
   // surfaceCreatedRef — sync hint: true once terminal:mount has been called at
@@ -789,7 +797,12 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, isClosed])
 
-  return (
+  // Content row is identical whether or not the workbench is enabled, save
+  // for the trailing WorkbenchPanel + whether it (and the title bar) are
+  // wrapped in WorkbenchProvider. Built once here and optionally wrapped
+  // below, so the flag-off path renders EXACTLY the pre-U4 tree (no extra
+  // wrapper element, no provider).
+  const content = (
     <>
       {/* Only render the title bar portal when this workspace is active.
           Inactive (keep-alive) views must not compete for the topbar slot. */}
@@ -811,7 +824,7 @@ export function WorkspaceView({
       {/* Content row: terminal host + optional drawer */}
       <div className="flex h-full min-h-0">
         {/* Terminal column: terminal host + footer strip */}
-        <div className="flex-1 min-w-0 flex flex-col">
+        <div data-workbench-claude-column className="flex-1 min-w-0 flex flex-col">
           {/* Terminal area — the libghostty NSView is the TOPMOST sibling of
               contentView (NSWindowAbove relativeTo:nil, isOpaque=YES). This div
               is transparent so the opaque terminal NSView paints through.
@@ -858,13 +871,24 @@ export function WorkspaceView({
           </div>
         )}
 
-        {/* Workbench mount point (U2, flagged off by default) — an empty seam
-            for U3/U4/U5 to build into. WorkbenchPanel itself renders null, so
-            this has no visible or layout effect regardless of the flag; the
-            flag check is kept here too so nothing downstream ever mounts
-            when workbenchEnabled is false. */}
+        {/* Workbench frame (U4, flagged off by default) — dormant/open/expanded
+            geometry driving a placeholder body. Only rendered when the flag is
+            on; the state machine (workbenchApi) is provided via
+            WorkbenchProvider just above this tree (see the wrap below), so
+            WorkbenchPanel and the title bar's "Workbench" button/section-2
+            restore control share one source of truth. */}
         {workbenchEnabled && <WorkbenchPanel />}
       </div>
     </>
   )
+
+  // Flag OFF: render the content tree exactly as before U4 — no provider
+  // wrapper, no workbench context, byte-identical DOM.
+  if (!workbenchEnabled) {
+    return content
+  }
+
+  // Flag ON: provide the shared state machine to WorkbenchPanel + the title
+  // bar's Workbench button / section-2 restore control.
+  return <WorkbenchProvider value={workbenchApi}>{content}</WorkbenchProvider>
 }

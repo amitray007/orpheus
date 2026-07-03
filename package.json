@@ -29,6 +29,7 @@
     "check:dead": "knip",
     "check": "bun run typecheck && bun run lint && bun run check:dup && bun run check:arch",
     "test:db": "node --experimental-strip-types scripts/verify-migration-engine.ts",
+    "test:workbench": "node --experimental-strip-types scripts/verify-workbench-reducer.ts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "bun run typecheck:node && bun run typecheck:web",

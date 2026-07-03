@@ -6,7 +6,8 @@ import {
   ArrowBendUpLeft,
   Info,
   GitBranch,
-  SquaresFour
+  SquaresFour,
+  CaretLeft
 } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
@@ -25,6 +26,7 @@ import {
 import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
 import { ClaudeGlyph } from '../workbench/ClaudeGlyph'
+import { useWorkbenchApi } from '../workbench/workbenchReducer'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -99,6 +101,10 @@ export function WorkspaceTitleBar({
   const detailsButtonRef = useRef<HTMLElement>(null)
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
   const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
+  // U4 — the shared Workbench state machine. Only actually provided (non-null)
+  // when workbenchEnabled, via WorkbenchProvider in WorkspaceView; safe to
+  // call unconditionally (reads a context that's null on the flag-off path).
+  const workbenchApi = useWorkbenchApi()
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
@@ -332,48 +338,72 @@ export function WorkspaceTitleBar({
   // Workbench button, over the Workbench frame). Details moves to title
   // hover; the gear + its drawer trigger are removed entirely.
   if (workbenchEnabled) {
+    // Section 2 becomes the "◂ Claude" restore control while the Workbench
+    // is expanded (docs/brainstorms/2026-07-02-workbench-panes-requirements.md
+    // §4) — clicking it is one of the two ways to land back in 'open'
+    // (mirrors the ⤡ toggle in WorkbenchPanel's header).
+    const isExpanded = workbenchApi?.state === 'expanded'
+
     return (
       <div
         className="flex items-center gap-2 min-w-0 flex-1 px-3"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
-        <span
-          ref={detailsButtonRef}
-          tabIndex={0}
-          role="button"
-          aria-label={`Details for ${titleText}`}
-          onMouseDown={(e) => e.stopPropagation()}
-          onMouseEnter={handleDetailsMouseEnter}
-          onMouseLeave={handleDetailsMouseLeave}
-          onFocus={handleDetailsMouseEnter}
-          onBlur={handleDetailsMouseLeave}
-          title={titleTooltip}
-          className="text-xs font-medium text-text-primary truncate cursor-default rounded-sm hover:bg-surface-overlay/60 px-0.5 -mx-0.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-        >
-          {titleText}
-        </span>
+        {isExpanded ? (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => workbenchApi?.restoreToOpen()}
+            title="Restore Claude"
+            aria-label="Restore Claude"
+            className={[
+              'flex items-center gap-1.5 px-1.5 py-0.5 -mx-1.5 rounded-sm text-xs font-medium flex-shrink-0',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              'text-accent hover:bg-surface-overlay/60'
+            ].join(' ')}
+          >
+            <CaretLeft size={12} />
+            <span>Claude</span>
+          </button>
+        ) : (
+          <>
+            <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
+            <span
+              ref={detailsButtonRef}
+              tabIndex={0}
+              role="button"
+              aria-label={`Details for ${titleText}`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onMouseEnter={handleDetailsMouseEnter}
+              onMouseLeave={handleDetailsMouseLeave}
+              onFocus={handleDetailsMouseEnter}
+              onBlur={handleDetailsMouseLeave}
+              title={titleTooltip}
+              className="text-xs font-medium text-text-primary truncate cursor-default rounded-sm hover:bg-surface-overlay/60 px-0.5 -mx-0.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            >
+              {titleText}
+            </span>
 
-        {chips}
+            {chips}
+          </>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => {
-              // U3 stub only — U4 wires the real dormant→open→expanded
-              // state machine (docs/plans/2026-07-02-001-feat-workbench-
-              // panes-plan.md). No-op for now beyond a debug breadcrumb.
-              console.debug('[WorkspaceTitleBar] Workbench button clicked (U4 will wire this up)')
-            }}
+            onClick={() => workbenchApi?.open()}
             title="Workbench"
             aria-label="Workbench"
-            aria-expanded={false}
+            aria-expanded={workbenchApi ? workbenchApi.state !== 'dormant' : false}
             className={[
               'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
               'transition-colors duration-150',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
-              'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+              workbenchApi && workbenchApi.state !== 'dormant'
+                ? 'bg-surface-overlay text-text-primary'
+                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
             ].join(' ')}
           >
             <SquaresFour size={14} />
