@@ -97,6 +97,23 @@ open "/Applications/Orpheus Dev.app"
 
 There is no general/renderer test runner — don't invent one for feature code. The DB migration engine is the one exception: it has a real assertion harness, `scripts/verify-migration-engine.ts`, run via `bun run test:db` (see the SQLite section below).
 
+**What lint actually catches** (`eslint.config.mjs`, ~lines 64-126): type-aware
+`recommendedTypeChecked` rules on `src/main`/`src/preload`/`src/shared` —
+`@typescript-eslint/no-floating-promises` (warn), `no-misused-promises` (warn),
+`await-thenable` (error, zero violations today), `no-unnecessary-type-assertion`
+(warn), plus the `no-unsafe-*` family (assignment/member-access/return/argument,
+all warn) — so: await or `void` your promises, don't let `any`/unsafe values
+flow across a type boundary untyped. And a curated `sonarjs` subset on `src/**`:
+`cognitive-complexity` capped at **20** (warn — extract a helper if a function
+gets too branchy), `no-identical-functions` (warn), `no-duplicate-string`
+threshold **5** (warn — hoist a literal repeated 5+ times to a const), plus
+`no-all-duplicated-branches` (warn), `no-element-overwrite`/`no-identical-expressions`
+(error, zero violations today). Most of these sit at `warn` under the ratchet —
+new code that trips them raises the warning count and breaks the 146-ceiling
+pre-push/CI gate (it only goes down). Write to these rules from the start. For
+the broader manual-review dimensions the gates can't cover (semantic
+duplication, swallowed errors, races, etc.), see `docs/CODE_QUALITY.md`.
+
 ## Architecture
 
 ### Three-process model (Electron)
