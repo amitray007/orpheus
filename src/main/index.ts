@@ -188,6 +188,7 @@ import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
+import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1082,18 +1083,7 @@ handle('workspaces:createWorktree', async (_e, { projectId, params }) => {
   })
 })
 
-// Thin existence check used by NewWorkspaceMenu to flip the branch-field hint.
-handle('worktrees:branchExists', async (_e, { projectId, branch }) => {
-  const project = getProject(projectId)
-  if (!project) return false
-  let repoRoot: string
-  try {
-    repoRoot = await resolveMainWorktree(project.path)
-  } catch {
-    return false
-  }
-  return branchExists(repoRoot, branch)
-})
+registerWorktreesIpc()
 
 handle('workspaces:open', (_e, { id }) => openWorkspace(id))
 
