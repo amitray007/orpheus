@@ -40,6 +40,7 @@ import {
   nextLastMode,
   type WorkbenchState
 } from '../../lib/workbenchStore'
+import type { WorkbenchTabId } from './workbenchTabs'
 
 export type { WorkbenchState }
 
@@ -120,6 +121,15 @@ export interface WorkbenchApi {
    *  and cleans them up on mouseup — call from the divider's onMouseDown. */
   beginDividerDrag: (startEvent: React.MouseEvent, availableWidth: number) => void
   isDraggingDivider: boolean
+  /** The active Workbench section tab (Git/Terminal/Files/Panes). Shared so
+   *  the top-bar tab strip (WorkspaceTitleBar) and the panel body
+   *  (WorkbenchPanel) agree on selection — see workbenchStore.ts's
+   *  WorkbenchEntry.activeTab for the storage rationale. */
+  activeTab: WorkbenchTabId
+  /** Selects a tab. If the Workbench is currently dormant, this ALSO opens it
+   *  (restoring lastMode) — clicking a top-bar tab while dormant is the
+   *  chosen "open the Workbench" affordance (see WorkspaceTitleBar). */
+  selectTab: (tab: WorkbenchTabId) => void
 }
 
 export const WorkbenchContext = createContext<WorkbenchApi | null>(null)
@@ -131,8 +141,8 @@ export function useWorkbenchApi(): WorkbenchApi | null {
 /**
  * The state machine hook. Mounted ONCE per workspace (in WorkspaceView,
  * unconditionally) and provided via WorkbenchProvider so both WorkbenchPanel
- * (the frame) and WorkspaceTitleBar (the "Workbench" button + section-2
- * restore control) can read/drive the same state.
+ * (the frame/body) and WorkspaceTitleBar (the top-bar section tabs + ⤢/✕ +
+ * the expanded-state [◂] restore control) can read/drive the same state.
  *
  * `workspaceId` selects which workspace's entry (state + width) this
  * instance reads/writes in the shared keyed store (`@/lib/workbenchStore`) —
@@ -144,7 +154,7 @@ export function useWorkbenchApi(): WorkbenchApi | null {
  * the Workbench is always on, so there's no gate to consult.
  */
 export function useWorkbenchState(workspaceId: string): WorkbenchApi {
-  const { state, width, lastMode } = useWorkbenchEntry(workspaceId)
+  const { state, width, lastMode, activeTab } = useWorkbenchEntry(workspaceId)
   const [isDraggingDivider, setIsDraggingDivider] = useState(false)
 
   // Reads/writes always go through the store keyed by the CURRENT
@@ -156,13 +166,14 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
     workspaceIdRef.current = workspaceId
   }, [workspaceId])
 
-  // Mirrors the entry so callbacks that need the LATEST state/width/lastMode
-  // (divider drag math, keyboard Esc gating, dormant->reopen restore) can
-  // read it without becoming stale or needing to be re-created every render.
-  const entryRef = useRef({ state, width, lastMode })
+  // Mirrors the entry so callbacks that need the LATEST state/width/lastMode/
+  // activeTab (divider drag math, keyboard Esc gating, dormant->reopen
+  // restore, tab selection) can read it without becoming stale or needing to
+  // be re-created every render.
+  const entryRef = useRef({ state, width, lastMode, activeTab })
   useEffect(() => {
-    entryRef.current = { state, width, lastMode }
-  }, [state, width, lastMode])
+    entryRef.current = { state, width, lastMode, activeTab }
+  }, [state, width, lastMode, activeTab])
 
   const dispatch = useCallback((action: WorkbenchAction) => {
     const id = workspaceIdRef.current
@@ -181,7 +192,8 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
     setWorkbenchEntry(id, {
       state: nextState,
       width: prevEntry.width,
-      lastMode: nextLastMode(nextState, prevEntry.lastMode)
+      lastMode: nextLastMode(nextState, prevEntry.lastMode),
+      activeTab: prevEntry.activeTab
     })
   }, [])
 
@@ -191,6 +203,23 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
   const close = useCallback(() => dispatch({ type: 'close' }), [dispatch])
   const stepDown = useCallback(() => dispatch({ type: 'stepDown' }), [dispatch])
   const toggle = useCallback(() => dispatch({ type: 'toggle' }), [dispatch])
+
+  // selectTab: switches the active section tab. If dormant, this is also the
+  // chosen "open the Workbench from the top bar" affordance (see
+  // WorkspaceTitleBar) — clicking any top-bar tab opens the Workbench
+  // (restoring lastMode, same as 'toggle'/'open') with that tab active, in
+  // one click rather than requiring an extra "open" click first.
+  const selectTab = useCallback((tab: WorkbenchTabId) => {
+    const id = workspaceIdRef.current
+    const prevEntry = entryRef.current
+    const nextState = prevEntry.state === 'dormant' ? prevEntry.lastMode : prevEntry.state
+    setWorkbenchEntry(id, {
+      state: nextState,
+      width: prevEntry.width,
+      lastMode: nextLastMode(nextState, prevEntry.lastMode),
+      activeTab: tab
+    })
+  }, [])
 
   // Keyboard: Cmd/Ctrl+\ toggles open/closed; Esc steps down one level.
   // Esc only acts when the workbench isn't dormant, so it never steals Esc
@@ -217,7 +246,8 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
   // Divider drag — tracks pointer position relative to the drag-start point,
   // converts to a new docked width, and snaps to 'expanded' past the
   // threshold. Un-snap back to 'open' happens by dragging back below the
-  // threshold, or via the ⤡/section-2 restore controls (handled elsewhere).
+  // threshold, or via the top bar's ⤢/[◂] restore controls (handled
+  // elsewhere, in WorkspaceTitleBar).
   const dragOriginRef = useRef<{ startX: number; startWidth: number; availableWidth: number }>({
     startX: 0,
     startWidth: DEFAULT_WORKBENCH_WIDTH,
@@ -256,7 +286,8 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
         setWorkbenchEntry(id, {
           state: snappedState,
           width: entryRef.current.width,
-          lastMode: nextLastMode(snappedState, prevLastMode)
+          lastMode: nextLastMode(snappedState, prevLastMode),
+          activeTab: entryRef.current.activeTab
         })
         return
       }
@@ -266,7 +297,8 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
       setWorkbenchEntry(id, {
         state: unsnappedState,
         width: clamped,
-        lastMode: nextLastMode(unsnappedState, prevLastMode)
+        lastMode: nextLastMode(unsnappedState, prevLastMode),
+        activeTab: entryRef.current.activeTab
       })
     }
 
@@ -302,7 +334,9 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
       stepDown,
       toggle,
       beginDividerDrag,
-      isDraggingDivider
+      isDraggingDivider,
+      activeTab,
+      selectTab
     }),
     [
       state,
@@ -314,7 +348,9 @@ export function useWorkbenchState(workspaceId: string): WorkbenchApi {
       stepDown,
       toggle,
       beginDividerDrag,
-      isDraggingDivider
+      isDraggingDivider,
+      activeTab,
+      selectTab
     ]
   )
 }

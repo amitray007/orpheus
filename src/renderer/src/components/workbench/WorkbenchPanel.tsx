@@ -1,15 +1,20 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/WorkbenchPanel.tsx
 //
-// U4 (P1) — the Workbench frame: docked ("open") / expanded geometry, a
-// header (⤢/⤡ expand-toggle + ✕ close) and a placeholder body
-// (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md;
+// U4 (P1) — the Workbench frame: docked ("open") / expanded geometry and a
+// placeholder body (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md;
 // docs/brainstorms/2026-07-02-workbench-panes-requirements.md §4).
-// U5 (P1) — adds the Git · Terminal · Files · Panes tab strip to the header
-// row (left of the ⤢/⤡ + ✕ controls) and renders the active tab's
-// `<ComingSoon />` body below. See WorkbenchTabStrip.tsx for the tab
-// affordance itself; this file only owns which tab is active and the layout
-// slot it renders into.
+// U5 (P1) — originally added the Git · Terminal · Files · Panes tab strip to
+// a header row here, alongside ⤢/⤡ + ✕ controls.
+// U9 (P4) — the section-tab strip AND the ⤢/⤡ + ✕ controls moved UP into the
+// top bar (WorkspaceTitleBar), split-tracked against this panel's own
+// width/expanded geometry so the two rows line up pixel-for-pixel. This
+// panel's header row is now per-CONTENT only — for the Terminal tab that's
+// `<TerminalTab />`'s own TerminalStrip (Terminal 1/2/+); other tabs have no
+// header row of their own yet. `activeTab` itself now lives in the shared
+// `WorkbenchApi` (workbenchReducer.ts / workbenchStore.ts) rather than local
+// state, so the top bar's tab strip and this panel's body agree on
+// selection.
 // U6b (P2) — the Terminal tab now renders a real `<TerminalTab />` (a live
 // $SHELL libghostty surface) instead of `<ComingSoon />`. This is also where
 // the HARD CONSTRAINT from the plan's U6 lives: expanding the Workbench must
@@ -20,26 +25,14 @@
 // docs/learnings/native-multisurface-investigation.md §7.6.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type React from 'react'
-import { ArrowsOutSimple, ArrowsInSimple, X } from '@phosphor-icons/react'
 import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
 import { TerminalTab } from './TerminalTab'
-import { WorkbenchTabStrip } from './WorkbenchTabStrip'
-import { WORKBENCH_TABS, type WorkbenchTabId } from './workbenchTabs'
+import { WORKBENCH_TABS } from './workbenchTabs'
 
 const TRANSITION = 'width 200ms ease'
-
-// Default tab: Terminal. It's the most immediately useful "give me a shell"
-// action per the requirements doc (§5.2 — "Job: give me a shell, quickly")
-// and is the tab most likely to be reached for first once P3 lands real
-// content; Git/Files/Panes are comparatively exploratory. Tab selection is
-// ephemeral component state (not persisted) — it resets to this default each
-// time the Workbench panel remounts, and is preserved across
-// open<->expanded transitions since the panel itself stays mounted across
-// those state changes.
-const DEFAULT_TAB: WorkbenchTabId = 'terminal'
 
 export interface WorkbenchPanelProps {
   /** The owning claude workspace's id — needed to (a) hide/re-mount claude's
@@ -51,8 +44,8 @@ export interface WorkbenchPanelProps {
 export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.Element | null {
   const api = useWorkbenchApi()
   const frameRef = useRef<HTMLDivElement>(null)
-  const [activeTab, setActiveTab] = useState<WorkbenchTabId>(DEFAULT_TAB)
   const state = api?.state ?? 'dormant'
+  const activeTab = api?.activeTab ?? 'terminal'
   const expanded = state === 'expanded'
 
   // ---------------------------------------------------------------------------
@@ -141,13 +134,19 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
   }
 
   if (!api) return null
-  const { width, toggleExpand, close, beginDividerDrag, isDraggingDivider } = api
+  const { width, beginDividerDrag, isDraggingDivider } = api
 
-  // Dormant is fully invisible — no rail, no strip — achieved with zero
+  // Dormant is fully invisible — no rail, no header — achieved with zero
   // width + hidden overflow on the SAME frame element the open/expanded
   // states use (not a different early-return subtree), so TerminalTab (and
   // the divider drag / keyboard listeners) stay mounted across the
   // dormant<->open<->expanded transitions instead of remounting.
+  //
+  // No header row of section-tabs / ⤢/⤡ / ✕ here anymore (U9) — those moved
+  // up into the top bar (WorkspaceTitleBar), which reads/drives this same
+  // `api`. Each tab body owns its OWN header row now, if it has one — the
+  // Terminal tab's `<TerminalTab />` renders its own TerminalStrip
+  // (Terminal 1/2/+) at the top of its tabpanel.
   return (
     <>
       {!expanded && !dormant && (
@@ -175,33 +174,6 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
           transition: isDraggingDivider ? 'none' : TRANSITION
         }}
       >
-        {!dormant && (
-          <div className="flex items-center justify-between gap-2 h-8 px-2 border-b border-border-default flex-shrink-0">
-            <WorkbenchTabStrip activeTab={activeTab} onChange={setActiveTab} />
-            <div className="flex items-center gap-1 flex-shrink-0 pl-2 border-l border-border-default">
-              <button
-                type="button"
-                onClick={toggleExpand}
-                aria-label={expanded ? 'Collapse Workbench' : 'Expand Workbench'}
-                aria-expanded={expanded}
-                title={expanded ? 'Collapse' : 'Expand'}
-                className="flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-              >
-                {expanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
-              </button>
-              <button
-                type="button"
-                onClick={close}
-                aria-label="Close Workbench"
-                title="Close"
-                className="flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-              >
-                <X size={13} />
-              </button>
-            </div>
-          </div>
-        )}
-
         {WORKBENCH_TABS.map(({ id, label }) => (
           <div
             key={id}

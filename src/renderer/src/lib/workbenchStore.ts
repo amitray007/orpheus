@@ -24,6 +24,7 @@
  */
 
 import { createPerKeyStore } from './createPerKeyStore'
+import type { WorkbenchTabId } from '../components/workbench/workbenchTabs'
 
 export type WorkbenchState = 'dormant' | 'open' | 'expanded'
 
@@ -42,6 +43,13 @@ export interface WorkbenchEntry {
    *  hardcoding 'open'. See `nextLastMode` below and its callers in
    *  workbenchReducer.ts's `useWorkbenchState`. */
   lastMode: WorkbenchMode
+  /** The currently active section tab (Git/Terminal/Files/Panes). Lifted up
+   *  here (rather than local `useState` in WorkbenchPanel) so the top bar's
+   *  tab strip (WorkspaceTitleBar) and the panel's body (WorkbenchPanel)
+   *  agree on which tab is selected — both read/write through the same
+   *  shared `WorkbenchApi` (see workbenchReducer.ts). Stored per-workspace,
+   *  same survives-unmount rationale as state/width/lastMode above. */
+  activeTab: WorkbenchTabId
 }
 
 export const DEFAULT_WORKBENCH_WIDTH = 460
@@ -49,7 +57,8 @@ export const DEFAULT_WORKBENCH_WIDTH = 460
 export const DEFAULT_WORKBENCH_ENTRY: WorkbenchEntry = {
   state: 'dormant',
   width: DEFAULT_WORKBENCH_WIDTH,
-  lastMode: 'open'
+  lastMode: 'open',
+  activeTab: 'terminal'
 }
 
 /** Derives the next `lastMode` for a transition into `nextState`: tracks
@@ -70,7 +79,10 @@ export function nextLastMode(
 // createPerKeyStore.
 const store = createPerKeyStore<WorkbenchEntry>({
   equals: (prev, next) =>
-    prev.state === next.state && prev.width === next.width && prev.lastMode === next.lastMode
+    prev.state === next.state &&
+    prev.width === next.width &&
+    prev.lastMode === next.lastMode &&
+    prev.activeTab === next.activeTab
 })
 
 /** Read a workspace's current entry, defaulting to dormant/DEFAULT_WORKBENCH_WIDTH if never set. */
