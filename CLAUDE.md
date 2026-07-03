@@ -82,22 +82,40 @@ open "/Applications/Orpheus Dev.app"
 | Command                    | What it does                                                                                                                                                                                                                                                                                                                                 |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bun run typecheck`        | Runs both `typecheck:node` (main + preload + shared) and `typecheck:web` (renderer) against composite tsconfigs.                                                                                                                                                                                                                             |
-| `bun run lint`             | ESLint over the workspace (flat config, `.eslintcache` enabled).                                                                                                                                                                                                                                                                             |
+| `bun run lint`             | ESLint over the workspace (flat config, `.eslintcache` enabled). CI runs `bunx eslint . --max-warnings=146` — a ratchet that only goes DOWN as warnings are fixed; don't add new ones.                                                                                                                                                       |
 | `bun run format`           | Prettier-format the workspace. Enforced by `husky` `pre-commit` (lint-staged Prettier) and `pre-push` (`prettier --check`).                                                                                                                                                                                                                  |
+| `bun run check`            | Aggregate gate: `typecheck` + `lint` + `check:dup` + `check:arch`. Run before considering non-trivial work done.                                                                                                                                                                                                                             |
+| `bun run check:dup`        | `jscpd` duplication scan over `src` + `packages/orpheus-cli`, threshold 2.4%.                                                                                                                                                                                                                                                                |
+| `bun run check:arch`       | `depcruise` (dependency-cruiser) over `src` + `packages/orpheus-cli` — enforces no circular imports plus layer rules (e.g. `src/shared/ipc.ts` may only import from `./types`).                                                                                                                                                              |
+| `bun run check:dead`       | `knip` dead-code/unused-export scan. Advisory, not a hard CI gate.                                                                                                                                                                                                                                                                           |
+| `bun run test:db`          | Runs `scripts/verify-migration-engine.ts` — the DB migration engine's assertion harness. CI-gated on changes under `src/main/db/**`; run and extend it whenever you touch that directory.                                                                                                                                                    |
 | `bun run build:native`     | Rebuild `packages/ghostty-surface` (`node-gyp` against the installed Electron ABI).                                                                                                                                                                                                                                                          |
 | `bun run fetch:libghostty` | Re-fetch `vendor/GhosttyKit.xcframework` + `vendor/ghostty` source pin (SHA-256-verified). Runs as `postinstall`.                                                                                                                                                                                                                            |
 | `bun run release`          | **Manual fallback only** (release-please owns the normal path — see release-pipeline section). Build `.dmg`, publish a `vX.Y.Z` GitHub release, render `scripts/orpheus-cask.template.rb`, commit + push the cask in `../homebrew-tap` (override path with `ORPHEUS_TAP_PATH`). Do NOT hand-bump `package.json#version` for the normal flow. |
 
-There is no test runner wired up. There are no unit tests. Don't invent one.
+**Enforcement gates.** Husky hooks run automatically: `pre-commit` (lint-staged ESLint + Prettier on staged files), `commit-msg` (commitlint), `pre-push` (`typecheck` + `eslint --max-warnings=146` + `prettier --check`). In CI, `typecheck`, `lint` (146 ratchet), `format`, `check:dup`, and `check:arch` are hard gates; `check:dead` is advisory; `test:db` is a hard gate but path-filtered to run only when `src/main/db/**` changes.
+
+There is no general/renderer test runner — don't invent one for feature code. The DB migration engine is the one exception: it has a real assertion harness, `scripts/verify-migration-engine.ts`, run via `bun run test:db` (see the SQLite section below).
 
 ## Architecture
 
 ### Three-process model (Electron)
 
-- **Main** (`src/main/`) — Node 22 / Electron 39. Owns SQLite, native addon, IPC handlers, hook server. Entry: `src/main/index.ts`. Every domain module hangs off `index.ts` via `ipcMain.handle(...)`.
-- **Preload** (`src/preload/index.ts`) — typed `window.api.*` bridge. `index.d.ts` is the contract the renderer types against.
+- **Main** (`src/main/`) — Node 22 / Electron 39. Owns SQLite, native addon, IPC handlers, hook server. Entry: `src/main/index.ts` (2700+ lines) wires cross-cutting handlers directly and delegates per-domain handlers to `src/main/ipc/*.ts` modules (`claudeAgents.ts`, `claudeAuth.ts`, `claudeHooks.ts`, `footerActions.ts`, `ghosttySettings.ts`, `git.ts`, `keepAwake.ts`, `mcp.ts`, `misc.ts`, `orpheusConfig.ts`, `shell.ts`, `system.ts`, `updates.ts`), each registered from `index.ts` via a `registerXxxIpc(deps)` call.
+- **Preload** (`src/preload/index.ts`) — typed `window.api.*` bridge. `index.d.ts` is a thin shim (`OrpheusApi = typeof api`) that hangs the type off `Window`; the renderer types against it.
 - **Renderer** (`src/renderer/src/`) — React 19 + Tailwind v4 + Geist. Boot path: `main.tsx` → `App.tsx` (runs doctor) → `components/dashboard/Dashboard.tsx`. Path aliases: `@renderer/*`, `@/*` → `src/renderer/src/*`; `@shared/*` → `src/shared/*`.
-- **Shared types** (`src/shared/types.ts`) — single source of truth for all IPC payloads, DB record types, draft types. Both main and renderer import from here.
+  - Cross-component state lives in `src/renderer/src/lib/` as external stores via `useSyncExternalStore`, not component-local state. Per-workspace data uses the `createPerKeyStore` factory (`gitStore`, `prStore`, `titleStore`, `activityStore`, `activityTimeStore`, `sleepStore`); app-wide UI state is `uiStateStore` (via the `useUiState` hook); reusable hooks include `useDebouncedValue`, `useOverlayHoverCard`, `useInlineRename`. Check for an existing store/hook before adding new component-local state.
+- **Shared types** (`src/shared/types.ts`) — single source of truth for all IPC payloads, DB record types, draft types. Both main and renderer import from here. `src/shared/ipc.ts` is the companion typed channel map (see "Adding an IPC channel" below).
+
+### Adding an IPC channel (typed + strict)
+
+IPC is no longer raw `ipcMain.handle(...)` calls scattered through `index.ts` — it's a typed, strict system anchored in `src/shared/ipc.ts`:
+
+1. **Request/response channels** must be added to `InvokeChannelMap` in `src/shared/ipc.ts` first, as `'channel:name': { req: [...]; res: ... }`. The `handle()` wrapper (`src/main/ipc/handle.ts`) is generic over `keyof InvokeChannelMap`, so registering a channel name that isn't in the map — or a handler whose args/return don't match — is a **compile error**, not a runtime surprise.
+2. **Implement** via `handle('channel:name', (e, ...args) => ...)` from `src/main/ipc/handle.ts` inside the matching `src/main/ipc/<domain>.ts` module's `registerXxxIpc(deps)` function (or a new module wired into `index.ts`) — never call raw `ipcMain.handle`. The wrapper auto-times the handler and logs slow/failing calls.
+3. **Expose in preload** (`src/preload/index.ts`) via the typed `invoke()` helper, added to the `api` object.
+4. **Push channels** (main → renderer, fire-and-forget) must be added to BOTH `RendererPushMap` and the `PUSH_CHANNELS` const in `src/shared/ipc.ts` — an exhaustiveness type-check (`_PushChannelsCoverAllKeys`) fails to compile if they drift apart. Send via `webContents.send`, consume in preload via `subscribe(PUSH_CHANNELS.xxx, cb)`.
+5. **New `ipc/` modules receive index.ts-owned state via their `registerXxxIpc(deps)` parameter** (e.g. `registerMiscIpc({ getProject })`), never by importing `index.ts` directly — that would create a circular dependency.
 
 ### Core domain model
 
@@ -138,7 +156,7 @@ Schema lives in `src/main/db/` (a directory, not a monolith). `schema.ts` is the
 
 **Column drops are explicit** — a `dropColumns: [...]` array on the `TableDef` — never inferred from a column's absence, so a typo in `schema.ts` can't cause silent data loss.
 
-Never write destructive migrations by hand; the engine's rebuild path backs up via `VACUUM INTO` before any rebuild and verifies row counts after. Verification harness: `node scripts/verify-migration-engine.ts` (dev-only, under `scripts/`, not shipped) exercises render/introspect/diff/rebuild/backup/engine/schema-fresh/convergence/data-steps/cutover.
+Never write destructive migrations by hand; the engine's rebuild path backs up via `VACUUM INTO` before any rebuild and verifies row counts after. Verification harness: `bun run test:db` (dev-only, under `scripts/`, not shipped) exercises render/introspect/diff/rebuild/backup/engine/schema-fresh/convergence/data-steps/cutover.
 
 ### Native terminal addon
 
