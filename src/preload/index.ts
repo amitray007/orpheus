@@ -64,25 +64,21 @@ import type {
 } from '../shared/types'
 
 // ---------------------------------------------------------------------------
-// Generic typed IPC helpers (DUP-3 chunk A). `invoke` and `subscribe` are
-// typed against the shared ChannelMap (src/shared/ipc.ts) for channels that
-// have been migrated into it; both also accept a plain `string` fallback so
-// unmigrated wrappers below keep compiling unchanged.
+// Generic typed IPC helpers. `invoke` and `subscribe` are typed against the
+// shared ChannelMap (src/shared/ipc.ts) — there is no permissive `string`
+// fallback, so an unmapped channel is a compile error (DUP-3 finalize,
+// commit 3/3).
 // ---------------------------------------------------------------------------
 
-function invoke<C extends InvokeChannel>(channel: C, ...args: Req<C>): Promise<Res<C>>
-function invoke(channel: string, ...args: unknown[]): Promise<unknown>
-function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+function invoke<C extends InvokeChannel>(channel: C, ...args: Req<C>): Promise<Res<C>> {
   return ipcRenderer.invoke(channel, ...args)
 }
 
 function subscribe<C extends PushChannel>(
   channel: C,
   cb: (payload: PushPayload<C>) => void
-): () => void
-function subscribe(channel: string, cb: (payload: unknown) => void): () => void
-function subscribe(channel: string, cb: (payload: unknown) => void): () => void {
-  const listener = (_evt: IpcRendererEvent, payload: unknown): void => cb(payload)
+): () => void {
+  const listener = (_evt: IpcRendererEvent, payload: PushPayload<C>): void => cb(payload)
   ipcRenderer.on(channel, listener)
   return () => ipcRenderer.removeListener(channel, listener)
 }

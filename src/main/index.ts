@@ -1157,28 +1157,25 @@ async function checkClaude(): Promise<{
 // as PERF_IPC_ROUNDTRIP, captures and re-throws errors as ERROR_IPC_FAIL.
 // ---------------------------------------------------------------------------
 
-// Overload 1: channel is a key of InvokeChannelMap — args/return are typed
-// against the shared ChannelMap (src/shared/ipc.ts).
+// Every channel must be a key of InvokeChannelMap (src/shared/ipc.ts) — args
+// and return type are checked against it. There is no permissive fallback:
+// an unmapped channel is now a compile error (DUP-3 finalize, commit 3/3).
 function handle<C extends InvokeChannel>(
   channel: C,
   fn: (e: Electron.IpcMainInvokeEvent, ...args: Req<C>) => Res<C> | Promise<Res<C>>
-): void
-// Overload 2: permissive fallback for the ~100+ channels not yet migrated
-// into InvokeChannelMap — zero behavior change, zero migration forced.
-function handle(
-  channel: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
-  fn: (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any
-): void
-function handle(
-  channel: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IPC handlers are inherently untyped at this boundary
-  fn: (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any
 ): void {
   ipcMain.handle(channel, async (e, ...args) => {
     const start = Date.now()
     try {
-      const result = await fn(e, ...args)
+      // The generic C collapses to a union across all channels inside this
+      // shared implementation body — TS can't correlate `args` (unknown[]
+      // from Electron's runtime signature) back to the specific `Req<C>`
+      // tuple for whichever channel this particular registration is for.
+      // The overload signature above is what actually enforces the
+      // per-channel contract at every call site; this cast just satisfies
+      // the implementation body, which is inherently untyped at this
+      // boundary (the same widening the removed permissive overload used).
+      const result = await fn(e, ...(args as Req<C>))
       const ms = Date.now() - start
       if (ms > 50) {
         logDiagMain({
