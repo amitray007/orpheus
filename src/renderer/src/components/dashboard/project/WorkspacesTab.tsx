@@ -20,6 +20,8 @@ import { SessionsTab } from './SessionsTab'
 import { useWorkspaceActivity } from '@/lib/activityStore'
 import { useWorkspaceTitle, getTitleSnapshot } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
+import { useDebouncedValue } from '@/lib/useDebouncedValue'
+import { useInlineRename } from '@/lib/useInlineRename'
 
 // ---------------------------------------------------------------------------
 // Project body — active workspaces on the left, sessions on the right, recent
@@ -366,8 +368,11 @@ export function WorkspacesTab({
   const [activeSortBy, setActiveSortBy] = useState<'lastOpenedAt' | 'messages'>('lastOpenedAt')
   const [activeSortDir, setActiveSortDir] = useState<'asc' | 'desc'>('desc')
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; ws: WorkspaceRecord } | null>(null)
+
+  // The workspace currently being renamed (if any) — drives useInlineRename's
+  // currentName so trim/no-op/commit compares against the right row.
+  const renamingWs = renamingId ? (all.find((w) => w.id === renamingId) ?? null) : null
   const [sessionStats, setSessionStats] = useState<
     Record<
       string,
@@ -377,13 +382,11 @@ export function WorkspacesTab({
 
   // Search + filter state
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  // Lowercasing is this call site's own behavior (not baked into the shared
+  // hook) — the debounced raw value is trimmed + lowercased here, same as the
+  // original setTimeout(() => setDebouncedSearch(search.trim().toLowerCase())).
+  const debouncedSearch = useDebouncedValue(search, 250).trim().toLowerCase()
   const [activityFilter, setActivityFilter] = useState<ActivityFilterKey>('all')
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim().toLowerCase()), 250)
-    return () => clearTimeout(t)
-  }, [search])
 
   // Git status for visible active rows is served by the global gitStore
   // (seeded + kept live by Dashboard's shared git:statusChanged push
@@ -431,20 +434,31 @@ export function WorkspacesTab({
     setMenu({ x: rect.right - 180, y: rect.bottom + 4, ws })
   }
 
-  function beginRename(ws: WorkspaceRecord): void {
-    setRenamingId(ws.id)
-    setRenameValue(ws.name)
-  }
+  // currentName tracks whichever workspace is currently being renamed (or ''
+  // when none is) — commit()'s trim/no-op/equality check compares against it.
+  const rename = useInlineRename(renamingWs?.name ?? '', (trimmed) => {
+    if (renamingWs) onRenameWorkspace(renamingWs.id, projectId, trimmed)
+  })
+
+  const beginRename = useCallback(
+    (ws: WorkspaceRecord): void => {
+      setRenamingId(ws.id)
+      rename.seed(ws.name)
+    },
+    [rename]
+  )
 
   const commitRename = useCallback(
     (ws: WorkspaceRecord): void => {
-      const trimmed = renameValue.trim()
-      if (trimmed && trimmed !== ws.name) {
-        onRenameWorkspace(ws.id, projectId, trimmed)
-      }
+      // ws is the row that invoked commit; rename's currentName already tracks
+      // renamingWs (the same row while renamingId === ws.id), so this call is
+      // just the WorkspaceNameCellProps contract — the actual compare/commit
+      // logic lives in useInlineRename, keyed off renamingWs.
+      if (renamingWs?.id !== ws.id) return
+      rename.commit()
       setRenamingId(null)
     },
-    [renameValue, onRenameWorkspace, projectId]
+    [rename, renamingWs]
   )
 
   // Stable handlers passed to memoized children (WorkspacesFilterBar, WorkspacesEmptyState).
@@ -483,7 +497,7 @@ export function WorkspacesTab({
         destructive: true
       }
     ]
-  }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin])
+  }, [menu, projectId, onArchiveWorkspace, onToggleWorkspacePin, beginRename])
 
   // Filter active workspaces by activity group and search term.
   const filtered = useMemo(() => {
@@ -544,9 +558,9 @@ export function WorkspacesTab({
           <WorkspaceNameCell
             ws={ws}
             renamingId={renamingId}
-            renameValue={renameValue}
+            renameValue={rename.value}
             sessionStats={sessionStats}
-            setRenameValue={setRenameValue}
+            setRenameValue={rename.setValue}
             commitRename={commitRename}
             setRenamingId={setRenamingId}
           />
@@ -582,7 +596,7 @@ export function WorkspacesTab({
         render: (ws) => <WorkspaceActionsButton onClick={(e) => openMenu(e, ws)} />
       }
     ],
-    [renamingId, renameValue, sessionStats, commitRename]
+    [renamingId, rename.value, rename.setValue, sessionStats, commitRename]
   )
 
   // Whether the raw workspace list (before any filtering) has any entries.

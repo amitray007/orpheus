@@ -11,6 +11,7 @@ import {
 } from '@/lib/overlayClient'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getTitleSnapshot } from '@/lib/titleStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import { resolveWorkspaceName } from './resolveWorkspaceName'
 import type { WorkspaceActivityDetail } from '@shared/types'
 
@@ -61,19 +62,10 @@ const ProjectTile = memo(function ProjectTile({
   tileClass
 }: ProjectTileProps): React.JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  function clearHoverTimer(): void {
-    if (hoverTimerRef.current !== null) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
-  }
+  const hoverCard = useOverlayHoverCard({ openDelay: 150, closeDelay: 80 })
 
   function handleMouseEnter(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
+    hoverCard.handleMouseEnter(() => {
       if (!buttonRef.current) return
 
       // Snapshot activity and title store at show-time (no hooks in a loop).
@@ -108,15 +100,11 @@ const ProjectTile = memo(function ProjectTile({
       }
 
       showProjectCard(p.id, buttonRef.current, cardProps)
-    }, 150)
+    })
   }
 
   function handleMouseLeave(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
-      hideOverlayCard(projectCardId(p.id))
-    }, 80)
+    hoverCard.handleMouseLeave(() => hideOverlayCard(projectCardId(p.id)))
   }
 
   return (

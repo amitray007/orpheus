@@ -11,6 +11,7 @@ import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
 import { PrChip } from '../github/PrChip'
 import { useGitStatus } from '@/lib/gitStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
 import {
   showDetailsCard,
   updateDetailsCard,
@@ -81,7 +82,8 @@ export function WorkspaceTitleBar({
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
   const detailsButtonRef = useRef<HTMLButtonElement>(null)
-  const detailsHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
+  const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
@@ -105,13 +107,6 @@ export function WorkspaceTitleBar({
   }, [workspace.id])
 
   // ── Details popover — hover open/close + async data fetching ────────────────
-
-  function clearDetailsHoverTimer(): void {
-    if (detailsHoverTimerRef.current !== null) {
-      clearTimeout(detailsHoverTimerRef.current)
-      detailsHoverTimerRef.current = null
-    }
-  }
 
   function updateDetails(patch: Partial<DetailsCardProps>): void {
     updateDetailsCard(detailsCardId(workspace.id), patch)
@@ -202,25 +197,17 @@ export function WorkspaceTitleBar({
   }
 
   function handleDetailsMouseEnter(): void {
-    clearDetailsHoverTimer()
-    detailsHoverTimerRef.current = setTimeout(() => {
-      detailsHoverTimerRef.current = null
-      openDetailsPopover()
-    }, 120)
+    hoverCard.handleMouseEnter(openDetailsPopover)
   }
 
   function handleDetailsMouseLeave(): void {
-    clearDetailsHoverTimer()
-    detailsHoverTimerRef.current = setTimeout(() => {
-      detailsHoverTimerRef.current = null
-      hideDetailsCard()
-    }, 80)
+    hoverCard.handleMouseLeave(hideDetailsCard)
   }
 
   // Hide and cancel timers on workspace change or unmount
   useEffect(() => {
     return () => {
-      clearDetailsHoverTimer()
+      hoverCard.clearTimer()
       hideDetailsCard()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,13 +218,8 @@ export function WorkspaceTitleBar({
   // close timer on enter and re-arm it (same 80ms) on leave.
   useEffect(() => {
     const unregister = onCardPointer(detailsCardId(workspace.id), {
-      onEnter: clearDetailsHoverTimer,
-      onLeave: () => {
-        detailsHoverTimerRef.current = setTimeout(() => {
-          detailsHoverTimerRef.current = null
-          hideDetailsCard()
-        }, 80)
-      }
+      onEnter: hoverCard.clearTimer,
+      onLeave: () => hoverCard.armClose(hideDetailsCard)
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps

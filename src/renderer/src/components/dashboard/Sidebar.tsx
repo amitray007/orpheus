@@ -29,6 +29,8 @@ import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
 import { useUiState } from '@/lib/uiStateStore'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
+import { useInlineRename } from '@/lib/useInlineRename'
 import {
   showHoverCard,
   hideOverlayCard,
@@ -99,7 +101,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const gitStatus = useGitStatus(workspace.id)
   const pr = usePr(workspace.id)
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(workspace.name)
+  const rename = useInlineRename(workspace.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const sidebarBoundsRef = useSidebarBounds()
 
@@ -113,8 +115,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Seed the rename input with whatever the user currently sees, so renaming
   // from a Claude title doesn't snap back to "New workspace".
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when renaming mode activates
-    if (renaming) setRenameValue(displayName)
+    if (renaming) rename.seed(displayName)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renaming])
 
@@ -153,13 +154,10 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   ]
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== workspace.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
-    setRenameValue(workspace.name) // reset so a future rename starts clean
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== workspace.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
   // Freshness display — live activity time wins; jsonl mtime is the fallback for
@@ -185,14 +183,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   const rowRef = useRef<HTMLDivElement>(null)
 
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  function clearHoverTimer(): void {
-    if (hoverTimerRef.current !== null) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
-  }
+  const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
 
   function hideHoverCard(): void {
     hideOverlayCard(hoverCardId(workspace.id))
@@ -200,9 +191,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
   function handleRowMouseEnter(): void {
     if (!cardAllowed) return
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
+    hoverCard.handleMouseEnter(() => {
       if (!rowRef.current || !cardAllowed) return
       // For worktree workspaces, annotate cwd with the parent repo path so
       // the hover popover surfaces the worktree context alongside the cwd.
@@ -220,22 +209,18 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
         cwd: popoverCwd
       }
       showHoverCard(workspace.id, rowRef.current, cardProps)
-    }, 120)
+    })
   }
 
   function handleRowMouseLeave(): void {
-    clearHoverTimer()
-    hoverTimerRef.current = setTimeout(() => {
-      hoverTimerRef.current = null
-      hideHoverCard()
-    }, 80)
+    hoverCard.handleMouseLeave(hideHoverCard)
   }
 
   // If the card is allowed but the row becomes active / renaming / loses detail,
   // close it immediately so it never sits over a live terminal.
   useEffect(() => {
     if (!cardAllowed) {
-      clearHoverTimer()
+      hoverCard.clearTimer()
       hideHoverCard()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -244,7 +229,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // Clean up on unmount.
   useEffect(() => {
     return () => {
-      clearHoverTimer()
+      hoverCard.clearTimer()
       hideHoverCard()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -257,13 +242,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
   // leave.
   useEffect(() => {
     const unregister = onCardPointer(hoverCardId(workspace.id), {
-      onEnter: clearHoverTimer,
-      onLeave: () => {
-        hoverTimerRef.current = setTimeout(() => {
-          hoverTimerRef.current = null
-          hideHoverCard()
-        }, 80)
-      }
+      onEnter: hoverCard.clearTimer,
+      onLeave: () => hoverCard.armClose(hideHoverCard)
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -331,8 +311,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               {renaming ? (
                 <RenameInput
                   ariaLabel="Rename workspace"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
+                  value={rename.value}
+                  onChange={(e) => rename.setValue(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleRenameCommit()
                     if (e.key === 'Escape') onCancelRename()
@@ -608,15 +588,15 @@ const ProjectRow = memo(function ProjectRow({
   onWorkspaceDragEnd
 }: ProjectRowProps): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const [renameValue, setRenameValue] = useState(project.name)
+  const rename = useInlineRename(project.name, (trimmed) => onFinishRename(trimmed))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [revealExtra, setRevealExtra] = useState(0)
   const sidebarBoundsRef = useSidebarBounds()
 
   // Sync rename input when project name changes externally (useEffect avoids render-time setState)
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- conditional sync: only updates when not actively renaming
-    if (!renaming) setRenameValue(project.name)
+    if (!renaming) rename.seed(project.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.name, renaming])
 
   // Collapse the revealed-extra count when the project is collapsed, so
@@ -697,12 +677,10 @@ const ProjectRow = memo(function ProjectRow({
   ]
 
   function handleRenameCommit(): void {
-    const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== project.name) {
-      onFinishRename(trimmed)
-    } else {
-      onCancelRename()
-    }
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== project.name
+    rename.commit() // calls onFinishRename(trimmed) when willCommit; always resets value
+    if (!willCommit) onCancelRename()
   }
 
   return (
@@ -741,8 +719,8 @@ const ProjectRow = memo(function ProjectRow({
           {renaming ? (
             <RenameInput
               ariaLabel="Rename project"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
+              value={rename.value}
+              onChange={(e) => rename.setValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleRenameCommit()
                 if (e.key === 'Escape') onCancelRename()

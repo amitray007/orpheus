@@ -6,6 +6,7 @@ import { DataTable, type DataTableColumn } from '../../DataTable'
 import { DotmSquare13 } from '../../ui/dotm-square-13'
 import { ConfirmModal } from '../../ConfirmModal'
 import { SessionsFilterBar } from './SessionsFilterBar'
+import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import {
   PAGE_SIZE_FULL,
   PAGE_SIZE_COMPACT,
@@ -69,7 +70,7 @@ export function SessionsTab({
 }: SessionsTabProps): React.JSX.Element {
   const PAGE_SIZE = compact ? PAGE_SIZE_COMPACT : PAGE_SIZE_FULL
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search, 250).trim()
   const [dateRange, setDateRange] = useState<DateRange>('d3')
   const [sortBy, setSortBy] = useState<SortBy>('updatedAt')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -97,12 +98,6 @@ export function SessionsTab({
   const [autoWidenedFor, setAutoWidenedFor] = useState<string | null>(null)
   const autoWidened = autoWidenedFor === projectId
 
-  // Debounce search input
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
-    return () => clearTimeout(t)
-  }, [search])
-
   // One-shot metadata backfill on project change — fills in any null titles
   // and models from JSONL files. Then the next paged query picks up the
   // freshly-extracted values.
@@ -118,6 +113,17 @@ export function SessionsTab({
     return () => {
       cancelled = true
     }
+  }, [projectId])
+
+  // Reset hasAnySessions to "unknown" the instant projectId changes — otherwise
+  // the previous project's value (e.g. true) stays live until the check below
+  // resolves for the new project, and the paged-fetch effect (which also fires
+  // on this projectId change, and races the same async gap) can read that
+  // stale value and auto-widen the NEW project's date range using the OLD
+  // project's "has sessions" answer.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting derived state before the async re-check below is the idiomatic pattern (mirrors CommitsTab's allTimeTotal reset)
+    setHasAnySessions(null)
   }, [projectId])
 
   // One-shot check: does this project have any sessions at all (ignoring all
