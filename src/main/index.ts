@@ -174,6 +174,16 @@ import {
   setOverlayTheme
 } from './overlayLayer'
 import { PUSH_CHANNELS } from '../shared/ipc'
+import {
+  configureWorkspaceResources,
+  getLaunchSnapshot,
+  setLaunchSnapshot,
+  deleteLaunchSnapshot,
+  launchSnapshotEntries,
+  launchSnapshotCount,
+  isDirty,
+  setDirty
+} from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
@@ -189,14 +199,6 @@ import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
-
-// ---------------------------------------------------------------------------
-// Launch snapshot + dirty tracking
-// ---------------------------------------------------------------------------
-
-// Keyed by workspaceId — snapshot of the ClaudeLaunch used at terminal:mount time.
-const launchSnapshots = new Map<string, ClaudeLaunch>()
-const dirtyWorkspaces = new Set<string>()
 
 // Fallback auto-hide timers for loading overlays — ensures a stuck overlay
 // is always dismissed even if claude never registers a session file.
@@ -423,17 +425,6 @@ function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
   return true
 }
 
-function broadcastDirty(workspaceId: string, dirty: boolean): void {
-  getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceDirtyChanged, { workspaceId, dirty })
-}
-
-function setDirty(workspaceId: string, dirty: boolean): void {
-  const was = dirtyWorkspaces.has(workspaceId)
-  if (dirty) dirtyWorkspaces.add(workspaceId)
-  else dirtyWorkspaces.delete(workspaceId)
-  if (was !== dirty) broadcastDirty(workspaceId, dirty)
-}
-
 // ---------------------------------------------------------------------------
 // Unified per-workspace teardown
 // ---------------------------------------------------------------------------
@@ -449,8 +440,8 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
   clearWorkspaceActivity(workspaceId)
-  launchSnapshots.delete(workspaceId)
-  if (dirtyWorkspaces.delete(workspaceId)) broadcastDirty(workspaceId, false)
+  deleteLaunchSnapshot(workspaceId)
+  setDirty(workspaceId, false)
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   if (workspaceTitles.delete(workspaceId)) {
@@ -518,17 +509,17 @@ async function performArchive(
 }
 
 function recomputeDirty(): void {
-  if (launchSnapshots.size === 0) return
+  if (launchSnapshotCount() === 0) return
   // Fetch global settings once — shared across all workspaces in the loop.
   // Each composeClaudeLaunch would otherwise run a redundant DB read.
   const globalSettings = getClaudeGlobalSettings()
-  for (const [workspaceId, snap] of launchSnapshots.entries()) {
+  for (const [workspaceId, snap] of launchSnapshotEntries()) {
     const ws = getWorkspace(workspaceId)
     if (!ws) {
       // Workspace was archived/removed while a snapshot was still tracked
       // (e.g. archived mid-mount) — evict the stale entry instead of
       // leaving it around forever.
-      launchSnapshots.delete(workspaceId)
+      deleteLaunchSnapshot(workspaceId)
       setDirty(workspaceId, false)
       continue
     }
@@ -620,7 +611,7 @@ function setWorkspaceSettingAndSuppressDirty(
 ): ClaudeWorkspaceSettings {
   const result = updateClaudeWorkspaceSettings(workspaceId, patch)
 
-  const snap = launchSnapshots.get(workspaceId)
+  const snap = getLaunchSnapshot(workspaceId)
   if (snap) {
     const ws = getWorkspace(workspaceId)
     if (ws) {
@@ -630,7 +621,7 @@ function setWorkspaceSettingAndSuppressDirty(
       const patchedFlags = reconcileFlagsExceptTarget(snap.flags, fresh.flags, flagName)
 
       // Only `flags` changes; settingsJson/env stay from the OLD snapshot.
-      launchSnapshots.set(workspaceId, { ...snap, flags: patchedFlags })
+      setLaunchSnapshot(workspaceId, { ...snap, flags: patchedFlags })
     }
   }
 
@@ -1305,7 +1296,7 @@ handle('workspaces:reorder', (_e, { projectId, orderedIds }) =>
   reorderWorkspaces(projectId, orderedIds)
 )
 
-handle('workspace:isDirty', (_e, { workspaceId }) => dirtyWorkspaces.has(workspaceId))
+handle('workspace:isDirty', (_e, { workspaceId }) => isDirty(workspaceId))
 
 // ---------------------------------------------------------------------------
 // Sessions IPC
@@ -1792,7 +1783,7 @@ handle('terminal:mount', async (e, { workspaceId, rect, scaleFactor, cwd }) => {
   }
 
   // Snapshot the composed launch so we can detect settings drift later.
-  launchSnapshots.set(workspaceId, launch)
+  setLaunchSnapshot(workspaceId, launch)
   setDirty(workspaceId, false)
 
   // Push the current canInject state so the renderer chip gets an immediate
@@ -1920,10 +1911,8 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   }
   hideLoadingOverlay(workspaceId)
   cancelAttentionRetry(workspaceId)
-  launchSnapshots.delete(workspaceId)
-  if (dirtyWorkspaces.delete(workspaceId)) {
-    broadcastDirty(workspaceId, false)
-  }
+  deleteLaunchSnapshot(workspaceId)
+  setDirty(workspaceId, false)
   // Clear title and notify renderer so stale claude titles don't linger
   if (workspaceTitles.delete(workspaceId)) {
     getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
@@ -2199,6 +2188,13 @@ if (!app.requestSingleInstanceLock()) {
       }
       startDiagnostics()
       syncDiagFlags()
+
+      // Wire the workspaceResources registry's main→renderer broadcast bridge
+      // once at boot (mirrors configureLoadingOverlay's injection pattern) —
+      // keeps workspaceResources.ts a leaf with no import back on index.ts.
+      configureWorkspaceResources({
+        broadcast: (channel, payload) => getMainWindow()?.webContents.send(channel, payload)
+      })
 
       // Boot Quick Actions registry — registers all action descriptors so they're
       // available before any IPC can invoke them.
