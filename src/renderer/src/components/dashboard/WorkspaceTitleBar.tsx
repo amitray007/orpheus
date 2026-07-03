@@ -5,7 +5,8 @@ import {
   Gear,
   ArrowBendUpLeft,
   Info,
-  GitBranch
+  GitBranch,
+  SquaresFour
 } from '@phosphor-icons/react'
 import { CLAUDE_MODEL_OPTIONS } from '@shared/types'
 import type { GhPullRequest, WorkspaceRecord, SessionUsage, SessionCost } from '@shared/types'
@@ -23,6 +24,7 @@ import {
 } from '@/lib/overlayClient'
 import type { DetailsCardProps } from '@shared/types'
 import { contextBudgetCache } from './workspaceTitleBar.helpers'
+import { ClaudeGlyph } from '../workbench/ClaudeGlyph'
 
 // ---------------------------------------------------------------------------
 // Model label helper — derives a short human-readable label from a model ID.
@@ -71,6 +73,17 @@ interface WorkspaceTitleBarProps {
   pr?: GhPullRequest | null
   /** All workspaces — used to resolve the parent workspace name for forked-from chip. */
   allWorkspaces?: WorkspaceRecord[]
+  /** Workbench feature flag (U2/U3, docs/plans/2026-07-02-001-feat-workbench-panes-plan.md).
+   *  When false (default) this component renders byte-for-byte as it did before U3 —
+   *  terminal icon, separate Details button, Gear "Workspace Settings" button.
+   *  When true it renders the three-section layout: Claude glyph, title-hover
+   *  details (dirty chip included), no gear, and a "Workbench" button stub. */
+  workbenchEnabled?: boolean
+  /** Restarts the workspace to apply pending settings changes — same handler
+   *  WorkspaceDrawer's "Restart to apply" button uses. Only consulted on the
+   *  workbenchEnabled path, where the dirty chip re-homes into the details
+   *  popover instead of the (removed) gear's drawer. */
+  onRestart?: () => void
 }
 
 export function WorkspaceTitleBar({
@@ -78,15 +91,51 @@ export function WorkspaceTitleBar({
   drawer,
   onSetDrawer,
   pr,
-  allWorkspaces
+  allWorkspaces,
+  workbenchEnabled = false,
+  onRestart
 }: WorkspaceTitleBarProps): React.JSX.Element {
   const [terminalTitle, setTerminalTitle] = useState<string | null>(null)
-  const detailsButtonRef = useRef<HTMLButtonElement>(null)
+  const detailsButtonRef = useRef<HTMLElement>(null)
   // Hover timing mirrors the old floating-ui delays: 120ms open, 80ms close.
   const hoverCard = useOverlayHoverCard({ openDelay: 120, closeDelay: 80 })
 
   // Git status for the details popover
   const gitStatus = useGitStatus(workspace.id)
+
+  // Dirty ("Restart to apply") state — only tracked/surfaced on the
+  // workbenchEnabled path, where it re-homes into the title-hover details
+  // popover instead of the (removed) gear's WorkspaceDrawer. Mirrors the
+  // polling + push pattern WorkspaceDrawer uses for the same state.
+  const [isDirty, setIsDirty] = useState(false)
+
+  useEffect(() => {
+    if (!workbenchEnabled) return
+    const workspaceId = workspace.id
+    let cancelled = false
+    window.api.workspaces
+      .isDirty(workspaceId)
+      .then((d) => {
+        if (!cancelled) setIsDirty(d)
+      })
+      .catch(() => {
+        if (!cancelled) setIsDirty(false)
+      })
+    const unsub = window.api.workspaces.onDirtyChanged((e) => {
+      if (e.workspaceId === workspaceId) setIsDirty(e.dirty)
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [workbenchEnabled, workspace.id])
+
+  // Keep the open details popover's dirty chip in sync if isDirty changes
+  // while the popover is already showing.
+  useEffect(() => {
+    if (!workbenchEnabled) return
+    updateDetailsCard(detailsCardId(workspace.id), { isDirty })
+  }, [isDirty, workbenchEnabled, workspace.id])
 
   useEffect(() => {
     const workspaceId = workspace.id
@@ -131,7 +180,10 @@ export function WorkspaceTitleBar({
       git: gitStatus ? gitStatusToCard(gitStatus) : undefined,
       cwd: cwdDisplay,
       contextLoading: true,
-      costLoading: true
+      costLoading: true,
+      // Dirty/"Restart to apply" only ever surfaces here on the
+      // workbenchEnabled path (U3) — isDirty stays false/unset otherwise.
+      isDirty: workbenchEnabled ? isDirty : undefined
     }
     showDetailsCard(workspace.id, detailsButtonRef.current, initialProps)
 
@@ -215,15 +267,18 @@ export function WorkspaceTitleBar({
 
   // Hover-bridge: keep the card open while the pointer is over the card
   // itself — the overlay card emits mouseenter/mouseleave, so cancel the
-  // close timer on enter and re-arm it (same 80ms) on leave.
+  // close timer on enter and re-arm it (same 80ms) on leave. Also registers
+  // the "Restart to apply" click the card emits (workbenchEnabled path only,
+  // U3) — the dirty chip re-homes here since the gear/drawer is removed.
   useEffect(() => {
     const unregister = onCardPointer(detailsCardId(workspace.id), {
       onEnter: hoverCard.clearTimer,
-      onLeave: () => hoverCard.armClose(hideDetailsCard)
+      onLeave: () => hoverCard.armClose(hideDetailsCard),
+      onRestart: workbenchEnabled ? () => onRestart?.() : undefined
     })
     return unregister
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspace.id])
+  }, [workspace.id, workbenchEnabled, onRestart])
 
   // Resolve parent name for the "forked from" chip
   const forkedFromSessionId = workspace.forkedFromSessionId ?? null
@@ -233,32 +288,21 @@ export function WorkspaceTitleBar({
     forkedFromName = parent ? parent.name : null
   }
 
-  return (
-    <div
-      className="flex items-center gap-2 min-w-0 flex-1 px-3"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-    >
-      <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
-      <span
-        className="text-xs font-medium text-text-primary truncate"
-        title={
-          workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
-            ? `${workspace.name} — ${terminalTitle}`
-            : workspace.name
-        }
-      >
-        {workspace.nameIsAuto ? terminalTitle || workspace.name : workspace.name}
-      </span>
+  const titleText = workspace.nameIsAuto ? terminalTitle || workspace.name : workspace.name
+  const titleTooltip =
+    workspace.nameIsAuto && terminalTitle && terminalTitle !== workspace.name
+      ? `${workspace.name} — ${terminalTitle}`
+      : workspace.name
 
-      {/* PR chip appears next to the workspace name when the current branch
-          has a PR on GitHub. Hides cleanly when no PR. */}
+  // Shared "extra chips" (PR / forked-from / worktree) — identical on both
+  // the flag-off and flag-on paths.
+  const chips = (
+    <>
       {pr && (
         <span className="flex-shrink-0">
           <PrChip pr={pr} variant="chip" />
         </span>
       )}
-
-      {/* Forked-from chip — shown when this workspace was forked from another session */}
       {forkedFromSessionId && (
         <span
           className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-text-muted bg-surface-overlay/50 border border-border-default/40"
@@ -270,8 +314,6 @@ export function WorkspaceTitleBar({
           {forkedFromName ? `forked from ${forkedFromName}` : 'forked'}
         </span>
       )}
-
-      {/* Worktree chip — shown when this workspace is a git worktree */}
       {workspace.worktreeParentCwd && (
         <span
           className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-text-muted bg-surface-overlay/50 border border-border-default/40"
@@ -281,11 +323,84 @@ export function WorkspaceTitleBar({
           {`Worktree · ${workspace.worktreeBranch ?? 'worktree'}`}
         </span>
       )}
+    </>
+  )
+
+  // ── Flag ON — three-section layout ──────────────────────────────────────
+  // Section 1 (icons over the sidebar) lives in TopBar itself; this
+  // component only ever renders sections 2 (title, over Claude) + 3 (the
+  // Workbench button, over the Workbench frame). Details moves to title
+  // hover; the gear + its drawer trigger are removed entirely.
+  if (workbenchEnabled) {
+    return (
+      <div
+        className="flex items-center gap-2 min-w-0 flex-1 px-3"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <ClaudeGlyph size={13} className="text-text-muted flex-shrink-0" />
+        <span
+          ref={detailsButtonRef}
+          tabIndex={0}
+          role="button"
+          aria-label={`Details for ${titleText}`}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseEnter={handleDetailsMouseEnter}
+          onMouseLeave={handleDetailsMouseLeave}
+          onFocus={handleDetailsMouseEnter}
+          onBlur={handleDetailsMouseLeave}
+          title={titleTooltip}
+          className="text-xs font-medium text-text-primary truncate cursor-default rounded-sm hover:bg-surface-overlay/60 px-0.5 -mx-0.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+        >
+          {titleText}
+        </span>
+
+        {chips}
+
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => {
+              // U3 stub only — U4 wires the real dormant→open→expanded
+              // state machine (docs/plans/2026-07-02-001-feat-workbench-
+              // panes-plan.md). No-op for now beyond a debug breadcrumb.
+              console.debug('[WorkspaceTitleBar] Workbench button clicked (U4 will wire this up)')
+            }}
+            title="Workbench"
+            aria-label="Workbench"
+            aria-expanded={false}
+            className={[
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs flex-shrink-0',
+              'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            ].join(' ')}
+          >
+            <SquaresFour size={14} />
+            <span>Workbench</span>
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Flag OFF (default) — unchanged from pre-U3 behavior ─────────────────
+  return (
+    <div
+      className="flex items-center gap-2 min-w-0 flex-1 px-3"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
+      <TerminalIcon size={13} className="text-text-muted flex-shrink-0" />
+      <span className="text-xs font-medium text-text-primary truncate" title={titleTooltip}>
+        {titleText}
+      </span>
+
+      {chips}
 
       <div className="ml-auto flex items-center gap-1">
         <button
           type="button"
-          ref={detailsButtonRef}
+          ref={detailsButtonRef as React.Ref<HTMLButtonElement>}
           onMouseDown={(e) => e.stopPropagation()}
           onMouseEnter={handleDetailsMouseEnter}
           onMouseLeave={handleDetailsMouseLeave}

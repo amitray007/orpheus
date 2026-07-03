@@ -802,6 +802,8 @@ export function WorkspaceView({
             onSetDrawer={setDrawer}
             pr={pr}
             allWorkspaces={allWorkspaces}
+            workbenchEnabled={workbenchEnabled}
+            onRestart={handleRestart}
           />,
           titleBarHost
         )}

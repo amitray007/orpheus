@@ -1116,6 +1116,9 @@ export type DetailsCardProps = {
   costLoading?: boolean
   git?: OverlayCardGit
   cwd?: string
+  /** Workbench flag-on path (U3): settings changed since launch — mirrors the
+   *  "Restart to apply" chip formerly shown only in the WorkspaceDrawer. */
+  isDirty?: boolean
 }
 
 // ---------------------------------------------------------------------------
