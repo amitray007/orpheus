@@ -176,19 +176,10 @@ import {
   getCachedShellPath
 } from './shellHelpers'
 import type {
-  ClaudeGlobalSettingsPatch,
   AppUiStatePatch,
-  ClaudeProjectSettingsOverrides,
-  ClaudeWorkspaceSettingsOverrides,
   ClaudeWorkspaceSettings,
   ClaudeEffort,
-  ClaudeAuthPatch,
-  ClaudeHookDraft,
-  McpServerDraft,
-  ClaudeSlashCommandDraft,
-  ClaudeSubagentDraft,
   ContextMenuNativeItem,
-  GhosttyUserConfig,
   WorkspaceRecord
 } from '../shared/types'
 import type { ClaudeLaunch } from './claudeSettings'
@@ -1578,7 +1569,7 @@ handle('sessions:getContextBudget', (_e, { workspaceId }) => getContextBudget(wo
 
 handle('claudeSettings:get', () => getClaudeGlobalSettings())
 
-handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
+handle('claudeSettings:update', (_e, patch) => {
   const result = updateClaudeGlobalSettings(patch)
   recomputeDirty()
   return result
@@ -1590,7 +1581,7 @@ handle('claudeSettings:update', (_e, patch: ClaudeGlobalSettingsPatch) => {
 
 handle('ghosttySettings:get', () => getGhosttyUserConfig())
 
-handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
+handle('ghosttySettings:update', (_e, patch) => {
   const result = updateGhosttyUserConfig(patch)
   writeGhosttyConfigFile()
   // TODO: add "restart to apply" signal for keys that require restart
@@ -1608,18 +1599,12 @@ handle('ghosttySettings:update', (_e, patch: Partial<GhosttyUserConfig>) => {
 // ---------------------------------------------------------------------------
 
 handle('mcp:listServers', () => listMcpServers())
-handle('mcp:add', (_e, draft: McpServerDraft) => addMcpServer(draft))
-handle(
-  'mcp:update',
-  (
-    _e,
-    args: { filePath: string; oldName: string; draft: Omit<McpServerDraft, 'source' | 'projectId'> }
-  ) => {
-    assertManagedConfigPath(args.filePath, 'filePath')
-    return updateMcpServer(args.filePath, args.oldName, args.draft)
-  }
-)
-handle('mcp:delete', (_e, args: { filePath: string; name: string }) => {
+handle('mcp:add', (_e, draft) => addMcpServer(draft))
+handle('mcp:update', (_e, args) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return updateMcpServer(args.filePath, args.oldName, args.draft)
+})
+handle('mcp:delete', (_e, args) => {
   assertManagedConfigPath(args.filePath, 'filePath')
   return deleteMcpServer(args.filePath, args.name)
 })
@@ -1631,33 +1616,22 @@ handle('mcp:delete', (_e, args: { filePath: string; name: string }) => {
 handle('claudeAgents:listSlashCommands', () => listSlashCommands())
 handle('claudeAgents:listSubagents', () => listSubagents())
 
-handle('claudeAgents:addSlashCommand', (_e, draft: ClaudeSlashCommandDraft) =>
-  addSlashCommand(draft)
-)
-handle(
-  'claudeAgents:updateSlashCommand',
-  (
-    _e,
-    args: { filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }
-  ) => {
-    assertManagedConfigPath(args.filePath, 'filePath')
-    return updateSlashCommand(args.filePath, args.draft)
-  }
-)
-handle('claudeAgents:deleteSlashCommand', (_e, args: { filePath: string }) => {
+handle('claudeAgents:addSlashCommand', (_e, draft) => addSlashCommand(draft))
+handle('claudeAgents:updateSlashCommand', (_e, args) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return updateSlashCommand(args.filePath, args.draft)
+})
+handle('claudeAgents:deleteSlashCommand', (_e, args) => {
   assertManagedConfigPath(args.filePath, 'filePath')
   return deleteSlashCommand(args.filePath)
 })
 
-handle('claudeAgents:addSubagent', (_e, draft: ClaudeSubagentDraft) => addSubagent(draft))
-handle(
-  'claudeAgents:updateSubagent',
-  (_e, args: { filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }) => {
-    assertManagedConfigPath(args.filePath, 'filePath')
-    return updateSubagent(args.filePath, args.draft)
-  }
-)
-handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) => {
+handle('claudeAgents:addSubagent', (_e, draft) => addSubagent(draft))
+handle('claudeAgents:updateSubagent', (_e, args) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return updateSubagent(args.filePath, args.draft)
+})
+handle('claudeAgents:deleteSubagent', (_e, args) => {
   assertManagedConfigPath(args.filePath, 'filePath')
   return deleteSubagent(args.filePath)
 })
@@ -1667,42 +1641,19 @@ handle('claudeAgents:deleteSubagent', (_e, args: { filePath: string }) => {
 // ---------------------------------------------------------------------------
 
 handle('claudeHooks:list', () => listClaudeHooks())
-handle('claudeHooks:openFile', async (_e, { filePath }: { filePath: string }) => {
+handle('claudeHooks:openFile', async (_e, { filePath }) => {
   assertManagedConfigPath(filePath, 'filePath')
   await shell.openPath(filePath)
 })
-handle('claudeHooks:add', (_e, draft: ClaudeHookDraft) => addHook(draft))
-handle(
-  'claudeHooks:update',
-  (
-    _e,
-    args: {
-      filePath: string
-      event: string
-      matcherEntryIdx: number
-      hookIdx: number
-      draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
-    }
-  ) => {
-    assertManagedConfigPath(args.filePath, 'filePath')
-    return updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
-  }
-)
-handle(
-  'claudeHooks:delete',
-  (
-    _e,
-    args: {
-      filePath: string
-      event: string
-      matcherEntryIdx: number
-      hookIdx: number
-    }
-  ) => {
-    assertManagedConfigPath(args.filePath, 'filePath')
-    return deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
-  }
-)
+handle('claudeHooks:add', (_e, draft) => addHook(draft))
+handle('claudeHooks:update', (_e, args) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return updateHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx, args.draft)
+})
+handle('claudeHooks:delete', (_e, args) => {
+  assertManagedConfigPath(args.filePath, 'filePath')
+  return deleteHook(args.filePath, args.event, args.matcherEntryIdx, args.hookIdx)
+})
 
 // ---------------------------------------------------------------------------
 // Claude Auth IPC
@@ -1710,7 +1661,7 @@ handle(
 
 handle('claudeAuth:get', () => getClaudeAuthState())
 
-handle('claudeAuth:update', (_e, patch: ClaudeAuthPatch) => updateClaudeAuth(patch))
+handle('claudeAuth:update', (_e, patch) => updateClaudeAuth(patch))
 
 handle('claudeAuth:testConnection', () => testAnthropicConnection())
 
@@ -1718,35 +1669,27 @@ handle('claudeAuth:testConnection', () => testAnthropicConnection())
 // Per-project Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-handle('claudeProjectSettings:get', (_e, { projectId }: { projectId: string }) =>
-  getClaudeProjectSettings(projectId)
-)
+handle('claudeProjectSettings:get', (_e, { projectId }) => getClaudeProjectSettings(projectId))
 
-handle(
-  'claudeProjectSettings:update',
-  (_e, args: { projectId: string; patch: ClaudeProjectSettingsOverrides }) => {
-    const result = updateClaudeProjectSettings(args.projectId, args.patch)
-    recomputeDirty()
-    return result
-  }
-)
+handle('claudeProjectSettings:update', (_e, args) => {
+  const result = updateClaudeProjectSettings(args.projectId, args.patch)
+  recomputeDirty()
+  return result
+})
 
 // ---------------------------------------------------------------------------
 // Per-workspace Claude Settings IPC
 // ---------------------------------------------------------------------------
 
-handle('claudeWorkspaceSettings:get', (_e, { workspaceId }: { workspaceId: string }) =>
+handle('claudeWorkspaceSettings:get', (_e, { workspaceId }) =>
   getClaudeWorkspaceSettings(workspaceId)
 )
 
-handle(
-  'claudeWorkspaceSettings:update',
-  (_e, args: { workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }) => {
-    const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
-    recomputeDirty()
-    return result
-  }
-)
+handle('claudeWorkspaceSettings:update', (_e, args) => {
+  const result = updateClaudeWorkspaceSettings(args.workspaceId, args.patch)
+  recomputeDirty()
+  return result
+})
 
 // Footer Model chip: persist a model override and suppress the resulting
 // dirty delta (the chip also injects `/model <value>` into the terminal live

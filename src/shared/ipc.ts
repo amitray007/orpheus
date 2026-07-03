@@ -46,7 +46,24 @@ import type {
   SessionRecord,
   SessionStatus,
   SessionsPagedRequest,
-  SessionsPagedResult
+  SessionsPagedResult,
+  ClaudeGlobalSettings,
+  ClaudeGlobalSettingsPatch,
+  GhosttyUserConfig,
+  DiscoveredMcpServer,
+  McpServerDraft,
+  ClaudeSlashCommand,
+  ClaudeSlashCommandDraft,
+  ClaudeSubagent,
+  ClaudeSubagentDraft,
+  ClaudeHookEntry,
+  ClaudeHookDraft,
+  ClaudeAuthState,
+  ClaudeAuthPatch,
+  ClaudeAuthTestResult,
+  ClaudeProjectSettings,
+  ClaudeProjectSettingsOverrides,
+  ClaudeWorkspaceSettingsOverrides
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -165,6 +182,69 @@ export interface InvokeChannelMap {
   'sessions:getContextBudget': {
     req: [{ workspaceId: string }]
     res: { contextBudget: number; modelId: string }
+  }
+  'claudeSettings:get': { req: []; res: ClaudeGlobalSettings }
+  'claudeSettings:update': { req: [ClaudeGlobalSettingsPatch]; res: ClaudeGlobalSettings }
+  'ghosttySettings:get': { req: []; res: GhosttyUserConfig }
+  'ghosttySettings:update': { req: [Partial<GhosttyUserConfig>]; res: GhosttyUserConfig }
+  'mcp:listServers': { req: []; res: DiscoveredMcpServer[] }
+  'mcp:add': { req: [McpServerDraft]; res: void }
+  'mcp:update': {
+    req: [
+      {
+        filePath: string
+        oldName: string
+        draft: Omit<McpServerDraft, 'source' | 'projectId'>
+      }
+    ]
+    res: void
+  }
+  'mcp:delete': { req: [{ filePath: string; name: string }]; res: void }
+  'claudeAgents:listSlashCommands': { req: []; res: ClaudeSlashCommand[] }
+  'claudeAgents:listSubagents': { req: []; res: ClaudeSubagent[] }
+  'claudeAgents:addSlashCommand': { req: [ClaudeSlashCommandDraft]; res: void }
+  'claudeAgents:updateSlashCommand': {
+    req: [{ filePath: string; draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'> }]
+    res: void
+  }
+  'claudeAgents:deleteSlashCommand': { req: [{ filePath: string }]; res: void }
+  'claudeAgents:addSubagent': { req: [ClaudeSubagentDraft]; res: void }
+  'claudeAgents:updateSubagent': {
+    req: [{ filePath: string; draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'> }]
+    res: void
+  }
+  'claudeAgents:deleteSubagent': { req: [{ filePath: string }]; res: void }
+  'claudeHooks:list': { req: []; res: ClaudeHookEntry[] }
+  'claudeHooks:openFile': { req: [{ filePath: string }]; res: void }
+  'claudeHooks:add': { req: [ClaudeHookDraft]; res: void }
+  'claudeHooks:update': {
+    req: [
+      {
+        filePath: string
+        event: string
+        matcherEntryIdx: number
+        hookIdx: number
+        draft: Omit<ClaudeHookDraft, 'source' | 'projectId'>
+      }
+    ]
+    res: void
+  }
+  'claudeHooks:delete': {
+    req: [{ filePath: string; event: string; matcherEntryIdx: number; hookIdx: number }]
+    res: void
+  }
+  'claudeAuth:get': { req: []; res: ClaudeAuthState }
+  'claudeAuth:update': { req: [ClaudeAuthPatch]; res: ClaudeAuthState }
+  'claudeAuth:testConnection': { req: []; res: ClaudeAuthTestResult }
+  'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
+  'claudeProjectSettings:update': {
+    req: [{ projectId: string; patch: ClaudeProjectSettingsOverrides }]
+    res: ClaudeProjectSettings
+  }
+  'claudeWorkspaceSettings:get': { req: [{ workspaceId: string }]; res: ClaudeWorkspaceSettings }
+  'claudeWorkspaceSettings:update': {
+    req: [{ workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }]
+    res: ClaudeWorkspaceSettings
   }
   // … migrated domain-by-domain in follow-up commits.
 }

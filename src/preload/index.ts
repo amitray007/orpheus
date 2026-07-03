@@ -313,39 +313,38 @@ const api = {
     listAll: (): Promise<PinnedItem[]> => invoke('pins:listAll')
   },
   claudeSettings: {
-    get: (): Promise<ClaudeGlobalSettings> => ipcRenderer.invoke('claudeSettings:get'),
+    get: (): Promise<ClaudeGlobalSettings> => invoke('claudeSettings:get'),
     update: (patch: ClaudeGlobalSettingsPatch): Promise<ClaudeGlobalSettings> =>
-      ipcRenderer.invoke('claudeSettings:update', patch)
+      invoke('claudeSettings:update', patch)
   },
   ghosttySettings: {
-    get: (): Promise<GhosttyUserConfig> => ipcRenderer.invoke('ghosttySettings:get'),
+    get: (): Promise<GhosttyUserConfig> => invoke('ghosttySettings:get'),
     update: (patch: Partial<GhosttyUserConfig>): Promise<GhosttyUserConfig> =>
-      ipcRenderer.invoke('ghosttySettings:update', patch)
+      invoke('ghosttySettings:update', patch)
   },
   claudeAuth: {
-    get: (): Promise<ClaudeAuthState> => ipcRenderer.invoke('claudeAuth:get'),
+    get: (): Promise<ClaudeAuthState> => invoke('claudeAuth:get'),
     update: (patch: ClaudeAuthPatch): Promise<ClaudeAuthState> =>
-      ipcRenderer.invoke('claudeAuth:update', patch),
-    testConnection: (): Promise<ClaudeAuthTestResult> =>
-      ipcRenderer.invoke('claudeAuth:testConnection')
+      invoke('claudeAuth:update', patch),
+    testConnection: (): Promise<ClaudeAuthTestResult> => invoke('claudeAuth:testConnection')
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
-      ipcRenderer.invoke('claudeProjectSettings:get', { projectId }),
+      invoke('claudeProjectSettings:get', { projectId }),
     update: (
       projectId: string,
       patch: ClaudeProjectSettingsOverrides
     ): Promise<ClaudeProjectSettings> =>
-      ipcRenderer.invoke('claudeProjectSettings:update', { projectId, patch })
+      invoke('claudeProjectSettings:update', { projectId, patch })
   },
   claudeWorkspaceSettings: {
     get: (workspaceId: string): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('claudeWorkspaceSettings:get', { workspaceId }),
+      invoke('claudeWorkspaceSettings:get', { workspaceId }),
     update: (
       workspaceId: string,
       patch: ClaudeWorkspaceSettingsOverrides
     ): Promise<ClaudeWorkspaceSettings> =>
-      ipcRenderer.invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
+      invoke('claudeWorkspaceSettings:update', { workspaceId, patch })
   },
   orpheusConfig: {
     get: (projectId: string): Promise<{ allowLocal: boolean; allowWorktree: boolean }> =>
@@ -405,43 +404,41 @@ const api = {
     listTerminalApps: (): Promise<DetectedApp[]> => ipcRenderer.invoke('shell:listTerminalApps')
   },
   mcp: {
-    listServers: (): Promise<DiscoveredMcpServer[]> => ipcRenderer.invoke('mcp:listServers'),
-    add: (draft: McpServerDraft): Promise<void> => ipcRenderer.invoke('mcp:add', draft),
+    listServers: (): Promise<DiscoveredMcpServer[]> => invoke('mcp:listServers'),
+    add: (draft: McpServerDraft): Promise<void> => invoke('mcp:add', draft),
     update: (
       filePath: string,
       oldName: string,
       draft: Omit<McpServerDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('mcp:update', { filePath, oldName, draft }),
+    ): Promise<void> => invoke('mcp:update', { filePath, oldName, draft }),
     delete: (filePath: string, name: string): Promise<void> =>
-      ipcRenderer.invoke('mcp:delete', { filePath, name })
+      invoke('mcp:delete', { filePath, name })
   },
   claudeAgents: {
     listSlashCommands: (): Promise<ClaudeSlashCommand[]> =>
-      ipcRenderer.invoke('claudeAgents:listSlashCommands'),
-    listSubagents: (): Promise<ClaudeSubagent[]> =>
-      ipcRenderer.invoke('claudeAgents:listSubagents'),
+      invoke('claudeAgents:listSlashCommands'),
+    listSubagents: (): Promise<ClaudeSubagent[]> => invoke('claudeAgents:listSubagents'),
     addSlashCommand: (draft: ClaudeSlashCommandDraft): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:addSlashCommand', draft),
+      invoke('claudeAgents:addSlashCommand', draft),
     updateSlashCommand: (
       filePath: string,
       draft: Omit<ClaudeSlashCommandDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('claudeAgents:updateSlashCommand', { filePath, draft }),
+    ): Promise<void> => invoke('claudeAgents:updateSlashCommand', { filePath, draft }),
     deleteSlashCommand: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:deleteSlashCommand', { filePath }),
+      invoke('claudeAgents:deleteSlashCommand', { filePath }),
     addSubagent: (draft: ClaudeSubagentDraft): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:addSubagent', draft),
+      invoke('claudeAgents:addSubagent', draft),
     updateSubagent: (
       filePath: string,
       draft: Omit<ClaudeSubagentDraft, 'source' | 'projectId'>
-    ): Promise<void> => ipcRenderer.invoke('claudeAgents:updateSubagent', { filePath, draft }),
+    ): Promise<void> => invoke('claudeAgents:updateSubagent', { filePath, draft }),
     deleteSubagent: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeAgents:deleteSubagent', { filePath })
+      invoke('claudeAgents:deleteSubagent', { filePath })
   },
   claudeHooks: {
-    list: (): Promise<ClaudeHookEntry[]> => ipcRenderer.invoke('claudeHooks:list'),
-    openFile: (filePath: string): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:openFile', { filePath }),
-    add: (draft: ClaudeHookDraft): Promise<void> => ipcRenderer.invoke('claudeHooks:add', draft),
+    list: (): Promise<ClaudeHookEntry[]> => invoke('claudeHooks:list'),
+    openFile: (filePath: string): Promise<void> => invoke('claudeHooks:openFile', { filePath }),
+    add: (draft: ClaudeHookDraft): Promise<void> => invoke('claudeHooks:add', draft),
     update: (
       filePath: string,
       event: string,
@@ -449,7 +446,7 @@ const api = {
       hookIdx: number,
       draft: { event: string; matcher: string | null; type: string; command: string }
     ): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:update', {
+      invoke('claudeHooks:update', {
         filePath,
         event,
         matcherEntryIdx,
@@ -461,8 +458,7 @@ const api = {
       event: string,
       matcherEntryIdx: number,
       hookIdx: number
-    ): Promise<void> =>
-      ipcRenderer.invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
+    ): Promise<void> => invoke('claudeHooks:delete', { filePath, event, matcherEntryIdx, hookIdx })
   },
   contextMenu: {
     show: (items: ContextMenuNativeItem[]): Promise<string | null> =>
