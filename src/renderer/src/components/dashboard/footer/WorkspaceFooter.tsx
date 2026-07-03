@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
 import type React from 'react'
-import type { AppUiState, FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
+import type { FooterActionVisibility, WorkspaceActivityDetail } from '@shared/types'
 import { useFooterActions } from './useFooterActions'
 import { ActionChip } from './ActionChip'
 import { LiveChip } from './LiveChip'
 import { DropdownChip } from './DropdownChip'
+import { useUiState } from '@/lib/uiStateStore'
 
 interface WorkspaceFooterProps {
   workspaceId: string
@@ -66,15 +66,8 @@ export function WorkspaceFooter({
   workspaceName = '',
   activityDetail
 }: WorkspaceFooterProps): React.JSX.Element | null {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const { items, loading } = useFooterActions(workspaceId)
-
-  useEffect(() => {
-    // Fetch initial state
-    window.api.uiState.get().then(setUiState).catch(console.error)
-    // Subscribe to changes so toggling showWorkspaceFooter is immediately reactive
-    return window.api.uiState.onChanged(setUiState)
-  }, [])
 
   // Hide when toggled off (once uiState loads; during load render nothing)
   if (uiState && !uiState.showWorkspaceFooter) return null

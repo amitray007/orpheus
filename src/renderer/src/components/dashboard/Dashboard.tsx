@@ -13,11 +13,11 @@ import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { clearFooterActionsCache } from './footer/useFooterActions'
 import { clearContextBudgetCache } from './workspaceTitleBar.helpers'
 import {
-  DEFAULT_UI_STATE_FALLBACK,
   viewToSidebarActiveView,
   mainContainerClassName,
   nextWorkspaceName,
@@ -25,7 +25,6 @@ import {
   reorderWithTail
 } from './dashboard.helpers'
 import type {
-  AppUiState,
   PinnedItem,
   ProjectRecord,
   SessionRecord,
@@ -46,8 +45,9 @@ interface DashboardProps {
 export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  // UI state hydration
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  // UI state — live subscription via the shared store (single get() + single
+  // onChanged() for the whole renderer; see lib/uiStateStore.ts).
+  const uiState = useUiState()
   const hydratedRef = useRef(false)
 
   // Projects state
@@ -126,16 +126,6 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   // IPC calls when the effect re-runs because workspacesPollKey changed.
   const hasFetchedRef = useRef<Set<string> | null>(null)
   if (hasFetchedRef.current === null) hasFetchedRef.current = new Set<string>()
-
-  useEffect(() => {
-    window.api.uiState
-      .get()
-      .then(setUiState)
-      .catch((err) => {
-        console.error('[dashboard] failed to load ui state', err)
-        setUiState(DEFAULT_UI_STATE_FALLBACK)
-      })
-  }, [])
 
   // Apply appearance data attributes to document root whenever uiState changes.
   // This drives [data-theme], [data-accent], and [data-font-scale] CSS selectors
@@ -326,21 +316,21 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           setSelectedProjectId(projectId)
           setSelectedWorkspaceId(next.id)
           setView({ kind: 'workspace', workspaceId: next.id, projectId })
-          window.api.uiState
-            .update({
-              lastViewKind: 'workspace',
-              lastProjectId: projectId,
-              lastWorkspaceId: next.id
-            })
-            .catch(console.error)
+          updateUiState({
+            lastViewKind: 'workspace',
+            lastProjectId: projectId,
+            lastWorkspaceId: next.id
+          })
         } else {
           // No workspaces left — go to the project view.
           setSelectedProjectId(projectId)
           setSelectedWorkspaceId(null)
           setView({ kind: 'project', projectId })
-          window.api.uiState
-            .update({ lastViewKind: 'project', lastProjectId: projectId, lastWorkspaceId: null })
-            .catch(console.error)
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: projectId,
+            lastWorkspaceId: null
+          })
         }
       }
       // Clear any stale entries for the deleted workspace from all stores.
@@ -401,7 +391,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSidebarCollapsed((prev) => {
       const next = !prev
       playSound(next ? 'drawer-close' : 'drawer-open')
-      window.api.uiState.update({ sidebarCollapsed: next }).catch(console.error)
+      updateUiState({ sidebarCollapsed: next })
       return next
     })
   }, [])
@@ -445,19 +435,22 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         }
         // workspaces.open and uiState.update are independent DB writes — issue them
         // concurrently so they don't serialize on the ipcMain queue ahead of terminal:mount.
-        await Promise.all([
-          window.api.workspaces.open(workspaceId).then((updated) => {
+        // updateUiState() is fire-and-forget (own internal .catch), so only
+        // workspaces.open needs to be awaited/caught here.
+        updateUiState({
+          lastViewKind: 'workspace',
+          lastProjectId: projectId,
+          lastWorkspaceId: workspaceId
+        })
+        await window.api.workspaces
+          .open(workspaceId)
+          .then((updated) => {
             setWorkspacesByProject((prev) => ({
               ...prev,
               [projectId]: (prev[projectId] ?? []).map((w) => (w.id === workspaceId ? updated : w))
             }))
-          }),
-          window.api.uiState.update({
-            lastViewKind: 'workspace',
-            lastProjectId: projectId,
-            lastWorkspaceId: workspaceId
           })
-        ]).catch(console.error)
+          .catch(console.error)
       })()
     },
     [fetchWorkspacesForProject]
@@ -605,9 +598,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         fetchWorkspacesForProject(id)
       }
       window.api.projects.open(id).catch(console.error)
-      window.api.uiState
-        .update({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
-        .catch(console.error)
+      updateUiState({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
     },
     [fetchWorkspacesForProject]
   )
@@ -616,9 +607,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setView({ kind: nav })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    window.api.uiState
-      .update({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   // ---------------------------------------------------------------------------
@@ -874,9 +863,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    window.api.uiState
-      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   const handleOpenUpdates = useCallback((): void => {
@@ -884,9 +871,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
     // Persist as 'sessions' — 'settings' is not in the DB enum; so on restore land on Workspaces
-    window.api.uiState
-      .update({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
-      .catch(console.error)
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
   }, [])
 
   const handleAddProject = useCallback(async (): Promise<void> => {
@@ -921,9 +906,11 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
           setSelectedProjectId(result.id)
           setSelectedWorkspaceId(null)
           setView({ kind: 'project', projectId: result.id })
-          window.api.uiState
-            .update({ lastViewKind: 'project', lastProjectId: result.id, lastWorkspaceId: null })
-            .catch(console.error)
+          updateUiState({
+            lastViewKind: 'project',
+            lastProjectId: result.id,
+            lastWorkspaceId: null
+          })
         }
       }
     } catch (err) {

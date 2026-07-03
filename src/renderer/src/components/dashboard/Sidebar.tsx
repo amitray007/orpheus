@@ -28,6 +28,7 @@ import { useWorkspaceActivityTime } from '@/lib/activityTimeStore'
 import { useWorkspaceTitle } from '@/lib/titleStore'
 import { useGitStatus } from '@/lib/gitStore'
 import { usePr } from '@/lib/prStore'
+import { useUiState } from '@/lib/uiStateStore'
 import {
   showHoverCard,
   hideOverlayCard,
@@ -1013,9 +1014,10 @@ export function Sidebar({
     Map<string, Map<string, number>>
   >(new Map())
   // Stale threshold from AppUiState (default matches original hardcoded 60 min)
-  const [staleAfterMinutes, setStaleAfterMinutes] = useState<number>(
-    UI_STATE_DEFAULTS.staleAfterMinutes
-  )
+  // — reads through the shared live store; falls back to the canonical
+  // default until the initial uiState.get() resolves.
+  const liveUiState = useUiState()
+  const staleAfterMinutes = liveUiState?.staleAfterMinutes ?? UI_STATE_DEFAULTS.staleAfterMinutes
   // Coarse clock — tick once per minute so all rows refresh together
   const [nowMs, setNowMs] = useState(() => Date.now())
   const fetchedProjectSessions = useRef<Set<string> | null>(null)
@@ -1058,13 +1060,6 @@ export function Sidebar({
         .catch((err) => console.error('[sidebar] sessions load failed for', projectId, err))
     }
   }, [projects])
-
-  // Subscribe to staleAfterMinutes from AppUiState
-  useEffect(() => {
-    void window.api.uiState.get().then((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    const unsub = window.api.uiState.onChanged((s) => setStaleAfterMinutes(s.staleAfterMinutes))
-    return unsub
-  }, [])
 
   // Tick nowMs once per minute so freshness labels refresh without per-row timers
   useEffect(() => {

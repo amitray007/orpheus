@@ -6,63 +6,8 @@
  * so that these utilities can be understood and tested in isolation.
  */
 
-import type { AppUiState } from '@shared/types'
-import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import type { View } from './MainContent'
 import type { SidebarActiveView } from './Sidebar'
-
-// ---------------------------------------------------------------------------
-// Default UI state — used as the error-path fallback when uiState.get() fails.
-// Mirrors the DB schema defaults exactly; update both when adding new columns.
-// ---------------------------------------------------------------------------
-
-export const DEFAULT_UI_STATE_FALLBACK: AppUiState = {
-  sidebarCollapsed: false,
-  lastViewKind: 'sessions',
-  lastProjectId: null,
-  lastWorkspaceId: null,
-  windowX: null,
-  windowY: null,
-  windowWidth: null,
-  windowHeight: null,
-  windowFullscreen: false,
-  restoreGeometry: true,
-  closeHides: true,
-  openAtLastView: true,
-  pinnedSectionVisible: true,
-  workspaceCountInline: true,
-  sidebarWidth: UI_STATE_DEFAULTS.sidebarWidth,
-  defaultProjectExpanded: false,
-  launchAtLogin: false,
-  globalHotkey: '',
-  archivedWorkspaceLimit: UI_STATE_DEFAULTS.archivedWorkspaceLimit,
-  hooksIntegrationEnabled: false,
-  notifyAttention: true,
-  notifyStop: true,
-  notifyAlways: false,
-  notifyRichSummary: true,
-  notifySuppressWhenFocused: false,
-  notifyMaxAttentionRepeats: 5,
-  inProgressWatchdogSec: 120,
-  staleAfterMinutes: UI_STATE_DEFAULTS.staleAfterMinutes,
-  autoCloseAfterMinutes: 120,
-  diagError: true,
-  diagLifecycle: false,
-  diagPerf: false,
-  diagAnomaly: false,
-  diagTrace: false,
-  theme: 'midnight',
-  accentColor: null,
-  uiFontScale: 'default',
-  fetchGithubAvatars: true,
-  playInteractionSounds: true,
-  soundPack: 'core',
-  autoCheckUpdates: true,
-  statusPollIntervalSec: UI_STATE_DEFAULTS.statusPollIntervalSec,
-  muteStatusNotifications: false,
-  showWorkspaceFooter: true,
-  updatedAt: 0
-}
 
 // ---------------------------------------------------------------------------
 // View helpers

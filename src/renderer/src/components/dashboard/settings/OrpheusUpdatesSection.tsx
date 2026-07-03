@@ -1,16 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
-import type {
-  AppUiState,
-  UpdateCheckResult,
-  UpdatePhase,
-  UpdateProgress,
-  UpdateSnapshot
-} from '@shared/types'
+import type { UpdateCheckResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '@shared/types'
 import { SettingRow, Toggle, SectionTitle, Eyebrow } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { DotmSquare11 } from '@/components/ui/dotm-square-11'
 import { DotmSquare18 } from '@/components/ui/dotm-square-18'
+import { useUiState, updateUiState } from '@/lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // State machine types
@@ -278,7 +273,7 @@ function handleRestart(): void {
 }
 
 export function OrpheusUpdatesSection(): React.JSX.Element {
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const [version, setVersion] = useState<string | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState>({ kind: 'idle', lastChecked: null })
   const cleanupRef = useRef<(() => void)[]>([])
@@ -301,11 +296,10 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([window.api.uiState.get(), window.api.app.getVersion()])
-      .then(([s, v]) => {
-        if (cancelled) return
-        setUiState(s)
-        setVersion(v)
+    window.api.app
+      .getVersion()
+      .then((v) => {
+        if (!cancelled) setVersion(v)
       })
       .catch(console.error)
 
@@ -379,10 +373,7 @@ export function OrpheusUpdatesSection(): React.JSX.Element {
   }
 
   function patchAutoCheck(v: boolean): void {
-    if (!uiState) return
-    const next = { ...uiState, autoCheckUpdates: v }
-    setUiState(next)
-    window.api.uiState.update({ autoCheckUpdates: v }).catch(console.error)
+    updateUiState({ autoCheckUpdates: v })
   }
 
   const isInFlight = updateState.kind === 'checking' || updateState.kind === 'installing'

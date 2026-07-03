@@ -12,19 +12,14 @@ import {
   Plus,
   Terminal
 } from '@phosphor-icons/react'
-import type {
-  AppUiState,
-  DetectedApp,
-  GitStatus,
-  ProjectRecord,
-  WorkspaceRecord
-} from '@shared/types'
+import type { DetectedApp, GitStatus, ProjectRecord, WorkspaceRecord } from '@shared/types'
 import { ContextMenu, type ContextMenuItem } from '../../ContextMenu'
 import { Identicon } from '../../Identicon'
 import { SplitButton } from '../../SplitButton'
 import { Skeleton } from '../../Skeleton'
 import { playSound } from '../../../lib/sound'
 import { NewWorkspaceMenu } from '../NewWorkspaceMenu'
+import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -354,7 +349,7 @@ export function ProjectHeader({
   const [pathCopied, setPathCopied] = useState(false)
   const [editors, setEditors] = useState<DetectedApp[]>([])
   const [terminals, setTerminals] = useState<DetectedApp[]>([])
-  const [uiState, setUiState] = useState<AppUiState | null>(null)
+  const uiState = useUiState()
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -374,16 +369,11 @@ export function ProjectHeader({
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([
-      window.api.shell.listEditorApps(),
-      window.api.shell.listTerminalApps(),
-      window.api.uiState.get()
-    ])
-      .then(([eds, tms, ui]) => {
+    Promise.all([window.api.shell.listEditorApps(), window.api.shell.listTerminalApps()])
+      .then(([eds, tms]) => {
         if (cancelled) return
         setEditors(eds)
         setTerminals(tms)
-        setUiState(ui)
       })
       .catch((err) => console.error('[project-header] failed to load app prefs', err))
     return () => {
@@ -410,22 +400,12 @@ export function ProjectHeader({
     }
   }, [project.path])
 
-  const pickEditor = useCallback(async (name: string): Promise<void> => {
-    setUiState((prev) => (prev ? { ...prev, preferredEditorApp: name } : prev))
-    try {
-      await window.api.uiState.update({ preferredEditorApp: name })
-    } catch (err) {
-      console.error('[project-header] persist editor pref failed', err)
-    }
+  const pickEditor = useCallback((name: string): void => {
+    updateUiState({ preferredEditorApp: name })
   }, [])
 
-  const pickTerminal = useCallback(async (name: string): Promise<void> => {
-    setUiState((prev) => (prev ? { ...prev, preferredTerminalApp: name } : prev))
-    try {
-      await window.api.uiState.update({ preferredTerminalApp: name })
-    } catch (err) {
-      console.error('[project-header] persist terminal pref failed', err)
-    }
+  const pickTerminal = useCallback((name: string): void => {
+    updateUiState({ preferredTerminalApp: name })
   }, [])
 
   const openMenu = useCallback((e: React.MouseEvent): void => {
