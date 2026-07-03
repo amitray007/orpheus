@@ -59,17 +59,6 @@ import {
 import { resolveOfferedModes } from './orpheusConfig'
 import { refreshGithubData } from './githubAvatar'
 import {
-  listSessionsForProject,
-  listSessionsForProjectPaged,
-  listAllSessions,
-  setSessionStatus,
-  createWorkspaceResumingSession,
-  createWorktreeResumingSession,
-  refreshSessionMetadata,
-  deleteSession,
-  getContextBudget
-} from './sessions'
-import {
   listWorkspacesForProject,
   createWorkspace,
   openWorkspace,
@@ -188,6 +177,7 @@ import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
 import { registerWorktreesIpc } from './ipc/worktrees'
 import { registerHooksIpc } from './ipc/hooks'
 import { registerUiStateIpc, syncDiagFlags } from './ipc/uiState'
+import { registerSessionsIpc } from './ipc/sessions'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1120,34 +1110,10 @@ handle('workspaces:reorder', (_e, { projectId, orderedIds }) =>
 handle('workspace:isDirty', (_e, { workspaceId }) => isDirty(workspaceId))
 
 // ---------------------------------------------------------------------------
-// Sessions IPC
+// Sessions IPC — extracted to ipc/sessions.ts.
 // ---------------------------------------------------------------------------
 
-handle('sessions:listForProject', (_e, { projectId, includeArchived }) =>
-  listSessionsForProject(projectId, { includeArchived })
-)
-
-handle('sessions:listAll', (_e, opts) => listAllSessions(opts))
-
-handle('sessions:setStatus', (_e, { id, status }) => setSessionStatus(id, status))
-
-handle('sessions:listForProjectPaged', (_e, req) => listSessionsForProjectPaged(req))
-
-handle('sessions:resumeInNewWorkspace', (_e, { sessionId, projectId }) =>
-  createWorkspaceResumingSession(projectId, sessionId)
-)
-
-handle('sessions:resumeInWorktreeWorkspace', (_e, { sessionId, projectId }) =>
-  createWorktreeResumingSession(projectId, sessionId)
-)
-
-handle('sessions:refreshMetadata', async (_e, { projectId }) => {
-  await refreshSessionMetadata(projectId)
-})
-
-handle('sessions:delete', (_e, { id }) => deleteSession(id))
-
-handle('sessions:getContextBudget', (_e, { workspaceId }) => getContextBudget(workspaceId))
+registerSessionsIpc()
 
 // ---------------------------------------------------------------------------
 // Claude Settings IPC (global + per-project + per-workspace + footer
