@@ -58,10 +58,10 @@ import type {
   KeepAwakeBaseMode,
   OverlayDescriptor,
   OverlayShowResult,
-  OverlayEvent
+  OverlayEvent,
+  TerminalMountResult,
+  TerminalRect
 } from '../shared/types'
-
-type TerminalRect = { x: number; y: number; w: number; h: number }
 
 // ---------------------------------------------------------------------------
 // Generic typed IPC helpers (DUP-3 chunk A). `invoke` and `subscribe` are
@@ -104,36 +104,45 @@ const api = {
       subscribe(PUSH_CHANNELS.addonActionTrace, cb)
   },
   terminal: {
+    // NOTE: this previously declared its resolved value as
+    // `{ workspaceId: string; created: boolean }`, which was already stale —
+    // the real terminal:mount handler has returned the 3-variant
+    // TerminalMountResult union (success / aborted / worktreeError) since the
+    // Phase-4 worktree-reconcile work. src/preload/index.d.ts had the correct
+    // union; this runtime wrapper's declared type had drifted from it. The
+    // only two call sites (WorkspaceView.tsx, Dashboard.tsx) already narrow
+    // via `'aborted' in result` / `'worktreeError' in result`, so they were
+    // relying on index.d.ts's (correct) ambient type, not this file's stale
+    // one — retyping here just makes the two agree.
     mount: (
       workspaceId: string,
       rect: TerminalRect,
       scaleFactor: number,
       cwd?: string
-    ): Promise<{ workspaceId: string; created: boolean }> =>
-      ipcRenderer.invoke('terminal:mount', { workspaceId, rect, scaleFactor, cwd }),
-    hide: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:hide', { workspaceId }),
+    ): Promise<TerminalMountResult> =>
+      invoke('terminal:mount', { workspaceId, rect, scaleFactor, cwd }),
+    hide: (workspaceId: string): Promise<void> => invoke('terminal:hide', { workspaceId }),
     resize: (workspaceId: string, rect: TerminalRect, scaleFactor: number): Promise<void> =>
-      ipcRenderer.invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
-    destroy: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:destroy', { workspaceId }),
+      invoke('terminal:resize', { workspaceId, rect, scaleFactor }),
+    destroy: (workspaceId: string): Promise<void> => invoke('terminal:destroy', { workspaceId }),
     sendInput: (workspaceId: string, text: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:sendInput', { workspaceId, text }),
+      invoke('terminal:sendInput', { workspaceId, text }),
     sendKeys: (workspaceId: string, keys: TerminalSendKeyDescriptor[]): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:sendKeys', { workspaceId, keys }),
+      invoke('terminal:sendKeys', { workspaceId, keys }),
     submit: (workspaceId: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:submit', { workspaceId }),
+      invoke('terminal:submit', { workspaceId }),
     clearInput: (workspaceId: string): Promise<ActionResult> =>
-      ipcRenderer.invoke('terminal:clearInput', { workspaceId }),
+      invoke('terminal:clearInput', { workspaceId }),
     canInject: (workspaceId: string): Promise<boolean> =>
-      ipcRenderer.invoke('terminal:canInject', { workspaceId }),
+      invoke('terminal:canInject', { workspaceId }),
     onCanInjectChanged: (
       cb: (e: { workspaceId: string; canInject: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalCanInjectChanged, cb),
-    focus: (workspaceId: string): Promise<void> =>
-      ipcRenderer.invoke('terminal:focus', { workspaceId }),
-    getSurfacePhase: (workspaceId: string): Promise<string> =>
-      ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
+    focus: (workspaceId: string): Promise<void> => invoke('terminal:focus', { workspaceId }),
+    getSurfacePhase: (
+      workspaceId: string
+    ): Promise<'none' | 'hidden' | 'attached' | 'visible' | 'freeing'> =>
+      invoke('terminal:getSurfacePhase', { workspaceId }),
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),

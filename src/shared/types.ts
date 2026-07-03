@@ -132,6 +132,15 @@ export type WorkspaceRecord = {
 export type CreateWorktreeParams = { name: string; branch?: string }
 
 /**
+ * DIPs rect used to mount/resize a workspace's libghostty surface. Mirrors
+ * `SurfaceRect` in `packages/ghostty-surface/index.ts` (kept structurally
+ * identical there so that package stays free of `src/` imports) and the
+ * local `TerminalRect` aliases previously duplicated in
+ * `src/preload/index.ts` / `index.d.ts`.
+ */
+export type TerminalRect = { x: number; y: number; w: number; h: number }
+
+/**
  * Return type of `terminal:mount`.
  *
  * Success: `{ workspaceId, created, notice? }` — surface is mounted; if a

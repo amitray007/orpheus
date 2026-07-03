@@ -73,7 +73,10 @@ import type {
   FooterActionScope,
   FooterActionDraft,
   FooterActionDescriptor,
-  KeepAwakeBaseMode
+  KeepAwakeBaseMode,
+  TerminalRect,
+  TerminalMountResult,
+  TerminalSendKeyDescriptor
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -332,6 +335,29 @@ export interface InvokeChannelMap {
   'keepAwake:setMode': { req: [KeepAwakeBaseMode]; res: KeepAwakeState }
   'keepAwake:setDisplayOn': { req: [boolean]; res: KeepAwakeState }
   'keepAwake:startTimer': { req: [number]; res: KeepAwakeState }
+  'terminal:mount': {
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number; cwd?: string }]
+    res: TerminalMountResult
+  }
+  'terminal:hide': { req: [{ workspaceId: string }]; res: void }
+  'terminal:focus': { req: [{ workspaceId: string }]; res: void }
+  'terminal:getSurfacePhase': {
+    req: [{ workspaceId: string }]
+    res: 'none' | 'hidden' | 'attached' | 'visible' | 'freeing'
+  }
+  'terminal:resize': {
+    req: [{ workspaceId: string; rect: TerminalRect; scaleFactor: number }]
+    res: void
+  }
+  'terminal:destroy': { req: [{ workspaceId: string }]; res: void }
+  'terminal:sendInput': { req: [{ workspaceId: string; text: string }]; res: ActionResult }
+  'terminal:sendKeys': {
+    req: [{ workspaceId: string; keys: TerminalSendKeyDescriptor[] }]
+    res: ActionResult
+  }
+  'terminal:submit': { req: [{ workspaceId: string }]; res: ActionResult }
+  'terminal:clearInput': { req: [{ workspaceId: string }]; res: ActionResult }
+  'terminal:canInject': { req: [{ workspaceId: string }]; res: boolean }
   // … migrated domain-by-domain in follow-up commits.
 }
 
