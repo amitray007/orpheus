@@ -363,9 +363,8 @@ const api = {
       subscribe(PUSH_CHANNELS.uiStateChanged, cb)
   },
   git: {
-    status: (cwd: string): Promise<GitStatus | null> => ipcRenderer.invoke('git:status', { cwd }),
-    branches: (cwd: string): Promise<GitBranchInfo[]> =>
-      ipcRenderer.invoke('git:branches', { cwd }),
+    status: (cwd: string): Promise<GitStatus | null> => invoke('git:status', { cwd }),
+    branches: (cwd: string): Promise<GitBranchInfo[]> => invoke('git:branches', { cwd }),
     log: (
       cwd: string,
       opts?: {
@@ -376,17 +375,17 @@ const api = {
         untilMs?: number
         grep?: string
       }
-    ): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', { cwd, ...opts }),
+    ): Promise<GitCommit[]> => invoke('git:log', { cwd, ...opts }),
     count: (
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-    ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts }),
+    ): Promise<number> => invoke('git:count', { cwd, ...opts }),
     onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.gitStatusChanged, cb)
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
-      ipcRenderer.invoke('github:prForBranch', { cwd, branch }),
+      invoke('github:prForBranch', { cwd, branch }),
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb)

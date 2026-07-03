@@ -63,7 +63,9 @@ import type {
   ClaudeAuthTestResult,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
-  ClaudeWorkspaceSettingsOverrides
+  ClaudeWorkspaceSettingsOverrides,
+  GitBranchInfo,
+  GitCommit
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -246,6 +248,27 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; patch: ClaudeWorkspaceSettingsOverrides }]
     res: ClaudeWorkspaceSettings
   }
+  'git:status': { req: [{ cwd: string }]; res: GitStatus | null }
+  'git:branches': { req: [{ cwd: string }]; res: GitBranchInfo[] }
+  'git:log': {
+    req: [
+      {
+        cwd: string
+        branch?: string
+        limit?: number
+        offset?: number
+        sinceMs?: number
+        untilMs?: number
+        grep?: string
+      }
+    ]
+    res: GitCommit[]
+  }
+  'git:count': {
+    req: [{ cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }]
+    res: number
+  }
+  'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
   // … migrated domain-by-domain in follow-up commits.
 }
 

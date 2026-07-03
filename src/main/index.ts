@@ -32,7 +32,7 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import type { DoctorResult, GitStatus, HealthReport, TerminalMountResult } from '../shared/types'
+import type { DoctorResult, HealthReport, TerminalMountResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import {
   getGitStatus,
@@ -2058,47 +2058,25 @@ handle('contextMenu:show', async (e, items: ContextMenuNativeItem[]) => {
 // Git IPC
 // ---------------------------------------------------------------------------
 
-handle('git:status', (_e, { cwd }: { cwd: string }): Promise<GitStatus | null> => getGitStatus(cwd))
+handle('git:status', (_e, { cwd }) => getGitStatus(cwd))
 
-handle('git:branches', async (_e, { cwd }: { cwd: string }) => {
+handle('git:branches', async (_e, { cwd }) => {
   const result = await listBranches(cwd)
   return result
 })
 
-handle(
-  'git:log',
-  (
-    _e,
-    args: {
-      cwd: string
-      branch?: string
-      limit?: number
-      offset?: number
-      sinceMs?: number
-      untilMs?: number
-      grep?: string
-    }
-  ) => listCommits(args.cwd, args)
-)
+handle('git:log', (_e, args) => listCommits(args.cwd, args))
 
-handle(
-  'git:count',
-  async (
-    _e,
-    args: { cwd: string; branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
-  ) => {
-    const result = await countCommits(args.cwd, args)
-    return result
-  }
-)
+handle('git:count', async (_e, args) => {
+  const result = await countCommits(args.cwd, args)
+  return result
+})
 
 // ---------------------------------------------------------------------------
 // GitHub IPC — `gh` CLI passthrough; null on every failure mode.
 // ---------------------------------------------------------------------------
 
-handle('github:prForBranch', (_e, { cwd, branch }: { cwd: string; branch: string }) =>
-  getPrForBranch(cwd, branch)
-)
+handle('github:prForBranch', (_e, { cwd, branch }) => getPrForBranch(cwd, branch))
 
 // ---------------------------------------------------------------------------
 // Shell helpers IPC
