@@ -95,7 +95,6 @@ import {
   startNotifyServer,
   ensureManagedHooks,
   uninstallManagedHooks,
-  countManagedHooks,
   clearWorkspaceActivity,
   invalidateWatchdogCache,
   getWorkspaceActivity,
@@ -189,6 +188,7 @@ import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
 import { registerWorktreesIpc } from './ipc/worktrees'
+import { registerHooksIpc } from './ipc/hooks'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1252,17 +1252,7 @@ ipcMain.on(
 // Hooks integration IPC
 // ---------------------------------------------------------------------------
 
-handle('hooks:setEnabled', (_e, enabled: boolean) => {
-  updateAppUiState({ hooksIntegrationEnabled: enabled })
-  reconcileHooks()
-  return { enabled }
-})
-
-handle('hooks:getStatus', () => {
-  const enabled = getAppUiState().hooksIntegrationEnabled
-  const installed = countManagedHooks()
-  return { enabled, installed }
-})
+registerHooksIpc({ reconcileHooks })
 
 registerSystemIpc({ getAppUiState })
 
