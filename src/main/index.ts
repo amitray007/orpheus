@@ -92,9 +92,6 @@ import type { CommandServerDeps } from './commandServer'
 import {
   initOverlayLayer,
   registerOverlayRendererIpc,
-  showOverlay,
-  updateOverlay,
-  hideOverlay,
   isInteractiveOverlayVisible,
   focusOverlay,
   forceHideOwnedBy,
@@ -137,6 +134,7 @@ import { registerSessionsIpc } from './ipc/sessions'
 import { registerProjectsIpc } from './ipc/projects'
 import { registerWorkspacesIpc } from './ipc/workspaces'
 import { registerActionsIpc } from './ipc/actions'
+import { registerOverlayIpc } from './ipc/overlay'
 import { registerMiscIpc } from './ipc/misc'
 import { registerOrpheusConfigIpc } from './ipc/orpheusConfig'
 
@@ -1403,11 +1401,7 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
 // Overlay layer IPC (React overlays above the terminal)
 // ---------------------------------------------------------------------------
 
-handle('overlay:showDescriptor', (_e, { descriptor }) => showOverlay(descriptor))
-
-handle('overlay:update', (_e, { id, props }): void => updateOverlay(id, props))
-
-handle('overlay:hide', (_e, { id }) => hideOverlay(id))
+registerOverlayIpc()
 
 // ipcMain.on registrations for the overlayRenderer:* channels (sends from the
 // overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.
