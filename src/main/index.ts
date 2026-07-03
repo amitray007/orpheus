@@ -167,13 +167,7 @@ import {
   diag
 } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
-import {
-  startPowerAwake,
-  getKeepAwakeState,
-  setKeepAwakeMode,
-  setKeepAwakeDisplayOn,
-  startKeepAwakeTimer
-} from './powerAwake'
+import { startPowerAwake } from './powerAwake'
 import { startCommandServer } from './commandServer'
 import type { CommandServerDeps } from './commandServer'
 import {
@@ -199,6 +193,7 @@ import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerFooterActionsIpc } from './ipc/footerActions'
+import { registerKeepAwakeIpc } from './ipc/keepAwake'
 
 // ---------------------------------------------------------------------------
 // Launch snapshot + dirty tracking
@@ -2206,14 +2201,7 @@ registerFooterActionsIpc()
 
 handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(workspaceId) ?? null)
 
-// ---------------------------------------------------------------------------
-// Keep Awake IPC
-// ---------------------------------------------------------------------------
-
-handle('keepAwake:get', () => getKeepAwakeState())
-handle('keepAwake:setMode', (_e, mode) => setKeepAwakeMode(mode))
-handle('keepAwake:setDisplayOn', (_e, on) => setKeepAwakeDisplayOn(on))
-handle('keepAwake:startTimer', (_e, minutes) => startKeepAwakeTimer(minutes))
+registerKeepAwakeIpc()
 
 // ---------------------------------------------------------------------------
 // App lifecycle
