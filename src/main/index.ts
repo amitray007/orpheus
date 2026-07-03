@@ -182,7 +182,11 @@ import {
   launchSnapshotEntries,
   launchSnapshotCount,
   isDirty,
-  setDirty
+  setDirty,
+  getTitle,
+  setTitle,
+  deleteTitle,
+  seedTitle
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
@@ -264,9 +268,6 @@ function getMainWindow(): BrowserWindow | null {
 function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
   getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceRequestOpen, { workspaceId, focus })
 }
-
-// Keyed by workspaceId — most recent terminal title from OSC 0/2.
-const workspaceTitles = new Map<string, string>()
 
 let titleCallbackRegistered = false
 let loadingOverlayWired = false
@@ -362,14 +363,14 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
 
     // Skip if nothing changed — guards the per-frame spinner churn.
-    if (workspaceTitles.get(workspaceId) === (cleaned ?? undefined)) return
-    if (!cleaned && !workspaceTitles.has(workspaceId)) return
+    if (getTitle(workspaceId) === (cleaned ?? undefined)) return
+    if (!cleaned && getTitle(workspaceId) === undefined) return
 
     console.log('[title] native fired', { workspaceId, raw: title, cleaned })
     if (cleaned) {
-      workspaceTitles.set(workspaceId, cleaned)
+      setTitle(workspaceId, cleaned)
     } else {
-      workspaceTitles.delete(workspaceId)
+      deleteTitle(workspaceId)
     }
     // Persist so the next launch can seed from the DB and the sidebar/header
     // shows the prior title instead of the default workspace name.
@@ -378,10 +379,6 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     } catch (err) {
       console.error('[title] failed to persist last_title', err)
     }
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: cleaned
-    })
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
     getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalSleepStateChanged, {
@@ -444,12 +441,7 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   setDirty(workspaceId, false)
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
-  if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: null
-    })
-  }
+  deleteTitle(workspaceId)
   const overlayTimer = overlayFallbackTimers.get(workspaceId)
   if (overlayTimer) {
     clearTimeout(overlayTimer)
@@ -465,7 +457,7 @@ function performClose(id: string): WorkspaceRecord | undefined {
   const ws = getWorkspace(id)
   // Capture the live terminal title BEFORE teardownWorkspaceResources clears it,
   // so the closed workspace keeps its name in the sidebar.
-  const lastTitle = workspaceTitles.get(id) ?? null
+  const lastTitle = getTitle(id) ?? null
   if (terminalAddon) {
     try {
       terminalAddon.destroy(id)
@@ -1914,12 +1906,7 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
   deleteLaunchSnapshot(workspaceId)
   setDirty(workspaceId, false)
   // Clear title and notify renderer so stale claude titles don't linger
-  if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
-      workspaceId,
-      title: null
-    })
-  }
+  deleteTitle(workspaceId)
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   // ownerWorkspaceId backstop: force-hide any anchored overlay owned by this
@@ -2102,7 +2089,7 @@ handle('actions:unsubscribe', (_e, { subscriptionId }) => {
 
 registerFooterActionsIpc()
 
-handle('workspace:getTitle', (_e, { workspaceId }) => workspaceTitles.get(workspaceId) ?? null)
+handle('workspace:getTitle', (_e, { workspaceId }) => getTitle(workspaceId) ?? null)
 
 registerKeepAwakeIpc()
 
@@ -2227,7 +2214,7 @@ if (!app.requestSingleInstanceLock()) {
       // launch — without waiting for Claude to re-emit an OSC title.
       try {
         for (const { id, title } of getAllWorkspaceLastTitles()) {
-          workspaceTitles.set(id, title)
+          seedTitle(id, title)
         }
       } catch (err) {
         console.error('[startup] failed to seed workspaceTitles from DB:', err)
