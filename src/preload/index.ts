@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { InvokeChannel, Req, Res, PushChannel, PushPayload } from '../shared/ipc'
 import type {
   DetectedApp,
@@ -75,16 +76,12 @@ function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
   return ipcRenderer.invoke(channel, ...args)
 }
 
-// Exported (rather than left module-private) because chunk A intentionally
-// stops short of migrating the 25 `ipcRenderer.on` push listeners below —
-// that mechanical dedup lands in the next commit — so nothing in this file
-// calls `subscribe` yet.
-export function subscribe<C extends PushChannel>(
+function subscribe<C extends PushChannel>(
   channel: C,
   cb: (payload: PushPayload<C>) => void
 ): () => void
-export function subscribe(channel: string, cb: (payload: unknown) => void): () => void
-export function subscribe(channel: string, cb: (payload: unknown) => void): () => void {
+function subscribe(channel: string, cb: (payload: unknown) => void): () => void
+function subscribe(channel: string, cb: (payload: unknown) => void): () => void {
   const listener = (_evt: IpcRendererEvent, payload: unknown): void => cb(payload)
   ipcRenderer.on(channel, listener)
   return () => ipcRenderer.removeListener(channel, listener)
@@ -103,11 +100,8 @@ const api = {
     reload: (): Promise<void> => invoke('window:reload')
   },
   debug: {
-    onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { tagName: string }): void => cb(e)
-      ipcRenderer.on('addon:actionTrace', listener)
-      return () => ipcRenderer.removeListener('addon:actionTrace', listener)
-    }
+    onActionTrace: (cb: (e: { tagName: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.addonActionTrace, cb)
   },
   terminal: {
     mount: (
@@ -135,26 +129,14 @@ const api = {
       ipcRenderer.invoke('terminal:canInject', { workspaceId }),
     onCanInjectChanged: (
       cb: (e: { workspaceId: string; canInject: boolean }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; canInject: boolean }
-      ): void => cb(e)
-      ipcRenderer.on('terminal:canInjectChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:canInjectChanged', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalCanInjectChanged, cb),
     focus: (workspaceId: string): Promise<void> =>
       ipcRenderer.invoke('terminal:focus', { workspaceId }),
     getSurfacePhase: (workspaceId: string): Promise<string> =>
       ipcRenderer.invoke('terminal:getSurfacePhase', { workspaceId }),
     onSleepStateChanged: (
       cb: (data: { workspaceId: string; sleeping: boolean }) => void
-    ): (() => void) => {
-      const listener = (_e: unknown, data: { workspaceId: string; sleeping: boolean }): void =>
-        cb(data)
-      ipcRenderer.on('terminal:sleepStateChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:sleepStateChanged', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalSleepStateChanged, cb),
     onLiveness: (
       cb: (data: {
         workspaceId: string
@@ -162,14 +144,7 @@ const api = {
         liveTick: number
         occluded: boolean
       }) => void
-    ): (() => void) => {
-      const listener = (
-        _e: unknown,
-        data: { workspaceId: string; inputTick: number; liveTick: number; occluded: boolean }
-      ): void => cb(data)
-      ipcRenderer.on('terminal:liveness', listener)
-      return () => ipcRenderer.removeListener('terminal:liveness', listener)
-    }
+    ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
   },
   config: {
     openFolder: (): Promise<string | null> => ipcRenderer.invoke('config:openFolder')
@@ -211,20 +186,7 @@ const api = {
         githubAvatarUrl: string | null
         githubCheckedAt: number
       }) => void
-    ): (() => void) => {
-      const listener = (
-        _e: Electron.IpcRendererEvent,
-        payload: {
-          projectId: string
-          githubOwner: string | null
-          githubRepo: string | null
-          githubAvatarUrl: string | null
-          githubCheckedAt: number
-        }
-      ): void => cb(payload)
-      ipcRenderer.on('projects:githubDataUpdated', listener)
-      return () => ipcRenderer.off('projects:githubDataUpdated', listener)
-    }
+    ): (() => void) => subscribe(PUSH_CHANNELS.projectsGithubDataUpdated, cb)
   },
   sessions: {
     listForProject: (
@@ -277,24 +239,13 @@ const api = {
       ipcRenderer.invoke('workspaces:reorder', { projectId, orderedIds }),
     isDirty: (id: string): Promise<boolean> =>
       ipcRenderer.invoke('workspace:isDirty', { workspaceId: id }),
-    onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspaceId: string; dirty: boolean }): void =>
-        cb(e)
-      ipcRenderer.on('workspace:dirtyChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:dirtyChanged', listener)
-    },
+    onDirtyChanged: (cb: (e: { workspaceId: string; dirty: boolean }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceDirtyChanged, cb),
     getTitle: (id: string): Promise<string | null> =>
       ipcRenderer.invoke('workspace:getTitle', { workspaceId: id }),
     onTitleChanged: (
       cb: (e: { workspaceId: string; title: string | null }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; title: string | null }
-      ): void => cb(e)
-      ipcRenderer.on('workspace:titleChanged', listener)
-      return () => ipcRenderer.removeListener('workspace:titleChanged', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceTitleChanged, cb),
     onActivityBatch: (
       cb: (
         updates: Array<{
@@ -303,70 +254,32 @@ const api = {
           detail: WorkspaceActivityDetail
         }>
       ) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        updates: Array<{
-          workspaceId: string
-          status: WorkspaceStatus
-          detail: WorkspaceActivityDetail
-        }>
-      ): void => cb(updates)
-      ipcRenderer.on('workspace:activityBatch', listener)
-      return () => ipcRenderer.removeListener('workspace:activityBatch', listener)
-    },
+    ): (() => void) => subscribe(PUSH_CHANNELS.workspaceActivityBatch, cb),
     setCurrentlyViewed: (workspaceId: string | null): void => {
       ipcRenderer.send('workspace:setCurrentlyViewed', { workspaceId })
     },
-    onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; projectId?: string }
-      ): void => cb(e.workspaceId, e.projectId)
-      ipcRenderer.on('workspace:navigateTo', listener)
-      return () => ipcRenderer.removeListener('workspace:navigateTo', listener)
-    },
-    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void =>
-        cb(e.workspace)
-      ipcRenderer.on('workspaces:created', listener)
-      return () => ipcRenderer.removeListener('workspaces:created', listener)
-    },
-    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; projectId: string }
-      ): void => cb(e)
-      ipcRenderer.on('workspaces:archived', listener)
-      return () => ipcRenderer.removeListener('workspaces:archived', listener)
-    },
+    onNavigateTo: (cb: (workspaceId: string, projectId?: string) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceNavigateTo, (e) => cb(e.workspaceId, e.projectId)),
+    onCreated: (cb: (workspace: WorkspaceRecord) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesCreated, (e) => cb(e.workspace)),
+    onArchived: (cb: (e: { workspaceId: string; projectId: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesArchived, cb),
     close: (
       id: string
     ): Promise<{ ok: boolean; reason?: string; workspace?: WorkspaceRecord | null }> =>
       ipcRenderer.invoke('workspace:close', { id }),
     reopen: (id: string): Promise<{ ok: boolean; workspace?: WorkspaceRecord | null }> =>
       ipcRenderer.invoke('workspace:reopen', { id }),
-    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: { workspace: WorkspaceRecord }): void => cb(e)
-      ipcRenderer.on('workspaces:changed', listener)
-      return () => ipcRenderer.removeListener('workspaces:changed', listener)
-    },
-    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, payload: { workspaceId: string | null }): void =>
-        cb(payload)
-      ipcRenderer.on('terminal:activeWorkspaceChanged', listener)
-      return () => ipcRenderer.removeListener('terminal:activeWorkspaceChanged', listener)
-    },
+    onChanged: (cb: (e: { workspace: WorkspaceRecord }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspacesChanged, cb),
+    onActiveWorkspaceChanged: (cb: (e: { workspaceId: string | null }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.terminalActiveWorkspaceChanged, cb),
     onWorkspaceRequestOpen: (
       cb: (e: { workspaceId: string; focus: boolean }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; focus?: boolean }
-      ): void => cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
-      ipcRenderer.on('workspace:requestOpen', listener)
-      return () => ipcRenderer.removeListener('workspace:requestOpen', listener)
-    },
+    ): (() => void) =>
+      subscribe(PUSH_CHANNELS.workspaceRequestOpen, (e) =>
+        cb({ workspaceId: e.workspaceId, focus: e.focus !== false })
+      ),
     convertToLocal: (id: string): Promise<WorkspaceRecord> =>
       ipcRenderer.invoke('workspaces:convertToLocal', { id }),
     // Footer Model chip: persists a model override and suppresses the
@@ -446,11 +359,8 @@ const api = {
     get: (): Promise<AppUiState> => ipcRenderer.invoke('uiState:get'),
     update: (patch: AppUiStatePatch): Promise<AppUiState> =>
       ipcRenderer.invoke('uiState:update', patch),
-    onChanged: (cb: (state: AppUiState) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, state: AppUiState): void => cb(state)
-      ipcRenderer.on('uiState:changed', handler)
-      return () => ipcRenderer.removeListener('uiState:changed', handler)
-    }
+    onChanged: (cb: (state: AppUiState) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.uiStateChanged, cb)
   },
   git: {
     status: (cwd: string): Promise<GitStatus | null> => ipcRenderer.invoke('git:status', { cwd }),
@@ -471,30 +381,15 @@ const api = {
       cwd: string,
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
     ): Promise<number> => ipcRenderer.invoke('git:count', { cwd, ...opts }),
-    onStatusChanged: (
-      cb: (e: { workspaceId: string; status: GitStatus }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; status: GitStatus }
-      ): void => cb(e)
-      ipcRenderer.on('git:statusChanged', listener)
-      return () => ipcRenderer.removeListener('git:statusChanged', listener)
-    }
+    onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.gitStatusChanged, cb)
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
       ipcRenderer.invoke('github:prForBranch', { cwd, branch }),
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
-    ): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { workspaceId: string; pr: GhPullRequest | null }
-      ): void => cb(e)
-      ipcRenderer.on('github:prChanged', listener)
-      return () => ipcRenderer.removeListener('github:prChanged', listener)
-    }
+    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb)
   },
   shell: {
     revealInFinder: (path: string): Promise<void> =>
@@ -580,35 +475,19 @@ const api = {
     install: (): Promise<void> => ipcRenderer.invoke('updates:install'),
     restart: (): Promise<void> => ipcRenderer.invoke('updates:restart'),
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke('updates:getState'),
-    onProgress: (cb: (e: UpdateProgress) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: UpdateProgress): void => cb(e)
-      ipcRenderer.on('updates:progress', listener)
-      return () => ipcRenderer.removeListener('updates:progress', listener)
-    },
-    onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) => {
-      const listener = (
-        _evt: IpcRendererEvent,
-        e: { success: boolean; code: number | null }
-      ): void => cb(e)
-      ipcRenderer.on('updates:done', listener)
-      return () => ipcRenderer.removeListener('updates:done', listener)
-    },
-    onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, result: UpdateCheckResult): void => cb(result)
-      ipcRenderer.on('updates:checkResult', listener)
-      return () => ipcRenderer.removeListener('updates:checkResult', listener)
-    }
+    onProgress: (cb: (e: UpdateProgress) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesProgress, cb),
+    onDone: (cb: (e: { success: boolean; code: number | null }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesDone, cb),
+    onCheckResult: (cb: (result: UpdateCheckResult) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.updatesCheckResult, cb)
   },
   status: {
     get: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:get'),
     refresh: (): Promise<ClaudeStatusSnapshot> => ipcRenderer.invoke('status:refresh'),
     openPage: (): Promise<void> => ipcRenderer.invoke('status:openPage'),
-    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, snapshot: ClaudeStatusSnapshot): void =>
-        cb(snapshot)
-      ipcRenderer.on('status:change', listener)
-      return () => ipcRenderer.removeListener('status:change', listener)
-    }
+    onChange: (cb: (snapshot: ClaudeStatusSnapshot) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.statusChange, cb)
   },
   actions: {
     invoke: (
@@ -645,7 +524,7 @@ const api = {
         }
       }
 
-      ipcRenderer.on('actions:subscription-update', listener)
+      ipcRenderer.on(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
       const subP = ipcRenderer
         .invoke('actions:subscribe', { subscriptionId, actionId, params, workspaceId })
         .catch((e) => {
@@ -654,7 +533,7 @@ const api = {
 
       return {
         dispose: () => {
-          ipcRenderer.removeListener('actions:subscription-update', listener)
+          ipcRenderer.removeListener(PUSH_CHANNELS.actionsSubscriptionUpdate, listener)
           subP
             .then(() => ipcRenderer.invoke('actions:unsubscribe', { subscriptionId }))
             .catch(() => {
@@ -709,11 +588,8 @@ const api = {
       }
     },
     openConsole: (): Promise<void> => ipcRenderer.invoke('diag:openConsole'),
-    onStream: (cb: (batch: unknown[]) => void): (() => void) => {
-      const listener = (_e: IpcRendererEvent, batch: unknown[]): void => cb(batch)
-      ipcRenderer.on('diag:stream', listener)
-      return () => ipcRenderer.removeListener('diag:stream', listener)
-    },
+    onStream: (cb: (batch: unknown[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.diagStream, cb),
     export: (opts: {
       sinceMs: number
     }): Promise<{
@@ -732,11 +608,8 @@ const api = {
       ipcRenderer.invoke('keepAwake:setDisplayOn', on),
     startTimer: (minutes: number): Promise<KeepAwakeState> =>
       ipcRenderer.invoke('keepAwake:startTimer', minutes),
-    onState: (cb: (state: KeepAwakeState) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, state: KeepAwakeState): void => cb(state)
-      ipcRenderer.on('keepAwake:state', handler)
-      return () => ipcRenderer.removeListener('keepAwake:state', handler)
-    }
+    onState: (cb: (state: KeepAwakeState) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.keepAwakeState, cb)
   },
   overlay: {
     show: (descriptor: OverlayDescriptor): Promise<OverlayShowResult> =>
@@ -744,11 +617,8 @@ const api = {
     update: (id: string, props: Record<string, unknown>): Promise<void> =>
       ipcRenderer.invoke('overlay:update', { id, props }),
     hide: (id: string): Promise<void> => ipcRenderer.invoke('overlay:hide', { id }),
-    onEvent: (cb: (e: OverlayEvent) => void): (() => void) => {
-      const listener = (_evt: IpcRendererEvent, e: OverlayEvent): void => cb(e)
-      ipcRenderer.on('overlay:event', listener)
-      return () => ipcRenderer.removeListener('overlay:event', listener)
-    }
+    onEvent: (cb: (e: OverlayEvent) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.overlayEvent, cb)
   }
 }
 

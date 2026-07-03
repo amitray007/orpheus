@@ -2,6 +2,8 @@ import { app, BrowserWindow } from 'electron'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { getDb } from './db'
+import { PUSH_CHANNELS } from '../shared/ipc'
+import type { PushChannel, PushPayload } from '../shared/ipc'
 import type {
   UpdateCheckResult,
   UpdatePhase,
@@ -62,7 +64,7 @@ const SNAPSHOT_LOG_CAP = 200
 // Broadcast helpers
 // ---------------------------------------------------------------------------
 
-function broadcast(channel: string, payload: unknown): void {
+function broadcast<C extends PushChannel>(channel: C, payload: PushPayload<C>): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send(channel, payload)
   }
@@ -248,7 +250,7 @@ export function checkForUpdates(): Promise<UpdateCheckResult> {
             lastChecked: result.checkedAt
           })
         }
-        broadcast('updates:checkResult', result)
+        broadcast(PUSH_CHANNELS.updatesCheckResult, result)
         resolve(result)
       })
     )
@@ -264,7 +266,7 @@ export function installUpdate(): void {
     line: 'Refreshing tap…'
   }
   setSnapshot({ kind: 'installing', phase: 'refresh', percent: null, log: [], reason: null })
-  broadcast('updates:progress', refreshProgress)
+  broadcast(PUSH_CHANNELS.updatesProgress, refreshProgress)
 
   refreshTap(() => {
     let currentPhase: UpdatePhase = 'download'
@@ -288,7 +290,7 @@ export function installUpdate(): void {
             : [...currentLog, line]
         setSnapshot({ phase, percent, log: newLog })
         const progress: UpdateProgress = { phase, percent, line }
-        broadcast('updates:progress', progress)
+        broadcast(PUSH_CHANNELS.updatesProgress, progress)
       }
     }
 
@@ -306,7 +308,7 @@ export function installUpdate(): void {
           percent: null
         })
       }
-      broadcast('updates:done', { success: code === 0, code })
+      broadcast(PUSH_CHANNELS.updatesDone, { success: code === 0, code })
     })
   })
 }

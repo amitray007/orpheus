@@ -3,6 +3,7 @@ import { getDb } from './db'
 import type { WorkspaceRecord, WorkspaceStatus, PinnedItem, ProjectRecord } from '../shared/types'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
 import { removeWorktree, withRepoLock } from './worktrees'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // DB row ↔ type mapping
@@ -152,7 +153,7 @@ function sanitizeWorkspaceName(name: string): string {
 function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:created', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesCreated, { workspace })
     }
   }
 }
@@ -160,7 +161,7 @@ function broadcastWorkspaceCreated(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:changed', { workspace })
+      win.webContents.send(PUSH_CHANNELS.workspacesChanged, { workspace })
     }
   }
 }
@@ -168,7 +169,7 @@ function broadcastWorkspaceChanged(workspace: WorkspaceRecord): void {
 function broadcastWorkspaceArchived(workspaceId: string, projectId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('workspaces:archived', { workspaceId, projectId })
+      win.webContents.send(PUSH_CHANNELS.workspacesArchived, { workspaceId, projectId })
     }
   }
 }

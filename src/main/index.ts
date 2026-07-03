@@ -269,6 +269,7 @@ import {
   setOverlayTheme
 } from './overlayLayer'
 import type { OverlayDescriptor } from '../shared/types'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { InvokeChannel, Req, Res } from '../shared/ipc'
 
 // ---------------------------------------------------------------------------
@@ -341,7 +342,7 @@ function getMainWindow(): BrowserWindow | null {
 // what the user is looking at). Defaults to true so existing callers that
 // don't pass it keep the pre-existing "always navigate" behavior.
 function requestOpenWorkspace(workspaceId: string, focus: boolean = true): void {
-  getMainWindow()?.webContents.send('workspace:requestOpen', { workspaceId, focus })
+  getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceRequestOpen, { workspaceId, focus })
 }
 
 // Keyed by workspaceId — most recent terminal title from OSC 0/2.
@@ -457,10 +458,13 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
     } catch (err) {
       console.error('[title] failed to persist last_title', err)
     }
-    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: cleaned })
+    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
+      workspaceId,
+      title: cleaned
+    })
   })
   addon.setOcclusionCallback((workspaceId: string, occluded: boolean) => {
-    getMainWindow()?.webContents.send('terminal:sleepStateChanged', {
+    getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalSleepStateChanged, {
       workspaceId,
       sleeping: occluded
     })
@@ -470,7 +474,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   // native-side. The watchdog applies them to the active workspace.
   addon.setLivenessCallback(
     (workspaceId: string, inputTick: number, liveTick: number, occluded: boolean) => {
-      getMainWindow()?.webContents.send('terminal:liveness', {
+      getMainWindow()?.webContents.send(PUSH_CHANNELS.terminalLiveness, {
         workspaceId,
         inputTick,
         liveTick,
@@ -484,7 +488,7 @@ function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   if (process.env['ORPHEUS_DEBUG_ACTION_TRACE'] === '1') {
     addon.setActionTraceCallback((tagName: string) => {
       const win = getMainWindow()
-      win?.webContents.send('addon:actionTrace', { tagName })
+      win?.webContents.send(PUSH_CHANNELS.addonActionTrace, { tagName })
     })
   }
 }
@@ -502,7 +506,7 @@ function launchEquals(a: ClaudeLaunch, b: ClaudeLaunch): boolean {
 }
 
 function broadcastDirty(workspaceId: string, dirty: boolean): void {
-  getMainWindow()?.webContents.send('workspace:dirtyChanged', { workspaceId, dirty })
+  getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceDirtyChanged, { workspaceId, dirty })
 }
 
 function setDirty(workspaceId: string, dirty: boolean): void {
@@ -532,7 +536,10 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   evictAccumulator(workspaceId)
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
+      workspaceId,
+      title: null
+    })
   }
   const overlayTimer = overlayFallbackTimers.get(workspaceId)
   if (overlayTimer) {
@@ -1992,7 +1999,7 @@ handle('uiState:update', (_e, patch: AppUiStatePatch) => {
   // can react without polling.
   const win = getMainWindow()
   if (win && !win.isDestroyed()) {
-    win.webContents.send('uiState:changed', result)
+    win.webContents.send(PUSH_CHANNELS.uiStateChanged, result)
   }
   return result
 })
@@ -2003,7 +2010,7 @@ ipcMain.on(
     setCurrentlyViewedWorkspace(workspaceId)
     const win = getMainWindow()
     if (win && !win.isDestroyed()) {
-      win.webContents.send('terminal:activeWorkspaceChanged', { workspaceId })
+      win.webContents.send(PUSH_CHANNELS.terminalActiveWorkspaceChanged, { workspaceId })
     }
   }
 )
@@ -2513,7 +2520,7 @@ handle(
     // value without waiting for the next activity transition.
     {
       const injectable = terminalActions.canInject(workspaceId)
-      e.sender.send('terminal:canInjectChanged', { workspaceId, canInject: injectable })
+      e.sender.send(PUSH_CHANNELS.terminalCanInjectChanged, { workspaceId, canInject: injectable })
     }
 
     // Start (or re-join) the fs.watch watcher for this workspace's git repo so
@@ -2641,7 +2648,10 @@ handle('terminal:destroy', (_e, { workspaceId }: { workspaceId: string }): void 
   }
   // Clear title and notify renderer so stale claude titles don't linger
   if (workspaceTitles.delete(workspaceId)) {
-    getMainWindow()?.webContents.send('workspace:titleChanged', { workspaceId, title: null })
+    getMainWindow()?.webContents.send(PUSH_CHANNELS.workspaceTitleChanged, {
+      workspaceId,
+      title: null
+    })
   }
   // Settings cache is cheap to evict — will be re-read on the next mount.
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
@@ -2854,7 +2864,7 @@ handle(
     const win = BrowserWindow.fromWebContents(e.sender)
     startSubscription(subscriptionId, actionId, params, workspaceId, (value) => {
       if (win && !win.isDestroyed()) {
-        win.webContents.send('actions:subscription-update', { subscriptionId, value })
+        win.webContents.send(PUSH_CHANNELS.actionsSubscriptionUpdate, { subscriptionId, value })
       }
     })
     return { ok: true }
@@ -3095,14 +3105,14 @@ if (!app.requestSingleInstanceLock()) {
         onActivityBatch((updates) => {
           const win = getMainWindow()
           if (!win) return
-          win.webContents.send('workspace:activityBatch', updates)
+          win.webContents.send(PUSH_CHANNELS.workspaceActivityBatch, updates)
           // Push canInject state for each workspace that changed activity so the
           // renderer chips don't need to poll terminal:canInject every second.
           // Use the authoritative terminalActions.canInject() so 'attention' and
           // any future status additions are handled identically to the IPC handler.
           for (const { workspaceId } of updates) {
             if (!win.webContents.isDestroyed()) {
-              win.webContents.send('terminal:canInjectChanged', {
+              win.webContents.send(PUSH_CHANNELS.terminalCanInjectChanged, {
                 workspaceId,
                 canInject: terminalActions.canInject(workspaceId)
               })

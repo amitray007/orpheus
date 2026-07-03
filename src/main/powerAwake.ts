@@ -1,6 +1,7 @@
 import { powerSaveBlocker, type BrowserWindow } from 'electron'
 import { getDb } from './db'
 import { onWorkspaceStatusChange, getAllWorkspaceStatuses } from './orpheusNotify'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { KeepAwakeBaseMode, KeepAwakeMode, KeepAwakeState } from '../shared/types'
 
 const RELEASE_GRACE_MS = 30_000
@@ -177,7 +178,8 @@ function getKeepAwakeState(): KeepAwakeState {
 
 function broadcast(): void {
   const win = getWindow?.()
-  if (win && !win.isDestroyed()) win.webContents.send('keepAwake:state', getKeepAwakeState())
+  if (win && !win.isDestroyed())
+    win.webContents.send(PUSH_CHANNELS.keepAwakeState, getKeepAwakeState())
 }
 
 // ---------------------------------------------------------------------------

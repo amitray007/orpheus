@@ -2,6 +2,7 @@ import { Notification, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
 import { getWorkspace } from './workspaces'
 import { getDb } from './db'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { WorkspaceStatus } from '../shared/types'
 
 let fileInfoProvider:
@@ -98,7 +99,7 @@ function focusAndNavigate(workspaceId: string): void {
   win.show()
   win.focus()
   const ws = getWorkspace(workspaceId)
-  win.webContents.send('workspace:navigateTo', { workspaceId, projectId: ws?.projectId })
+  win.webContents.send(PUSH_CHANNELS.workspaceNavigateTo, { workspaceId, projectId: ws?.projectId })
 }
 
 function fireAttentionNotification(workspaceId: string, count: number, maxRepeats: number): void {

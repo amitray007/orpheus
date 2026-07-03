@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { subscribeDiag } from './diagnostics'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type { DiagEvent } from '../shared/types'
 
 // Single-instance diagnostics console window. Opening it is what attaches the
@@ -52,7 +53,7 @@ function startStreaming(target: BrowserWindow): void {
       if (target.isDestroyed()) return
       if (buffer.length === 0) return
       const batch = buffer.splice(0, SEND_BATCH_MAX)
-      target.webContents.send('diag:stream', batch)
+      target.webContents.send(PUSH_CHANNELS.diagStream, batch)
     } catch {
       /* never throw out of the flush loop */
     }

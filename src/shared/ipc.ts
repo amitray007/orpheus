@@ -124,3 +124,48 @@ export interface RendererPushMap {
 
 export type PushChannel = keyof RendererPushMap
 export type PushPayload<C extends PushChannel> = RendererPushMap[C]
+
+/**
+ * MDB-10: the single place the 25 push-channel literals are spelled. Main
+ * (`webContents.send`) and preload (`ipcRenderer.on` via `subscribe`) both
+ * import from here so a typo on either side is a compile error instead of a
+ * silently-dead channel. Keys match `RendererPushMap` — `keyof` below fails
+ * to compile if the two ever drift apart.
+ */
+export const PUSH_CHANNELS = {
+  addonActionTrace: 'addon:actionTrace',
+  terminalCanInjectChanged: 'terminal:canInjectChanged',
+  terminalSleepStateChanged: 'terminal:sleepStateChanged',
+  terminalLiveness: 'terminal:liveness',
+  terminalActiveWorkspaceChanged: 'terminal:activeWorkspaceChanged',
+  projectsGithubDataUpdated: 'projects:githubDataUpdated',
+  workspaceDirtyChanged: 'workspace:dirtyChanged',
+  workspaceTitleChanged: 'workspace:titleChanged',
+  workspaceActivityBatch: 'workspace:activityBatch',
+  workspaceNavigateTo: 'workspace:navigateTo',
+  workspaceRequestOpen: 'workspace:requestOpen',
+  workspacesCreated: 'workspaces:created',
+  workspacesArchived: 'workspaces:archived',
+  workspacesChanged: 'workspaces:changed',
+  uiStateChanged: 'uiState:changed',
+  gitStatusChanged: 'git:statusChanged',
+  githubPrChanged: 'github:prChanged',
+  updatesProgress: 'updates:progress',
+  updatesDone: 'updates:done',
+  updatesCheckResult: 'updates:checkResult',
+  statusChange: 'status:change',
+  actionsSubscriptionUpdate: 'actions:subscription-update',
+  diagStream: 'diag:stream',
+  keepAwakeState: 'keepAwake:state',
+  overlayEvent: 'overlay:event'
+} satisfies Record<string, PushChannel>
+
+// Exhaustiveness check: every PushChannel must appear as a value above (the
+// `satisfies` above already guarantees the converse — no value can be an
+// invalid PushChannel). If a channel is added to RendererPushMap but not to
+// PUSH_CHANNELS, `_PushChannelsCoverAllKeys` narrows to `never` and this
+// assignment fails to compile. Exported (not just declared) so it's an
+// actual checked assertion, not a dead, unevaluated type alias.
+type _PushChannelsCoverAllKeys =
+  PushChannel extends (typeof PUSH_CHANNELS)[keyof typeof PUSH_CHANNELS] ? true : never
+export const _assertPushChannelsExhaustive: _PushChannelsCoverAllKeys = true

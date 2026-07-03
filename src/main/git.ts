@@ -4,6 +4,7 @@ import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
 import type { WebContents } from 'electron'
 import { getWorkspace } from './workspaces'
+import { PUSH_CHANNELS } from '../shared/ipc'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -314,7 +315,7 @@ async function refreshGitForDir(dir: string): Promise<void> {
       }
 
       if (!webContents.isDestroyed() && status !== null) {
-        webContents.send('git:statusChanged', { workspaceId, status })
+        webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
       }
 
       // If branch changed, also refresh the PR
@@ -325,7 +326,7 @@ async function refreshGitForDir(dir: string): Promise<void> {
           getPrForBranch(cwd, newBranch)
             .then((pr) => {
               if (!webContents.isDestroyed()) {
-                webContents.send('github:prChanged', { workspaceId, pr })
+                webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
               }
             })
             .catch(() => {
@@ -333,7 +334,7 @@ async function refreshGitForDir(dir: string): Promise<void> {
             })
         } else if (!webContents.isDestroyed()) {
           // Detached HEAD or no branch — clear the PR chip
-          webContents.send('github:prChanged', { workspaceId, pr: null })
+          webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
         }
       }
     })
@@ -426,7 +427,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
         getGitStatus(cwd)
           .then((status) => {
             if (!webContents.isDestroyed() && status !== null) {
-              webContents.send('git:statusChanged', { workspaceId, status })
+              webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             }
           })
           .catch(() => {
@@ -443,7 +444,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       getGitStatus(cwd)
         .then((status) => {
           if (!webContents.isDestroyed() && status !== null) {
-            webContents.send('git:statusChanged', { workspaceId, status })
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             const branch = status.branch
             if (branch) {
               const client = entry?.clients.get(workspaceId)
@@ -451,7 +452,7 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
               getPrForBranch(cwd, branch)
                 .then((pr) => {
                   if (!webContents.isDestroyed()) {
-                    webContents.send('github:prChanged', { workspaceId, pr })
+                    webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
                   }
                 })
                 .catch(() => {

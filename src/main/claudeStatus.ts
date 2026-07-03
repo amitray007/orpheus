@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { getAppUiState } from './uiState'
+import { PUSH_CHANNELS } from '../shared/ipc'
 import type {
   ClaudeStatusSnapshot,
   ClaudeStatusComponent,
@@ -91,9 +92,9 @@ const firedKeys = new Set<string>()
 // Helpers
 // ---------------------------------------------------------------------------
 
-function broadcast(channel: string, payload: unknown): void {
+function broadcast(snapshot: ClaudeStatusSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    if (!win.isDestroyed()) win.webContents.send(PUSH_CHANNELS.statusChange, snapshot)
   }
 }
 
@@ -319,7 +320,7 @@ async function runPoll(): Promise<void> {
 
   // Mark as fetching and broadcast immediately so the chip flips to the spinner
   snapshot = { ...snapshot, isFetching: true }
-  broadcast('status:change', snapshot)
+  broadcast(snapshot)
 
   try {
     const fresh = await fetchStatusSnapshot()
@@ -331,11 +332,11 @@ async function runPoll(): Promise<void> {
       }
     }
 
-    broadcast('status:change', snapshot)
+    broadcast(snapshot)
   } catch (err) {
     console.warn('[claudeStatus] fetch failed:', err)
     snapshot = { ...prevSnapshot, fetchOk: false, isFetching: false }
-    broadcast('status:change', snapshot)
+    broadcast(snapshot)
   }
 }
 
