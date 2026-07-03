@@ -76,7 +76,9 @@ import type {
   KeepAwakeBaseMode,
   TerminalRect,
   TerminalMountResult,
-  TerminalSendKeyDescriptor
+  TerminalSendKeyDescriptor,
+  OverlayDescriptor,
+  OverlayShowResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -358,6 +360,9 @@ export interface InvokeChannelMap {
   'terminal:submit': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:clearInput': { req: [{ workspaceId: string }]; res: ActionResult }
   'terminal:canInject': { req: [{ workspaceId: string }]; res: boolean }
+  'overlay:showDescriptor': { req: [{ descriptor: OverlayDescriptor }]; res: OverlayShowResult }
+  'overlay:update': { req: [{ id: string; props: Record<string, unknown> }]; res: void }
+  'overlay:hide': { req: [{ id: string }]; res: void }
   // … migrated domain-by-domain in follow-up commits.
 }
 

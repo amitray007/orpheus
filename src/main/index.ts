@@ -249,7 +249,6 @@ import {
   forceHideOwnedBy,
   setOverlayTheme
 } from './overlayLayer'
-import type { OverlayDescriptor } from '../shared/types'
 import { PUSH_CHANNELS } from '../shared/ipc'
 import type { InvokeChannel, Req, Res } from '../shared/ipc'
 
@@ -2520,17 +2519,11 @@ handle('terminal:destroy', (_e, { workspaceId }): void => {
 // Overlay layer IPC (React overlays above the terminal)
 // ---------------------------------------------------------------------------
 
-handle('overlay:showDescriptor', (_e, { descriptor }: { descriptor: OverlayDescriptor }) =>
-  showOverlay(descriptor)
-)
+handle('overlay:showDescriptor', (_e, { descriptor }) => showOverlay(descriptor))
 
-handle(
-  'overlay:update',
-  (_e, { id, props }: { id: string; props: Record<string, unknown> }): void =>
-    updateOverlay(id, props)
-)
+handle('overlay:update', (_e, { id, props }): void => updateOverlay(id, props))
 
-handle('overlay:hide', (_e, { id }: { id: string }) => hideOverlay(id))
+handle('overlay:hide', (_e, { id }) => hideOverlay(id))
 
 // ipcMain.on registrations for the overlayRenderer:* channels (sends from the
 // overlay WebContentsView, not invokes) live inside overlayLayer.ts itself.

@@ -614,10 +614,10 @@ const api = {
   },
   overlay: {
     show: (descriptor: OverlayDescriptor): Promise<OverlayShowResult> =>
-      ipcRenderer.invoke('overlay:showDescriptor', { descriptor }),
+      invoke('overlay:showDescriptor', { descriptor }),
     update: (id: string, props: Record<string, unknown>): Promise<void> =>
-      ipcRenderer.invoke('overlay:update', { id, props }),
-    hide: (id: string): Promise<void> => ipcRenderer.invoke('overlay:hide', { id }),
+      invoke('overlay:update', { id, props }),
+    hide: (id: string): Promise<void> => invoke('overlay:hide', { id }),
     onEvent: (cb: (e: OverlayEvent) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.overlayEvent, cb)
   }
