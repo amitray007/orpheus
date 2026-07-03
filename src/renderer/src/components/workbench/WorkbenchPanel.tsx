@@ -5,31 +5,49 @@
 // header (⤢/⤡ expand-toggle + ✕ close) and a placeholder body
 // (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md;
 // docs/brainstorms/2026-07-02-workbench-panes-requirements.md §4).
+// U5 (P1) — adds the Git · Terminal · Files · Panes tab strip to the header
+// row (left of the ⤢/⤡ + ✕ controls) and renders the active tab's
+// `<ComingSoon />` body below. See WorkbenchTabStrip.tsx for the tab
+// affordance itself; this file only owns which tab is active and the layout
+// slot it renders into.
 //
-// SCOPE BOUNDARY (U4): this is pure DOM + CSS geometry driving a placeholder.
-// It does NOT touch the claude native terminal surface or its host container
-// — when state is 'expanded' this frame simply grows (via WorkspaceView's
-// flex sizing) to visually occupy the claude column's space; the native
-// libghostty surface underneath keeps running exactly as it does today.
-// U6 is where the native reframe/hide actually happens — see the comment
-// marker below.
+// SCOPE BOUNDARY (U4/U5): this is pure DOM + CSS geometry driving
+// placeholders. It does NOT touch the claude native terminal surface or its
+// host container — when state is 'expanded' this frame simply grows (via
+// WorkspaceView's flex sizing) to visually occupy the claude column's space;
+// the native libghostty surface underneath keeps running exactly as it does
+// today. U6 is where the native reframe/hide actually happens — see the
+// comment marker below. No real tab content yet (that's P3-P6).
 //
 // Rendered only when `workbenchEnabled` (gated at the WorkspaceView call
 // site) AND state !== 'dormant' (dormant is fully invisible per the state
 // table — no rail, no strip).
 // ---------------------------------------------------------------------------
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type React from 'react'
 import { ArrowsOutSimple, ArrowsInSimple, X } from '@phosphor-icons/react'
 import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
+import { WorkbenchTabStrip } from './WorkbenchTabStrip'
+import { WORKBENCH_TABS, type WorkbenchTabId } from './workbenchTabs'
 
 const TRANSITION = 'width 200ms ease'
+
+// Default tab: Terminal. It's the most immediately useful "give me a shell"
+// action per the requirements doc (§5.2 — "Job: give me a shell, quickly")
+// and is the tab most likely to be reached for first once P3 lands real
+// content; Git/Files/Panes are comparatively exploratory. Tab selection is
+// ephemeral component state (not persisted) — it resets to this default each
+// time the Workbench panel remounts, and is preserved across
+// open<->expanded transitions since the panel itself stays mounted across
+// those state changes.
+const DEFAULT_TAB: WorkbenchTabId = 'terminal'
 
 export function WorkbenchPanel(): React.JSX.Element | null {
   const api = useWorkbenchApi()
   const frameRef = useRef<HTMLDivElement>(null)
+  const [activeTab, setActiveTab] = useState<WorkbenchTabId>(DEFAULT_TAB)
   if (!api) return null
   const { state, width, toggleExpand, close, beginDividerDrag, isDraggingDivider } = api
 
@@ -87,9 +105,9 @@ export function WorkbenchPanel(): React.JSX.Element | null {
           transition: isDraggingDivider ? 'none' : TRANSITION
         }}
       >
-        <div className="flex items-center justify-between h-8 px-2 border-b border-border-default flex-shrink-0">
-          <span className="text-xs font-medium text-text-primary truncate">Workbench</span>
-          <div className="flex items-center gap-1">
+        <div className="flex items-center justify-between gap-2 h-8 px-2 border-b border-border-default flex-shrink-0">
+          <WorkbenchTabStrip activeTab={activeTab} onChange={setActiveTab} />
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
               type="button"
               onClick={toggleExpand}
@@ -112,7 +130,18 @@ export function WorkbenchPanel(): React.JSX.Element | null {
           </div>
         </div>
 
-        <ComingSoon />
+        {WORKBENCH_TABS.map(({ id, label }) => (
+          <div
+            key={id}
+            id={`workbench-tabpanel-${id}`}
+            role="tabpanel"
+            aria-labelledby={`workbench-tab-${id}`}
+            hidden={id !== activeTab}
+            className="flex-1 flex flex-col min-h-0"
+          >
+            {id === activeTab && <ComingSoon label={label} />}
+          </div>
+        ))}
       </div>
     </>
   )
