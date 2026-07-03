@@ -189,7 +189,9 @@ import {
   seedTitle,
   setOverlayFallbackTimer,
   clearOverlayFallbackTimer,
-  takeOverlayFallbackTimer
+  takeOverlayFallbackTimer,
+  withInjectLock,
+  deleteInjectLock
 } from './workspaceResources'
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
@@ -442,7 +444,7 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   deleteTitle(workspaceId)
   clearOverlayFallbackTimer(workspaceId)
-  injectLocks.delete(workspaceId)
+  deleteInjectLock(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
 }
 
@@ -1991,35 +1993,6 @@ function resolveNamedKey(name: string): TerminalSendKeyDescriptor | null {
 // paste-then-submit automation typically needs 50-200ms).
 const SUBMIT_DELAY_MS = 150
 const delay = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms))
-
-// ---------------------------------------------------------------------------
-// Per-workspace injection mutex (RACE-10) — mirrors withRepoLock's
-// promise-chain pattern (worktrees.ts) but keyed by workspaceId, a separate
-// lock domain. Without this, two concurrent CLI injections into the SAME
-// workspace (e.g. two `ws send` calls) can interleave their
-// sendInput/sendKeys → delay → submit sequences: A stages text, B stages
-// text, A submits (submitting A+B concatenated), B submits into a now-empty
-// input box. Serialising the stage-then-submit critical section per
-// workspace prevents that interleaving while leaving unrelated workspaces
-// fully concurrent.
-// ---------------------------------------------------------------------------
-const injectLocks = new Map<string, Promise<unknown>>()
-function withInjectLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = injectLocks.get(workspaceId) ?? Promise.resolve()
-  const next = prev.then(
-    () => fn(),
-    () => fn()
-  )
-  // Store a silent version so map entry errors don't surface as unhandled rejections
-  injectLocks.set(
-    workspaceId,
-    next.then(
-      () => undefined,
-      () => undefined
-    )
-  )
-  return next
-}
 
 // ---------------------------------------------------------------------------
 // Quick Actions — terminal interaction primitives
