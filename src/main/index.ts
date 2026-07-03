@@ -1866,7 +1866,7 @@ handle('diag:openConsole', () => {
   openDiagConsole()
 })
 
-handle('diag:export', async (_e, { sinceMs }: { sinceMs: number }) => {
+handle('diag:export', async (_e, { sinceMs }) => {
   try {
     const result = await dialog.showSaveDialog({
       title: 'Export Diagnostics',

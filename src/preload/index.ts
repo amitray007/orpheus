@@ -587,18 +587,14 @@ const api = {
         /* never throw */
       }
     },
-    openConsole: (): Promise<void> => ipcRenderer.invoke('diag:openConsole'),
+    openConsole: (): Promise<void> => invoke('diag:openConsole'),
     onStream: (cb: (batch: unknown[]) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.diagStream, cb),
     export: (opts: {
       sinceMs: number
-    }): Promise<{
-      ok: boolean
-      path?: string
-      txtPath?: string
-      jsonPath?: string
-      error?: string
-    }> => ipcRenderer.invoke('diag:export', opts)
+    }): Promise<
+      { ok: true; path: string; txtPath: string; jsonPath: string } | { ok: false; error: string }
+    > => invoke('diag:export', opts)
   },
   keepAwake: {
     get: (): Promise<KeepAwakeState> => ipcRenderer.invoke('keepAwake:get'),

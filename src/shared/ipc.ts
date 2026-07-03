@@ -70,6 +70,13 @@ export interface InvokeChannelMap {
     req: [{ projectId: string; patch: Partial<{ allowLocal: boolean; allowWorktree: boolean }> }]
     res: { allowLocal: boolean; allowWorktree: boolean }
   }
+  'diag:openConsole': { req: []; res: void }
+  'diag:export': {
+    req: [{ sinceMs: number }]
+    res:
+      | { ok: true; path: string; txtPath: string; jsonPath: string }
+      | { ok: false; error: string }
+  }
   // … migrated domain-by-domain in follow-up commits.
 }
 
