@@ -32,6 +32,7 @@ import type {
   WriteFileResult
 } from '../../shared/types'
 import { handle } from './handle'
+import { startFilesWatch, stopFilesWatch } from '../filesWatcher'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -500,5 +501,20 @@ export function registerFilesIpc(deps: FilesIpcDeps): void {
   handle('files:absolutePath', (_e, { workspaceId, path }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return Promise.resolve(cwd ? resolveInside(cwd, path) : null)
+  })
+
+  // ── Working-tree watcher (live tree refresh while the Files tab is open) ──
+  // See src/main/filesWatcher.ts. AT MOST ONE watcher is active at a time —
+  // starting a new one (even for a different workspace) stops any previous
+  // watch, matching the "only the visible Files tab" scope.
+  handle('files:watchStart', (e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    if (cwd) startFilesWatch(workspaceId, cwd, e.sender)
+    return Promise.resolve()
+  })
+
+  handle('files:watchStop', (_e, { workspaceId }) => {
+    stopFilesWatch(workspaceId)
+    return Promise.resolve()
   })
 }

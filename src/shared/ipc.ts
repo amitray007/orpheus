@@ -327,6 +327,12 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; path: string }]
     res: string | null
   }
+  // Working-tree file watcher (main/filesWatcher.ts) — active only while the
+  // Workbench Files tab is open for a workspace, so an external edit (Claude,
+  // a terminal command, `git checkout`) keeps the tree live instead of going
+  // stale until the next tab open. AT MOST ONE watcher runs at a time.
+  'files:watchStart': { req: [{ workspaceId: string }]; res: void }
+  'files:watchStop': { req: [{ workspaceId: string }]; res: void }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
@@ -497,6 +503,10 @@ export interface RendererPushMap {
   'uiState:changed': AppUiState
   'git:statusChanged': { workspaceId: string; status: GitStatus }
   'github:prChanged': { workspaceId: string; pr: GhPullRequest | null }
+  // Working-tree change notification from filesWatcher.ts — pushed (debounced)
+  // whenever a non-denylisted path changes while the Files tab's watcher is
+  // active for `workspaceId`. The renderer refetches listing + git status.
+  'files:changed': { workspaceId: string }
   'updates:progress': UpdateProgress
   'updates:done': { success: boolean; code: number | null }
   'updates:checkResult': UpdateCheckResult
@@ -536,6 +546,7 @@ export const PUSH_CHANNELS = {
   uiStateChanged: 'uiState:changed',
   gitStatusChanged: 'git:statusChanged',
   githubPrChanged: 'github:prChanged',
+  filesChanged: 'files:changed',
   updatesProgress: 'updates:progress',
   updatesDone: 'updates:done',
   updatesCheckResult: 'updates:checkResult',

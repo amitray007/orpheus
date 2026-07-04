@@ -32,6 +32,7 @@ import * as path from 'node:path'
 import type { DoctorResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
+import { stopFilesWatch } from './filesWatcher'
 import { getDb } from './db'
 import { getProject } from './projects'
 import { reconcileWorktree } from './worktrees'
@@ -384,6 +385,10 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   teardownWorkspaceState(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
+  // Reap the Files tab's working-tree watcher too, if this workspace happened
+  // to be the one watch instance active (no-op otherwise — stopFilesWatch is
+  // a targeted, workspaceId-matched stop, see filesWatcher.ts).
+  stopFilesWatch(workspaceId)
 }
 
 function performClose(id: string): WorkspaceRecord | undefined {
@@ -676,7 +681,10 @@ function createWindow(): void {
   registerWebContentsCleanup(mainWindow.webContents)
   // Tear down all git watchers when the renderer goes away so we don't hold
   // destroyed WebContents references until will-quit.
-  mainWindow.webContents.on('destroyed', () => stopAllGitWatches())
+  mainWindow.webContents.on('destroyed', () => {
+    stopAllGitWatches()
+    stopFilesWatch()
+  })
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -2287,6 +2295,7 @@ if (!app.requestSingleInstanceLock()) {
     stopStatusPoller()
     stopAutoCheckLoop()
     stopAllGitWatches()
+    stopFilesWatch()
     stopDiagnostics()
   })
 

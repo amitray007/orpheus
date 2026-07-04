@@ -447,7 +447,14 @@ const api = {
     delete: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
       invoke('files:delete', { workspaceId, path }),
     absolutePath: (workspaceId: string, path: string): Promise<string | null> =>
-      invoke('files:absolutePath', { workspaceId, path })
+      invoke('files:absolutePath', { workspaceId, path }),
+    // Working-tree watcher (main/filesWatcher.ts) — live tree refresh while
+    // the Files tab is open. AT MOST ONE watcher is active app-wide; starting
+    // a new workspace's watch stops any previous one.
+    watchStart: (workspaceId: string): Promise<void> => invoke('files:watchStart', { workspaceId }),
+    watchStop: (workspaceId: string): Promise<void> => invoke('files:watchStop', { workspaceId }),
+    onFilesChanged: (cb: (e: { workspaceId: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.filesChanged, cb)
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>

@@ -485,6 +485,37 @@ function TreePane({
     fetchEntries()
   }, [fetchEntries])
 
+  // Keep a live ref to refetch so the watcher subscription effect below (keyed
+  // only on workspaceId) always calls the CURRENT refetch closure without
+  // needing to re-subscribe every time fetchEntries/refetch is recreated.
+  const refetchRef = useRef(refetch)
+  useLayoutEffect(() => {
+    refetchRef.current = refetch
+  })
+
+  // Working-tree watcher (src/main/filesWatcher.ts): live while this pane is
+  // mounted for `workspaceId` — which, per WorkbenchPanel, is exactly while
+  // the Files tab is the active, non-dormant tab (see the FilesTab module
+  // header). Starts the main-process watch on mount, subscribes to the
+  // debounced files:changed push and refetches on a match, and stops the
+  // watch on unmount / workspaceId change so at most one watcher is ever
+  // active app-wide (main enforces the single-active invariant; this effect
+  // just drives start/stop from the tab's own lifecycle).
+  useEffect(() => {
+    window.api.files
+      .watchStart(workspaceId)
+      .catch((e) => console.error('[FilesTab] watchStart failed:', e))
+    const unsubscribe = window.api.files.onFilesChanged((e) => {
+      if (e.workspaceId === workspaceId) refetchRef.current()
+    })
+    return () => {
+      unsubscribe()
+      window.api.files
+        .watchStop(workspaceId)
+        .catch((e) => console.error('[FilesTab] watchStop failed:', e))
+    }
+  }, [workspaceId])
+
   // Re-fetch when the editor saves (refreshNonce bumped by FilesTab) so the
   // tree's git-status dots reflect the just-saved change. Skips the initial
   // mount (nonce 0) — the fetchEntries effect above already loaded then.
@@ -892,9 +923,10 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   // Bumped when the editor SAVES a file — TreePane watches this nonce and
   // refetches the listing + git status so the tree's dots reflect the just-saved
   // change immediately (the two panes are siblings, so the save→refresh signal
-  // routes through this shared parent). This covers editor saves only; external
-  // changes (Claude/terminal/git editing files) still need the fs.watch watcher
-  // tracked as a follow-up.
+  // routes through this shared parent). External changes (Claude/terminal/git
+  // editing files while the tab is open) are handled separately by TreePane's
+  // own files:changed subscription, which drives the SAME refetch via the
+  // main-process working-tree watcher (src/main/filesWatcher.ts).
   const [refreshNonce, setRefreshNonce] = useState(0)
   const bumpRefresh = useCallback(() => setRefreshNonce((n) => n + 1), [])
 
