@@ -124,6 +124,31 @@ function ignoredStatus(entries: readonly FileEntry[], options: TreeOptionsState)
   })
 }
 
+/** The single `setGitStatus` payload the tree consumes: REAL git status
+ *  (added/modified/deleted/renamed/untracked → colored label + a dot in the
+ *  `git` lane) COMPOSED with the synthetic `ignored` dim entries above (a row
+ *  can carry only ONE `data-item-git-status`, so these are two disjoint sets
+ *  in practice — git status never reports gitignored files, and denylisted
+ *  paths like node_modules aren't tracked).
+ *
+ *  Rules:
+ *   - Only real entries for paths VISIBLE under the current toggles are kept —
+ *     setting status on a hidden path is harmless but pointless.
+ *   - On the rare collision where a path appears in BOTH lists, REAL git status
+ *     WINS (a tracked-but-modified file shows its 'modified' dot at full
+ *     opacity, not the dimmed 'ignored' slot). Dedupe by path, real first. */
+function mergedStatus(
+  entries: readonly FileEntry[],
+  gitStatus: readonly GitStatusEntry[],
+  options: TreeOptionsState
+): GitStatusEntry[] {
+  const visible = new Set(visiblePaths(entries, options.showHidden))
+  const real = gitStatus.filter((g) => visible.has(g.path))
+  const claimed = new Set(real.map((g) => g.path))
+  const dim = ignoredStatus(entries, options).filter((g) => !claimed.has(g.path))
+  return [...real, ...dim]
+}
+
 // Image extensions we recognize for the "image file" placeholder branch. For
 // Stage B images get a calm placeholder (not real rendering) — see the note
 // in the report / imageExtensions block below.
@@ -175,6 +200,11 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
   // The already-fetched, tier-tagged entries for the current workspace. Kept in
   // a ref so a toggle change re-filters WITHOUT re-fetching listDir (§11).
   const entriesRef = useRef<FileEntry[]>([])
+  // The already-fetched REAL git status for the current workspace (added/
+  // modified/deleted/…), cached alongside entriesRef so a toggle flip re-merges
+  // the dots WITHOUT re-fetching. Refreshed together with entries in
+  // fetchEntries (so post-mutation refetches also refresh the dots).
+  const gitStatusRef = useRef<GitStatusEntry[]>([])
 
   // The rename onRename/onError handlers live in a ref so they can be given to
   // useFileTree's `renaming` config once (stable) while still calling the
@@ -209,13 +239,18 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
     onSelectFile(derived)
   }, [derived, onSelectFile])
 
-  // Apply the current toggles to the cached entries: reset the visible paths
-  // and (re)set the `ignored` git-status that drives dimming. Imperative (§7).
+  // Apply the current toggles to the cached entries + git status: reset the
+  // visible paths and set the merged git-status payload (real added/modified/…
+  // dots COMPOSED with the synthetic `ignored` dim entries). Imperative (§7).
   const applyOptions = useCallback(
-    (entries: readonly FileEntry[], opts: TreeOptionsState): void => {
+    (
+      entries: readonly FileEntry[],
+      gitStatus: readonly GitStatusEntry[],
+      opts: TreeOptionsState
+    ): void => {
       const paths = visiblePaths(entries, opts.showHidden)
       model.resetPaths(paths)
-      model.setGitStatus(ignoredStatus(entries, opts))
+      model.setGitStatus(mergedStatus(entries, gitStatus, opts))
       setPathCount(paths.length)
     },
     [model]
@@ -229,24 +264,34 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
     optionsRef.current = options
   })
 
-  // Fetch listDir + re-apply the current toggles. Reused for the initial load,
-  // workspace changes, AND post-mutation re-tag (create/rename/delete) so the
-  // tier/dim map always reflects disk. resetPaths is imperative (§7).
+  // Fetch listDir + git status, then re-apply the current toggles. Reused for
+  // the initial load, workspace changes, AND post-mutation re-tag (create/
+  // rename/delete) so both the tier/dim map AND the real git dots always
+  // reflect disk. Git status is fetched in parallel and self-catches to [] so
+  // a git failure (or a non-repo, which already returns []) never blanks the
+  // tree — it just means no dots. resetPaths/setGitStatus are imperative (§7).
   const fetchEntries = useCallback(() => {
     let cancelled = false
-    window.api.files
-      .listDir(workspaceId)
-      .then((listing) => {
+    Promise.all([
+      window.api.files.listDir(workspaceId),
+      window.api.files.gitStatus(workspaceId).catch((e) => {
+        console.error('[FilesTab] gitStatus failed:', e)
+        return [] as GitStatusEntry[]
+      })
+    ])
+      .then(([listing, gitStatus]) => {
         if (cancelled) return
         entriesRef.current = listing.entries
-        applyOptions(listing.entries, optionsRef.current)
+        gitStatusRef.current = gitStatus
+        applyOptions(listing.entries, gitStatus, optionsRef.current)
         setTruncated(listing.truncated)
       })
       .catch((e) => {
         if (cancelled) return
         console.error('[FilesTab] listDir failed:', e)
         entriesRef.current = []
-        applyOptions([], optionsRef.current)
+        gitStatusRef.current = []
+        applyOptions([], [], optionsRef.current)
         setTruncated(false)
       })
     return () => {
@@ -256,10 +301,10 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
 
   useEffect(() => fetchEntries(), [fetchEntries])
 
-  // Re-filter the ALREADY-FETCHED entries whenever a toggle flips — instant,
-  // no IPC round-trip (§11).
+  // Re-filter the ALREADY-FETCHED entries + git status whenever a toggle flips
+  // — instant, no IPC round-trip (§11).
   useEffect(() => {
-    applyOptions(entriesRef.current, options)
+    applyOptions(entriesRef.current, gitStatusRef.current, options)
   }, [options, applyOptions])
 
   // A post-mutation refetch that also clears any stale error banner.
@@ -321,7 +366,23 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
       // wasting horizontal space in our narrow sidebar. Zero it so the search
       // box and tree rows use the full panel width (row content still has its
       // own small item padding).
-      '--trees-padding-inline-override': '0px'
+      '--trees-padding-inline-override': '0px',
+      // Git-status dot + label colors for the tree's shadow DOM. The bundled
+      // CSS resolves each `--trees-git-<x>-color` through a `-color-override`
+      // seam first (var(--trees-git-<x>-color-override, var(--trees-status-…))),
+      // so setting the override on this host unconditionally wins the chain and
+      // inherits into the shadow root — the same pattern as the padding
+      // override above. GitHub-dark diff palette (main.css has no green/amber/
+      // red file-status tokens — only the darker PR-state --color-gh-* set —
+      // and these are purpose-built to read as dots on our dark surfaces):
+      '--trees-git-added-color-override': '#3fb950', // green — new/added
+      '--trees-git-modified-color-override': '#d29922', // amber — modified
+      '--trees-git-deleted-color-override': '#f85149', // red — deleted
+      '--trees-git-renamed-color-override': '#58a6ff', // blue — renamed
+      '--trees-git-untracked-color-override': '#6e7681', // muted gray — untracked
+      // Ignored drives the DIMMED rows (0.62 opacity via TREE_IGNORED_DIM_CSS);
+      // keep it a low-contrast gray so it stays de-emphasized.
+      '--trees-git-ignored-color-override': '#484f58'
     } as React.CSSProperties
   }, [])
 
