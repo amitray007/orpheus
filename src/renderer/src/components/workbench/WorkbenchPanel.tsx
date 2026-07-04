@@ -25,7 +25,7 @@
 // docs/learnings/native-multisurface-investigation.md §7.6.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
@@ -33,6 +33,11 @@ import { TerminalTab } from './TerminalTab'
 import { WORKBENCH_TABS } from './workbenchTabs'
 
 const TRANSITION = 'width 200ms ease'
+// Duration of the width transition above, plus a small margin — used as a
+// safety-net timeout to clear the `animating` flag in case `transitionend`
+// never fires (e.g. the transition is interrupted, or a state change lands a
+// width identical to the current one so the browser emits no transitionend).
+const TRANSITION_MS = 220
 
 export interface WorkbenchPanelProps {
   /** The owning claude workspace's id — needed to (a) hide/re-mount claude's
@@ -47,6 +52,85 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
   const state = api?.state ?? 'dormant'
   const activeTab = api?.activeTab ?? 'terminal'
   const expanded = state === 'expanded'
+  const isDraggingDivider = api?.isDraggingDivider ?? false
+  const width = api?.width ?? 0
+
+  // ---------------------------------------------------------------------------
+  // SCROLLBACK PRESERVATION — the width-transition "animating" flag (renderer
+  // side of the fix; the addon's own size-unchanged guard is the other half).
+  //
+  // The frame below animates its `width` over TRANSITION (200ms) on the
+  // open<->dormant<->expanded state changes. While that animation runs, the
+  // frame — and therefore the Terminal tab's measured container rect — passes
+  // through INTERMEDIATE widths that are neither 0 nor the final settled
+  // width. If TerminalTab measured + forwarded one of those to the addon as a
+  // workbench:resize, ghostty_surface_set_size would reflow the buffer and
+  // snap the viewport to the bottom, discarding scrollback (addon.mm's own
+  // comment). Worse, on REOPEN the surface's first (re)mount would land at a
+  // mid-animation width != the size it had when hidden, so the addon's
+  // "sizeChanged == false -> skip set_size" guard would NOT fire.
+  //
+  // So: `animating` is true for the duration of a STATE-CHANGE width
+  // transition. TerminalTab consumes it to (a) drop resizes and (b) defer its
+  // (re)mount until the width has SETTLED — at which point the container's
+  // measured width equals the final open width, which (on reopen) equals the
+  // size the surface had when hidden -> addon skips the reflow -> scrollback
+  // survives. Cleared on the frame's width `transitionend`, with a timeout
+  // fallback in case that event never fires.
+  //
+  // DIVIDER DRAG is deliberately excluded: a drag sets `isDraggingDivider`,
+  // which suppresses the CSS transition entirely (see the frame's `style`
+  // below), so a drag produces NO animation — each drag step lands the frame
+  // at its literal width with no transition. We must NOT set `animating`
+  // during a drag, or genuine drag-to-resize would be dropped. The effect
+  // below therefore ignores width changes while `isDraggingDivider` is true.
+  // ---------------------------------------------------------------------------
+  const [animating, setAnimating] = useState(false)
+  // Serializes the width-driving inputs into one comparable key: the state
+  // (dormant/open/expanded -> 0 / width / 100%) plus, in 'open', the docked
+  // width. A change to this key is exactly a change that kicks off the CSS
+  // width transition. Seeded to the INITIAL key (not a sentinel) so the very
+  // first render — which paints the frame at its persisted width with no
+  // transition to wait out — does NOT falsely flag `animating` and defer the
+  // first mount.
+  const widthDriverKey = expanded ? 'expanded' : state === 'dormant' ? 'dormant' : `open:${width}`
+  // Adjust `animating` DURING RENDER when the width-driver key changes — the
+  // React-recommended "storing information from previous renders" pattern
+  // (react.dev/reference/react/useState#storing-information-from-previous-
+  // renders): a setState called during render (not in an effect) so React
+  // re-renders immediately with the corrected value before committing/painting
+  // — avoiding both the cascading-render lint error of an effect-setState and
+  // a stale first paint. `prevWidthDriverKey` is plain state (not a ref) so it
+  // can be read/written during render. A divider drag suppresses the CSS
+  // transition (see the frame's `style` below), so it's not an animation to
+  // wait out — never flag `animating` for a drag, or genuine drag-to-resize
+  // would be dropped downstream.
+  const [prevWidthDriverKey, setPrevWidthDriverKey] = useState(widthDriverKey)
+  if (widthDriverKey !== prevWidthDriverKey) {
+    setPrevWidthDriverKey(widthDriverKey)
+    if (!isDraggingDivider && !animating) setAnimating(true)
+  }
+
+  // Clear `animating` when the frame's width transition finishes, or after a
+  // timeout fallback if `transitionend` never arrives. Keyed on
+  // `widthDriverKey` as well as `animating` so that when a NEW width transition
+  // starts while `animating` is already true (e.g. a rapid open->expand), the
+  // listener + fallback timer are re-registered for the current transition
+  // rather than left tracking the prior one (which could clear `animating`
+  // mid-second-transition and let an intermediate resize slip through).
+  useEffect(() => {
+    if (!animating) return
+    const frame = frameRef.current
+    const onEnd = (e: TransitionEvent): void => {
+      if (e.target === frame && e.propertyName === 'width') setAnimating(false)
+    }
+    frame?.addEventListener('transitionend', onEnd)
+    const timer = window.setTimeout(() => setAnimating(false), TRANSITION_MS)
+    return () => {
+      frame?.removeEventListener('transitionend', onEnd)
+      window.clearTimeout(timer)
+    }
+  }, [animating, widthDriverKey])
 
   // ---------------------------------------------------------------------------
   // HARD CONSTRAINT (U6, folded into U6b): expanding the Workbench must HIDE
@@ -134,7 +218,10 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
   }
 
   if (!api) return null
-  const { width, beginDividerDrag, isDraggingDivider } = api
+  // `width` and `isDraggingDivider` are already derived from the nullable
+  // `api` above (they feed the animating-flag effects, which run before this
+  // early return); only `beginDividerDrag` is needed fresh here.
+  const { beginDividerDrag } = api
 
   // Dormant is fully invisible — no rail, no header — achieved with zero
   // width + hidden overflow on the SAME frame element the open/expanded
@@ -184,7 +271,11 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
             className="flex-1 flex flex-col min-h-0"
           >
             {id === 'terminal' ? (
-              <TerminalTab workspaceId={workspaceId} active={terminalTabActive} />
+              <TerminalTab
+                workspaceId={workspaceId}
+                active={terminalTabActive}
+                animating={animating}
+              />
             ) : (
               id === activeTab && !dormant && <ComingSoon label={label} />
             )}

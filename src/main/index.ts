@@ -399,6 +399,11 @@ function performClose(id: string): WorkspaceRecord | undefined {
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  // Trigger (g): workspace close is one of the only two allowed workbench
+  // terminal destroy points — destroy ALL of this workspace's workbench
+  // surfaces here, authoritatively, regardless of what's currently mounted
+  // in the renderer (see workbenchSurfacesByWorkspace's header comment).
+  destroyWorkbenchSurfacesForWorkspace(id)
   teardownWorkspaceResources(id, ws?.cwd ?? null)
   return closeWorkspace(id, lastTitle)
 }
@@ -428,6 +433,11 @@ async function performArchive(
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  // Trigger (g): workspace archive is one of the only two allowed workbench
+  // terminal destroy points — destroy ALL of this workspace's workbench
+  // surfaces here, authoritatively, regardless of what's currently mounted
+  // in the renderer (see workbenchSurfacesByWorkspace's header comment).
+  destroyWorkbenchSurfacesForWorkspace(id)
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
@@ -896,6 +906,10 @@ registerProjectsIpc({
         // Surface not mounted or already destroyed — ignore.
       }
     }
+    // Trigger (g) also covers project removal — every workspace under the
+    // removed project is provably dead, so its workbench surfaces must be
+    // destroyed here too (see workbenchSurfacesByWorkspace's header comment).
+    destroyWorkbenchSurfacesForWorkspace(workspaceId)
   },
   teardownWorkspaceResources
 })
@@ -1395,6 +1409,67 @@ function parseWorkbenchSlotId(
   return { workspaceId: rest.slice(0, lastColon), terminalId }
 }
 
+// ---------------------------------------------------------------------------
+// Workbench surface registry (U9) — the authoritative record of which
+// workbench terminal surfaces exist per claude workspace.
+//
+// WHY: the renderer's TerminalTab now only ever HIDES surfaces on its own
+// unmount (nav-away, LRU eviction, remount) — never destroys — so hidden
+// surfaces persist addon-side indefinitely, exactly mirroring claude's own
+// terminal. The only two triggers allowed to actually destroy a workbench
+// surface are (f) a terminal's own ✕-close (renderer-initiated, already
+// explicit) and (g) the owning workspace being closed/archived/removed. But
+// by the time (g) fires, the renderer that knew which terminal ids existed
+// may be long unmounted (or was never the active view), so main cannot rely
+// on the renderer to tell it what to destroy. This map is main's own
+// bookkeeping of live `workbench:<workspaceId>:<terminalId>` slots so
+// close/archive/project-remove can deterministically destroy ALL of a
+// workspace's workbench surfaces regardless of render state.
+//
+// Populated on every successful workbench:mount, cleaned on every
+// workbench:destroy (both explicit ✕-close and the bulk destroy below).
+// ---------------------------------------------------------------------------
+
+const workbenchSurfacesByWorkspace = new Map<string, Set<number>>()
+
+function registerWorkbenchSurface(workspaceId: string, terminalId?: number): void {
+  if (terminalId === undefined) return // legacy single-shell form — not terminal-id-addressable
+  let ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids) {
+    ids = new Set()
+    workbenchSurfacesByWorkspace.set(workspaceId, ids)
+  }
+  ids.add(terminalId)
+}
+
+function unregisterWorkbenchSurface(workspaceId: string, terminalId?: number): void {
+  if (terminalId === undefined) return
+  const ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids) return
+  ids.delete(terminalId)
+  if (ids.size === 0) workbenchSurfacesByWorkspace.delete(workspaceId)
+}
+
+/** Destroys every known workbench terminal surface for `workspaceId` — the
+ *  ONE authoritative bulk-destroy path for trigger (g) (workspace
+ *  close/archive/project-remove). Idempotent: safe to call even when the
+ *  workspace never had any workbench terminals, or has already been torn
+ *  down (registry entries are removed as they're destroyed). Never called
+ *  from anywhere else — nav/LRU/remount must never reach this. */
+function destroyWorkbenchSurfacesForWorkspace(workspaceId: string): void {
+  const ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids || ids.size === 0) return
+  const addon = loadTerminalAddon()
+  for (const terminalId of ids) {
+    try {
+      addon.destroy(workbenchSlotId(workspaceId, terminalId))
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  workbenchSurfacesByWorkspace.delete(workspaceId)
+}
+
 handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) => {
   const addon = loadTerminalAddon()
   const win = BrowserWindow.fromWebContents(e.sender)
@@ -1419,6 +1494,7 @@ handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) =>
     command: shell,
     env: {}
   })
+  registerWorkbenchSurface(workspaceId, terminalId)
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1447,6 +1523,7 @@ handle('workbench:hide', (_e, { workspaceId, terminalId }): void => {
 handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
   const addon = loadTerminalAddon()
   addon.destroy(workbenchSlotId(workspaceId, terminalId))
+  unregisterWorkbenchSurface(workspaceId, terminalId)
 })
 
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
@@ -1817,6 +1894,9 @@ if (!app.requestSingleInstanceLock()) {
                     // Surface not mounted or already destroyed — ignore.
                   }
                 }
+                // Trigger (g) — mirrors performClose/performArchive/projects:remove
+                // (see workbenchSurfacesByWorkspace's header comment).
+                destroyWorkbenchSurfacesForWorkspace(workspaceId)
               },
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),
