@@ -33,20 +33,23 @@
 // (Pierre's bundled dark/light). Same theme shape as __pierre_smoke__.tsx.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSelection } from '@pierre/trees/react'
 import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List } from '@phosphor-icons/react'
-import type { FileContents } from '@shared/types'
+import type { FileEntry, FileContents, GitStatusEntry } from '@shared/types'
 import { useUiState } from '../../lib/uiStateStore'
+import {
+  useFilesTabEntry,
+  getFilesTabEntry,
+  setFilesTabEntry,
+  type FilesViewMode
+} from '../../lib/filesTabStore'
 import { CodeEditor } from './editor/CodeEditor'
-
-// Viewer (default) = Pierre's read-only <File>; Editor = the CodeMirror editor.
-// Per-FilesTab component state (not persisted); the auto-save setting is the
-// only persisted piece.
-type FilesViewMode = 'viewer' | 'editor'
+import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
+import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
@@ -65,9 +68,52 @@ const TREE_THEME: TreeThemeInput = {
   }
 }
 
+// Raw CSS injected into the tree's shadow root (§5 escape hatch) so a whole
+// ROW carrying git-status `ignored` dims — the tree's own bundled CSS only
+// dims the ignored row's ICON (opacity .5), not the full row. We tag
+// gitignored/denylisted paths with status:'ignored' (see ignoredStatus →
+// setGitStatus) and this rule dims the row. 0.62 keeps the row text clearly
+// readable while still reading as de-emphasized (0.5 was too faint). When "Dim
+// gitignored" is OFF we simply don't tag those paths, so this rule matches
+// nothing and they render at full opacity — dim is a pure style toggle, never
+// a presence one (§11).
+const TREE_IGNORED_DIM_CSS = `
+  [data-item-git-status="ignored"] {
+    opacity: 0.62;
+  }
+`
+
 // Pierre's bundled dark/light themes for the <File> viewer (§8) — the same
 // pair the smoke test's <PatchDiff> used. `themeType: 'dark'` picks dark.
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
+
+// --- Tier → visible-paths + dim wiring (§11) -------------------------------
+// From the tagged listDir entries + the two popover toggles, compute (a) the
+// flat path list fed to the tree via resetPaths and (b) which of those paths
+// carry the `ignored` git-status that drives the row dim. Pure functions so
+// toggling recomputes instantly from the ALREADY-FETCHED entries (no re-fetch).
+
+/** Paths visible under the current toggles: always `normal` + `gitignored`;
+ *  `denylisted` only when Show hidden is on. */
+function visiblePaths(entries: readonly FileEntry[], showHidden: boolean): string[] {
+  return entries.flatMap((e) => (e.tier === 'denylisted' && !showHidden ? [] : [e.path]))
+}
+
+/** The `ignored` git-status entries that dim rows. Gitignored rows dim only
+ *  when Dim gitignored is on; a revealed denylisted row is ALSO dimmed (it's
+ *  noise the user opted to peek at). A path present in this list matches the
+ *  injected `[data-item-git-status="ignored"]` dim rule. */
+function ignoredStatus(entries: readonly FileEntry[], options: TreeOptionsState): GitStatusEntry[] {
+  return entries.flatMap((e) => {
+    if (e.tier === 'denylisted') {
+      return options.showHidden ? [{ path: e.path, status: 'ignored' as const }] : []
+    }
+    if (e.tier === 'gitignored' && options.dimGitignored) {
+      return [{ path: e.path, status: 'ignored' as const }]
+    }
+    return []
+  })
+}
 
 // Image extensions we recognize for the "image file" placeholder branch. For
 // Stage B images get a calm placeholder (not real rendering) — see the note
@@ -102,20 +148,31 @@ export interface FilesTabProps {
 
 interface TreePaneProps {
   workspaceId: string
+  options: TreeOptionsState
   onSelectFile: (path: string | null) => void
 }
 
-/** Left pane: fetches the dir listing, seeds/updates the Pierre tree, and
+/** Left pane: fetches the tier-tagged dir listing ONCE per workspace, seeds/
+ *  updates the Pierre tree, applies the tree-options toggles client-side, and
  *  reports the single selected file path up to FilesTab. Extracted so the
  *  fetch + imperative resetPaths + selection wiring stays out of FilesTab's
  *  body (cognitive-complexity ceiling). */
-function TreePane({ workspaceId, onSelectFile }: TreePaneProps): React.JSX.Element {
+function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.JSX.Element {
   const [truncated, setTruncated] = useState(false)
   const [pathCount, setPathCount] = useState(0)
+  // The already-fetched, tier-tagged entries for the current workspace. Kept in
+  // a ref so a toggle change re-filters WITHOUT re-fetching listDir (§11).
+  const entriesRef = useRef<FileEntry[]>([])
   // Seeded empty; the first workspace's paths arrive via resetPaths in the
   // fetch effect below (keeps a single imperative code path for both the
-  // initial load and subsequent workspace changes — §7).
-  const { model } = useFileTree({ paths: [], initialExpansion: 'open', search: true })
+  // initial load and subsequent workspace changes — §7). unsafeCSS dims full
+  // rows tagged git-status `ignored` (see TREE_IGNORED_DIM_CSS).
+  const { model } = useFileTree({
+    paths: [],
+    initialExpansion: 'open',
+    search: true,
+    unsafeCSS: TREE_IGNORED_DIM_CSS
+  })
   const selection = useFileTreeSelection(model)
 
   // Report the derived file-to-view up whenever the selection changes.
@@ -124,34 +181,69 @@ function TreePane({ workspaceId, onSelectFile }: TreePaneProps): React.JSX.Eleme
     onSelectFile(derived)
   }, [derived, onSelectFile])
 
-  // Fetch + (re)seed on workspace change. resetPaths is imperative (§7): the
-  // tree does NOT react to a changed `paths` prop, so every update — including
-  // the initial load — flows through model.resetPaths(...).
+  // Apply the current toggles to the cached entries: reset the visible paths
+  // and (re)set the `ignored` git-status that drives dimming. Imperative (§7).
+  const applyOptions = useCallback(
+    (entries: readonly FileEntry[], opts: TreeOptionsState): void => {
+      const paths = visiblePaths(entries, opts.showHidden)
+      model.resetPaths(paths)
+      model.setGitStatus(ignoredStatus(entries, opts))
+      setPathCount(paths.length)
+    },
+    [model]
+  )
+
+  // Latest-options ref (written in a layout effect, per useEscapeKey's pattern)
+  // so the fetch effect can read current options WITHOUT depending on them —
+  // toggling must NOT re-fetch (the toggle effect below re-filters instead).
+  const optionsRef = useRef(options)
+  useLayoutEffect(() => {
+    optionsRef.current = options
+  })
+
+  // Fetch ONCE per workspace change. resetPaths is imperative (§7): the tree
+  // does NOT react to a changed `paths` prop, so every update flows through
+  // applyOptions → model.resetPaths(...).
   useEffect(() => {
     let cancelled = false
     window.api.files
       .listDir(workspaceId)
       .then((listing) => {
         if (cancelled) return
-        model.resetPaths(listing.paths)
+        entriesRef.current = listing.entries
+        applyOptions(listing.entries, optionsRef.current)
         setTruncated(listing.truncated)
-        setPathCount(listing.paths.length)
       })
       .catch((e) => {
         if (cancelled) return
         console.error('[FilesTab] listDir failed:', e)
-        model.resetPaths([])
+        entriesRef.current = []
+        applyOptions([], optionsRef.current)
         setTruncated(false)
-        setPathCount(0)
       })
     return () => {
       cancelled = true
     }
-  }, [workspaceId, model])
+  }, [workspaceId, applyOptions])
+
+  // Re-filter the ALREADY-FETCHED entries whenever a toggle flips — instant,
+  // no IPC round-trip (§11).
+  useEffect(() => {
+    applyOptions(entriesRef.current, options)
+  }, [options, applyOptions])
 
   const hostStyle = useMemo(() => {
     const vars = themeToTreeStyles(TREE_THEME)
-    return { height: '100%', ...vars } as React.CSSProperties
+    return {
+      height: '100%',
+      ...vars,
+      // The tree's default 16px inline inset (--trees-padding-inline-override,
+      // 16px) boxes the search field + indents every row from the panel edges,
+      // wasting horizontal space in our narrow sidebar. Zero it so the search
+      // box and tree rows use the full panel width (row content still has its
+      // own small item padding).
+      '--trees-padding-inline-override': '0px'
+    } as React.CSSProperties
   }, [])
 
   return (
@@ -300,7 +392,12 @@ function ContentBody({
   return (
     <div className="flex flex-col h-full min-h-0">
       <div hidden={editable} className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="flex-1 min-h-0 overflow-auto">
+        {/* The <File> renders in a shadow root and only paints the pierre-dark
+            background behind its actual text extent — empty space below the
+            last line / right of short lines would show the PANEL background as a
+            seam. Paint the scroll container the SAME editor.background so the
+            whole viewer region reads as one dark surface (matches the editor). */}
+        <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
           <PierreFile
             file={{ name: contents.name, contents: contents.contents }}
             options={{ theme: VIEWER_THEME, themeType: 'dark' }}
@@ -386,11 +483,42 @@ function ModeToggle({ mode, onChange, dirty }: ModeToggleProps): React.JSX.Eleme
  * fetched when the tab isn't visible.
  */
 export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
-  const [treeOpen, setTreeOpen] = useState(true)
-  const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  // Viewer is the DEFAULT. Per-FilesTab component state (not persisted).
-  const [mode, setMode] = useState<FilesViewMode>('viewer')
+  // Per-workspace Files-tab state (selectedFile / mode / treeOpen / treeOptions)
+  // is lifted into a module-level keyed store so it SURVIVES this component's
+  // unmount/remount — `MainContent` tears down the whole Workbench subtree when
+  // you navigate to a project/workspaces page, and plain `useState` here would
+  // re-initialize to defaults on return (losing the open file + mode + toggles).
+  // Reads subscribe to just this workspace's entry; every setter writes the
+  // full entry back. See src/renderer/src/lib/filesTabStore.ts.
+  const entry = useFilesTabEntry(workspaceId)
+  const { selectedFile, mode, treeOpen, treeOptions } = entry
+
+  // `dirty` stays component-local: it's transient editor UI (the unsaved dot),
+  // re-reported by the freshly-mounted editor from disk on remount, and never
+  // persisted (see the dirty-buffer note in filesTabStore.ts).
   const [dirty, setDirty] = useState(false)
+
+  const setSelectedFile = useCallback(
+    (next: string | null) => {
+      const cur = getFilesTabEntry(workspaceId)
+      setFilesTabEntry(workspaceId, { ...cur, selectedFile: next })
+    },
+    [workspaceId]
+  )
+  const setMode = useCallback(
+    (next: FilesViewMode) => {
+      const cur = getFilesTabEntry(workspaceId)
+      setFilesTabEntry(workspaceId, { ...cur, mode: next })
+    },
+    [workspaceId]
+  )
+  const setTreeOptions = useCallback(
+    (next: TreeOptionsState) => {
+      const cur = getFilesTabEntry(workspaceId)
+      setFilesTabEntry(workspaceId, { ...cur, treeOptions: next })
+    },
+    [workspaceId]
+  )
 
   // The persisted save-mode setting (default false = manual save). Read from
   // the app-wide ui-state store; the editor uses it to decide manual vs
@@ -398,7 +526,10 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   const uiState = useUiState()
   const autoSave = uiState?.filesAutoSave ?? false
 
-  const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])
+  const toggleTree = useCallback(() => {
+    const cur = getFilesTabEntry(workspaceId)
+    setFilesTabEntry(workspaceId, { ...cur, treeOpen: !cur.treeOpen })
+  }, [workspaceId])
 
   // A newly-selected file starts clean; the freshly-mounted editor reports its
   // own dirty state from there. (An unmounting editor can't report false.)
@@ -420,6 +551,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
         >
           <List size={16} />
         </button>
+        <TreeOptionsPopover options={treeOptions} onChange={setTreeOptions} />
         <div className="ml-auto pr-1">
           <ModeToggle mode={mode} onChange={setMode} dirty={dirty} />
         </div>
@@ -434,7 +566,11 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
           hidden={!treeOpen}
           className="w-60 flex-shrink-0 min-h-0 border-r border-border-default"
         >
-          <TreePane workspaceId={workspaceId} onSelectFile={setSelectedFile} />
+          <TreePane
+            workspaceId={workspaceId}
+            options={treeOptions}
+            onSelectFile={setSelectedFile}
+          />
         </div>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
           <ContentPane

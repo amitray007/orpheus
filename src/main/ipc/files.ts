@@ -22,7 +22,9 @@ import { promisify } from 'node:util'
 import ignore, { type Ignore } from 'ignore'
 import type {
   FileContents,
+  FileEntry,
   FilesListing,
+  FileTier,
   GitFileStatusKind,
   GitStatusEntry,
   WriteFileResult
@@ -47,14 +49,43 @@ const MAX_READ_BYTES = 3 * 1024 * 1024 // 3 MB — larger files are truncated.
 const BINARY_SNIFF_BYTES = 8192 // scan the leading chunk for a NUL byte.
 
 const GITIGNORE = '.gitignore'
-const EMPTY_LISTING: FilesListing = { paths: [], truncated: false }
+const EMPTY_LISTING: FilesListing = { entries: [], truncated: false }
+
+// ── Denylist ─────────────────────────────────────────────────────────────
+// Noisy machine dirs/files that are HIDDEN by default (tier `denylisted`),
+// independent of whether the project's own `.gitignore` happens to mention
+// them — so a repo with a thin/missing `.gitignore` still gets a sane default
+// tree (§11). Two axes: directory basenames (we do NOT recurse into these —
+// see walkDir) and file patterns (exact basenames + a couple of suffix
+// globs). Roughly mirrors this repo's own `.gitignore` noise.
+const DENYLIST_DIRS = new Set(['node_modules', '.git', 'vendor', 'out', 'dist', 'build', 'target'])
+const DENYLIST_FILES = new Set(['.DS_Store', '.eslintcache'])
+const DENYLIST_FILE_SUFFIXES = ['.log', '.tsbuildinfo']
+
+/** True if a file basename is denylisted (exact match or a denylisted suffix). */
+function isDenylistedFile(name: string): boolean {
+  if (DENYLIST_FILES.has(name)) return true
+  return DENYLIST_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix))
+}
+
+/**
+ * Resolve an entry's visibility tier (§11). Denylist wins over gitignore: a
+ * path that's both denylisted AND gitignored is tagged `denylisted` (the
+ * harder cut), so revealing it via "Show hidden" shows it undimmed.
+ */
+function tierFor(name: string, rel: string, isDir: boolean, ig: Ignore): FileTier {
+  if (isDir ? DENYLIST_DIRS.has(name) : isDenylistedFile(name)) return 'denylisted'
+  // `ignore` wants a trailing slash to match dir-only rules correctly.
+  if (ig.ignores(isDir ? `${rel}/` : rel)) return 'gitignored'
+  return 'normal'
+}
 
 // ---------------------------------------------------------------------------
 // files:listDir — flat, gitignore-aware directory walk.
 // ---------------------------------------------------------------------------
 
 type WalkState = {
-  paths: string[]
+  entries: FileEntry[]
   truncated: boolean
 }
 
@@ -64,7 +95,8 @@ type WalkState = {
  * stack the way git resolves them. Matcher rules are always evaluated against
  * root-relative paths, which is why patterns accumulate as text and a single
  * matcher is rebuilt per level (`ignore` matches relative to where it's tested,
- * and we always test the full repo-relative path). `.git` is always excluded.
+ * and we always test the full repo-relative path). `.git` is not special-cased
+ * here — the denylist (see `tierFor`) suppresses it and its whole subtree.
  */
 async function buildIgnore(
   absDir: string,
@@ -77,15 +109,24 @@ async function buildIgnore(
   } catch {
     // No local .gitignore — inherit as-is.
   }
-  const ig = ignore().add('.git').add(text)
+  const ig = ignore().add(text)
   return { ig, text }
 }
 
 /**
- * Recursively walk `absDir`, appending repo-relative POSIX paths to
- * `state.paths`. Directories carry a trailing slash; files do not. `.gitignore`
- * files layer per-directory. Stops (setting `state.truncated`) once the depth
- * or entry cap is hit.
+ * Recursively walk `absDir`, appending tier-tagged repo-relative POSIX paths
+ * to `state.entries`. Every entry is included (no path is dropped) and tagged
+ * with its `tier` (`normal`/`gitignored`/`denylisted`) — the renderer filters
+ * client-side per the tree-options toggles (§11). Directories carry a trailing
+ * slash; files do not. `.gitignore` files layer per-directory.
+ *
+ * PERFORMANCE: a `denylisted` DIRECTORY is included as a single collapsed entry
+ * but we do NOT recurse into it — so `node_modules` (~20k entries) contributes
+ * exactly ONE dimmed folder row, not thousands. (Limitation: expanding such a
+ * folder in the tree shows it empty; we don't lazy-load its children in this
+ * pass.) A `gitignored` directory is still walked — it's real content the user
+ * wants dimmed — unless it's also denylisted. Stops (setting `state.truncated`)
+ * once the depth or entry cap is hit.
  */
 async function walkDir(
   absDir: string,
@@ -110,22 +151,25 @@ async function walkDir(
   }
 
   for (const entry of entries) {
-    if (state.paths.length >= MAX_ENTRIES) {
+    if (state.entries.length >= MAX_ENTRIES) {
       state.truncated = true
       return
     }
     const name = entry.name
     const rel = relDir ? `${relDir}/${name}` : name
     const isDir = entry.isDirectory()
-    // `ignore` wants a trailing slash to match dir-only rules correctly.
-    if (ig.ignores(isDir ? `${rel}/` : rel)) continue
 
     if (isDir) {
-      state.paths.push(`${rel}/`)
-      await walkDir(nodePath.join(absDir, name), rel, depth + 1, text, state)
-      if (state.truncated) return
+      const tier = tierFor(name, rel, true, ig)
+      state.entries.push({ path: `${rel}/`, tier })
+      // Only skip recursion for denylisted dirs (perf) — gitignored dirs are
+      // still walked so their real (dimmed) contents show.
+      if (tier !== 'denylisted') {
+        await walkDir(nodePath.join(absDir, name), rel, depth + 1, text, state)
+        if (state.truncated) return
+      }
     } else if (entry.isFile()) {
-      state.paths.push(rel)
+      state.entries.push({ path: rel, tier: tierFor(name, rel, false, ig) })
     }
     // Symlinks and other special entries are intentionally skipped.
   }
@@ -139,10 +183,10 @@ async function listDir(cwd: string): Promise<FilesListing> {
     return EMPTY_LISTING
   }
 
-  const state: WalkState = { paths: [], truncated: false }
+  const state: WalkState = { entries: [], truncated: false }
   await walkDir(cwd, '', 0, '', state)
-  state.paths.sort((a, b) => a.localeCompare(b))
-  return { paths: state.paths, truncated: state.truncated }
+  state.entries.sort((a, b) => a.path.localeCompare(b.path))
+  return { entries: state.entries, truncated: state.truncated }
 }
 
 // ---------------------------------------------------------------------------

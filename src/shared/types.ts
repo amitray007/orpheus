@@ -1223,15 +1223,42 @@ export type ChipDropdownResult = { kind: 'select'; value: string } | null
 // ---------------------------------------------------------------------------
 
 /**
- * Flat, gitignore-aware directory listing of a workspace's cwd.
+ * Visibility tier for a single tree entry (see docs/learnings/pierre-libraries.md §11).
  *
- * `paths` are repo-relative POSIX paths. Directories carry a trailing slash
- * (e.g. `'src/'`) and files do not (e.g. `'src/index.ts'`) — matching the
- * mixed dir+file input @pierre/trees' README examples pass. `truncated` is
- * true when the walk hit the depth/entry cap and the listing is partial.
+ *  - `'normal'`     — tracked / non-ignored path; full opacity, no annotation.
+ *  - `'gitignored'` — matched by the `.gitignore` chain but NOT denylisted
+ *                     (e.g. `.env`, `.claude/settings.local.json`); shown,
+ *                     dimmed when "Dim gitignored" is on.
+ *  - `'denylisted'` — a hardcoded noisy machine dir/file (`node_modules`,
+ *                     `.git`, `vendor`, `out`/`dist`/`build`/`target`,
+ *                     `.DS_Store`, `*.log`, caches); hidden unless "Show hidden
+ *                     files" is on. The denylist is applied regardless of
+ *                     whether the project's own `.gitignore` mentions it.
+ */
+export type FileTier = 'normal' | 'gitignored' | 'denylisted'
+
+/**
+ * A single flat directory-walk entry, tagged with its visibility tier.
+ * `path` is a repo-relative POSIX path — directories carry a trailing slash
+ * (e.g. `'src/'`), files do not (e.g. `'src/index.ts'`).
+ */
+export type FileEntry = {
+  path: string
+  tier: FileTier
+}
+
+/**
+ * Flat, tier-tagged directory listing of a workspace's cwd.
+ *
+ * Every path is returned tagged with its `tier` (rather than gitignored paths
+ * being dropped at walk time) so the renderer can filter/dim client-side with
+ * NO re-fetch when the tree-options toggles flip — see §11. Directories carry a
+ * trailing slash and files do not, matching the mixed dir+file input
+ * @pierre/trees' README examples pass. `truncated` is true when the walk hit
+ * the depth/entry cap and the listing is partial.
  */
 export type FilesListing = {
-  paths: string[]
+  entries: FileEntry[]
   truncated: boolean
 }
 

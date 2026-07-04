@@ -14,6 +14,7 @@ import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
 import { removeWorkbenchEntry } from '@/lib/workbenchStore'
 import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
+import { removeFilesTabEntry } from '@/lib/filesTabStore'
 import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
@@ -344,6 +345,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -1093,6 +1095,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -1134,6 +1137,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deletePr(workspaceId)
       removeWorkbenchEntry(workspaceId)
       removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -1257,6 +1261,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deletePr(ws.id)
         removeWorkbenchEntry(ws.id)
         removeWorkbenchTerminalsEntry(ws.id)
+        removeFilesTabEntry(ws.id)
         hasFetchedRef.current!.delete(ws.id)
         clearFooterActionsCache(ws.id)
         clearLiveChipCache(ws.id)

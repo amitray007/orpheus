@@ -36,6 +36,12 @@ const colors = pierreDark.colors as Record<string, string>
 // Pull each chrome colour from the pierre-dark map with a sensible fallback so a
 // future theme edit that drops a key can't crash the editor.
 const bg = colors['editor.background'] ?? '#0a0a0a'
+// Re-exported so the read-only VIEWER (Pierre <File>) can paint its wrapper the
+// SAME background. The <File> renders in a shadow root and only paints behind
+// its actual text extent, so empty space below the last line / right of short
+// lines would otherwise show the panel background as a seam. The viewer wrapper
+// fills its region with this so viewer + editor read as one identical surface.
+export const PIERRE_VIEWER_BG = bg
 const fg = colors['editor.foreground'] ?? '#fafafa'
 const cursor = colors['editorCursor.foreground'] ?? '#009fff'
 const selectionBg = colors['editor.selectionBackground'] ?? '#009fff4d'
