@@ -184,6 +184,9 @@ interface TreePaneProps {
   workspaceId: string
   options: TreeOptionsState
   onSelectFile: (path: string | null) => void
+  /** Bumped by FilesTab when the editor saves a file — a change here refetches
+   *  the listing + git status so the tree's dots reflect the save immediately. */
+  refreshNonce: number
 }
 
 /** Left pane: fetches the tier-tagged dir listing ONCE per workspace, seeds/
@@ -191,7 +194,12 @@ interface TreePaneProps {
  *  reports the single selected file path up to FilesTab. Extracted so the
  *  fetch + imperative resetPaths + selection wiring stays out of FilesTab's
  *  body (cognitive-complexity ceiling). */
-function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.JSX.Element {
+function TreePane({
+  workspaceId,
+  options,
+  onSelectFile,
+  refreshNonce
+}: TreePaneProps): React.JSX.Element {
   const [truncated, setTruncated] = useState(false)
   const [pathCount, setPathCount] = useState(0)
   // Transient inline error banner for a failed create/rename/delete (§ "surface
@@ -312,6 +320,18 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
     setError(null)
     fetchEntries()
   }, [fetchEntries])
+
+  // Re-fetch when the editor saves (refreshNonce bumped by FilesTab) so the
+  // tree's git-status dots reflect the just-saved change. Skips the initial
+  // mount (nonce 0) — the fetchEntries effect above already loaded then.
+  const didMountRef = useRef(false)
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true
+      return
+    }
+    fetchEntries()
+  }, [refreshNonce, fetchEntries])
 
   const getKnownPaths = useCallback(() => new Set(entriesRef.current.map((e) => e.path)), [])
 
@@ -450,6 +470,9 @@ interface ContentPaneProps {
   mode: FilesViewMode
   autoSave: boolean
   onDirtyChange: (dirty: boolean) => void
+  /** Fired after the editor saves the file to disk — FilesTab uses this to
+   *  refresh the tree's git-status dots. */
+  onSaved: () => void
 }
 
 /** Right pane: loads the selected file and routes the result to the correct
@@ -462,7 +485,8 @@ function ContentPane({
   path,
   mode,
   autoSave,
-  onDirtyChange
+  onDirtyChange,
+  onSaved
 }: ContentPaneProps): React.JSX.Element {
   // Holds only SETTLED results — the effect never sets state synchronously
   // (no "loading" write on entry). "Loading" is derived: whenever the selected
@@ -503,6 +527,7 @@ function ContentPane({
       mode={mode}
       autoSave={autoSave}
       onDirtyChange={onDirtyChange}
+      onSaved={onSaved}
     />
   )
 }
@@ -514,6 +539,7 @@ interface ContentBodyProps {
   mode: FilesViewMode
   autoSave: boolean
   onDirtyChange: (dirty: boolean) => void
+  onSaved: () => void
 }
 
 /** Pure presentation split out of ContentPane so the routing branches (empty /
@@ -527,7 +553,8 @@ function ContentBody({
   result,
   mode,
   autoSave,
-  onDirtyChange
+  onDirtyChange,
+  onSaved
 }: ContentBodyProps): React.JSX.Element {
   if (path === null) {
     return <ViewerMessage text="Select a file to view" />
@@ -590,6 +617,7 @@ function ContentBody({
             initialContents={contents.contents}
             autoSave={autoSave}
             onDirtyChange={onDirtyChange}
+            onSaved={onSaved}
           />
         </div>
       )}
@@ -669,6 +697,15 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   // persisted (see the dirty-buffer note in filesTabStore.ts).
   const [dirty, setDirty] = useState(false)
 
+  // Bumped when the editor SAVES a file — TreePane watches this nonce and
+  // refetches the listing + git status so the tree's dots reflect the just-saved
+  // change immediately (the two panes are siblings, so the save→refresh signal
+  // routes through this shared parent). This covers editor saves only; external
+  // changes (Claude/terminal/git editing files) still need the fs.watch watcher
+  // tracked as a follow-up.
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const bumpRefresh = useCallback(() => setRefreshNonce((n) => n + 1), [])
+
   const setSelectedFile = useCallback(
     (next: string | null) => {
       const cur = getFilesTabEntry(workspaceId)
@@ -741,6 +778,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             workspaceId={workspaceId}
             options={treeOptions}
             onSelectFile={setSelectedFile}
+            refreshNonce={refreshNonce}
           />
         </div>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
@@ -750,6 +788,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             mode={mode}
             autoSave={autoSave}
             onDirtyChange={setDirty}
+            onSaved={bumpRefresh}
           />
         </div>
       </div>
