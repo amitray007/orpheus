@@ -229,6 +229,28 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Auto-title: reflect whatever program is running in each ad-hoc terminal
+  // (e.g. `claude` sets its own title, just like it does in the main
+  // per-workspace terminal) via the main process's setTitleCallback bridge,
+  // routed here through a dedicated workbench-scoped push channel (see
+  // src/main/index.ts's parseWorkbenchSlotId + workbenchTerminalTitleChanged
+  // — deliberately NOT workspace:titleChanged, which is claude-workspace-
+  // scoped and would collide across terminals). Matched on BOTH workspaceId
+  // and terminalId so an event for another workspace's (or another
+  // terminal's) surface never touches this list. An empty/blank title falls
+  // back to the default "Terminal <id>" label rather than clearing it.
+  useEffect(() => {
+    const unsub = window.api.workbench.onTerminalTitleChanged((e) => {
+      if (e.workspaceId !== workspaceId) return
+      setTerminals((prev) =>
+        prev.map((t) =>
+          t.id === e.terminalId ? { ...t, label: e.title?.trim() || `Terminal ${t.id}` } : t
+        )
+      )
+    })
+    return unsub
+  }, [workspaceId])
+
   const spawnTerminal = useCallback((): void => {
     const id = nextIdRef.current
     nextIdRef.current += 1
@@ -280,7 +302,7 @@ export function TerminalTab({ workspaceId, active }: TerminalTabProps): React.JS
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-      <div className="h-6 flex-shrink-0 border-b border-border-default">
+      <div className="h-8 flex-shrink-0 border-b border-border-default">
         <TerminalStrip
           terminals={stripTerminals}
           activeTerminalId={activeTerminalId}

@@ -175,7 +175,15 @@ const api = {
     hide: (workspaceId: string, terminalId?: number): Promise<void> =>
       invoke('workbench:hide', { workspaceId, terminalId }),
     destroy: (workspaceId: string, terminalId?: number): Promise<void> =>
-      invoke('workbench:destroy', { workspaceId, terminalId })
+      invoke('workbench:destroy', { workspaceId, terminalId }),
+    // Fires whenever a program running inside a Workbench ad-hoc terminal
+    // sets its OSC title (e.g. running `claude` inside one) — mirrors
+    // workspaces.onTitleChanged but scoped per-terminal via {workspaceId,
+    // terminalId} instead of just the claude workspace id, since a single
+    // claude workspace can own many ad-hoc terminals at once.
+    onTerminalTitleChanged: (
+      cb: (e: { workspaceId: string; terminalId: number; title: string | null }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.workbenchTerminalTitleChanged, cb)
   },
   config: {
     openFolder: (): Promise<string | null> => invoke('config:openFolder')

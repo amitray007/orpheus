@@ -441,6 +441,11 @@ export interface RendererPushMap {
   }
   'workspace:dirtyChanged': { workspaceId: string; dirty: boolean }
   'workspace:titleChanged': { workspaceId: string; title: string | null }
+  'workbench:terminalTitleChanged': {
+    workspaceId: string
+    terminalId: number
+    title: string | null
+  }
   'workspace:activityBatch': Array<{
     workspaceId: string
     status: WorkspaceStatus
@@ -483,6 +488,7 @@ export const PUSH_CHANNELS = {
   projectsGithubDataUpdated: 'projects:githubDataUpdated',
   workspaceDirtyChanged: 'workspace:dirtyChanged',
   workspaceTitleChanged: 'workspace:titleChanged',
+  workbenchTerminalTitleChanged: 'workbench:terminalTitleChanged',
   workspaceActivityBatch: 'workspace:activityBatch',
   workspaceNavigateTo: 'workspace:navigateTo',
   workspaceRequestOpen: 'workspace:requestOpen',

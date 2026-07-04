@@ -282,15 +282,36 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
 function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
-  addon.setTitleCallback((workspaceId: string, title: string) => {
+  addon.setTitleCallback((surfaceKey: string, title: string) => {
     // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
     // and a space. Strip leading non-letter/non-digit characters so the
     // sidebar shows clean text and so our own loader UI can layer in front.
     // Stripping also collapses the spinner animation to one stable string
     // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
     // dedupe below uses to avoid hammering the DB on every frame.
-
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
+
+    // The addon's title callback fires for ANY surface — it's keyed by the
+    // opaque native surface id, not scoped to claude workspaces. Workbench
+    // ad-hoc terminals are mounted as `workbench:<workspaceId>:<terminalId>`
+    // (see workbenchSlotId above); route those to their own dedicated push
+    // channel instead of falling through to the claude-workspace title
+    // logic below (getTitle/setTitle/deleteTitle/setWorkspaceLastTitle are
+    // all keyed by plain claude workspaceId and must never see a workbench
+    // slot key). No dedupe here — the workbench side owns its own
+    // last-label comparison in the renderer, and per-terminal title churn is
+    // low-volume compared to claude's own spinner-driven updates.
+    const workbenchParts = parseWorkbenchSlotId(surfaceKey)
+    if (workbenchParts) {
+      getMainWindow()?.webContents.send(PUSH_CHANNELS.workbenchTerminalTitleChanged, {
+        workspaceId: workbenchParts.workspaceId,
+        terminalId: workbenchParts.terminalId,
+        title: cleaned
+      })
+      return
+    }
+
+    const workspaceId = surfaceKey
 
     // Skip if nothing changed — guards the per-frame spinner churn.
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
@@ -1352,6 +1373,26 @@ function workbenchSlotId(claudeWorkspaceId: string, terminalId?: number): string
   return terminalId === undefined
     ? `workbench:${claudeWorkspaceId}`
     : `workbench:${claudeWorkspaceId}:${terminalId}`
+}
+
+/** Inverse of `workbenchSlotId`'s two-arg (per-terminal) form — parses a
+ *  native surface key of the shape `workbench:<claudeWorkspaceId>:<terminalId>`
+ *  back into its parts. Returns null for anything else, including the
+ *  single-shell `workbench:<claudeWorkspaceId>` form (no terminalId to
+ *  recover) and any non-workbench key (plain claude `workspaceId`s never
+ *  contain a `:`, but this guards the parse either way). Used by the title
+ *  callback below to route workbench-keyed title events to their own push
+ *  channel instead of the claude-workspace-scoped `workspace:titleChanged`. */
+function parseWorkbenchSlotId(
+  surfaceKey: string
+): { workspaceId: string; terminalId: number } | null {
+  if (!surfaceKey.startsWith('workbench:')) return null
+  const rest = surfaceKey.slice('workbench:'.length)
+  const lastColon = rest.lastIndexOf(':')
+  if (lastColon === -1) return null
+  const terminalId = Number(rest.slice(lastColon + 1))
+  if (!Number.isInteger(terminalId)) return null
+  return { workspaceId: rest.slice(0, lastColon), terminalId }
 }
 
 handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) => {

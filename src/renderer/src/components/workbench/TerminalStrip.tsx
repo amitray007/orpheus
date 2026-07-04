@@ -100,7 +100,7 @@ export function TerminalStrip({
           type="button"
           aria-label="Scroll terminals left"
           onClick={() => scrollByChevron(scrollerRef.current, -1)}
-          className="flex items-center justify-center w-4 h-5 flex-shrink-0 text-text-muted hover:text-text-primary"
+          className="flex items-center justify-center w-4 h-6 flex-shrink-0 text-text-muted hover:text-text-primary"
         >
           <CaretLeft size={11} />
         </button>
@@ -125,7 +125,7 @@ export function TerminalStrip({
           type="button"
           aria-label="Scroll terminals right"
           onClick={() => scrollByChevron(scrollerRef.current, 1)}
-          className="flex items-center justify-center w-4 h-5 flex-shrink-0 text-text-muted hover:text-text-primary"
+          className="flex items-center justify-center w-4 h-6 flex-shrink-0 text-text-muted hover:text-text-primary"
         >
           <CaretRight size={11} />
         </button>
@@ -135,7 +135,7 @@ export function TerminalStrip({
         aria-label="New terminal"
         title="New terminal"
         onClick={onSpawn}
-        className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+        className="flex items-center justify-center w-6 h-6 flex-shrink-0 rounded text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
         <Plus size={12} />
       </button>
@@ -182,7 +182,7 @@ function TerminalStripTab({
       aria-selected={isActive}
       title={terminal.label}
       className={[
-        'group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded text-xs font-medium whitespace-nowrap flex-shrink-0',
+        'group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 min-h-[26px] rounded text-xs font-medium whitespace-nowrap flex-shrink-0',
         'transition-colors duration-150',
         isActive
           ? 'bg-accent/15 text-text-primary'
@@ -205,7 +205,7 @@ function TerminalStripTab({
         tabIndex={0}
         onClick={handleCloseClick}
         className={[
-          'flex items-center justify-center w-3.5 h-3.5 rounded-sm flex-shrink-0 cursor-pointer',
+          'flex items-center justify-center w-4 h-4 rounded-sm flex-shrink-0 cursor-pointer',
           'hover:bg-surface-overlay hover:text-text-primary',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
           isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
