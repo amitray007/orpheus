@@ -19,11 +19,13 @@ import * as childProcess from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
 import { promisify } from 'node:util'
+import { shell } from 'electron'
 import ignore, { type Ignore } from 'ignore'
 import type {
   FileContents,
   FileEntry,
   FilesListing,
+  FilesMutationResult,
   FileTier,
   GitFileStatusKind,
   GitStatusEntry,
@@ -345,6 +347,103 @@ async function writeFileContents(
 }
 
 // ---------------------------------------------------------------------------
+// files:createFile / files:createDir / files:rename / files:delete — tree
+// mutations (Phase 4). Every one reuses the same `resolveInside` traversal
+// guard as the read/write paths and is total (a FilesMutationResult, never a
+// throw). Deletes go to the OS Trash (recoverable), not a hard fs remove.
+// ---------------------------------------------------------------------------
+
+/** Map a Node fs error code to a FilesMutationResult error. `ENOENT` (missing
+ *  parent/target) is `missing`; anything else collapses to `denied`. */
+function fsErrorToResult(err: unknown): FilesMutationResult {
+  const code = (err as { code?: string } | null)?.code
+  if (code === 'ENOENT') return { ok: false, error: 'missing' }
+  return { ok: false, error: 'denied' }
+}
+
+/** Create an EMPTY file at `relPath` inside `cwd`. Fails with `exists` if the
+ *  path is already present (open flag `wx`), `traversal` on an escape, and
+ *  `missing`/`denied` for a missing parent or an fs failure. */
+async function createFile(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    // 'wx' — create+write but FAIL if it already exists (no silent overwrite).
+    await fs.writeFile(abs, '', { encoding: 'utf8', flag: 'wx' })
+    return { ok: true }
+  } catch (err) {
+    if ((err as { code?: string }).code === 'EEXIST') return { ok: false, error: 'exists' }
+    return fsErrorToResult(err)
+  }
+}
+
+/** Create a directory at `relPath` inside `cwd`. mkdir with `recursive: false`
+ *  so an existing path (dir or file) surfaces `exists` rather than silently
+ *  succeeding; `traversal` on an escape, `missing`/`denied` otherwise. */
+async function createDir(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    // recursive: false — a colliding path (existing dir OR file) throws EEXIST
+    // so the user gets a clear "exists" instead of a no-op.
+    await fs.mkdir(abs, { recursive: false })
+    return { ok: true }
+  } catch (err) {
+    if ((err as { code?: string }).code === 'EEXIST') return { ok: false, error: 'exists' }
+    return fsErrorToResult(err)
+  }
+}
+
+/** Rename/move `from` → `to`, both inside `cwd`. BOTH paths are guarded via
+ *  resolveInside (a rename target could itself be crafted to escape). Fails
+ *  with `exists` if `to` already exists (checked first — fs.rename would
+ *  otherwise overwrite it), `missing` if `from` is gone, `traversal`/`denied`
+ *  otherwise. */
+async function renamePath(cwd: string, from: string, to: string): Promise<FilesMutationResult> {
+  const absFrom = resolveInside(cwd, from)
+  const absTo = resolveInside(cwd, to)
+  if (!absFrom || !absTo) return { ok: false, error: 'traversal' }
+  try {
+    // Guard against fs.rename's silent-overwrite: refuse if the destination is
+    // already taken. (A rename to the SAME path is a no-op no-collision case.)
+    if (absTo !== absFrom) {
+      try {
+        await fs.access(absTo)
+        return { ok: false, error: 'exists' }
+      } catch {
+        // Destination free — proceed.
+      }
+    }
+    await fs.rename(absFrom, absTo)
+    return { ok: true }
+  } catch (err) {
+    return fsErrorToResult(err)
+  }
+}
+
+/** Move `relPath` (file OR directory) inside `cwd` to the OS Trash — recoverable
+ *  from Finder, never a hard delete (mirrors sessions.ts deleteSession). Fails
+ *  with `missing` if the path is gone, `traversal` on an escape, `denied`
+ *  otherwise. */
+async function deletePath(cwd: string, relPath: string): Promise<FilesMutationResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    await fs.access(abs) // surface a clear `missing` before attempting the trash.
+  } catch {
+    return { ok: false, error: 'missing' }
+  }
+  try {
+    // trashItem (vs fs.rm) so the user can still recover from Finder Trash if
+    // they hit delete by accident. Works for files AND directories on macOS.
+    await shell.trashItem(abs)
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Registration.
 // ---------------------------------------------------------------------------
 
@@ -370,5 +469,36 @@ export function registerFilesIpc(deps: FilesIpcDeps): void {
     const cwd = getWorkspaceCwd(workspaceId)
     if (!cwd) return Promise.resolve({ ok: false, error: 'no-workspace' } as WriteFileResult)
     return writeFileContents(cwd, path, contents)
+  })
+
+  // ── Tree mutations (Phase 4) ──────────────────────────────────────────────
+  const NO_WORKSPACE: FilesMutationResult = { ok: false, error: 'no-workspace' }
+
+  handle('files:createFile', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? createFile(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:createDir', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? createDir(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:rename', (_e, { workspaceId, from, to }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? renamePath(cwd, from, to) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  handle('files:delete', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? deletePath(cwd, path) : Promise.resolve(NO_WORKSPACE)
+  })
+
+  // Resolve a workspace-relative path to its absolute form for the shell:*
+  // IPCs. Returns null on a traversal escape / missing workspace (so the caller
+  // never passes an out-of-tree path to assertAbsolutePath).
+  handle('files:absolutePath', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return Promise.resolve(cwd ? resolveInside(cwd, path) : null)
   })
 }

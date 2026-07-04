@@ -1312,3 +1312,19 @@ export type FileContents = {
 export type WriteFileResult =
   | { ok: true }
   | { ok: false; error: 'traversal' | 'denied' | 'no-workspace' }
+
+/**
+ * Result of the Files-tab tree mutation IPCs (`files:createFile`,
+ * `files:createDir`, `files:rename`, `files:delete` — Phase 4). One shared
+ * shape across all four so the renderer can surface a single error union:
+ *   - `exists`      — the target path (or rename destination) already exists
+ *   - `traversal`   — a path escaped the workspace cwd (`../`, absolute, root)
+ *   - `denied`      — an underlying fs/trash operation failed
+ *   - `missing`     — the source path (rename `from`, delete target) is gone
+ *   - `no-workspace`— the workspace cwd could not be resolved from its id
+ * Every mutating handler is total — it returns one of these results rather than
+ * throwing across the IPC boundary.
+ */
+export type FilesMutationResult =
+  | { ok: true }
+  | { ok: false; error: 'exists' | 'traversal' | 'denied' | 'missing' | 'no-workspace' }

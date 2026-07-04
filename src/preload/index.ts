@@ -31,6 +31,7 @@ import type {
   GitStatusEntry,
   FileContents,
   WriteFileResult,
+  FilesMutationResult,
   GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
@@ -435,7 +436,18 @@ const api = {
     readFile: (workspaceId: string, path: string): Promise<FileContents> =>
       invoke('files:readFile', { workspaceId, path }),
     writeFile: (workspaceId: string, path: string, contents: string): Promise<WriteFileResult> =>
-      invoke('files:writeFile', { workspaceId, path, contents })
+      invoke('files:writeFile', { workspaceId, path, contents }),
+    // Tree mutations (Phase 4). Each returns a typed FilesMutationResult.
+    createFile: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createFile', { workspaceId, path }),
+    createDir: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createDir', { workspaceId, path }),
+    rename: (workspaceId: string, from: string, to: string): Promise<FilesMutationResult> =>
+      invoke('files:rename', { workspaceId, from, to }),
+    delete: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:delete', { workspaceId, path }),
+    absolutePath: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('files:absolutePath', { workspaceId, path })
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>

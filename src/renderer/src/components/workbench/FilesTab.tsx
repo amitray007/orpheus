@@ -36,7 +36,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSelection } from '@pierre/trees/react'
-import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
+import {
+  themeToTreeStyles,
+  type TreeThemeInput,
+  type ContextMenuItem as FileTreeContextMenuItem,
+  type ContextMenuOpenContext as FileTreeContextMenuOpenContext,
+  type FileTreeRenameEvent
+} from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List } from '@phosphor-icons/react'
 import type { FileEntry, FileContents, GitStatusEntry } from '@shared/types'
@@ -50,6 +56,9 @@ import {
 import { CodeEditor } from './editor/CodeEditor'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
+import { FilesTreeContextMenu } from './FilesTreeContextMenu'
+import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
+import { ConfirmModal } from '../ConfirmModal'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
@@ -160,18 +169,37 @@ interface TreePaneProps {
 function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.JSX.Element {
   const [truncated, setTruncated] = useState(false)
   const [pathCount, setPathCount] = useState(0)
+  // Transient inline error banner for a failed create/rename/delete (§ "surface
+  // errors, don't swallow"). Cleared on the next successful action / re-fetch.
+  const [error, setError] = useState<string | null>(null)
   // The already-fetched, tier-tagged entries for the current workspace. Kept in
   // a ref so a toggle change re-filters WITHOUT re-fetching listDir (§11).
   const entriesRef = useRef<FileEntry[]>([])
+
+  // The rename onRename/onError handlers live in a ref so they can be given to
+  // useFileTree's `renaming` config once (stable) while still calling the
+  // latest mutations hook closures (which depend on model/workspaceId).
+  const renameHandlersRef = useRef<{
+    onRename: (e: FileTreeRenameEvent) => void
+    onError: (m: string) => void
+  }>({ onRename: () => {}, onError: () => {} })
+
   // Seeded empty; the first workspace's paths arrive via resetPaths in the
   // fetch effect below (keeps a single imperative code path for both the
   // initial load and subsequent workspace changes — §7). unsafeCSS dims full
-  // rows tagged git-status `ignored` (see TREE_IGNORED_DIM_CSS).
+  // rows tagged git-status `ignored` (see TREE_IGNORED_DIM_CSS). `renaming`
+  // enables the built-in inline rename input (§10.2); `composition.contextMenu`
+  // enables the right-click trigger for renderContextMenu (§10.3).
   const { model } = useFileTree({
     paths: [],
     initialExpansion: 'open',
     search: true,
-    unsafeCSS: TREE_IGNORED_DIM_CSS
+    unsafeCSS: TREE_IGNORED_DIM_CSS,
+    composition: { contextMenu: { enabled: true } },
+    renaming: {
+      onRename: (e: FileTreeRenameEvent) => renameHandlersRef.current.onRename(e),
+      onError: (m: string) => renameHandlersRef.current.onError(m)
+    }
   })
   const selection = useFileTreeSelection(model)
 
@@ -201,10 +229,10 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
     optionsRef.current = options
   })
 
-  // Fetch ONCE per workspace change. resetPaths is imperative (§7): the tree
-  // does NOT react to a changed `paths` prop, so every update flows through
-  // applyOptions → model.resetPaths(...).
-  useEffect(() => {
+  // Fetch listDir + re-apply the current toggles. Reused for the initial load,
+  // workspace changes, AND post-mutation re-tag (create/rename/delete) so the
+  // tier/dim map always reflects disk. resetPaths is imperative (§7).
+  const fetchEntries = useCallback(() => {
     let cancelled = false
     window.api.files
       .listDir(workspaceId)
@@ -226,11 +254,62 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
     }
   }, [workspaceId, applyOptions])
 
+  useEffect(() => fetchEntries(), [fetchEntries])
+
   // Re-filter the ALREADY-FETCHED entries whenever a toggle flips — instant,
   // no IPC round-trip (§11).
   useEffect(() => {
     applyOptions(entriesRef.current, options)
   }, [options, applyOptions])
+
+  // A post-mutation refetch that also clears any stale error banner.
+  const refetch = useCallback(() => {
+    setError(null)
+    fetchEntries()
+  }, [fetchEntries])
+
+  const getKnownPaths = useCallback(() => new Set(entriesRef.current.map((e) => e.path)), [])
+
+  // Directory-delete confirm: `del` (in the mutations hook) awaits
+  // confirmDirDelete(item), which opens a ConfirmModal and resolves the pending
+  // promise from the modal's confirm/cancel handlers.
+  const [pendingDelete, setPendingDelete] = useState<{
+    item: FileTreeContextMenuItem
+    resolve: (ok: boolean) => void
+  } | null>(null)
+  const confirmDirDelete = useCallback(
+    (item: FileTreeContextMenuItem): Promise<boolean> =>
+      new Promise<boolean>((resolve) => setPendingDelete({ item, resolve })),
+    []
+  )
+
+  const mutations = useFilesTreeMutations({
+    workspaceId,
+    model: model as unknown as TreeModel,
+    getKnownPaths,
+    refetch,
+    onError: setError,
+    confirmDirDelete
+  })
+
+  // Keep the renaming handlers ref pointed at the latest hook closures.
+  useLayoutEffect(() => {
+    renameHandlersRef.current = {
+      onRename: mutations.handleRename,
+      onError: mutations.handleRenamingError
+    }
+  }, [mutations])
+
+  const renderContextMenu = useCallback(
+    (item: FileTreeContextMenuItem, ctx: FileTreeContextMenuOpenContext): React.ReactNode => (
+      <FilesTreeContextMenu
+        item={item}
+        context={ctx}
+        actions={mutations.buildActions(item, () => ctx.close())}
+      />
+    ),
+    [mutations]
+  )
 
   const hostStyle = useMemo(() => {
     const vars = themeToTreeStyles(TREE_THEME)
@@ -248,13 +327,44 @@ function TreePane({ workspaceId, options, onSelectFile }: TreePaneProps): React.
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {error && (
+        <button
+          type="button"
+          onClick={() => setError(null)}
+          title="Dismiss"
+          className="flex-shrink-0 w-full text-left px-2 py-1 text-[11px] text-red-300 bg-red-500/10 border-b border-red-500/20 hover:bg-red-500/15"
+        >
+          {error}
+        </button>
+      )}
       <div style={hostStyle} className="flex-1 min-h-0">
-        <FileTree model={model} style={{ height: '100%' }} />
+        <FileTree model={model} renderContextMenu={renderContextMenu} style={{ height: '100%' }} />
       </div>
       {truncated && (
         <div className="flex-shrink-0 px-2 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
           showing first {pathCount} — tree truncated
         </div>
+      )}
+      {pendingDelete && (
+        <ConfirmModal
+          title="Move folder to Trash?"
+          body={
+            <>
+              <span className="font-mono text-text-primary">{pendingDelete.item.name}</span> and all
+              of its contents will be moved to the Trash. You can recover it from Finder.
+            </>
+          }
+          confirmLabel="Move to Trash"
+          destructive
+          onConfirm={() => {
+            pendingDelete.resolve(true)
+            setPendingDelete(null)
+          }}
+          onCancel={() => {
+            pendingDelete.resolve(false)
+            setPendingDelete(null)
+          }}
+        />
       )}
     </div>
   )

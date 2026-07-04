@@ -85,7 +85,8 @@ import type {
   FilesListing,
   GitStatusEntry,
   FileContents,
-  WriteFileResult
+  WriteFileResult,
+  FilesMutationResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -305,6 +306,26 @@ export interface InvokeChannelMap {
   'files:writeFile': {
     req: [{ workspaceId: string; path: string; contents: string }]
     res: WriteFileResult
+  }
+  // Workbench Files tab — tree mutations (Phase 4). Each guards its relative
+  // path(s) through resolveInside (rejecting `../` escapes) and is total (a
+  // FilesMutationResult, never a throw). See docs/learnings/pierre-libraries.md
+  // §10.5. `files:delete` moves the target to the OS Trash (recoverable).
+  'files:createFile': { req: [{ workspaceId: string; path: string }]; res: FilesMutationResult }
+  'files:createDir': { req: [{ workspaceId: string; path: string }]; res: FilesMutationResult }
+  'files:rename': {
+    req: [{ workspaceId: string; from: string; to: string }]
+    res: FilesMutationResult
+  }
+  'files:delete': { req: [{ workspaceId: string; path: string }]; res: FilesMutationResult }
+  // Resolve a workspace-relative path to its ABSOLUTE form (guarded via
+  // resolveInside), so the renderer can hand an absolute path to the existing
+  // shell:* IPCs (revealInFinder / openInEditor / copyToClipboard), which
+  // assertAbsolutePath server-side. Returns null on a traversal escape / no
+  // workspace.
+  'files:absolutePath': {
+    req: [{ workspaceId: string; path: string }]
+    res: string | null
   }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
