@@ -24,7 +24,8 @@ import type {
   FileContents,
   FilesListing,
   GitFileStatusKind,
-  GitStatusEntry
+  GitStatusEntry,
+  WriteFileResult
 } from '../../shared/types'
 import { handle } from './handle'
 
@@ -274,6 +275,32 @@ async function readFileContents(cwd: string, relPath: string): Promise<FileConte
 }
 
 // ---------------------------------------------------------------------------
+// files:writeFile — path-guarded UTF-8 write (Files-tab editor save).
+// ---------------------------------------------------------------------------
+
+/**
+ * Write `contents` as UTF-8 to `relPath` inside `cwd`, reusing the same
+ * `resolveInside` traversal guard as the read path — a `../` escape, an
+ * absolute path, or the cwd root itself is refused with `{ ok: false,
+ * error: 'traversal' }` and no write happens. All fs failures collapse to
+ * `{ ok: false, error: 'denied' }`; the handler never throws.
+ */
+async function writeFileContents(
+  cwd: string,
+  relPath: string,
+  contents: string
+): Promise<WriteFileResult> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'traversal' }
+  try {
+    await fs.writeFile(abs, contents, 'utf8')
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Registration.
 // ---------------------------------------------------------------------------
 
@@ -293,5 +320,11 @@ export function registerFilesIpc(deps: FilesIpcDeps): void {
   handle('files:readFile', (_e, { workspaceId, path }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return cwd ? readFileContents(cwd, path) : Promise.resolve(EMPTY_CONTENTS)
+  })
+
+  handle('files:writeFile', (_e, { workspaceId, path, contents }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    if (!cwd) return Promise.resolve({ ok: false, error: 'no-workspace' } as WriteFileResult)
+    return writeFileContents(cwd, path, contents)
   })
 }

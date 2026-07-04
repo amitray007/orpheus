@@ -30,6 +30,7 @@ import type {
   FilesListing,
   GitStatusEntry,
   FileContents,
+  WriteFileResult,
   GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
@@ -432,7 +433,9 @@ const api = {
     gitStatus: (workspaceId: string): Promise<GitStatusEntry[]> =>
       invoke('files:gitStatus', { workspaceId }),
     readFile: (workspaceId: string, path: string): Promise<FileContents> =>
-      invoke('files:readFile', { workspaceId, path })
+      invoke('files:readFile', { workspaceId, path }),
+    writeFile: (workspaceId: string, path: string, contents: string): Promise<WriteFileResult> =>
+      invoke('files:writeFile', { workspaceId, path, contents })
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>

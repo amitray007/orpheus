@@ -84,7 +84,8 @@ import type {
   DetectedApp,
   FilesListing,
   GitStatusEntry,
-  FileContents
+  FileContents,
+  WriteFileResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -300,6 +301,10 @@ export interface InvokeChannelMap {
   'files:readFile': {
     req: [{ workspaceId: string; path: string }]
     res: FileContents
+  }
+  'files:writeFile': {
+    req: [{ workspaceId: string; path: string; contents: string }]
+    res: WriteFileResult
   }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }

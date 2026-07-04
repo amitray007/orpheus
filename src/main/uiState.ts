@@ -83,6 +83,8 @@ type AppUiStateRow = {
   mute_status_notifications: number | null
   // Workspace footer visibility (v45)
   show_workspace_footer: number | null
+  // Files-tab editor save mode (v62)
+  files_auto_save: number | null
   // Diagnostics capture toggles (v56)
   diag_error: number | null
   diag_lifecycle: number | null
@@ -159,6 +161,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
+    // Files-tab editor save mode (v62) — default false (manual save)
+    filesAutoSave: (row.files_auto_save ?? 0) === 1,
     // Diagnostics capture toggles (v56)
     diagError: row.diag_error == null ? true : row.diag_error === 1,
     diagLifecycle: row.diag_lifecycle === 1,
@@ -251,6 +255,11 @@ function validatePatch(patch: AppUiStatePatch): void {
       throw new Error('uiState: showWorkspaceFooter must be a boolean')
     }
   }
+  if ('filesAutoSave' in patch && patch.filesAutoSave !== undefined) {
+    if (typeof patch.filesAutoSave !== 'boolean') {
+      throw new Error('uiState: filesAutoSave must be a boolean')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +345,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     muteStatusNotifications: 'mute_status_notifications',
     // Workspace footer visibility (v45)
     showWorkspaceFooter: 'show_workspace_footer',
+    // Files-tab editor save mode (v62)
+    filesAutoSave: 'files_auto_save',
     // Diagnostics capture toggles (v56)
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',

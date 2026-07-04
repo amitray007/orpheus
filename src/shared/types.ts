@@ -267,6 +267,9 @@ export type AppUiState = {
   muteStatusNotifications: boolean
   // Workspace footer visibility (v45)
   showWorkspaceFooter: boolean
+  // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);
+  // true = debounced auto-save on idle. Default false (manual).
+  filesAutoSave: boolean
   updatedAt: number
 }
 
@@ -1270,3 +1273,15 @@ export type FileContents = {
   /** True when null bytes were detected; `contents` is empty. */
   binary: boolean
 }
+
+/**
+ * Result of `files:writeFile` (Files-tab editor save). `ok` is true when the
+ * UTF-8 write to the resolved-inside path succeeded; on failure `error` carries
+ * a short reason (`traversal` = the path escaped the workspace cwd, `denied` =
+ * fs write failed, `no-workspace` = workspace cwd could not be resolved). The
+ * handler never throws — every failure is a typed result the renderer can
+ * surface without an unhandled rejection.
+ */
+export type WriteFileResult =
+  | { ok: true }
+  | { ok: false; error: 'traversal' | 'denied' | 'no-workspace' }

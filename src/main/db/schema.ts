@@ -484,6 +484,8 @@ export const schema: SchemaDef = {
       notify_suppress_when_focused: { type: 'BOOLEAN', notNull: true, default: '0' },
       // Hooks integration (v60) — default 0 (off); opt-in to socket server + settings.json hooks
       hooks_integration_enabled: { type: 'INTEGER', notNull: true, default: '0' },
+      // Files-tab editor save mode (v62) — default 0 (manual save via Cmd/Ctrl+S).
+      files_auto_save: bool('files_auto_save', '0'),
       // ALTER-only columns folded into desired state (drift vs the fresh-install
       // constant per _db-surface.md's "Columns added ONLY via later ALTER" list)
       notify_attention: { type: 'BOOLEAN', notNull: true, default: '1' },

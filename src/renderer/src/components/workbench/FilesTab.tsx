@@ -40,6 +40,13 @@ import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List } from '@phosphor-icons/react'
 import type { FileContents } from '@shared/types'
+import { useUiState } from '../../lib/uiStateStore'
+import { CodeEditor } from './editor/CodeEditor'
+
+// Viewer (default) = Pierre's read-only <File>; Editor = the CodeMirror editor.
+// Per-FilesTab component state (not persisted); the auto-save setting is the
+// only persisted piece.
+type FilesViewMode = 'viewer' | 'editor'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
@@ -174,15 +181,26 @@ interface LoadedFile {
   error: boolean
 }
 
-interface ViewerPaneProps {
+interface ContentPaneProps {
   workspaceId: string
   path: string | null
+  mode: FilesViewMode
+  autoSave: boolean
+  onDirtyChange: (dirty: boolean) => void
 }
 
 /** Right pane: loads the selected file and routes the result to the correct
- *  presentation (text via <File>, binary/image placeholder, empty state).
- *  Extracted alongside TreePane to keep FilesTab's own complexity low. */
-function ViewerPane({ workspaceId, path }: ViewerPaneProps): React.JSX.Element {
+ *  presentation. In `viewer` mode, text renders via Pierre's read-only <File>;
+ *  in `editor` mode, editable text renders via <CodeEditor>. Binary/image/empty/
+ *  error states are identical in both modes (never editable). Extracted
+ *  alongside TreePane to keep FilesTab's own complexity low. */
+function ContentPane({
+  workspaceId,
+  path,
+  mode,
+  autoSave,
+  onDirtyChange
+}: ContentPaneProps): React.JSX.Element {
   // Holds only SETTLED results — the effect never sets state synchronously
   // (no "loading" write on entry). "Loading" is derived: whenever the selected
   // `path` differs from `result.path`, the fetch for `path` hasn't landed yet.
@@ -214,19 +232,40 @@ function ViewerPane({ workspaceId, path }: ViewerPaneProps): React.JSX.Element {
   // The result is only current when it matches the selected path; otherwise
   // we're still loading the newly-selected file.
   const current = result && result.path === path ? result : null
-  return <ViewerBody path={path} result={current} />
+  return (
+    <ContentBody
+      workspaceId={workspaceId}
+      path={path}
+      result={current}
+      mode={mode}
+      autoSave={autoSave}
+      onDirtyChange={onDirtyChange}
+    />
+  )
 }
 
-interface ViewerBodyProps {
+interface ContentBodyProps {
+  workspaceId: string
   path: string | null
   result: LoadedFile | null
+  mode: FilesViewMode
+  autoSave: boolean
+  onDirtyChange: (dirty: boolean) => void
 }
 
-/** Pure presentation split out of ViewerPane so the routing branches (empty /
- *  loading / error / image / binary / truncated+text) don't push ViewerPane's
- *  effect logic over the complexity ceiling. `result === null` while a path is
- *  selected means the fetch for it hasn't settled yet → loading. */
-function ViewerBody({ path, result }: ViewerBodyProps): React.JSX.Element {
+/** Pure presentation split out of ContentPane so the routing branches (empty /
+ *  loading / error / image / binary / text) don't push ContentPane's effect
+ *  logic over the complexity ceiling. `result === null` while a path is selected
+ *  means the fetch for it hasn't settled yet → loading. Text files route to the
+ *  editor or the viewer per `mode`; every non-text state is mode-independent. */
+function ContentBody({
+  workspaceId,
+  path,
+  result,
+  mode,
+  autoSave,
+  onDirtyChange
+}: ContentBodyProps): React.JSX.Element {
   if (path === null) {
     return <ViewerMessage text="Select a file to view" />
   }
@@ -243,17 +282,47 @@ function ViewerBody({ path, result }: ViewerBodyProps): React.JSX.Element {
   if (contents.binary) {
     return <ViewerMessage text={`Binary file (${formatKB(contents.size)}) — no preview`} />
   }
+  // Truncated files are read-only-safe in the viewer, but editing a partial
+  // buffer then saving would DESTROY the un-read tail — so editing is refused
+  // for them (only the viewer branch runs below).
+  const editable = mode === 'editor' && !contents.truncated
+  if (mode === 'editor' && contents.truncated) {
+    return (
+      <ViewerMessage text={`File too large to edit (${formatKB(contents.size)}) — view only`} />
+    )
+  }
+
+  // Editable text mounts BOTH the editor and the viewer, toggling visibility
+  // with `hidden` rather than conditionally rendering, so switching Editor →
+  // Viewer keeps the editor's unsaved buffer + dirty state in memory (no
+  // silent data loss). The editor keys on (workspaceId, path) so a genuinely
+  // new file resets its baseline.
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex-1 min-h-0 overflow-auto">
-        <PierreFile
-          file={{ name: contents.name, contents: contents.contents }}
-          options={{ theme: VIEWER_THEME, themeType: 'dark' }}
-        />
+      <div hidden={editable} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-auto">
+          <PierreFile
+            file={{ name: contents.name, contents: contents.contents }}
+            options={{ theme: VIEWER_THEME, themeType: 'dark' }}
+          />
+        </div>
+        {contents.truncated && (
+          <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
+            file truncated at 3MB
+          </div>
+        )}
       </div>
-      {contents.truncated && (
-        <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
-          file truncated at 3MB
+      {!contents.truncated && (
+        <div hidden={!editable} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <CodeEditor
+            key={`${workspaceId}:${path}`}
+            workspaceId={workspaceId}
+            path={path}
+            name={contents.name}
+            initialContents={contents.contents}
+            autoSave={autoSave}
+            onDirtyChange={onDirtyChange}
+          />
         </div>
       )}
     </div>
@@ -264,6 +333,46 @@ function ViewerMessage({ text }: { text: string }): React.JSX.Element {
   return (
     <div className="flex-1 flex items-center justify-center min-h-0">
       <span className="text-xs text-text-muted select-none">{text}</span>
+    </div>
+  )
+}
+
+// --- Mode toggle -----------------------------------------------------------
+
+interface ModeToggleProps {
+  mode: FilesViewMode
+  onChange: (mode: FilesViewMode) => void
+  /** A dirty dot on the Editor segment when there are unsaved edits. */
+  dirty: boolean
+}
+
+/** Compact [Viewer | Editor] segmented control. Viewer is the default. */
+function ModeToggle({ mode, onChange, dirty }: ModeToggleProps): React.JSX.Element {
+  const seg = (value: FilesViewMode, label: string): React.JSX.Element => {
+    const active = mode === value
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(value)}
+        aria-pressed={active}
+        className={[
+          'relative px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-100',
+          active
+            ? 'bg-surface-raised text-text-primary'
+            : 'text-text-muted hover:text-text-secondary'
+        ].join(' ')}
+      >
+        {label}
+        {value === 'editor' && dirty && (
+          <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent" />
+        )}
+      </button>
+    )
+  }
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-overlay/60 border border-border-default/60">
+      {seg('viewer', 'Viewer')}
+      {seg('editor', 'Editor')}
     </div>
   )
 }
@@ -279,8 +388,24 @@ function ViewerMessage({ text }: { text: string }): React.JSX.Element {
 export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   const [treeOpen, setTreeOpen] = useState(true)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  // Viewer is the DEFAULT. Per-FilesTab component state (not persisted).
+  const [mode, setMode] = useState<FilesViewMode>('viewer')
+  const [dirty, setDirty] = useState(false)
+
+  // The persisted save-mode setting (default false = manual save). Read from
+  // the app-wide ui-state store; the editor uses it to decide manual vs
+  // debounced auto-save.
+  const uiState = useUiState()
+  const autoSave = uiState?.filesAutoSave ?? false
 
   const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])
+
+  // A newly-selected file starts clean; the freshly-mounted editor reports its
+  // own dirty state from there. (An unmounting editor can't report false.)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: selecting a different file resets the dirty indicator; the incoming editor re-reports its own state on mount.
+    setDirty(false)
+  }, [selectedFile])
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
@@ -295,6 +420,9 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
         >
           <List size={16} />
         </button>
+        <div className="ml-auto pr-1">
+          <ModeToggle mode={mode} onChange={setMode} dirty={dirty} />
+        </div>
       </div>
       <div className="flex-1 min-h-0 flex">
         {/* Kept MOUNTED and hidden via `display` (not conditionally rendered)
@@ -309,7 +437,13 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
           <TreePane workspaceId={workspaceId} onSelectFile={setSelectedFile} />
         </div>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          <ViewerPane workspaceId={workspaceId} path={selectedFile} />
+          <ContentPane
+            workspaceId={workspaceId}
+            path={selectedFile}
+            mode={mode}
+            autoSave={autoSave}
+            onDirtyChange={setDirty}
+          />
         </div>
       </div>
     </div>

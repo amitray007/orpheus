@@ -241,6 +241,23 @@ export function OrpheusAppearanceSection(): React.JSX.Element {
         </div>
       </section>
 
+      {/* Files editor */}
+      <section className="flex flex-col">
+        <Eyebrow className="mb-3">Files editor</Eyebrow>
+        <div className="bg-surface-raised border border-border-default rounded-lg px-5">
+          <SettingRow
+            label="Auto-save edits"
+            description="In the Workbench Files tab's Editor mode, write changes to disk automatically after ~1s of idle. When off, save manually with ⌘S."
+          >
+            <Toggle
+              value={uiState.filesAutoSave ?? false}
+              onChange={(v) => patch({ filesAutoSave: v })}
+              ariaLabel="Auto-save file edits"
+            />
+          </SettingRow>
+        </div>
+      </section>
+
       {/* Privacy */}
       <section className="flex flex-col">
         <Eyebrow className="mb-3">Privacy</Eyebrow>
