@@ -65,6 +65,37 @@ const accentSoft = `${focusBorder}33`
 const accentSofter = `${focusBorder}59`
 
 /**
+ * The pierre-dark surface palette the custom React search panel paints itself
+ * with, so the app-native find/replace UI reads as part of the SAME dark editor
+ * chrome (the editor is pierre-dark, independent of the app's accent). Every
+ * value is sourced from the pierre-dark colours above — no new hex introduced.
+ */
+export const searchPanelPalette = {
+  /** Panel + input + button text. */
+  fg,
+  /** Muted text (counts, placeholder, inactive icons). */
+  muted: lineNumber,
+  /** Editor background — the panel/input base. */
+  bg,
+  /** Subtle divider / control border. */
+  border: panelBorder,
+  /** Raised input background. */
+  inputBg,
+  /** Raised button background. */
+  buttonBg,
+  /** Button hover background. */
+  buttonHoverBg,
+  /** The pierre-dark focus/accent blue — focus rings + active toggles. */
+  accent: focusBorder,
+  /** Translucent accent for active-toggle fills. */
+  accentSoft,
+  /** Stronger translucent accent. */
+  accentSofter,
+  /** Monospace family matching the editor. */
+  fontFamily: FONT_FAMILY
+} as const
+
+/**
  * The pierre-dark chrome theme for the CodeMirror editor. Dark-only (the Files
  * tab, like the viewer, is dark-only in Orpheus today). Applied alongside the
  * Shiki token bridge to reproduce the <File> look for the editable case.
@@ -139,59 +170,18 @@ export const pierreDarkChromeTheme: Extension = EditorView.theme(
     '.cm-scroller::-webkit-scrollbar-track': {
       backgroundColor: 'transparent'
     },
-    // -- Find/Replace panel (@codemirror/search, mounted top:true) ------------
-    // Unstyled it renders light on the dark editor; paint it from the same
-    // pierre-dark surfaces as the rest of the chrome so it reads as one piece.
+    // -- Find/Replace panel container -----------------------------------------
+    // The panel's INNER UI is our own React component (EditorSearchPanel), which
+    // paints its own surfaces from `searchPanelPalette` below. We only theme the
+    // CM-owned panel CONTAINER here so it reads as one piece with the editor: a
+    // pierre-dark background + a subtle bottom divider. (No default-panel
+    // input/checkbox/button rules — the default panel is no longer rendered.)
     '.cm-panels': {
       backgroundColor: bg,
       color: fg
     },
     '.cm-panels.cm-panels-top': {
       borderBottom: `1px solid ${panelBorder}`
-    },
-    '.cm-panel.cm-search': {
-      backgroundColor: bg,
-      color: fg,
-      padding: '6px 8px',
-      fontFamily: FONT_FAMILY,
-      fontSize: '12px'
-    },
-    '.cm-panel.cm-search label': {
-      color: fg,
-      fontSize: '12px'
-    },
-    '.cm-panel.cm-search input[type=text]': {
-      backgroundColor: inputBg,
-      color: fg,
-      border: `1px solid ${panelBorder}`,
-      borderRadius: '4px',
-      padding: '2px 6px',
-      caretColor: cursor
-    },
-    '.cm-panel.cm-search input[type=text]:focus': {
-      outline: 'none',
-      borderColor: focusBorder
-    },
-    '.cm-panel.cm-search input[type=checkbox]': {
-      accentColor: focusBorder
-    },
-    '.cm-panel.cm-search button, .cm-panel.cm-search .cm-button': {
-      backgroundColor: buttonBg,
-      backgroundImage: 'none',
-      color: fg,
-      border: `1px solid ${panelBorder}`,
-      borderRadius: '4px'
-    },
-    '.cm-panel.cm-search button:hover, .cm-panel.cm-search .cm-button:hover': {
-      backgroundColor: buttonHoverBg
-    },
-    '.cm-panel.cm-search button[name=close]': {
-      color: lineNumber,
-      backgroundColor: 'transparent',
-      border: 'none'
-    },
-    '.cm-panel.cm-search button[name=close]:hover': {
-      color: fg
     },
     // Match highlights — translucent accent so found text stays visible on dark,
     // with a stronger variant for the currently-selected match.

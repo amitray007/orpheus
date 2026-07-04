@@ -39,6 +39,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { bracketMatching, foldGutter, indentOnInput } from '@codemirror/language'
 import { search, searchKeymap } from '@codemirror/search'
 import { pierreDarkChromeTheme } from './chromeTheme'
+import { makeSearchPanel } from './searchPanel'
 import { languageFor } from './language'
 import { shikiHighlighting } from './codemirror-shiki'
 import { getEditorHighlighter, EDITOR_THEME_NAME } from './highlighter'
@@ -181,10 +182,12 @@ export function CodeEditor({
         foldGutter(),
         indentOnInput(),
         bracketMatching(),
-        // Find/Replace: panel pinned to the TOP of the editor, styled dark by
-        // chromeTheme.ts. searchKeymap provides Cmd/Ctrl+F (find), the replace
-        // toggle, Cmd/Ctrl+G / Shift+… (next/prev match), and Esc (close).
-        search({ top: true }),
+        // Find/Replace: a CUSTOM app-native panel pinned to the TOP of the
+        // editor (createPanel → React root in EditorSearchPanel.tsx), replacing
+        // @codemirror/search's default panel UI while keeping its engine.
+        // searchKeymap still provides Cmd/Ctrl+F (open), Cmd/Ctrl+G / Shift+…
+        // (next/prev match), and Esc (close).
+        search({ top: true, createPanel: makeSearchPanel }),
         ...(cm ? [cm] : []),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         saveKeymap,
