@@ -44,8 +44,6 @@ import { languageFor } from './language'
 import { shikiHighlighting } from './codemirror-shiki'
 import { getEditorHighlighter, EDITOR_THEME_NAME } from './highlighter'
 
-const AUTO_SAVE_DEBOUNCE_MS = 1000
-
 export interface CodeEditorProps {
   workspaceId: string
   /** Repo-relative POSIX path of the file being edited. */
@@ -54,7 +52,8 @@ export interface CodeEditorProps {
   name: string
   /** The file's contents at load time — the initial + first-baseline buffer. */
   initialContents: string
-  /** When true, debounce-write on idle; when false, manual save only. */
+  /** When true, auto-save on context leave (editor blur, file switch, unmount);
+   *  when false, manual Cmd/Ctrl+S only. */
   autoSave: boolean
   /** Reports dirty transitions up to FilesTab (drives the header dot). */
   onDirtyChange?: (dirty: boolean) => void
@@ -81,14 +80,20 @@ export function CodeEditor({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const saveRef = useRef<SaveState>({ baseline: initialContents, saving: false })
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Latest autoSave flag, read inside the (stable) update listener without
+  // Latest autoSave flag, read inside the (stable) blur handler without
   // re-creating the editor when the setting toggles. Synced in an effect (not
   // during render) so it doesn't trip the "no ref writes in render" rule.
   const autoSaveRef = useRef(autoSave)
   useEffect(() => {
     autoSaveRef.current = autoSave
   }, [autoSave])
+  // Latest onSaved, read by the fire-and-forget flush (see flushSaveRef) which
+  // may run AFTER this editor unmounts (file switch) — a ref keeps it reachable
+  // when the closure outlives the render that created it.
+  const onSavedRef = useRef(onSaved)
+  useEffect(() => {
+    onSavedRef.current = onSaved
+  }, [onSaved])
 
   const [dirty, setDirty] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -100,7 +105,19 @@ export function CodeEditor({
   }, [dirty, onDirtyChange])
 
   // The actual write. Reads the current doc, writes it, and (on success)
-  // advances the baseline + clears dirty. Coalesces concurrent calls.
+  // advances the baseline + clears dirty. Coalesces concurrent calls. Used by
+  // the interactive save paths (Cmd/Ctrl+S and editor blur).
+  //
+  // A blur-triggered save can race with this editor unmounting (clicking a tree
+  // row both blurs the editor AND switches the file → remount). So the write's
+  // completion is split:
+  //   - onSaved() (the tree-dot refresh) is workspace-global and idempotent, so
+  //     it fires on ANY successful write regardless of whether this view is
+  //     still mounted — this is what guarantees a file-switch save still lights
+  //     the dot even though the editor that issued the write is gone.
+  //   - baseline / setDirty / setSaveError touch THIS file's state, so they stay
+  //     gated behind the stale-view check (a newer file must not be mutated by
+  //     an older file's write completing late).
   const doSave = useCallback(async (): Promise<void> => {
     const view = viewRef.current
     if (!view) return
@@ -110,6 +127,7 @@ export function CodeEditor({
     state.saving = true
     try {
       const result = await window.api.files.writeFile(workspaceId, path, contents)
+      if (result.ok) onSavedRef.current?.()
       // Stale: a different file remounted this editor while the write was in
       // flight — don't let its completion mutate the new file's UI state.
       if (viewRef.current !== view) return
@@ -118,7 +136,6 @@ export function CodeEditor({
         setSaveError(null)
         // Only clear dirty if the buffer hasn't changed again mid-write.
         if (view.state.doc.toString() === contents) setDirty(false)
-        onSaved?.()
       } else {
         setSaveError(saveErrorText(result.error))
       }
@@ -128,15 +145,47 @@ export function CodeEditor({
     } finally {
       state.saving = false
     }
-  }, [workspaceId, path, onSaved])
+  }, [workspaceId, path])
 
-  // Keep a stable ref to doSave for the keymap + update listener (which are
-  // baked into the editor state created once per mount). Synced in an effect so
-  // the ref write doesn't happen during render.
+  // Keep a stable ref to doSave for the keymap + blur handler (which are baked
+  // into the editor state created once per mount). Synced in an effect so the
+  // ref write doesn't happen during render.
   const doSaveRef = useRef(doSave)
   useEffect(() => {
     doSaveRef.current = doSave
   }, [doSave])
+
+  // A fire-and-forget flush for the UNMOUNT / file-switch case. React cleanup
+  // can't await, and by the time the write resolves this editor's `view` is
+  // already destroyed (viewRef cleared) — so unlike doSave this captures
+  // workspaceId/path/contents synchronously and does NOT touch component state
+  // or gate on viewRef after the await; it only advances the baseline (so a
+  // remount of the same file starts clean) and fires onSaved via a ref (kept
+  // current by the effect above) so FilesTab still refetches the tree's dot.
+  // Only writes when actually dirty (buffer ≠ last-saved baseline).
+  const flushSaveRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    flushSaveRef.current = (): void => {
+      const view = viewRef.current
+      if (!view) return
+      const contents = view.state.doc.toString()
+      const state = saveRef.current
+      if (state.saving || contents === state.baseline) return
+      state.saving = true
+      state.baseline = contents
+      void window.api.files
+        .writeFile(workspaceId, path, contents)
+        .then((result) => {
+          if (result.ok) onSavedRef.current?.()
+        })
+        .catch((e) => {
+          console.error('[CodeEditor] flush writeFile failed:', e)
+        })
+        .finally(() => {
+          state.saving = false
+        })
+    }
+  }, [workspaceId, path])
 
   // Create the editor once per (workspaceId, path). initialContents/name are
   // captured at creation; a different file remounts via the effect deps.
@@ -147,16 +196,22 @@ export function CodeEditor({
     const { cm } = languageFor(name)
     const highlightCompartment = new Compartment()
 
+    // Dirty tracking only — the header dot + auto-save gating both read the
+    // dirty state; the actual auto-save now fires on context-leave (blur /
+    // file-switch / unmount), NOT on an idle timer while typing.
     const updateListener = EditorView.updateListener.of((update) => {
       if (!update.docChanged) return
       const contents = update.state.doc.toString()
-      const isDirty = contents !== saveRef.current.baseline
-      setDirty(isDirty)
-      if (isDirty && autoSaveRef.current) {
-        if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-        autoSaveTimerRef.current = setTimeout(() => {
-          void doSaveRef.current()
-        }, AUTO_SAVE_DEBOUNCE_MS)
+      setDirty(contents !== saveRef.current.baseline)
+    })
+
+    // Auto-save on editor BLUR: when focus leaves the editor (clicking the tree,
+    // another tab, another app) and auto-save is on, persist a dirty buffer.
+    // doSave no-ops a clean buffer, so the autoSaveRef guard is just to keep the
+    // whole behavior off when the setting is disabled (manual Cmd/Ctrl+S only).
+    const blurHandler = EditorView.domEventHandlers({
+      blur: () => {
+        if (autoSaveRef.current) void doSaveRef.current()
       }
     })
 
@@ -192,6 +247,7 @@ export function CodeEditor({
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         saveKeymap,
         updateListener,
+        blurHandler,
         pierreDarkChromeTheme,
         highlightCompartment.of([]),
         EditorView.lineWrapping
@@ -224,10 +280,12 @@ export function CodeEditor({
 
     return () => {
       cancelled = true
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current)
-        autoSaveTimerRef.current = null
-      }
+      // Auto-save on context-leave: switching files unmounts this editor and
+      // mounts a new one, and navigating away tears it down — flush a dirty
+      // buffer first (fire-and-forget, since cleanup can't await) so leaving the
+      // file persists it and refreshes the tree dot. Runs BEFORE destroy so the
+      // buffer is still readable; the flush snapshots contents synchronously.
+      if (autoSaveRef.current) flushSaveRef.current()
       view.destroy()
       if (viewRef.current === view) viewRef.current = null
     }
