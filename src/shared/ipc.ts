@@ -81,7 +81,10 @@ import type {
   OverlayShowResult,
   AppUiStatePatch,
   ContextMenuNativeItem,
-  DetectedApp
+  DetectedApp,
+  FilesListing,
+  GitStatusEntry,
+  FileContents
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -289,6 +292,15 @@ export interface InvokeChannelMap {
     res: number
   }
   'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
+  // Workbench Files tab — file tree + viewer data sources (Stage A). All three
+  // resolve the workspace's cwd from `workspaceId` internally; res types live
+  // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.
+  'files:listDir': { req: [{ workspaceId: string }]; res: FilesListing }
+  'files:gitStatus': { req: [{ workspaceId: string }]; res: GitStatusEntry[] }
+  'files:readFile': {
+    req: [{ workspaceId: string; path: string }]
+    res: FileContents
+  }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }

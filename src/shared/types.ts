@@ -1210,3 +1210,63 @@ export type ChipDropdownProps = {
 
 /** Resolves on row click/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
+
+// ---------------------------------------------------------------------------
+// Workbench Files tab — file tree + viewer data sources (Stage A backend).
+//
+// These feed @pierre/trees (flat `paths: string[]` + per-path git-status
+// decorations) and the file viewer. See docs/learnings/pierre-libraries.md
+// §7 for why the tree consumes a FLAT path list and a GitStatusEntry[].
+// ---------------------------------------------------------------------------
+
+/**
+ * Flat, gitignore-aware directory listing of a workspace's cwd.
+ *
+ * `paths` are repo-relative POSIX paths. Directories carry a trailing slash
+ * (e.g. `'src/'`) and files do not (e.g. `'src/index.ts'`) — matching the
+ * mixed dir+file input @pierre/trees' README examples pass. `truncated` is
+ * true when the walk hit the depth/entry cap and the listing is partial.
+ */
+export type FilesListing = {
+  paths: string[]
+  truncated: boolean
+}
+
+/**
+ * Per-path git status decoration for the file tree, mapped to @pierre/trees'
+ * `GitStatusEntry` enum. `path` is repo-relative POSIX (joins to the same
+ * paths `files:listDir` returns).
+ */
+export type GitFileStatusKind =
+  | 'added'
+  | 'deleted'
+  | 'ignored'
+  | 'modified'
+  | 'renamed'
+  | 'untracked'
+
+export type GitStatusEntry = {
+  path: string
+  status: GitFileStatusKind
+}
+
+/**
+ * Text contents of a single file for the viewer.
+ *
+ * `binary` is true when null bytes were detected — `contents` is then empty
+ * and the renderer shows a placeholder rather than garbage. `truncated` is
+ * true when the file exceeded the size cap and `contents` holds only the
+ * leading portion that was read.
+ */
+export type FileContents = {
+  /** File contents as UTF-8 text (empty when `binary`). */
+  contents: string
+  /** Basename of the file (e.g. `index.ts`). */
+  name: string
+  /** Byte size of the file on disk. */
+  size: number
+  /** True when the file exceeded the size cap; `contents` is partial. */
+  truncated: boolean
+  /** True when null bytes were detected; `contents` is empty. */
+  binary: boolean
+}

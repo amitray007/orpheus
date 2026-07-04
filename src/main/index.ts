@@ -116,6 +116,7 @@ import {
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
+import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
@@ -1018,6 +1019,8 @@ handle('doctor:check', async (): Promise<DoctorResult> => {
 })
 
 registerGitIpc()
+
+registerFilesIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
 
 registerShellIpc({ getAppUiState })
 

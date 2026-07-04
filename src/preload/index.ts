@@ -27,6 +27,9 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  FilesListing,
+  GitStatusEntry,
+  FileContents,
   GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
@@ -420,6 +423,16 @@ const api = {
     ): Promise<number> => invoke('git:count', { cwd, ...opts }),
     onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
       subscribe(PUSH_CHANNELS.gitStatusChanged, cb)
+  },
+  // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
+  // from `workspaceId` in the main process; see src/main/ipc/files.ts.
+  files: {
+    listDir: (workspaceId: string): Promise<FilesListing> =>
+      invoke('files:listDir', { workspaceId }),
+    gitStatus: (workspaceId: string): Promise<GitStatusEntry[]> =>
+      invoke('files:gitStatus', { workspaceId }),
+    readFile: (workspaceId: string, path: string): Promise<FileContents> =>
+      invoke('files:readFile', { workspaceId, path })
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
