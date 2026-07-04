@@ -9,11 +9,16 @@
 // `@pierre/diffs`, so this adds no new runtime weight — it just spins up a
 // second highlighter instance configured with the languages the editor
 // supports and the same `pierre-dark` theme object Pierre ships
-// (`@pierre/theme/pierre-dark`). The default JS regex engine is used (no WASM),
-// matching the viewer (docs/learnings/pierre-libraries.md §9).
+// (`@pierre/theme/pierre-dark`). The JS regex engine is EXPLICITLY selected via
+// `engine: createJavaScriptRegexEngine()` (required — Shiki's default is the
+// Oniguruma WASM engine, which the renderer CSP blocks: `script-src 'self'`
+// with no `wasm-unsafe-eval`, so `createHighlighter()` would reject and the
+// editor would fall back to plain, uncoloured text). This mirrors how
+// `@pierre/diffs`' viewer configures its highlighter
+// (docs/learnings/pierre-libraries.md §9, §12).
 // ---------------------------------------------------------------------------
 
-import { createHighlighter, type ThemeRegistrationAny } from 'shiki'
+import { createHighlighter, createJavaScriptRegexEngine, type ThemeRegistrationAny } from 'shiki'
 import pierreDark from '@pierre/theme/pierre-dark'
 import type { ShikiTokenizer } from './codemirror-shiki'
 
@@ -69,7 +74,11 @@ export function getEditorHighlighter(): Promise<ShikiTokenizer> {
       // declared `PierreTheme` type is a structural subset of ThemeRegistration,
       // so cast at this one boundary.
       themes: [pierreDark as unknown as ThemeRegistrationAny],
-      langs: [...EDITOR_LANGS]
+      langs: [...EDITOR_LANGS],
+      // Pure-JS regex engine — CSP-safe. Shiki defaults to the Oniguruma WASM
+      // engine, which the renderer CSP blocks; without this the whole
+      // createHighlighter() promise rejects. Matches @pierre/diffs' viewer.
+      engine: createJavaScriptRegexEngine()
     })
       // The full Highlighter carries stricter bundled-key generics on
       // codeToTokensBase than the runtime-string ShikiTokenizer shape the bridge
