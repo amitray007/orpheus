@@ -35,7 +35,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { FileTree, useFileTree, useFileTreeSelection } from '@pierre/trees/react'
+import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
 import {
   themeToTreeStyles,
   type TreeThemeInput,
@@ -44,7 +44,7 @@ import {
   type FileTreeRenameEvent
 } from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
-import { List } from '@phosphor-icons/react'
+import { List, MagnifyingGlass, FolderPlus, FilePlus } from '@phosphor-icons/react'
 import type { FileEntry, FileContents, GitStatusEntry } from '@shared/types'
 import { useUiState } from '../../lib/uiStateStore'
 import {
@@ -227,6 +227,65 @@ interface TreePaneProps {
   onExpandedPathsChange: (paths: string[]) => void
 }
 
+// --- Tree toolbar ------------------------------------------------------
+
+interface TreeToolbarProps {
+  /** Whether the tree's built-in search input is currently open. */
+  searchOpen: boolean
+  /** Toggle the built-in search input open/closed (useFileTreeSearch). */
+  onToggleSearch: () => void
+  /** Create a new folder / file at the tree root (mutations.createAtRoot). */
+  onCreate: (isFolder: boolean) => void
+}
+
+// Shared icon-button classes — matches the outer FilesTab header's hamburger
+// button (~L864 below) exactly, so the toolbar reads as the same chrome
+// family even though it lives in a different slot (FileTree's `header`).
+const TOOLBAR_BUTTON_CLASS =
+  'p-1 rounded text-text-muted hover:bg-surface-raised hover:text-text-primary'
+
+/** Compact header rendered into `<FileTree header={...} />`: a search-toggle
+ *  icon on the left, New Folder / New File on the right. Extracted to its own
+ *  component (rather than inlined in TreePane) to keep TreePane's cognitive
+ *  complexity down and because it's pure presentation over three callbacks. */
+function TreeToolbar({
+  searchOpen,
+  onToggleSearch,
+  onCreate
+}: TreeToolbarProps): React.JSX.Element {
+  return (
+    <div className="flex items-center h-7 px-1">
+      <button
+        type="button"
+        onClick={onToggleSearch}
+        aria-pressed={searchOpen}
+        title="Search files"
+        className={TOOLBAR_BUTTON_CLASS}
+      >
+        <MagnifyingGlass size={14} />
+      </button>
+      <div className="ml-auto flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => onCreate(true)}
+          title="New folder"
+          className={TOOLBAR_BUTTON_CLASS}
+        >
+          <FolderPlus size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onCreate(false)}
+          title="New file"
+          className={TOOLBAR_BUTTON_CLASS}
+        >
+          <FilePlus size={14} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** Left pane: fetches the tier-tagged dir listing ONCE per workspace, seeds/
  *  updates the Pierre tree, applies the tree-options toggles client-side, and
  *  reports the single selected file path up to FilesTab. Extracted so the
@@ -297,6 +356,14 @@ function TreePane({
     }
   })
   const selection = useFileTreeSelection(model)
+  // Drives the tree's own built-in search input (search: true above renders it
+  // only while open — see useFileTreeSearch.d.ts). The toolbar's search icon
+  // just toggles open/close; the input itself lives in the tree's shadow DOM.
+  const search = useFileTreeSearch(model)
+  const toggleSearch = useCallback(() => {
+    if (search.isOpen) search.close()
+    else search.open()
+  }, [search])
 
   // Report the derived file-to-view up whenever the selection changes.
   const derived = useMemo(() => fileToView(selection), [selection])
@@ -473,6 +540,29 @@ function TreePane({
     [mutations]
   )
 
+  // Toolbar's New Folder / New File buttons — no right-clicked row to derive a
+  // target dir from, so these always create at the tree ROOT (the workspace
+  // cwd root). `createAtRoot` is async (create → startRenaming); errors are
+  // already surfaced via `onError` inside the mutations hook, so this handler
+  // just needs to not leave a floating promise.
+  const handleToolbarCreate = useCallback(
+    (isFolder: boolean): void => {
+      void mutations.createAtRoot(isFolder)
+    },
+    [mutations]
+  )
+
+  const toolbar = useMemo(
+    () => (
+      <TreeToolbar
+        searchOpen={search.isOpen}
+        onToggleSearch={toggleSearch}
+        onCreate={handleToolbarCreate}
+      />
+    ),
+    [search.isOpen, toggleSearch, handleToolbarCreate]
+  )
+
   const hostStyle = useMemo(() => {
     const vars = themeToTreeStyles(TREE_THEME)
     return {
@@ -516,7 +606,12 @@ function TreePane({
         </button>
       )}
       <div style={hostStyle} className="flex-1 min-h-0">
-        <FileTree model={model} renderContextMenu={renderContextMenu} style={{ height: '100%' }} />
+        <FileTree
+          model={model}
+          header={toolbar}
+          renderContextMenu={renderContextMenu}
+          style={{ height: '100%' }}
+        />
       </div>
       {truncated && (
         <div className="flex-shrink-0 px-2 py-1 text-[10px] text-text-muted border-t border-border-default select-none">

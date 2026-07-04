@@ -44,9 +44,14 @@ const ERROR_COPY: Record<Exclude<FilesMutationResult, { ok: true }>['error'], st
 
 /** Directory portion of a repo-relative path (Pierre paths: dirs carry a
  *  trailing slash, files do not). For a file → its parent dir (with trailing
- *  slash, '' for a root file); for a directory → itself. */
+ *  slash, '' for a root file); for a directory → itself; the synthetic tree-
+ *  ROOT item (`path: ''`, used by the toolbar's create buttons — there's no
+ *  real row for the root) stays `''`, not a stray leading `/`. */
 function targetDir(item: FileTreeContextMenuItem): string {
-  if (item.kind === 'directory') return item.path.endsWith('/') ? item.path : `${item.path}/`
+  if (item.kind === 'directory') {
+    if (item.path === '') return ''
+    return item.path.endsWith('/') ? item.path : `${item.path}/`
+  }
   const slash = item.path.lastIndexOf('/')
   return slash === -1 ? '' : item.path.slice(0, slash + 1)
 }
@@ -90,6 +95,11 @@ export interface FilesTreeMutations {
   handleRename: (event: FileTreeRenameEvent) => void
   /** onError handler for useFileTree({ renaming: { onError } }). */
   handleRenamingError: (message: string) => void
+  /** Create a file/folder at the tree ROOT — used by the toolbar's New File /
+   *  New Folder buttons, which have no right-clicked item to derive a target
+   *  dir from (unlike the context menu's per-row create). Drives the same
+   *  create→startRenaming flow via a synthetic root item (`path: ''`). */
+  createAtRoot: (isFolder: boolean) => Promise<void>
 }
 
 export function useFilesTreeMutations(deps: FilesTreeMutationsDeps): FilesTreeMutations {
@@ -243,8 +253,18 @@ export function useFilesTreeMutations(deps: FilesTreeMutationsDeps): FilesTreeMu
     [onError]
   )
 
+  // Toolbar create: no right-clicked row to derive a target dir from, so a
+  // synthetic root directory item (`path: ''`) is handed to the same `create`
+  // used by the context menu — `targetDir` special-cases `path: ''` to stay
+  // `''` (tree root) rather than becoming a stray leading `/`.
+  const createAtRoot = useCallback(
+    (isFolder: boolean): Promise<void> =>
+      create({ kind: 'directory', name: '', path: '' }, isFolder),
+    [create]
+  )
+
   return useMemo(
-    () => ({ buildActions, handleRename, handleRenamingError }),
-    [buildActions, handleRename, handleRenamingError]
+    () => ({ buildActions, handleRename, handleRenamingError, createAtRoot }),
+    [buildActions, handleRename, handleRenamingError, createAtRoot]
   )
 }
