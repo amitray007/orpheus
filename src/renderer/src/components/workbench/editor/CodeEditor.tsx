@@ -37,6 +37,7 @@ import {
 } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, foldGutter, indentOnInput } from '@codemirror/language'
+import { search, searchKeymap } from '@codemirror/search'
 import { pierreDarkChromeTheme } from './chromeTheme'
 import { languageFor } from './language'
 import { shikiHighlighting } from './codemirror-shiki'
@@ -180,8 +181,12 @@ export function CodeEditor({
         foldGutter(),
         indentOnInput(),
         bracketMatching(),
+        // Find/Replace: panel pinned to the TOP of the editor, styled dark by
+        // chromeTheme.ts. searchKeymap provides Cmd/Ctrl+F (find), the replace
+        // toggle, Cmd/Ctrl+G / Shift+… (next/prev match), and Esc (close).
+        search({ top: true }),
         ...(cm ? [cm] : []),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+        keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         saveKeymap,
         updateListener,
         pierreDarkChromeTheme,

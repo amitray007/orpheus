@@ -50,6 +50,20 @@ const lineNumber = colors['editorLineNumber.foreground'] ?? '#737373'
 const lineNumberActive = colors['editorLineNumber.activeForeground'] ?? '#a3a3a3'
 const focusBorder = colors['focusBorder'] ?? '#009fff'
 
+// Search-panel surfaces, all derived from the sourced pierre-dark values above
+// so the find/replace UI reads as part of the same dark chrome (no new hex):
+//   - panelBorder: a subtle divider from the foreground at low alpha.
+//   - inputBg / buttonBg: a slightly raised dark from the foreground at very
+//     low alpha over the editor background.
+//   - accentSoft / accentSofter: translucent focus/accent blue for match
+//     highlights and active toggles.
+const panelBorder = `${fg}1f`
+const inputBg = `${fg}0d`
+const buttonBg = `${fg}14`
+const buttonHoverBg = `${fg}1f`
+const accentSoft = `${focusBorder}33`
+const accentSofter = `${focusBorder}59`
+
 /**
  * The pierre-dark chrome theme for the CodeMirror editor. Dark-only (the Files
  * tab, like the viewer, is dark-only in Orpheus today). Applied alongside the
@@ -124,6 +138,69 @@ export const pierreDarkChromeTheme: Extension = EditorView.theme(
     },
     '.cm-scroller::-webkit-scrollbar-track': {
       backgroundColor: 'transparent'
+    },
+    // -- Find/Replace panel (@codemirror/search, mounted top:true) ------------
+    // Unstyled it renders light on the dark editor; paint it from the same
+    // pierre-dark surfaces as the rest of the chrome so it reads as one piece.
+    '.cm-panels': {
+      backgroundColor: bg,
+      color: fg
+    },
+    '.cm-panels.cm-panels-top': {
+      borderBottom: `1px solid ${panelBorder}`
+    },
+    '.cm-panel.cm-search': {
+      backgroundColor: bg,
+      color: fg,
+      padding: '6px 8px',
+      fontFamily: FONT_FAMILY,
+      fontSize: '12px'
+    },
+    '.cm-panel.cm-search label': {
+      color: fg,
+      fontSize: '12px'
+    },
+    '.cm-panel.cm-search input[type=text]': {
+      backgroundColor: inputBg,
+      color: fg,
+      border: `1px solid ${panelBorder}`,
+      borderRadius: '4px',
+      padding: '2px 6px',
+      caretColor: cursor
+    },
+    '.cm-panel.cm-search input[type=text]:focus': {
+      outline: 'none',
+      borderColor: focusBorder
+    },
+    '.cm-panel.cm-search input[type=checkbox]': {
+      accentColor: focusBorder
+    },
+    '.cm-panel.cm-search button, .cm-panel.cm-search .cm-button': {
+      backgroundColor: buttonBg,
+      backgroundImage: 'none',
+      color: fg,
+      border: `1px solid ${panelBorder}`,
+      borderRadius: '4px'
+    },
+    '.cm-panel.cm-search button:hover, .cm-panel.cm-search .cm-button:hover': {
+      backgroundColor: buttonHoverBg
+    },
+    '.cm-panel.cm-search button[name=close]': {
+      color: lineNumber,
+      backgroundColor: 'transparent',
+      border: 'none'
+    },
+    '.cm-panel.cm-search button[name=close]:hover': {
+      color: fg
+    },
+    // Match highlights — translucent accent so found text stays visible on dark,
+    // with a stronger variant for the currently-selected match.
+    '.cm-searchMatch': {
+      backgroundColor: accentSoft,
+      outline: `1px solid ${accentSofter}`
+    },
+    '.cm-searchMatch-selected': {
+      backgroundColor: accentSofter
     }
   },
   { dark: true }
