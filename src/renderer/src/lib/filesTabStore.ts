@@ -24,6 +24,19 @@
  * restored. Persisting the raw dirty buffer here was considered and rejected:
  * it risks the stashed buffer going stale vs. an on-disk change and is far more
  * failure-prone than the file+mode restoration this bug is actually about.
+ *
+ * SELECTION-POINTER NOTE: `selectedFile` already restored the CONTENT pane
+ * (the viewer/editor opened the right file on remount) — but until now nothing
+ * pushed it back into the TREE's own selection, so the tree row never
+ * re-highlighted/scrolled-to on return even though the content pane showed the
+ * file. `expandedPaths` closes the other half of that gap: @pierre/trees has
+ * no public getter or change-event for "the current expanded set" (verified
+ * against node_modules/@pierre/trees/dist/model/FileTreeController.js — expand/
+ * collapse never appears in the exported mutation-event union), so this field
+ * is a best-effort snapshot of the ANCESTOR DIRECTORIES OF THE SELECTED FILE
+ * (recomputed alongside `selectedFile` in FilesTab.tsx), not a true "everything
+ * the user manually expanded" record. That's sufficient for the bug this fixes:
+ * making the restored selection visible without every ancestor being collapsed.
  */
 
 import { createPerKeyStore } from './createPerKeyStore'
@@ -42,25 +55,38 @@ export interface FilesTabEntry {
   treeOpen: boolean
   /** The tree-view toggles (Show hidden / Dim gitignored). */
   treeOptions: TreeOptionsState
+  /** Directory paths (trailing-slash, tree-canonical form) to expand when the
+   *  tree remounts — the ancestor chain of `selectedFile` at the time it was
+   *  last selected. See the SELECTION-POINTER NOTE above for why this is an
+   *  ancestors-of-selection snapshot rather than a full expansion record. */
+  expandedPaths: string[]
 }
 
 export const DEFAULT_FILES_TAB_ENTRY: FilesTabEntry = {
   selectedFile: null,
   mode: 'viewer',
   treeOpen: true,
-  treeOptions: { showHidden: false, dimGitignored: true }
+  treeOptions: { showHidden: false, dimGitignored: true },
+  expandedPaths: []
 }
 
-// Field-shallow equality (treeOptions compared by its two fields) — a
+// Field-shallow equality (treeOptions compared by its two fields; expandedPaths
+// by length + order — it's always derived+written as a single array, never
+// mutated in place, so this is a cheap and correct comparison) — a
 // freshly-constructed but value-identical entry shouldn't notify subscribers,
 // matching the guard in createPerKeyStore / the sibling stores.
+function sameExpandedPaths(prev: readonly string[], next: readonly string[]): boolean {
+  return prev.length === next.length && prev.every((p, i) => p === next[i])
+}
+
 const store = createPerKeyStore<FilesTabEntry>({
   equals: (prev, next) =>
     prev.selectedFile === next.selectedFile &&
     prev.mode === next.mode &&
     prev.treeOpen === next.treeOpen &&
     prev.treeOptions.showHidden === next.treeOptions.showHidden &&
-    prev.treeOptions.dimGitignored === next.treeOptions.dimGitignored
+    prev.treeOptions.dimGitignored === next.treeOptions.dimGitignored &&
+    sameExpandedPaths(prev.expandedPaths, next.expandedPaths)
 })
 
 /** Read a workspace's current Files-tab entry, defaulting to the shared

@@ -172,6 +172,27 @@ function fileToView(selection: readonly string[]): string | null {
   return files.length === 1 ? files[0] : null
 }
 
+/** The ancestor DIRECTORY paths of a repo-relative path, in the tree's
+ *  canonical trailing-slash form (`"a/b/c.ts"` → `["a/", "a/b/"]`). Used both
+ *  to seed `initialExpandedPaths` so a restored selection's parent folders are
+ *  open (@pierre/trees has no public "current expansion set" API to persist
+ *  directly — see the SELECTION-POINTER NOTE in filesTabStore.ts) and to
+ *  recompute the persisted `expandedPaths` snapshot whenever the selection
+ *  changes. A bare top-level file yields `[]`. */
+function ancestorDirPaths(path: string): string[] {
+  const segments = path.split('/').filter((s) => s.length > 0)
+  // Drop the final segment (the file/dir's own basename) — only PARENT
+  // directories are ancestors. A single-segment path (top-level file) has none.
+  segments.pop()
+  const ancestors: string[] = []
+  let prefix = ''
+  for (const segment of segments) {
+    prefix += `${segment}/`
+    ancestors.push(prefix)
+  }
+  return ancestors
+}
+
 export interface FilesTabProps {
   /** The owning claude workspace's id — resolves to the workspace cwd in the
    *  main process (see src/main/ipc/files.ts). */
@@ -187,6 +208,23 @@ interface TreePaneProps {
   /** Bumped by FilesTab when the editor saves a file — a change here refetches
    *  the listing + git status so the tree's dots reflect the save immediately. */
   refreshNonce: number
+  /** The persisted selection from filesTabStore at the moment this TreePane
+   *  mounted — read ONCE (via a ref, not reactively) to restore the tree's own
+   *  selection highlight + scroll position after the first successful listDir,
+   *  since the content pane already restores independently via `selectedFile`
+   *  but nothing previously pushed that back into the tree (see the module
+   *  header + filesTabStore.ts's SELECTION-POINTER NOTE). Null when there was
+   *  nothing selected (fresh workspace, or the user never opened a file). */
+  initialSelectedFile: string | null
+  /** The persisted ancestors-of-selection from filesTabStore, read ONCE the
+   *  same way, so the restored selection's parent folders are open instead of
+   *  collapsed. Empty when there's nothing to restore. */
+  initialExpandedPaths: readonly string[]
+  /** Fired with the ancestor directories of the CURRENT selection whenever it
+   *  changes, so FilesTab can persist an up-to-date expansion snapshot (see
+   *  ancestorDirPaths — @pierre/trees has no expansion-change event/getter to
+   *  observe the user's actual manual expand/collapse state). */
+  onExpandedPathsChange: (paths: string[]) => void
 }
 
 /** Left pane: fetches the tier-tagged dir listing ONCE per workspace, seeds/
@@ -198,7 +236,10 @@ function TreePane({
   workspaceId,
   options,
   onSelectFile,
-  refreshNonce
+  refreshNonce,
+  initialSelectedFile,
+  initialExpandedPaths,
+  onExpandedPathsChange
 }: TreePaneProps): React.JSX.Element {
   const [truncated, setTruncated] = useState(false)
   const [pathCount, setPathCount] = useState(0)
@@ -213,6 +254,22 @@ function TreePane({
   // the dots WITHOUT re-fetching. Refreshed together with entries in
   // fetchEntries (so post-mutation refetches also refresh the dots).
   const gitStatusRef = useRef<GitStatusEntry[]>([])
+
+  // The persisted selection/expansion to restore, captured ONCE at mount (a
+  // ref, not read reactively) — this pane only ever restores the snapshot that
+  // was current when it (re)mounted, not a moving target as FilesTab's store
+  // subscription updates during normal use (that would fight the tree→store
+  // effect below and could re-select a stale path mid-session).
+  const initialSelectedFileRef = useRef(initialSelectedFile)
+  const initialExpandedPathsRef = useRef(initialExpandedPaths)
+  // Sentinel: the store→tree restore (select + scroll + seed expansion) runs at
+  // most ONCE per mount, on the first successful (non-empty) resetPaths — see
+  // the `isFirstRestore` branch inside applyOptions below. This is what
+  // prevents a ping-pong with the tree→store selection effect (below) and with
+  // later resetPaths calls (toggle flips, refreshNonce refetches) that must
+  // NOT stomp the user's in-session selection/expansion back to the stale
+  // snapshot.
+  const didRestoreRef = useRef(false)
 
   // The rename onRename/onError handlers live in a ref so they can be given to
   // useFileTree's `renaming` config once (stable) while still calling the
@@ -247,9 +304,37 @@ function TreePane({
     onSelectFile(derived)
   }, [derived, onSelectFile])
 
+  // Recompute + report the ancestors-of-selection whenever the selected FILE
+  // changes (not on every raw selection tick — a directory-only or multi-path
+  // selection yields `derived === null` and intentionally leaves the last
+  // persisted snapshot alone rather than clobbering it with `[]`; ancestors
+  // are only ever recorded for an actual open file, matching filesTabStore's
+  // "ancestors of the selected file" contract). This is the ONLY writer of
+  // expansion state — see the module header on why there's no true expansion-
+  // change observation available from @pierre/trees.
+  useEffect(() => {
+    if (derived != null) onExpandedPathsChange(ancestorDirPaths(derived))
+  }, [derived, onExpandedPathsChange])
+
   // Apply the current toggles to the cached entries + git status: reset the
   // visible paths and set the merged git-status payload (real added/modified/…
   // dots COMPOSED with the synthetic `ignored` dim entries). Imperative (§7).
+  //
+  // STORE→TREE RESTORE (the other half of the selection-pointer bug): the
+  // FIRST time this resolves a non-empty path set after mount, seed
+  // `resetPaths`'s `initialExpandedPaths` from the persisted snapshot (so the
+  // restored selection's parent folders are open) and imperatively select +
+  // scroll to the persisted `selectedFile`, if it's still present. This can
+  // ONLY happen here (not at useFileTree's own `initialSelectedPaths`/
+  // `initialExpandedPaths` construction options) because construction always
+  // starts from `paths: []` — the persisted path can't resolve against an
+  // empty store (verified against FileTreeController's constructor: it
+  // resolves `initialSelectedPaths` against `#store` synchronously, and
+  // `#store` is built from the SAME `paths` array passed in). Runs at most
+  // once per mount (`didRestoreRef`), which is what keeps this from ping-
+  // ponging with the tree→store selection effect below and from re-stomping
+  // the user's live selection/expansion on every later toggle-flip or
+  // refreshNonce-triggered resetPaths within the same mount.
   const applyOptions = useCallback(
     (
       entries: readonly FileEntry[],
@@ -257,9 +342,21 @@ function TreePane({
       opts: TreeOptionsState
     ): void => {
       const paths = visiblePaths(entries, opts.showHidden)
-      model.resetPaths(paths)
+      const isFirstRestore = !didRestoreRef.current && paths.length > 0
+      model.resetPaths(
+        paths,
+        isFirstRestore ? { initialExpandedPaths: initialExpandedPathsRef.current } : undefined
+      )
       model.setGitStatus(mergedStatus(entries, gitStatus, opts))
       setPathCount(paths.length)
+      if (isFirstRestore) {
+        didRestoreRef.current = true
+        const restorePath = initialSelectedFileRef.current
+        if (restorePath != null && paths.includes(restorePath)) {
+          model.getItem(restorePath)?.select()
+          model.scrollToPath(restorePath)
+        }
+      }
     },
     [model]
   )
@@ -690,7 +787,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   // Reads subscribe to just this workspace's entry; every setter writes the
   // full entry back. See src/renderer/src/lib/filesTabStore.ts.
   const entry = useFilesTabEntry(workspaceId)
-  const { selectedFile, mode, treeOpen, treeOptions } = entry
+  const { selectedFile, mode, treeOpen, treeOptions, expandedPaths } = entry
 
   // `dirty` stays component-local: it's transient editor UI (the unsaved dot),
   // re-reported by the freshly-mounted editor from disk on remount, and never
@@ -724,6 +821,19 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
     (next: TreeOptionsState) => {
       const cur = getFilesTabEntry(workspaceId)
       setFilesTabEntry(workspaceId, { ...cur, treeOptions: next })
+    },
+    [workspaceId]
+  )
+  // Written by TreePane whenever the selected FILE changes (see
+  // onExpandedPathsChange in TreePane) — the persisted ancestors-of-selection
+  // snapshot that seeds `initialExpandedPaths` the next time this workspace's
+  // tree (re)mounts. createPerKeyStore's array-shallow `equals` (added in
+  // filesTabStore.ts) no-ops a value-identical write, so re-selecting the same
+  // file doesn't spuriously notify.
+  const setExpandedPaths = useCallback(
+    (next: string[]) => {
+      const cur = getFilesTabEntry(workspaceId)
+      setFilesTabEntry(workspaceId, { ...cur, expandedPaths: next })
     },
     [workspaceId]
   )
@@ -779,6 +889,9 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             options={treeOptions}
             onSelectFile={setSelectedFile}
             refreshNonce={refreshNonce}
+            initialSelectedFile={selectedFile}
+            initialExpandedPaths={expandedPaths}
+            onExpandedPathsChange={setExpandedPaths}
           />
         </div>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
