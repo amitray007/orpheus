@@ -30,6 +30,7 @@ import type React from 'react'
 import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
 import { TerminalTab } from './TerminalTab'
+import { FilesTab } from './FilesTab'
 import { WORKBENCH_TABS } from './workbenchTabs'
 
 const TRANSITION = 'width 200ms ease'
@@ -276,6 +277,8 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
                 active={terminalTabActive}
                 animating={animating}
               />
+            ) : id === 'files' ? (
+              id === activeTab && !dormant && <FilesTab workspaceId={workspaceId} />
             ) : (
               id === activeTab && !dormant && <ComingSoon label={label} />
             )}
