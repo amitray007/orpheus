@@ -79,6 +79,8 @@ import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
+import { useImageZoomPan } from './useImageZoomPan'
+import { ImageZoomBar } from './ImageZoomBar'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -369,7 +371,26 @@ function DiffTreeToolbar({
  *  decorations. Selecting a file reports it up to GitTab, which looks up its
  *  patch for the diff pane. No directories in this list beyond what the
  *  paths themselves imply — @pierre/trees derives the folder structure from
- *  the path separators, same as FilesTab. */
+ *  the path separators, same as FilesTab.
+ *
+ *  FIX 1: `selected` (GitTab's own selectedPath — seeded by auto-select via
+ *  nextSelection, or carried over from a prior render) is now pushed INTO the
+ *  widget imperatively, mirroring FilesTab's store→tree restore (see its
+ *  applyOptions comment + `model.getItem(restorePath)?.select()` /
+ *  `scrollToPath`) — previously nothing ever called the model's own
+ *  select(), so the widget's internal selection stayed empty and the
+ *  selection-report effect below would fire with `[]`, reporting `null` up
+ *  and clobbering GitTab's `selectedPath` back to null (the "Select a
+ *  changed file" placeholder showing despite a populated auto-selection).
+ *
+ *  GUARD against the push/report ping-pong: the report effect below only
+ *  ever propagates a NON-NULL widget selection upward (the same asymmetry
+ *  FilesTab's restore-guard uses — withhold a clobbering `null` while a
+ *  known-good selection hasn't been reflected into the widget yet). So an
+ *  empty widget selection during (re)mount or a resetPaths() churn can never
+ *  null out `selectedPath`; it can only be advanced by a genuine new
+ *  non-null pick (a user click) or by this push effect explicitly selecting
+ *  the auto-selected path once its path is actually present in the tree. */
 function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): React.JSX.Element {
   const paths = useMemo(() => files.map((f) => f.path), [files])
   // Keyed by path so the decoration renderer (an imperative callback, not a
@@ -421,12 +442,41 @@ function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): Rea
     model.setGitStatus(toTreeGitStatus(files))
   }, [model, paths, files])
 
+  // FIX 1 (push half): whenever GitTab's `selected` path changes (or the
+  // path set changes shape, e.g. after resetPaths above) AND the widget's
+  // own current selection doesn't already match it, imperatively select it
+  // in the widget — same call FilesTab's restore path uses
+  // (`model.getItem(path)?.select()` + `scrollToPath`). Guarded so this
+  // never fights the report effect below: it only acts when `selected` is
+  // non-null and actually present in `paths` (nothing to select otherwise),
+  // and it's a no-op once the widget selection already agrees, so it can't
+  // re-trigger itself via the report effect on every tick.
+  useEffect(() => {
+    if (selected === null) return
+    if (!paths.includes(selected)) return
+    const current = selection.length === 1 ? selection[0] : null
+    if (current === selected) return
+    const item = model.getItem(selected)
+    if (item == null) return
+    item.select()
+    model.scrollToPath(selected)
+  }, [model, selected, paths, selection])
+
   // Report the single selected (non-directory) file up. Every path here is a
   // file already (git:diff never returns directories), so any single
   // selection is a valid target.
+  //
+  // FIX 1 (clobber guard): only ever propagate a NON-NULL widget selection.
+  // Withholding a `null` report means an empty/transient widget selection —
+  // during (re)mount, a resetPaths() churn, or the brief window before the
+  // push effect above has run — can never stomp GitTab's already-populated
+  // `selectedPath` back to null. A genuine user deselect never happens in
+  // this single-select tree (there's no empty-space click target that
+  // clears selection without picking another row), so this asymmetry costs
+  // nothing real; it only removes the spurious clobber this fix addresses.
   useEffect(() => {
     const single = selection.length === 1 ? selection[0] : null
-    if (single !== selected) onSelectFile(single)
+    if (single !== null && single !== selected) onSelectFile(single)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `selected`/`onSelectFile` intentionally excluded: this effect only reacts to the tree's OWN selection changing, not to GitTab re-deriving `selected` from a fresh files[] after a refetch.
   }, [selection])
 
@@ -562,7 +612,15 @@ interface LoadedGitImage {
  *  uses. Showing the current/new version is the documented minimum (a
  *  before/after diff is a nice-to-have the task explicitly says to skip if
  *  non-trivial — it would need a second read of the file at HEAD, which
- *  files:readImage has no revision parameter for). */
+ *  files:readImage has no revision parameter for).
+ *
+ *  FIX 2: reuses FilesTab's zoom/pan exactly (useImageZoomPan + ImageZoomBar,
+ *  see FilesTab.tsx's ImageBody) rather than reimplementing it — same
+ *  `useImageZoomPan(path)` keyed on path so zoom/pan resets whenever the
+ *  selected file changes, same pan-container wiring (wheel/pointer handlers
+ *  + `zoom.style` transform + `zoom.cursorClassName`), same floating
+ *  `<ImageZoomBar>`. The non-image "Binary file — no preview" placeholder in
+ *  DiffContentPane is untouched — this only applies to the image branch. */
 function BinaryImageBody({
   workspaceId,
   path
@@ -587,6 +645,11 @@ function BinaryImageBody({
     }
   }, [workspaceId, path])
 
+  // Zoom/pan state resets whenever the viewed path changes — keyed on
+  // `path` (not the loaded image), matching FilesTab's ImageBody comment on
+  // why it's keyed on the SELECTION rather than the settled fetch.
+  const zoom = useImageZoomPan(path)
+
   const current = loaded && loaded.path === path ? loaded.image : null
   if (current === null) return <DiffMessage text="Loading…" />
   if (!current.ok) {
@@ -597,15 +660,22 @@ function BinaryImageBody({
   }
   return (
     <div
-      className="flex-1 min-h-0 flex items-center justify-center overflow-hidden"
+      className={`relative flex-1 min-h-0 flex items-center justify-center overflow-hidden ${zoom.cursorClassName}`}
       style={{ backgroundColor: PIERRE_VIEWER_BG }}
+      onWheel={zoom.onWheel}
+      onPointerDown={zoom.onPointerDown}
+      onPointerMove={zoom.onPointerMove}
+      onPointerUp={zoom.onPointerUp}
+      onPointerCancel={zoom.onPointerUp}
     >
       <img
         src={current.dataUrl}
         alt=""
         draggable={false}
         className="max-w-full max-h-full object-contain"
+        style={zoom.style}
       />
+      <ImageZoomBar zoom={zoom} />
     </div>
   )
 }
