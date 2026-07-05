@@ -59,6 +59,8 @@ import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { PreviewPane } from './PreviewPane'
 import { isRenderablePath } from './previewRender'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
+import { useImageZoomPan } from './useImageZoomPan'
+import { ImageZoomBar } from './ImageZoomBar'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
 import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
 import { showConfirmModalReact } from '../../lib/overlayClient'
@@ -154,8 +156,13 @@ function mergedStatus(
 
 // Image extensions we recognize for the ImageBody branch — these route to
 // files:readImage (base64 data URL → <img>) instead of the text readFile path.
-// Kept in sync with IMAGE_MIME_BY_EXT in src/main/ipc/files.ts.
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'])
+// Kept in sync with IMAGE_MIME_BY_EXT in src/main/ipc/files.ts, MINUS 'svg':
+// SVG is XML/text source (not a raster format), so it's deliberately excluded
+// here and instead routed through the normal text path (readFile → Viewer's
+// highlighted source / Editor's CodeMirror) with a rendered Preview segment
+// (see RENDERABLE_EXTENSIONS in previewRender.ts). PNG/JPG/GIF/WebP/AVIF have
+// no meaningful source view and stay image-only via ImageBody.
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'])
 
 function isImagePath(path: string): boolean {
   const dot = path.lastIndexOf('.')
@@ -837,7 +844,7 @@ function ContentBody({
   // entirely) and are never editable, regardless of the viewer/editor mode
   // toggle (there is no "edit an image" concept here).
   if (isImagePath(path)) {
-    return <ImageBody image={image} />
+    return <ImageBody image={image} path={path} />
   }
   if (result === null) {
     return <ViewerMessage text="Loading…" />
@@ -918,15 +925,25 @@ function ViewerMessage({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-/** Renders the selected image (a data URL fetched via files:readImage) centered
- *  on the same dark viewer background as the text viewer, or a graceful
- *  loading/error message. `image === null` means the fetch for the current
- *  path hasn't settled yet (mirrors ContentPane's `result === null` loading
- *  convention). SVGs are handed to `<img>` as a data URL too — that renders
- *  them as a rasterized image (not inline `<svg>` source), which is what we
- *  want here (no script execution, consistent sizing/centering with other
- *  formats). */
-function ImageBody({ image }: { image: LoadedImage | null }): React.JSX.Element {
+/** Renders the selected RASTER image (a data URL fetched via files:readImage)
+ *  centered on the same dark viewer background as the text viewer, or a
+ *  graceful loading/error message. `image === null` means the fetch for the
+ *  current path hasn't settled yet (mirrors ContentPane's `result === null`
+ *  loading convention). SVG is NOT routed here — see IMAGE_EXTENSIONS above —
+ *  it goes through the text Viewer/Editor path with a rendered Preview
+ *  instead, since it's XML source, not a raster format. */
+function ImageBody({
+  image,
+  path
+}: {
+  image: LoadedImage | null
+  path: string
+}): React.JSX.Element {
+  // Zoom/pan state resets whenever the viewed path changes (see
+  // useImageZoomPan's resetKey contract) — keyed on `path`, not `image`, so it
+  // resets the instant the SELECTION changes rather than waiting for the new
+  // image's fetch to settle.
+  const zoom = useImageZoomPan(path)
   if (image === null) {
     return <ViewerMessage text="Loading…" />
   }
@@ -939,10 +956,22 @@ function ImageBody({ image }: { image: LoadedImage | null }): React.JSX.Element 
   }
   return (
     <div
-      className="flex-1 min-h-0 flex items-center justify-center overflow-auto"
+      className={`relative flex-1 min-h-0 flex items-center justify-center overflow-hidden ${zoom.cursorClassName}`}
       style={{ backgroundColor: PIERRE_VIEWER_BG }}
+      onWheel={zoom.onWheel}
+      onPointerDown={zoom.onPointerDown}
+      onPointerMove={zoom.onPointerMove}
+      onPointerUp={zoom.onPointerUp}
+      onPointerCancel={zoom.onPointerUp}
     >
-      <img src={result.dataUrl} alt="" className="max-w-full max-h-full object-contain" />
+      <img
+        src={result.dataUrl}
+        alt=""
+        draggable={false}
+        className="max-w-full max-h-full object-contain"
+        style={zoom.style}
+      />
+      <ImageZoomBar zoom={zoom} />
     </div>
   )
 }

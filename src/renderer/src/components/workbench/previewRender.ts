@@ -2,29 +2,37 @@
 // src/renderer/src/components/workbench/previewRender.ts
 //
 // Pure helpers for the Files-tab Preview mode: which files are renderable,
-// and the md/html -> sanitized-HTML pipeline. Split out of PreviewPane.tsx
+// and the md/html/svg -> sanitized-HTML pipeline. Split out of PreviewPane.tsx
 // (which stays component-only) so react-refresh/only-export-components
 // doesn't flag a non-component export sharing a file with a component.
 //
 // SECURITY (read before touching): `markdown-it` is configured with
 // `html: true` (raw HTML passthrough inside markdown — needed so common
-// README patterns like `<details>`/`<img align>` render), and `.html`/`.htm`
-// files are rendered AS-IS. Both paths are therefore untrusted-HTML paths.
-// `DOMPurify.sanitize(...)` is MANDATORY on both — it strips `<script>`,
-// `on*` handler attributes, and `javascript:` URLs before the string ever
-// reaches `dangerouslySetInnerHTML`. The renderer CSP (`script-src 'self'`)
-// is a backstop, not a substitute: sanitize is the actual control here,
-// because the user explicitly opted into rendering file-authored HTML (the
-// higher-risk path a plain syntax-highlighted viewer never takes).
+// README patterns like `<details>`/`<img align>` render), and `.html`/`.htm`/
+// `.svg` files are rendered AS-IS (passthrough). All three paths are
+// therefore untrusted-HTML (or untrusted-SVG, which can carry the same
+// `<script>`/event-handler payloads) paths. `DOMPurify.sanitize(...)` is
+// MANDATORY on all of them — it strips `<script>`, `on*` handler attributes,
+// and `javascript:` URLs before the string ever reaches
+// `dangerouslySetInnerHTML`. DOMPurify's default config already sanitizes SVG
+// safely while preserving the vector markup (`<svg>`, `<circle>`, `<path>`,
+// etc. survive; `<script>`/`onload`/... do not) — no special SVG profile
+// needed. The renderer CSP (`script-src 'self'`) is a backstop, not a
+// substitute: sanitize is the actual control here, because the user
+// explicitly opted into rendering file-authored markup (the higher-risk path
+// a plain syntax-highlighted viewer never takes).
 // ---------------------------------------------------------------------------
 
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 
 // Extensions the Preview mode can render. Kept as its own set (not reusing
-// IMAGE_EXTENSIONS from FilesTab.tsx) since this is a disjoint concept: images
-// route to <img>, never through markdown-it/DOMPurify.
-const RENDERABLE_EXTENSIONS = new Set(['md', 'markdown', 'html', 'htm'])
+// IMAGE_EXTENSIONS from FilesTab.tsx) since this is a disjoint concept:
+// raster images (png/jpg/gif/webp/avif) route to <img> in FilesTab's
+// ImageBody, never through markdown-it/DOMPurify. SVG is text/XML source —
+// it's deliberately NOT in FilesTab's IMAGE_EXTENSIONS — and renders here via
+// the same passthrough+sanitize path as HTML (see isHtmlLikePath below).
+const RENDERABLE_EXTENSIONS = new Set(['md', 'markdown', 'html', 'htm', 'svg'])
 
 function extensionOf(path: string): string | null {
   const dot = path.lastIndexOf('.')
@@ -54,10 +62,12 @@ function isMarkdownPath(path: string): boolean {
 // bare URLs in the source into clickable links.
 const markdownRenderer = new MarkdownIt({ html: true, linkify: true })
 
-/** md → HTML (markdown-it) or passthrough (.html/.htm) → DOMPurify.sanitize.
- *  MANDATORY sanitize call on both branches — see the file-header SECURITY
+/** md → HTML (markdown-it) or passthrough (.html/.htm/.svg) → DOMPurify.sanitize.
+ *  MANDATORY sanitize call on every branch — see the file-header SECURITY
  *  note. The single call site here makes the "sanitize always runs" invariant
- *  easy to audit. */
+ *  easy to audit. SVG takes the SAME passthrough branch as HTML (raw contents
+ *  straight into DOMPurify) — it is not markdown, so `isMarkdownPath` already
+ *  routes it there without any extra branching. */
 export function renderToSafeHtml(contents: string, path: string): string {
   const raw = isMarkdownPath(path) ? markdownRenderer.render(contents) : contents
   return DOMPurify.sanitize(raw)
