@@ -58,7 +58,7 @@ import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
 import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
-import { ConfirmModal } from '../ConfirmModal'
+import { showConfirmModalReact } from '../../lib/overlayClient'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
@@ -531,17 +531,23 @@ function TreePane({
   const getKnownPaths = useCallback(() => new Set(entriesRef.current.map((e) => e.path)), [])
 
   // Directory-delete confirm: `del` (in the mutations hook) awaits
-  // confirmDirDelete(item), which opens a ConfirmModal and resolves the pending
-  // promise from the modal's confirm/cancel handlers.
-  const [pendingDelete, setPendingDelete] = useState<{
-    item: FileTreeContextMenuItem
-    resolve: (ok: boolean) => void
-  } | null>(null)
-  const confirmDirDelete = useCallback(
-    (item: FileTreeContextMenuItem): Promise<boolean> =>
-      new Promise<boolean>((resolve) => setPendingDelete({ item, resolve })),
-    []
-  )
+  // confirmDirDelete(item), which shows the CENTERED confirm modal via the
+  // native overlay layer (overlayClient.showConfirmModalReact) instead of an
+  // in-window React modal. A centered modal spans the whole window — including
+  // the claude column's rect — so an in-window DOM version would render BEHIND
+  // the live libghostty terminal surface (see
+  // docs/learnings/overlay-child-window-macos.md). The overlay layer's own
+  // child BrowserWindow genuinely paints above it.
+  const confirmDirDelete = useCallback((item: FileTreeContextMenuItem): Promise<boolean> => {
+    return showConfirmModalReact({
+      title: 'Move folder to Trash?',
+      body: `${item.name} and all of its contents will be moved to the Trash. You can recover it from Finder.`,
+      buttons: [
+        { id: 'cancel', label: 'Cancel' },
+        { id: 'confirm', label: 'Move to Trash', style: 'danger' }
+      ]
+    }).then((result) => result.buttonId === 'confirm')
+  }, [])
 
   const mutations = useFilesTreeMutations({
     workspaceId,
@@ -648,27 +654,6 @@ function TreePane({
         <div className="flex-shrink-0 px-2 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
           showing first {pathCount} — tree truncated
         </div>
-      )}
-      {pendingDelete && (
-        <ConfirmModal
-          title="Move folder to Trash?"
-          body={
-            <>
-              <span className="font-mono text-text-primary">{pendingDelete.item.name}</span> and all
-              of its contents will be moved to the Trash. You can recover it from Finder.
-            </>
-          }
-          confirmLabel="Move to Trash"
-          destructive
-          onConfirm={() => {
-            pendingDelete.resolve(true)
-            setPendingDelete(null)
-          }}
-          onCancel={() => {
-            pendingDelete.resolve(false)
-            setPendingDelete(null)
-          }}
-        />
       )}
     </div>
   )
