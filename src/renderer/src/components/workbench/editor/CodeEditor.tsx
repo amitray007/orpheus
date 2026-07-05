@@ -55,6 +55,12 @@ export interface CodeEditorProps {
   /** When true, auto-save on context leave (editor blur, file switch, unmount);
    *  when false, manual Cmd/Ctrl+S only. */
   autoSave: boolean
+  /** Word-wrap long lines (CodeMirror's `EditorView.lineWrapping`, kept in a
+   *  Compartment — see `wrapCompartment` below — so toggling it reconfigures
+   *  the live view instead of remounting the whole editor). Mirrors the
+   *  viewer's `overflow: 'wrap'|'scroll'` (see TreeOptionsPopover's
+   *  `wrapLines`, threaded through FilesTab → ContentBody). */
+  wrap: boolean
   /** Reports dirty transitions up to FilesTab (drives the header dot). */
   onDirtyChange?: (dirty: boolean) => void
   /** Reports a successful save (e.g. to refresh any external view). */
@@ -74,11 +80,17 @@ export function CodeEditor({
   name,
   initialContents,
   autoSave,
+  wrap,
   onDirtyChange,
   onSaved
 }: CodeEditorProps): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
+  // Reconfigured (not remounted) whenever `wrap` changes — see the effect
+  // below. The Compartment instance itself is stable for the editor's whole
+  // mount lifetime (recreated only alongside the view itself, in the create
+  // effect), matching the existing `highlightCompartment` pattern.
+  const wrapCompartmentRef = useRef(new Compartment())
   const saveRef = useRef<SaveState>({ baseline: initialContents, saving: false })
   // Latest autoSave flag, read inside the (stable) blur handler without
   // re-creating the editor when the setting toggles. Synced in an effect (not
@@ -87,6 +99,16 @@ export function CodeEditor({
   useEffect(() => {
     autoSaveRef.current = autoSave
   }, [autoSave])
+  // Latest `wrap`, read by the create-effect ONLY at initial mount (to seed
+  // the Compartment) — kept current so a genuinely new file (which reruns
+  // that effect) always seeds from the live setting rather than a stale
+  // closure value. The actual toggle path (existing view, no remount) is the
+  // reconfigure effect below, which dispatches directly instead of reading
+  // this ref.
+  const wrapRef = useRef(wrap)
+  useEffect(() => {
+    wrapRef.current = wrap
+  }, [wrap])
   // Latest onSaved, read by the fire-and-forget flush (see flushSaveRef) which
   // may run AFTER this editor unmounts (file switch) — a ref keeps it reachable
   // when the closure outlives the render that created it.
@@ -195,6 +217,11 @@ export function CodeEditor({
 
     const { cm } = languageFor(name)
     const highlightCompartment = new Compartment()
+    // Fresh Compartment per mount (a new file remounts this whole effect), kept
+    // in the ref so the reconfigure effect below can reach it without adding a
+    // second source of truth for "the current wrap state."
+    const wrapCompartment = new Compartment()
+    wrapCompartmentRef.current = wrapCompartment
 
     // Dirty tracking only — the header dot + auto-save gating both read the
     // dirty state; the actual auto-save now fires on context-leave (blur /
@@ -250,7 +277,7 @@ export function CodeEditor({
         blurHandler,
         pierreDarkChromeTheme,
         highlightCompartment.of([]),
-        EditorView.lineWrapping
+        wrapCompartment.of(wrapRef.current ? EditorView.lineWrapping : [])
       ]
     })
 
@@ -294,6 +321,19 @@ export function CodeEditor({
     // doc from a stale prop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, path, name])
+
+  // Reconfigure line-wrapping on an EXISTING view when `wrap` changes — no
+  // remount (unlike `workspaceId`/`path`/`name` above, which recreate the
+  // whole editor). Also fires once right after a fresh mount (the create
+  // effect above already seeded the Compartment from the same value), which
+  // is a harmless no-op redispatch — not worth an extra mount-guard ref.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: wrapCompartmentRef.current.reconfigure(wrap ? EditorView.lineWrapping : [])
+    })
+  }, [wrap])
 
   return (
     <div className="flex flex-col h-full min-h-0">

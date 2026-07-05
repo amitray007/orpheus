@@ -57,7 +57,8 @@ export interface FilesTabEntry {
   mode: FilesViewMode
   /** Whether the left file-tree pane is open. */
   treeOpen: boolean
-  /** The tree-view toggles (Show hidden / Dim gitignored). */
+  /** The tree/viewer/editor options — Show hidden / Dim gitignored / Wrap
+   *  lines / Sort order / Flatten empty dirs (see TreeOptionsPopover.tsx). */
   treeOptions: TreeOptionsState
   /** Directory paths (trailing-slash, tree-canonical form) to expand when the
    *  tree remounts — the ancestor chain of `selectedFile` at the time it was
@@ -70,7 +71,13 @@ export const DEFAULT_FILES_TAB_ENTRY: FilesTabEntry = {
   selectedFile: null,
   mode: 'viewer',
   treeOpen: true,
-  treeOptions: { showHidden: false, dimGitignored: true },
+  treeOptions: {
+    showHidden: false,
+    dimGitignored: true,
+    wrapLines: true,
+    sortOrder: 'default',
+    flattenEmptyDirs: false
+  },
   expandedPaths: []
 }
 
@@ -83,13 +90,22 @@ function sameExpandedPaths(prev: readonly string[], next: readonly string[]): bo
   return prev.length === next.length && prev.every((p, i) => p === next[i])
 }
 
+function sameTreeOptions(prev: TreeOptionsState, next: TreeOptionsState): boolean {
+  return (
+    prev.showHidden === next.showHidden &&
+    prev.dimGitignored === next.dimGitignored &&
+    prev.wrapLines === next.wrapLines &&
+    prev.sortOrder === next.sortOrder &&
+    prev.flattenEmptyDirs === next.flattenEmptyDirs
+  )
+}
+
 const store = createPerKeyStore<FilesTabEntry>({
   equals: (prev, next) =>
     prev.selectedFile === next.selectedFile &&
     prev.mode === next.mode &&
     prev.treeOpen === next.treeOpen &&
-    prev.treeOptions.showHidden === next.treeOptions.showHidden &&
-    prev.treeOptions.dimGitignored === next.treeOptions.dimGitignored &&
+    sameTreeOptions(prev.treeOptions, next.treeOptions) &&
     sameExpandedPaths(prev.expandedPaths, next.expandedPaths)
 })
 

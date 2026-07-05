@@ -42,7 +42,8 @@ import {
   type TreeThemeInput,
   type ContextMenuItem as FileTreeContextMenuItem,
   type ContextMenuOpenContext as FileTreeContextMenuOpenContext,
-  type FileTreeRenameEvent
+  type FileTreeRenameEvent,
+  type FileTreeSortComparator
 } from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List, MagnifyingGlass, FolderPlus, FilePlus } from '@phosphor-icons/react'
@@ -152,6 +153,33 @@ function mergedStatus(
   const claimed = new Set(real.map((g) => g.path))
   const dim = ignoredStatus(entries, options).filter((g) => !claimed.has(g.path))
   return [...real, ...dim]
+}
+
+// --- Sort order (§11 "Sort order") ------------------------------------------
+// `sort` is a CONSTRUCTION-ONLY option on `useFileTree`/`FileTreeController` —
+// verified against node_modules/@pierre/trees/dist/model/FileTreeController.js:
+// the controller captures `#baseOptions` (which includes `sort` AND
+// `flattenEmptyDirectories`) once in its constructor, and `resetPaths` always
+// rebuilds its store by re-spreading that SAME captured `#baseOptions` — there
+// is no reconfigure path for either option post-construction. So both are
+// passed only at `useFileTree(...)` call time in TreePane, and changing either
+// one remounts TreePane (see FilesTab's `treeKey`) rather than going through
+// `applyOptions`/`resetPaths` like showHidden/dimGitignored do.
+
+/** Pure alphabetical A→Z comparator (case-insensitive, ignoring directory-vs-
+ *  file type) for `sortOrder: 'name'` — Pierre's own `'default'` string picks
+ *  its built-in dirs-first/alpha ordering, so this is the only comparator we
+ *  need to hand-write. Ties (identical basename, e.g. same name different
+ *  case) fall back to full path so the order is still stable/deterministic. */
+const nameSortComparator: FileTreeSortComparator = (left, right) => {
+  const byName = left.basename.localeCompare(right.basename, undefined, { sensitivity: 'base' })
+  return byName !== 0 ? byName : left.path.localeCompare(right.path)
+}
+
+/** Resolves a `TreeOptionsState.sortOrder` to the `sort` value `useFileTree`
+ *  accepts (`'default'` string vs. a comparator function). */
+function resolveSort(sortOrder: TreeOptionsState['sortOrder']): 'default' | FileTreeSortComparator {
+  return sortOrder === 'name' ? nameSortComparator : 'default'
 }
 
 // Image extensions we recognize for the ImageBody branch — these route to
@@ -369,11 +397,17 @@ function TreePane({
   // initial load and subsequent workspace changes — §7). unsafeCSS dims full
   // rows tagged git-status `ignored` (see TREE_IGNORED_DIM_CSS). `renaming`
   // enables the built-in inline rename input (§10.2); `composition.contextMenu`
-  // enables the right-click trigger for renderContextMenu (§10.3).
+  // enables the right-click trigger for renderContextMenu (§10.3). `sort` and
+  // `flattenEmptyDirectories` are read ONCE here (construction-only — see the
+  // "Sort order" section above): FilesTab remounts this whole pane (via a
+  // `key` on `sortOrder:flattenEmptyDirs`) whenever either changes, since
+  // there's no post-construction reconfigure path for them.
   const { model } = useFileTree({
     paths: [],
     initialExpansion: 'open',
     search: true,
+    sort: resolveSort(options.sortOrder),
+    flattenEmptyDirectories: options.flattenEmptyDirs,
     unsafeCSS: TREE_IGNORED_DIM_CSS,
     composition: { contextMenu: { enabled: true } },
     renaming: {
@@ -392,8 +426,25 @@ function TreePane({
   }, [search])
 
   // Report the derived file-to-view up whenever the selection changes.
+  //
+  // GUARD (CodeRabbit finding, fixed): `useFileTree` always constructs with
+  // `paths: []` (see below), so on EVERY (re)mount — including the sort/
+  // flatten `key` remount above, not just a fresh workspace — `selection`
+  // starts empty and `derived` is `null` for the brief window before
+  // `fetchEntries` resolves and the store→tree restore effect (below) re-
+  // selects the persisted file. Reporting that transient `null` up
+  // unconditionally would have `setSelectedFile(null)` (FilesTab) clobber the
+  // PERSISTED selection before restore ever runs — not just a visual flash,
+  // a real loss of the open file. So: while there's a persisted file still
+  // waiting to be restored (`didRestoreRef` not yet true) and this is that
+  // exact restore target's absence (`derived === null`), withhold the report.
+  // Once restore has run (or there was nothing to restore), every `derived`
+  // change — including a genuine user-driven deselect — reports normally.
   const derived = useMemo(() => fileToView(selection), [selection])
   useEffect(() => {
+    if (derived === null && !didRestoreRef.current && initialSelectedFileRef.current !== null) {
+      return
+    }
     onSelectFile(derived)
   }, [derived, onSelectFile])
 
@@ -717,6 +768,10 @@ interface ContentPaneProps {
   path: string | null
   mode: FilesViewMode
   autoSave: boolean
+  /** Word-wrap toggle (§11's "Wrap lines") — drives BOTH the viewer's Pierre
+   *  <File> `overflow` option and the editor's CodeMirror line-wrapping
+   *  Compartment. Threaded down to ContentBody unchanged. */
+  wrapLines: boolean
   onDirtyChange: (dirty: boolean) => void
   /** Fired after the editor saves the file to disk — FilesTab uses this to
    *  refresh the tree's git-status dots. */
@@ -733,6 +788,7 @@ function ContentPane({
   path,
   mode,
   autoSave,
+  wrapLines,
   onDirtyChange,
   onSaved
 }: ContentPaneProps): React.JSX.Element {
@@ -804,6 +860,7 @@ function ContentPane({
       image={currentImage}
       mode={mode}
       autoSave={autoSave}
+      wrapLines={wrapLines}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
     />
@@ -817,6 +874,7 @@ interface ContentBodyProps {
   image: LoadedImage | null
   mode: FilesViewMode
   autoSave: boolean
+  wrapLines: boolean
   onDirtyChange: (dirty: boolean) => void
   onSaved: () => void
 }
@@ -833,6 +891,7 @@ function ContentBody({
   image,
   mode,
   autoSave,
+  wrapLines,
   onDirtyChange,
   onSaved
 }: ContentBodyProps): React.JSX.Element {
@@ -890,7 +949,11 @@ function ContentBody({
         <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
           <PierreFile
             file={{ name: contents.name, contents: contents.contents }}
-            options={{ theme: VIEWER_THEME, themeType: 'dark' }}
+            options={{
+              theme: VIEWER_THEME,
+              themeType: 'dark',
+              overflow: wrapLines ? 'wrap' : 'scroll'
+            }}
           />
         </div>
         {contents.truncated && (
@@ -908,6 +971,7 @@ function ContentBody({
             name={contents.name}
             initialContents={contents.contents}
             autoSave={autoSave}
+            wrap={wrapLines}
             onDirtyChange={onDirtyChange}
             onSaved={onSaved}
           />
@@ -1166,6 +1230,18 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
           className="w-60 flex-shrink-0 min-h-0 border-r border-border-default"
         >
           <TreePane
+            // Sort order + flatten-empty-dirs are construction-only options on
+            // useFileTree (see the "Sort order" comment block above
+            // nameSortComparator) — there's no post-construction reconfigure
+            // path, so changing either REMOUNTS this pane via this key. That
+            // drops the old useFileTree model and creates a fresh one, but
+            // selection/expansion still survive: `initialSelectedFile`/
+            // `initialExpandedPaths` below read the LIVE persisted entry (not
+            // a stale snapshot), and TreePane's own store→tree restore effect
+            // (didRestoreRef) re-selects + re-expands from those on the very
+            // first successful resetPaths after (re)mount — the same path
+            // that already restores selection across a full nav-away/back.
+            key={`${treeOptions.sortOrder}:${treeOptions.flattenEmptyDirs}`}
             workspaceId={workspaceId}
             options={treeOptions}
             onSelectFile={setSelectedFile}
@@ -1181,6 +1257,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             path={selectedFile}
             mode={mode}
             autoSave={autoSave}
+            wrapLines={treeOptions.wrapLines}
             onDirtyChange={setDirty}
             onSaved={bumpRefresh}
           />
