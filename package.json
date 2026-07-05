@@ -78,7 +78,9 @@
     "@pierre/trees": "1.0.0-beta.5",
     "@web-kits/audio": "^0.1.0",
     "better-sqlite3": "^12.9.0",
+    "dompurify": "^3.4.11",
     "geist": "^1.7.0",
+    "markdown-it": "^14.3.0",
     "minidenticons": "^4.2.1",
     "yaml": "^2.9.0"
   },
@@ -90,6 +92,8 @@
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/dompurify": "^3.2.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",

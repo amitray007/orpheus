@@ -56,6 +56,8 @@ import {
 } from '../../lib/filesTabStore'
 import { CodeEditor } from './editor/CodeEditor'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
+import { PreviewPane } from './PreviewPane'
+import { isRenderablePath } from './previewRender'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
 import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
@@ -847,6 +849,14 @@ function ContentBody({
   if (contents.binary) {
     return <ViewerMessage text={`Binary file (${formatKB(contents.size)}) — no preview`} />
   }
+  // Preview mode: rendered md/html, read-only. Gated on isRenderablePath so a
+  // stale 'preview' mode can never reach here for a non-renderable file — the
+  // ModeToggle disables the segment and FilesTab's own effect falls back to
+  // 'viewer' when the selection changes to a non-renderable file, but this
+  // check is the actual safety net (belt-and-suspenders, cheap to keep).
+  if (mode === 'preview' && isRenderablePath(path)) {
+    return <PreviewPane contents={contents.contents} path={path} />
+  }
   // Truncated files are read-only-safe in the viewer, but editing a partial
   // buffer then saving would DESTROY the un-read tail — so editing is refused
   // for them (only the viewer branch runs below).
@@ -944,22 +954,36 @@ interface ModeToggleProps {
   onChange: (mode: FilesViewMode) => void
   /** A dirty dot on the Editor segment when there are unsaved edits. */
   dirty: boolean
+  /** Whether the currently-selected file can render in Preview mode (md/html
+   *  text files — see isRenderablePath in PreviewPane.tsx). The Preview
+   *  segment is disabled/greyed and non-interactive when false. */
+  previewEnabled: boolean
 }
 
-/** Compact [Viewer | Editor] segmented control. Viewer is the default. */
-function ModeToggle({ mode, onChange, dirty }: ModeToggleProps): React.JSX.Element {
-  const seg = (value: FilesViewMode, label: string): React.JSX.Element => {
-    const active = mode === value
+/** Compact [Viewer | Editor | Preview] segmented control. Viewer is the
+ *  default. The Preview segment is disabled (greyed, non-clickable,
+ *  aria-disabled) unless the selected file is renderable (md/markdown/
+ *  html/htm) — rendering is meaningless for e.g. a .js or .py file. */
+function ModeToggle({ mode, onChange, dirty, previewEnabled }: ModeToggleProps): React.JSX.Element {
+  const seg = (value: FilesViewMode, label: string, disabled = false): React.JSX.Element => {
+    const active = mode === value && !disabled
     return (
       <button
         type="button"
-        onClick={() => onChange(value)}
+        onClick={() => {
+          if (!disabled) onChange(value)
+        }}
+        disabled={disabled}
         aria-pressed={active}
+        aria-disabled={disabled}
+        title={disabled ? 'Only available for Markdown/HTML files' : undefined}
         className={[
           'relative px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-100',
-          active
-            ? 'bg-surface-raised text-text-primary'
-            : 'text-text-muted hover:text-text-secondary'
+          disabled
+            ? 'text-text-muted/40 cursor-not-allowed'
+            : active
+              ? 'bg-surface-raised text-text-primary'
+              : 'text-text-muted hover:text-text-secondary'
         ].join(' ')}
       >
         {label}
@@ -973,6 +997,7 @@ function ModeToggle({ mode, onChange, dirty }: ModeToggleProps): React.JSX.Eleme
     <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-overlay/60 border border-border-default/60">
       {seg('viewer', 'Viewer')}
       {seg('editor', 'Editor')}
+      {seg('preview', 'Preview', !previewEnabled)}
     </div>
   )
 }
@@ -1064,6 +1089,20 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
     setDirty(false)
   }, [selectedFile])
 
+  // If the selection moves to a non-renderable file (e.g. from a README to a
+  // .js) while Preview is active, fall back to Viewer rather than leaving the
+  // user on a dead Preview pane. `mode` intentionally excluded from the deps —
+  // this only reacts to the SELECTION changing under an already-active Preview,
+  // not to every mode change (switching Editor->Preview on a renderable file is
+  // the normal path and must not be undone by this effect).
+  const previewEnabled = selectedFile !== null && isRenderablePath(selectedFile)
+  useEffect(() => {
+    if (mode === 'preview' && !previewEnabled) {
+      setMode('viewer')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately keyed on selectedFile (via previewEnabled), not `mode`; see comment above.
+  }, [selectedFile, previewEnabled])
+
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
       <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
@@ -1079,7 +1118,12 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
         </button>
         <TreeOptionsPopover options={treeOptions} onChange={setTreeOptions} />
         <div className="ml-auto pr-1">
-          <ModeToggle mode={mode} onChange={setMode} dirty={dirty} />
+          <ModeToggle
+            mode={mode}
+            onChange={setMode}
+            dirty={dirty}
+            previewEnabled={previewEnabled}
+          />
         </div>
       </div>
       <div className="flex-1 min-h-0 flex">

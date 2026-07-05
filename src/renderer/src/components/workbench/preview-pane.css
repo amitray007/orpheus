@@ -1,0 +1,195 @@
+/* ---------------------------------------------------------------------------
+ * src/renderer/src/components/workbench/preview-pane.css
+ *
+ * Scoped prose styling for the Files-tab Preview mode (rendered md/html).
+ * Every rule is namespaced under `.files-preview-prose` so it can never leak
+ * into the rest of the app — mirrors the co-located, directly-imported CSS
+ * pattern used by dotmatrix-loader.css (imported straight into its owning
+ * component rather than folded into the global main.css).
+ *
+ * Dark-only: the Files tab's Viewer/Editor already render against the fixed
+ * pierre-dark surface (see PIERRE_VIEWER_BG in ./editor/chromeTheme.ts) rather
+ * than the app's [data-theme] tokens, so Preview matches that same fixed dark
+ * palette for a seamless Viewer/Editor/Preview switch. Colors below are the
+ * same pierre-dark-derived values chromeTheme.ts uses (editor.foreground /
+ * editorLineNumber.foreground / focusBorder / panel divider), not new hex.
+ * --------------------------------------------------------------------------- */
+
+.files-preview-prose {
+  --fpp-fg: #fafafa;
+  --fpp-muted: #a3a3a3;
+  --fpp-faint: #737373;
+  --fpp-accent: #009fff;
+  --fpp-border: #fafafa1f;
+  --fpp-code-bg: #ffffff0d;
+  --fpp-code-block-bg: #050505;
+}
+
+.files-preview-prose__inner {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 32px 64px;
+  color: var(--fpp-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.files-preview-prose__inner > :first-child {
+  margin-top: 0;
+}
+.files-preview-prose__inner > :last-child {
+  margin-bottom: 0;
+}
+
+/* Headings */
+.files-preview-prose__inner h1,
+.files-preview-prose__inner h2,
+.files-preview-prose__inner h3,
+.files-preview-prose__inner h4,
+.files-preview-prose__inner h5,
+.files-preview-prose__inner h6 {
+  color: var(--fpp-fg);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.6em 0 0.6em;
+}
+.files-preview-prose__inner h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--fpp-border);
+}
+.files-preview-prose__inner h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--fpp-border);
+}
+.files-preview-prose__inner h3 {
+  font-size: 1.25em;
+}
+.files-preview-prose__inner h4 {
+  font-size: 1.1em;
+}
+.files-preview-prose__inner h5,
+.files-preview-prose__inner h6 {
+  font-size: 1em;
+  color: var(--fpp-muted);
+}
+
+/* Paragraphs + inline emphasis */
+.files-preview-prose__inner p {
+  margin: 0.8em 0;
+}
+.files-preview-prose__inner strong {
+  font-weight: 600;
+  color: var(--fpp-fg);
+}
+.files-preview-prose__inner em {
+  font-style: italic;
+}
+
+/* Lists */
+.files-preview-prose__inner ul,
+.files-preview-prose__inner ol {
+  margin: 0.6em 0;
+  padding-left: 1.6em;
+}
+.files-preview-prose__inner ul {
+  list-style: disc;
+}
+.files-preview-prose__inner ol {
+  list-style: decimal;
+}
+.files-preview-prose__inner li {
+  margin: 0.25em 0;
+}
+.files-preview-prose__inner li > ul,
+.files-preview-prose__inner li > ol {
+  margin: 0.25em 0;
+}
+
+/* Code — inline + fenced blocks */
+.files-preview-prose__inner code {
+  font-family: 'SF Mono', Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--fpp-code-bg);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+}
+.files-preview-prose__inner pre {
+  background: var(--fpp-code-block-bg);
+  border: 1px solid var(--fpp-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 1em 0;
+  overflow-x: auto;
+}
+.files-preview-prose__inner pre code {
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+/* Tables */
+.files-preview-prose__inner table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: max-content;
+  max-width: 100%;
+  font-size: 0.92em;
+}
+.files-preview-prose__inner th,
+.files-preview-prose__inner td {
+  border: 1px solid var(--fpp-border);
+  padding: 6px 12px;
+  text-align: left;
+}
+.files-preview-prose__inner th {
+  background: var(--fpp-code-bg);
+  color: var(--fpp-fg);
+  font-weight: 600;
+}
+.files-preview-prose__inner tr:nth-child(even) td {
+  background: #ffffff05;
+}
+
+/* Links */
+.files-preview-prose__inner a {
+  color: var(--fpp-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.files-preview-prose__inner a:hover {
+  color: var(--fpp-fg);
+}
+
+/* Blockquotes */
+.files-preview-prose__inner blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--fpp-border);
+  color: var(--fpp-muted);
+}
+.files-preview-prose__inner blockquote > :first-child {
+  margin-top: 0;
+}
+.files-preview-prose__inner blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* Rules */
+.files-preview-prose__inner hr {
+  border: none;
+  border-top: 1px solid var(--fpp-border);
+  margin: 2em 0;
+}
+
+/* Images */
+.files-preview-prose__inner img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}

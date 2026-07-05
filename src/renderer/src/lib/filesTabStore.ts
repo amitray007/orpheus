@@ -42,9 +42,13 @@
 import { createPerKeyStore } from './createPerKeyStore'
 import type { TreeOptionsState } from '../components/workbench/TreeOptionsPopover'
 
-/** Viewer (read-only Pierre <File>) vs Editor (CodeMirror). Mirrors the
- *  `FilesViewMode` union local to FilesTab.tsx. */
-export type FilesViewMode = 'viewer' | 'editor'
+/** Viewer (read-only Pierre <File>) vs Editor (CodeMirror) vs Preview
+ *  (rendered md/html). Mirrors the `FilesViewMode` union local to
+ *  FilesTab.tsx. Preview is only ever selectable for renderable files
+ *  (md/markdown/html/htm — see `isRenderablePath` in PreviewPane.tsx); FilesTab
+ *  falls back to 'viewer' if the selected file stops being renderable while
+ *  'preview' is active. */
+export type FilesViewMode = 'viewer' | 'editor' | 'preview'
 
 export interface FilesTabEntry {
   /** The single non-directory path currently selected/viewed, or null. */
