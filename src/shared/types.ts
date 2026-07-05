@@ -1295,6 +1295,47 @@ export type GitStatusEntry = {
   status: GitFileStatusKind
 }
 
+// ---------------------------------------------------------------------------
+// Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
+// patches, consumed by @pierre/diffs' <PatchDiff patch={...}>). See
+// docs/learnings/pierre-libraries.md §13.4/§13.9: PatchDiff takes a raw patch
+// string, so the git:diff IPC ships one already-split patch per file rather
+// than pre-parsed FileDiffMetadata.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-file working-tree diff status. Distinct from `GitFileStatusKind` (the
+ * Files-tab tree decoration enum) only in that there's no `'ignored'` state
+ * here — every entry in a `git:diff` result is a real changed file.
+ */
+export type GitDiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked'
+
+/**
+ * A single file's working-tree diff: the repo-relative path, its change
+ * status, a ready-to-render unified-diff patch string (`diff --git ...`
+ * through the last hunk line for this file only), and +/- line counts parsed
+ * from the same patch. `oldPath` is set only for renames (the pre-rename
+ * path) so the renderer can show "old → new" if desired.
+ */
+export type GitDiffFile = {
+  path: string
+  status: GitDiffFileStatus
+  patch: string
+  additions: number
+  deletions: number
+  oldPath?: string
+}
+
+/**
+ * Result of `git:diff` — the working tree vs `HEAD` (tracked changes) plus
+ * untracked files (each rendered as an all-additions patch against
+ * `/dev/null`). Empty `files` for a non-repo, a clean tree, or any git
+ * failure — the handler never throws (see src/main/gitDiff.ts).
+ */
+export type GitDiffResult = {
+  files: GitDiffFile[]
+}
+
 /**
  * Text contents of a single file for the viewer.
  *

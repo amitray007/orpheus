@@ -33,6 +33,7 @@ import type {
   FileImage,
   WriteFileResult,
   FilesMutationResult,
+  GitDiffResult,
   GhPullRequest,
   ClaudeAuthState,
   ClaudeAuthPatch,
@@ -425,7 +426,11 @@ const api = {
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
     ): Promise<number> => invoke('git:count', { cwd, ...opts }),
     onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
-      subscribe(PUSH_CHANNELS.gitStatusChanged, cb)
+      subscribe(PUSH_CHANNELS.gitStatusChanged, cb),
+    // Workbench Git tab (Phase 1) — per-file working-tree diff patches.
+    // Resolves the workspace's cwd internally, like files:*. See
+    // src/main/gitDiff.ts.
+    diff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:diff', { workspaceId })
   },
   // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
   // from `workspaceId` in the main process; see src/main/ipc/files.ts.

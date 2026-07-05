@@ -87,7 +87,8 @@ import type {
   FileContents,
   FileImage,
   WriteFileResult,
-  FilesMutationResult
+  FilesMutationResult,
+  GitDiffResult
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -295,6 +296,10 @@ export interface InvokeChannelMap {
     res: number
   }
   'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
+  // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
+  // patch strings, resolved from `workspaceId` like the files:* channels
+  // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.
+  'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult }
   // Workbench Files tab — file tree + viewer data sources (Stage A). All three
   // resolve the workspace's cwd from `workspaceId` internally; res types live
   // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.

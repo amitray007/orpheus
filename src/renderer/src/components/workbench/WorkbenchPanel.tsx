@@ -31,6 +31,7 @@ import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
 import { TerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
+import { GitTab } from './GitTab'
 import { WORKBENCH_TABS } from './workbenchTabs'
 
 const TRANSITION = 'width 200ms ease'
@@ -45,9 +46,20 @@ export interface WorkbenchPanelProps {
    *  own native surface on expand/collapse (the hard constraint below) and
    *  (b) key the Workbench Terminal tab's surface `workbench:<workspaceId>`. */
   workspaceId: string
+  /** Worktree metadata (WorkspaceRecord.worktreeParentCwd/worktreeBranch),
+   *  passed through from WorkspaceView (which already holds the full
+   *  workspace record) so the Git tab can show its worktree-vs-local chip
+   *  without a dedicated IPC round-trip — see GitTab.tsx. Null for a
+   *  main-checkout (non-worktree) workspace. */
+  worktreeParentCwd: string | null
+  worktreeBranch: string | null
 }
 
-export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.Element | null {
+export function WorkbenchPanel({
+  workspaceId,
+  worktreeParentCwd,
+  worktreeBranch
+}: WorkbenchPanelProps): React.JSX.Element | null {
   const api = useWorkbenchApi()
   const frameRef = useRef<HTMLDivElement>(null)
   const state = api?.state ?? 'dormant'
@@ -279,6 +291,15 @@ export function WorkbenchPanel({ workspaceId }: WorkbenchPanelProps): React.JSX.
               />
             ) : id === 'files' ? (
               id === activeTab && !dormant && <FilesTab workspaceId={workspaceId} />
+            ) : id === 'git' ? (
+              id === activeTab &&
+              !dormant && (
+                <GitTab
+                  workspaceId={workspaceId}
+                  worktreeParentCwd={worktreeParentCwd}
+                  worktreeBranch={worktreeBranch}
+                />
+              )
             ) : (
               id === activeTab && !dormant && <ComingSoon label={label} />
             )}

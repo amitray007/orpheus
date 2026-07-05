@@ -1026,7 +1026,7 @@ handle('doctor:check', async (): Promise<DoctorResult> => {
   }
 })
 
-registerGitIpc()
+registerGitIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
 
 registerFilesIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
 

@@ -889,7 +889,11 @@ export function WorkspaceView({
             WorkbenchProvider just below, so WorkbenchPanel and the title
             bar's "Workbench" button/section-2 restore control share one
             source of truth. */}
-        <WorkbenchPanel workspaceId={workspace.id} />
+        <WorkbenchPanel
+          workspaceId={workspace.id}
+          worktreeParentCwd={workspace.worktreeParentCwd}
+          worktreeBranch={workspace.worktreeBranch}
+        />
       </div>
     </>
   )
