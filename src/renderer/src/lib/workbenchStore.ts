@@ -52,13 +52,13 @@ export interface WorkbenchEntry {
   activeTab: WorkbenchTabId
 }
 
-export const DEFAULT_WORKBENCH_WIDTH = 460
+export const DEFAULT_WORKBENCH_WIDTH = 640
 
 export const DEFAULT_WORKBENCH_ENTRY: WorkbenchEntry = {
   state: 'dormant',
   width: DEFAULT_WORKBENCH_WIDTH,
   lastMode: 'open',
-  activeTab: 'terminal'
+  activeTab: 'git'
 }
 
 /** Derives the next `lastMode` for a transition into `nextState`: tracks
