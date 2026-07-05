@@ -85,6 +85,7 @@ import type {
   FilesListing,
   GitStatusEntry,
   FileContents,
+  FileImage,
   WriteFileResult,
   FilesMutationResult
 } from './types'
@@ -302,6 +303,13 @@ export interface InvokeChannelMap {
   'files:readFile': {
     req: [{ workspaceId: string; path: string }]
     res: FileContents
+  }
+  // Image bytes for the Files-tab viewer's `<img>` branch — base64 data URL,
+  // size-capped separately from text reads (images tend to be larger and are
+  // never truncated-and-shown-partial the way text is). See FileImage.
+  'files:readImage': {
+    req: [{ workspaceId: string; path: string }]
+    res: FileImage
   }
   'files:writeFile': {
     req: [{ workspaceId: string; path: string; contents: string }]

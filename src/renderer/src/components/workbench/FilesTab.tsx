@@ -18,9 +18,10 @@
 //     selected path that is NOT a directory (no trailing slash); that becomes
 //     the file to view. Directories toggle-expand natively on click and never
 //     open anything in the viewer.
-//   - VIEWER: `files:readFile(workspaceId, path)` → routed by result: binary
-//     (or image extension) → placeholder; text → Pierre's `<File>` with the
-//     bundled `pierre-dark` theme; `truncated` → a subtle note.
+//   - VIEWER: image extensions → `files:readImage(workspaceId, path)` (base64
+//     data URL → `<img>`); everything else → `files:readFile(workspaceId,
+//     path)`, routed by result: binary → placeholder; text → Pierre's `<File>`
+//     with the bundled `pierre-dark` theme; `truncated` → a subtle note.
 //
 // Gating: this whole component is only MOUNTED when the Files tab is the
 // active Workbench tab and the Workbench is open (see WorkbenchPanel — the
@@ -45,7 +46,7 @@ import {
 } from '@pierre/trees'
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List, MagnifyingGlass, FolderPlus, FilePlus } from '@phosphor-icons/react'
-import type { FileEntry, FileContents, GitStatusEntry } from '@shared/types'
+import type { FileEntry, FileContents, FileImage, GitStatusEntry } from '@shared/types'
 import { useUiState } from '../../lib/uiStateStore'
 import {
   useFilesTabEntry,
@@ -149,9 +150,9 @@ function mergedStatus(
   return [...real, ...dim]
 }
 
-// Image extensions we recognize for the "image file" placeholder branch. For
-// Stage B images get a calm placeholder (not real rendering) — see the note
-// in the report / imageExtensions block below.
+// Image extensions we recognize for the ImageBody branch — these route to
+// files:readImage (base64 data URL → <img>) instead of the text readFile path.
+// Kept in sync with IMAGE_MIME_BY_EXT in src/main/ipc/files.ts.
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'])
 
 function isImagePath(path: string): boolean {
@@ -170,6 +171,22 @@ function formatKB(bytes: number): string {
 function fileToView(selection: readonly string[]): string | null {
   const files = selection.filter((p) => !p.endsWith('/'))
   return files.length === 1 ? files[0] : null
+}
+
+/** The toolbar create-target path for the CURRENT tree selection, passed as
+ *  `targetPath` to `mutations.createAtRoot` (see useFilesTreeMutations.ts's
+ *  `targetDir`, which does the actual dir-vs-file branching once handed an
+ *  item). A single selected DIRECTORY (trailing slash) creates INSIDE it —
+ *  its own path is the target. A single selected FILE creates in its PARENT
+ *  dir. Anything else (nothing selected, or a multi-select) returns
+ *  `undefined` so `createAtRoot` falls back to the tree root, matching the
+ *  prior toolbar behavior when there's no unambiguous target. */
+function toolbarCreateTarget(selection: readonly string[]): string | undefined {
+  if (selection.length !== 1) return undefined
+  const [only] = selection
+  if (only.endsWith('/')) return only
+  const slash = only.lastIndexOf('/')
+  return slash === -1 ? undefined : only.slice(0, slash + 1)
 }
 
 /** The ancestor DIRECTORY paths of a repo-relative path, in the tree's
@@ -578,15 +595,18 @@ function TreePane({
   )
 
   // Toolbar's New Folder / New File buttons — no right-clicked row to derive a
-  // target dir from, so these always create at the tree ROOT (the workspace
-  // cwd root). `createAtRoot` is async (create → startRenaming); errors are
-  // already surfaced via `onError` inside the mutations hook, so this handler
-  // just needs to not leave a floating promise.
+  // target dir from, so they target the CURRENT tree selection instead: a
+  // single selected directory creates inside it, a single selected file
+  // creates in its parent dir, and no selection (or a multi-select) falls
+  // back to the tree root (see toolbarCreateTarget). `createAtRoot` is async
+  // (create → startRenaming); errors are already surfaced via `onError`
+  // inside the mutations hook, so this handler just needs to not leave a
+  // floating promise.
   const handleToolbarCreate = useCallback(
     (isFolder: boolean): void => {
-      void mutations.createAtRoot(isFolder)
+      void mutations.createAtRoot(isFolder, toolbarCreateTarget(selection))
     },
-    [mutations]
+    [mutations, selection]
   )
 
   const toolbar = useMemo(
@@ -672,6 +692,17 @@ interface LoadedFile {
   error: boolean
 }
 
+// A settled readImage result, tagged with the path it belongs to — the same
+// stale-guard shape as LoadedFile, but for the image-bytes IPC (files:readImage)
+// rather than files:readFile. Kept as a SEPARATE fetch/state (not folded into
+// LoadedFile) because images route around the text read entirely: fetching
+// readFile for a multi-MB PNG would burn the 3MB text cap + UTF-8 decode for
+// bytes the viewer never uses.
+interface LoadedImage {
+  path: string
+  image: FileImage
+}
+
 interface ContentPaneProps {
   workspaceId: string
   path: string | null
@@ -700,11 +731,39 @@ function ContentPane({
   // (no "loading" write on entry). "Loading" is derived: whenever the selected
   // `path` differs from `result.path`, the fetch for `path` hasn't landed yet.
   const [result, setResult] = useState<LoadedFile | null>(null)
+  const [image, setImage] = useState<LoadedImage | null>(null)
   // Guards a stale readFile resolving after the selection moved on — only the
-  // most-recent requested path may commit its result.
+  // most-recent requested path may commit its result. Shared between the two
+  // fetch effects below since only one of them is ever active for a given path.
   const requestedPathRef = useRef<string | null>(null)
 
+  // Images route to files:readImage (base64 data URL) instead of readFile —
+  // fetching readFile for a multi-MB image would burn the text size cap +
+  // UTF-8 decode for bytes the viewer never uses. isImagePath is a pure
+  // extension check, so this and the text-read effect below are mutually
+  // exclusive per path (never both in flight for the same selection).
   useEffect(() => {
+    if (path === null || !isImagePath(path)) return
+    requestedPathRef.current = path
+    let cancelled = false
+    window.api.files
+      .readImage(workspaceId, path)
+      .then((img) => {
+        if (cancelled || requestedPathRef.current !== path) return
+        setImage({ path, image: img })
+      })
+      .catch((e) => {
+        if (cancelled || requestedPathRef.current !== path) return
+        console.error('[FilesTab] readImage failed:', e)
+        setImage({ path, image: { ok: false, error: 'denied' } })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, path])
+
+  useEffect(() => {
+    if (path !== null && isImagePath(path)) return
     requestedPathRef.current = path
     if (path === null) return
     let cancelled = false
@@ -727,11 +786,13 @@ function ContentPane({
   // The result is only current when it matches the selected path; otherwise
   // we're still loading the newly-selected file.
   const current = result && result.path === path ? result : null
+  const currentImage = image && image.path === path ? image : null
   return (
     <ContentBody
       workspaceId={workspaceId}
       path={path}
       result={current}
+      image={currentImage}
       mode={mode}
       autoSave={autoSave}
       onDirtyChange={onDirtyChange}
@@ -744,6 +805,7 @@ interface ContentBodyProps {
   workspaceId: string
   path: string | null
   result: LoadedFile | null
+  image: LoadedImage | null
   mode: FilesViewMode
   autoSave: boolean
   onDirtyChange: (dirty: boolean) => void
@@ -759,6 +821,7 @@ function ContentBody({
   workspaceId,
   path,
   result,
+  image,
   mode,
   autoSave,
   onDirtyChange,
@@ -767,15 +830,19 @@ function ContentBody({
   if (path === null) {
     return <ViewerMessage text="Select a file to view" />
   }
+  // Images short-circuit before the text-read branches below — they never go
+  // through `result` (ContentPane's readFile effect skips image paths
+  // entirely) and are never editable, regardless of the viewer/editor mode
+  // toggle (there is no "edit an image" concept here).
+  if (isImagePath(path)) {
+    return <ImageBody image={image} />
+  }
   if (result === null) {
     return <ViewerMessage text="Loading…" />
   }
   const { contents } = result
   if (result.error || contents === null) {
     return <ViewerMessage text="Could not read this file." />
-  }
-  if (isImagePath(path)) {
-    return <ViewerMessage text={`Image file (${formatKB(contents.size)}) — preview coming soon`} />
   }
   if (contents.binary) {
     return <ViewerMessage text={`Binary file (${formatKB(contents.size)}) — no preview`} />
@@ -837,6 +904,35 @@ function ViewerMessage({ text }: { text: string }): React.JSX.Element {
   return (
     <div className="flex-1 flex items-center justify-center min-h-0">
       <span className="text-xs text-text-muted select-none">{text}</span>
+    </div>
+  )
+}
+
+/** Renders the selected image (a data URL fetched via files:readImage) centered
+ *  on the same dark viewer background as the text viewer, or a graceful
+ *  loading/error message. `image === null` means the fetch for the current
+ *  path hasn't settled yet (mirrors ContentPane's `result === null` loading
+ *  convention). SVGs are handed to `<img>` as a data URL too — that renders
+ *  them as a rasterized image (not inline `<svg>` source), which is what we
+ *  want here (no script execution, consistent sizing/centering with other
+ *  formats). */
+function ImageBody({ image }: { image: LoadedImage | null }): React.JSX.Element {
+  if (image === null) {
+    return <ViewerMessage text="Loading…" />
+  }
+  const { image: result } = image
+  if (!result.ok) {
+    if (result.error === 'too-large') {
+      return <ViewerMessage text="Image too large to preview (over 5 MB)" />
+    }
+    return <ViewerMessage text="Could not load image" />
+  }
+  return (
+    <div
+      className="flex-1 min-h-0 flex items-center justify-center overflow-auto"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
+      <img src={result.dataUrl} alt="" className="max-w-full max-h-full object-contain" />
     </div>
   )
 }

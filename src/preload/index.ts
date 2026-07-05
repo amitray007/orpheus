@@ -30,6 +30,7 @@ import type {
   FilesListing,
   GitStatusEntry,
   FileContents,
+  FileImage,
   WriteFileResult,
   FilesMutationResult,
   GhPullRequest,
@@ -435,6 +436,8 @@ const api = {
       invoke('files:gitStatus', { workspaceId }),
     readFile: (workspaceId: string, path: string): Promise<FileContents> =>
       invoke('files:readFile', { workspaceId, path }),
+    readImage: (workspaceId: string, path: string): Promise<FileImage> =>
+      invoke('files:readImage', { workspaceId, path }),
     writeFile: (workspaceId: string, path: string, contents: string): Promise<WriteFileResult> =>
       invoke('files:writeFile', { workspaceId, path, contents }),
     // Tree mutations (Phase 4). Each returns a typed FilesMutationResult.

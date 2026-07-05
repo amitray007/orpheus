@@ -24,6 +24,7 @@ import ignore, { type Ignore } from 'ignore'
 import type {
   FileContents,
   FileEntry,
+  FileImage,
   FilesListing,
   FilesMutationResult,
   FileTier,
@@ -322,6 +323,64 @@ async function readFileContents(cwd: string, relPath: string): Promise<FileConte
 }
 
 // ---------------------------------------------------------------------------
+// files:readImage — path-guarded, size-capped image read → base64 data URL.
+// ---------------------------------------------------------------------------
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5 MB — larger images refuse with 'too-large'.
+const IMAGE_NO_WORKSPACE: FileImage = { ok: false, error: 'missing' }
+
+// Extension → MIME map for the data URL. Falls back to a generic octet-stream
+// type for an unrecognized extension rather than refusing (isImagePath on the
+// renderer side already gates which paths reach this handler).
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif'
+}
+
+/** Derive the data-URL MIME type from a file's extension (lowercased, no dot). */
+function imageMimeFor(relPath: string): string {
+  const dot = relPath.lastIndexOf('.')
+  const ext = dot === -1 ? '' : relPath.slice(dot + 1).toLowerCase()
+  return IMAGE_MIME_BY_EXT[ext] ?? 'application/octet-stream'
+}
+
+/**
+ * Resolve `relPath` inside `cwd` (same `resolveInside` traversal guard as
+ * every other read/write handler), size-cap it (`MAX_IMAGE_BYTES`), and
+ * return the whole file as a base64 `data:<mime>;base64,...` URL for the
+ * viewer's `<img src>`. Total — never throws; every failure collapses to a
+ * typed `FileImage` error ('missing' for a traversal escape / no-file /
+ * unreadable path, 'too-large' for an oversized file).
+ */
+async function readImageContents(cwd: string, relPath: string): Promise<FileImage> {
+  const abs = resolveInside(cwd, relPath)
+  if (!abs) return { ok: false, error: 'missing' } // traversal escape — refuse.
+
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(abs)
+  } catch {
+    return { ok: false, error: 'missing' }
+  }
+  if (!stat.isFile()) return { ok: false, error: 'missing' }
+  if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'too-large' }
+
+  try {
+    const buf = await fs.readFile(abs)
+    const mime = imageMimeFor(abs)
+    const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+    return { ok: true, dataUrl, size: stat.size }
+  } catch {
+    return { ok: false, error: 'denied' }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // files:writeFile — path-guarded UTF-8 write (Files-tab editor save).
 // ---------------------------------------------------------------------------
 
@@ -464,6 +523,11 @@ export function registerFilesIpc(deps: FilesIpcDeps): void {
   handle('files:readFile', (_e, { workspaceId, path }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return cwd ? readFileContents(cwd, path) : Promise.resolve(EMPTY_CONTENTS)
+  })
+
+  handle('files:readImage', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? readImageContents(cwd, path) : Promise.resolve(IMAGE_NO_WORKSPACE)
   })
 
   handle('files:writeFile', (_e, { workspaceId, path, contents }) => {

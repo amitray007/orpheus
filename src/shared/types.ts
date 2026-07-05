@@ -1328,3 +1328,18 @@ export type WriteFileResult =
 export type FilesMutationResult =
   | { ok: true }
   | { ok: false; error: 'exists' | 'traversal' | 'denied' | 'missing' | 'no-workspace' }
+
+/**
+ * Result of `files:readImage` (Files-tab image viewer). On success, `dataUrl`
+ * is a base64 `data:<mime>;base64,...` URL of the whole file (small enough to
+ * hand straight to an `<img src>`) and `size` is the on-disk byte size. On
+ * failure, `error` carries a short reason: `too-large` (over the read cap),
+ * `missing` (no workspace cwd, a traversal escape, or the path doesn't
+ * resolve to an existing file), or `denied` (the file exists and is within
+ * cap but the fs read itself failed, e.g. a permissions error). The handler
+ * never throws across the IPC boundary — see `readFileContents`'s sibling
+ * `readImageContents` in src/main/ipc/files.ts.
+ */
+export type FileImage =
+  | { ok: true; dataUrl: string; size: number }
+  | { ok: false; error: 'too-large' | 'denied' | 'missing' }

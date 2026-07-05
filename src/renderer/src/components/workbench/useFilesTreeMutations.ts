@@ -95,11 +95,15 @@ export interface FilesTreeMutations {
   handleRename: (event: FileTreeRenameEvent) => void
   /** onError handler for useFileTree({ renaming: { onError } }). */
   handleRenamingError: (message: string) => void
-  /** Create a file/folder at the tree ROOT — used by the toolbar's New File /
-   *  New Folder buttons, which have no right-clicked item to derive a target
-   *  dir from (unlike the context menu's per-row create). Drives the same
-   *  create→startRenaming flow via a synthetic root item (`path: ''`). */
-  createAtRoot: (isFolder: boolean) => Promise<void>
+  /** Create a file/folder, targeting `targetPath` when given (used by the
+   *  toolbar's New File / New Folder buttons, which have no right-clicked item
+   *  to derive a target dir from the way the context menu does). `targetPath`
+   *  should be the SELECTED item's tree path: a directory path (trailing
+   *  slash) creates INSIDE it, a file path creates in its PARENT dir. Omitted
+   *  (or `undefined`) falls back to the tree ROOT via a synthetic `path: ''`
+   *  item — same as the prior no-selection behavior. Drives the same
+   *  create→startRenaming flow as the context menu's per-row create. */
+  createAtRoot: (isFolder: boolean, targetPath?: string) => Promise<void>
 }
 
 export function useFilesTreeMutations(deps: FilesTreeMutationsDeps): FilesTreeMutations {
@@ -253,13 +257,25 @@ export function useFilesTreeMutations(deps: FilesTreeMutationsDeps): FilesTreeMu
     [onError]
   )
 
-  // Toolbar create: no right-clicked row to derive a target dir from, so a
-  // synthetic root directory item (`path: ''`) is handed to the same `create`
-  // used by the context menu — `targetDir` special-cases `path: ''` to stay
+  // Toolbar create: no right-clicked row to derive a target dir from, so the
+  // caller (TreePane) passes the currently-selected item's tree path instead —
+  // a directory path (trailing slash) creates INSIDE it, a file path creates
+  // in its PARENT dir (both via `targetDir`'s existing item-kind branching).
+  // No selection (or a path we can't classify) falls back to a synthetic root
+  // directory item (`path: ''`) — `targetDir` special-cases `path: ''` to stay
   // `''` (tree root) rather than becoming a stray leading `/`.
   const createAtRoot = useCallback(
-    (isFolder: boolean): Promise<void> =>
-      create({ kind: 'directory', name: '', path: '' }, isFolder),
+    (isFolder: boolean, targetPath?: string): Promise<void> => {
+      const item: FileTreeContextMenuItem =
+        targetPath != null
+          ? {
+              kind: targetPath.endsWith('/') ? 'directory' : 'file',
+              name: '',
+              path: targetPath
+            }
+          : { kind: 'directory', name: '', path: '' }
+      return create(item, isFolder)
+    },
     [create]
   )
 
