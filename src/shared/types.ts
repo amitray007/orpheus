@@ -270,6 +270,21 @@ export type AppUiState = {
   // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);
   // true = debounced auto-save on idle. Default false (manual).
   filesAutoSave: boolean
+  // Files-tab tree VIEW preferences (v67) — app-wide, not per-workspace: these
+  // are the ⚙ TreeOptionsPopover toggles, moved here (from the in-memory
+  // filesTabStore) so they survive an app restart. `selectedFile`/`mode`/
+  // `treeOpen`/`expandedPaths` remain per-workspace SESSION state in
+  // filesTabStore — only the view-preference knobs live here.
+  /** Reveal denylisted (noisy machine dir/file) rows. Default false (off). */
+  filesShowHidden: boolean
+  /** Dim gitignored rows to ~62% opacity. Default true (on). */
+  filesDimGitignored: boolean
+  /** Word-wrap long lines in both the viewer and the editor. Default true (on). */
+  filesWrapLines: boolean
+  /** Tree row ordering: Pierre's built-in dirs-first/alpha vs pure alphabetical. Default 'default'. */
+  filesSortOrder: 'default' | 'name'
+  /** Collapse single-child directory chains into one flattened row. Default true (on) — see Fix 3. */
+  filesFlattenEmptyDirs: boolean
   updatedAt: number
 }
 

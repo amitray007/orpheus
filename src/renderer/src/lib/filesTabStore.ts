@@ -9,13 +9,24 @@
  * `MainContent` only keeps `WorkspaceView`/the Workbench mounted while
  * `view.kind === 'workspace'`; navigating to a project (or the workspaces
  * list) unmounts the whole subtree, so `FilesTab`'s plain component-local
- * `useState` (`selectedFile`, `mode`, `treeOpen`, `treeOptions`) re-initialized
- * to defaults on remount — you'd lose the file you were viewing, the
- * viewer/editor mode, and the tree toggles just by navigating away and back.
+ * `useState` (`selectedFile`, `mode`, `treeOpen`) re-initialized to defaults
+ * on remount — you'd lose the file you were viewing, the viewer/editor mode,
+ * and the tree expansion just by navigating away and back.
  *
  * Moving that STATE into this module-level store (same pattern as
  * workbenchStore.ts's state/width/lastMode/activeTab) means a remounted
  * `FilesTab` seeds from the saved entry and restores exactly where it was.
+ *
+ * TREE-OPTIONS NOTE (Fix 2): the ⚙ view-options (showHidden/dimGitignored/
+ * wrapLines/sortOrder/flattenEmptyDirs) used to live HERE as `treeOptions`,
+ * but that meant they reset to defaults on every app restart — wrong for
+ * settings that are really app-wide VIEW PREFERENCES, not per-workspace
+ * session state. They now live in the DB-backed `AppUiState`
+ * (filesShowHidden/filesDimGitignored/filesWrapLines/filesSortOrder/
+ * filesFlattenEmptyDirs — see src/main/uiState.ts + src/shared/types.ts) and
+ * are read/written via `useUiState()`/`updateUiState()`, the same mechanism
+ * `filesAutoSave` already used. This store keeps only genuinely per-workspace,
+ * restart-ok-to-lose session state.
  *
  * DIRTY-BUFFER NOTE (deliberate scope): we persist `selectedFile` + `mode` +
  * tree state, NOT the editor's in-memory unsaved buffer. On nav-away/back the
@@ -40,7 +51,6 @@
  */
 
 import { createPerKeyStore } from './createPerKeyStore'
-import type { TreeOptionsState } from '../components/workbench/TreeOptionsPopover'
 
 /** Viewer (read-only Pierre <File>) vs Editor (CodeMirror) vs Preview
  *  (rendered md/html). Mirrors the `FilesViewMode` union local to
@@ -57,9 +67,6 @@ export interface FilesTabEntry {
   mode: FilesViewMode
   /** Whether the left file-tree pane is open. */
   treeOpen: boolean
-  /** The tree/viewer/editor options — Show hidden / Dim gitignored / Wrap
-   *  lines / Sort order / Flatten empty dirs (see TreeOptionsPopover.tsx). */
-  treeOptions: TreeOptionsState
   /** Directory paths (trailing-slash, tree-canonical form) to expand when the
    *  tree remounts — the ancestor chain of `selectedFile` at the time it was
    *  last selected. See the SELECTION-POINTER NOTE above for why this is an
@@ -71,33 +78,16 @@ export const DEFAULT_FILES_TAB_ENTRY: FilesTabEntry = {
   selectedFile: null,
   mode: 'viewer',
   treeOpen: true,
-  treeOptions: {
-    showHidden: false,
-    dimGitignored: true,
-    wrapLines: true,
-    sortOrder: 'default',
-    flattenEmptyDirs: false
-  },
   expandedPaths: []
 }
 
-// Field-shallow equality (treeOptions compared by its two fields; expandedPaths
-// by length + order — it's always derived+written as a single array, never
-// mutated in place, so this is a cheap and correct comparison) — a
-// freshly-constructed but value-identical entry shouldn't notify subscribers,
-// matching the guard in createPerKeyStore / the sibling stores.
+// expandedPaths equality by length + order — it's always derived+written as a
+// single array, never mutated in place, so this is a cheap and correct
+// comparison — a freshly-constructed but value-identical entry shouldn't
+// notify subscribers, matching the guard in createPerKeyStore / the sibling
+// stores.
 function sameExpandedPaths(prev: readonly string[], next: readonly string[]): boolean {
   return prev.length === next.length && prev.every((p, i) => p === next[i])
-}
-
-function sameTreeOptions(prev: TreeOptionsState, next: TreeOptionsState): boolean {
-  return (
-    prev.showHidden === next.showHidden &&
-    prev.dimGitignored === next.dimGitignored &&
-    prev.wrapLines === next.wrapLines &&
-    prev.sortOrder === next.sortOrder &&
-    prev.flattenEmptyDirs === next.flattenEmptyDirs
-  )
 }
 
 const store = createPerKeyStore<FilesTabEntry>({
@@ -105,7 +95,6 @@ const store = createPerKeyStore<FilesTabEntry>({
     prev.selectedFile === next.selectedFile &&
     prev.mode === next.mode &&
     prev.treeOpen === next.treeOpen &&
-    sameTreeOptions(prev.treeOptions, next.treeOptions) &&
     sameExpandedPaths(prev.expandedPaths, next.expandedPaths)
 })
 

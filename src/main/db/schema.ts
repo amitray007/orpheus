@@ -21,6 +21,9 @@ const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 
 const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace'] as const
+// Mirrors VALID_FILES_SORT_ORDERS / TreeSortOrder in
+// src/shared/uiStateDefaults.ts / TreeOptionsPopover.tsx.
+const FILES_SORT_ORDER = ['default', 'name'] as const
 const THEME = ['midnight', 'daylight', 'eclipse'] as const
 const ACCENT_COLOR = ['gold', 'blue', 'teal', 'orange', 'pink'] as const
 const UI_FONT_SCALE = ['small', 'default', 'large'] as const
@@ -523,6 +526,21 @@ export const schema: SchemaDef = {
       auto_check_updates: bool('auto_check_updates', '1'),
       // mirrors UI_STATE_DEFAULTS.staleAfterMinutes in src/shared/uiStateDefaults.ts
       stale_after_minutes: { type: 'INTEGER', notNull: true, default: '60' },
+      // Files-tab tree VIEW preferences (v67) — moved out of the in-memory
+      // per-workspace filesTabStore so they're app-wide + survive restart
+      // (mirrors UI_STATE_DEFAULTS.filesShowHidden/… in
+      // src/shared/uiStateDefaults.ts). filesFlattenEmptyDirs defaults to 1
+      // (Fix 3 — flatten empty dirs is ON by default).
+      files_show_hidden: bool('files_show_hidden', '0'),
+      files_dim_gitignored: bool('files_dim_gitignored', '1'),
+      files_wrap_lines: bool('files_wrap_lines', '1'),
+      files_sort_order: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'default'",
+        check: enumCheck('files_sort_order', FILES_SORT_ORDER)
+      },
+      files_flatten_empty_dirs: bool('files_flatten_empty_dirs', '1'),
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

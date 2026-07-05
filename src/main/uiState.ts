@@ -11,6 +11,7 @@ import type {
 import {
   UI_STATE_DEFAULTS,
   VALID_STATUS_POLL_INTERVALS_SEC,
+  VALID_FILES_SORT_ORDERS,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX
 } from '../shared/uiStateDefaults'
@@ -85,6 +86,12 @@ type AppUiStateRow = {
   show_workspace_footer: number | null
   // Files-tab editor save mode (v62)
   files_auto_save: number | null
+  // Files-tab tree view preferences (v67)
+  files_show_hidden: number
+  files_dim_gitignored: number
+  files_wrap_lines: number
+  files_sort_order: string
+  files_flatten_empty_dirs: number
   // Diagnostics capture toggles (v56)
   diag_error: number | null
   diag_lifecycle: number | null
@@ -163,6 +170,13 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
     // Files-tab editor save mode (v62) — default false (manual save)
     filesAutoSave: (row.files_auto_save ?? 0) === 1,
+    // Files-tab tree view preferences (v67) — mirrors UI_STATE_DEFAULTS in
+    // src/shared/uiStateDefaults.ts (filesFlattenEmptyDirs defaults true, Fix 3)
+    filesShowHidden: (row.files_show_hidden ?? 0) === 1,
+    filesDimGitignored: (row.files_dim_gitignored ?? 1) === 1,
+    filesWrapLines: (row.files_wrap_lines ?? 1) === 1,
+    filesSortOrder: row.files_sort_order === 'name' ? 'name' : 'default',
+    filesFlattenEmptyDirs: (row.files_flatten_empty_dirs ?? 1) === 1,
     // Diagnostics capture toggles (v56)
     diagError: row.diag_error == null ? true : row.diag_error === 1,
     diagLifecycle: row.diag_lifecycle === 1,
@@ -260,6 +274,31 @@ function validatePatch(patch: AppUiStatePatch): void {
       throw new Error('uiState: filesAutoSave must be a boolean')
     }
   }
+  validateFilesViewPatch(patch)
+}
+
+// Split out of validatePatch to keep its cognitive complexity under the
+// ratchet ceiling — the 5 Files-tab tree view-preference fields (Fix 2) are
+// all boolean except filesSortOrder, which is a small enum.
+function validateFilesViewPatch(patch: AppUiStatePatch): void {
+  const boolFields = [
+    'filesShowHidden',
+    'filesDimGitignored',
+    'filesWrapLines',
+    'filesFlattenEmptyDirs'
+  ] as const
+  for (const key of boolFields) {
+    if (key in patch && patch[key] !== undefined && typeof patch[key] !== 'boolean') {
+      throw new Error(`uiState: ${key} must be a boolean`)
+    }
+  }
+  if ('filesSortOrder' in patch && patch.filesSortOrder !== undefined) {
+    if (!VALID_FILES_SORT_ORDERS.includes(patch.filesSortOrder)) {
+      throw new Error(
+        `uiState: filesSortOrder must be one of ${VALID_FILES_SORT_ORDERS.join(', ')}`
+      )
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +386,12 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     showWorkspaceFooter: 'show_workspace_footer',
     // Files-tab editor save mode (v62)
     filesAutoSave: 'files_auto_save',
+    // Files-tab tree view preferences (v67)
+    filesShowHidden: 'files_show_hidden',
+    filesDimGitignored: 'files_dim_gitignored',
+    filesWrapLines: 'files_wrap_lines',
+    filesSortOrder: 'files_sort_order',
+    filesFlattenEmptyDirs: 'files_flatten_empty_dirs',
     // Diagnostics capture toggles (v56)
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',

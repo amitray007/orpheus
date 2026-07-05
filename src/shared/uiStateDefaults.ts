@@ -10,8 +10,21 @@ export const UI_STATE_DEFAULTS = {
   staleAfterMinutes: 60,
   statusPollIntervalSec: 1800,
   sidebarWidth: 256,
-  archivedWorkspaceLimit: 20
+  archivedWorkspaceLimit: 20,
+  // Files-tab tree view preferences (v67) — mirrors app_ui_state's
+  // files_show_hidden/files_dim_gitignored/files_wrap_lines/files_sort_order/
+  // files_flatten_empty_dirs SQL DEFAULTs in schema.ts. flattenEmptyDirs
+  // defaults to true (Fix 3 — single-child dir chains collapse by default).
+  filesShowHidden: false,
+  filesDimGitignored: true,
+  filesWrapLines: true,
+  filesSortOrder: 'default' as const,
+  filesFlattenEmptyDirs: true
 } as const
+
+// Valid values for app_ui_state.files_sort_order — mirrors TreeSortOrder in
+// TreeOptionsPopover.tsx and the SQL CHECK constraint in schema.ts.
+export const VALID_FILES_SORT_ORDERS = ['default', 'name'] as const
 
 // Valid values for the status-poller interval (seconds). The UI Select in
 // OrpheusStatusSection.tsx must only offer values from this set, and the

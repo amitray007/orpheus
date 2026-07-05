@@ -48,7 +48,8 @@ import {
 import { File as PierreFile } from '@pierre/diffs/react'
 import { List, MagnifyingGlass, FolderPlus, FilePlus } from '@phosphor-icons/react'
 import type { FileEntry, FileContents, FileImage, GitStatusEntry } from '@shared/types'
-import { useUiState } from '../../lib/uiStateStore'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import {
   useFilesTabEntry,
   getFilesTabEntry,
@@ -92,9 +93,30 @@ const TREE_THEME: TreeThemeInput = {
 // gitignored" is OFF we simply don't tag those paths, so this rule matches
 // nothing and they render at full opacity — dim is a pure style toggle, never
 // a presence one (§11).
+//
+// SEARCH BOX VISIBILITY (§ Fix 4 — investigated against
+// node_modules/@pierre/trees/dist/render/FileTreeView.js + dist/style.js):
+// `search: true` (passed to useFileTree below) makes FileTreeView ALWAYS
+// mount a `[data-file-tree-search-container]` div with a `data-open`
+// attribute reflecting `controller.isSearchOpen()` — but the library's own
+// bundled CSS sets `[data-file-tree-search-container] { display: flex; }`
+// UNCONDITIONALLY, never gating on `data-open`. So with `search: true` the
+// box is a permanently-visible fixture; `useFileTreeSearch`'s isOpen/open()/
+// close() only drive the MODEL's search state (value/matching paths/focus),
+// not the box's visibility. There is no third "persistent input, but only
+// mount when open" config value — `search` is a plain boolean
+// (publicTypes.d.ts). So: keep `search: true` (required for the controller's
+// search state/keyboard handling/auto-focus-on-open to exist at all) and
+// override the container's display ourselves, keyed off the SAME `data-open`
+// attribute the library already stamps on it — hidden when closed, flex when
+// open. This makes our toolbar icon (which calls search.open()/close()) the
+// single control over visibility.
 const TREE_IGNORED_DIM_CSS = `
   [data-item-git-status="ignored"] {
     opacity: 0.62;
+  }
+  [data-file-tree-search-container][data-open="false"] {
+    display: none;
   }
 `
 
@@ -404,7 +426,13 @@ function TreePane({
   // there's no post-construction reconfigure path for them.
   const { model } = useFileTree({
     paths: [],
-    initialExpansion: 'open',
+    // Tree starts COLLAPSED by default (Fix 1) — only root entries are
+    // visible; folders are closed until the user expands them. The
+    // STORE→TREE RESTORE below (isFirstRestore branch in applyOptions) still
+    // seeds `initialExpandedPaths` from the persisted ancestors-of-selection
+    // snapshot on the very first successful resetPaths, so a returning user's
+    // open file has its ancestor folders opened despite this default.
+    initialExpansion: 'closed',
     search: true,
     sort: resolveSort(options.sortOrder),
     flattenEmptyDirectories: options.flattenEmptyDirs,
@@ -416,9 +444,13 @@ function TreePane({
     }
   })
   const selection = useFileTreeSelection(model)
-  // Drives the tree's own built-in search input (search: true above renders it
-  // only while open — see useFileTreeSearch.d.ts). The toolbar's search icon
-  // just toggles open/close; the input itself lives in the tree's shadow DOM.
+  // Drives the tree's own built-in search input's OPEN/CLOSED model state
+  // (isOpen/value/matchingPaths) — the input itself always exists in the DOM
+  // once `search: true` (see the SEARCH BOX VISIBILITY comment above
+  // TREE_IGNORED_DIM_CSS); its actual show/hide is a CSS override keyed off
+  // the same `data-open` attribute this hook's `isOpen` drives. The toolbar's
+  // search icon just toggles open()/close(); library auto-focuses the input
+  // on the isOpen:false→true transition (FileTreeView.js's layout effect).
   const search = useFileTreeSearch(model)
   const toggleSearch = useCallback(() => {
     if (search.isOpen) search.close()
@@ -1104,15 +1136,16 @@ function ModeToggle({ mode, onChange, dirty, previewEnabled }: ModeToggleProps):
  * fetched when the tab isn't visible.
  */
 export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
-  // Per-workspace Files-tab state (selectedFile / mode / treeOpen / treeOptions)
-  // is lifted into a module-level keyed store so it SURVIVES this component's
-  // unmount/remount — `MainContent` tears down the whole Workbench subtree when
-  // you navigate to a project/workspaces page, and plain `useState` here would
-  // re-initialize to defaults on return (losing the open file + mode + toggles).
-  // Reads subscribe to just this workspace's entry; every setter writes the
-  // full entry back. See src/renderer/src/lib/filesTabStore.ts.
+  // Per-workspace Files-tab SESSION state (selectedFile / mode / treeOpen /
+  // expandedPaths) is lifted into a module-level keyed store so it SURVIVES
+  // this component's unmount/remount — `MainContent` tears down the whole
+  // Workbench subtree when you navigate to a project/workspaces page, and
+  // plain `useState` here would re-initialize to defaults on return (losing
+  // the open file + mode + tree expansion). Reads subscribe to just this
+  // workspace's entry; every setter writes the full entry back. See
+  // src/renderer/src/lib/filesTabStore.ts.
   const entry = useFilesTabEntry(workspaceId)
-  const { selectedFile, mode, treeOpen, treeOptions, expandedPaths } = entry
+  const { selectedFile, mode, treeOpen, expandedPaths } = entry
 
   // `dirty` stays component-local: it's transient editor UI (the unsaved dot),
   // re-reported by the freshly-mounted editor from disk on remount, and never
@@ -1143,13 +1176,6 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
     },
     [workspaceId]
   )
-  const setTreeOptions = useCallback(
-    (next: TreeOptionsState) => {
-      const cur = getFilesTabEntry(workspaceId)
-      setFilesTabEntry(workspaceId, { ...cur, treeOptions: next })
-    },
-    [workspaceId]
-  )
   // Written by TreePane whenever the selected FILE changes (see
   // onExpandedPathsChange in TreePane) — the persisted ancestors-of-selection
   // snapshot that seeds `initialExpandedPaths` the next time this workspace's
@@ -1169,6 +1195,34 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   // debounced auto-save.
   const uiState = useUiState()
   const autoSave = uiState?.filesAutoSave ?? false
+
+  // The ⚙ tree-options (Fix 2): APP-WIDE view preferences, not per-workspace
+  // session state — moved out of filesTabStore into the DB-backed AppUiState
+  // (filesShowHidden/filesDimGitignored/filesWrapLines/filesSortOrder/
+  // filesFlattenEmptyDirs) so they survive an app restart, the same mechanism
+  // `filesAutoSave` already uses. Falls back to UI_STATE_DEFAULTS while the
+  // initial `uiState.get()` hasn't resolved yet (uiState === null) — same
+  // fallback values the main-process rowToRecord uses, so there's no visible
+  // flash of different defaults before the real value loads.
+  const treeOptions: TreeOptionsState = useMemo(
+    () => ({
+      showHidden: uiState?.filesShowHidden ?? UI_STATE_DEFAULTS.filesShowHidden,
+      dimGitignored: uiState?.filesDimGitignored ?? UI_STATE_DEFAULTS.filesDimGitignored,
+      wrapLines: uiState?.filesWrapLines ?? UI_STATE_DEFAULTS.filesWrapLines,
+      sortOrder: uiState?.filesSortOrder ?? UI_STATE_DEFAULTS.filesSortOrder,
+      flattenEmptyDirs: uiState?.filesFlattenEmptyDirs ?? UI_STATE_DEFAULTS.filesFlattenEmptyDirs
+    }),
+    [uiState]
+  )
+  const setTreeOptions = useCallback((next: TreeOptionsState) => {
+    updateUiState({
+      filesShowHidden: next.showHidden,
+      filesDimGitignored: next.dimGitignored,
+      filesWrapLines: next.wrapLines,
+      filesSortOrder: next.sortOrder,
+      filesFlattenEmptyDirs: next.flattenEmptyDirs
+    })
+  }, [])
 
   const toggleTree = useCallback(() => {
     const cur = getFilesTabEntry(workspaceId)
