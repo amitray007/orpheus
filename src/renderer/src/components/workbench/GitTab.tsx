@@ -678,6 +678,26 @@ interface DiffSettleResult {
   files: GitDiffFile[]
 }
 
+// Loop-breaker (perf fix — see src/main/git.ts's statusSignature comment for
+// the root cause): `git diff`/`git status` opportunistically rewrite
+// `.git/index`'s stat-cache as a side effect of running them, which on some
+// repos never "settles" — every read re-touches the index, re-firing the
+// main-process watcher, pushing another `git:statusChanged`/`files:changed`
+// event, scheduling another refetch, forever. src/main/git.ts now dedupes
+// its OWN push on an unchanged status, which stops most of this at the
+// source — but this signature is the renderer-side backstop: even if a
+// refetch DOES fire (a real edit, a burst the main-process dedupe didn't
+// catch, a future new event source), applying an IDENTICAL result is a
+// no-op — no setFiles/setSelectedPath, so no re-render, no tree-flicker, no
+// <PatchDiff> remount. A real change always produces a different signature
+// (any changed patch text changes its own entry) and still applies. Patch
+// TEXT (not just length) is included so a same-length content edit still
+// counts as a change.
+function diffSignature(result: DiffSettleResult): string {
+  if (!result.repo) return 'no-repo'
+  return result.files.map((f) => `${f.path} ${f.status} ${f.patch}`).join('')
+}
+
 /** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
  *  refetch effect below and the initial-load effect share one code path,
  *  keeping GitTab's own body under the cognitive-complexity ceiling. */
@@ -729,7 +749,18 @@ export function GitTab({
   // while preserving an existing selection that's still present. Wraps
   // `setFiles`/`setRepo` so every call site below gets this for free, rather
   // than repeating the selection-derivation at each of the two settle points.
+  //
+  // Perf fix — idempotent by signature (see diffSignature's comment): a
+  // settled result IDENTICAL to what's already applied is a no-op — skips
+  // setRepo/setFiles/setSelectedPath entirely so `files`/the selected file
+  // keep their EXISTING object identity across a redundant refetch (nothing
+  // downstream re-renders or remounts). `lastAppliedSigRef` starts `null` so
+  // the very first settle always applies (there's nothing to compare yet).
+  const lastAppliedSigRef = useRef<string | null>(null)
   const applyDiff = useCallback((result: DiffSettleResult) => {
+    const sig = diffSignature(result)
+    if (sig === lastAppliedSigRef.current) return
+    lastAppliedSigRef.current = sig
     setRepo(result.repo)
     setFiles(result.files)
     setSelectedPath((prev) => nextSelection(result.files, prev))
@@ -745,6 +776,14 @@ export function GitTab({
     setFiles([])
     setSelectedPath(null)
     setGitInitError(null)
+    // A new workspace has nothing in common with whatever signature the
+    // PREVIOUS workspace last applied — reset so applyDiff can't mistake a
+    // coincidentally-identical result (e.g. two different clean repos both
+    // signature to the same "no changes" value) for a no-op and skip
+    // applying the new workspace's (already correct, just-reset-above)
+    // state. Purely a correctness/future-proofing reset; harmless either way
+    // since files/selectedPath were already reset directly above.
+    lastAppliedSigRef.current = null
     return fetchDiff(workspaceId, (result) => {
       applyDiff(result)
       setLoading(false)

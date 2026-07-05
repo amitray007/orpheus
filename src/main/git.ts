@@ -296,12 +296,37 @@ export function listCommits(
 
 import { getPrForBranch } from './github'
 
+type GitWatchClient = {
+  cwd: string
+  webContents: WebContents
+  lastBranch: string | null
+  // Signature of the last GitStatus actually PUSHED to this client — lets
+  // refreshGitForDir skip a redundant gitStatusChanged send when a watcher
+  // firing produced no real change (see the loop-breaker comment below).
+  lastStatusSig: string | null
+}
+
 type GitWatchEntry = {
   watchers: fs.FSWatcher[]
   refCount: number
-  // workspaceId → { cwd, webContents, lastBranch }
-  clients: Map<string, { cwd: string; webContents: WebContents; lastBranch: string | null }>
+  // workspaceId → client record
+  clients: Map<string, GitWatchClient>
   debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+/** Cheap, stable signature of the fields the renderer actually renders/reacts
+ *  to — used only to detect "nothing actually changed" (see below), not as a
+ *  content hash of the repo. */
+function statusSignature(status: GitStatus): string {
+  return [
+    status.insertions,
+    status.deletions,
+    status.hasChanges,
+    status.branch ?? '',
+    status.newFiles,
+    status.modifiedFiles,
+    status.deletedFiles
+  ].join('|')
 }
 
 const gitWatchers = new Map<string, GitWatchEntry>()
@@ -320,6 +345,19 @@ async function refreshGitForDir(dir: string): Promise<void> {
   // its own workspaceId/webContents), so fan these out in parallel instead
   // of serializing one git subprocess round-trip per client.
   // also addresses PERF-5
+  //
+  // LOOP-BREAKER (see docs/learnings — Workbench Git tab flicker): `git
+  // status`/`git diff` opportunistically refresh + rewrite `.git/index`'s
+  // stat-cache as a side effect of running them (real git behavior, not an
+  // Orpheus bug) — on some repos that stat-cache never "settles", so EVERY
+  // status read re-touches `.git/index`, which re-fires THIS watcher,
+  // forever, even though nothing the user did actually changed. Pushing
+  // `gitStatusChanged` unconditionally on every watcher tick therefore drove
+  // an unbounded renderer refetch loop (measured: continuous pushes at rest,
+  // never converging). Comparing against the last signature ACTUALLY pushed
+  // to this client and skipping a no-op push breaks that amplification at
+  // the source — a real change still pushes (and its downstream watcher
+  // re-tick, if any, is itself a no-op next time and stops there).
   const clientList = Array.from(entry.clients.entries())
   await Promise.all(
     clientList.map(async ([workspaceId, client]) => {
@@ -334,7 +372,11 @@ async function refreshGitForDir(dir: string): Promise<void> {
       }
 
       if (!webContents.isDestroyed() && status !== null) {
-        webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+        const sig = statusSignature(status)
+        if (sig !== client.lastStatusSig) {
+          client.lastStatusSig = sig
+          webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+        }
       }
 
       // If branch changed, also refresh the PR
@@ -442,10 +484,17 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // double-counting on hide→mount cycles and the resulting watcher leak.
       if (entry.clients.has(workspaceId)) {
         const existing = entry.clients.get(workspaceId)!
-        entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
+        const client: GitWatchClient = {
+          cwd,
+          webContents,
+          lastBranch: existing.lastBranch,
+          lastStatusSig: existing.lastStatusSig
+        }
+        entry.clients.set(workspaceId, client)
         getGitStatus(cwd)
           .then((status) => {
             if (!webContents.isDestroyed() && status !== null) {
+              client.lastStatusSig = statusSignature(status)
               webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             }
           })
@@ -456,13 +505,16 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       }
 
       entry.refCount++
-      entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
+      const client: GitWatchClient = { cwd, webContents, lastBranch: null, lastStatusSig: null }
+      entry.clients.set(workspaceId, client)
 
       // Emit an initial status push so the renderer gets current state without
       // waiting for the next file-change event.
       getGitStatus(cwd)
         .then((status) => {
           if (!webContents.isDestroyed() && status !== null) {
+            const initialClient = entry?.clients.get(workspaceId)
+            if (initialClient) initialClient.lastStatusSig = statusSignature(status)
             webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             const branch = status.branch
             if (branch) {
