@@ -300,6 +300,11 @@ export interface InvokeChannelMap {
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.
   'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult }
+  // Workbench Git tab — Phase 2 "Not a git repository" empty state's Git-init
+  // button. Resolves `workspaceId` -> cwd like git:diff; total (never
+  // rejects) so the renderer can show inline success/failure feedback. See
+  // src/main/git.ts's gitInit + src/main/ipc/git.ts.
+  'git:init': { req: [{ workspaceId: string }]; res: { ok: true } | { ok: false; error: string } }
   // Workbench Files tab — file tree + viewer data sources (Stage A). All three
   // resolve the workspace's cwd from `workspaceId` internally; res types live
   // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.

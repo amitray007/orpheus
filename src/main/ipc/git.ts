@@ -11,7 +11,7 @@
 // it already has from the workspace record / gitStore).
 // ---------------------------------------------------------------------------
 
-import { getGitStatus, listBranches, listCommits, countCommits } from '../git'
+import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
 import { getWorkingTreeDiff } from '../gitDiff'
 import { getPrForBranch } from '../github'
 import { handle } from './handle'
@@ -44,7 +44,12 @@ export function registerGitIpc(deps: GitIpcDeps): void {
 
   handle('git:diff', (_e, { workspaceId }) => {
     const cwd = getWorkspaceCwd(workspaceId)
-    return cwd ? getWorkingTreeDiff(cwd) : Promise.resolve({ files: [] })
+    return cwd ? getWorkingTreeDiff(cwd) : Promise.resolve({ repo: false, files: [] })
+  })
+
+  handle('git:init', (_e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? gitInit(cwd) : Promise.resolve({ ok: false, error: 'Workspace not found' })
   })
 
   // ---------------------------------------------------------------------------

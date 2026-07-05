@@ -198,15 +198,21 @@ async function untrackedDiffFiles(cwd: string): Promise<GitDiffFile[]> {
 }
 
 /**
- * Working-tree diff for the Workbench Git tab (Phase 1): tracked changes
- * (staged + unstaged combined vs HEAD) plus untracked files, each as a
- * ready-to-render per-file patch string. Total — never throws: a non-repo
- * cwd, a clean tree, or any git failure all resolve to `{ files: [] }`.
+ * Working-tree diff for the Workbench Git tab: tracked changes (staged +
+ * unstaged combined vs HEAD) plus untracked files, each as a ready-to-render
+ * per-file patch string. Never throws — any git failure resolves to an empty
+ * `files[]`.
+ *
+ * `repo` (Phase 2) surfaces the `isGitRepo` check that was previously only
+ * used internally to short-circuit — the renderer needs it to distinguish
+ * "not a git repo" from "clean tree" (both were indistinguishable `{files:
+ * []}` before). `repo: false` short-circuits before any diff subprocess
+ * runs, same as before.
  */
 export async function getWorkingTreeDiff(cwd: string): Promise<GitDiffResult> {
-  if (!cwd) return { files: [] }
-  if (!(await isGitRepo(cwd))) return { files: [] }
+  if (!cwd) return { repo: false, files: [] }
+  if (!(await isGitRepo(cwd))) return { repo: false, files: [] }
 
   const [tracked, untracked] = await Promise.all([trackedDiffFiles(cwd), untrackedDiffFiles(cwd)])
-  return { files: [...tracked, ...untracked] }
+  return { repo: true, files: [...tracked, ...untracked] }
 }

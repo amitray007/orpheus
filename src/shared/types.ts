@@ -1344,8 +1344,17 @@ export type GitDiffFile = {
  * untracked files (each rendered as an all-additions patch against
  * `/dev/null`). Empty `files` for a non-repo, a clean tree, or any git
  * failure — the handler never throws (see src/main/gitDiff.ts).
+ *
+ * `repo` (Phase 2 — Workbench Git tab edge states) discriminates the two
+ * cases that otherwise both resolve to an empty `files[]`: `repo: false`
+ * means `cwd` isn't inside a git working tree at all (the renderer shows the
+ * "Not a git repository" + Git-init empty state); `repo: true` with an empty
+ * `files[]` means it IS a repo and the working tree is simply clean (the
+ * renderer shows the "No changes" empty state). `files.length > 0` always
+ * implies `repo: true`.
  */
 export type GitDiffResult = {
+  repo: boolean
   files: GitDiffFile[]
 }
 

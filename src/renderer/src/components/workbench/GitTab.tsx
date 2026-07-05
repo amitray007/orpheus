@@ -48,6 +48,18 @@
 //     "Binary" instead of a meaningless "-0 +0", and the diff pane renders the
 //     current image (via files:readImage) for image extensions or a "no
 //     preview" placeholder for other binary files, instead of a blank PatchDiff.
+//
+// Phase 2 — edge states (docs/brainstorms/2026-07-06-git-tab-requirements.md
+// states 1 "not a git repo" + 2 "clean/no changes"; mockup's Edge-states
+// panel): `git:diff`'s result now carries a `repo: boolean` discriminator
+// (src/shared/types.ts's GitDiffResult) so this component can tell "not a
+// git repo" apart from "clean tree" — both previously resolved to the same
+// empty `files: []}`. Three render branches: `!repo` → a centered empty
+// state with a "Git init" button (calls the new `git:init` IPC, then
+// explicitly refetches `git:diff` — the watcher may not pick up a brand-new
+// `.git` dir immediately, so this doesn't rely on live-refresh); `repo &&
+// files.length === 0` → a centered "No changes" empty state; otherwise the
+// unchanged Phase-1 tree+diff view.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -60,9 +72,10 @@ import {
   type FileTreeRowDecorationRenderer
 } from '@pierre/trees'
 import { PatchDiff } from '@pierre/diffs/react'
-import { List, Rows, Columns, MagnifyingGlass } from '@phosphor-icons/react'
+import { List, Rows, Columns, MagnifyingGlass, GitBranch, CheckCircle } from '@phosphor-icons/react'
 import type { FileImage, GitDiffFile, GitStatusEntry } from '@shared/types'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
@@ -455,6 +468,86 @@ function DiffMessage({ text }: { text: string }): React.JSX.Element {
   )
 }
 
+// --- Phase 2 edge states: not-a-repo (+ Git init) / clean ---------------------
+
+/** Shared empty-state shell — centered icon + title + sub-line + optional
+ *  action, matching the mockup's `.empty-state` (docs/brainstorms/
+ *  git-tab-mockup/styles.css): centered column, muted 40px icon at 55%
+ *  opacity, 13.5px title, 12px muted sub-line capped ~320px wide. Reuses
+ *  PIERRE_VIEWER_BG so the edge states sit on the same dark viewer surface
+ *  the diff pane itself uses, rather than introducing a third background. */
+function EmptyStateShell({
+  icon,
+  title,
+  subtitle,
+  children
+}: {
+  icon: React.ReactNode
+  title: string
+  subtitle: string
+  children?: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <div
+      className="flex-1 flex flex-col items-center justify-center gap-2.5 min-h-0 px-10 text-center"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
+      <div className="text-text-muted opacity-55">{icon}</div>
+      <div className="text-[13.5px] font-semibold text-text-primary">{title}</div>
+      <div className="text-xs text-text-muted max-w-[320px]">{subtitle}</div>
+      {children}
+    </div>
+  )
+}
+
+/** State 1 (mockup) — `!repo`: this workspace's cwd isn't a git working tree
+ *  at all. A primary "Git init" button runs `git:init`, then the caller
+ *  refetches `git:diff` explicitly (a brand-new `.git` may not be picked up
+ *  by the existing watchers immediately — see the module header). Inline
+ *  status text stands in for a toast (the app has no global toast/notice
+ *  mechanism to reuse — see the module header's Phase 2 note); the button is
+ *  disabled while the init call is in flight. */
+function NotARepoState({
+  onInit,
+  running,
+  error
+}: {
+  onInit: () => void
+  running: boolean
+  error: string | null
+}): React.JSX.Element {
+  return (
+    <EmptyStateShell
+      icon={<GitBranch size={40} weight="regular" />}
+      title="Not a git repository"
+      subtitle="This workspace's folder isn't tracked by git yet. Initialize a repository here to start tracking changes."
+    >
+      <Button size="sm" onClick={onInit} loading={running} disabled={running}>
+        <GitBranch size={14} />
+        Git init
+      </Button>
+      {error !== null && <span className="text-xs text-red-400 max-w-[320px]">{error}</span>}
+    </EmptyStateShell>
+  )
+}
+
+/** State 2 (mockup) — `repo && files.length === 0`: a real repo with a clean
+ *  working tree. `branch` comes from the existing `git:statusChanged` push
+ *  GitTab already subscribes to for live-refresh (no new IPC round-trip) —
+ *  it's `null` until that first push arrives (or on a branch-less/detached
+ *  HEAD repo), in which case this falls back to the branch-less "No changes"
+ *  copy rather than blocking the empty state on one. */
+function CleanState({ branch }: { branch: string | null }): React.JSX.Element {
+  const title = branch !== null ? `No changes on ${branch}` : 'No changes'
+  return (
+    <EmptyStateShell
+      icon={<CheckCircle size={40} weight="regular" />}
+      title={title}
+      subtitle="The working tree is clean. Nothing to review yet."
+    />
+  )
+}
+
 // A settled files:readImage result, tagged with the path it belongs to —
 // the same stale-guard shape FilesTab's LoadedImage uses, so a fast
 // re-selection while a fetch is in flight can't commit a mismatched image.
@@ -574,19 +667,30 @@ function nextSelection(files: readonly GitDiffFile[], current: string | null): s
   return files[0]?.path ?? null
 }
 
+/** A settled `git:diff` result, as GitTab needs it: the discriminator plus
+ *  the files. Named separately from GitDiffResult so a network/IPC failure
+ *  (caught below) can still produce a value of this shape — `repo: true`
+ *  with an empty `files[]` is the deliberate "assume it's a repo, just
+ *  couldn't read it right now" fallback, matching the old pre-Phase-2
+ *  behavior of silently resolving to an empty diff on any failure. */
+interface DiffSettleResult {
+  repo: boolean
+  files: GitDiffFile[]
+}
+
 /** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
  *  refetch effect below and the initial-load effect share one code path,
  *  keeping GitTab's own body under the cognitive-complexity ceiling. */
-function fetchDiff(workspaceId: string, onSettled: (files: GitDiffFile[]) => void): () => void {
+function fetchDiff(workspaceId: string, onSettled: (result: DiffSettleResult) => void): () => void {
   let cancelled = false
   window.api.git
     .diff(workspaceId)
     .then((result) => {
-      if (!cancelled) onSettled(result.files)
+      if (!cancelled) onSettled({ repo: result.repo, files: result.files })
     })
     .catch((e) => {
       console.error('[GitTab] git:diff failed:', e)
-      if (!cancelled) onSettled([])
+      if (!cancelled) onSettled({ repo: true, files: [] })
     })
   return () => {
     cancelled = true
@@ -604,21 +708,31 @@ export function GitTab({
   worktreeBranch
 }: GitTabProps): React.JSX.Element {
   const [files, setFiles] = useState<GitDiffFile[]>([])
+  // Phase 2: `repo` starts optimistic (`true`) so a first-paint flash of the
+  // "Not a git repository" empty state doesn't show for an ordinary repo
+  // while the initial git:diff round-trip is still in flight — `loading`
+  // below already gates the tree/diff panes on the same round-trip, so this
+  // mirrors that convention rather than introducing a third loading state.
+  const [repo, setRepo] = useState(true)
   const [loading, setLoading] = useState(true)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [treeOpen, setTreeOpen] = useState(true)
   const [diffStyle, setDiffStyle] = useState<DiffStyle>('unified')
   const [subTab, setSubTab] = useState<GitSubTab>('diff')
+  const [branch, setBranch] = useState<string | null>(null)
+  const [gitInitRunning, setGitInitRunning] = useState(false)
+  const [gitInitError, setGitInitError] = useState<string | null>(null)
 
   // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
   // runs through nextSelection so the tab auto-selects the first changed
   // file when nothing is selected (or the prior selection dropped out),
   // while preserving an existing selection that's still present. Wraps
-  // `setFiles` so every call site below gets this for free, rather than
-  // repeating the selection-derivation at each of the two settle points.
-  const applyFiles = useCallback((f: GitDiffFile[]) => {
-    setFiles(f)
-    setSelectedPath((prev) => nextSelection(f, prev))
+  // `setFiles`/`setRepo` so every call site below gets this for free, rather
+  // than repeating the selection-derivation at each of the two settle points.
+  const applyDiff = useCallback((result: DiffSettleResult) => {
+    setRepo(result.repo)
+    setFiles(result.files)
+    setSelectedPath((prev) => nextSelection(result.files, prev))
   }, [])
 
   // Initial load + workspace change. Resets files/selectedPath alongside
@@ -630,11 +744,12 @@ export function GitTab({
     setLoading(true)
     setFiles([])
     setSelectedPath(null)
-    return fetchDiff(workspaceId, (f) => {
-      applyFiles(f)
+    setGitInitError(null)
+    return fetchDiff(workspaceId, (result) => {
+      applyDiff(result)
       setLoading(false)
     })
-  }, [workspaceId, applyFiles])
+  }, [workspaceId, applyDiff])
 
   // Live refresh: git:statusChanged (branch/index change — src/main/git.ts's
   // .git watcher, already running unconditionally since terminal:mount) and
@@ -652,11 +767,14 @@ export function GitTab({
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
         cleanupRef.current?.()
-        cleanupRef.current = fetchDiff(workspaceId, applyFiles)
+        cleanupRef.current = fetchDiff(workspaceId, applyDiff)
       }, REFRESH_DEBOUNCE_MS)
     }
     const unsubStatus = window.api.git.onStatusChanged((e) => {
-      if (e.workspaceId === workspaceId) scheduleRefetch()
+      if (e.workspaceId === workspaceId) {
+        setBranch(e.status.branch)
+        scheduleRefetch()
+      }
     })
     const unsubFiles = window.api.files.onFilesChanged((e) => {
       if (e.workspaceId === workspaceId) scheduleRefetch()
@@ -668,7 +786,34 @@ export function GitTab({
       cleanupRef.current?.()
       cleanupRef.current = null
     }
-  }, [workspaceId, applyFiles])
+  }, [workspaceId, applyDiff])
+
+  // Phase 2 Git-init: runs git:init, then — regardless of outcome — clears
+  // the running flag; on success, explicitly refetches git:diff (a brand-new
+  // `.git` dir may not be picked up by the existing watchers immediately, so
+  // this doesn't rely on live-refresh) which naturally moves the tab into
+  // the clean-state render branch once `repo` flips true with empty `files`.
+  const runGitInit = useCallback(() => {
+    setGitInitRunning(true)
+    setGitInitError(null)
+    window.api.git
+      .init(workspaceId)
+      .then((result) => {
+        if (result.ok) {
+          cleanupRef.current?.()
+          cleanupRef.current = fetchDiff(workspaceId, applyDiff)
+        } else {
+          setGitInitError(result.error)
+        }
+      })
+      .catch((e) => {
+        console.error('[GitTab] git:init failed:', e)
+        setGitInitError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        setGitInitRunning(false)
+      })
+  }, [workspaceId, applyDiff])
 
   // If the currently-selected file drops out of the diff (e.g. the user
   // committed/discarded it externally), `selectedFile` below simply derives
@@ -694,21 +839,33 @@ export function GitTab({
     updateUiState({ gitDiffWrapLines: next.wrapLines })
   }, [])
 
+  // Phase 2: the hide-tree icon + unified/split toggle + ⚙ wrap popover only
+  // make sense once there's an actual diff to view — while loading, or in
+  // either edge state (not-a-repo / clean), there's no tree/diff pane to
+  // control. The worktree chip + [Diff|Commits] strip stay visible in every
+  // state (matching the mockup's edge-states panel, which keeps its own
+  // harness chrome up top regardless of body state).
+  const showDiffControls = !loading && repo && files.length > 0
+
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
       <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
-        <button
-          type="button"
-          onClick={toggleTree}
-          aria-pressed={treeOpen}
-          aria-label={treeOpen ? 'Hide changed-files tree' : 'Show changed-files tree'}
-          title={treeOpen ? 'Hide changed-files tree' : 'Show changed-files tree'}
-          className="p-1 rounded text-text-muted hover:bg-surface-raised hover:text-text-primary"
-        >
-          <List size={16} />
-        </button>
-        <DiffStyleToggle value={diffStyle} onChange={setDiffStyle} />
-        <GitDiffOptionsPopover options={diffOptions} onChange={setDiffOptions} />
+        {showDiffControls && (
+          <>
+            <button
+              type="button"
+              onClick={toggleTree}
+              aria-pressed={treeOpen}
+              aria-label={treeOpen ? 'Hide changed-files tree' : 'Show changed-files tree'}
+              title={treeOpen ? 'Hide changed-files tree' : 'Show changed-files tree'}
+              className="p-1 rounded text-text-muted hover:bg-surface-raised hover:text-text-primary"
+            >
+              <List size={16} />
+            </button>
+            <DiffStyleToggle value={diffStyle} onChange={setDiffStyle} />
+            <GitDiffOptionsPopover options={diffOptions} onChange={setDiffOptions} />
+          </>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
           <SubTabStrip active={subTab} onChange={setSubTab} />
@@ -717,24 +874,86 @@ export function GitTab({
       {subTab === 'commits' ? (
         <DiffMessage text="Commits — coming soon" />
       ) : (
-        <div className="flex-1 min-h-0 flex">
-          <div
-            hidden={!treeOpen}
-            className="w-60 flex-shrink-0 min-h-0 border-r border-border-default"
-          >
-            <DiffTreePane files={files} selected={selectedPath} onSelectFile={setSelectedPath} />
-          </div>
-          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <DiffContentPane
-              workspaceId={workspaceId}
-              file={selectedFile}
-              diffStyle={diffStyle}
-              wrapLines={wrapLines}
-              loading={loading}
-            />
-          </div>
-        </div>
+        <GitTabBody
+          loading={loading}
+          repo={repo}
+          files={files}
+          selectedPath={selectedPath}
+          selectedFile={selectedFile}
+          treeOpen={treeOpen}
+          diffStyle={diffStyle}
+          wrapLines={wrapLines}
+          workspaceId={workspaceId}
+          branch={branch}
+          gitInitRunning={gitInitRunning}
+          gitInitError={gitInitError}
+          onSelectFile={setSelectedPath}
+          onGitInit={runGitInit}
+        />
       )}
+    </div>
+  )
+}
+
+interface GitTabBodyProps {
+  loading: boolean
+  repo: boolean
+  files: GitDiffFile[]
+  selectedPath: string | null
+  selectedFile: GitDiffFile | null
+  treeOpen: boolean
+  diffStyle: DiffStyle
+  wrapLines: boolean
+  workspaceId: string
+  branch: string | null
+  gitInitRunning: boolean
+  gitInitError: string | null
+  onSelectFile: (path: string | null) => void
+  onGitInit: () => void
+}
+
+/** The Diff sub-tab's body — extracted from GitTab's own render so the
+ *  three-way branch (loading / not-a-repo / clean / has-changes) reads as a
+ *  flat set of early returns instead of nested ternaries inline in GitTab's
+ *  JSX, keeping GitTab's own cognitive complexity down. `loading` intentionally
+ *  takes priority over `repo`/`files` — see GitTab's `repo` state comment on
+ *  why it defaults optimistic. */
+function GitTabBody({
+  loading,
+  repo,
+  files,
+  selectedPath,
+  selectedFile,
+  treeOpen,
+  diffStyle,
+  wrapLines,
+  workspaceId,
+  branch,
+  gitInitRunning,
+  gitInitError,
+  onSelectFile,
+  onGitInit
+}: GitTabBodyProps): React.JSX.Element {
+  if (loading) return <DiffMessage text="Loading…" />
+  if (!repo) {
+    return <NotARepoState onInit={onGitInit} running={gitInitRunning} error={gitInitError} />
+  }
+  if (files.length === 0) return <CleanState branch={branch} />
+
+  return (
+    <div className="flex-1 min-h-0 flex">
+      <div hidden={!treeOpen} className="w-60 flex-shrink-0 min-h-0 border-r border-border-default">
+        <DiffTreePane files={files} selected={selectedPath} onSelectFile={onSelectFile} />
+      </div>
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+        <DiffContentPane
+          workspaceId={workspaceId}
+          file={selectedFile}
+          diffStyle={diffStyle}
+          wrapLines={wrapLines}
+          loading={false}
+        />
+      </div>
     </div>
   )
 }

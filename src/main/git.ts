@@ -97,6 +97,25 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
   return { insertions, deletions, hasChanges, branch, newFiles, modifiedFiles, deletedFiles }
 }
 
+/**
+ * `git init` for the Workbench Git tab's "Not a git repository" empty state
+ * (Phase 2). Total — never throws: returns a discriminated result so the
+ * renderer can show inline success/failure feedback instead of an unhandled
+ * rejection. The caller (src/main/ipc/git.ts) is responsible for refetching
+ * `git:diff` afterward — this function only runs `git init`, it doesn't
+ * re-derive diff state itself.
+ */
+export async function gitInit(cwd: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!cwd) return { ok: false, error: 'No workspace directory' }
+  try {
+    await execFile('git', ['-C', cwd, 'init'], { timeout: 5000 })
+    return { ok: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message }
+  }
+}
+
 export type GitBranchInfo = {
   name: string
   isCurrent: boolean

@@ -430,7 +430,12 @@ const api = {
     // Workbench Git tab (Phase 1) — per-file working-tree diff patches.
     // Resolves the workspace's cwd internally, like files:*. See
     // src/main/gitDiff.ts.
-    diff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:diff', { workspaceId })
+    diff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:diff', { workspaceId }),
+    // Workbench Git tab (Phase 2) — "Not a git repository" empty state's
+    // Git-init button. Resolves the workspace's cwd internally, like diff
+    // above. Total (never rejects) — see src/main/git.ts's gitInit.
+    init: (workspaceId: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('git:init', { workspaceId })
   },
   // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
   // from `workspaceId` in the main process; see src/main/ipc/files.ts.
