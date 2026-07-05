@@ -30,16 +30,42 @@
 // Gating: mounted only while the Git tab is the active, non-dormant
 // Workbench tab (see WorkbenchPanel) — git:diff is never fetched while the
 // tab isn't visible.
+//
+// Phase 1 refinements (this pass):
+//   FIX 1 — auto-select the first changed file when the diff loads/refreshes
+//     and nothing is selected (or the prior selection dropped out), so the
+//     tab shows a diff immediately instead of an empty "Select a file" state.
+//   FIX 2 — a ⚙ GitDiffOptionsPopover (mirrors FilesTab's TreeOptionsPopover)
+//     holding a "Wrap lines" toggle for the diff viewer, persisted app-wide
+//     via AppUiState.gitDiffWrapLines (same files_wrap_lines pattern), plus a
+//     search-icon toggle for the changed-files tree (mirrors FilesTab's
+//     TreeToolbar search-icon-toggle fix). NOTE: "search in git commits" is a
+//     separate ask — the Commits sub-tab is a Phase-3 stub today, so
+//     commit-search lands there, not here; this only searches changed FILES.
+//   FIX 3 — the per-row +/- counts are right-aligned with tabular-nums so
+//     they line up column-wise regardless of digit count.
+//   FIX 4 — binary files (gitDiff.ts now flags `binary: boolean`) show
+//     "Binary" instead of a meaningless "-0 +0", and the diff pane renders the
+//     current image (via files:readImage) for image extensions or a "no
+//     preview" placeholder for other binary files, instead of a blank PatchDiff.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
-import { FileTree, useFileTree, useFileTreeSelection } from '@pierre/trees/react'
-import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
+import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
+import {
+  themeToTreeStyles,
+  type TreeThemeInput,
+  type FileTreeRowDecorationContext,
+  type FileTreeRowDecorationRenderer
+} from '@pierre/trees'
 import { PatchDiff } from '@pierre/diffs/react'
-import { List, Rows, Columns } from '@phosphor-icons/react'
-import type { GitDiffFile, GitStatusEntry } from '@shared/types'
+import { List, Rows, Columns, MagnifyingGlass } from '@phosphor-icons/react'
+import type { FileImage, GitDiffFile, GitStatusEntry } from '@shared/types'
+import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
+import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
+import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -99,6 +125,23 @@ export interface GitTabProps {
  *  simply never used here, every entry in a diff result is a real change). */
 function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
   return files.map((f) => ({ path: f.path, status: f.status }))
+}
+
+// Raster image extensions (Fix 4) — a changed binary file with one of these
+// extensions renders as an <img> (via files:readImage) instead of a "no
+// preview" placeholder. Kept as its own small const (not imported from
+// FilesTab, which doesn't export its equivalent IMAGE_EXTENSIONS/isImagePath)
+// — same "duplicated small literal, independently editable" rationale the
+// module header already applies to TREE_THEME. SVG is deliberately excluded:
+// it's XML/text source, so a changed .svg with actual hunks still renders as
+// a normal text PatchDiff (only a truly binary .svg — rare — would fall
+// through to the generic "Binary file" placeholder below).
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'])
+
+function isImagePath(path: string): boolean {
+  const dot = path.lastIndexOf('.')
+  if (dot === -1) return false
+  return IMAGE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
 }
 
 // --- Sub-tab strip -----------------------------------------------------------
@@ -210,10 +253,103 @@ function WorktreeChip({
 
 // --- Changed-files tree pane ---------------------------------------------------
 
+// Fix 3: the per-row +/- decoration text is right-aligned by the library's
+// own `[data-item-section="decoration"]` CSS (text-align: end; flex: 1 1 0;
+// justify-content: flex-end) already, but plain decimal text of varying
+// digit-width still visually "wiggles" against that shared right edge (e.g.
+// "-0 +0" vs "-128 +34" don't line up column-wise) since the flex lane has no
+// fixed width and each row's text is only as wide as its own content, and
+// proportional-width digit glyphs don't align even when they ARE the same
+// character count. Two fixes, both via unsafeCSS (the tree's shadow-DOM
+// escape hatch — same one FilesTab uses for TREE_IGNORED_DIM_CSS):
+//   (a) `font-variant-numeric: tabular-nums` on the decoration span so every
+//       digit glyph has the same advance width;
+//   (b) a fixed `min-width` on the decoration LANE itself so all rows share
+//       the same lane boundary regardless of how many digits their own count
+//       has (rather than each row's flex box just hugging its own text).
+// The decoration API (@pierre/trees' FileTreeRowDecorationRenderer) only
+// supports ONE plain-text (or icon) span per row — no per-token color
+// spans — so true two-color "-D +A" (red minus, green plus) isn't reachable
+// through this slot; the text itself is colored by git-status via the
+// SAME override-chain FilesTab's ignored-dim rule already relies on
+// (data-item-git-status), giving deletions-heavy rows a red-leaning tint and
+// additions a green-leaning one where the underlying status makes that
+// meaningful (added/untracked → green, deleted → red, modified/renamed →
+// neutral) — see the `data-item-git-status` rules below. Binary files
+// (Fix 4) render "Binary" here instead of a "-0 +0" that would otherwise be
+// meaningless.
+const DECORATION_LANE_CSS = `
+  [data-item-section="decoration"] {
+    min-width: 72px;
+  }
+  [data-item-section="decoration"] > span {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+  [data-item-git-status="added"] [data-item-section="decoration"] > span,
+  [data-item-git-status="untracked"] [data-item-section="decoration"] > span {
+    color: var(--trees-git-added-color-override, #3fb950);
+  }
+  [data-item-git-status="deleted"] [data-item-section="decoration"] > span {
+    color: var(--trees-git-deleted-color-override, #f85149);
+  }
+  [data-file-tree-search-container][data-open="false"] {
+    display: none;
+  }
+`
+
+/** Fixed-width-padded "-D +A" decoration text for one changed file — pads
+ *  each number to 3 characters (right-aligned, non-breaking spaces so the
+ *  browser doesn't collapse them) so the tabular-nums glyphs line up at a
+ *  consistent column even before the lane's own min-width kicks in. Binary
+ *  files show "Binary" instead — their additions/deletions are always 0,
+ *  which would otherwise render the exact "-0 +0" the user reported as
+ *  meaningless. */
+function decorationText(file: GitDiffFile): string {
+  if (file.binary) return 'Binary'
+  const pad = (n: number): string => n.toString().padStart(3, ' ')
+  return `-${pad(file.deletions)} +${pad(file.additions)}`
+}
+
 interface DiffTreePaneProps {
   files: readonly GitDiffFile[]
   selected: string | null
   onSelectFile: (path: string | null) => void
+}
+
+// Shared icon-button class for the changed-files tree's own header toolbar —
+// matches FilesTab's TOOLBAR_BUTTON_CLASS exactly so it reads as the same
+// chrome family.
+const SEARCH_TOGGLE_BUTTON_CLASS =
+  'p-1 rounded text-text-muted hover:bg-surface-raised hover:text-text-primary'
+
+/** Compact header rendered into `<FileTree header={...} />`: just a
+ *  search-toggle icon (Fix 2's changed-files search) — mirrors FilesTab's
+ *  TreeToolbar, minus the New Folder/New File actions (a git diff's changed
+ *  files aren't user-creatable). NOTE: this is CHANGED-FILES search only —
+ *  the user also asked for "search in git commits", which belongs to the
+ *  Commits sub-tab (a Phase-3 stub today, see SubTabStrip); commit search
+ *  lands there, not here. */
+function DiffTreeToolbar({
+  searchOpen,
+  onToggleSearch
+}: {
+  searchOpen: boolean
+  onToggleSearch: () => void
+}): React.JSX.Element {
+  return (
+    <div className="flex items-center h-7 px-1">
+      <button
+        type="button"
+        onClick={onToggleSearch}
+        aria-pressed={searchOpen}
+        title="Search changed files"
+        className={SEARCH_TOGGLE_BUTTON_CLASS}
+      >
+        <MagnifyingGlass size={14} />
+      </button>
+    </div>
+  )
 }
 
 /** Left pane: a flat @pierre/trees fed the changed files' paths + git-status
@@ -223,12 +359,46 @@ interface DiffTreePaneProps {
  *  the path separators, same as FilesTab. */
 function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): React.JSX.Element {
   const paths = useMemo(() => files.map((f) => f.path), [files])
+  // Keyed by path so the decoration renderer (an imperative callback, not a
+  // reactive prop — @pierre/trees calls it per-row at render time) always
+  // reads the CURRENT diff result rather than a stale closure over `files`
+  // from construction time.
+  const filesByPathRef = useRef<Map<string, GitDiffFile>>(new Map())
+  useEffect(() => {
+    filesByPathRef.current = new Map(files.map((f) => [f.path, f]))
+  }, [files])
+
+  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(
+    (ctx: FileTreeRowDecorationContext) => {
+      if (ctx.item.kind !== 'file') return null
+      const file = filesByPathRef.current.get(ctx.item.path)
+      if (!file) return null
+      return {
+        text: decorationText(file),
+        title: `${file.deletions} deleted, ${file.additions} added`
+      }
+    },
+    []
+  )
+
   const { model } = useFileTree({
     paths,
     initialExpansion: 'open',
-    search: true
+    search: true,
+    unsafeCSS: DECORATION_LANE_CSS,
+    renderRowDecoration
   })
   const selection = useFileTreeSelection(model)
+  // Search-icon-toggle (Fix 2) — same visibility pattern FilesTab's TreePane
+  // uses: `search: true` is required for the controller's search state to
+  // exist at all, but the library always mounts the search box regardless of
+  // `isOpen` (see FilesTab's SEARCH BOX VISIBILITY comment) — so `data-open`
+  // is overridden via unsafeCSS below to actually hide/show it.
+  const search = useFileTreeSearch(model)
+  const toggleSearch = useCallback(() => {
+    if (search.isOpen) search.close()
+    else search.open()
+  }, [search])
 
   // Push the fresh path list + git-status decorations into the tree whenever
   // the diff result changes — imperative, matching FilesTab's §7 pattern
@@ -247,6 +417,11 @@ function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): Rea
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `selected`/`onSelectFile` intentionally excluded: this effect only reacts to the tree's OWN selection changing, not to GitTab re-deriving `selected` from a fresh files[] after a refetch.
   }, [selection])
 
+  const toolbar = useMemo(
+    () => <DiffTreeToolbar searchOpen={search.isOpen} onToggleSearch={toggleSearch} />,
+    [search.isOpen, toggleSearch]
+  )
+
   const hostStyle = useMemo(() => {
     const vars = themeToTreeStyles(TREE_THEME)
     return { height: '100%', ...vars, ...TREE_GIT_STATUS_VARS } as React.CSSProperties
@@ -254,7 +429,7 @@ function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): Rea
 
   return (
     <div style={hostStyle} className="h-full">
-      <FileTree model={model} style={{ height: '100%' }} />
+      <FileTree model={model} header={toolbar} style={{ height: '100%' }} />
     </div>
   )
 }
@@ -262,8 +437,10 @@ function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): Rea
 // --- Diff content pane ---------------------------------------------------------
 
 interface DiffContentPaneProps {
+  workspaceId: string
   file: GitDiffFile | null
   diffStyle: DiffStyle
+  wrapLines: boolean
   loading: boolean
 }
 
@@ -278,13 +455,94 @@ function DiffMessage({ text }: { text: string }): React.JSX.Element {
   )
 }
 
+// A settled files:readImage result, tagged with the path it belongs to —
+// the same stale-guard shape FilesTab's LoadedImage uses, so a fast
+// re-selection while a fetch is in flight can't commit a mismatched image.
+interface LoadedGitImage {
+  path: string
+  image: FileImage
+}
+
+/** Fix 4 (image branch): fetches + renders the CURRENT on-disk image for a
+ *  changed binary file whose extension is a recognized raster format, via
+ *  the existing files:readImage IPC — the same one FilesTab's ImageBody
+ *  uses. Showing the current/new version is the documented minimum (a
+ *  before/after diff is a nice-to-have the task explicitly says to skip if
+ *  non-trivial — it would need a second read of the file at HEAD, which
+ *  files:readImage has no revision parameter for). */
+function BinaryImageBody({
+  workspaceId,
+  path
+}: {
+  workspaceId: string
+  path: string
+}): React.JSX.Element {
+  const [loaded, setLoaded] = useState<LoadedGitImage | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.api.files
+      .readImage(workspaceId, path)
+      .then((image) => {
+        if (!cancelled) setLoaded({ path, image })
+      })
+      .catch((e) => {
+        console.error('[GitTab] readImage failed:', e)
+        if (!cancelled) setLoaded({ path, image: { ok: false, error: 'denied' } })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, path])
+
+  const current = loaded && loaded.path === path ? loaded.image : null
+  if (current === null) return <DiffMessage text="Loading…" />
+  if (!current.ok) {
+    if (current.error === 'too-large') {
+      return <DiffMessage text="Image too large to preview (over 5 MB)" />
+    }
+    return <DiffMessage text="Could not load image" />
+  }
+  return (
+    <div
+      className="flex-1 min-h-0 flex items-center justify-center overflow-hidden"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
+      <img
+        src={current.dataUrl}
+        alt=""
+        draggable={false}
+        className="max-w-full max-h-full object-contain"
+      />
+    </div>
+  )
+}
+
 /** Right pane: the selected file's patch rendered via @pierre/diffs'
  *  <PatchDiff>, themed pierre-dark to match the Files-tab viewer, styled
- *  unified or split per the header toggle. Empty/loading/no-selection states
- *  mirror FilesTab's ViewerMessage convention. */
-function DiffContentPane({ file, diffStyle, loading }: DiffContentPaneProps): React.JSX.Element {
+ *  unified or split per the header toggle, word-wrapped per the ⚙ popover's
+ *  Wrap-lines toggle. Empty/loading/no-selection states mirror FilesTab's
+ *  ViewerMessage convention.
+ *
+ *  Fix 4: a `binary` file never reaches <PatchDiff> — its patch chunk is a
+ *  `Binary files … differ` marker with no real hunks, which PatchDiff would
+ *  render as a blank pane. Image extensions route to BinaryImageBody
+ *  (current on-disk image via files:readImage); every other binary file
+ *  gets a plain "no preview" placeholder. */
+function DiffContentPane({
+  workspaceId,
+  file,
+  diffStyle,
+  wrapLines,
+  loading
+}: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
+  if (file.binary) {
+    if (isImagePath(file.path)) {
+      return <BinaryImageBody workspaceId={workspaceId} path={file.path} />
+    }
+    return <DiffMessage text="Binary file — no preview" />
+  }
   return (
     <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
       <PatchDiff
@@ -293,7 +551,8 @@ function DiffContentPane({ file, diffStyle, loading }: DiffContentPaneProps): Re
         options={{
           theme: VIEWER_THEME,
           themeType: 'dark',
-          diffStyle
+          diffStyle,
+          overflow: wrapLines ? 'wrap' : 'scroll'
         }}
       />
     </div>
@@ -301,6 +560,19 @@ function DiffContentPane({ file, diffStyle, loading }: DiffContentPaneProps): Re
 }
 
 // --- Root ------------------------------------------------------------------
+
+/** Fix 1 — the auto-select rule applied every time a fresh `files[]` result
+ *  settles (initial load, live-refresh refetch): keep the current selection
+ *  if that path is STILL present in the new result (a refresh must not yank
+ *  the user off the file they're looking at); otherwise fall back to the
+ *  first changed file so the tab always shows a diff by default instead of
+ *  the empty "Select a file" state. Returns null only when `files` itself is
+ *  empty (a clean tree — nothing to select). Pure so it's trivially testable
+ *  and keeps the effects below declarative. */
+function nextSelection(files: readonly GitDiffFile[], current: string | null): string | null {
+  if (current !== null && files.some((f) => f.path === current)) return current
+  return files[0]?.path ?? null
+}
 
 /** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
  *  refetch effect below and the initial-load effect share one code path,
@@ -338,6 +610,17 @@ export function GitTab({
   const [diffStyle, setDiffStyle] = useState<DiffStyle>('unified')
   const [subTab, setSubTab] = useState<GitSubTab>('diff')
 
+  // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
+  // runs through nextSelection so the tab auto-selects the first changed
+  // file when nothing is selected (or the prior selection dropped out),
+  // while preserving an existing selection that's still present. Wraps
+  // `setFiles` so every call site below gets this for free, rather than
+  // repeating the selection-derivation at each of the two settle points.
+  const applyFiles = useCallback((f: GitDiffFile[]) => {
+    setFiles(f)
+    setSelectedPath((prev) => nextSelection(f, prev))
+  }, [])
+
   // Initial load + workspace change. Resets files/selectedPath alongside
   // loading — otherwise DiffTreePane/DiffContentPane would briefly render the
   // PREVIOUS workspace's changed files/diff (loading=true but stale `files`)
@@ -348,10 +631,10 @@ export function GitTab({
     setFiles([])
     setSelectedPath(null)
     return fetchDiff(workspaceId, (f) => {
-      setFiles(f)
+      applyFiles(f)
       setLoading(false)
     })
-  }, [workspaceId])
+  }, [workspaceId, applyFiles])
 
   // Live refresh: git:statusChanged (branch/index change — src/main/git.ts's
   // .git watcher, already running unconditionally since terminal:mount) and
@@ -369,7 +652,7 @@ export function GitTab({
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
         cleanupRef.current?.()
-        cleanupRef.current = fetchDiff(workspaceId, setFiles)
+        cleanupRef.current = fetchDiff(workspaceId, applyFiles)
       }, REFRESH_DEBOUNCE_MS)
     }
     const unsubStatus = window.api.git.onStatusChanged((e) => {
@@ -385,7 +668,7 @@ export function GitTab({
       cleanupRef.current?.()
       cleanupRef.current = null
     }
-  }, [workspaceId])
+  }, [workspaceId, applyFiles])
 
   // If the currently-selected file drops out of the diff (e.g. the user
   // committed/discarded it externally), `selectedFile` below simply derives
@@ -399,6 +682,17 @@ export function GitTab({
   )
 
   const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])
+
+  // Fix 2: the ⚙ diff-options popover's Wrap-lines toggle — APP-WIDE view
+  // preference, persisted via AppUiState.gitDiffWrapLines (same
+  // files_wrap_lines pattern FilesTab's TreeOptionsPopover uses). Falls back
+  // to UI_STATE_DEFAULTS while the initial uiState.get() hasn't resolved yet.
+  const uiState = useUiState()
+  const wrapLines = uiState?.gitDiffWrapLines ?? UI_STATE_DEFAULTS.gitDiffWrapLines
+  const diffOptions = useMemo(() => ({ wrapLines }), [wrapLines])
+  const setDiffOptions = useCallback((next: { wrapLines: boolean }) => {
+    updateUiState({ gitDiffWrapLines: next.wrapLines })
+  }, [])
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
@@ -414,6 +708,7 @@ export function GitTab({
           <List size={16} />
         </button>
         <DiffStyleToggle value={diffStyle} onChange={setDiffStyle} />
+        <GitDiffOptionsPopover options={diffOptions} onChange={setDiffOptions} />
         <div className="ml-auto flex items-center gap-2">
           <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
           <SubTabStrip active={subTab} onChange={setSubTab} />
@@ -430,7 +725,13 @@ export function GitTab({
             <DiffTreePane files={files} selected={selectedPath} onSelectFile={setSelectedPath} />
           </div>
           <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <DiffContentPane file={selectedFile} diffStyle={diffStyle} loading={loading} />
+            <DiffContentPane
+              workspaceId={workspaceId}
+              file={selectedFile}
+              diffStyle={diffStyle}
+              wrapLines={wrapLines}
+              loading={loading}
+            />
           </div>
         </div>
       )}

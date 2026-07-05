@@ -541,6 +541,11 @@ export const schema: SchemaDef = {
         check: enumCheck('files_sort_order', FILES_SORT_ORDER)
       },
       files_flatten_empty_dirs: bool('files_flatten_empty_dirs', '1'),
+      // Workbench Git-tab diff VIEW preferences (v68) — app-wide, same
+      // pattern as the files_* columns above: the Git tab's ⚙ options
+      // popover's "Wrap lines" toggle (mirrors UI_STATE_DEFAULTS.gitDiffWrapLines
+      // in src/shared/uiStateDefaults.ts). Default 1 (wrap on).
+      git_diff_wrap_lines: bool('git_diff_wrap_lines', '1'),
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

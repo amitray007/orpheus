@@ -92,6 +92,8 @@ type AppUiStateRow = {
   files_wrap_lines: number
   files_sort_order: string
   files_flatten_empty_dirs: number
+  // Workbench Git-tab diff view preferences (v68)
+  git_diff_wrap_lines: number
   // Diagnostics capture toggles (v56)
   diag_error: number | null
   diag_lifecycle: number | null
@@ -177,6 +179,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     filesWrapLines: (row.files_wrap_lines ?? 1) === 1,
     filesSortOrder: row.files_sort_order === 'name' ? 'name' : 'default',
     filesFlattenEmptyDirs: (row.files_flatten_empty_dirs ?? 1) === 1,
+    // Workbench Git-tab diff view preferences (v68) — default true (wrap on)
+    gitDiffWrapLines: (row.git_diff_wrap_lines ?? 1) === 1,
     // Diagnostics capture toggles (v56)
     diagError: row.diag_error == null ? true : row.diag_error === 1,
     diagLifecycle: row.diag_lifecycle === 1,
@@ -272,6 +276,11 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('filesAutoSave' in patch && patch.filesAutoSave !== undefined) {
     if (typeof patch.filesAutoSave !== 'boolean') {
       throw new Error('uiState: filesAutoSave must be a boolean')
+    }
+  }
+  if ('gitDiffWrapLines' in patch && patch.gitDiffWrapLines !== undefined) {
+    if (typeof patch.gitDiffWrapLines !== 'boolean') {
+      throw new Error('uiState: gitDiffWrapLines must be a boolean')
     }
   }
   validateFilesViewPatch(patch)
@@ -392,6 +401,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     filesWrapLines: 'files_wrap_lines',
     filesSortOrder: 'files_sort_order',
     filesFlattenEmptyDirs: 'files_flatten_empty_dirs',
+    // Workbench Git-tab diff view preferences (v68)
+    gitDiffWrapLines: 'git_diff_wrap_lines',
     // Diagnostics capture toggles (v56)
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',

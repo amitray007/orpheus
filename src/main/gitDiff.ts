@@ -95,13 +95,26 @@ function countPatchLines(chunk: string): { additions: number; deletions: number 
   return { additions, deletions }
 }
 
+/** True when a patch chunk is a `git diff` BINARY marker rather than real
+ *  text hunks — either the human-readable `Binary files a/x and b/x differ`
+ *  line (the default, no `--binary`) or a `GIT binary patch` block (emitted
+ *  when the caller passes `--binary`, which this module doesn't, but detected
+ *  anyway for robustness/future-proofing). Additions/deletions are always 0
+ *  for these — `countPatchLines` would already return {0,0} since a binary
+ *  chunk has no `+`/`-` hunk lines, but callers use this flag to render
+ *  "Binary" instead of a misleading "-0 +0" line count. */
+function isBinaryPatchChunk(chunk: string): boolean {
+  return /^Binary files .+ differ$/m.test(chunk) || /^GIT binary patch$/m.test(chunk)
+}
+
 /** Build one `GitDiffFile` from a single-file patch chunk (already split out
  *  of the combined `git diff HEAD` output). */
 function fileFromChunk(chunk: string): GitDiffFile {
   const { path, oldPath } = parsePatchPaths(chunk)
   const status = parsePatchStatus(chunk, path, oldPath)
   const { additions, deletions } = countPatchLines(chunk)
-  return { path, status, patch: chunk, additions, deletions, oldPath }
+  const binary = isBinaryPatchChunk(chunk)
+  return { path, status, patch: chunk, additions, deletions, oldPath, binary }
 }
 
 /** Tracked changes (staged + unstaged, combined) vs HEAD, split per file. */

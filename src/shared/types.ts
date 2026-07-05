@@ -285,6 +285,11 @@ export type AppUiState = {
   filesSortOrder: 'default' | 'name'
   /** Collapse single-child directory chains into one flattened row. Default true (on) — see Fix 3. */
   filesFlattenEmptyDirs: boolean
+  // Workbench Git-tab diff VIEW preferences (v68) — app-wide, mirrors the
+  // files_* pattern above: the Git tab's ⚙ options popover's "Wrap lines"
+  // toggle, persisted so it survives an app restart.
+  /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`). Default true (on). */
+  gitDiffWrapLines: boolean
   updatedAt: number
 }
 
@@ -1316,6 +1321,13 @@ export type GitDiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | '
  * through the last hunk line for this file only), and +/- line counts parsed
  * from the same patch. `oldPath` is set only for renames (the pre-rename
  * path) so the renderer can show "old → new" if desired.
+ *
+ * `binary` (Fix 4) is true when the patch chunk is a `git diff` binary marker
+ * (`Binary files a/x b/x differ` or a `GIT binary patch` block) rather than
+ * real `+`/`-` hunks — additions/deletions are then meaningless (always 0)
+ * and the renderer shows "Binary" instead of a line-count, routing image
+ * extensions to an <img> preview (via files:readImage) and everything else to
+ * a "no preview" placeholder rather than rendering the (blank) patch.
  */
 export type GitDiffFile = {
   path: string
@@ -1324,6 +1336,7 @@ export type GitDiffFile = {
   additions: number
   deletions: number
   oldPath?: string
+  binary: boolean
 }
 
 /**

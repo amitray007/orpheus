@@ -19,7 +19,10 @@ export const UI_STATE_DEFAULTS = {
   filesDimGitignored: true,
   filesWrapLines: true,
   filesSortOrder: 'default' as const,
-  filesFlattenEmptyDirs: true
+  filesFlattenEmptyDirs: true,
+  // Workbench Git-tab diff view preferences (v68) — mirrors app_ui_state's
+  // git_diff_wrap_lines SQL DEFAULT in schema.ts.
+  gitDiffWrapLines: true
 } as const
 
 // Valid values for app_ui_state.files_sort_order — mirrors TreeSortOrder in
