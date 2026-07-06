@@ -130,6 +130,26 @@
 // uses); 3c/3d build their real content. No PR → the strip (and the rest of
 // the tab) is completely unchanged from Phase 1/2.
 //
+// PR-header polish (this pass, live-QA follow-up) — two fixes:
+//   FIX 1 — the sub-tab strip used to render a bare "local" pill (from
+//     WorktreeChip) immediately left of [Diff|Commits|Details|Checks] for
+//     every non-worktree workspace (the common case), reading as a stray
+//     extra tab segment rather than a deliberate indicator. Root-caused to
+//     WorktreeChip always rendering SOME text ("worktree · x" or "local")
+//     instead of nothing when there's nothing notable to say — fixed by
+//     having it render `null` for the non-worktree case (see its own doc
+//     comment) rather than visually hiding/repositioning the same string.
+//   FIX 2 — PrSlimHeader is now one full-width `flex flex-wrap` row (badge,
+//     title, #id, branch chip+copy, worktree chip) instead of a cramped
+//     top-left block with wasted width and a truncated title; a long title
+//     wraps instead of ellipsizing. The branch chip grew a copy-icon button
+//     (BranchCopyButton, mirroring git/CommitsTab.tsx's CommitShaCopyButton
+//     copy/timeout-reset-to-check pattern). The worktree chip — now a no-op
+//     for the common non-worktree case per Fix 1 — moved into this row
+//     (after the branch chip) for the has-PR case; the no-PR case still
+//     renders it (a no-op for non-worktrees) beside the sub-tab strip, since
+//     there's no PR header row for it to live in there.
+//
 // Phase 3b foundation (this pass) — the three-parallel-agent split. The
 // Commits/Details/Checks sub-tabs are now their OWN files under ./git/
 // (CommitsTab.tsx / DetailsTab.tsx / ChecksTab.tsx), each a self-contained
@@ -205,7 +225,9 @@ import {
   GitMerge,
   GitPullRequest,
   Plus,
-  X
+  X,
+  Copy,
+  Check
 } from '@phosphor-icons/react'
 import type {
   FileImage,
@@ -672,31 +694,82 @@ function DiffModeToggle({ value, onChange }: DiffModeToggleProps): React.JSX.Ele
   )
 }
 
-// --- Worktree/local chip ------------------------------------------------------
+// --- Worktree chip ------------------------------------------------------------
 
-/** "worktree · <branch>" vs "local" — the app already tracks
- *  worktreeParentCwd/worktreeBranch per workspace (see WorkspaceTitleBar's
- *  own worktree chip), so this is pure presentation over props passed down
- *  from WorkspaceView, no new IPC needed. */
+/** "worktree · <branch>" — the app already tracks worktreeParentCwd/
+ *  worktreeBranch per workspace (see WorkspaceTitleBar's own worktree chip),
+ *  so this is pure presentation over props passed down from WorkspaceView, no
+ *  new IPC needed.
+ *
+ *  BUG FIX (this pass) — the stray "local" pill: this component used to
+ *  render a literal "local" pill for the (extremely common) main-checkout
+ *  case, sitting in the sub-tab-strip row right next to
+ *  [Diff|Commits|Details|Checks] — from a QA glance it read as a bogus extra
+ *  segment glued onto the tab strip, not as a deliberate "this is not a
+ *  worktree" indicator. Root cause: a worktree-vs-main-checkout distinction
+ *  doesn't need an always-visible "local" pill to make its point — it only
+ *  needs to say something when there IS something notable to say (i.e. this
+ *  workspace IS an isolated worktree). So this now renders `null` entirely
+ *  for the non-worktree case; only a genuine worktree gets a chip, which
+ *  GitTab now places in the PR slim header row (Fix 2) — see PrSlimHeader —
+ *  rather than in the sub-tab-strip row this used to occupy. */
 function WorktreeChip({
   worktreeParentCwd,
   worktreeBranch
 }: {
   worktreeParentCwd: string | null
   worktreeBranch: string | null
-}): React.JSX.Element {
-  const isWorktree = worktreeParentCwd != null
+}): React.JSX.Element | null {
+  if (worktreeParentCwd === null) return null
   return (
     <span
-      title={
-        isWorktree
-          ? `Worktree branch: ${worktreeBranch ?? 'unknown'}\nParent repo: ${worktreeParentCwd}`
-          : 'Main checkout'
-      }
-      className="px-1.5 py-0.5 rounded text-[10px] font-medium text-text-muted bg-surface-overlay/60 border border-border-default/60 select-none whitespace-nowrap"
+      title={`Worktree branch: ${worktreeBranch ?? 'unknown'}\nParent repo: ${worktreeParentCwd}`}
+      className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium text-text-muted bg-surface-overlay/60 border border-border-default/60 select-none whitespace-nowrap"
     >
-      {isWorktree ? `worktree · ${worktreeBranch ?? '?'}` : 'local'}
+      {`worktree · ${worktreeBranch ?? '?'}`}
     </span>
+  )
+}
+
+// --- Branch copy button --------------------------------------------------------
+
+/** Copy-to-clipboard button for the PR header's branch chip — mirrors
+ *  git/CommitsTab.tsx's `CommitShaCopyButton` pattern 1:1 (copy via
+ *  `navigator.clipboard`, flip to a Check icon for ~1.2s, reset on unmount/
+ *  re-click via the same cleanup-timer shape) rather than re-deriving a
+ *  second copy-button implementation for a branch name instead of a SHA. */
+function BranchCopyButton({ branch }: { branch: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!copied) return
+    const id = setTimeout(() => setCopied(false), 1200)
+    return () => clearTimeout(id)
+  }, [copied])
+
+  async function handleCopy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(branch)
+      setCopied(true)
+    } catch (err) {
+      console.error('[GitTab] clipboard copy failed:', err)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void handleCopy()}
+      aria-label={copied ? 'Copied branch name' : `Copy branch name ${branch}`}
+      title={copied ? 'Copied' : 'Copy branch name'}
+      className="p-0.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 cursor-pointer"
+    >
+      {copied ? (
+        <Check size={10} weight="bold" className="text-emerald-400" />
+      ) : (
+        <Copy size={10} weight="bold" />
+      )}
+    </button>
   )
 }
 
@@ -743,41 +816,63 @@ function PrBadgeIcon({ state }: { state: GhPullRequestState }): React.JSX.Elemen
  *  today, so — per the doc's "keep 3a simple: branch shown; base
  *  best-effort" — this only shows the head branch; a future pass can thread
  *  `baseRefName` through `getPrForBranch` and add the mockup's
- *  `branch → base` arrow here without changing this component's shape. */
+ *  `branch → base` arrow here without changing this component's shape.
+ *
+ *  REDESIGN (this pass) — full-width, wrapping single row. Previously this
+ *  crammed [badge][title #id/branch two-line stack] into the top-left with a
+ *  large empty expanse to the right of a `truncate`d title — on a long real
+ *  PR title that meant the header wasted most of its width AND ellipsized
+ *  the one thing (the title) a reviewer most wants to actually read in full.
+ *  Now it's ONE `flex flex-wrap` row — badge, title, #id, branch chip (+copy),
+ *  worktree chip — that fills the header's width and wraps to a second line
+ *  when it doesn't fit, instead of truncating or overflowing. `gap-x`/`gap-y`
+ *  give both the inline spacing and a sane row-gap once it wraps. The title
+ *  is `min-w-0` + no `truncate`/`whitespace-nowrap` so long titles can break
+ *  across lines like any other wrapped inline content, and it keeps its
+ *  `openPrUrl` click/hover-underline behavior unchanged from before.
+ *
+ *  Worktree chip: moved here (Fix 1) from the sub-tab-strip row, where it
+ *  used to render a bare "local" pill for the (common) main-checkout case —
+ *  see WorktreeChip's own doc comment for the root-cause writeup. It's
+ *  `null` for a main checkout, so nothing renders for the common case; a
+ *  genuine worktree gets its chip placed after the branch chip, per the
+ *  task's "place it sensibly in the row" direction. */
 function PrSlimHeader({
   pr,
-  branch
+  branch,
+  worktreeParentCwd,
+  worktreeBranch
 }: {
   pr: GhPullRequest
   branch: string | null
+  worktreeParentCwd: string | null
+  worktreeBranch: string | null
 }): React.JSX.Element {
   return (
     <div className="flex-shrink-0 px-3.5 py-2.5 border-b border-border-default bg-surface-raised">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <span
           className={`flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-bold px-1.5 py-0.5 rounded-full text-white tracking-wide ${PR_BADGE_BG[pr.state]}`}
         >
           <PrBadgeIcon state={pr.state} />
           {PR_BADGE_LABEL[pr.state]}
         </span>
-        <div className="flex-1 min-w-0">
-          <button
-            type="button"
-            onClick={() => openPrUrl(pr.url)}
-            title="Open in browser"
-            className="block w-full text-left text-[15px] font-semibold text-text-primary truncate cursor-pointer hover:underline"
-          >
-            {pr.title}
-          </button>
-          <div className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-text-muted flex-wrap">
-            <span>#{pr.number}</span>
-            {branch !== null && (
-              <span className="font-mono text-[11px] px-1.5 py-0 rounded bg-surface-overlay border border-border-default text-text-secondary">
-                {branch}
-              </span>
-            )}
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={() => openPrUrl(pr.url)}
+          title="Open in browser"
+          className="min-w-0 text-left text-[15px] font-semibold text-text-primary cursor-pointer hover:underline"
+        >
+          {pr.title}
+        </button>
+        <span className="flex-shrink-0 text-[11.5px] text-text-muted">#{pr.number}</span>
+        {branch !== null && (
+          <span className="flex-shrink-0 inline-flex items-center gap-1 font-mono text-[11px] px-1.5 py-0 rounded bg-surface-overlay border border-border-default text-text-secondary">
+            {branch}
+            <BranchCopyButton branch={branch} />
+          </span>
+        )}
+        <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
       </div>
     </div>
   )
@@ -2225,14 +2320,22 @@ export function GitTab({
   // Phase 2: the hide-tree icon + unified/split toggle + ⚙ wrap popover only
   // make sense once there's an actual diff to view — while loading, or in
   // either edge state (not-a-repo / clean), there's no tree/diff pane to
-  // control. The worktree chip + [Diff|Commits] strip stay visible in every
-  // state (matching the mockup's edge-states panel, which keeps its own
-  // harness chrome up top regardless of body state).
+  // control. The worktree chip (PR case only — see PrSlimHeader; the
+  // no-PR row below carries it directly) + [Diff|Commits] strip stay visible
+  // in every state (matching the mockup's edge-states panel, which keeps its
+  // own harness chrome up top regardless of body state).
   const showDiffControls = !loading && repo && files.length > 0
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-      {pr !== null && <PrSlimHeader pr={pr} branch={branch} />}
+      {pr !== null && (
+        <PrSlimHeader
+          pr={pr}
+          branch={branch}
+          worktreeParentCwd={worktreeParentCwd}
+          worktreeBranch={worktreeBranch}
+        />
+      )}
       <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
         {showDiffControls && (
           <>
@@ -2264,7 +2367,18 @@ export function GitTab({
           )
         }
         <div className="ml-auto flex items-center gap-2">
-          <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
+          {
+            // The worktree chip already renders inside PrSlimHeader once a PR
+            // exists (Fix 2 places it in that full-width row) — only show it
+            // here, next to the strip, for the no-PR case where there's no PR
+            // header row for it to live in. WorktreeChip itself is a no-op
+            // (renders null) for a main-checkout workspace either way, so
+            // this can render unconditionally without reintroducing the
+            // removed "local" pill (see WorktreeChip's own doc comment).
+            pr === null && (
+              <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
+            )
+          }
           <SubTabStrip active={subTab} onChange={setSubTab} hasPr={pr !== null} />
         </div>
       </div>
