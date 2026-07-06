@@ -90,7 +90,9 @@ import type {
   FilesMutationResult,
   GitDiffResult,
   GhPullRequestDetail,
-  GhReviewCommentThread
+  GhReviewCommentThread,
+  GhReviewComment,
+  GhReviewCommentSide
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -308,6 +310,34 @@ export interface InvokeChannelMap {
   // prDetail above — see docs/learnings/pr-comments.md + src/main/github.ts::
   // getPrReviewComments. Total (never throws); null on any failure mode.
   'github:prReviewComments': { req: [{ workspaceId: string }]; res: GhReviewCommentThread[] | null }
+  // Workbench Git tab — Phase 4c write operations. THE FIRST GitHub writes
+  // this app makes. Each is total (never rejects) — see
+  // src/main/github.ts's "PR write operations" section for the full
+  // execFile-args-body-safety + error-extraction + cache-invalidation
+  // rationale; `commitId` on postReviewComment is optional (server-side
+  // falls back to the PR's live head sha via `gh pr view --json
+  // headRefOid`) so a stale/omitted client-side sha still succeeds.
+  'github:postReviewComment': {
+    req: [
+      {
+        workspaceId: string
+        path: string
+        line: number
+        side: GhReviewCommentSide
+        body: string
+        commitId?: string
+      }
+    ]
+    res: { ok: true; value: GhReviewComment } | { ok: false; error: string }
+  }
+  'github:replyToReviewComment': {
+    req: [{ workspaceId: string; commentId: number; body: string }]
+    res: { ok: true; value: GhReviewComment } | { ok: false; error: string }
+  }
+  'github:postGeneralComment': {
+    req: [{ workspaceId: string; body: string }]
+    res: { ok: true } | { ok: false; error: string }
+  }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.

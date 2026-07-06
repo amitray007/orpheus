@@ -37,6 +37,8 @@ import type {
   GhPullRequest,
   GhPullRequestDetail,
   GhReviewCommentThread,
+  GhReviewComment,
+  GhReviewCommentSide,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -494,7 +496,30 @@ const api = {
     // Phase 4a — line-anchored PR review comments (inline diff annotations).
     // Manual-refresh only, same cadence convention as prDetail above.
     prReviewComments: (workspaceId: string): Promise<GhReviewCommentThread[] | null> =>
-      invoke('github:prReviewComments', { workspaceId })
+      invoke('github:prReviewComments', { workspaceId }),
+    // Phase 4c — write operations (the first GitHub writes this app makes).
+    // Each is total (never rejects) — see src/main/github.ts's "PR write
+    // operations" section for the full safety rationale.
+    postReviewComment: (args: {
+      workspaceId: string
+      path: string
+      line: number
+      side: GhReviewCommentSide
+      body: string
+      commitId?: string
+    }): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:postReviewComment', args),
+    replyToReviewComment: (
+      workspaceId: string,
+      commentId: number,
+      body: string
+    ): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:replyToReviewComment', { workspaceId, commentId, body }),
+    postGeneralComment: (
+      workspaceId: string,
+      body: string
+    ): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('github:postGeneralComment', { workspaceId, body })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),

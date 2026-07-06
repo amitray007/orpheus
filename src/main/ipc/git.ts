@@ -16,7 +16,14 @@
 
 import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
 import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
-import { getPrForBranch, getPrDetail, getPrReviewComments } from '../github'
+import {
+  getPrForBranch,
+  getPrDetail,
+  getPrReviewComments,
+  postReviewComment,
+  replyToReviewComment,
+  postGeneralComment
+} from '../github'
 import { handle } from './handle'
 
 export type GitIpcDeps = {
@@ -87,5 +94,31 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // above; own gh call + cache, separate from prDetail (see github.ts).
   handle('github:prReviewComments', (_e, { workspaceId }) =>
     getPrReviewComments(getWorkspaceCwd(workspaceId))
+  )
+
+  // Phase 4c — the FIRST write operations to GitHub. Each resolves
+  // workspaceId -> cwd the same way the read handlers above do, then defers
+  // to github.ts's total (never-throws) write functions — see that module's
+  // "PR write operations" section header for the full safety rationale
+  // (execFile-args body passing, error extraction, cache invalidation).
+
+  handle('github:postReviewComment', (_e, { workspaceId, path, line, side, body, commitId }) =>
+    postReviewComment({
+      workspaceId,
+      cwd: getWorkspaceCwd(workspaceId),
+      path,
+      line,
+      side,
+      body,
+      commitId
+    })
+  )
+
+  handle('github:replyToReviewComment', (_e, { workspaceId, commentId, body }) =>
+    replyToReviewComment({ cwd: getWorkspaceCwd(workspaceId), commentId, body })
+  )
+
+  handle('github:postGeneralComment', (_e, { workspaceId, body }) =>
+    postGeneralComment({ cwd: getWorkspaceCwd(workspaceId), body })
   )
 }

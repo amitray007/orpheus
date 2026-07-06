@@ -215,7 +215,7 @@ import { CommitsTab } from './git/CommitsTab'
 import { DetailsTab } from './git/DetailsTab'
 import { ChecksTab } from './git/ChecksTab'
 import { ReviewCommentThread } from './git/ReviewCommentThread'
-import { CommentComposer, type CommentDraft } from './git/CommentComposer'
+import { CommentComposer, type CommentDraft, type GhSubmitResult } from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
@@ -359,18 +359,30 @@ function annotationsForFile(
   return [...threadAnnotations, ...composerAnnotations]
 }
 
+// A composer with no wired onSubmit (shouldn't happen per the doc comment
+// below, but keeps the optional-callback fallback honest about its own
+// return type instead of silently resolving `undefined` where a
+// `GhSubmitResult` is expected).
+const NO_SUBMIT_WIRED: GhSubmitResult = { ok: false, error: 'Comment posting is not available' }
+
 /** Routes one merged annotation to its card: an existing GitHub thread (4a,
- *  read-only) or a pending composer (4b). `onCancelComposer`/`onSubmitComposer`
- *  are only ever actually invoked for a 'pending' annotation, which — per
+ *  read-only, with a Reply affordance as of 4c — see ReviewCommentThread.tsx)
+ *  or a pending composer (4b/4c). `onCancelComposer`/`onSubmitComposer` are
+ *  only ever actually invoked for a 'pending' annotation, which — per
  *  `annotationsForFile` — can only exist when DiffContentPane was given a
  *  real (non-null) `composers` wiring object in the first place; they're
  *  still typed as optional (rather than required) so callers in a context
  *  with no composers at all (there are none today, but this keeps the helper
- *  honest about what it needs) don't have to invent placeholder callbacks. */
+ *  honest about what it needs) don't have to invent placeholder callbacks.
+ *  `workspaceId` is threaded through to ReviewCommentThread so its own Reply
+ *  composer can post via github:replyToReviewComment + trigger the same
+ *  onRefetch callback a new-comment post does. */
 function renderReviewCommentAnnotation(
   annotation: DiffLineAnnotation<ReviewAnnotationMeta>,
+  workspaceId: string,
+  onRefetchThreads: () => void,
   onCancelComposer?: (id: string) => void,
-  onSubmitComposer?: (draft: CommentDraft) => void
+  onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>
 ): React.ReactNode {
   if (annotation.metadata.kind === 'pending') {
     const { composer } = annotation.metadata
@@ -378,11 +390,17 @@ function renderReviewCommentAnnotation(
       <CommentComposer
         draft={composer}
         onCancel={() => onCancelComposer?.(composer.id)}
-        onSubmit={(draft) => onSubmitComposer?.(draft)}
+        onSubmit={(draft) => onSubmitComposer?.(draft) ?? Promise.resolve(NO_SUBMIT_WIRED)}
       />
     )
   }
-  return <ReviewCommentThread thread={annotation.metadata.thread} />
+  return (
+    <ReviewCommentThread
+      thread={annotation.metadata.thread}
+      workspaceId={workspaceId}
+      onReplyPosted={onRefetchThreads}
+    />
+  )
 }
 
 /** Phase 4b — the gutter "+" add-comment button, passed to @pierre/diffs'
@@ -869,17 +887,26 @@ interface DiffContentPaneProps {
    *  than "no composers open" — GitTab passes the real composers object only
    *  while `diffMode === 'pr'`. */
   composers: ReviewComposerWiring | null
+  /** Phase 4c — refetches `reviewThreads` (GitTab's own `fetchReviewComments`
+   *  helper, bound to `setReviewThreads`). Passed down to ReviewCommentThread
+   *  via renderReviewCommentAnnotation so a successful Reply post refreshes
+   *  the thread list the same way a new-comment post does. A no-op function
+   *  in working-tree mode (nothing ever renders a thread there to reply to,
+   *  so this is never actually invoked in that mode — kept required rather
+   *  than optional so every call site is explicit about wiring it). */
+  onRefetchThreads: () => void
 }
 
-/** Phase 4b — the subset of `useReviewComposers`'s result DiffContentPane
- *  needs, plus the (still-stubbed) submit callback. Kept as its own small
- *  interface (rather than threading the whole hook result down) so this
- *  pane's prop surface only names what it actually uses. */
+/** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
+ *  needs, plus the submit callback (Phase 4c: now a real async post, see
+ *  GitTab's `submitReviewComment`). Kept as its own small interface (rather
+ *  than threading the whole hook result down) so this pane's prop surface
+ *  only names what it actually uses. */
 interface ReviewComposerWiring {
   composers: readonly PendingComposer[]
   open: (path: string, side: 'LEFT' | 'RIGHT', line: number) => void
   close: (id: string) => void
-  onSubmit: (draft: CommentDraft) => void
+  onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
 }
 
 function DiffMessage({ text }: { text: string }): React.JSX.Element {
@@ -1157,7 +1184,8 @@ function DiffContentPane({
   wrapLines,
   loading,
   reviewThreads,
-  composers
+  composers,
+  onRefetchThreads
 }: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -1185,7 +1213,13 @@ function DiffContentPane({
         options={options}
         lineAnnotations={lineAnnotations}
         renderAnnotation={(annotation) =>
-          renderReviewCommentAnnotation(annotation, composers?.close, composers?.onSubmit)
+          renderReviewCommentAnnotation(
+            annotation,
+            workspaceId,
+            onRefetchThreads,
+            composers?.close,
+            composers?.onSubmit
+          )
         }
         renderGutterUtility={composers !== null ? renderGutterUtility : undefined}
       />
@@ -1795,17 +1829,66 @@ export function GitTab({
     resetComposers()
   }, [selectedPath, resetComposers])
 
-  // Phase 4b: "Comment" stub — 4c wires this to the real GitHub-post IPC
-  // (posting a new review comment). Today it just closes the composer that
-  // produced the draft (matching a successful-post UX without actually
-  // posting anything) and logs the draft so it's visible for manual
-  // spot-checking during this phase; no network call happens here.
+  // Phase 4c: shared refetch-on-success callback — both a new-comment post
+  // (submitReviewComment below) and a Reply post (ReviewCommentThread's own
+  // composer, via renderReviewCommentAnnotation's onRefetchThreads) need to
+  // refresh reviewThreads after a successful write so the just-posted
+  // comment/reply shows up as part of its thread immediately. Reuses the
+  // existing fetchReviewComments one-shot helper (defined above, alongside
+  // fetchDiff/fetchPrDiff) rather than duplicating its .then/.catch shape.
+  const refetchReviewThreads = useCallback(() => {
+    fetchReviewComments(workspaceId, setReviewThreads)
+  }, [workspaceId])
+
+  // Phase 4c: same "refetch after a successful write" callback for the
+  // Details tab's general-comment composer — a successful github:
+  // postGeneralComment needs prDetail.comments.general to include the new
+  // comment so it shows up in the timeline immediately. Direct one-shot
+  // fetch (not wrapped in its own named helper like fetchReviewComments)
+  // since this is the only caller.
+  const refetchPrDetail = useCallback(() => {
+    window.api.github
+      .prDetail(workspaceId)
+      .then(setPrDetail)
+      .catch((e) => console.error('[GitTab] github:prDetail refetch failed:', e))
+  }, [workspaceId])
+
+  // Phase 4c: posts a NEW line-anchored review comment for real, via
+  // github:postReviewComment. `commitId` is the PR's head commit sha — taken
+  // from `prDetail.commits` (gh returns them oldest-first, confirmed live:
+  // `commits[commits.length - 1].oid === headRefOid`), so the comment
+  // anchors to the SAME commit the PR diff currently being viewed is
+  // rendered against. Left undefined when prDetail/commits haven't loaded
+  // yet (rare — PR-diff mode implies a PR exists, so prDetail is normally
+  // already populated by the time a composer can even open); the main
+  // process resolves its own live head sha in that case (see
+  // resolvePrWriteContext in src/main/github.ts), so omitting it here still
+  // succeeds rather than failing outright.
+  //
+  // On success: close the composer (removes it from openComposers) AND
+  // refetch reviewThreads so the newly-posted comment appears as a thread
+  // immediately, rather than waiting for the next incidental refresh. On
+  // failure: return the result as-is so CommentComposer keeps the composer
+  // open with the typed body + shows the inline error (never silently
+  // swallowed) — closeComposer/refetch are NOT called on failure, matching
+  // the task's "composer stays with the text so the user can retry".
   const submitReviewComment = useCallback(
-    (draft: CommentDraft) => {
-      console.log('[GitTab] pending comment draft (posting not yet wired):', draft)
+    async (draft: CommentDraft): Promise<GhSubmitResult> => {
+      const headOid = prDetail?.commits[prDetail.commits.length - 1]?.oid
+      const result = await window.api.github.postReviewComment({
+        workspaceId,
+        path: draft.path,
+        line: draft.line,
+        side: draft.side,
+        body: draft.body,
+        commitId: headOid
+      })
+      if (!result.ok) return result
       closeComposer(draft.id)
+      refetchReviewThreads()
+      return { ok: true }
     },
-    [closeComposer]
+    [workspaceId, prDetail, closeComposer, refetchReviewThreads]
   )
 
   // Phase 4b: the wiring DiffContentPane needs to drive the gutter "+"/
@@ -1886,7 +1969,12 @@ export function GitTab({
         <CommitsTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
       )}
       {subTab === 'details' && (
-        <DetailsTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
+        <DetailsTab
+          prDetail={prDetail}
+          workspaceId={workspaceId}
+          branch={branch}
+          onCommentPosted={refetchPrDetail}
+        />
       )}
       {subTab === 'checks' && (
         <ChecksTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
@@ -1908,6 +1996,7 @@ export function GitTab({
           diffMode={diffMode}
           reviewThreads={reviewThreads}
           composers={diffMode === 'pr' ? reviewComposerWiring : null}
+          onRefetchThreads={refetchReviewThreads}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -1941,6 +2030,9 @@ interface GitTabBodyProps {
    *  through to DiffContentPane. Already `null` in working-tree mode (GitTab
    *  derives this from `diffMode` before passing it down). */
   composers: ReviewComposerWiring | null
+  /** Phase 4c — see DiffContentPaneProps' own doc comment; threaded straight
+   *  through to DiffContentPane. */
+  onRefetchThreads: () => void
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -1967,6 +2059,7 @@ function GitTabBody({
   diffMode,
   reviewThreads,
   composers,
+  onRefetchThreads,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -1994,6 +2087,7 @@ function GitTabBody({
           loading={false}
           reviewThreads={diffMode === 'pr' ? reviewThreads : null}
           composers={composers}
+          onRefetchThreads={onRefetchThreads}
         />
       </div>
     </div>

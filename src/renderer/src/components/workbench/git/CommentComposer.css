@@ -42,6 +42,21 @@
   color: var(--color-text-muted);
 }
 
+/* Phase 4c — inline post-failure banner. Uses the same red GitTab.tsx's
+   NotARepoState error line already uses (text-red-400, #f87171) rather than
+   inventing a new error token — no --color-red/--color-danger CSS var
+   exists in the app's token set today (checked before adding this). */
+.gcc-error {
+  font-size: 11px;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .gcc-footer {
   display: flex;
   align-items: center;

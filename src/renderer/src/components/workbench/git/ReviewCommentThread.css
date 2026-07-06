@@ -151,3 +151,22 @@
   background: rgba(110, 119, 129, 0.16);
   color: var(--color-text-secondary);
 }
+
+/* Phase 4c — the "Reply" affordance at the bottom of a thread. Text-button
+   styling (not a bordered `.gcc-btn`-style pill) so it reads as a lightweight
+   in-thread action rather than competing with the composer's own Reply/
+   Cancel buttons once opened. */
+.rc-reply-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.rc-reply-btn:hover {
+  color: var(--color-accent);
+}

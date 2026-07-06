@@ -1,18 +1,20 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/git/ReviewCommentThread.tsx
 //
-// Workbench Git tab — Phase 4a: the inline GitHub-style comment-thread card
-// rendered by @pierre/diffs' `renderAnnotation` on the PR diff (GitTab.tsx's
-// DiffContentPane, PR-diff mode only). Read-only in 4a — no reply box / post
-// affordance yet (that's 4c, per docs/learnings/pr-comments.md).
+// Workbench Git tab — Phase 4a built the inline GitHub-style comment-thread
+// card rendered by @pierre/diffs' `renderAnnotation` on the PR diff
+// (GitTab.tsx's DiffContentPane, PR-diff mode only). Phase 4c (this pass)
+// adds the one write affordance this read-only card gets: a "Reply" button
+// at the bottom of the thread that opens a CommentComposer posting via
+// github:replyToReviewComment. There is still no resolve/collapse/edit
+// affordance — those remain out of scope.
 //
 // Reusable by design (kept as its own file, not inlined into GitTab.tsx) —
-// 4b/4c/4d (resolve/collapse, reply/post, other comment sources) all build on
-// this same card. Visual language mirrors DetailsTab's comment-card /
-// timeline-entry treatment (initials avatar, "GitHub" source tag, markdown
-// body via the SAME renderToSafeHtml pipeline) rather than forking a second
-// avatar/markdown scheme — see DetailsTab.tsx's own header comment for why
-// that pipeline (markdown-it + DOMPurify) is the one mandatory path.
+// visual language mirrors DetailsTab's comment-card / timeline-entry
+// treatment (initials avatar, "GitHub" source tag, markdown body via the SAME
+// renderToSafeHtml pipeline) rather than forking a second avatar/markdown
+// scheme — see DetailsTab.tsx's own header comment for why that pipeline
+// (markdown-it + DOMPurify) is the one mandatory path.
 //
 // Small helpers (initials/avatar-color/date) are duplicated here rather than
 // imported from DetailsTab.tsx: that module doesn't export them (they're
@@ -23,13 +25,23 @@
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
-import { useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { GhReviewCommentThread } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
+import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
 import './ReviewCommentThread.css'
 
 export interface ReviewCommentThreadProps {
   thread: GhReviewCommentThread
+  /** The owning claude workspace's id — resolves to the workspace cwd in the
+   *  main process, same as every other github:* call site. Needed here (not
+   *  just in GitTab) because the Reply composer posts its own IPC call
+   *  directly rather than bubbling the draft up to GitTab first. */
+  workspaceId: string
+  /** Called after a Reply successfully posts — GitTab passes its
+   *  `refetchReviewThreads` so the new reply shows up in this thread
+   *  immediately (mirrors the new-comment composer's own refetch-on-success). */
+  onReplyPosted: () => void
 }
 
 function initialsOf(login: string): string {
@@ -117,15 +129,76 @@ function CommentRow({
   )
 }
 
+/** Phase 4c — the "Reply" button + its CommentComposer, shown at the bottom
+ *  of a thread. Kept as its own small component (rather than inlined into
+ *  ReviewCommentThread's body) so the open/closed toggle state doesn't add
+ *  another branch directly in the root render. The composer posts via
+ *  github:replyToReviewComment, threaded to the thread's ROOT id (GitHub's
+ *  replies endpoint nests under the root comment, not whichever comment in
+ *  the thread visually reads as "last" — matches the API's own semantics,
+ *  same as src/main/github.ts's replyToReviewComment). */
+function ReplySection({
+  rootCommentId,
+  workspaceId,
+  onReplyPosted
+}: {
+  rootCommentId: number
+  workspaceId: string
+  onReplyPosted: () => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+
+  const draft = useMemo<Pick<CommentDraft, 'id' | 'path' | 'line' | 'side'>>(
+    () => ({ id: `reply-${rootCommentId}`, path: '', line: 0, side: 'RIGHT' }),
+    [rootCommentId]
+  )
+
+  const handleSubmit = useCallback(
+    async (d: CommentDraft): Promise<GhSubmitResult> => {
+      const result = await window.api.github.replyToReviewComment(
+        workspaceId,
+        rootCommentId,
+        d.body
+      )
+      if (!result.ok) return result
+      setOpen(false)
+      onReplyPosted()
+      return { ok: true }
+    },
+    [workspaceId, rootCommentId, onReplyPosted]
+  )
+
+  if (!open) {
+    return (
+      <button type="button" className="rc-reply-btn" onClick={() => setOpen(true)}>
+        Reply
+      </button>
+    )
+  }
+  return (
+    <CommentComposer
+      draft={draft}
+      onSubmit={handleSubmit}
+      onCancel={() => setOpen(false)}
+      placeholder="Write a reply…"
+      submitLabel="Reply"
+    />
+  )
+}
+
 /** The inline review-comment thread card — passed to @pierre/diffs'
  *  `renderAnnotation` via GitTab.tsx's `lineAnnotations` mapping. Renders the
  *  root comment followed by any replies, in the already-sorted-by-createdAt
  *  order `groupReviewCommentsIntoThreads` (src/main/github.ts) produced.
  *  `thread.outdated` (root's `line` was null — anchored to `originalLine`
  *  instead) gets a subtle marker so a comment on a line that's since drifted
- *  doesn't read as freshly-anchored. Read-only: no reply box / resolve
- *  affordance in 4a. */
-export function ReviewCommentThread({ thread }: ReviewCommentThreadProps): React.JSX.Element {
+ *  doesn't read as freshly-anchored. Phase 4c adds a Reply affordance at the
+ *  bottom (ReplySection above) — still no resolve/collapse/edit. */
+export function ReviewCommentThread({
+  thread,
+  workspaceId,
+  onReplyPosted
+}: ReviewCommentThreadProps): React.JSX.Element {
   return (
     <div className="rc-thread">
       {thread.outdated && (
@@ -145,6 +218,11 @@ export function ReviewCommentThread({ thread }: ReviewCommentThreadProps): React
           isRoot={i === 0}
         />
       ))}
+      <ReplySection
+        rootCommentId={thread.id}
+        workspaceId={workspaceId}
+        onReplyPosted={onReplyPosted}
+      />
     </div>
   )
 }

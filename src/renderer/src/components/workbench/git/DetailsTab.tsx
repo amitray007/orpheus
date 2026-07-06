@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import type {
   GhCheck,
   GhGeneralComment,
@@ -39,6 +39,7 @@ import type {
   GhReviewRequest
 } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
+import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
 import './DetailsTab.css'
 
 export interface DetailsTabProps {
@@ -48,15 +49,19 @@ export interface DetailsTabProps {
    *  match CommitsTab/ChecksTab's shared signature. */
   prDetail: GhPullRequestDetail | null
   /** The owning claude workspace's id — resolves to the workspace cwd in the
-   *  main process, same as GitTab's own `workspaceId` prop. Unused by this
-   *  tab's own rendering (no per-file/per-workspace IPC here), kept for
-   *  signature parity with CommitsTab/ChecksTab. */
+   *  main process, same as GitTab's own `workspaceId` prop. Used by the
+   *  general-comment composer (Phase 4c) to post via
+   *  github:postGeneralComment. */
   workspaceId: string
   /** The current branch name (from GitTab's `git:statusChanged` push), or
    *  null before the first push arrives / on a detached HEAD. Unused by this
    *  tab's own rendering (the PR's own headRefName/branch chip already lives
    *  in GitTab's PrSlimHeader), kept for signature parity. */
   branch: string | null
+  /** Phase 4c — called after a general comment successfully posts, so GitTab
+   *  can refetch `prDetail` (the new comment needs to show up in the
+   *  timeline above). GitTab passes its own `refetchPrDetail`. */
+  onCommentPosted: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -252,25 +257,60 @@ function Timeline({ prDetail }: { prDetail: GhPullRequestDetail }): React.JSX.El
 }
 
 // ---------------------------------------------------------------------------
-// Display-only composer (Phase 4 wires posting)
+// General-comment composer (Phase 4c wires posting via
+// github:postGeneralComment). Reuses the shared CommentComposer.tsx
+// component (the SAME one the PR-diff's line-comment/reply composers use)
+// rather than keeping its own bespoke `.comment-composer`/`.btn` markup —
+// this pass deliberately consolidates onto the one composer implementation
+// instead of forking a second in-flight/error-handling copy for the
+// Details-tab call site. Visually this changes the composer's classes from
+// `.comment-composer`/`.btn` (DetailsTab.css) to `.gcc-*`
+// (CommentComposer.css) — both already match the same dark-surface-card
+// language, so this isn't a visual regression, just a de-duplication.
 // ---------------------------------------------------------------------------
 
-function CommentComposer(): React.JSX.Element {
+// A general PR comment has no path/line/side to anchor to — CommentDraft's
+// shape still requires them (it's shared with the line-anchored composers),
+// so this is a fixed placeholder draft; postGeneralComment (main process)
+// never reads path/line/side, only `body`.
+const GENERAL_COMMENT_DRAFT: Pick<CommentDraft, 'id' | 'path' | 'line' | 'side'> = {
+  id: 'general-comment',
+  path: '',
+  line: 0,
+  side: 'RIGHT'
+}
+
+function GeneralCommentComposer({
+  workspaceId,
+  onCommentPosted
+}: {
+  workspaceId: string
+  onCommentPosted: () => void
+}): React.JSX.Element {
+  const handleSubmit = useCallback(
+    async (draft: CommentDraft): Promise<GhSubmitResult> => {
+      const result = await window.api.github.postGeneralComment(workspaceId, draft.body)
+      if (!result.ok) return result
+      onCommentPosted()
+      return { ok: true }
+    },
+    [workspaceId, onCommentPosted]
+  )
+
+  // No onCancel affordance here — a general PR comment isn't anchored to
+  // anything the user needs to "cancel out of" the way a line-comment's
+  // gutter-opened composer is; CommentComposer still requires the prop, so
+  // this is a no-op (there's nothing to close — the composer is always
+  // present at the bottom of the timeline, matching the mockup's persistent
+  // "leave a comment" box).
   return (
-    <div className="comment-composer">
-      <textarea
-        placeholder="Leave a general PR comment…"
-        disabled
-        rows={3}
-        aria-label="Leave a general PR comment (posting coming soon)"
-      />
-      <div className="composer-footer">
-        <span className="composer-hint">Posting comments is coming soon.</span>
-        <button type="button" className="btn btn-primary composer-submit" disabled>
-          Comment
-        </button>
-      </div>
-    </div>
+    <CommentComposer
+      draft={GENERAL_COMMENT_DRAFT}
+      onSubmit={handleSubmit}
+      onCancel={() => {}}
+      placeholder="Leave a general PR comment…"
+      submitLabel="Comment"
+    />
   )
 }
 
@@ -510,7 +550,12 @@ function NoDetails(): React.JSX.Element {
  *  sidebar) inside a container-query root (see DetailsTab.css) so the layout
  *  collapses to a single column when the Workbench pane itself is narrow,
  *  independent of the app window's overall width. */
-export function DetailsTab({ prDetail, workspaceId, branch }: DetailsTabProps): React.JSX.Element {
+export function DetailsTab({
+  prDetail,
+  workspaceId,
+  branch,
+  onCommentPosted
+}: DetailsTabProps): React.JSX.Element {
   if (prDetail === null) return <NoDetails />
   return (
     <div
@@ -522,7 +567,7 @@ export function DetailsTab({ prDetail, workspaceId, branch }: DetailsTabProps): 
         <div className="details-main">
           <DescriptionCard prDetail={prDetail} />
           <Timeline prDetail={prDetail} />
-          <CommentComposer />
+          <GeneralCommentComposer workspaceId={workspaceId} onCommentPosted={onCommentPosted} />
         </div>
         <DetailsSidebar prDetail={prDetail} />
       </div>

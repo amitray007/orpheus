@@ -758,3 +758,268 @@ export async function getPrReviewComments(
   reviewCommentsCache.set(key, { value, fetchedAt: Date.now() })
   return value
 }
+
+// ---------------------------------------------------------------------------
+// PR write operations (Workbench Git tab, Phase 4c) — the FIRST write calls
+// to GitHub this module makes. Everything above this point is read-only
+// (`gh pr list`/`gh pr view`/`gh api ... GET`); the three functions below
+// (postReviewComment / replyToReviewComment / postGeneralComment) are the
+// only ones that mutate the real PR. All three:
+//   - are TOTAL — never throw. `gh api`'s failure mode (auth/rate-limit/
+//     network/422 validation) rejects the underlying execFile call; that
+//     rejection's `.stdout` (gh writes the JSON error BODY to stdout, a short
+//     one-line summary to stderr — confirmed live against a real 422) is
+//     parsed for a `message`/`errors[].message` when present, falling back to
+//     the raw stderr/Error.message otherwise. See extractGhErrorMessage.
+//   - pass the comment BODY (arbitrary multi-line markdown — quotes,
+//     backticks, `$vars`, newlines) as a single discrete execFile ARGV
+//     element (`-f body=<value>`), never interpolated into a shell string —
+//     execFile (not exec/spawn-with-shell) invokes the binary directly, so
+//     there is no shell to interpret `$`/backticks/quotes inside that
+//     argument in the first place. This was verified against a real payload
+//     containing newlines + quotes + `$` + backticks before wiring the
+//     renderer call sites.
+//   - use `-F` (gh's TYPED field flag) for the integer `line`, and `-f`
+//     (STRING field flag) for path/side/body/commit_id — matches gh's own
+//     `-f`/`-F` type distinction (see `gh api --help`).
+//   - invalidate the relevant cache (review-comments or detail) on success so
+//     the very next read reflects the write instead of serving a stale TTL
+//     hit — the renderer additionally does its own explicit refetch, but this
+//     keeps the server-side cache from fighting that refetch for the next
+//     `REVIEW_COMMENTS_TTL_MS`/`DETAIL_TTL_MS` window.
+// ---------------------------------------------------------------------------
+
+export type GhWriteResult<T> = { ok: true; value: T } | { ok: false; error: string }
+
+/** Parses `gh`'s own JSON error-body convention (GitHub's `{message,
+ *  errors:[{message, field, ...}]}` shape) out of a failed call's stdout,
+ *  preferring the most specific `errors[].message` over the top-level
+ *  `message`. Returns null when stdout is empty/not that shape — the caller
+ *  falls back to stderr/Error.message in that case. Split out of
+ *  extractGhErrorMessage so that function's own branching stays under the
+ *  cognitive-complexity ceiling. */
+function parseGhStdoutErrorMessage(stdout: unknown): string | null {
+  if (typeof stdout !== 'string' || stdout.trim().length === 0) return null
+  try {
+    const parsed = JSON.parse(stdout) as {
+      message?: string
+      errors?: Array<{ message?: string; field?: string }>
+    }
+    const first = parsed.errors?.find((e) => typeof e.message === 'string')?.message
+    if (first) return first
+    if (typeof parsed.message === 'string' && parsed.message.length > 0) return parsed.message
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Best-effort extraction of a readable message from a failed `gh api`/`gh pr`
+ *  execFile call. `gh` writes the JSON error body (GitHub's own `{message,
+ *  errors:[...]}` shape) to STDOUT and a one-line human summary to STDERR —
+ *  confirmed live against a real 422 (`gh: Validation Failed (HTTP 422)` on
+ *  stderr, the full validation-errors JSON on stdout). Prefers the parsed
+ *  stdout JSON's `errors[].message`/`message` (most specific, via
+ *  parseGhStdoutErrorMessage above), then falls back to stderr, then to the
+ *  raw Error.message (e.g. "gh: command not found", which never touches
+ *  stdout/stderr at all). */
+function extractGhErrorMessage(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const withStreams = err as { stdout?: unknown; stderr?: unknown; message?: unknown }
+    const fromStdout = parseGhStdoutErrorMessage(withStreams.stdout)
+    if (fromStdout) return fromStdout
+    if (typeof withStreams.stderr === 'string' && withStreams.stderr.trim().length > 0) {
+      return withStreams.stderr.trim()
+    }
+    if (typeof withStreams.message === 'string' && withStreams.message.length > 0) {
+      return withStreams.message
+    }
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** Resolves `cwd` -> the PR opened against its current branch -> that PR's
+ *  number + head commit sha (`headRefOid`) — the two pieces of context every
+ *  write below needs (the PR number for the API path, the head sha as
+ *  `commit_id` for a brand-new line comment). A dedicated `gh pr view
+ *  --json headRefOid` call rather than threading `headRefOid` through the
+ *  existing `getPrDetail`/`GhPullRequestDetail` (whose `commits[]` already
+ *  carries every commit's oid, including the head's — see gitDiff/github's
+ *  own commits parsing) — kept separate so this module's one write-side
+ *  resolver doesn't couple to prDetail's larger, differently-cached fetch/
+ *  shape for what's ultimately one scalar field. Total: null on any failure
+ *  (no cwd, no branch, no PR, gh missing/unauth/network). */
+async function resolvePrWriteContext(
+  cwd: string | null
+): Promise<{ prNumber: number; headOid: string } | null> {
+  if (!cwd) return null
+  const branch = await resolveCurrentBranch(cwd)
+  if (!branch) return null
+  const pr = await getPrForBranch(cwd, branch)
+  if (!pr) return null
+  const pathEnv = await resolveGhPathEnv()
+  try {
+    const { stdout } = await execFile(
+      'gh',
+      ['pr', 'view', String(pr.number), '--json', 'headRefOid'],
+      { cwd, env: { ...process.env, PATH: pathEnv }, timeout: 8000, maxBuffer: 64 * 1024 }
+    )
+    const parsed = JSON.parse(stdout) as { headRefOid?: string }
+    if (!parsed.headRefOid) return null
+    return { prNumber: pr.number, headOid: parsed.headRefOid }
+  } catch {
+    return null
+  }
+}
+
+export type PostReviewCommentArgs = {
+  workspaceId: string
+  cwd: string | null
+  path: string
+  line: number
+  side: GhReviewCommentSide
+  body: string
+  /** Optional explicit commit sha — when omitted, resolved server-side from
+   *  the PR's current head (`resolvePrWriteContext`). The renderer passes the
+   *  head sha it already has from `prDetail.commits`, but this stays
+   *  resolvable server-side too so a stale/missing client-side sha degrades
+   *  to "use the real current head" instead of failing outright. */
+  commitId?: string
+}
+
+/** Posts a NEW line-anchored review comment (Workbench Git tab, Phase 4c —
+ *  the gutter "+"/select-to-comment composer's submit). Mirrors
+ *  `gh api repos/{owner}/{repo}/pulls/{n}/comments -f body=<body> -f
+ *  commit_id=<sha> -f path=<path> -F line=<line> -f side=<LEFT|RIGHT>`
+ *  exactly, via execFile (body passed as one argv element — see the module
+ *  header above). On success, invalidates BOTH the review-comments cache
+ *  (a fresh `gh api .../comments` GET would otherwise serve a stale TTL hit
+ *  that doesn't yet include the just-created comment) and the detail cache
+ *  (comment counts, if ever surfaced there). Total — never throws. */
+export async function postReviewComment(
+  args: PostReviewCommentArgs
+): Promise<GhWriteResult<GhReviewComment>> {
+  const { cwd, path, line, side, body } = args
+  if (!cwd) return { ok: false, error: 'Workspace not found' }
+
+  const ctx = await resolvePrWriteContext(cwd)
+  if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
+  const commitId = args.commitId && args.commitId.length > 0 ? args.commitId : ctx.headOid
+
+  const pathEnv = await resolveGhPathEnv()
+  try {
+    const { stdout } = await execFile(
+      'gh',
+      [
+        'api',
+        `repos/{owner}/{repo}/pulls/${ctx.prNumber}/comments`,
+        '-f',
+        `body=${body}`,
+        '-f',
+        `commit_id=${commitId}`,
+        '-f',
+        `path=${path}`,
+        '-F',
+        `line=${line}`,
+        '-f',
+        `side=${side}`
+      ],
+      {
+        cwd,
+        env: { ...process.env, PATH: pathEnv },
+        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
+        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
+      }
+    )
+    const raw = JSON.parse(stdout) as RawGhReviewComment
+    reviewCommentsCache.delete(reviewCommentsCacheKey(cwd, ctx.prNumber))
+    detailCache.delete(detailCacheKey(cwd, ctx.prNumber))
+    return { ok: true, value: parseRawReviewComment(raw) }
+  } catch (err) {
+    return { ok: false, error: extractGhErrorMessage(err) }
+  }
+}
+
+export type ReplyToReviewCommentArgs = {
+  cwd: string | null
+  commentId: number
+  body: string
+}
+
+/** Posts a reply to an existing review-comment thread (Phase 4c — the
+ *  ReviewCommentThread "Reply" affordance). Mirrors `gh api
+ *  repos/{owner}/{repo}/pulls/{n}/comments/{commentId}/replies -f
+ *  body=<body>` exactly. Needs the PR number for the API path (GitHub's
+ *  replies endpoint is nested under the PR, not comment-id-only), resolved
+ *  the same way postReviewComment does. Total — never throws; invalidates
+ *  the review-comments cache on success, same reasoning as postReviewComment. */
+export async function replyToReviewComment(
+  args: ReplyToReviewCommentArgs
+): Promise<GhWriteResult<GhReviewComment>> {
+  const { cwd, commentId, body } = args
+  if (!cwd) return { ok: false, error: 'Workspace not found' }
+
+  const ctx = await resolvePrWriteContext(cwd)
+  if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
+
+  const pathEnv = await resolveGhPathEnv()
+  try {
+    const { stdout } = await execFile(
+      'gh',
+      [
+        'api',
+        `repos/{owner}/{repo}/pulls/${ctx.prNumber}/comments/${commentId}/replies`,
+        '-f',
+        `body=${body}`
+      ],
+      {
+        cwd,
+        env: { ...process.env, PATH: pathEnv },
+        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
+        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
+      }
+    )
+    const raw = JSON.parse(stdout) as RawGhReviewComment
+    reviewCommentsCache.delete(reviewCommentsCacheKey(cwd, ctx.prNumber))
+    return { ok: true, value: parseRawReviewComment(raw) }
+  } catch (err) {
+    return { ok: false, error: extractGhErrorMessage(err) }
+  }
+}
+
+export type PostGeneralCommentArgs = {
+  cwd: string | null
+  body: string
+}
+
+/** Posts a general (non-line-anchored) PR comment — the Details tab's
+ *  "Conversation" composer (Phase 4c). Mirrors `gh pr comment <n> --body
+ *  <body>` (rather than the equivalent `gh api .../issues/{n}/comments`
+ *  call — `gh pr comment` is the documented, more direct CLI surface for
+ *  this specific action and needs no separate owner/repo/number
+ *  interpolation into a raw REST path). Total — never throws; invalidates
+ *  the detail cache on success so the next `github:prDetail` fetch picks up
+ *  the new comment in its timeline. */
+export async function postGeneralComment(
+  args: PostGeneralCommentArgs
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { cwd, body } = args
+  if (!cwd) return { ok: false, error: 'Workspace not found' }
+
+  const ctx = await resolvePrWriteContext(cwd)
+  if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
+
+  const pathEnv = await resolveGhPathEnv()
+  try {
+    await execFile('gh', ['pr', 'comment', String(ctx.prNumber), '--body', body], {
+      cwd,
+      env: { ...process.env, PATH: pathEnv },
+      timeout: REVIEW_COMMENTS_TIMEOUT_MS,
+      maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
+    })
+    detailCache.delete(detailCacheKey(cwd, ctx.prNumber))
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: extractGhErrorMessage(err) }
+  }
+}
