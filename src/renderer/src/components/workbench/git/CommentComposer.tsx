@@ -29,11 +29,52 @@
 // inside a diff-pane annotation slot anyway — same "duplicated small
 // treatment, independently editable" rationale that module already
 // documents.
+//
+// Phase 4d — an optional [GitHub | Local] SOURCE toggle, shown only when the
+// caller passes `source`/`onSourceChange` (GitTab's new-line-comment composer
+// is the only call site that does; Reply/general-comment composers post to a
+// fixed destination and never render this). Lets a brand-new comment either
+// post to GitHub (4c's github:postReviewComment) or save to the LOCAL store
+// (reviews:add) — GitTab routes `onSubmit` based on the CURRENT toggle value
+// at submit time (see its own submitReviewComment/addLocalComment split).
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
 import { useCallback, useState } from 'react'
 import './CommentComposer.css'
+
+/** Phase 4d — which store a new comment is being drafted for. */
+export type CommentSource = 'github' | 'local'
+
+interface SourceToggleProps {
+  value: CommentSource
+  onChange: (source: CommentSource) => void
+  disabled: boolean
+}
+
+/** [GitHub | Local] segmented control — compact pill segments matching the
+ *  rest of the Git tab's toggle language (GitTab.tsx's DiffModeToggle/
+ *  SubTabStrip). Disabled while a submit is in flight, same as the textarea. */
+function SourceToggle({ value, onChange, disabled }: SourceToggleProps): React.JSX.Element {
+  const seg = (source: CommentSource, label: string): React.JSX.Element => (
+    <button
+      key={source}
+      type="button"
+      onClick={() => onChange(source)}
+      aria-pressed={value === source}
+      disabled={disabled}
+      className={value === source ? 'gcc-source-seg gcc-source-seg--active' : 'gcc-source-seg'}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="gcc-source-toggle">
+      {seg('github', 'GitHub')}
+      {seg('local', 'Local')}
+    </div>
+  )
+}
 
 export interface CommentDraft {
   /** The pending composer's own id (see useReviewComposers.ts) — lets the
@@ -63,7 +104,15 @@ export interface CommentComposerProps {
    *  own in-flight ("Posting…", disabled button) and error-banner state; the
    *  CALLER is responsible for closing the composer / triggering a refetch
    *  on a `{ ok: true }` result (this component only renders, it doesn't
-   *  know how to invalidate the caller's data). */
+   *  know how to invalidate the caller's data).
+   *
+   *  Phase 4d: when `source`/`onSourceChange` are wired (see below), `onSubmit`
+   *  is called with whichever source is CURRENTLY selected at submit time
+   *  (`source` itself, read fresh by the caller — this component doesn't
+   *  thread it through the draft object, since `CommentDraft` is also the
+   *  shape ReviewCommentThread's Reply composer uses, which has no source
+   *  concept at all). GitTab's own onSubmit closure reads its `commentSource`
+   *  state directly rather than needing it passed back here. */
   onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
   /** Closes/removes this pending composer (its annotation entry) without
    *  submitting anything. Disabled while a submit is in flight — cancelling
@@ -77,6 +126,16 @@ export interface CommentComposerProps {
   /** Button label — "Comment" (new comment / general comment) vs "Reply"
    *  (ReviewCommentThread's reply composer). Defaults to "Comment". */
   submitLabel?: string
+  /** Phase 4d — the SOURCE toggle's current value. Omitted entirely (the
+   *  default) means "don't render the toggle at all" — only GitTab's
+   *  new-line-comment composer wires this; Reply/general-comment composers
+   *  post to one fixed destination and have no toggle. */
+  source?: CommentSource
+  /** Phase 4d — called when the user flips the [GitHub | Local] toggle.
+   *  Required together with `source` (both omitted or both present) so the
+   *  toggle is fully controlled by the caller, matching GitTab's own
+   *  controlled-state convention elsewhere (diffMode, diffStyle, etc.). */
+  onSourceChange?: (source: CommentSource) => void
 }
 
 /** The inline "start a comment" compose box — a markdown textarea + Comment/
@@ -95,11 +154,19 @@ export function CommentComposer({
   onSubmit,
   onCancel,
   placeholder = 'Leave a comment on this line…',
-  submitLabel = 'Comment'
+  submitLabel,
+  source,
+  onSourceChange
 }: CommentComposerProps): React.JSX.Element {
   const [body, setBody] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Phase 4d: when the source toggle is wired, the button label follows the
+  // CURRENT source so "Comment" always reads as "post to GitHub" vs "save
+  // locally" rather than a fixed generic label — defaults to the original
+  // "Comment" copy when no toggle is wired (Reply/general-comment composers,
+  // and the 'github' source itself, which keeps the original wording).
+  const resolvedSubmitLabel = submitLabel ?? (source === 'local' ? 'Save locally' : 'Comment')
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setBody(e.target.value)
@@ -134,6 +201,9 @@ export function CommentComposer({
 
   return (
     <div className="gcc-composer">
+      {source !== undefined && onSourceChange !== undefined && (
+        <SourceToggle value={source} onChange={onSourceChange} disabled={submitting} />
+      )}
       <textarea
         className="gcc-textarea"
         value={body}
@@ -166,7 +236,7 @@ export function CommentComposer({
             disabled={!canSubmit}
             onClick={handleSubmit}
           >
-            {submitting ? 'Posting…' : submitLabel}
+            {submitting ? 'Posting…' : resolvedSubmitLabel}
           </button>
         </div>
       </div>

@@ -20,6 +20,7 @@ import { getProject } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
+import { listByWorkspace as listLocalReviewComments } from './reviewStore'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -505,6 +506,26 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         projectName: project?.name ?? null,
         cwd: ws.cwd
       }
+    },
+
+    // Workbench Git tab, Phase 4d — THE agent-readable hook for the LOCAL
+    // review-comment store (Epic G2). Surfaces the SAME data reviewStore.ts's
+    // reviews:list IPC returns to the renderer, over the existing `orpheus`
+    // CLI/HTTP command channel — so an agent can read local review comments
+    // without needing direct SQLite access (though that always works too,
+    // since the store is just the `review_comments` table — see
+    // reviewStore.ts's own header). Read-only by design for this phase; a
+    // future `reviews.add`/`reviews.resolve` write action would slot in here
+    // alongside this one using the same reviewStore.ts functions.
+    // Args:
+    //   workspaceId — falls back to context.workspaceId (the same
+    //                 caller-identity convention whoami.resolve above uses),
+    //                 so a workspace-scoped agent doesn't need to pass it.
+    'reviews.list': (args, context) => {
+      const workspaceId =
+        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
+      if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
+      return listLocalReviewComments(workspaceId)
     }
   }
 }

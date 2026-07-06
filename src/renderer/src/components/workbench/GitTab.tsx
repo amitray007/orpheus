@@ -200,7 +200,8 @@ import type {
   GhPullRequestState,
   GhReviewCommentThread,
   GitDiffFile,
-  GitStatusEntry
+  GitStatusEntry,
+  LocalReviewComment
 } from '@shared/types'
 import type { DiffLineAnnotation, FileDiffOptions, SelectedLineRange } from '@pierre/diffs'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
@@ -214,8 +215,13 @@ import { ImageZoomBar } from './ImageZoomBar'
 import { CommitsTab } from './git/CommitsTab'
 import { DetailsTab } from './git/DetailsTab'
 import { ChecksTab } from './git/ChecksTab'
-import { ReviewCommentThread } from './git/ReviewCommentThread'
-import { CommentComposer, type CommentDraft, type GhSubmitResult } from './git/CommentComposer'
+import { ReviewCommentThread, LocalCommentThread } from './git/ReviewCommentThread'
+import {
+  CommentComposer,
+  type CommentDraft,
+  type CommentSource,
+  type GhSubmitResult
+} from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
@@ -294,12 +300,15 @@ function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
 // --- PR review-comment inline annotations (Phase 4a + 4b) --------------------
 
 /** The annotation metadata union rendered into the SAME `renderAnnotation`
- *  slot (Phase 4b): either an existing GitHub thread (4a, read-only) or a
- *  pending composer the user just opened via the gutter "+"/select-to-comment
- *  (4b, this phase). `renderReviewCommentAnnotation` below routes on `kind`. */
+ *  slot (Phase 4b/4d): an existing GitHub thread (4a, read-only), a pending
+ *  composer the user just opened via the gutter "+"/select-to-comment (4b),
+ *  or a LOCAL (Orpheus-owned) review comment (4d — see reviewStore.ts's own
+ *  header for the 3-source model this completes). `renderReviewCommentAnnotation`
+ *  below routes on `kind`. */
 export type ReviewAnnotationMeta =
   | { kind: 'thread'; thread: GhReviewCommentThread }
   | { kind: 'pending'; composer: PendingComposer }
+  | { kind: 'local'; comment: LocalReviewComment }
 
 /** Maps a GitHub review-comment thread onto Pierre's side-relative
  *  `DiffLineAnnotation` (see docs/learnings/pr-comments.md §Q2 "Mapping to
@@ -339,6 +348,25 @@ function composerToAnnotation(composer: PendingComposer): DiffLineAnnotation<Rev
   }
 }
 
+/** Phase 4d — maps a LOCAL review comment onto the same annotation shape.
+ *  `side`/`line` come straight from the comment's own anchor (set at
+ *  reviews:add time — see GitTab's addLocalComment); a null `line` (a
+ *  file-level local comment, mirroring GhReviewCommentThread's `subjectType:
+ *  'file'`) maps to `lineNumber: 0`, same convention threadToAnnotation above
+ *  already uses for a file-level GitHub thread. A null `side` defaults to
+ *  'additions' (RIGHT) — every local comment created via the current gutter-
+ *  "+"/select-to-comment entry points always sets a real side, so this only
+ *  matters for a hypothetical future file-level-only entry point. */
+function localCommentToAnnotation(
+  comment: LocalReviewComment
+): DiffLineAnnotation<ReviewAnnotationMeta> {
+  return {
+    side: comment.side === 'LEFT' ? 'deletions' : 'additions',
+    lineNumber: comment.line ?? 0,
+    metadata: { kind: 'local', comment }
+  }
+}
+
 /** Filters + merges the full thread list and the open pending composers down
  *  to ONE file's annotations — DiffContentPane renders one file's
  *  <PatchDiff> at a time, so this is recomputed per selected file (memoized
@@ -350,13 +378,20 @@ function composerToAnnotation(composer: PendingComposer): DiffLineAnnotation<Rev
 function annotationsForFile(
   threads: readonly GhReviewCommentThread[],
   composers: readonly PendingComposer[],
+  localComments: readonly LocalReviewComment[],
   path: string
 ): DiffLineAnnotation<ReviewAnnotationMeta>[] {
   const threadAnnotations = threads
     .filter((t) => t.path === path && (t.subjectType === 'file' || t.line !== null))
     .map(threadToAnnotation)
   const composerAnnotations = composers.filter((c) => c.path === path).map(composerToAnnotation)
-  return [...threadAnnotations, ...composerAnnotations]
+  // Phase 4d: local comments merge into the SAME per-file annotation list as
+  // GitHub threads/pending composers — completing the 3-source model inline
+  // on the same diff (github-from-others / my-github / LOCAL).
+  const localAnnotations = localComments
+    .filter((c) => c.path === path)
+    .map(localCommentToAnnotation)
+  return [...threadAnnotations, ...composerAnnotations, ...localAnnotations]
 }
 
 // A composer with no wired onSubmit (shouldn't happen per the doc comment
@@ -365,24 +400,43 @@ function annotationsForFile(
 // `GhSubmitResult` is expected).
 const NO_SUBMIT_WIRED: GhSubmitResult = { ok: false, error: 'Comment posting is not available' }
 
+/** Phase 4d — the subset of local-comment wiring `renderReviewCommentAnnotation`
+ *  needs to route a `kind: 'local'` annotation to its card, PLUS the
+ *  [GitHub | Local] source-toggle state for the pending NEW-comment composer
+ *  (a 'pending' annotation is also routed by this same function — see the
+ *  'pending' branch below). Kept as its own small interface (rather than more
+ *  loose optional params) so the growing parameter list stays readable —
+ *  mirrors ReviewComposerWiring's own "named wiring bag" shape below. */
+interface LocalCommentWiring {
+  onToggleResolved: (comment: LocalReviewComment) => void
+  onDelete: (comment: LocalReviewComment) => void
+  commentSource: CommentSource
+  onCommentSourceChange: (source: CommentSource) => void
+}
+
 /** Routes one merged annotation to its card: an existing GitHub thread (4a,
- *  read-only, with a Reply affordance as of 4c — see ReviewCommentThread.tsx)
- *  or a pending composer (4b/4c). `onCancelComposer`/`onSubmitComposer` are
- *  only ever actually invoked for a 'pending' annotation, which — per
- *  `annotationsForFile` — can only exist when DiffContentPane was given a
- *  real (non-null) `composers` wiring object in the first place; they're
- *  still typed as optional (rather than required) so callers in a context
- *  with no composers at all (there are none today, but this keeps the helper
- *  honest about what it needs) don't have to invent placeholder callbacks.
- *  `workspaceId` is threaded through to ReviewCommentThread so its own Reply
- *  composer can post via github:replyToReviewComment + trigger the same
- *  onRefetch callback a new-comment post does. */
+ *  read-only, with a Reply affordance as of 4c — see ReviewCommentThread.tsx),
+ *  a pending composer (4b/4c), or a LOCAL review comment (4d — see
+ *  reviewStore.ts's header for the 3-source model). `onCancelComposer`/
+ *  `onSubmitComposer` are only ever actually invoked for a 'pending'
+ *  annotation, which — per `annotationsForFile` — can only exist when
+ *  DiffContentPane was given a real (non-null) `composers` wiring object in
+ *  the first place; they're still typed as optional (rather than required)
+ *  so callers in a context with no composers at all (there are none today,
+ *  but this keeps the helper honest about what it needs) don't have to
+ *  invent placeholder callbacks. Same optionality for `localWiring` — a
+ *  'local' annotation can only exist once GitTab has fetched local comments
+ *  at all, but the helper doesn't assume that. `workspaceId` is threaded
+ *  through to ReviewCommentThread so its own Reply composer can post via
+ *  github:replyToReviewComment + trigger the same onRefetch callback a
+ *  new-comment post does. */
 function renderReviewCommentAnnotation(
   annotation: DiffLineAnnotation<ReviewAnnotationMeta>,
   workspaceId: string,
   onRefetchThreads: () => void,
   onCancelComposer?: (id: string) => void,
-  onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>
+  onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>,
+  localWiring?: LocalCommentWiring
 ): React.ReactNode {
   if (annotation.metadata.kind === 'pending') {
     const { composer } = annotation.metadata
@@ -391,6 +445,18 @@ function renderReviewCommentAnnotation(
         draft={composer}
         onCancel={() => onCancelComposer?.(composer.id)}
         onSubmit={(draft) => onSubmitComposer?.(draft) ?? Promise.resolve(NO_SUBMIT_WIRED)}
+        source={localWiring?.commentSource}
+        onSourceChange={localWiring?.onCommentSourceChange}
+      />
+    )
+  }
+  if (annotation.metadata.kind === 'local') {
+    const { comment } = annotation.metadata
+    return (
+      <LocalCommentThread
+        comment={comment}
+        onToggleResolved={(c) => localWiring?.onToggleResolved(c)}
+        onDelete={(c) => localWiring?.onDelete(c)}
       />
     )
   }
@@ -895,6 +961,19 @@ interface DiffContentPaneProps {
    *  so this is never actually invoked in that mode — kept required rather
    *  than optional so every call site is explicit about wiring it). */
   onRefetchThreads: () => void
+  /** Phase 4d — LOCAL review comments for the CURRENTLY selected file only
+   *  (GitTab passes the full per-workspace list; `annotationsForFile` filters
+   *  by path the same way it already does for threads/composers). Unlike
+   *  reviewThreads, this is fetched (and shown) in PR-diff mode alongside
+   *  GitHub comments — the priority scope per the task — so it's a plain
+   *  array (never null): an empty list just means "no local comments on this
+   *  workspace yet", not "not applicable". */
+  localComments: readonly LocalReviewComment[]
+  /** Phase 4d — resolve/delete actions for a LOCAL comment's card, plus the
+   *  source toggle wiring for the NEW-comment composer (GitHub vs Local —
+   *  see CommentComposer.tsx's own SourceToggle). `null` in working-tree mode,
+   *  same gating as `composers` above (no PR-diff composer to toggle there). */
+  localWiring: LocalCommentWiring | null
 }
 
 /** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
@@ -1185,7 +1264,9 @@ function DiffContentPane({
   loading,
   reviewThreads,
   composers,
-  onRefetchThreads
+  onRefetchThreads,
+  localComments,
+  localWiring
 }: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -1195,15 +1276,16 @@ function DiffContentPane({
     }
     return <DiffMessage text="Binary file — no preview" />
   }
-  // Phase 4a/4b: only computed while reviewThreads is non-null (PR-diff mode
-  // with a loaded/attempted comment fetch) — annotationsForFile itself
-  // returns [] for a file with no threads/composers, which PatchDiff renders
-  // exactly like an omitted lineAnnotations prop (a plain diff, no
-  // annotations).
-  const lineAnnotations =
-    reviewThreads !== null
-      ? annotationsForFile(reviewThreads, composers?.composers ?? [], file.path)
-      : undefined
+  // Phase 4a/4b/4d: only computed while EITHER reviewThreads is non-null
+  // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
+  // localWiring is non-null (PR-diff mode, per the task's scope) —
+  // annotationsForFile itself returns [] for a file with no threads/
+  // composers/local comments, which PatchDiff renders exactly like an
+  // omitted lineAnnotations prop (a plain diff, no annotations).
+  const showAnnotations = reviewThreads !== null || localWiring !== null
+  const lineAnnotations = showAnnotations
+    ? annotationsForFile(reviewThreads ?? [], composers?.composers ?? [], localComments, file.path)
+    : undefined
   const options = buildDiffOptions(diffStyle, wrapLines, file.path, composers)
   return (
     <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
@@ -1218,7 +1300,8 @@ function DiffContentPane({
             workspaceId,
             onRefetchThreads,
             composers?.close,
-            composers?.onSubmit
+            composers?.onSubmit,
+            localWiring ?? undefined
           )
         }
         renderGutterUtility={composers !== null ? renderGutterUtility : undefined}
@@ -1346,6 +1429,26 @@ function fetchReviewComments(
     })
 }
 
+/** Phase 4d — fetch the LOCAL review-comment store's full list for
+ *  `workspaceId`, reporting the settled value via `onSettled` (falls back to
+ *  `[]` on failure — an empty list renders identically to "no local comments
+ *  yet", never blocking the diff pane). Fire-and-forget, same shape as
+ *  fetchReviewComments above (this is also only ever called as a one-shot
+ *  refetch after a mutation or on workspace change, never inside a bare
+ *  mount effect that needs its own cancel token). */
+function fetchLocalReviews(
+  workspaceId: string,
+  onSettled: (comments: LocalReviewComment[]) => void
+): void {
+  window.api.reviews
+    .list(workspaceId)
+    .then(onSettled)
+    .catch((e) => {
+      console.error('[GitTab] reviews:list failed:', e)
+      onSettled([])
+    })
+}
+
 /** Diff-mode dispatcher — the [Working tree | PR diff] toggle's data-source
  *  switch (Phase 4-pre). Both branches share the exact same
  *  fetch/cancel/onSettled contract, so every call site (initial load, mode
@@ -1406,6 +1509,20 @@ export function GitTab({
   // same as "no annotations" so a failed/pending fetch never blocks the
   // diff itself from rendering.
   const [reviewThreads, setReviewThreads] = useState<GhReviewCommentThread[] | null>(null)
+  // Phase 4d: the LOCAL (Orpheus-owned) review-comment store's full list for
+  // this workspace — see reviewStore.ts's own header. Unlike reviewThreads,
+  // this is a plain array (never null): local comments have no PR
+  // requirement, so there's no "not applicable" state, only "empty so far".
+  // Fetched on workspace change (below) and refetched after every local
+  // mutation (add/resolve/delete — see refetchLocalReviews).
+  const [localReviews, setLocalReviews] = useState<LocalReviewComment[]>([])
+  // Phase 4d: the NEW-comment composer's [GitHub | Local] source toggle —
+  // app-session state (not persisted), defaults to 'github' since that's the
+  // pre-4d behavior every existing composer already has. Lives in GitTab
+  // (not the composer itself) so it survives a composer being closed/
+  // reopened at a different line within the same session, matching how
+  // diffStyle/diffMode are already lifted up rather than kept per-composer.
+  const [commentSource, setCommentSource] = useState<CommentSource>('github')
   // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
   // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
   // at every point below that clears it (workspace switch, PR loss, leaving
@@ -1488,6 +1605,11 @@ export function GitTab({
     // PR-diff mode (if it even has a PR) must not render the PREVIOUS
     // workspace's stale comment threads while its own fetch is in flight.
     setReviewThreads(null)
+    // Phase 4d: same reset for the LOCAL review-comment store — a new
+    // workspace's local comments are fetched fresh below (unlike
+    // reviewThreads, this has no PR dependency, so it's unconditional here
+    // rather than gated behind the PR-detection push).
+    setLocalReviews([])
     // Phase 4b: same reset for open pending composers — a composer anchored
     // to the PREVIOUS workspace's file/line has no meaning in the new one.
     resetComposers()
@@ -1510,6 +1632,10 @@ export function GitTab({
     // Guards the mode-switch effect below from re-firing its own redundant
     // fetch for this same workspace-change tick — see that effect's comment.
     lastFetchedModeForWorkspaceRef.current = 'working'
+    // Phase 4d: fetch the new workspace's local review comments — no PR
+    // dependency (unlike reviewThreads), so this fires unconditionally on
+    // every workspace switch rather than waiting on a PR-detection push.
+    fetchLocalReviews(workspaceId, setLocalReviews)
     return fetchDiff(workspaceId, (result) => {
       applyDiff(result)
       setLoading(false)
@@ -1830,14 +1956,23 @@ export function GitTab({
   }, [selectedPath, resetComposers])
 
   // Phase 4c: shared refetch-on-success callback — both a new-comment post
-  // (submitReviewComment below) and a Reply post (ReviewCommentThread's own
-  // composer, via renderReviewCommentAnnotation's onRefetchThreads) need to
-  // refresh reviewThreads after a successful write so the just-posted
+  // (submitGithubReviewComment below) and a Reply post (ReviewCommentThread's
+  // own composer, via renderReviewCommentAnnotation's onRefetchThreads) need
+  // to refresh reviewThreads after a successful write so the just-posted
   // comment/reply shows up as part of its thread immediately. Reuses the
   // existing fetchReviewComments one-shot helper (defined above, alongside
   // fetchDiff/fetchPrDiff) rather than duplicating its .then/.catch shape.
   const refetchReviewThreads = useCallback(() => {
     fetchReviewComments(workspaceId, setReviewThreads)
+  }, [workspaceId])
+
+  // Phase 4d: same "refetch after a successful write" callback for the LOCAL
+  // review-comment store — add/resolve/delete all need localReviews to
+  // reflect the just-applied mutation immediately rather than waiting for
+  // the next incidental refresh (there is no live-refresh/push channel for
+  // this local, mutation-driven data — see reviewStore.ts's header).
+  const refetchLocalReviews = useCallback(() => {
+    fetchLocalReviews(workspaceId, setLocalReviews)
   }, [workspaceId])
 
   // Phase 4c: same "refetch after a successful write" callback for the
@@ -1872,7 +2007,7 @@ export function GitTab({
   // open with the typed body + shows the inline error (never silently
   // swallowed) — closeComposer/refetch are NOT called on failure, matching
   // the task's "composer stays with the text so the user can retry".
-  const submitReviewComment = useCallback(
+  const submitGithubReviewComment = useCallback(
     async (draft: CommentDraft): Promise<GhSubmitResult> => {
       const headOid = prDetail?.commits[prDetail.commits.length - 1]?.oid
       const result = await window.api.github.postReviewComment({
@@ -1891,6 +2026,77 @@ export function GitTab({
     [workspaceId, prDetail, closeComposer, refetchReviewThreads]
   )
 
+  // Phase 4d: saves a NEW comment to the LOCAL store instead of posting to
+  // GitHub — the [GitHub | Local] source toggle's 'local' branch. reviews:add
+  // is total (a plain SQLite insert — see reviewStore.ts), so this can't fail
+  // the way a `gh` network call can; still wrapped in the SAME
+  // Promise<GhSubmitResult> contract CommentComposer expects (so it's a
+  // drop-in alternative to submitGithubReviewComment, not a special case the
+  // composer needs to know about) with a .catch belt-and-suspenders for an
+  // unexpected IPC failure. `prNumber` is threaded from `pr` (Phase 3a) so a
+  // local comment made while viewing a PR's diff records which PR it was
+  // made against — even though local comments don't require one.
+  const submitLocalComment = useCallback(
+    async (draft: CommentDraft): Promise<GhSubmitResult> => {
+      try {
+        await window.api.reviews.add({
+          workspaceId,
+          prNumber: pr?.number ?? null,
+          path: draft.path,
+          line: draft.line,
+          side: draft.side,
+          body: draft.body
+        })
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
+      closeComposer(draft.id)
+      refetchLocalReviews()
+      return { ok: true }
+    },
+    [workspaceId, pr, closeComposer, refetchLocalReviews]
+  )
+
+  // Phase 4d: the NEW-comment composer's submit dispatcher — routes to
+  // whichever store the [GitHub | Local] toggle currently points at.
+  // `commentSourceRef` (kept in sync below) lets this read the CURRENT
+  // toggle value without needing it as a dependency of every composer-open
+  // closure — same "latest value via ref" pattern the file already uses for
+  // diffModeRef/prRef.
+  const commentSourceRef = useRef(commentSource)
+  useEffect(() => {
+    commentSourceRef.current = commentSource
+  }, [commentSource])
+  const submitComment = useCallback(
+    (draft: CommentDraft): Promise<GhSubmitResult> =>
+      commentSourceRef.current === 'local'
+        ? submitLocalComment(draft)
+        : submitGithubReviewComment(draft),
+    [submitLocalComment, submitGithubReviewComment]
+  )
+
+  // Phase 4d: resolve-toggle + delete for a LOCAL comment's card — both
+  // mutate via the reviewStore IPCs then refetch, mirroring
+  // submitLocalComment's own refetch-on-success convention.
+  const toggleLocalResolved = useCallback(
+    (comment: LocalReviewComment) => {
+      window.api.reviews
+        .setResolved(comment.id, !comment.resolved)
+        .then(refetchLocalReviews)
+        .catch((e) => console.error('[GitTab] reviews:setResolved failed:', e))
+    },
+    [refetchLocalReviews]
+  )
+  const deleteLocalComment = useCallback(
+    (comment: LocalReviewComment) => {
+      window.api.reviews
+        .delete(comment.id)
+        .then(refetchLocalReviews)
+        .catch((e) => console.error('[GitTab] reviews:delete failed:', e))
+    },
+    [refetchLocalReviews]
+  )
+
   // Phase 4b: the wiring DiffContentPane needs to drive the gutter "+"/
   // select-to-comment affordance — only meaningful in PR-diff mode (see
   // DiffContentPaneProps' `composers` doc comment); GitTabBody passes `null`
@@ -1901,9 +2107,22 @@ export function GitTab({
       composers: openComposers,
       open: openComposer,
       close: closeComposer,
-      onSubmit: submitReviewComment
+      onSubmit: submitComment
     }),
-    [openComposers, openComposer, closeComposer, submitReviewComment]
+    [openComposers, openComposer, closeComposer, submitComment]
+  )
+
+  // Phase 4d: the wiring DiffContentPane needs for LOCAL comment cards
+  // (resolve/delete) plus the source-toggle state/setter for the pending
+  // NEW-comment composer — see LocalCommentWiring's own doc comment.
+  const localCommentWiring: LocalCommentWiring = useMemo(
+    () => ({
+      onToggleResolved: toggleLocalResolved,
+      onDelete: deleteLocalComment,
+      commentSource,
+      onCommentSourceChange: setCommentSource
+    }),
+    [toggleLocalResolved, deleteLocalComment, commentSource]
   )
 
   const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])
@@ -1997,6 +2216,8 @@ export function GitTab({
           reviewThreads={reviewThreads}
           composers={diffMode === 'pr' ? reviewComposerWiring : null}
           onRefetchThreads={refetchReviewThreads}
+          localComments={localReviews}
+          localWiring={diffMode === 'pr' ? localCommentWiring : null}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -2033,6 +2254,14 @@ interface GitTabBodyProps {
   /** Phase 4c — see DiffContentPaneProps' own doc comment; threaded straight
    *  through to DiffContentPane. */
   onRefetchThreads: () => void
+  /** Phase 4d — see DiffContentPaneProps' own doc comment; threaded straight
+   *  through to DiffContentPane (the full per-workspace list, unfiltered —
+   *  DiffContentPane/annotationsForFile filter by the selected file's path). */
+  localComments: readonly LocalReviewComment[]
+  /** Phase 4d — see DiffContentPaneProps' own doc comment; threaded straight
+   *  through to DiffContentPane. Already `null` in working-tree mode, same
+   *  gating as `composers` above. */
+  localWiring: LocalCommentWiring | null
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -2060,6 +2289,8 @@ function GitTabBody({
   reviewThreads,
   composers,
   onRefetchThreads,
+  localComments,
+  localWiring,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -2088,6 +2319,8 @@ function GitTabBody({
           reviewThreads={diffMode === 'pr' ? reviewThreads : null}
           composers={composers}
           onRefetchThreads={onRefetchThreads}
+          localComments={localComments}
+          localWiring={localWiring}
         />
       </div>
     </div>

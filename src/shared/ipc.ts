@@ -92,7 +92,8 @@ import type {
   GhPullRequestDetail,
   GhReviewCommentThread,
   GhReviewComment,
-  GhReviewCommentSide
+  GhReviewCommentSide,
+  LocalReviewComment
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -338,6 +339,27 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; body: string }]
     res: { ok: true } | { ok: false; error: string }
   }
+  // Workbench Git tab — Phase 4d. The LOCAL (Orpheus-owned) review-comment
+  // store — see src/main/reviewStore.ts's own header for the full Epic G2
+  // rationale (the 3-source comment model, the agent-readable DB/commandServer
+  // hook). Total (never rejects on a missing row for list/add; setResolved/
+  // delete on an unknown id are simple SQLite no-ops, not error paths).
+  'reviews:list': { req: [{ workspaceId: string }]; res: LocalReviewComment[] }
+  'reviews:add': {
+    req: [
+      {
+        workspaceId: string
+        prNumber?: number | null
+        path: string
+        line?: number | null
+        side?: GhReviewCommentSide | null
+        body: string
+      }
+    ]
+    res: LocalReviewComment
+  }
+  'reviews:setResolved': { req: [{ id: string; resolved: boolean }]; res: LocalReviewComment }
+  'reviews:delete': { req: [{ id: string }]; res: void }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.

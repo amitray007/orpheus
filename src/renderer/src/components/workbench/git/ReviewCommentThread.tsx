@@ -26,7 +26,7 @@
 
 import type React from 'react'
 import { useCallback, useMemo, useState } from 'react'
-import type { GhReviewCommentThread } from '@shared/types'
+import type { GhReviewCommentThread, LocalReviewComment } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
 import './ReviewCommentThread.css'
@@ -223,6 +223,79 @@ export function ReviewCommentThread({
         workspaceId={workspaceId}
         onReplyPosted={onReplyPosted}
       />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4d — the LOCAL (Orpheus-owned) comment thread card. Reuses this
+// module's CommentRow/ThreadAvatar/CommentBody (same avatar-circle + markdown
+// pipeline) rather than forking a second implementation — a local comment is
+// visually the SAME shape as a GitHub thread (one root "comment", no replies
+// today), just tagged 'Local' (source-tag--local, see the CSS file) instead
+// of 'GitHub', with a Resolve/Delete affordance a GitHub thread doesn't have
+// (Orpheus owns this data, so it can mutate it directly — no `gh` write
+// needed). Resolved comments dim + strike through (rc-thread--resolved) per
+// the task's "a subtle resolved style", staying visible/reachable rather than
+// collapsing away entirely (the Resolve toggle needs to stay clickable to
+// un-resolve).
+// ---------------------------------------------------------------------------
+
+export interface LocalCommentThreadProps {
+  comment: LocalReviewComment
+  /** Toggles `resolved` via reviews:setResolved, then refetches (GitTab's own
+   *  refetchLocalReviews) so this card reflects the new state immediately. */
+  onToggleResolved: (comment: LocalReviewComment) => void
+  /** Deletes via reviews:delete, then refetches — same refetch callback as
+   *  onToggleResolved (both are "local store changed" events). */
+  onDelete: (comment: LocalReviewComment) => void
+}
+
+/** A single-comment "thread" card for a LOCAL review comment — the third
+ *  source in the 3-source model (github-from-others / my-github / LOCAL).
+ *  Rendered by GitTab's `renderReviewCommentAnnotation` for a
+ *  `kind: 'local'` annotation, into the SAME `renderAnnotation` slot the
+ *  GitHub thread card and the pending composer already share. */
+export function LocalCommentThread({
+  comment,
+  onToggleResolved,
+  onDelete
+}: LocalCommentThreadProps): React.JSX.Element {
+  const cardClass = [
+    'rc-thread',
+    'rc-thread--local',
+    comment.resolved ? 'rc-thread--resolved' : null
+  ]
+    .filter(Boolean)
+    .join(' ')
+  return (
+    <div className={cardClass}>
+      <div className="rc-row rc-row--root">
+        <ThreadAvatar login={comment.author} />
+        <div className="rc-row-main">
+          <div className="rc-row-head">
+            <span className="rc-author">{comment.author || 'unknown'}</span>
+            <span className="rc-time">
+              {formatRelative(new Date(comment.createdAt).toISOString())}
+            </span>
+            <span className="source-tag source-tag--local">Local</span>
+            {comment.resolved && <span className="rc-time">Resolved</span>}
+          </div>
+          <CommentBody body={comment.body} />
+        </div>
+      </div>
+      <div className="rc-local-actions">
+        <button type="button" className="rc-local-action" onClick={() => onToggleResolved(comment)}>
+          {comment.resolved ? 'Unresolve' : 'Resolve ✓'}
+        </button>
+        <button
+          type="button"
+          className="rc-local-action rc-local-action--delete"
+          onClick={() => onDelete(comment)}
+        >
+          Delete
+        </button>
+      </div>
     </div>
   )
 }

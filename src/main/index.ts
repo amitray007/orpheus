@@ -126,6 +126,7 @@ import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerFooterActionsIpc } from './ipc/footerActions'
+import { registerReviewsIpc } from './ipc/reviews'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
@@ -1702,6 +1703,8 @@ handle('terminal:canInject', (_e, { workspaceId }): boolean => {
 registerActionsIpc()
 
 registerFooterActionsIpc()
+
+registerReviewsIpc()
 
 registerKeepAwakeIpc()
 

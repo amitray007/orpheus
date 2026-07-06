@@ -152,6 +152,56 @@
   color: var(--color-text-secondary);
 }
 
+/* Phase 4d — the LOCAL (Orpheus-owned) comment tag, visually distinct from
+   `.source-tag--github` above (accent-tinted vs. neutral-gray) so the
+   3-source model (github-from-others / my-github / LOCAL) is legible at a
+   glance on the same diff. */
+.source-tag--local {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+}
+
+/* Phase 4d — local-comment thread card: same shape as `.rc-thread` but with
+   an accent-tinted left border so a LOCAL comment reads as visually distinct
+   from a GitHub thread at a glance, without needing a second full stylesheet. */
+.rc-thread--local {
+  border-left: 2px solid var(--color-accent);
+}
+
+/* Resolved local comments dim/collapse per the task's "a subtle resolved
+   style" — kept legible (not hidden) so a resolved thread can still be
+   reopened/deleted, just visually deprioritized. */
+.rc-thread--resolved {
+  opacity: 0.55;
+}
+.rc-thread--resolved .rc-body {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-text-muted);
+}
+
+.rc-local-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.rc-local-action {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.rc-local-action:hover {
+  color: var(--color-accent);
+}
+.rc-local-action--delete:hover {
+  color: #f87171;
+}
+
 /* Phase 4c — the "Reply" affordance at the bottom of a thread. Text-button
    styling (not a bordered `.gcc-btn`-style pill) so it reads as a lightweight
    in-thread action rather than competing with the composer's own Reply/

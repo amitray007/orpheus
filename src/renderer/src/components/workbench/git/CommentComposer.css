@@ -22,6 +22,46 @@
   font-family: var(--font-sans);
 }
 
+/* Phase 4d — the [GitHub | Local] source toggle, shown only when the caller
+   wires `source`/`onSourceChange` (see CommentComposer.tsx's own doc
+   comment). Compact pill segments, same visual language as GitTab.tsx's
+   DiffModeToggle/SubTabStrip. */
+.gcc-source-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-default);
+  align-self: flex-start;
+}
+.gcc-source-seg {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition:
+    background-color 0.1s,
+    color 0.1s;
+}
+.gcc-source-seg:hover:not(:disabled) {
+  color: var(--color-text-secondary);
+}
+.gcc-source-seg--active {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+.gcc-source-seg:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .gcc-textarea {
   width: 100%;
   resize: vertical;

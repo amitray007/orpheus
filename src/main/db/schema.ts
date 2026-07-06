@@ -670,6 +670,37 @@ export const schema: SchemaDef = {
       // case a future rebuild encounters an unknown value.
       mode: enumCoerce('mode', KEEP_AWAKE_MODE, 'auto')
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // review_comments — Workbench Git tab, Phase 4d. The LOCAL (Orpheus-owned)
+  // review-comment store, completing the 3-source comment model alongside
+  // GitHub's own review comments (github-from-others / my-github / LOCAL —
+  // see src/main/reviewStore.ts's own header). A local comment can exist
+  // with no PR at all (`pr_number` nullable) — it's anchored to a workspace +
+  // file/line, not to a GitHub PR. `line`/`side` are nullable to allow a
+  // file-level (not line-anchored) comment, mirroring GhReviewCommentThread's
+  // own `subjectType: 'file'` case (shared/types.ts).
+  // ---------------------------------------------------------------------
+  review_comments: {
+    columns: {
+      id: TEXT_PK,
+      workspace_id: TEXT_NOT_NULL,
+      pr_number: 'INTEGER',
+      path: TEXT_NOT_NULL,
+      line: 'INTEGER',
+      side: 'TEXT',
+      body: TEXT_NOT_NULL,
+      author: TEXT_NOT_NULL,
+      resolved: { type: 'INTEGER', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_review_comments_workspace_path: ['workspace_id', 'path'],
+      idx_review_comments_workspace: ['workspace_id']
+    }
   }
 }
 

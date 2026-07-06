@@ -39,6 +39,7 @@ import type {
   GhReviewCommentThread,
   GhReviewComment,
   GhReviewCommentSide,
+  LocalReviewComment,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -520,6 +521,24 @@ const api = {
       body: string
     ): Promise<{ ok: true } | { ok: false; error: string }> =>
       invoke('github:postGeneralComment', { workspaceId, body })
+  },
+  // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
+  // store. See src/main/reviewStore.ts's own header for the full rationale
+  // (3-source comment model, agent-readable DB/commandServer hook).
+  reviews: {
+    list: (workspaceId: string): Promise<LocalReviewComment[]> =>
+      invoke('reviews:list', { workspaceId }),
+    add: (args: {
+      workspaceId: string
+      prNumber?: number | null
+      path: string
+      line?: number | null
+      side?: GhReviewCommentSide | null
+      body: string
+    }): Promise<LocalReviewComment> => invoke('reviews:add', args),
+    setResolved: (id: string, resolved: boolean): Promise<LocalReviewComment> =>
+      invoke('reviews:setResolved', { id, resolved }),
+    delete: (id: string): Promise<void> => invoke('reviews:delete', { id })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),

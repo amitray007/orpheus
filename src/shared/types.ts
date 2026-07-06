@@ -892,6 +892,34 @@ export type GhPullRequestDetail = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Local review comments (Workbench Git tab, Phase 4d) — the Orpheus-owned
+// comment store (Epic G2), living alongside GitHub's own review comments in
+// the SAME inline diff display. Completes the 3-source comment model:
+// github-from-others / my-github (both GhReviewCommentThread, tagged
+// 'GitHub') / LOCAL (this type, tagged 'Local'). Persisted in SQLite's
+// `review_comments` table (src/main/db/schema.ts) — see src/main/reviewStore.ts
+// for the CRUD surface. `prNumber` is nullable: a local comment can exist on
+// a workspace with no PR at all (it anchors to workspace + path/line, not to
+// a GitHub PR). `line`/`side` are nullable for a file-level (not
+// line-anchored) comment, mirroring GhReviewCommentThread's own
+// `subjectType: 'file'` case above.
+// ---------------------------------------------------------------------------
+
+export type LocalReviewComment = {
+  id: string
+  workspaceId: string
+  prNumber: number | null
+  path: string
+  line: number | null
+  side: GhReviewCommentSide | null
+  body: string
+  author: string // e.g. 'you' — local comments have no real GitHub identity
+  resolved: boolean
+  createdAt: number
+  updatedAt: number
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {
