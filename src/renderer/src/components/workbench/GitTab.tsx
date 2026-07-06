@@ -115,6 +115,24 @@
 // ("Coming soon" placeholders, same convention the Commits stub already
 // uses); 3c/3d build their real content. No PR → the strip (and the rest of
 // the tab) is completely unchanged from Phase 1/2.
+//
+// Phase 3b foundation (this pass) — the three-parallel-agent split. The
+// Commits/Details/Checks sub-tabs are now their OWN files under ./git/
+// (CommitsTab.tsx / DetailsTab.tsx / ChecksTab.tsx), each a self-contained
+// placeholder receiving `{ prDetail, workspaceId, branch }` as props — so a
+// later pass can build out each tab's real content in parallel, with each
+// agent editing only its own file (no shared-file collision with GitTab.tsx
+// or with each other). This component's only new responsibility is fetching
+// the rich `github:prDetail` payload (src/shared/types.ts's
+// GhPullRequestDetail — meta, labels, assignees, reviews, milestone,
+// commits[], checks[], general comments) into `prDetail` state and handing it
+// down: once on PR detection/change (the existing `onPrChanged` push below
+// already tells us a PR now exists or changed), and again whenever the
+// working-tree diff refetches (mirrors the existing refresh cadence rather
+// than adding a second poll loop — the IPC itself is cached server-side for
+// 5 minutes, so this doesn't hammer `gh`). `prDetail` resets to null exactly
+// where `pr` resets to null (workspace switch, PR loss) so a stale previous
+// workspace's/PR's rich data never leaks into the new one.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -136,6 +154,7 @@ import {
 import type {
   FileImage,
   GhPullRequest,
+  GhPullRequestDetail,
   GhPullRequestState,
   GitDiffFile,
   GitStatusEntry
@@ -148,6 +167,9 @@ import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
 import { useImageZoomPan } from './useImageZoomPan'
 import { ImageZoomBar } from './ImageZoomBar'
+import { CommitsTab } from './git/CommitsTab'
+import { DetailsTab } from './git/DetailsTab'
+import { ChecksTab } from './git/ChecksTab'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -937,6 +959,10 @@ export function GitTab({
   // `github:prChanged` push — see the module header's Phase 3a note for why
   // no separate fetch call is needed here.
   const [pr, setPr] = useState<GhPullRequest | null>(null)
+  // Phase 3b foundation: the rich PR payload (GhPullRequestDetail) backing
+  // the Commits/Details/Checks sub-tabs — see the module header's "Phase 3b
+  // foundation" note. Null until fetched (or when there's no PR at all).
+  const [prDetail, setPrDetail] = useState<GhPullRequestDetail | null>(null)
 
   // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
   // runs through nextSelection so the tab auto-selects the first changed
@@ -976,6 +1002,11 @@ export function GitTab({
     // otherwise a switch from a PR'd workspace to a non-PR one would keep
     // showing the PREVIOUS workspace's slim header/tab-strip growth.
     setPr(null)
+    // Same reset for the rich PR-detail payload (Phase 3b foundation) — a
+    // new workspace's Commits/Details/Checks tabs must not render the
+    // PREVIOUS workspace's PR data while the fresh prDetail fetch (below,
+    // keyed off `pr`) is still in flight.
+    setPrDetail(null)
     // A PR-only sub-tab (Details/Checks) carried over from the PREVIOUS
     // workspace has no backing strip segment here (hasPr is about to be
     // false until/unless this workspace's own PR push says otherwise) —
@@ -1077,7 +1108,68 @@ export function GitTab({
       // one — is a lint error (cascading-render risk).
       if (e.pr === null) {
         setSubTab((prev) => (prev === 'details' || prev === 'checks' ? 'diff' : prev))
+        // Same "clear immediately rather than wait on a round-trip" reset
+        // for the rich PR-detail payload (Phase 3b foundation) — done here
+        // (inside this event callback) rather than in the prDetail-fetch
+        // effect below, for the same cascading-render reason noted above.
+        setPrDetail(null)
       }
+    })
+  }, [workspaceId])
+
+  // Phase 3b foundation: fetch the rich `github:prDetail` payload backing the
+  // Commits/Details/Checks sub-tabs (see the module header's "Phase 3b
+  // foundation" note) whenever a PR exists for this workspace/branch —
+  // re-runs on `pr.number`/`pr.state` change (a new/updated PR, e.g. after a
+  // branch switch or a merge/close) rather than on the whole `pr` object
+  // reference, since `onPrChanged` above may push an equivalent-but-new
+  // object on every branch-watch tick. The `pr === null` case needs no work
+  // here at all — `prDetail` is already cleared synchronously wherever `pr`
+  // itself is cleared (the workspace-switch reset above, and the
+  // onPrChanged(null) branch above), so this effect simply has nothing to
+  // fetch and skips straight to a no-op cleanup (avoids a setState-in-effect
+  // lint error from clearing it a second time here).
+  useEffect(() => {
+    if (pr === null) return undefined
+    let cancelled = false
+    window.api.github
+      .prDetail(workspaceId)
+      .then((detail) => {
+        if (!cancelled) setPrDetail(detail)
+      })
+      .catch((e) => {
+        console.error('[GitTab] github:prDetail failed:', e)
+        if (!cancelled) setPrDetail(null)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the PRIMITIVE pr?.number/pr?.state rather than the whole `pr` object: onPrChanged (above) may push a referentially-new-but-equal PR on every branch-watch tick, and this effect must not refetch prDetail on those no-op pushes.
+  }, [workspaceId, pr?.number, pr?.state])
+
+  // Phase 3b foundation: also refresh `prDetail` whenever the working-tree
+  // diff itself refetches (the existing git:statusChanged/files:changed
+  // live-refresh effect above) — mirrors the diff's own refresh cadence
+  // rather than adding a second poll loop, and picks up e.g. new commits
+  // pushed to the PR branch, new checks landing, or new reviews without
+  // requiring a branch change. Subscribes unconditionally (cheap — just an
+  // event listener) and checks `pr` freshly inside the callback via a ref
+  // (kept in sync by its own effect below, never written during render) so
+  // this doesn't need `pr` in its own dependency array — avoids a
+  // resubscribe on every PR poll tick, same "latest value without an effect
+  // dependency" escape hatch as elsewhere in this file.
+  const prRef = useRef(pr)
+  useEffect(() => {
+    prRef.current = pr
+  }, [pr])
+  useEffect(() => {
+    return window.api.git.onStatusChanged((e) => {
+      if (e.workspaceId !== workspaceId) return
+      if (prRef.current === null) return
+      window.api.github
+        .prDetail(workspaceId)
+        .then(setPrDetail)
+        .catch((e2) => console.error('[GitTab] github:prDetail refresh failed:', e2))
     })
   }, [workspaceId])
 
@@ -1165,9 +1257,15 @@ export function GitTab({
           <SubTabStrip active={subTab} onChange={setSubTab} hasPr={pr !== null} />
         </div>
       </div>
-      {subTab === 'commits' && <DiffMessage text="Commits — coming soon" />}
-      {subTab === 'details' && <DiffMessage text="Details — coming soon" />}
-      {subTab === 'checks' && <DiffMessage text="Checks — coming soon" />}
+      {subTab === 'commits' && (
+        <CommitsTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
+      )}
+      {subTab === 'details' && (
+        <DetailsTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
+      )}
+      {subTab === 'checks' && (
+        <ChecksTab prDetail={prDetail} workspaceId={workspaceId} branch={branch} />
+      )}
       {subTab === 'diff' && (
         <GitTabBody
           loading={loading}
