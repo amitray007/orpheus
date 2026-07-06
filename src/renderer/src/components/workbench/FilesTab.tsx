@@ -70,7 +70,25 @@ import { showConfirmModalReact } from '../../lib/overlayClient'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
-// Orpheus's dark palette + the #7c8cff accent for selection/focus.
+// Orpheus's dark palette + the #7c8cff accent for links.
+//
+// FOCUS-RING REMOVAL (this pass): `focusBorder` here does NOT drive the
+// selected/focused row's outline ring by itself — `themeToTreeStyles` doesn't
+// read `focusBorder` directly at all; it goes through `@pierre/theming`'s
+// `normalizeThemeColors`, which folds `focusBorder` into `list.focusOutline`
+// (first non-transparent of the two) and that becomes
+// `--trees-theme-focus-ring`. The tree's own bundled CSS then resolves the
+// ring color through `--trees-focus-ring-color-override` →
+// `--trees-theme-focus-ring` → `--trees-accent` (see
+// node_modules/@pierre/trees/dist/style.js's `[data-item-focused="true"]:before`
+// rule) — so simply setting `focusBorder: 'transparent'` here would only drop
+// out of the chain and fall through to `--trees-accent`, NOT actually zero the
+// ring. The reliable fix is the `-override` CSS vars set directly on the host
+// below (`hostStyle`), which win the chain unconditionally — same override
+// seam the git-status dot colors already use. `focusBorder` is left as-is
+// (harmless — its own link in the chain is now moot since the override wins
+// first) rather than removed, so a future theme swap that drops the override
+// doesn't silently reintroduce a stray ring with no explanation.
 const TREE_THEME: TreeThemeInput = {
   name: 'orpheus-dark',
   type: 'dark',
@@ -247,6 +265,45 @@ function toolbarCreateTarget(selection: readonly string[]): string | undefined {
   if (only.endsWith('/')) return only
   const slash = only.lastIndexOf('/')
   return slash === -1 ? undefined : only.slice(0, slash + 1)
+}
+
+/** Imperatively selects EXACTLY `path` in the tree, clearing every other
+ *  currently-selected path first.
+ *
+ *  BUG FIX (stale-selection, this pass) — root cause: `FileTreeItemHandle`'s
+ *  `.select()` (the only imperative selection entry point `useFileTree`'s
+ *  model exposes) calls the controller's `selectPath`, which is ADDITIVE
+ *  (`[...this.#selectedPaths, resolvedPath]` — see
+ *  node_modules/@pierre/trees/dist/model/FileTreeController.js). There IS a
+ *  true single-select replace (`selectOnlyPath`) on the controller, but it is
+ *  NOT exposed on the `FileTree` render-model `useFileTree` returns (only
+ *  `getItem`/`getSelectedPaths`/`scrollToPath`/etc. are proxied — see
+ *  dist/render/FileTree.d.ts) — so callers reaching for "select just this
+ *  path" via `model.getItem(path)?.select()` were unknowingly ADDING to the
+ *  selection, not replacing it. Compounding this: `resetPaths` (called on
+ *  every toggle-flip/live-refresh refetch) explicitly PRESERVES the prior
+ *  selection across the reset rather than clearing it (same file, `resetPaths`
+ *  remaps `previousSelectedPaths` onto the fresh store) — so a stale
+ *  previously-selected path can survive indefinitely once additively selected
+ *  once. A plain user click doesn't hit this path (FileTreeView's own
+ *  `handleRowClick` calls the controller's `selectOnlyMountedPathFromInput`,
+ *  a genuine replace) — only the restore-on-mount/auto-select IMPERATIVE push
+ *  did, which is exactly the bug: the restored path could end up co-selected
+ *  alongside a path the user already picked.
+ *
+ *  Fix: deselect every OTHER currently-selected path (via `getSelectedPaths()`
+ *  + each stale path's own `.deselect()`) before selecting the target, so the
+ *  imperative push always leaves EXACTLY one path selected — the same
+ *  single-select invariant a native click already gets for free. */
+interface SingleSelectableTreeModel {
+  getSelectedPaths: () => readonly string[]
+  getItem: (path: string) => { select: () => void; deselect: () => void } | null
+}
+function selectOnlyPath(model: SingleSelectableTreeModel, path: string): void {
+  for (const stale of model.getSelectedPaths()) {
+    if (stale !== path) model.getItem(stale)?.deselect()
+  }
+  model.getItem(path)?.select()
 }
 
 /** The ancestor DIRECTORY paths of a repo-relative path, in the tree's
@@ -541,7 +598,7 @@ function TreePane({
         didRestoreRef.current = true
         const restorePath = initialSelectedFileRef.current
         if (restorePath != null && paths.includes(restorePath)) {
-          model.getItem(restorePath)?.select()
+          selectOnlyPath(model, restorePath)
           model.scrollToPath(restorePath)
         }
       }
@@ -750,7 +807,20 @@ function TreePane({
       '--trees-git-untracked-color-override': '#6e7681', // muted gray — untracked
       // Ignored drives the DIMMED rows (0.62 opacity via TREE_IGNORED_DIM_CSS);
       // keep it a low-contrast gray so it stays de-emphasized.
-      '--trees-git-ignored-color-override': '#484f58'
+      '--trees-git-ignored-color-override': '#484f58',
+      // FOCUS-RING REMOVAL (this pass) — see TREE_THEME's doc comment above
+      // for the full chain writeup. Both vars feed the SAME `:before` outline
+      // rule in the tree's bundled CSS: `--trees-focus-ring-color-override`
+      // for a focused-but-unselected row, `--trees-selected-focused-border-
+      // color-override` for a row that's BOTH focused and selected (the
+      // common case right after a click) — the stylesheet swaps to the
+      // second var specifically via its `&[data-item-selected="true"]:before`
+      // rule, so both need the override or a selected row would still show a
+      // ring. Setting both to fully transparent zeros the ring in every case
+      // while leaving `list.activeSelectionBackground`/`list.focusBackground`
+      // (the filled highlight) completely untouched.
+      '--trees-focus-ring-color-override': 'transparent',
+      '--trees-selected-focused-border-color-override': 'transparent'
     } as React.CSSProperties
   }, [])
 

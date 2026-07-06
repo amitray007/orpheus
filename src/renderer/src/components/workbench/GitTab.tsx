@@ -265,7 +265,10 @@ import { useReviewComposers, type PendingComposer } from './git/useReviewCompose
 // own const (rather than importing FilesTab's) so this component doesn't
 // couple to FilesTab's module for a plain data literal; the visual result is
 // identical (§5.1 recommends one shared theme, but a duplicated small object
-// is cheap and keeps the two tabs independently editable).
+// is cheap and keeps the two tabs independently editable). `focusBorder` here
+// does NOT by itself zero the selected-row focus ring — see FilesTab.tsx's
+// TREE_THEME doc comment for the full chain writeup; the actual ring removal
+// is the two `-override` CSS vars on TREE_GIT_STATUS_VARS below.
 const TREE_THEME: TreeThemeInput = {
   name: 'orpheus-dark',
   type: 'dark',
@@ -282,14 +285,23 @@ const TREE_THEME: TreeThemeInput = {
 
 // Git-status dot colors for the changed-files tree's shadow DOM — same
 // GitHub-dark diff palette FilesTab uses (see its TREE_THEME hostStyle
-// comment for the override-chain rationale).
+// comment for the override-chain rationale). Also carries the FOCUS-RING
+// REMOVAL override vars (this pass) — see FilesTab.tsx's TREE_THEME doc
+// comment for the full `focusBorder` → `list.focusOutline` →
+// `--trees-theme-focus-ring` chain writeup on why `focusBorder` alone can't
+// zero the ring and these two `-override` vars are the reliable mechanism.
+// Both are needed: `--trees-focus-ring-color-override` for a focused-but-
+// unselected row, `--trees-selected-focused-border-color-override` for a row
+// that's both focused AND selected (the common case right after a click).
 const TREE_GIT_STATUS_VARS = {
   '--trees-padding-inline-override': '0px',
   '--trees-git-added-color-override': '#3fb950',
   '--trees-git-modified-color-override': '#d29922',
   '--trees-git-deleted-color-override': '#f85149',
   '--trees-git-renamed-color-override': '#58a6ff',
-  '--trees-git-untracked-color-override': '#6e7681'
+  '--trees-git-untracked-color-override': '#6e7681',
+  '--trees-focus-ring-color-override': 'transparent',
+  '--trees-selected-focused-border-color-override': 'transparent'
 } as const
 
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
@@ -332,6 +344,31 @@ export interface GitTabProps {
  *  simply never used here, every entry in a diff result is a real change). */
 function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
   return files.map((f) => ({ path: f.path, status: f.status }))
+}
+
+/** Imperatively selects EXACTLY `path` in the tree, clearing every other
+ *  currently-selected path first — same helper FilesTab.tsx defines (see its
+ *  own doc comment for the full root-cause writeup): `FileTreeItemHandle`'s
+ *  `.select()` is the controller's ADDITIVE `selectPath`, not the single-
+ *  select-replace `selectOnlyPath` (which isn't exposed on the `FileTree`
+ *  render-model at all), and `resetPaths` (fired on every diff refetch below)
+ *  explicitly PRESERVES the prior selection across the reset rather than
+ *  clearing it — so a stale previously-selected path could survive
+ *  indefinitely once additively (re-)selected by this pane's imperative push,
+ *  co-selected alongside whatever the user actually clicked next. Deselecting
+ *  every other selected path before selecting the target restores the
+ *  single-select invariant a plain user click already gets for free (native
+ *  clicks go through the controller's `selectOnlyMountedPathFromInput`, a
+ *  genuine replace — only this imperative push needed the fix). */
+interface SingleSelectableTreeModel {
+  getSelectedPaths: () => readonly string[]
+  getItem: (path: string) => { select: () => void; deselect: () => void } | null
+}
+function selectOnlyPath(model: SingleSelectableTreeModel, path: string): void {
+  for (const stale of model.getSelectedPaths()) {
+    if (stale !== path) model.getItem(stale)?.deselect()
+  }
+  model.getItem(path)?.select()
 }
 
 // --- PR review-comment inline annotations (Phase 4a + 4b) --------------------
@@ -973,12 +1010,12 @@ function DiffTreeToolbar({
  *  FIX 1: `selected` (GitTab's own selectedPath — seeded by auto-select via
  *  nextSelection, or carried over from a prior render) is now pushed INTO the
  *  widget imperatively, mirroring FilesTab's store→tree restore (see its
- *  applyOptions comment + `model.getItem(restorePath)?.select()` /
- *  `scrollToPath`) — previously nothing ever called the model's own
- *  select(), so the widget's internal selection stayed empty and the
- *  selection-report effect below would fire with `[]`, reporting `null` up
- *  and clobbering GitTab's `selectedPath` back to null (the "Select a
- *  changed file" placeholder showing despite a populated auto-selection).
+ *  applyOptions comment + `selectOnlyPath` below) — previously nothing ever
+ *  called the model's own select(), so the widget's internal selection
+ *  stayed empty and the selection-report effect below would fire with `[]`,
+ *  reporting `null` up and clobbering GitTab's `selectedPath` back to null
+ *  (the "Select a changed file" placeholder showing despite a populated
+ *  auto-selection).
  *
  *  GUARD against the push/report ping-pong: the report effect below only
  *  ever propagates a NON-NULL widget selection upward (the same asymmetry
@@ -987,7 +1024,15 @@ function DiffTreeToolbar({
  *  empty widget selection during (re)mount or a resetPaths() churn can never
  *  null out `selectedPath`; it can only be advanced by a genuine new
  *  non-null pick (a user click) or by this push effect explicitly selecting
- *  the auto-selected path once its path is actually present in the tree. */
+ *  the auto-selected path once its path is actually present in the tree.
+ *
+ *  STALE-SELECTION BUG FIX (this pass): the push effect below now goes
+ *  through `selectOnlyPath` (see its own doc comment) instead of the item
+ *  handle's raw `.select()` — that handle's `.select()` is the controller's
+ *  ADDITIVE `selectPath`, and `resetPaths` (in the effect above) explicitly
+ *  PRESERVES the prior selection across a reset rather than clearing it, so a
+ *  stale previously-pushed path could survive additively selected forever,
+ *  visually co-selected alongside whatever the user clicked next. */
 function DiffTreePane({
   files,
   selected,
@@ -1029,17 +1074,43 @@ function DiffTreePane({
   // in the widget — same call FilesTab's restore path uses
   // (`model.getItem(path)?.select()` + `scrollToPath`). Guarded so this
   // never fights the report effect below: it only acts when `selected` is
-  // non-null and actually present in `paths` (nothing to select otherwise),
-  // and it's a no-op once the widget selection already agrees, so it can't
-  // re-trigger itself via the report effect on every tick.
+  // non-null and actually present in `paths` (nothing to select otherwise).
+  //
+  // INFINITE-LOOP FIX (this pass, found via live CDP QA of the stale-
+  // selection fix above): this effect and the report effect below run in the
+  // SAME commit, in declaration order, both reacting to `selection`
+  // changing. Right after a genuine user click, the sequence within one
+  // commit is: (1) the native click already replaced the widget's own
+  // selection (`selectOnlyMountedPathFromInput`, synchronous); (2) the
+  // report effect sees the NEW `selection` and calls `onSelectFile`, which
+  // schedules a `setSelectedPath` in GitTab — but that hasn't re-rendered
+  // yet, so THIS effect still reads the OLD `selected` prop from before the
+  // click in the SAME pass. The old guard compared that stale `selected`
+  // against the new `selection` (unequal — different file), concluded the
+  // widget "disagreed" with `selected`, and pushed the STALE path back via
+  // `selectOnlyPath` — undoing the user's click. That push changes
+  // `selection` again, re-firing the report effect with the reverted
+  // selection, which flips `selectedPath` back the OTHER way, forever
+  // (`Maximum update depth exceeded`, caught live via CDP-driven QA clicking
+  // a second file with the additive-`.select()` bug already fixed above —
+  // the old ADDITIVE bug had accidentally been masking this exact race: an
+  // additive push just left BOTH paths selected, `selection.length !== 1`,
+  // and the report effect's own `single = null` guard silently stopped the
+  // ping-pong instead of looping, which is what read as "stale selection
+  // never clears" rather than a crash).
+  //
+  // Fix: only push when the widget's OWN selection can't already resolve to
+  // a valid single file — i.e. it's empty, or a directory-only/multi
+  // selection (never happens here in practice, but stay defensive) — NOT
+  // merely "differs from the stale `selected` prop". A widget that already
+  // holds a valid single selection is never wrong; it's simply not reported
+  // upward yet (the report effect owns that, in the same commit), so pushing
+  // here would only ever be UNDOING a real, more-recent tree-side change.
   useEffect(() => {
     if (selected === null) return
     if (!paths.includes(selected)) return
-    const current = selection.length === 1 ? selection[0] : null
-    if (current === selected) return
-    const item = model.getItem(selected)
-    if (item == null) return
-    item.select()
+    if (selection.length === 1) return
+    selectOnlyPath(model, selected)
     model.scrollToPath(selected)
   }, [model, selected, paths, selection])
 
