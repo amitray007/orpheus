@@ -819,6 +819,42 @@ export type GhMilestone = {
   dueOn: string | null
 }
 
+// ---------------------------------------------------------------------------
+// GitHub PR review comments (Workbench Git tab, Phase 4a) — line-anchored
+// review comments, threaded, feeding inline annotations on the PR diff. A
+// SEPARATE `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` call
+// from `prDetail` above (not folded in) — see docs/learnings/pr-comments.md
+// for the full research this mirrors: field shapes, the `in_reply_to_id ??
+// id` threading rule (verified live: 0 reply-to-reply chains across 41
+// comments on PR #105), and the Pierre DiffLineAnnotation mapping.
+// ---------------------------------------------------------------------------
+
+export type GhReviewCommentSide = 'LEFT' | 'RIGHT'
+
+export type GhReviewComment = {
+  id: number
+  inReplyToId: number | null
+  path: string
+  line: number | null // current diff line; null once the anchor is outdated
+  originalLine: number | null // stable anchor recorded at creation, never null
+  side: GhReviewCommentSide
+  subjectType: 'line' | 'file'
+  body: string
+  authorLogin: string
+  createdAt: string
+  htmlUrl: string
+}
+
+export type GhReviewCommentThread = {
+  id: number // the thread root comment's id (in_reply_to_id ?? id grouping key)
+  path: string
+  line: number | null // root comment's line ?? originalLine (see grouping in github.ts)
+  side: GhReviewCommentSide
+  subjectType: 'line' | 'file'
+  outdated: boolean // true when the root comment's `line` is null
+  comments: GhReviewComment[] // root + replies, sorted by createdAt
+}
+
 export type GhPullRequestDetail = {
   // meta
   number: number

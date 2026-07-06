@@ -89,7 +89,8 @@ import type {
   WriteFileResult,
   FilesMutationResult,
   GitDiffResult,
-  GhPullRequestDetail
+  GhPullRequestDetail,
+  GhReviewCommentThread
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -302,6 +303,11 @@ export interface InvokeChannelMap {
   // -> PR number -> ONE `gh pr view` call. Total (never throws); null when
   // there's no PR/no gh/no remote. See src/main/github.ts::getPrDetail.
   'github:prDetail': { req: [{ workspaceId: string }]; res: GhPullRequestDetail | null }
+  // Workbench Git tab — Phase 4a line-anchored PR review comments, threaded
+  // server-side (`in_reply_to_id ?? id` grouping). SEPARATE gh call/cache from
+  // prDetail above — see docs/learnings/pr-comments.md + src/main/github.ts::
+  // getPrReviewComments. Total (never throws); null on any failure mode.
+  'github:prReviewComments': { req: [{ workspaceId: string }]; res: GhReviewCommentThread[] | null }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.

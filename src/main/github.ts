@@ -13,7 +13,10 @@ import type {
   GhCheck,
   GhCheckState,
   GhGeneralComment,
-  GhMilestone
+  GhMilestone,
+  GhReviewComment,
+  GhReviewCommentThread,
+  GhReviewCommentSide
 } from '../shared/types'
 
 const execFile = promisify(childProcess.execFile)
@@ -567,4 +570,191 @@ function parseGeneralComments(raw: RawGhComment[] | null | undefined): GhGeneral
     url: c.url ?? '',
     isMinimized: c.isMinimized ?? false
   }))
+}
+
+// ---------------------------------------------------------------------------
+// PR review comments (Workbench Git tab, Phase 4a) — line-anchored comments
+// on the PR diff, threaded. Separate `gh api` call from prDetail above (own
+// cache/TTL) — see docs/learnings/pr-comments.md for the full research this
+// mirrors: the command, the field shapes, the `in_reply_to_id ?? id`
+// threading rule (verified live: 0 reply-to-reply chains across 41 comments
+// on PR #105), and the Pierre DiffLineAnnotation mapping the renderer builds
+// from the threads this returns.
+// ---------------------------------------------------------------------------
+
+// A PR with many reviewers/threads can produce a sizeable paginated payload
+// (41 comments on PR #105 already ran several KB) — same generous
+// timeout/buffer class as the detail fetch above.
+const REVIEW_COMMENTS_TIMEOUT_MS = 10_000
+const REVIEW_COMMENTS_MAX_BUFFER = 4 * 1024 * 1024
+
+type ReviewCommentsCacheEntry = { value: GhReviewCommentThread[] | null; fetchedAt: number }
+const reviewCommentsCache = new Map<string, ReviewCommentsCacheEntry>()
+const REVIEW_COMMENTS_TTL_MS = 2 * 60 * 1000
+const reviewCommentsInflight = new Map<string, Promise<GhReviewCommentThread[] | null>>()
+
+function reviewCommentsCacheKey(cwd: string, prNumber: number): string {
+  return `${cwd}\0${prNumber}`
+}
+
+/** Invalidate every review-comments cache entry — manual "Refresh" affordance. */
+export function clearGithubReviewCommentsCache(): void {
+  reviewCommentsCache.clear()
+}
+
+// Raw shape of one element from `gh api .../pulls/{n}/comments` — only the
+// fields Phase 4a actually consumes (see pr-comments.md's confirmed key
+// list for the full set gh returns; everything else is left off this repo's
+// local raw type, per github.ts's existing convention of normalizing into
+// the shared Gh* types before crossing into src/shared/types.ts).
+type RawGhReviewComment = {
+  id: number
+  in_reply_to_id?: number | null
+  path?: string
+  line?: number | null
+  original_line?: number | null
+  side?: string
+  subject_type?: string
+  body?: string
+  user?: { login?: string | null } | null
+  created_at?: string
+  html_url?: string
+}
+
+function normalizeReviewCommentSide(raw: string | undefined): GhReviewCommentSide {
+  return raw === 'LEFT' ? 'LEFT' : 'RIGHT'
+}
+
+function parseRawReviewComment(raw: RawGhReviewComment): GhReviewComment {
+  return {
+    id: raw.id,
+    inReplyToId: raw.in_reply_to_id ?? null,
+    path: raw.path ?? '',
+    line: raw.line ?? null,
+    originalLine: raw.original_line ?? null,
+    side: normalizeReviewCommentSide(raw.side),
+    subjectType: raw.subject_type === 'file' ? 'file' : 'line',
+    body: raw.body ?? '',
+    authorLogin: raw.user?.login ?? '',
+    createdAt: raw.created_at ?? '',
+    htmlUrl: raw.html_url ?? ''
+  }
+}
+
+/** Groups a flat list of parsed review comments into threads keyed on
+ *  `in_reply_to_id ?? id` (confirmed correct against real data — see
+ *  pr-comments.md: 0 reply-to-reply chains found across 41 comments, so
+ *  every reply's `in_reply_to_id` points directly at its thread's root).
+ *  Root-comment-first bookkeeping (`roots`) means a reply that happens to
+ *  arrive before its root in `gh`'s own ordering still threads correctly —
+ *  the map is keyed purely by id, not by array position. */
+function groupReviewCommentsIntoThreads(
+  raw: readonly RawGhReviewComment[]
+): GhReviewCommentThread[] {
+  const comments = raw.map(parseRawReviewComment)
+  const roots = new Map<number, GhReviewComment>()
+  const byRoot = new Map<number, GhReviewComment[]>()
+
+  for (const comment of comments) {
+    if (comment.inReplyToId === null) roots.set(comment.id, comment)
+  }
+  for (const comment of comments) {
+    const rootId = comment.inReplyToId ?? comment.id
+    const bucket = byRoot.get(rootId)
+    if (bucket) bucket.push(comment)
+    else byRoot.set(rootId, [comment])
+  }
+
+  const threads: GhReviewCommentThread[] = []
+  for (const [rootId, bucket] of byRoot) {
+    const root = roots.get(rootId) ?? bucket.find((c) => c.id === rootId) ?? bucket[0]
+    if (!root) continue
+    const sorted = [...bucket].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    )
+    threads.push({
+      id: rootId,
+      path: root.path,
+      line: root.line ?? root.originalLine,
+      side: root.side,
+      subjectType: root.subjectType,
+      outdated: root.line === null,
+      comments: sorted
+    })
+  }
+  return threads
+}
+
+async function fetchReviewCommentsFromGh(
+  cwd: string,
+  prNumber: number
+): Promise<GhReviewCommentThread[] | null> {
+  const pathEnv = await resolveGhPathEnv()
+  try {
+    const { stdout } = await execFile(
+      'gh',
+      [
+        'api',
+        `repos/{owner}/{repo}/pulls/${prNumber}/comments`,
+        '--paginate',
+        // `--paginate` alone emits each page as its OWN top-level JSON array
+        // (per `gh api --help`: "Each page is a separate JSON array"), not
+        // one merged array — `--slurp` wraps every page into a single outer
+        // array so a multi-page PR (>100 review comments) still parses as
+        // one `JSON.parse` call instead of needing to split gh's raw stdout
+        // into per-page chunks.
+        '--slurp'
+      ],
+      {
+        cwd,
+        env: { ...process.env, PATH: pathEnv },
+        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
+        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
+      }
+    )
+    const pages = JSON.parse(stdout) as RawGhReviewComment[][]
+    const raw = pages.flat()
+    return groupReviewCommentsIntoThreads(raw)
+  } catch {
+    // gh missing / unauth / no remote / network — degrade to null; the
+    // caller renders the PR diff with no annotations rather than blanking
+    // the rest of the PR-diff view.
+    return null
+  }
+}
+
+/**
+ * Fetch + thread the line-anchored PR review comments for the PR opened
+ * against `workspaceId`'s current branch (Workbench Git tab, Phase 4a).
+ * Resolves workspaceId -> cwd -> branch -> PR number via the SAME
+ * `getPrDetail` used by `getPrDiff` (gitDiff.ts), then makes its own
+ * separate `gh api .../comments` call (own cache/TTL, per
+ * docs/learnings/pr-comments.md — this is deliberately NOT folded into
+ * prDetail's fetch). Total — never throws: no cwd / no branch / no PR / gh
+ * missing / unauth / network all resolve to null.
+ */
+export async function getPrReviewComments(
+  cwd: string | null
+): Promise<GhReviewCommentThread[] | null> {
+  if (!cwd) return null
+
+  const detail = await getPrDetail(cwd)
+  if (!detail) return null
+
+  const key = reviewCommentsCacheKey(cwd, detail.number)
+  const now = Date.now()
+
+  const hit = reviewCommentsCache.get(key)
+  if (hit && now - hit.fetchedAt < REVIEW_COMMENTS_TTL_MS) return hit.value
+
+  const pending = reviewCommentsInflight.get(key)
+  if (pending) return pending
+
+  const promise = fetchReviewCommentsFromGh(cwd, detail.number).finally(() =>
+    reviewCommentsInflight.delete(key)
+  )
+  reviewCommentsInflight.set(key, promise)
+  const value = await promise
+  reviewCommentsCache.set(key, { value, fetchedAt: Date.now() })
+  return value
 }

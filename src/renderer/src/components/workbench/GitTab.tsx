@@ -175,9 +175,11 @@ import type {
   GhPullRequest,
   GhPullRequestDetail,
   GhPullRequestState,
+  GhReviewCommentThread,
   GitDiffFile,
   GitStatusEntry
 } from '@shared/types'
+import type { DiffLineAnnotation } from '@pierre/diffs'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
@@ -189,6 +191,7 @@ import { ImageZoomBar } from './ImageZoomBar'
 import { CommitsTab } from './git/CommitsTab'
 import { DetailsTab } from './git/DetailsTab'
 import { ChecksTab } from './git/ChecksTab'
+import { ReviewCommentThread } from './git/ReviewCommentThread'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -261,6 +264,55 @@ export interface GitTabProps {
  *  simply never used here, every entry in a diff result is a real change). */
 function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
   return files.map((f) => ({ path: f.path, status: f.status }))
+}
+
+// --- PR review-comment inline annotations (Phase 4a) -------------------------
+
+/** Maps a GitHub review-comment thread onto Pierre's side-relative
+ *  `DiffLineAnnotation` (see docs/learnings/pr-comments.md §Q2 "Mapping to
+ *  Pierre's DiffLineAnnotation"): `RIGHT`→`additions`/`LEFT`→`deletions`
+ *  (Pierre's `lineNumber` is side-relative — new-file for additions, old-file
+ *  for deletions — matching GitHub's line/original_line semantics 1:1, no
+ *  further transform needed), and `lineNumber` from the thread's own
+ *  `line` (root comment's `line ?? originalLine`, already resolved
+ *  server-side by groupReviewCommentsIntoThreads — see src/main/github.ts).
+ *  A `subjectType: 'file'` thread (no per-line anchor) maps to `lineNumber: 0`
+ *  per Pierre's own documented file-level-annotation convention
+ *  (`dist/types.d.ts`'s doc comment on `DiffLineAnnotation`) — 4a doesn't
+ *  special-case file-level comments beyond this placement; a future phase can
+ *  render them distinctly if that reads better in practice. */
+function threadToAnnotation(
+  thread: GhReviewCommentThread
+): DiffLineAnnotation<GhReviewCommentThread> {
+  const lineNumber = thread.subjectType === 'file' ? 0 : (thread.line ?? 0)
+  return {
+    side: thread.side === 'LEFT' ? 'deletions' : 'additions',
+    lineNumber,
+    metadata: thread
+  }
+}
+
+/** Filters the full thread list down to ONE file's threads and maps each to
+ *  a Pierre annotation — DiffContentPane renders one file's <PatchDiff> at a
+ *  time, so this is recomputed per selected file (memoized by the caller).
+ *  Threads with `line === null` AND `subjectType !== 'file'` (an outdated
+ *  line-anchored comment with no `originalLine` fallback either — shouldn't
+ *  happen per pr-comments.md's "original_line is never null" finding, but
+ *  guarded defensively) are skipped rather than guessing lineNumber 0, which
+ *  would misleadingly render them as file-level. */
+function annotationsForFile(
+  threads: readonly GhReviewCommentThread[],
+  path: string
+): DiffLineAnnotation<GhReviewCommentThread>[] {
+  return threads
+    .filter((t) => t.path === path && (t.subjectType === 'file' || t.line !== null))
+    .map(threadToAnnotation)
+}
+
+function renderReviewCommentAnnotation(
+  annotation: DiffLineAnnotation<GhReviewCommentThread>
+): React.ReactNode {
+  return <ReviewCommentThread thread={annotation.metadata} />
 }
 
 // Raster image extensions (Fix 4) — a changed binary file with one of these
@@ -711,6 +763,13 @@ interface DiffContentPaneProps {
   diffStyle: DiffStyle
   wrapLines: boolean
   loading: boolean
+  /** Phase 4a — PR review-comment threads for the CURRENTLY selected file
+   *  only (already filtered by path), or null when annotations don't apply
+   *  (working-tree mode, or no PR-diff comments loaded yet/failed). GitTab
+   *  only ever passes a non-null list while `diffMode === 'pr'` — comments
+   *  anchor to the PR diff, not the live working tree (see
+   *  docs/learnings/pr-comments.md's Q1 gap note). */
+  reviewThreads: readonly GhReviewCommentThread[] | null
 }
 
 function DiffMessage({ text }: { text: string }): React.JSX.Element {
@@ -919,7 +978,8 @@ function DiffContentPane({
   file,
   diffStyle,
   wrapLines,
-  loading
+  loading,
+  reviewThreads
 }: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -929,6 +989,12 @@ function DiffContentPane({
     }
     return <DiffMessage text="Binary file — no preview" />
   }
+  // Phase 4a: only computed while reviewThreads is non-null (PR-diff mode
+  // with a loaded/attempted comment fetch) — annotationsForFile itself
+  // returns [] for a file with no threads, which PatchDiff renders exactly
+  // like an omitted lineAnnotations prop (a plain diff, no annotations).
+  const lineAnnotations =
+    reviewThreads !== null ? annotationsForFile(reviewThreads, file.path) : undefined
   return (
     <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
       <PatchDiff
@@ -940,6 +1006,8 @@ function DiffContentPane({
           diffStyle,
           overflow: wrapLines ? 'wrap' : 'scroll'
         }}
+        lineAnnotations={lineAnnotations}
+        renderAnnotation={renderReviewCommentAnnotation}
       />
     </div>
   )
@@ -1034,6 +1102,26 @@ function fetchPrDiff(
   }
 }
 
+/** Fetch review-comment threads (Phase 4a) for `workspaceId`'s current PR,
+ *  reporting the settled value (or null on failure) via `onSettled`. Fire-
+ *  and-forget by design (unlike fetchDiff/fetchPrDiff, callers here don't
+ *  need a cancel token — this is only called from the onPrChanged event
+ *  callback's "PR changed while already in PR-diff mode" branch, a single
+ *  one-shot refetch, not a mount/dependency-driven effect that could race a
+ *  cleanup). */
+function fetchReviewComments(
+  workspaceId: string,
+  onSettled: (threads: GhReviewCommentThread[] | null) => void
+): void {
+  window.api.github
+    .prReviewComments(workspaceId)
+    .then(onSettled)
+    .catch((e) => {
+      console.error('[GitTab] github:prReviewComments failed:', e)
+      onSettled(null)
+    })
+}
+
 /** Diff-mode dispatcher — the [Working tree | PR diff] toggle's data-source
  *  switch (Phase 4-pre). Both branches share the exact same
  *  fetch/cancel/onSettled contract, so every call site (initial load, mode
@@ -1086,6 +1174,14 @@ export function GitTab({
   // the Commits/Details/Checks sub-tabs — see the module header's "Phase 3b
   // foundation" note. Null until fetched (or when there's no PR at all).
   const [prDetail, setPrDetail] = useState<GhPullRequestDetail | null>(null)
+  // Phase 4a: line-anchored PR review-comment threads, fetched only while
+  // `diffMode === 'pr'` (comments anchor to the PR diff, not the working
+  // tree — see docs/learnings/pr-comments.md's Q1 gap note). `null` means
+  // "not applicable / not yet loaded" (working-tree mode, or before the
+  // first PR-diff-mode fetch settles) — DiffContentPane treats null the
+  // same as "no annotations" so a failed/pending fetch never blocks the
+  // diff itself from rendering.
+  const [reviewThreads, setReviewThreads] = useState<GhReviewCommentThread[] | null>(null)
 
   // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
   // runs through nextSelection so the tab auto-selects the first changed
@@ -1144,6 +1240,10 @@ export function GitTab({
     // PREVIOUS workspace's PR data while the fresh prDetail fetch (below,
     // keyed off `pr`) is still in flight.
     setPrDetail(null)
+    // Phase 4a: same reset for review-comment threads — a new workspace's
+    // PR-diff mode (if it even has a PR) must not render the PREVIOUS
+    // workspace's stale comment threads while its own fetch is in flight.
+    setReviewThreads(null)
     // A PR-only sub-tab (Details/Checks) carried over from the PREVIOUS
     // workspace has no backing strip segment here (hasPr is about to be
     // false until/unless this workspace's own PR push says otherwise) —
@@ -1307,6 +1407,11 @@ export function GitTab({
         // effect (which owns fetching) reacts to this state change on its
         // own; no fetch call needed here.
         setDiffMode((prev) => (prev === 'pr' ? 'working' : prev))
+        // Phase 4a: the review-comment threads belonged to the PR that just
+        // disappeared — clear them alongside the diffMode/prDetail resets
+        // above rather than leaving stale threads around for whatever the
+        // (possibly PR-less) working-tree view renders next.
+        setReviewThreads(null)
       } else if (diffModeRef.current === 'pr') {
         // Phase 4-pre: the PR changed (branch switch to a DIFFERENT PR'd
         // branch, or the same PR updated) while already viewing PR-diff mode
@@ -1317,9 +1422,54 @@ export function GitTab({
         // case.
         cleanupRef.current?.()
         cleanupRef.current = fetchPrDiff(workspaceId, applyDiff)
+        // Phase 4a: same "PR changed while already in PR-diff mode" case —
+        // the review-comment threads belong to the OLD PR, refetch for the
+        // new/updated one. Mirrors the diff refetch just above.
+        fetchReviewComments(workspaceId, setReviewThreads)
       }
     })
   }, [workspaceId, applyDiff])
+
+  // Phase 4a: fetch (or clear) review-comment threads on entering/leaving
+  // PR-diff mode. Deliberately its own effect (not folded into the
+  // mode-switch effect above, which owns the DIFF fetch) so a PR-diff-mode
+  // refetch of the diff itself doesn't also need to know about comments —
+  // this just tracks `diffMode`/`pr` directly. `diffMode !== 'pr'` clears
+  // threads to null (working-tree mode never shows annotations — comments
+  // anchor to the PR diff, not the live working tree, per
+  // docs/learnings/pr-comments.md's Q1 gap note) rather than leaving a stale
+  // PR-diff-mode fetch around for a mode the user just switched away from.
+  //
+  // `reviewThreadsClearedRef` guards the "clear" branch's setState so it's
+  // not an unconditional top-of-effect call (react-hooks/set-state-in-effect
+  // flags that shape) — it only actually clears once per non-PR-diff
+  // stretch, mirroring the mode-switch effect's own early-return-guard
+  // pattern above.
+  const reviewThreadsClearedRef = useRef(true)
+  useEffect(() => {
+    if (diffMode !== 'pr' || pr === null) {
+      if (!reviewThreadsClearedRef.current) {
+        reviewThreadsClearedRef.current = true
+        setReviewThreads(null)
+      }
+      return undefined
+    }
+    reviewThreadsClearedRef.current = false
+    let cancelled = false
+    window.api.github
+      .prReviewComments(workspaceId)
+      .then((threads) => {
+        if (!cancelled) setReviewThreads(threads)
+      })
+      .catch((e) => {
+        console.error('[GitTab] github:prReviewComments failed:', e)
+        if (!cancelled) setReviewThreads(null)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the PRIMITIVE pr?.number rather than the whole `pr` object, same rationale as the prDetail-fetch effect above: onPrChanged may push a referentially-new-but-equal PR on every branch-watch tick, and this effect must not refetch on those no-op pushes.
+  }, [workspaceId, diffMode, pr?.number])
 
   // Phase 3b foundation: fetch the rich `github:prDetail` payload backing the
   // Commits/Details/Checks sub-tabs (see the module header's "Phase 3b
@@ -1498,6 +1648,7 @@ export function GitTab({
           gitInitRunning={gitInitRunning}
           gitInitError={gitInitError}
           diffMode={diffMode}
+          reviewThreads={reviewThreads}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -1524,6 +1675,9 @@ interface GitTabBodyProps {
    *  PrDiffEmptyState instead (a PR-diff fetch has no "not a repo"/"clean
    *  tree" concept of its own — see that component's doc comment). */
   diffMode: DiffMode
+  /** Phase 4a — see DiffContentPaneProps' own doc comment; threaded straight
+   *  through to DiffContentPane. */
+  reviewThreads: readonly GhReviewCommentThread[] | null
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -1548,6 +1702,7 @@ function GitTabBody({
   gitInitRunning,
   gitInitError,
   diffMode,
+  reviewThreads,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -1573,6 +1728,7 @@ function GitTabBody({
           diffStyle={diffStyle}
           wrapLines={wrapLines}
           loading={false}
+          reviewThreads={diffMode === 'pr' ? reviewThreads : null}
         />
       </div>
     </div>

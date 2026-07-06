@@ -36,6 +36,7 @@ import type {
   GitDiffResult,
   GhPullRequest,
   GhPullRequestDetail,
+  GhReviewCommentThread,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -489,7 +490,11 @@ const api = {
     // docs/learnings/gh-pr-detail.md — avoid reintroducing the Git tab's
     // continuous-refetch flicker).
     prDetail: (workspaceId: string): Promise<GhPullRequestDetail | null> =>
-      invoke('github:prDetail', { workspaceId })
+      invoke('github:prDetail', { workspaceId }),
+    // Phase 4a — line-anchored PR review comments (inline diff annotations).
+    // Manual-refresh only, same cadence convention as prDetail above.
+    prReviewComments: (workspaceId: string): Promise<GhReviewCommentThread[] | null> =>
+      invoke('github:prReviewComments', { workspaceId })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),

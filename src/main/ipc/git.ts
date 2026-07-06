@@ -16,7 +16,7 @@
 
 import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
 import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
-import { getPrForBranch, getPrDetail } from '../github'
+import { getPrForBranch, getPrDetail, getPrReviewComments } from '../github'
 import { handle } from './handle'
 
 export type GitIpcDeps = {
@@ -81,4 +81,11 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // Phase 3b — rich PR detail (Details/Commits/Checks tabs). Resolves
   // workspaceId -> cwd like git:diff/git:init above.
   handle('github:prDetail', (_e, { workspaceId }) => getPrDetail(getWorkspaceCwd(workspaceId)))
+
+  // Phase 4a — line-anchored PR review comments (inline annotations on the
+  // PR diff). Resolves workspaceId -> cwd like git:diff/git:init/prDetail
+  // above; own gh call + cache, separate from prDetail (see github.ts).
+  handle('github:prReviewComments', (_e, { workspaceId }) =>
+    getPrReviewComments(getWorkspaceCwd(workspaceId))
+  )
 }
