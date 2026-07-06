@@ -52,7 +52,7 @@ export interface WorkbenchEntry {
   activeTab: WorkbenchTabId
 }
 
-export const DEFAULT_WORKBENCH_WIDTH = 640
+export const DEFAULT_WORKBENCH_WIDTH = 760
 
 export const DEFAULT_WORKBENCH_ENTRY: WorkbenchEntry = {
   state: 'dormant',
