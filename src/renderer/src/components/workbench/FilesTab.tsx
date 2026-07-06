@@ -61,7 +61,7 @@ import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { PreviewPane } from './PreviewPane'
 import { isRenderablePath } from './previewRender'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
-import { useTreeWidthDrag } from './useTreeWidthDrag'
+import { useTreeWidthDrag, TREE_WIDTH_CSS_VAR } from './useTreeWidthDrag'
 import { useImageZoomPan } from './useImageZoomPan'
 import { ImageZoomBar } from './ImageZoomBar'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
@@ -1398,7 +1398,19 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   const commitTreeWidth = useCallback((width: number) => {
     updateUiState({ workbenchTreeWidth: width })
   }, [])
-  const treeWidthDrag = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
+  // Destructured immediately at the call site (rather than kept as one
+  // `treeWidthDrag` object and accessed via `.width`/`.beginDrag` etc. below)
+  // — react-hooks' static ref-safety analysis conservatively taints EVERY
+  // property read off a variable holding a custom hook's return value once
+  // any one of that return object's properties is ref-derived
+  // (`treeWidthVarRef` is a callback ref); destructuring at the call site
+  // (this exact pattern) is what it recognizes as safe.
+  const {
+    width: treeWidth,
+    isDragging: treeIsDragging,
+    beginDrag: treeBeginDrag,
+    treeWidthVarRef
+  } = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
 
   const toggleTree = useCallback(() => {
     const cur = getFilesTabEntry(workspaceId)
@@ -1456,8 +1468,9 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             every reopen. Hidden with `hidden` (display:none) which also drops
             it from layout so the viewer takes the full width. */}
         <div
+          ref={treeWidthVarRef}
           hidden={!treeOpen}
-          style={{ width: treeWidthDrag.width }}
+          style={{ width: `var(${TREE_WIDTH_CSS_VAR}, ${treeWidth}px)` }}
           className="flex-shrink-0 min-h-0"
         >
           <TreePane
@@ -1487,10 +1500,10 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize file tree"
-            onMouseDown={treeWidthDrag.beginDrag}
+            onMouseDown={treeBeginDrag}
             className={[
               'w-1 flex-shrink-0 cursor-col-resize hover:bg-accent/40 transition-colors duration-150 border-r border-border-default',
-              treeWidthDrag.isDragging ? 'bg-accent/40' : 'bg-transparent'
+              treeIsDragging ? 'bg-accent/40' : 'bg-transparent'
             ].join(' ')}
           />
         )}

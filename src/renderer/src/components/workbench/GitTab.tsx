@@ -239,7 +239,7 @@
 //     purely a CSS change, no positioning logic touched.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
 import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
@@ -275,7 +275,7 @@ import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import { openPrUrl } from '../../lib/overlayClient'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
-import { useTreeWidthDrag } from './useTreeWidthDrag'
+import { useTreeWidthDrag, TREE_WIDTH_CSS_VAR } from './useTreeWidthDrag'
 import { useImageZoomPan } from './useImageZoomPan'
 import { ImageZoomBar } from './ImageZoomBar'
 import { CommitsTab } from './git/CommitsTab'
@@ -1499,25 +1499,32 @@ function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT'
   return { line: range.end, side }
 }
 
-/** Phase 4b — builds the `options` object passed to <PatchDiff> in PR-diff
- *  mode: the base viewer options (theme/diffStyle/overflow, unchanged since
- *  Phase 1) plus the select-to-comment line-selection option, ONLY when
- *  `composers` is non-null (i.e. `diffMode === 'pr'` — see
- *  DiffContentPaneProps' doc comment). Extracted so DiffContentPane's own
- *  body doesn't inline this branching logic into the JSX (cognitive-
- *  complexity ceiling).
+/** Phase 4b — builds the BASE `options` object passed to <PatchDiff>: theme/
+ *  diffStyle/overflow (unchanged since Phase 1) plus the crash-fix-#2
+ *  tokenize cap. Extracted so DiffContentPane's own body doesn't inline this
+ *  into the JSX (cognitive-complexity ceiling).
  *
  *  BUG FIX (this pass): the gutter-"+" click is now wired entirely through
  *  `renderGutterUtility`/`GutterAddCommentButton`'s own onClick (see that
  *  component's doc comment for the full root-cause writeup) — `options` no
  *  longer sets `enableGutterUtility`/`onGutterUtilityClick` at all, since
  *  those conflict with the `renderGutterUtility` React prop DiffContentPane
- *  also passes and crash @pierre/diffs' InteractionManager. */
+ *  also passes and crash @pierre/diffs' InteractionManager.
+ *
+ *  PERF FIX (LAG-LAYER #5): deliberately does NOT take `onLineSelected` as a
+ *  parameter (it used to) — react-hooks' ref-safety lint rule flags passing
+ *  a ref-closing callback into ANY function call during render, even one
+ *  that never invokes it synchronously. The caller (DiffContentPaneImpl)
+ *  instead spreads this function's return value into its OWN inline object
+ *  literal inside `useMemo` and sets `onLineSelected` there directly — see
+ *  its own comment. This function's return value still only depends on
+ *  primitives (diffStyle/wrapLines/hasComposers), which is what lets the
+ *  caller's memo actually recognize two calls as equal instead of always
+ *  observing a new object and forcing a full diff DOM re-apply. */
 function buildDiffOptions(
   diffStyle: DiffStyle,
   wrapLines: boolean,
-  path: string,
-  composers: ReviewComposerWiring | null
+  hasComposers: boolean
 ): FileDiffOptions<ReviewAnnotationMeta> {
   const base: FileDiffOptions<ReviewAnnotationMeta> = {
     theme: VIEWER_THEME,
@@ -1532,7 +1539,7 @@ function buildDiffOptions(
     // back to plaintext for any one line beyond this length instead.
     tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH
   }
-  if (composers === null) return base
+  if (!hasComposers) return base
   return {
     ...base,
     // Select-to-comment: scoped to reporting the FINAL committed selection
@@ -1541,13 +1548,10 @@ function buildDiffOptions(
     // intermediate frame while the user is still dragging would be noisy
     // and would fight the "one composer per exact anchor" de-dupe in
     // useReviewComposers.open. A `null` range means the selection was
-    // cleared (e.g. clicking elsewhere) — nothing to open.
-    enableLineSelection: true,
-    onLineSelected: (range) => {
-      if (range === null) return
-      const { line, side } = anchorFromRange(range)
-      composers.open(path, side, line)
-    }
+    // cleared (e.g. clicking elsewhere) — nothing to open. `onLineSelected`
+    // itself is set by the caller (see this function's own doc comment on
+    // why it can't be a parameter here).
+    enableLineSelection: true
   }
 }
 
@@ -1570,7 +1574,19 @@ function buildDiffOptions(
  *  working-tree mode gets a local-only composer, PR-diff mode gets the full
  *  [GitHub | Local] composer. See GutterAddCommentButton's doc comment for
  *  the bug fix (Phase 4c) to how the gutter "+" click itself is wired. */
-function DiffContentPane({
+/** PERF FIX (LAG-LAYER #5): every value this ref carries is read ONLY from
+ *  inside the stable `onLineSelected` callback below (never during render),
+ *  so `DiffContentPaneImpl` can build that callback ONCE (empty deps) instead
+ *  of on every render — which in turn lets `buildDiffOptions`'s return value
+ *  be memoized on plain primitives instead of always allocating a fresh
+ *  `options` object (defeating Pierre's `areOptionsEqual` and forcing a full
+ *  diff DOM re-apply). */
+interface LatestSelectHandlerInputs {
+  path: string
+  composers: ReviewComposerWiring | null
+}
+
+function DiffContentPaneImpl({
   workspaceId,
   file,
   diffStyle,
@@ -1589,6 +1605,65 @@ function DiffContentPane({
   // so switching away and back to an already-force-shown file doesn't ask
   // again within the same Git-tab session.
   const [shownAnyway, setShownAnyway] = useState<ReadonlySet<string>>(() => new Set())
+
+  // PERF FIX (LAG-LAYER #5): the hooks below must run UNCONDITIONALLY on
+  // every render (rules-of-hooks) — so they're hoisted above every early
+  // return (loading/no-selection/binary/oversized), even though their
+  // OUTPUT is only actually used by the plain-diff JSX at the bottom. This
+  // is what lets `lineAnnotations`/`options` stay referentially stable
+  // across an unrelated re-render (e.g. the tree-drag commit, prDetail
+  // ticks) instead of forcing @pierre/diffs to re-apply the whole diff DOM.
+  const path = file?.path ?? null
+  const latestRef = useRef<LatestSelectHandlerInputs>({ path: path ?? '', composers })
+  useEffect(() => {
+    latestRef.current = { path: path ?? '', composers }
+  })
+
+  // Stable identity (empty deps) for the whole component lifetime — reads
+  // the CURRENT path/composers off latestRef rather than closing over the
+  // render's own values, so it never needs to be recreated.
+  const onLineSelected = useCallback((range: SelectedLineRange | null) => {
+    if (range === null) return
+    const { composers: currentComposers, path: currentPath } = latestRef.current
+    if (currentComposers === null) return
+    const { line, side } = anchorFromRange(range)
+    currentComposers.open(currentPath, side, line)
+  }, [])
+
+  // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
+  // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
+  // localWiring is non-null (now true in BOTH modes as of Phase 5 FIX 1) —
+  // annotationsForFile itself returns [] for a file with no threads/
+  // composers/local comments, which PatchDiff renders exactly like an
+  // omitted lineAnnotations prop (a plain diff, no annotations). Memoized so
+  // an unrelated re-render (tree-drag commit, prDetail poll tick) doesn't
+  // reallocate a fresh (but content-equal) array every time — a fresh array
+  // identity alone is enough to make @pierre/diffs treat annotations as
+  // "changed" and re-apply the diff DOM.
+  const showAnnotations = reviewThreads !== null || localWiring !== null
+  const composerList = composers?.composers ?? EMPTY_COMPOSERS
+  const lineAnnotations = useMemo(
+    () =>
+      showAnnotations && path !== null
+        ? annotationsForFile(reviewThreads ?? [], composerList, localComments, path)
+        : undefined,
+    [showAnnotations, reviewThreads, composerList, localComments, path]
+  )
+
+  // Memoized on primitives + the composers-WIRING identity only — see
+  // buildDiffOptions' own doc comment for why this is the fix for the
+  // "fresh onLineSelected every render" forceRender bug. `onLineSelected` is
+  // spread in via this OWN inline object literal (not passed as an argument
+  // into buildDiffOptions) — react-hooks' ref-safety lint rule flags a
+  // ref-closing callback passed into any function call during render, but
+  // accepts it being placed directly into an object literal the same way a
+  // DOM `ref` prop is accepted.
+  const hasComposers = composers !== null
+  const options = useMemo(() => {
+    const base = buildDiffOptions(diffStyle, wrapLines, hasComposers)
+    return hasComposers ? { ...base, onLineSelected } : base
+  }, [diffStyle, wrapLines, hasComposers, onLineSelected])
+
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
   if (file.binary) {
@@ -1611,17 +1686,6 @@ function DiffContentPane({
       />
     )
   }
-  // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
-  // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
-  // localWiring is non-null (now true in BOTH modes as of Phase 5 FIX 1) —
-  // annotationsForFile itself returns [] for a file with no threads/
-  // composers/local comments, which PatchDiff renders exactly like an
-  // omitted lineAnnotations prop (a plain diff, no annotations).
-  const showAnnotations = reviewThreads !== null || localWiring !== null
-  const lineAnnotations = showAnnotations
-    ? annotationsForFile(reviewThreads ?? [], composers?.composers ?? [], localComments, file.path)
-    : undefined
-  const options = buildDiffOptions(diffStyle, wrapLines, file.path, composers)
   return (
     <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
       <PatchDiff
@@ -1656,6 +1720,20 @@ function DiffContentPane({
     </div>
   )
 }
+
+/** PERF FIX (LAG-LAYER #5) — a stable empty-array fallback for `composers?.
+ *  composers` so `lineAnnotations`'s useMemo deps don't see a fresh `[]`
+ *  identity every render when `composers` is null. */
+const EMPTY_COMPOSERS: readonly PendingComposer[] = []
+
+/** PERF FIX (LAG-LAYER #4/#5): memoized so an unrelated re-render one level
+ *  up (prDetail poll tick, tree-drag width COMMIT on mouseup, branch churn)
+ *  doesn't force @pierre/diffs to re-apply the entire (non-virtualized) diff
+ *  DOM — React.memo's shallow prop comparison short-circuits the re-render
+ *  entirely when every prop is referentially unchanged, which is now the
+ *  common case since the props this pane receives are themselves stabilized
+ *  in GitTab/GitTabBody. */
+const DiffContentPane = memo(DiffContentPaneImpl)
 
 // --- Root ------------------------------------------------------------------
 
@@ -1695,12 +1773,25 @@ interface DiffSettleResult {
 // catch, a future new event source), applying an IDENTICAL result is a
 // no-op — no setFiles/setSelectedPath, so no re-render, no tree-flicker, no
 // <PatchDiff> remount. A real change always produces a different signature
-// (any changed patch text changes its own entry) and still applies. Patch
-// TEXT (not just length) is included so a same-length content edit still
-// counts as a change.
+// (any changed patch text changes its own entry) and still applies.
+//
+// PERF FIX (LAG-LAYER #7): this used to concatenate every file's FULL patch
+// TEXT into one giant string per settle (`path\x00status\x00patch`, joined by
+// `\x01`) purely to build a comparison key — on a large diff that's a
+// multi-MB string allocation on every debounced live-refresh, just to detect
+// a no-op. `f.sig` (src/main/gitDiff.ts's fileFromChunk) is a cyrb53 content
+// hash already computed ONCE per file in main over the exact same
+// path+status+patch inputs, so combining those short per-file hashes here is
+// O(files.length) string-building instead of O(total-diff-bytes) — same
+// correctness (a same-length content edit still changes its file's hash, so
+// still registers as a change; see gitDiff.ts's own doc comment for why this
+// is a 53-bit hash, not 32-bit or length-only). The `\x00`/`\x01` separators
+// are no longer needed (no raw patch text flows through this function
+// anymore) but kept as the join delimiter for consistency/no-collision with
+// any hash value itself.
 function diffSignature(result: DiffSettleResult): string {
   if (!result.repo) return 'no-repo'
-  return result.files.map((f) => `${f.path} ${f.status} ${f.patch}`).join('')
+  return result.files.map((f) => f.sig).join('\x01')
 }
 
 /** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
@@ -2067,6 +2158,22 @@ export function GitTab({
   }, [diffMode])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
+  // PERF FIX (LAG-LAYER #9): `prDetail`'s own onStatusChanged refresh used to
+  // be a SEPARATE subscription (see the module header's old "Phase 3b
+  // foundation" comment, now folded in below) — two independent listeners on
+  // the same event meant every real status change did double dispatch work.
+  // Collapsed into this ONE onStatusChanged listener: one filter, one
+  // cleanup. prDetail refresh is debounced on its OWN timer (not folded into
+  // scheduleRefetch's timer) and fires OUTSIDE the `diffModeRef` guard —
+  // it must run in BOTH diff modes (a PR's checks/commits can update while
+  // viewing PR-diff mode too), unlike the diff refetch which is
+  // working-tree-only. `prRef` (kept in sync just below) lets it skip the
+  // network round-trip entirely when there's no PR to refresh.
+  const prRef = useRef(pr)
+  useEffect(() => {
+    prRef.current = pr
+  }, [pr])
+  const prDetailDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const scheduleRefetch = (): void => {
       if (diffModeRef.current !== 'working') return
@@ -2077,11 +2184,22 @@ export function GitTab({
         cleanupRef.current = fetchDiff(workspaceId, applyDiff)
       }, REFRESH_DEBOUNCE_MS)
     }
+    const scheduleRefreshPrDetail = (): void => {
+      if (prRef.current === null) return
+      if (prDetailDebounceRef.current !== null) clearTimeout(prDetailDebounceRef.current)
+      prDetailDebounceRef.current = setTimeout(() => {
+        prDetailDebounceRef.current = null
+        window.api.github
+          .prDetail(workspaceId)
+          .then(setPrDetail)
+          .catch((e2) => console.error('[GitTab] github:prDetail refresh failed:', e2))
+      }, REFRESH_DEBOUNCE_MS)
+    }
     const unsubStatus = window.api.git.onStatusChanged((e) => {
-      if (e.workspaceId === workspaceId) {
-        setBranch(e.status.branch)
-        scheduleRefetch()
-      }
+      if (e.workspaceId !== workspaceId) return
+      setBranch(e.status.branch)
+      scheduleRefetch()
+      scheduleRefreshPrDetail()
     })
     const unsubFiles = window.api.files.onFilesChanged((e) => {
       if (e.workspaceId === workspaceId) scheduleRefetch()
@@ -2090,6 +2208,7 @@ export function GitTab({
       unsubStatus()
       unsubFiles()
       if (debounceRef.current !== null) clearTimeout(debounceRef.current)
+      if (prDetailDebounceRef.current !== null) clearTimeout(prDetailDebounceRef.current)
       cleanupRef.current?.()
       cleanupRef.current = null
     }
@@ -2266,31 +2385,12 @@ export function GitTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the PRIMITIVE pr?.number/pr?.state rather than the whole `pr` object: onPrChanged (above) may push a referentially-new-but-equal PR on every branch-watch tick, and this effect must not refetch prDetail on those no-op pushes.
   }, [workspaceId, pr?.number, pr?.state])
 
-  // Phase 3b foundation: also refresh `prDetail` whenever the working-tree
-  // diff itself refetches (the existing git:statusChanged/files:changed
-  // live-refresh effect above) — mirrors the diff's own refresh cadence
-  // rather than adding a second poll loop, and picks up e.g. new commits
-  // pushed to the PR branch, new checks landing, or new reviews without
-  // requiring a branch change. Subscribes unconditionally (cheap — just an
-  // event listener) and checks `pr` freshly inside the callback via a ref
-  // (kept in sync by its own effect below, never written during render) so
-  // this doesn't need `pr` in its own dependency array — avoids a
-  // resubscribe on every PR poll tick, same "latest value without an effect
-  // dependency" escape hatch as elsewhere in this file.
-  const prRef = useRef(pr)
-  useEffect(() => {
-    prRef.current = pr
-  }, [pr])
-  useEffect(() => {
-    return window.api.git.onStatusChanged((e) => {
-      if (e.workspaceId !== workspaceId) return
-      if (prRef.current === null) return
-      window.api.github
-        .prDetail(workspaceId)
-        .then(setPrDetail)
-        .catch((e2) => console.error('[GitTab] github:prDetail refresh failed:', e2))
-    })
-  }, [workspaceId])
+  // PERF FIX (LAG-LAYER #9): prDetail's own status-driven refresh used to be
+  // a second, independent `git:statusChanged` subscription here — it's now
+  // folded into the single onStatusChanged listener above (see that effect's
+  // own doc comment); `prRef` is declared there too since both the diff- and
+  // prDetail-refresh callbacks need the SAME "latest pr without an effect
+  // dependency" ref.
 
   // Phase 2 Git-init: runs git:init, then — regardless of outcome — clears
   // the running flag; on success, explicitly refetches git:diff (a brand-new
@@ -2553,7 +2653,17 @@ export function GitTab({
   const commitTreeWidth = useCallback((width: number) => {
     updateUiState({ workbenchTreeWidth: width })
   }, [])
-  const treeWidthDrag = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
+  // Destructured immediately at the call site — see FilesTab.tsx's identical
+  // comment on why: react-hooks' ref-safety analysis taints EVERY property
+  // read off a variable holding a custom hook's return object once any ONE
+  // of its properties is ref-derived (`treeWidthVarRef`); destructuring here
+  // is what it recognizes as safe.
+  const {
+    width: treeWidth,
+    isDragging: treeIsDragging,
+    beginDrag: treeBeginDrag,
+    treeWidthVarRef
+  } = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
 
   // Phase 2: the hide-tree icon + unified/split toggle + ⚙ wrap popover only
   // make sense once there's an actual diff to view — while loading, or in
@@ -2642,9 +2752,10 @@ export function GitTab({
           selectedPath={selectedPath}
           selectedFile={selectedFile}
           treeOpen={treeOpen}
-          treeWidth={treeWidthDrag.width}
-          isTreeWidthDragging={treeWidthDrag.isDragging}
-          onBeginTreeWidthDrag={treeWidthDrag.beginDrag}
+          treeWidth={treeWidth}
+          treeWidthVarRef={treeWidthVarRef}
+          isTreeWidthDragging={treeIsDragging}
+          onBeginTreeWidthDrag={treeBeginDrag}
           flattenEmptyDirs={flattenEmptyDirs}
           diffStyle={diffStyle}
           wrapLines={wrapLines}
@@ -2681,6 +2792,11 @@ interface GitTabBodyProps {
   /** Draggable tree/code split — SHARED width with FilesTab (see
    *  useTreeWidthDrag.ts's module header). */
   treeWidth: number
+  /** Imperative ref for the tree-pane wrapper — the live drag writes a CSS
+   *  var directly onto this node (bypassing React state) rather than
+   *  flowing `treeWidth` through a prop update every mousemove frame. See
+   *  useTreeWidthDrag.ts's PERF FIX note. */
+  treeWidthVarRef: React.RefCallback<HTMLElement>
   isTreeWidthDragging: boolean
   onBeginTreeWidthDrag: (e: React.MouseEvent) => void
   /** SHARED Files+Git tree setting (AppUiState.filesFlattenEmptyDirs) — see
@@ -2728,7 +2844,7 @@ interface GitTabBodyProps {
  *  JSX, keeping GitTab's own cognitive complexity down. `loading` intentionally
  *  takes priority over `repo`/`files` — see GitTab's `repo` state comment on
  *  why it defaults optimistic. */
-function GitTabBody({
+function GitTabBodyImpl({
   loading,
   repo,
   files,
@@ -2736,6 +2852,7 @@ function GitTabBody({
   selectedFile,
   treeOpen,
   treeWidth,
+  treeWidthVarRef,
   isTreeWidthDragging,
   onBeginTreeWidthDrag,
   flattenEmptyDirs,
@@ -2767,7 +2884,12 @@ function GitTabBody({
 
   return (
     <div className="flex-1 min-h-0 flex">
-      <div hidden={!treeOpen} style={{ width: treeWidth }} className="flex-shrink-0 min-h-0">
+      <div
+        ref={treeWidthVarRef}
+        hidden={!treeOpen}
+        style={{ width: `var(${TREE_WIDTH_CSS_VAR}, ${treeWidth}px)` }}
+        className="flex-shrink-0 min-h-0"
+      >
         <DiffTreePane
           // See DiffTreePaneProps' flattenEmptyDirs doc comment: construction-
           // only option on useFileTree, so changing it remounts via this key
@@ -2809,3 +2931,9 @@ function GitTabBody({
     </div>
   )
 }
+
+/** PERF FIX (LAG-LAYER #4): memoized — see DiffContentPane's own doc comment
+ *  on why this firewalls unrelated parent re-renders (prDetail tick, PR/
+ *  branch churn) from reaching the diff pane, on top of the tree-drag width
+ *  no longer flowing through React state at all during an active drag. */
+const GitTabBody = memo(GitTabBodyImpl)

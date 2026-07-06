@@ -22,6 +22,7 @@
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
 import type { GitDiffFile, GitDiffFileStatus, GitDiffResult } from '../shared/types'
+import { cyrb53 } from '../shared/hash'
 import { getPrDetail } from './github'
 import { getUserShellPath } from './shellHelpers'
 
@@ -77,12 +78,13 @@ function splitPatchByFile(combined: string): string[] {
   return chunks
 }
 
-/** Parse the two `--- a/...` / `+++ b/...` header lines of one file's patch
- *  chunk into a repo-relative path (and, for a rename, the OLD path too).
- *  Falls back to parsing the `diff --git a/X b/Y` line when a file is purely
- *  added/deleted (one side is `/dev/null`). */
-function parsePatchPaths(chunk: string): { path: string; oldPath?: string } {
-  const diffGitMatch = /^diff --git a\/(.+) b\/(.+)$/m.exec(chunk)
+/** Parse the `diff --git a/X b/Y` header line into a repo-relative path
+ *  (and, for a rename, the OLD path too). Used only by the single-pass
+ *  `fileFromChunk` below to interpret the FIRST line it already visits while
+ *  scanning — kept as its own function purely so that parsing logic reads as
+ *  a named step rather than inlined into the loop body. */
+function parseDiffGitLine(line: string): { path: string; oldPath?: string } {
+  const diffGitMatch = /^diff --git a\/(.+) b\/(.+)$/.exec(line)
   const aPath = diffGitMatch?.[1]
   const bPath = diffGitMatch?.[2]
   const newPath = bPath ?? aPath ?? ''
@@ -92,79 +94,128 @@ function parsePatchPaths(chunk: string): { path: string; oldPath?: string } {
   return { path: newPath }
 }
 
-/** Parse a file's change status from its patch chunk's header lines. Checked
- *  in order: rename (a/b differ), new file, deleted file, else modified. */
-function parsePatchStatus(
-  chunk: string,
-  path: string,
+/** PERF FIX (LAG-LAYER #8): builds one `GitDiffFile` from a single-file patch
+ *  chunk (already split out of the combined `git diff HEAD`/`gh pr diff`
+ *  output) in a SINGLE linear pass over its lines, instead of the previous
+ *  split-then-~6-regex/count-passes-per-chunk pipeline (parsePatchPaths +
+ *  parsePatchStatus + countPatchLines + isBinaryPatchChunk +
+ *  isOversizedPatchChunk, each re-scanning the same chunk independently).
+ *  Iterates line boundaries via `indexOf('\n', ...)` (no `.split('\n')`
+ *  array allocation for the whole chunk) and accumulates every derived field
+ *  — path/oldPath (from the first `diff --git` line), status (new/deleted/
+ *  binary-vs-modified/renamed), additions/deletions, binary, and the
+ *  oversized line-count — inline as it walks.
+ *
+ *  additions/deletions/status/binary are always computed from the FULL
+ *  chunk before the oversized check is finalized (crash fix #1) — so the
+ *  tree's "+N -M" counts and comment line-anchoring stay correct for an
+ *  oversized file exactly as they are for a normal one; only the RENDERER'S
+ *  decision to feed `patch` into <PatchDiff> is gated by `oversized`, not
+ *  this function's own output.
+ *
+ *  `patch` on the returned `GitDiffFile` is the ORIGINAL `chunk` string,
+ *  completely unmodified — this function only ever READS it, never slices or
+ *  rebuilds it, so the emitted patch stays byte-identical to the previous
+ *  implementation (still fed verbatim to PatchDiff, still hashed below).
+ *  `sig` (LAG-LAYER #7) is a single cyrb53 pass over path+status+chunk,
+ *  computed here (once, in main) so the renderer only ever combines
+ *  already-hashed per-file signatures instead of re-hashing/re-joining full
+ *  patch text itself. */
+/** Mutable per-chunk accumulator `fileFromChunk`'s single-pass loop folds
+ *  every line into, via `classifyLine` below — kept as its own interface
+ *  purely so the accumulator's shape (and the "what does this line
+ *  contribute" dispatch) reads as one named step rather than a wall of
+ *  loose `let`s, which is what was pushing `fileFromChunk` itself over the
+ *  cognitive-complexity ceiling. */
+interface ChunkScanState {
+  path: string
   oldPath: string | undefined
-): GitDiffFileStatus {
-  if (oldPath && oldPath !== path) return 'renamed'
-  if (/^new file mode/m.test(chunk)) return 'added'
-  if (/^deleted file mode/m.test(chunk)) return 'deleted'
-  return 'modified'
+  sawDiffGitLine: boolean
+  isNewFile: boolean
+  isDeletedFile: boolean
+  isBinary: boolean
+  additions: number
+  deletions: number
 }
 
-/** Count added/removed content lines in a patch chunk — every `+`/`-` line
- *  inside a hunk, excluding the `+++`/`---` file-header lines themselves. */
-function countPatchLines(chunk: string): { additions: number; deletions: number } {
-  let additions = 0
-  let deletions = 0
-  for (const line of chunk.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
-    if (line.startsWith('+')) additions++
-    else if (line.startsWith('-')) deletions++
+/** Classifies ONE line of a patch chunk, mutating `state` in place with
+ *  whatever that line contributes (the `diff --git` header, a new/deleted-
+ *  file marker, a binary marker, or a `+`/`-` content line). Pulled out of
+ *  `fileFromChunk`'s loop body so that function's own cognitive complexity
+ *  stays under the lint ceiling — this is the single-pass replacement for
+ *  the previous parsePatchPaths/parsePatchStatus/countPatchLines/
+ *  isBinaryPatchChunk regex passes, now dispatched per line instead of once
+ *  per chunk each. */
+function classifyLine(line: string, state: ChunkScanState): void {
+  if (!state.sawDiffGitLine && line.startsWith('diff --git ')) {
+    const parsed = parseDiffGitLine(line)
+    state.path = parsed.path
+    state.oldPath = parsed.oldPath
+    state.sawDiffGitLine = true
+    return
   }
-  return { additions, deletions }
-}
-
-/** True when a patch chunk is a `git diff` BINARY marker rather than real
- *  text hunks — either the human-readable `Binary files a/x and b/x differ`
- *  line (the default, no `--binary`) or a `GIT binary patch` block (emitted
- *  when the caller passes `--binary`, which this module doesn't, but detected
- *  anyway for robustness/future-proofing). Additions/deletions are always 0
- *  for these — `countPatchLines` would already return {0,0} since a binary
- *  chunk has no `+`/`-` hunk lines, but callers use this flag to render
- *  "Binary" instead of a misleading "-0 +0" line count. */
-function isBinaryPatchChunk(chunk: string): boolean {
-  return /^Binary files .+ differ$/m.test(chunk) || /^GIT binary patch$/m.test(chunk)
-}
-
-/** True when a patch chunk exceeds the oversized line/byte threshold (crash
- *  fix #1). Byte length is a cheap `.length` check (no scan); line count
- *  needs a single pass but short-circuits via `indexOf` rather than
- *  allocating a full `.split('\n')` array, so a multi-hundred-KB chunk isn't
- *  itself an extra O(n) allocation on top of the ones `countPatchLines`
- *  already does. Checked in this order (bytes first) since it's the cheaper
- *  test and covers the "one giant minified line" case that a line-count
- *  check alone would miss. */
-function isOversizedPatchChunk(chunk: string): boolean {
-  if (chunk.length > OVERSIZED_BYTE_THRESHOLD) return true
-  let lines = 0
-  let idx = 0
-  while (lines <= OVERSIZED_LINE_THRESHOLD) {
-    idx = chunk.indexOf('\n', idx)
-    if (idx === -1) break
-    idx++
-    lines++
+  if (line.startsWith('new file mode')) {
+    state.isNewFile = true
+    return
   }
-  return lines > OVERSIZED_LINE_THRESHOLD
+  if (line.startsWith('deleted file mode')) {
+    state.isDeletedFile = true
+    return
+  }
+  if (!state.isBinary && (/^Binary files .+ differ$/.test(line) || line === 'GIT binary patch')) {
+    state.isBinary = true
+    return
+  }
+  if (line.startsWith('+++') || line.startsWith('---')) {
+    // File-header lines — excluded from the +/- content-line counts below,
+    // same as the previous countPatchLines behavior.
+    return
+  }
+  if (line.startsWith('+')) {
+    state.additions++
+  } else if (line.startsWith('-')) {
+    state.deletions++
+  }
 }
 
-/** Build one `GitDiffFile` from a single-file patch chunk (already split out
- *  of the combined `git diff HEAD` output). additions/deletions/status/binary
- *  are always computed from the FULL chunk before the oversized check runs
- *  (crash fix #1) — so the tree's "+N -M" counts and comment line-anchoring
- *  stay correct for an oversized file exactly as they are for a normal one;
- *  only the RENDERER'S decision to feed `patch` into <PatchDiff> is gated by
- *  `oversized`, not this function's own output. */
 function fileFromChunk(chunk: string): GitDiffFile {
-  const { path, oldPath } = parsePatchPaths(chunk)
-  const status = parsePatchStatus(chunk, path, oldPath)
-  const { additions, deletions } = countPatchLines(chunk)
-  const binary = isBinaryPatchChunk(chunk)
-  const oversized = !binary && isOversizedPatchChunk(chunk)
-  return { path, status, patch: chunk, additions, deletions, oldPath, binary, oversized }
+  const state: ChunkScanState = {
+    path: '',
+    oldPath: undefined,
+    sawDiffGitLine: false,
+    isNewFile: false,
+    isDeletedFile: false,
+    isBinary: false,
+    additions: 0,
+    deletions: 0
+  }
+  let lineCount = 0
+  const oversizedByBytes = chunk.length > OVERSIZED_BYTE_THRESHOLD
+
+  let start = 0
+  while (start < chunk.length) {
+    let end = chunk.indexOf('\n', start)
+    const isLastLine = end === -1
+    if (isLastLine) end = chunk.length
+    classifyLine(chunk.slice(start, end), state)
+    lineCount++
+    if (isLastLine) break
+    start = end + 1
+  }
+
+  const { path, oldPath, isNewFile, isDeletedFile, isBinary, additions, deletions } = state
+  const status: GitDiffFileStatus =
+    oldPath && oldPath !== path
+      ? 'renamed'
+      : isNewFile
+        ? 'added'
+        : isDeletedFile
+          ? 'deleted'
+          : 'modified'
+  const binary = isBinary
+  const oversized = !binary && (oversizedByBytes || lineCount > OVERSIZED_LINE_THRESHOLD)
+  const sig = cyrb53(`${path} ${status} ${chunk}`)
+  return { path, status, patch: chunk, additions, deletions, oldPath, binary, oversized, sig }
 }
 
 /** Tracked changes (staged + unstaged, combined) vs HEAD, split per file. */

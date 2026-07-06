@@ -1525,6 +1525,13 @@ export type GitDiffFile = {
   oldPath?: string
   binary: boolean
   oversized?: boolean
+  /** PERF FIX (LAG-LAYER #7) — a cyrb53 content hash over path+status+patch,
+   *  computed ONCE in main (src/main/gitDiff.ts's fileFromChunk) so the
+   *  renderer's diffSignature (GitTab.tsx) can combine per-file hashes
+   *  instead of re-concatenating every file's full patch TEXT into one giant
+   *  string on every settled git:diff/prDiff. See gitDiff.ts's own doc
+   *  comment for why this isn't a 32-bit hash or `patch.length`. */
+  sig: string
 }
 
 /**
