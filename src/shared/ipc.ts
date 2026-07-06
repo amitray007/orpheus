@@ -88,7 +88,8 @@ import type {
   FileImage,
   WriteFileResult,
   FilesMutationResult,
-  GitDiffResult
+  GitDiffResult,
+  GhPullRequestDetail
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -296,6 +297,11 @@ export interface InvokeChannelMap {
     res: number
   }
   'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
+  // Workbench Git tab — Phase 3b rich PR detail (Details/Commits/Checks tabs,
+  // Phase 4 general comments). Resolves `workspaceId` -> cwd -> current branch
+  // -> PR number -> ONE `gh pr view` call. Total (never throws); null when
+  // there's no PR/no gh/no remote. See src/main/github.ts::getPrDetail.
+  'github:prDetail': { req: [{ workspaceId: string }]; res: GhPullRequestDetail | null }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.

@@ -13,7 +13,7 @@
 
 import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
 import { getWorkingTreeDiff } from '../gitDiff'
-import { getPrForBranch } from '../github'
+import { getPrForBranch, getPrDetail } from '../github'
 import { handle } from './handle'
 
 export type GitIpcDeps = {
@@ -57,4 +57,8 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // ---------------------------------------------------------------------------
 
   handle('github:prForBranch', (_e, { cwd, branch }) => getPrForBranch(cwd, branch))
+
+  // Phase 3b — rich PR detail (Details/Commits/Checks tabs). Resolves
+  // workspaceId -> cwd like git:diff/git:init above.
+  handle('github:prDetail', (_e, { workspaceId }) => getPrDetail(getWorkspaceCwd(workspaceId)))
 }

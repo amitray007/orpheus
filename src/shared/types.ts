@@ -749,6 +749,113 @@ export type GhPullRequest = {
   checks: 'success' | 'failure' | 'pending' | null
 }
 
+// ---------------------------------------------------------------------------
+// GitHub PR detail (Workbench Git tab, Phase 3b) — richer `gh pr view` fetch
+// feeding the Details/Commits/Checks tabs (3c/3d/3e) and the general-comments
+// half of Phase 4. See docs/learnings/gh-pr-detail.md for the researched
+// field mapping this type mirrors. `GhPullRequest` above stays the thin
+// row/chip shape; this is fetched only when a user opens the PR detail panel.
+// ---------------------------------------------------------------------------
+
+export type GhLabel = {
+  name: string
+  color: string // hex, no leading '#'
+  description: string | null
+}
+
+export type GhReviewState = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING'
+
+export type GhReview = {
+  id: string
+  author: string // login
+  state: GhReviewState
+  submittedAt: string | null // ISO
+  body: string
+}
+
+export type GhReviewRequest = {
+  login: string // requested reviewer (user or team)
+  isTeam: boolean
+}
+
+export type GhCommit = {
+  oid: string
+  messageHeadline: string
+  messageBody: string
+  authoredDate: string
+  committedDate: string
+  authorLogin: string | null // authors[0]?.login
+  authorName: string
+  url: string // derived client-side: `${repoUrl}/commit/${oid}`
+}
+
+// Un-reduced per-check status, distinct from GhPullRequest['checks'] (which
+// stays the existing 3-state aggregate for the row/chip). Normalizes both
+// `statusCheckRollup` shapes (`CheckRun` and legacy `StatusContext`) into one.
+export type GhCheckState = 'success' | 'failure' | 'pending' | 'neutral'
+
+export type GhCheck = {
+  name: string
+  workflowName: string | null
+  state: GhCheckState
+  url: string | null
+  startedAt: string | null
+  completedAt: string | null
+}
+
+export type GhGeneralComment = {
+  id: string
+  author: string
+  authorAssociation: string
+  body: string
+  createdAt: string
+  url: string
+  isMinimized: boolean
+}
+
+export type GhMilestone = {
+  title: string
+  url: string
+  dueOn: string | null
+}
+
+export type GhPullRequestDetail = {
+  // meta
+  number: number
+  title: string
+  body: string // markdown, PR description
+  state: GhPullRequestState
+  url: string
+  baseRefName: string
+  headRefName: string
+  author: string | null
+  createdAt: string
+  updatedAt: string
+  mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN'
+  mergeStateStatus: string // CLEAN|DIRTY|BLOCKED|BEHIND|DRAFT|HAS_HOOKS|UNKNOWN|UNSTABLE
+  additions: number
+  deletions: number
+  changedFiles: number
+
+  // people/metadata
+  labels: GhLabel[]
+  assignees: string[] // logins
+  reviewRequests: GhReviewRequest[]
+  reviews: GhReview[] // per-reviewer state, from gh pr view's own reviews field
+  reviewDecision: GhPullRequest['reviewDecision'] // aggregate, reuses existing normalizer
+  milestone: GhMilestone | null
+
+  // content
+  commits: GhCommit[]
+  checks: GhCheck[] // un-reduced per-check list (Checks tab)
+  comments: {
+    general: GhGeneralComment[] // gh pr view --json comments
+    // Line-anchored review comments are Phase 4 (separate `gh api
+    // .../pulls/{n}/comments` call) — left empty here, not fetched in 3b.
+    review: []
+  }
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

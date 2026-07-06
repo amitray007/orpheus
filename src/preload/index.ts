@@ -35,6 +35,7 @@ import type {
   FilesMutationResult,
   GitDiffResult,
   GhPullRequest,
+  GhPullRequestDetail,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -474,7 +475,13 @@ const api = {
       invoke('github:prForBranch', { cwd, branch }),
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
-    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb)
+    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb),
+    // Phase 3b — rich PR detail (Details/Commits/Checks tabs, Phase 4
+    // general comments). Manual-refresh only; no push channel (see
+    // docs/learnings/gh-pr-detail.md — avoid reintroducing the Git tab's
+    // continuous-refetch flicker).
+    prDetail: (workspaceId: string): Promise<GhPullRequestDetail | null> =>
+      invoke('github:prDetail', { workspaceId })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),
