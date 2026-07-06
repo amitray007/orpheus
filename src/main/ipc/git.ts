@@ -8,7 +8,10 @@
 // files.ts's channels, it resolves `workspaceId` -> cwd itself via an
 // injected `getWorkspaceCwd`, rather than taking `{ cwd }` directly the way
 // the other git:* channels do (those are called by the renderer with a cwd
-// it already has from the workspace record / gitStore).
+// it already has from the workspace record / gitStore). git:logForWorkspace
+// (Phase 3c) is the same shape, added for CommitsTab.tsx's no-PR fallback,
+// which — like the rest of the Workbench Git tab — only ever has a
+// `workspaceId`, never a raw cwd.
 // ---------------------------------------------------------------------------
 
 import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
@@ -50,6 +53,14 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('git:init', (_e, { workspaceId }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return cwd ? gitInit(cwd) : Promise.resolve({ ok: false, error: 'Workspace not found' })
+  })
+
+  // Workbench Git tab, Phase 3c — Commits sub-tab's no-PR fallback (local
+  // commits on a branch with no PR yet). Resolves workspaceId -> cwd like
+  // git:diff/git:init above, then defers to the existing listCommits.
+  handle('git:logForWorkspace', (_e, { workspaceId, limit }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return Promise.resolve(cwd ? listCommits(cwd, { limit }) : [])
   })
 
   // ---------------------------------------------------------------------------

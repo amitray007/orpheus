@@ -311,6 +311,12 @@ export interface InvokeChannelMap {
   // rejects) so the renderer can show inline success/failure feedback. See
   // src/main/git.ts's gitInit + src/main/ipc/git.ts.
   'git:init': { req: [{ workspaceId: string }]; res: { ok: true } | { ok: false; error: string } }
+  // Workbench Git tab — Phase 3c Commits sub-tab's no-PR fallback (branch has
+  // local commits but no PR yet). Resolves `workspaceId` -> cwd like
+  // git:diff/git:init above, rather than taking a bare `cwd` like the
+  // existing `git:log` — CommitsTab.tsx only ever has `workspaceId`, same as
+  // GitTab's other props, and has no other route to a raw cwd string.
+  'git:logForWorkspace': { req: [{ workspaceId: string; limit?: number }]; res: GitCommit[] }
   // Workbench Files tab — file tree + viewer data sources (Stage A). All three
   // resolve the workspace's cwd from `workspaceId` internally; res types live
   // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.

@@ -436,7 +436,11 @@ const api = {
     // Git-init button. Resolves the workspace's cwd internally, like diff
     // above. Total (never rejects) — see src/main/git.ts's gitInit.
     init: (workspaceId: string): Promise<{ ok: true } | { ok: false; error: string }> =>
-      invoke('git:init', { workspaceId })
+      invoke('git:init', { workspaceId }),
+    // Workbench Git tab (Phase 3c) — Commits sub-tab's no-PR fallback.
+    // Resolves the workspace's cwd internally, like diff/init above.
+    logForWorkspace: (workspaceId: string, limit?: number): Promise<GitCommit[]> =>
+      invoke('git:logForWorkspace', { workspaceId, limit })
   },
   // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
   // from `workspaceId` in the main process; see src/main/ipc/files.ts.
