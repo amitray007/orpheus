@@ -19,13 +19,31 @@
 // toggle (diffStyle), a worktree/local chip, and a [Diff | Commits] sub-tab
 // strip (Commits is a Phase-3 stub).
 //
-// Live refresh: subscribes to the EXISTING `git:statusChanged` and
-// `files:changed` pushes (already fired by src/main/git.ts's .git watcher —
-// started unconditionally on terminal:mount — and filesWatcher.ts) rather
-// than starting its own watcher. filesWatcher.ts enforces "at most one
-// active watcher app-wide", which is already owned by whichever Files tab is
-// open — GitTab must NOT call files:watchStart itself, or it would fight
-// that single-slot invariant.
+// Live refresh: subscribes to `git:statusChanged` (src/main/git.ts's .git
+// watcher — started unconditionally on terminal:mount, covers branch/index
+// changes) AND `files:changed` (filesWatcher.ts — working-tree file
+// create/edit/delete). git.ts's watcher alone is NOT enough: it only covers
+// `.git/HEAD` + `.git/index`, so a bare file save never touches either and
+// never fires it — the tab would only refresh incidentally (e.g. via a
+// staging operation) and feel slow/stale for a plain edit.
+//
+// PERF FIX (this pass): GitTab now DRIVES filesWatcher.ts itself — starting
+// the working-tree watch on mount and stopping it on unmount, exactly like
+// FilesTab.tsx does (see its own watchStart/watchStop effect). This used to
+// be explicitly disallowed here ("must NOT call files:watchStart, would
+// fight the single-active invariant") because filesWatcher.ts allows only
+// ONE active watcher app-wide. That reasoning no longer blocks this: the Git
+// and Files tabs are mutually exclusive Workbench tabs (WorkbenchPanel mounts
+// at most one of them at a time), so whichever one is active owns the
+// single watcher slot for as long as it's shown, and there is never a moment
+// both are mounted to contend over it. Unmount (tab switch, workspace
+// change) always stops the watch it started, so the handoff to the other
+// tab's own watchStart is clean.
+//
+// Combined with the idempotent applyDiff no-op below (diffSignature), this
+// is what makes updates fast WITHOUT reintroducing the flicker loop that was
+// just fixed: the watcher now fires promptly on a real change, but an
+// unchanged git:diff result is still a complete no-op (no re-render).
 //
 // Gating: mounted only while the Git tab is the active, non-dormant
 // Workbench tab (see WorkbenchPanel) — git:diff is never fetched while the
@@ -116,11 +134,19 @@ const TREE_GIT_STATUS_VARS = {
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
 // Live-refresh debounce — coalesces bursts from either push source (a save
-// touching several files, a `git add -A`) into one git:diff refetch. Matches
-// the spirit of git.ts's own GIT_WATCH_DEBOUNCE_MS (350ms) and
-// filesWatcher.ts's FILES_WATCH_DEBOUNCE_MS (200ms); this sits between the
-// two since it's reacting to either.
-const REFRESH_DEBOUNCE_MS = 200
+// touching several files, a `git add -A`) into one git:diff refetch.
+//
+// Perf fix (this pass): GitTab now drives filesWatcher.ts itself (see the
+// watchStart/watchStop effect below), so a working-tree create/edit fires
+// `files:changed` immediately instead of waiting on git.ts's much coarser
+// `.git/HEAD`+`.git/index` watch. Tuned down from the original 200ms to
+// 130ms now that the fast path is wired — still enough to coalesce a burst
+// of files:changed events from a multi-file save/`git add -A` into one
+// git:diff round-trip, without feeling laggy. The idempotent applyDiff
+// no-op (see diffSignature below) is what keeps this safe at rest — a
+// shorter debounce just means a REAL change reaches the screen sooner, it
+// doesn't reintroduce the flicker loop that fix addressed.
+const REFRESH_DEBOUNCE_MS = 130
 
 export type DiffStyle = 'unified' | 'split'
 
@@ -806,14 +832,35 @@ export function GitTab({
     })
   }, [workspaceId, applyDiff])
 
+  // Working-tree watcher (src/main/filesWatcher.ts) — see the module header's
+  // PERF FIX note. Mirrors FilesTab.tsx's own watchStart/watchStop effect
+  // exactly: start the main-process watch on mount (or workspaceId change),
+  // stop it on unmount, same .catch-only error handling (a failed
+  // start/stop here just means live-refresh degrades to the git.ts-only
+  // signal, not a crash). GitTab is only ever mounted while it's the active
+  // Workbench tab (see the module header's Gating note), so this start/stop
+  // is exactly scoped to "while the Git tab is showing" — same lifecycle
+  // FilesTab uses for "while the Files tab is showing". The two tabs being
+  // mutually exclusive is what makes both safely calling watchStart/watchStop
+  // non-conflicting: at most one of them is ever mounted at a time, so at
+  // most one of them ever holds filesWatcher's single-active slot.
+  useEffect(() => {
+    window.api.files
+      .watchStart(workspaceId)
+      .catch((e) => console.error('[GitTab] watchStart failed:', e))
+    return () => {
+      window.api.files
+        .watchStop(workspaceId)
+        .catch((e) => console.error('[GitTab] watchStop failed:', e))
+    }
+  }, [workspaceId])
+
   // Live refresh: git:statusChanged (branch/index change — src/main/git.ts's
   // .git watcher, already running unconditionally since terminal:mount) and
-  // files:changed (working-tree edits — filesWatcher.ts, active only while a
-  // Files tab is open elsewhere) both indicate the working tree may have
-  // moved; refetch git:diff, debounced so a burst of either collapses into
-  // one round-trip. Deliberately does NOT call files:watchStart — that would
-  // fight filesWatcher.ts's single-active-watcher invariant, which whichever
-  // Files tab is open already owns.
+  // files:changed (working-tree edits — filesWatcher.ts, now driven by THIS
+  // tab via the watchStart/watchStop effect above) both indicate the working
+  // tree may have moved; refetch git:diff, debounced so a burst of either
+  // collapses into one round-trip.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => {
