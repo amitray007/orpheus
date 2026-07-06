@@ -83,6 +83,38 @@
 // `.git` dir immediately, so this doesn't rely on live-refresh); `repo &&
 // files.length === 0` → a centered "No changes" empty state; otherwise the
 // unchanged Phase-1 tree+diff view.
+//
+// Phase 3a — PR detection + slim header (docs/brainstorms/
+// 2026-07-06-git-tab-requirements.md "Full-PR experience" → slim header;
+// mockup's `.pr-header--slim`). NO new IPC needed: `startGitWatch`
+// (src/main/git.ts, started unconditionally on `terminal:mount` — see
+// index.ts) already resolves the current branch's PR via `getPrForBranch`
+// and pushes it over the existing `github:prChanged` channel — once on the
+// initial watch registration, and again every time the branch changes. So
+// this component just subscribes to `window.api.github.onPrChanged` (same
+// pattern as its existing `git:statusChanged` subscription) and stores
+// whatever arrives; there's no separate fetch call to make or cwd to plumb
+// down. `pr: null` (no PR / no `gh` / no remote / detached HEAD) renders
+// the header as it did before this phase — the slim header is additive,
+// gated entirely on `pr !== null`.
+//
+// Slim header fields, matching the mockup's `renderPrHeader` 1:1: a colored
+// status badge (open/draft/merged/closed → the app's own `--color-gh-*`
+// tokens, reusing `PrChip`'s STATE_COLOR/STATE_LABEL rather than
+// re-deriving a second copy), the PR title (clickable → `openPrUrl`, no
+// separate link button/icon per the requirements doc), `#<number>`, and the
+// branch. `GhPullRequest` doesn't carry a base-ref field (see
+// shared/types.ts) — the doc explicitly allows "best-effort" here for 3a,
+// so the arrow only renders when a base is available; today that's never,
+// so it's just the branch chip alone until a future phase threads
+// `baseRefName` through `getPrForBranch`. The existing worktree chip stays
+// in the header row unchanged.
+//
+// Tab-strip growth: `[Diff | Commits]` becomes `[Diff | Commits | Details |
+// Checks]` once `pr !== null` — Details/Checks are stubs this phase
+// ("Coming soon" placeholders, same convention the Commits stub already
+// uses); 3c/3d build their real content. No PR → the strip (and the rest of
+// the tab) is completely unchanged from Phase 1/2.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -90,11 +122,28 @@ import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
 import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
 import { PatchDiff } from '@pierre/diffs/react'
-import { List, Rows, Columns, MagnifyingGlass, GitBranch, CheckCircle } from '@phosphor-icons/react'
-import type { FileImage, GitDiffFile, GitStatusEntry } from '@shared/types'
+import {
+  List,
+  Rows,
+  Columns,
+  MagnifyingGlass,
+  GitBranch,
+  CheckCircle,
+  GitMerge,
+  GitPullRequest,
+  X
+} from '@phosphor-icons/react'
+import type {
+  FileImage,
+  GhPullRequest,
+  GhPullRequestState,
+  GitDiffFile,
+  GitStatusEntry
+} from '@shared/types'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
+import { openPrUrl } from '../../lib/overlayClient'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
 import { useImageZoomPan } from './useImageZoomPan'
@@ -187,20 +236,25 @@ function isImagePath(path: string): boolean {
 
 // --- Sub-tab strip -----------------------------------------------------------
 
-type GitSubTab = 'diff' | 'commits'
+type GitSubTab = 'diff' | 'commits' | 'details' | 'checks'
 
 interface SubTabStripProps {
   active: GitSubTab
   onChange: (tab: GitSubTab) => void
+  /** Phase 3a: the strip grows from [Diff|Commits] to [Diff|Commits|Details|
+   *  Checks] once a PR is detected for the current branch — Details/Checks
+   *  are PR-only surfaces (requirements doc's "Full-PR experience" tabs). */
+  hasPr: boolean
 }
 
-/** [Diff | Commits] segmented control — matches FilesTab's ModeToggle visual
- *  language (compact pill segments) but only two segments, no disabled state
- *  needed. Commits renders a stub in this phase (Phase 3 builds it out); no
- *  Details/Checks segments — those are PR-only, later phases. */
-function SubTabStrip({ active, onChange }: SubTabStripProps): React.JSX.Element {
+/** [Diff | Commits] (or, with a PR, [Diff | Commits | Details | Checks])
+ *  segmented control — matches FilesTab's ModeToggle visual language (compact
+ *  pill segments) but no disabled state needed. Commits/Details/Checks all
+ *  render stubs today (Phase 3b/3c/3d build them out). */
+function SubTabStrip({ active, onChange, hasPr }: SubTabStripProps): React.JSX.Element {
   const seg = (value: GitSubTab, label: string): React.JSX.Element => (
     <button
+      key={value}
       type="button"
       onClick={() => onChange(value)}
       aria-pressed={active === value}
@@ -218,6 +272,8 @@ function SubTabStrip({ active, onChange }: SubTabStripProps): React.JSX.Element 
     <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-overlay/60 border border-border-default/60">
       {seg('diff', 'Diff')}
       {seg('commits', 'Commits')}
+      {hasPr && seg('details', 'Details')}
+      {hasPr && seg('checks', 'Checks')}
     </div>
   )
 }
@@ -289,6 +345,89 @@ function WorktreeChip({
     >
       {isWorktree ? `worktree · ${worktreeBranch ?? '?'}` : 'local'}
     </span>
+  )
+}
+
+// --- PR slim header (Phase 3a) ------------------------------------------------
+
+// Badge color/label/icon per PR state — same vocabulary PrChip.tsx already
+// established (github/PrChip.tsx's STATE_COLOR/STATE_LABEL) for the sidebar/
+// kanban/title-bar chip. Duplicated here as small literals rather than
+// imported: PrChip's own component renders its OWN compact pill shape
+// (rounded-full pixel badge, tokenized bg colors) that doesn't match the
+// mockup's `.pr-badge` (solid color chip, white text, pill icon+label) this
+// header specifically asks for — see docs/brainstorms/git-tab-mockup's
+// `renderPrHeader`. Same "duplicated small literal, independently editable"
+// rationale the module already applies to TREE_THEME/IMAGE_EXTENSIONS.
+const PR_BADGE_BG: Record<GhPullRequestState, string> = {
+  open: 'bg-gh-open',
+  draft: 'bg-gh-draft',
+  merged: 'bg-gh-merged',
+  closed: 'bg-gh-closed'
+}
+
+const PR_BADGE_LABEL: Record<GhPullRequestState, string> = {
+  open: 'Open',
+  draft: 'Draft',
+  merged: 'Merged',
+  closed: 'Closed'
+}
+
+function PrBadgeIcon({ state }: { state: GhPullRequestState }): React.JSX.Element {
+  if (state === 'merged') return <GitMerge size={11} weight="fill" />
+  if (state === 'closed') return <X size={11} weight="bold" />
+  return <GitPullRequest size={11} weight={state === 'draft' ? 'regular' : 'fill'} />
+}
+
+/** Full-PR slim header (requirements doc's "Full-PR experience" → slim
+ *  header; mockup's `.pr-header--slim`/`renderPrHeader`): status badge, a
+ *  clickable title (→ `openPrUrl`, no separate link button per the doc),
+ *  `#<number>`, and the current branch. Rendered ABOVE the existing tab
+ *  header row, only while a PR is detected for this branch — `pr === null`
+ *  (no PR / no `gh` / no remote / detached HEAD) means this never mounts and
+ *  the rest of the tab is visually unchanged from Phase 1/2.
+ *
+ *  Base branch: `GhPullRequest` (shared/types.ts) has no base-ref field
+ *  today, so — per the doc's "keep 3a simple: branch shown; base
+ *  best-effort" — this only shows the head branch; a future pass can thread
+ *  `baseRefName` through `getPrForBranch` and add the mockup's
+ *  `branch → base` arrow here without changing this component's shape. */
+function PrSlimHeader({
+  pr,
+  branch
+}: {
+  pr: GhPullRequest
+  branch: string | null
+}): React.JSX.Element {
+  return (
+    <div className="flex-shrink-0 px-3.5 py-2.5 border-b border-border-default bg-surface-raised">
+      <div className="flex items-center gap-2">
+        <span
+          className={`flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-bold px-1.5 py-0.5 rounded-full text-white tracking-wide ${PR_BADGE_BG[pr.state]}`}
+        >
+          <PrBadgeIcon state={pr.state} />
+          {PR_BADGE_LABEL[pr.state]}
+        </span>
+        <div className="flex-1 min-w-0">
+          <button
+            type="button"
+            onClick={() => openPrUrl(pr.url)}
+            title="Open in browser"
+            className="block w-full text-left text-[15px] font-semibold text-text-primary truncate cursor-pointer hover:underline"
+          >
+            {pr.title}
+          </button>
+          <div className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-text-muted flex-wrap">
+            <span>#{pr.number}</span>
+            {branch !== null && (
+              <span className="font-mono text-[11px] px-1.5 py-0 rounded bg-surface-overlay border border-border-default text-text-secondary">
+                {branch}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -793,6 +932,11 @@ export function GitTab({
   const [branch, setBranch] = useState<string | null>(null)
   const [gitInitRunning, setGitInitRunning] = useState(false)
   const [gitInitError, setGitInitError] = useState<string | null>(null)
+  // Phase 3a: the PR for the current branch, or null (no PR / no `gh` / no
+  // remote / detached HEAD). Populated entirely by the existing
+  // `github:prChanged` push — see the module header's Phase 3a note for why
+  // no separate fetch call is needed here.
+  const [pr, setPr] = useState<GhPullRequest | null>(null)
 
   // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
   // runs through nextSelection so the tab auto-selects the first changed
@@ -827,6 +971,19 @@ export function GitTab({
     setFiles([])
     setSelectedPath(null)
     setGitInitError(null)
+    // A new workspace starts with no known PR until its own
+    // `github:prChanged` push arrives (see the subscription effect below) —
+    // otherwise a switch from a PR'd workspace to a non-PR one would keep
+    // showing the PREVIOUS workspace's slim header/tab-strip growth.
+    setPr(null)
+    // A PR-only sub-tab (Details/Checks) carried over from the PREVIOUS
+    // workspace has no backing strip segment here (hasPr is about to be
+    // false until/unless this workspace's own PR push says otherwise) —
+    // fall back to Diff. Mirrors the same fallback the onPrChanged(null)
+    // path below applies for an in-place PR-loss on the SAME workspace;
+    // this covers the workspace-switch case that push wouldn't necessarily
+    // fire for (CodeRabbit finding, fixed).
+    setSubTab((prev) => (prev === 'details' || prev === 'checks' ? 'diff' : prev))
     // A new workspace has nothing in common with whatever signature the
     // PREVIOUS workspace last applied — reset so applyDiff can't mistake a
     // coincidentally-identical result (e.g. two different clean repos both
@@ -899,6 +1056,31 @@ export function GitTab({
     }
   }, [workspaceId, applyDiff])
 
+  // Phase 3a: PR detection. `startGitWatch` (src/main/git.ts, running
+  // unconditionally since terminal:mount) already resolves the current
+  // branch's PR and pushes it over `github:prChanged` — once on initial
+  // watch registration and again on every branch change — so this is a pure
+  // subscribe, no fetch call of its own. Filtered to this workspace the same
+  // way the git:statusChanged/files:changed subscriptions above are.
+  useEffect(() => {
+    return window.api.github.onPrChanged((e) => {
+      if (e.workspaceId !== workspaceId) return
+      setPr(e.pr)
+      // If the PR just disappeared (branch switched to one with no PR, or
+      // the PR was closed/deleted) while a PR-only sub-tab (Details/Checks)
+      // was active, the strip segment backing it is about to unmount out
+      // from under the user — fall back to Diff rather than leaving
+      // `subTab` pointed at a segment that no longer exists in the strip.
+      // Done here (inside the external-event callback) rather than a
+      // separate effect keyed on `pr`/`subTab`, since setState directly in
+      // an effect body — as opposed to an event-driven callback like this
+      // one — is a lint error (cascading-render risk).
+      if (e.pr === null) {
+        setSubTab((prev) => (prev === 'details' || prev === 'checks' ? 'diff' : prev))
+      }
+    })
+  }, [workspaceId])
+
   // Phase 2 Git-init: runs git:init, then — regardless of outcome — clears
   // the running flag; on success, explicitly refetches git:diff (a brand-new
   // `.git` dir may not be picked up by the existing watchers immediately, so
@@ -960,6 +1142,7 @@ export function GitTab({
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+      {pr !== null && <PrSlimHeader pr={pr} branch={branch} />}
       <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
         {showDiffControls && (
           <>
@@ -979,12 +1162,13 @@ export function GitTab({
         )}
         <div className="ml-auto flex items-center gap-2">
           <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
-          <SubTabStrip active={subTab} onChange={setSubTab} />
+          <SubTabStrip active={subTab} onChange={setSubTab} hasPr={pr !== null} />
         </div>
       </div>
-      {subTab === 'commits' ? (
-        <DiffMessage text="Commits — coming soon" />
-      ) : (
+      {subTab === 'commits' && <DiffMessage text="Commits — coming soon" />}
+      {subTab === 'details' && <DiffMessage text="Details — coming soon" />}
+      {subTab === 'checks' && <DiffMessage text="Checks — coming soon" />}
+      {subTab === 'diff' && (
         <GitTabBody
           loading={loading}
           repo={repo}
