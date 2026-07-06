@@ -208,6 +208,35 @@
 // button calls a still-stubbed `onSubmit` (GitTab's `submitReviewComment` —
 // logs the draft and closes the composer) rather than posting anywhere;
 // Phase 4c wires that to the real GitHub-post IPC.
+//
+// Phase 5 (this pass, live-QA follow-up) — two comment-UX fixes:
+//   FIX 1 — LOCAL comments now work in WORKING-TREE mode too, not just
+//     PR-diff mode. `composers`/`localWiring` are now passed to
+//     DiffContentPane UNCONDITIONALLY (both modes) instead of only while
+//     `diffMode === 'pr'` — the gutter "+"/select-to-comment affordance and
+//     the local-comment cards (resolve/delete) now render on the
+//     working-tree diff exactly like they already did on the PR diff.
+//     GitHub comments stay PR-diff-only (`reviewThreads` is still `null` in
+//     working-tree mode, unchanged) since they anchor to the PR, not the
+//     working tree. The new `allowGithubComments` prop (`diffMode === 'pr'`)
+//     gates whether the pending-composer's [GitHub | Local] SourceToggle
+//     renders at all -- in working-tree mode there's no PR to post a GitHub
+//     comment to, so the composer is local-only (no toggle) rather than
+//     showing a toggle with a disabled/meaningless GitHub option.
+//     `submitComment`'s dispatcher now also checks `diffModeRef` (not just
+//     `commentSourceRef`) so a stale 'github' toggle selection carried over
+//     from a previous PR-diff-mode session can never route a
+//     working-tree-mode submit to `submitGithubReviewComment` (which has no
+//     PR to post against there).
+//   FIX 2 -- the gutter "+" is GitHub-style already (Pierre's
+//     `renderGutterUtility` mounts ONE slot per file that the underlying
+//     custom element repositions to track the currently-hovered row -- see
+//     GutterAddCommentButton's doc comment) but LOOKED like an always-on
+//     accent-filled pill rather than a subtle affordance that only reads as
+//     "accented" on hover. CommentComposer.css's `.gcc-gutter-add` is now
+//     subtle by default (muted icon, transparent bg) and only turns
+//     accent-filled on `:hover`/`:focus-visible` of the button itself --
+//     purely a CSS change, no positioning logic touched.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -510,7 +539,15 @@ function renderReviewCommentAnnotation(
   onRefetchThreads: () => void,
   onCancelComposer?: (id: string) => void,
   onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>,
-  localWiring?: LocalCommentWiring
+  localWiring?: LocalCommentWiring,
+  // Phase 5 FIX 1: whether the pending-composer's [GitHub | Local]
+  // SourceToggle should render at all -- only true in PR-diff mode (there's
+  // a PR to post a GitHub comment to). In working-tree mode this is false,
+  // so `source`/`onSourceChange` are omitted entirely (both undefined) rather
+  // than passed-but-pointless: CommentComposer already treats `source ===
+  // undefined` as "no toggle, local-only composer" (see its own doc
+  // comment) -- exactly the working-tree-mode UX this fix wants.
+  allowGithub = false
 ): React.ReactNode {
   if (annotation.metadata.kind === 'pending') {
     const { composer } = annotation.metadata
@@ -519,8 +556,8 @@ function renderReviewCommentAnnotation(
         draft={composer}
         onCancel={() => onCancelComposer?.(composer.id)}
         onSubmit={(draft) => onSubmitComposer?.(draft) ?? Promise.resolve(NO_SUBMIT_WIRED)}
-        source={localWiring?.commentSource}
-        onSourceChange={localWiring?.onCommentSourceChange}
+        source={allowGithub ? localWiring?.commentSource : undefined}
+        onSourceChange={allowGithub ? localWiring?.onCommentSourceChange : undefined}
       />
     )
   }
@@ -1160,16 +1197,19 @@ interface DiffContentPaneProps {
   /** Phase 4a — PR review-comment threads for the CURRENTLY selected file
    *  only (already filtered by path), or null when annotations don't apply
    *  (working-tree mode, or no PR-diff comments loaded yet/failed). GitTab
-   *  only ever passes a non-null list while `diffMode === 'pr'` — comments
-   *  anchor to the PR diff, not the live working tree (see
-   *  docs/learnings/pr-comments.md's Q1 gap note). */
+   *  only ever passes a non-null list while `diffMode === 'pr'` — GitHub
+   *  comments anchor to the PR diff, not the live working tree (see
+   *  docs/learnings/pr-comments.md's Q1 gap note) — this stays PR-diff-only
+   *  even after Phase 5's FIX 1 below. */
   reviewThreads: readonly GhReviewCommentThread[] | null
   /** Phase 4b — the "add a comment" affordance (gutter "+" + select-to-
-   *  comment) is PR-diff-mode-only, same reasoning as reviewThreads: a
-   *  working-tree diff has no PR to anchor a posted comment to. `null` here
-   *  means "don't wire the affordance at all" (working-tree mode) rather
-   *  than "no composers open" — GitTab passes the real composers object only
-   *  while `diffMode === 'pr'`. */
+   *  comment). `null` means "don't wire the affordance at all" (no diff
+   *  loaded); a non-null value means it's ALWAYS available now (Phase 5 FIX
+   *  1: previously PR-diff-mode-only, since a GitHub post has nothing to
+   *  anchor to without a PR — but a LOCAL comment (reviews:add) needs no PR
+   *  at all, so GitTab now passes this unconditionally in both modes; see
+   *  `allowGithubComments` below for how the composer still knows whether
+   *  GitHub is actually a valid destination). */
   composers: ReviewComposerWiring | null
   /** Phase 4c — refetches `reviewThreads` (GitTab's own `fetchReviewComments`
    *  helper, bound to `setReviewThreads`). Passed down to ReviewCommentThread
@@ -1181,17 +1221,26 @@ interface DiffContentPaneProps {
   onRefetchThreads: () => void
   /** Phase 4d — LOCAL review comments for the CURRENTLY selected file only
    *  (GitTab passes the full per-workspace list; `annotationsForFile` filters
-   *  by path the same way it already does for threads/composers). Unlike
-   *  reviewThreads, this is fetched (and shown) in PR-diff mode alongside
-   *  GitHub comments — the priority scope per the task — so it's a plain
-   *  array (never null): an empty list just means "no local comments on this
-   *  workspace yet", not "not applicable". */
+   *  by path the same way it already does for threads/composers). A plain
+   *  array (never null) in EITHER mode as of Phase 5 FIX 1 — local comments
+   *  have no PR requirement, so there's no "not applicable" state, only
+   *  "empty so far", in both working-tree and PR-diff mode. */
   localComments: readonly LocalReviewComment[]
   /** Phase 4d — resolve/delete actions for a LOCAL comment's card, plus the
    *  source toggle wiring for the NEW-comment composer (GitHub vs Local —
-   *  see CommentComposer.tsx's own SourceToggle). `null` in working-tree mode,
-   *  same gating as `composers` above (no PR-diff composer to toggle there). */
+   *  see CommentComposer.tsx's own SourceToggle). Phase 5 FIX 1: passed
+   *  unconditionally now (both modes), same reasoning as `composers` above —
+   *  `allowGithubComments` (not this being non-null) is what actually gates
+   *  whether the SourceToggle itself renders. */
   localWiring: LocalCommentWiring | null
+  /** Phase 5 FIX 1 — `diffMode === 'pr'`: whether GitHub is a valid
+   *  destination for a NEW comment right now. Threaded down (rather than
+   *  inferring it from `reviewThreads !== null`, which can legitimately be
+   *  null in PR-diff mode too, e.g. a failed fetch) so
+   *  renderReviewCommentAnnotation can omit the pending composer's [GitHub |
+   *  Local] SourceToggle entirely in working-tree mode — there's no PR to
+   *  post a GitHub comment to there, so the composer is local-only. */
+  allowGithubComments: boolean
 }
 
 /** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
@@ -1470,13 +1519,13 @@ function buildDiffOptions(
  *  (current on-disk image via files:readImage); every other binary file
  *  gets a plain "no preview" placeholder.
  *
- *  Phase 4b: the gutter "+"/select-to-comment affordance (renderGutterUtility
- *  + the select-to-comment option from buildDiffOptions) is wired ONLY when
- *  `composers` is non-null — i.e. PR-diff mode (see DiffContentPaneProps'
- *  doc comment); working-tree mode passes `composers={null}` from GitTab and
- *  gets exactly the pre-4b <PatchDiff>, unchanged. See
- *  GutterAddCommentButton's doc comment for the bug fix (this pass) to how
- *  the gutter "+" click itself is wired. */
+ *  Phase 4b/5: the gutter "+"/select-to-comment affordance
+ *  (renderGutterUtility + the select-to-comment option from
+ *  buildDiffOptions) is wired whenever `composers` is non-null — as of
+ *  Phase 5 FIX 1 that's BOTH modes (see DiffContentPaneProps' doc comment):
+ *  working-tree mode gets a local-only composer, PR-diff mode gets the full
+ *  [GitHub | Local] composer. See GutterAddCommentButton's doc comment for
+ *  the bug fix (Phase 4c) to how the gutter "+" click itself is wired. */
 function DiffContentPane({
   workspaceId,
   file,
@@ -1487,7 +1536,8 @@ function DiffContentPane({
   composers,
   onRefetchThreads,
   localComments,
-  localWiring
+  localWiring,
+  allowGithubComments
 }: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -1497,9 +1547,9 @@ function DiffContentPane({
     }
     return <DiffMessage text="Binary file — no preview" />
   }
-  // Phase 4a/4b/4d: only computed while EITHER reviewThreads is non-null
+  // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
   // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
-  // localWiring is non-null (PR-diff mode, per the task's scope) —
+  // localWiring is non-null (now true in BOTH modes as of Phase 5 FIX 1) —
   // annotationsForFile itself returns [] for a file with no threads/
   // composers/local comments, which PatchDiff renders exactly like an
   // omitted lineAnnotations prop (a plain diff, no annotations).
@@ -1522,7 +1572,8 @@ function DiffContentPane({
             onRefetchThreads,
             composers?.close,
             composers?.onSubmit,
-            localWiring ?? undefined
+            localWiring ?? undefined,
+            allowGithubComments
           )
         }
         renderGutterUtility={
@@ -1745,6 +1796,12 @@ export function GitTab({
   // (not the composer itself) so it survives a composer being closed/
   // reopened at a different line within the same session, matching how
   // diffStyle/diffMode are already lifted up rather than kept per-composer.
+  // Phase 5: the toggle itself only ever RENDERS in PR-diff mode
+  // (`allowGithubComments`/`allowGithub` gating in renderReviewCommentAnnotation)
+  // — this value can still carry a stale 'github' selection across a mode
+  // flip since it's not reset on `diffMode` change, which is exactly why
+  // `submitComment` below ALSO checks `diffModeRef` rather than trusting
+  // this alone.
   const [commentSource, setCommentSource] = useState<CommentSource>('github')
   // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
   // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
@@ -2327,13 +2384,25 @@ export function GitTab({
   // toggle value without needing it as a dependency of every composer-open
   // closure — same "latest value via ref" pattern the file already uses for
   // diffModeRef/prRef.
+  //
+  // Phase 5 FIX 1: also consults `diffModeRef` — working-tree mode's
+  // composer never renders the SourceToggle at all (see
+  // renderReviewCommentAnnotation's `allowGithub` gating), but
+  // `commentSource` is app-session state that can carry a stale 'github'
+  // value over from a PRIOR PR-diff-mode session on the same workspace (the
+  // toggle isn't reset just because the mode flipped — see its own
+  // declaration comment). Without this check, submitting a working-tree
+  // composer right after leaving PR-diff mode with 'github' selected would
+  // silently attempt `submitGithubReviewComment` against a mode with no PR
+  // diff open. `diffModeRef.current !== 'pr'` always forces the local path,
+  // regardless of the toggle's last value.
   const commentSourceRef = useRef(commentSource)
   useEffect(() => {
     commentSourceRef.current = commentSource
   }, [commentSource])
   const submitComment = useCallback(
     (draft: CommentDraft): Promise<GhSubmitResult> =>
-      commentSourceRef.current === 'local'
+      diffModeRef.current !== 'pr' || commentSourceRef.current === 'local'
         ? submitLocalComment(draft)
         : submitGithubReviewComment(draft),
     [submitLocalComment, submitGithubReviewComment]
@@ -2361,11 +2430,11 @@ export function GitTab({
     [refetchLocalReviews]
   )
 
-  // Phase 4b: the wiring DiffContentPane needs to drive the gutter "+"/
-  // select-to-comment affordance — only meaningful in PR-diff mode (see
-  // DiffContentPaneProps' `composers` doc comment); GitTabBody passes `null`
-  // through in working-tree mode so DiffContentPane never wires the
-  // interaction options at all there.
+  // Phase 4b/5: the wiring DiffContentPane needs to drive the gutter "+"/
+  // select-to-comment affordance — meaningful in BOTH modes as of Phase 5
+  // FIX 1 (see DiffContentPaneProps' `composers` doc comment); `submitComment`
+  // itself is what routes a working-tree submit to the local store only
+  // (see its own doc comment on the `diffModeRef` check).
   const reviewComposerWiring: ReviewComposerWiring = useMemo(
     () => ({
       composers: openComposers,
@@ -2521,10 +2590,15 @@ export function GitTab({
           gitInitError={gitInitError}
           diffMode={diffMode}
           reviewThreads={reviewThreads}
-          composers={diffMode === 'pr' ? reviewComposerWiring : null}
+          // Phase 5 FIX 1: unconditional in both modes now — a local comment
+          // needs no PR, so the gutter "+"/select-to-comment affordance and
+          // the local-comment cards work on the working-tree diff too. See
+          // DiffContentPaneProps' own doc comment.
+          composers={reviewComposerWiring}
           onRefetchThreads={refetchReviewThreads}
           localComments={localReviews}
-          localWiring={diffMode === 'pr' ? localCommentWiring : null}
+          localWiring={localCommentWiring}
+          allowGithubComments={diffMode === 'pr'}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -2562,9 +2636,9 @@ interface GitTabBodyProps {
   /** Phase 4a — see DiffContentPaneProps' own doc comment; threaded straight
    *  through to DiffContentPane. */
   reviewThreads: readonly GhReviewCommentThread[] | null
-  /** Phase 4b — see DiffContentPaneProps' own doc comment; threaded straight
-   *  through to DiffContentPane. Already `null` in working-tree mode (GitTab
-   *  derives this from `diffMode` before passing it down). */
+  /** Phase 4b/5 — see DiffContentPaneProps' own doc comment; threaded
+   *  straight through to DiffContentPane. Non-null in BOTH modes as of
+   *  Phase 5 FIX 1 (a local comment needs no PR). */
   composers: ReviewComposerWiring | null
   /** Phase 4c — see DiffContentPaneProps' own doc comment; threaded straight
    *  through to DiffContentPane. */
@@ -2573,10 +2647,13 @@ interface GitTabBodyProps {
    *  through to DiffContentPane (the full per-workspace list, unfiltered —
    *  DiffContentPane/annotationsForFile filter by the selected file's path). */
   localComments: readonly LocalReviewComment[]
-  /** Phase 4d — see DiffContentPaneProps' own doc comment; threaded straight
-   *  through to DiffContentPane. Already `null` in working-tree mode, same
-   *  gating as `composers` above. */
+  /** Phase 4d/5 — see DiffContentPaneProps' own doc comment; threaded
+   *  straight through to DiffContentPane. Non-null in BOTH modes as of
+   *  Phase 5 FIX 1. */
   localWiring: LocalCommentWiring | null
+  /** Phase 5 FIX 1 — see DiffContentPaneProps' own doc comment; threaded
+   *  straight through to DiffContentPane. */
+  allowGithubComments: boolean
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -2610,6 +2687,7 @@ function GitTabBody({
   onRefetchThreads,
   localComments,
   localWiring,
+  allowGithubComments,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -2661,6 +2739,7 @@ function GitTabBody({
           onRefetchThreads={onRefetchThreads}
           localComments={localComments}
           localWiring={localWiring}
+          allowGithubComments={allowGithubComments}
         />
       </div>
     </div>
