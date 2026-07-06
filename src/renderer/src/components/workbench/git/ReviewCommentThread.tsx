@@ -16,12 +16,13 @@
 // scheme — see DetailsTab.tsx's own header comment for why that pipeline
 // (markdown-it + DOMPurify) is the one mandatory path.
 //
-// Small helpers (initials/avatar-color/date) are duplicated here rather than
-// imported from DetailsTab.tsx: that module doesn't export them (they're
-// module-private), and re-exporting purely to share ~15 lines would couple
-// two independently-phased tabs together for no real benefit — same
-// "duplicated small literal, independently editable" rationale GitTab.tsx's
-// own module header already applies to TREE_THEME/IMAGE_EXTENSIONS.
+// Initials/avatar-color helpers are shared with DetailsTab.tsx via
+// ./avatarColor.ts (hoisted — the whole point of `avatarColorFor` is that
+// the SAME login maps to the SAME color everywhere, so keeping two
+// independently-editable copies risked them drifting apart). The relative-
+// date formatter below stays local/duplicated on purpose: DetailsTab's
+// `formatDate` is an absolute-date formatter serving a different visual
+// need (see this file's own `formatRelative` doc comment).
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
@@ -29,6 +30,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { GhReviewCommentThread, LocalReviewComment } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
+import { initialsOf, avatarColorFor } from './avatarColor'
 import './ReviewCommentThread.css'
 
 export interface ReviewCommentThreadProps {
@@ -42,25 +44,6 @@ export interface ReviewCommentThreadProps {
    *  `refetchReviewThreads` so the new reply shows up in this thread
    *  immediately (mirrors the new-comment composer's own refetch-on-success). */
   onReplyPosted: () => void
-}
-
-function initialsOf(login: string): string {
-  const trimmed = login.trim()
-  if (trimmed.length === 0) return '?'
-  return trimmed.slice(0, 2).toUpperCase()
-}
-
-// Same fixed palette DetailsTab.tsx uses — kept in sync manually (not
-// imported, see the module header) so the same GitHub login gets the same
-// avatar color whether it shows up in the Details timeline or an inline
-// review-comment thread.
-const AVATAR_COLORS = ['#d4a847', '#7c8cff', '#3fb950', '#f0883e', '#b18cf0', '#58a6ff', '#e0688f']
-
-function avatarColorFor(login: string): string {
-  let hash = 0
-  for (let i = 0; i < login.length; i++) hash = (hash * 31 + login.charCodeAt(i)) | 0
-  const idx = Math.abs(hash) % AVATAR_COLORS.length
-  return AVATAR_COLORS[idx]
 }
 
 /** ISO timestamp -> relative-ish short label. Inline review threads are

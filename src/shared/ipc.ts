@@ -301,6 +301,17 @@ export interface InvokeChannelMap {
     res: number
   }
   'github:prForBranch': { req: [{ cwd: string; branch: string }]; res: GhPullRequest | null }
+  // Workbench Git tab — fetch-on-mount fallback for GitTab's `pr` state.
+  // `startGitWatch` (src/main/git.ts) pushes `github:prChanged` exactly ONCE
+  // on initial watch registration, async, at `terminal:mount` time — a
+  // one-shot push that's usually already fired by the time the user
+  // actually opens the Git tab (GitTab unmounts while its Workbench tab
+  // isn't active), so `pr` stayed null forever with no way to self-heal.
+  // This channel resolves workspaceId -> cwd -> current branch -> PR, same
+  // composition as github:prDetail below, so GitTab can fetch it directly
+  // on mount instead of relying solely on the push. See src/main/github.ts::
+  // getPrForWorkspace.
+  'github:prForWorkspace': { req: [{ workspaceId: string }]; res: GhPullRequest | null }
   // Workbench Git tab — Phase 3b rich PR detail (Details/Commits/Checks tabs,
   // Phase 4 general comments). Resolves `workspaceId` -> cwd -> current branch
   // -> PR number -> ONE `gh pr view` call. Total (never throws); null when

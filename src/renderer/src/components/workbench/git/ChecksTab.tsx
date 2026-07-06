@@ -39,6 +39,7 @@
 import type React from 'react'
 import { Check, X, CircleNotch, Clock } from '@phosphor-icons/react'
 import type { GhCheck, GhCheckState, GhPullRequestDetail } from '@shared/types'
+import { openPrUrl } from '../../../lib/overlayClient'
 
 export interface ChecksTabProps {
   /** The current branch's PR detail, or null when there's no PR for this
@@ -132,14 +133,6 @@ function orderChecks(checks: readonly GhCheck[]): GhCheck[] {
   return [...checks].sort((a, b) => rank[a.state] - rank[b.state])
 }
 
-function openCheckUrl(url: string): void {
-  try {
-    window.open(url, '_blank', 'noopener,noreferrer')
-  } catch {
-    // no-op — same best-effort convention as overlayClient.ts's openPrUrl
-  }
-}
-
 function CheckRow({ check }: { check: GhCheck }): React.JSX.Element {
   // Guard against an empty-string url, not just null: the main-process
   // normalizer (github.ts's parseChecks) falls back detailsUrl ?? targetUrl
@@ -152,13 +145,13 @@ function CheckRow({ check }: { check: GhCheck }): React.JSX.Element {
     <div
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
-      onClick={clickable ? () => openCheckUrl(check.url as string) : undefined}
+      onClick={clickable ? () => openPrUrl(check.url as string) : undefined}
       onKeyDown={
         clickable
           ? (e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
-                openCheckUrl(check.url as string)
+                openPrUrl(check.url as string)
               }
             }
           : undefined

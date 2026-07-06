@@ -488,6 +488,11 @@ const api = {
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb),
+    // Fetch-on-mount fallback for GitTab's `pr` state — see src/shared/
+    // ipc.ts's own comment on this channel for why onPrChanged's one-shot
+    // push alone isn't enough.
+    prForWorkspace: (workspaceId: string): Promise<GhPullRequest | null> =>
+      invoke('github:prForWorkspace', { workspaceId }),
     // Phase 3b — rich PR detail (Details/Commits/Checks tabs, Phase 4
     // general comments). Manual-refresh only; no push channel (see
     // docs/learnings/gh-pr-detail.md — avoid reintroducing the Git tab's

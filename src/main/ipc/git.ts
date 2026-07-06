@@ -18,6 +18,7 @@ import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '
 import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
 import {
   getPrForBranch,
+  getPrForWorkspace,
   getPrDetail,
   getPrReviewComments,
   postReviewComment,
@@ -84,6 +85,16 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // ---------------------------------------------------------------------------
 
   handle('github:prForBranch', (_e, { cwd, branch }) => getPrForBranch(cwd, branch))
+
+  // Fetch-on-mount fallback for GitTab's `pr` state (see the bug this fixes
+  // in src/main/git.ts's startGitWatch header + src/shared/ipc.ts's own
+  // comment on this channel). Resolves workspaceId -> cwd like the other
+  // workspaceId-keyed handlers below, then defers to github.ts's
+  // getPrForWorkspace (cwd -> current branch -> PR, sharing getPrForBranch's
+  // cache/inflight-dedup).
+  handle('github:prForWorkspace', (_e, { workspaceId }) =>
+    getPrForWorkspace(getWorkspaceCwd(workspaceId))
+  )
 
   // Phase 3b — rich PR detail (Details/Commits/Checks tabs). Resolves
   // workspaceId -> cwd like git:diff/git:init above.

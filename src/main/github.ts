@@ -254,6 +254,26 @@ async function resolveCurrentBranch(cwd: string): Promise<string | null> {
 }
 
 /**
+ * Resolve the PR opened against `cwd`'s CURRENT branch — the same
+ * cwd -> branch -> PR composition `getPrDetail` below uses, but returning
+ * just the list-view `GhPullRequest` shape (not the heavier detail payload).
+ * Total — never throws: no cwd / no branch / no PR / gh missing / unauth /
+ * network all resolve to null. Backs `github:prForWorkspace` (see
+ * src/shared/ipc.ts), GitTab's fetch-on-mount fallback for the `pr` state —
+ * `startGitWatch`'s one-shot `github:prChanged` push (src/main/git.ts) may
+ * already have fired by the time the Git tab mounts, so this lets the
+ * renderer fetch the current value directly instead of only ever waiting on
+ * a push. Reuses getPrForBranch's own cache/inflight-dedup, so calling this
+ * alongside the push handler never doubles up on `gh` invocations.
+ */
+export async function getPrForWorkspace(cwd: string | null): Promise<GhPullRequest | null> {
+  if (!cwd) return null
+  const branch = await resolveCurrentBranch(cwd)
+  if (!branch) return null
+  return getPrForBranch(cwd, branch)
+}
+
+/**
  * Fetch the rich PR detail for the PR opened against `workspaceId`'s current
  * branch. Total — never throws: no cwd / no branch / no PR / gh missing /
  * unauth / network all resolve to null so the caller can render an empty
@@ -401,7 +421,7 @@ function parsePrDetail(raw: RawGhPrDetail): GhPullRequestDetail {
     milestone: parseMilestone(raw.milestone),
     commits: parseCommits(raw.commits, raw.url),
     checks: parseChecks(raw.statusCheckRollup),
-    comments: { general: parseGeneralComments(raw.comments), review: [] }
+    comments: { general: parseGeneralComments(raw.comments) }
   }
 }
 

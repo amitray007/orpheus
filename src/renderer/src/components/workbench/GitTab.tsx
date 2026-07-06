@@ -86,17 +86,31 @@
 //
 // Phase 3a — PR detection + slim header (docs/brainstorms/
 // 2026-07-06-git-tab-requirements.md "Full-PR experience" → slim header;
-// mockup's `.pr-header--slim`). NO new IPC needed: `startGitWatch`
-// (src/main/git.ts, started unconditionally on `terminal:mount` — see
-// index.ts) already resolves the current branch's PR via `getPrForBranch`
-// and pushes it over the existing `github:prChanged` channel — once on the
-// initial watch registration, and again every time the branch changes. So
-// this component just subscribes to `window.api.github.onPrChanged` (same
-// pattern as its existing `git:statusChanged` subscription) and stores
-// whatever arrives; there's no separate fetch call to make or cwd to plumb
-// down. `pr: null` (no PR / no `gh` / no remote / detached HEAD) renders
+// mockup's `.pr-header--slim`). `startGitWatch` (src/main/git.ts, started
+// unconditionally on `terminal:mount` — see index.ts) resolves the current
+// branch's PR via `getPrForBranch` and pushes it over `github:prChanged` —
+// once on the initial watch registration, and again every time the branch
+// changes (plus, as of the fetch-on-mount fix below, again on a re-mount).
+// This component subscribes to `window.api.github.onPrChanged` (same pattern
+// as its existing `git:statusChanged` subscription) and stores whatever
+// arrives. `pr: null` (no PR / no `gh` / no remote / detached HEAD) renders
 // the header as it did before this phase — the slim header is additive,
 // gated entirely on `pr !== null`.
+//
+// BUG FIX (this pass) — fetch-on-mount fallback: the push above is a
+// ONE-SHOT event that fires asynchronously at `terminal:mount` time, a
+// window that's usually already closed by the time the user actually opens
+// Workbench → Git (GitTab unmounts while its own sub-tab isn't active — see
+// the module header's Gating note), so `pr` stayed null forever for a
+// perfectly normal PR'd branch: the Details/Checks tabs, the [Working tree |
+// PR diff] toggle, and inline review comments were all unreachable. The
+// PR-detection effect below now ALSO calls `github:prForWorkspace` directly
+// on mount/workspace-change (in addition to keeping the onPrChanged
+// subscription, which still handles live updates while mounted) — see
+// src/main/github.ts::getPrForWorkspace + src/shared/ipc.ts's own comment on
+// this channel. Once this fetch sets `pr`, the existing prDetail/
+// reviewThreads effects below (keyed on `pr.number`/`pr.state`) cascade
+// exactly as they already did for a push-delivered `pr`.
 //
 // Slim header fields, matching the mockup's `renderPrHeader` 1:1: a colored
 // status badge (open/draft/merged/closed → the app's own `--color-gh-*`
@@ -469,22 +483,46 @@ function renderReviewCommentAnnotation(
   )
 }
 
-/** Phase 4b — the gutter "+" add-comment button, passed to @pierre/diffs'
- *  `renderGutterUtility` (only in PR-diff mode; see DiffContentPane). Pierre
- *  positions/shows this on whichever line is currently hovered on its own
- *  (see docs/learnings/pierre-libraries.md §13 + InteractionManager's
- *  ensureGutterUtilityNode/showUtilityOnLine) — this component only needs to
- *  render the glyph; the click itself is wired via `options.
- *  onGutterUtilityClick`, not an onClick here (Pierre's InteractionManager
- *  owns pointer handling on the gutter-utility slot so hover/selection stay
- *  in sync — see its `startGutterSelectionFromPointerDown`). */
-function GutterAddCommentButton(): React.JSX.Element {
+/** BUG FIX (this pass) — Pierre's `@pierre/diffs` has TWO mutually exclusive
+ *  gutter-utility APIs, and the previous code set both at once: `options.
+ *  onGutterUtilityClick` (a built-in, non-custom-render click handler) AND
+ *  the React `renderGutterUtility` prop (a custom-render React node,
+ *  auto-detected by the library and translated into `options.
+ *  renderGutterUtility` — see `useFileDiffInstance.mergeFileDiffOptions` in
+ *  @pierre/diffs' own source). `InteractionManager` throws "Cannot use both
+ *  'onGutterUtilityClick' and 'renderGutterUtility'" the instant BOTH end up
+ *  non-null in its resolved options — which happened on every PR-diff-mode
+ *  render, crashing the whole app to the error boundary. This was dormant
+ *  since Phase 4b introduced it: PR-diff mode was unreachable until this
+ *  pass's `pr`-state fix made it reachable for the first time, so this
+ *  latent crash never actually fired in practice until now.
+ *
+ *  FIX: since a custom React node IS wanted here (GutterAddCommentButton),
+ *  only the `renderGutterUtility` prop is used — `onGutterUtilityClick`/
+ *  `enableGutterUtility` are removed from buildDiffOptions entirely. The
+ *  click itself is now wired directly on the button's own onClick, reading
+ *  the currently-hovered line via the `getHoveredLine` accessor Pierre passes
+ *  into `renderGutterUtility(getHoveredLine)` (see renderDiffChildren.tsx) —
+ *  the same line/side data `onGutterUtilityClick`'s `SelectedLineRange`
+ *  argument used to carry, just sourced from the render-prop's own accessor
+ *  instead of a second parallel callback. */
+function GutterAddCommentButton({
+  getHoveredLine,
+  onAdd
+}: {
+  getHoveredLine: () => { lineNumber: number; side: 'additions' | 'deletions' } | undefined
+  onAdd: (lineNumber: number, side: 'additions' | 'deletions') => void
+}): React.JSX.Element {
   return (
     <button
       type="button"
       className="gcc-gutter-add"
       title="Add a comment on this line"
       tabIndex={-1}
+      onClick={() => {
+        const hovered = getHoveredLine()
+        if (hovered) onAdd(hovered.lineNumber, hovered.side)
+      }}
     >
       <Plus size={11} weight="bold" />
     </button>
@@ -1178,8 +1216,7 @@ function BinaryImageBody({
   )
 }
 
-/** Phase 4b — converts a Pierre `SelectedLineRange` (from either
- *  `onGutterUtilityClick`'s single-line click or `onLineSelected`'s
+/** Phase 4b — converts a Pierre `SelectedLineRange` (from `onLineSelected`'s
  *  select-a-range gesture) into the anchor a pending composer opens at.
  *  Scoped to SINGLE-LINE comments only, per the task's explicit fallback:
  *  "If range-comments are fiddly, single-line via the gutter '+' is the
@@ -1198,11 +1235,18 @@ function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT'
 
 /** Phase 4b — builds the `options` object passed to <PatchDiff> in PR-diff
  *  mode: the base viewer options (theme/diffStyle/overflow, unchanged since
- *  Phase 1) plus the gutter-"+"/line-selection interaction options, ONLY
- *  when `composers` is non-null (i.e. `diffMode === 'pr'` — see
+ *  Phase 1) plus the select-to-comment line-selection option, ONLY when
+ *  `composers` is non-null (i.e. `diffMode === 'pr'` — see
  *  DiffContentPaneProps' doc comment). Extracted so DiffContentPane's own
  *  body doesn't inline this branching logic into the JSX (cognitive-
- *  complexity ceiling). */
+ *  complexity ceiling).
+ *
+ *  BUG FIX (this pass): the gutter-"+" click is now wired entirely through
+ *  `renderGutterUtility`/`GutterAddCommentButton`'s own onClick (see that
+ *  component's doc comment for the full root-cause writeup) — `options` no
+ *  longer sets `enableGutterUtility`/`onGutterUtilityClick` at all, since
+ *  those conflict with the `renderGutterUtility` React prop DiffContentPane
+ *  also passes and crash @pierre/diffs' InteractionManager. */
 function buildDiffOptions(
   diffStyle: DiffStyle,
   wrapLines: boolean,
@@ -1218,11 +1262,6 @@ function buildDiffOptions(
   if (composers === null) return base
   return {
     ...base,
-    enableGutterUtility: true,
-    onGutterUtilityClick: (range) => {
-      const { line, side } = anchorFromRange(range)
-      composers.open(path, side, line)
-    },
     // Select-to-comment: scoped to reporting the FINAL committed selection
     // (`onLineSelected`, fired once per gesture) rather than every
     // in-progress tick (`onLineSelectionChange`) — opening a composer per
@@ -1252,10 +1291,12 @@ function buildDiffOptions(
  *  gets a plain "no preview" placeholder.
  *
  *  Phase 4b: the gutter "+"/select-to-comment affordance (renderGutterUtility
- *  + the interaction options from buildDiffOptions) is wired ONLY when
+ *  + the select-to-comment option from buildDiffOptions) is wired ONLY when
  *  `composers` is non-null — i.e. PR-diff mode (see DiffContentPaneProps'
  *  doc comment); working-tree mode passes `composers={null}` from GitTab and
- *  gets exactly the pre-4b <PatchDiff>, unchanged. */
+ *  gets exactly the pre-4b <PatchDiff>, unchanged. See
+ *  GutterAddCommentButton's doc comment for the bug fix (this pass) to how
+ *  the gutter "+" click itself is wired. */
 function DiffContentPane({
   workspaceId,
   file,
@@ -1304,20 +1345,21 @@ function DiffContentPane({
             localWiring ?? undefined
           )
         }
-        renderGutterUtility={composers !== null ? renderGutterUtility : undefined}
+        renderGutterUtility={
+          composers !== null
+            ? (getHoveredLine) => (
+                <GutterAddCommentButton
+                  getHoveredLine={getHoveredLine}
+                  onAdd={(lineNumber, side) =>
+                    composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
+                  }
+                />
+              )
+            : undefined
+        }
       />
     </div>
   )
-}
-
-/** Phase 4b — `renderGutterUtility`'s React node factory: the getHoveredLine
- *  callback Pierre passes isn't needed here (the button doesn't need to know
- *  WHICH line is hovered — Pierre only shows/positions it on the hovered
- *  line in the first place; the actual line/side comes from
- *  `onGutterUtilityClick`'s own `SelectedLineRange` argument, wired in
- *  buildDiffOptions above), so this ignores its argument. */
-function renderGutterUtility(): React.ReactNode {
-  return <GutterAddCommentButton />
 }
 
 // --- Root ------------------------------------------------------------------
@@ -1493,9 +1535,10 @@ export function GitTab({
   const [gitInitRunning, setGitInitRunning] = useState(false)
   const [gitInitError, setGitInitError] = useState<string | null>(null)
   // Phase 3a: the PR for the current branch, or null (no PR / no `gh` / no
-  // remote / detached HEAD). Populated entirely by the existing
-  // `github:prChanged` push — see the module header's Phase 3a note for why
-  // no separate fetch call is needed here.
+  // remote / detached HEAD). Populated by BOTH the `github:prChanged` push
+  // (live updates while mounted) AND a direct `github:prForWorkspace` fetch
+  // on mount/workspace-change (the bug fix — see the module header's "BUG
+  // FIX (this pass)" note for why the push alone isn't reliable).
   const [pr, setPr] = useState<GhPullRequest | null>(null)
   // Phase 3b foundation: the rich PR payload (GhPullRequestDetail) backing
   // the Commits/Details/Checks sub-tabs — see the module header's "Phase 3b
@@ -1751,12 +1794,53 @@ export function GitTab({
     }
   }, [workspaceId, applyDiff])
 
+  // BUG FIX (this pass): fetch-on-mount fallback for `pr` — see the module
+  // header's "BUG FIX" note for the full root-cause writeup. `startGitWatch`'s
+  // initial `github:prChanged` push (subscribed to just below) is a ONE-SHOT
+  // event fired asynchronously at `terminal:mount` time; by the time the user
+  // actually navigates to the Git sub-tab (GitTab is unmounted until then —
+  // see the module header's Gating note) that push has almost always already
+  // fired, so the subscription below is registered too late to ever catch it
+  // and `pr` stayed null forever. This effect calls `github:prForWorkspace`
+  // directly on mount and on every workspace change, in ADDITION to the
+  // subscription (which still owns live updates while mounted — a branch
+  // switch or PR update while the tab is open). Guarded against
+  // setState-after-unmount the same way fetchDiff/fetchPrDiff above are;
+  // deliberately does NOT reset `pr` to null itself on cleanup — the
+  // workspace-change effect already does that reset synchronously (so no
+  // stale-previous-workspace flash), and a fast unmount/remount here should
+  // just let the next mount's own fetch settle rather than racing a clear.
+  useEffect(() => {
+    let cancelled = false
+    window.api.github
+      .prForWorkspace(workspaceId)
+      .then((fetchedPr) => {
+        if (cancelled) return
+        // Race guard: `onPrChanged`'s live subscription (below) may resolve
+        // a fresher, real PR before this slower fetch settles (both hit the
+        // same cwd/branch, but the push can win the race) — never let this
+        // fetch clobber an already-set non-null `pr` back to null. A genuine
+        // PR-loss (branch switch, close) is still handled by the push's own
+        // `e.pr === null` branch below, which this guard doesn't touch.
+        setPr((prev) => (prev !== null && fetchedPr === null ? prev : fetchedPr))
+      })
+      .catch((e) => {
+        console.error('[GitTab] github:prForWorkspace failed:', e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
   // Phase 3a: PR detection. `startGitWatch` (src/main/git.ts, running
   // unconditionally since terminal:mount) already resolves the current
   // branch's PR and pushes it over `github:prChanged` — once on initial
-  // watch registration and again on every branch change — so this is a pure
-  // subscribe, no fetch call of its own. Filtered to this workspace the same
-  // way the git:statusChanged/files:changed subscriptions above are.
+  // watch registration, again on every branch change, and again on a
+  // re-mount (self-heal fix, same pass) — subscribed to here for LIVE
+  // updates while mounted; the fetch-on-mount effect above covers the
+  // one-shot-push-already-fired gap this subscription alone can't. Filtered
+  // to this workspace the same way the git:statusChanged/files:changed
+  // subscriptions above are.
   useEffect(() => {
     return window.api.github.onPrChanged((e) => {
       if (e.workspaceId !== workspaceId) return

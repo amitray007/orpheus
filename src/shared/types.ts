@@ -886,9 +886,9 @@ export type GhPullRequestDetail = {
   checks: GhCheck[] // un-reduced per-check list (Checks tab)
   comments: {
     general: GhGeneralComment[] // gh pr view --json comments
-    // Line-anchored review comments are Phase 4 (separate `gh api
-    // .../pulls/{n}/comments` call) — left empty here, not fetched in 3b.
-    review: []
+    // Line-anchored review comments are a SEPARATE `gh api
+    // .../pulls/{n}/comments` call (Phase 4a's github:prReviewComments /
+    // GhReviewCommentThread) — not part of this payload at all.
   }
 }
 

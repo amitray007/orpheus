@@ -445,7 +445,13 @@ function watchGitFiles(dir: string, gitDir: string): fs.FSWatcher[] {
  * An initial push fires shortly after watch starts so the renderer
  * gets current status without the 30s polling round-trip.
  *
- * Safe to call multiple times for the same cwd — ref-counted.
+ * Safe to call multiple times for the same cwd — ref-counted. A re-mount for
+ * an already-registered workspaceId (a hide→show terminal cycle) re-emits
+ * BOTH the status push AND (on a branch change) the PR push — see the
+ * re-mount-guard branch below; this self-heals a workspace whose Git tab
+ * mounted after `startGitWatch`'s one-shot initial PR push already fired
+ * (the Workbench Git tab is only mounted while its own sub-tab is active, so
+ * that's the common case, not an edge case).
  *
  * The git rev-parse to locate the .git dir is now async so terminal:mount
  * returns immediately without blocking on the git subprocess. The watcher
@@ -493,10 +499,37 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
         entry.clients.set(workspaceId, client)
         getGitStatus(cwd)
           .then((status) => {
-            if (!webContents.isDestroyed() && status !== null) {
-              client.lastStatusSig = statusSignature(status)
-              webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+            if (webContents.isDestroyed() || status === null) return
+            client.lastStatusSig = statusSignature(status)
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+
+            // Self-heal fix: also re-run the PR resolution + re-push
+            // githubPrChanged on every re-mount (hide→show terminal cycle),
+            // not just the very first watch registration below. Before this
+            // fix, a re-mount only re-emitted gitStatusChanged — GitTab's
+            // `pr` state had no other way to recover a missed initial push
+            // (see the module header's "GitTab fetch-on-mount fallback" note
+            // for the renderer-side half of this fix). Signature-gated the
+            // same way refreshGitForDir's branch-change path already is (via
+            // `client.lastBranch`) so a redundant re-mount with an unchanged
+            // branch still only sends one push per actual change, not a
+            // flicker-inducing unconditional resend.
+            const branch = status.branch
+            if (branch === existing.lastBranch) return
+            client.lastBranch = branch
+            if (!branch) {
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
+              return
             }
+            getPrForBranch(cwd, branch)
+              .then((pr) => {
+                if (!webContents.isDestroyed()) {
+                  webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+                }
+              })
+              .catch(() => {
+                /* gh unavailable */
+              })
           })
           .catch(() => {
             /* git unavailable — skip */

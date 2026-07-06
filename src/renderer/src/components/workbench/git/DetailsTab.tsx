@@ -40,6 +40,7 @@ import type {
 } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
+import { initialsOf, avatarColorFor } from './avatarColor'
 import './DetailsTab.css'
 
 export interface DetailsTabProps {
@@ -65,29 +66,9 @@ export interface DetailsTabProps {
 }
 
 // ---------------------------------------------------------------------------
-// Small shared bits — initials avatar, relative-date formatting
+// Small shared bits — relative-date formatting (initials/avatar-color now
+// live in ./avatarColor.ts, shared with ReviewCommentThread.tsx)
 // ---------------------------------------------------------------------------
-
-/** GitHub-login → 1-2 letter avatar initial, deterministic (no external
- *  images — CSP forbids remote avatar fetches anyway). Mirrors the mockup's
- *  initial-circle avatars. */
-function initialsOf(login: string): string {
-  const trimmed = login.trim()
-  if (trimmed.length === 0) return '?'
-  return trimmed.slice(0, 2).toUpperCase()
-}
-
-// A small fixed palette keyed off a stable hash of the login, so the same
-// author always gets the same color across the description card, timeline,
-// and sidebar without needing a lookup table of real GitHub users.
-const AVATAR_COLORS = ['#d4a847', '#7c8cff', '#3fb950', '#f0883e', '#b18cf0', '#58a6ff', '#e0688f']
-
-function avatarColorFor(login: string): string {
-  let hash = 0
-  for (let i = 0; i < login.length; i++) hash = (hash * 31 + login.charCodeAt(i)) | 0
-  const idx = Math.abs(hash) % AVATAR_COLORS.length
-  return AVATAR_COLORS[idx]
-}
 
 /** ISO timestamp -> short absolute date (e.g. "Jul 3, 2026"). The timeline
  *  spans potentially many months (review history), so a relative "3d ago"
