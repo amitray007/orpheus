@@ -38,8 +38,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
 import {
-  themeToTreeStyles,
-  type TreeThemeInput,
   type ContextMenuItem as FileTreeContextMenuItem,
   type ContextMenuOpenContext as FileTreeContextMenuOpenContext,
   type FileTreeRenameEvent,
@@ -57,6 +55,13 @@ import {
   type FilesViewMode
 } from '../../lib/filesTabStore'
 import { CodeEditor } from './editor/CodeEditor'
+import {
+  treeHostStyle,
+  TREE_ICONS,
+  TREE_DENSITY,
+  TREE_RENDER_OPTIONS,
+  TREE_DIR_GIT_CHANGE_CSS
+} from './treeConfig'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { PreviewPane } from './PreviewPane'
 import { isRenderablePath } from './previewRender'
@@ -68,40 +73,10 @@ import { FilesTreeContextMenu } from './FilesTreeContextMenu'
 import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
 import { showConfirmModalReact } from '../../lib/overlayClient'
 
-// Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
-// smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
-// Orpheus's dark palette + the #7c8cff accent for links.
-//
-// FOCUS-RING REMOVAL (this pass): `focusBorder` here does NOT drive the
-// selected/focused row's outline ring by itself — `themeToTreeStyles` doesn't
-// read `focusBorder` directly at all; it goes through `@pierre/theming`'s
-// `normalizeThemeColors`, which folds `focusBorder` into `list.focusOutline`
-// (first non-transparent of the two) and that becomes
-// `--trees-theme-focus-ring`. The tree's own bundled CSS then resolves the
-// ring color through `--trees-focus-ring-color-override` →
-// `--trees-theme-focus-ring` → `--trees-accent` (see
-// node_modules/@pierre/trees/dist/style.js's `[data-item-focused="true"]:before`
-// rule) — so simply setting `focusBorder: 'transparent'` here would only drop
-// out of the chain and fall through to `--trees-accent`, NOT actually zero the
-// ring. The reliable fix is the `-override` CSS vars set directly on the host
-// below (`hostStyle`), which win the chain unconditionally — same override
-// seam the git-status dot colors already use. `focusBorder` is left as-is
-// (harmless — its own link in the chain is now moot since the override wins
-// first) rather than removed, so a future theme swap that drops the override
-// doesn't silently reintroduce a stray ring with no explanation.
-const TREE_THEME: TreeThemeInput = {
-  name: 'orpheus-dark',
-  type: 'dark',
-  bg: '#15161a',
-  fg: '#e6e6ea',
-  colors: {
-    'list.activeSelectionBackground': '#2a2c3a',
-    'list.focusBackground': '#2a2c3a',
-    'list.hoverBackground': '#1f2028',
-    focusBorder: '#7c8cff',
-    'textLink.foreground': '#7c8cff'
-  }
-}
+// TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
+// ./treeConfig.ts (shared with GitTab.tsx — both trees are the same dark
+// theme; see that module's doc comment for the full override-chain writeup
+// this used to carry inline here).
 
 // Raw CSS injected into the tree's shadow root (§5 escape hatch) so a whole
 // ROW carrying git-status `ignored` dims — the tree's own bundled CSS only
@@ -130,6 +105,12 @@ const TREE_THEME: TreeThemeInput = {
 // attribute the library already stamps on it — hidden when closed, flex when
 // open. This makes our toolbar icon (which calls search.open()/close()) the
 // single control over visibility.
+// Appends TREE_DIR_GIT_CHANGE_CSS (treeConfig.ts) — the directory-level
+// git-status-rollup theming (roadmap item 3): a collapsed folder whose
+// subtree contains a change gets a subtle accent dot + tint, computed
+// automatically by @pierre/trees from the same setGitStatus payload this
+// pane already sends (see treeConfig.ts's doc comment for the verified
+// `data-item-contains-git-change` attribute).
 const TREE_IGNORED_DIM_CSS = `
   [data-item-git-status="ignored"] {
     opacity: 0.62;
@@ -137,6 +118,7 @@ const TREE_IGNORED_DIM_CSS = `
   [data-file-tree-search-container][data-open="false"] {
     display: none;
   }
+  ${TREE_DIR_GIT_CHANGE_CSS}
 `
 
 // Pierre's bundled dark/light themes for the <File> viewer (§8) — the same
@@ -524,7 +506,15 @@ function TreePane({
     renaming: {
       onRename: (e: FileTreeRenameEvent) => renameHandlersRef.current.onRename(e),
       onError: (m: string) => renameHandlersRef.current.onError(m)
-    }
+    },
+    // Batch 1b (treeConfig.ts): per-filetype icons, compact density, sticky
+    // folders — all plain construction-time fields on FileTreeOptionSurface,
+    // verified against the installed 1.0.0-beta.5 .d.ts (see treeConfig.ts's
+    // doc comment). Never change after mount, so passing them here (rather
+    // than an imperative `model.setIcons(...)` call) is correct.
+    icons: TREE_ICONS,
+    density: TREE_DENSITY,
+    ...TREE_RENDER_OPTIONS
   })
   const selection = useFileTreeSelection(model)
   // Drives the tree's own built-in search input's OPEN/CLOSED model state
@@ -578,6 +568,24 @@ function TreePane({
   // Apply the current toggles to the cached entries + git status: reset the
   // visible paths and set the merged git-status payload (real added/modified/…
   // dots COMPOSED with the synthetic `ignored` dim entries). Imperative (§7).
+  //
+  // SKIPPED (Batch 1b, roadmap item 4 — prepared tree input): considered
+  // routing this `resetPaths(paths, …)` call through
+  // `preparePresortedFileTreeInput`/`prepareFileTreeInput` (@pierre/trees) for
+  // cheaper rebuilds on this refresh loop. Verified against
+  // dist/model/inputResolution.js: when a `preparedInput` is supplied WITHOUT
+  // a parallel `paths` array, `resolveFileTreeInput` trusts its `.paths`
+  // AS-IS and never re-validates them against the controller's own `sort`
+  // baked in at construction (`useFileTree`'s `sort: resolveSort(...)` above,
+  // which can be `nameSortComparator`, a function — not just `'default'`).
+  // A prepared input built with a mismatched/forgotten sort option would
+  // silently misorder the tree with no error. Given `MAX_ENTRIES = 5000`
+  // (src/main/ipc/files.ts) already bounds this tree's size — the perf case
+  // this API targets ("large or frequently reloaded path lists") isn't
+  // actually a bottleneck here — and the recently-fixed selection/flatten/
+  // resetPaths wiring this callback owns is explicitly not to be
+  // destabilized, this is skipped for Batch 1b. Revisit only if profiling
+  // ever shows resetPaths cost matters at this scale.
   //
   // STORE→TREE RESTORE (the other half of the selection-pointer bug): the
   // FIRST time this resolves a non-empty path set after mount, seed
@@ -795,47 +803,11 @@ function TreePane({
     [search.isOpen, toggleSearch, handleToolbarCreate]
   )
 
+  // Theme + git-status/focus-ring host CSS vars — shared with GitTab.tsx via
+  // treeConfig.ts's `treeHostStyle()` (see that module for the full
+  // override-chain writeup this used to carry inline here).
   const hostStyle = useMemo(() => {
-    const vars = themeToTreeStyles(TREE_THEME)
-    return {
-      height: '100%',
-      ...vars,
-      // The tree's default 16px inline inset (--trees-padding-inline-override,
-      // 16px) boxes the search field + indents every row from the panel edges,
-      // wasting horizontal space in our narrow sidebar. Zero it so the search
-      // box and tree rows use the full panel width (row content still has its
-      // own small item padding).
-      '--trees-padding-inline-override': '0px',
-      // Git-status dot + label colors for the tree's shadow DOM. The bundled
-      // CSS resolves each `--trees-git-<x>-color` through a `-color-override`
-      // seam first (var(--trees-git-<x>-color-override, var(--trees-status-…))),
-      // so setting the override on this host unconditionally wins the chain and
-      // inherits into the shadow root — the same pattern as the padding
-      // override above. GitHub-dark diff palette (main.css has no green/amber/
-      // red file-status tokens — only the darker PR-state --color-gh-* set —
-      // and these are purpose-built to read as dots on our dark surfaces):
-      '--trees-git-added-color-override': '#3fb950', // green — new/added
-      '--trees-git-modified-color-override': '#d29922', // amber — modified
-      '--trees-git-deleted-color-override': '#f85149', // red — deleted
-      '--trees-git-renamed-color-override': '#58a6ff', // blue — renamed
-      '--trees-git-untracked-color-override': '#6e7681', // muted gray — untracked
-      // Ignored drives the DIMMED rows (0.62 opacity via TREE_IGNORED_DIM_CSS);
-      // keep it a low-contrast gray so it stays de-emphasized.
-      '--trees-git-ignored-color-override': '#484f58',
-      // FOCUS-RING REMOVAL (this pass) — see TREE_THEME's doc comment above
-      // for the full chain writeup. Both vars feed the SAME `:before` outline
-      // rule in the tree's bundled CSS: `--trees-focus-ring-color-override`
-      // for a focused-but-unselected row, `--trees-selected-focused-border-
-      // color-override` for a row that's BOTH focused and selected (the
-      // common case right after a click) — the stylesheet swaps to the
-      // second var specifically via its `&[data-item-selected="true"]:before`
-      // rule, so both need the override or a selected row would still show a
-      // ring. Setting both to fully transparent zeros the ring in every case
-      // while leaving `list.activeSelectionBackground`/`list.focusBackground`
-      // (the filled highlight) completely untouched.
-      '--trees-focus-ring-color-override': 'transparent',
-      '--trees-selected-focused-border-color-override': 'transparent'
-    } as React.CSSProperties
+    return { height: '100%', ...treeHostStyle() } as React.CSSProperties
   }, [])
 
   return (

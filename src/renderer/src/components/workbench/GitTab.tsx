@@ -239,10 +239,9 @@
 //     purely a CSS change, no positioning logic touched.
 // ---------------------------------------------------------------------------
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
-import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
 import { PatchDiff } from '@pierre/diffs/react'
 import {
   List,
@@ -290,49 +289,17 @@ import {
 } from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
 import { preloadDiffHighlighter } from './diffHighlighterPreload'
+import {
+  treeHostStyle,
+  TREE_ICONS,
+  TREE_DENSITY,
+  TREE_RENDER_OPTIONS,
+  TREE_DIR_GIT_CHANGE_CSS
+} from './treeConfig'
 
-// Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
-// own const (rather than importing FilesTab's) so this component doesn't
-// couple to FilesTab's module for a plain data literal; the visual result is
-// identical (§5.1 recommends one shared theme, but a duplicated small object
-// is cheap and keeps the two tabs independently editable). `focusBorder` here
-// does NOT by itself zero the selected-row focus ring — see FilesTab.tsx's
-// TREE_THEME doc comment for the full chain writeup; the actual ring removal
-// is the two `-override` CSS vars on TREE_GIT_STATUS_VARS below.
-const TREE_THEME: TreeThemeInput = {
-  name: 'orpheus-dark',
-  type: 'dark',
-  bg: '#15161a',
-  fg: '#e6e6ea',
-  colors: {
-    'list.activeSelectionBackground': '#2a2c3a',
-    'list.focusBackground': '#2a2c3a',
-    'list.hoverBackground': '#1f2028',
-    focusBorder: '#7c8cff',
-    'textLink.foreground': '#7c8cff'
-  }
-}
-
-// Git-status dot colors for the changed-files tree's shadow DOM — same
-// GitHub-dark diff palette FilesTab uses (see its TREE_THEME hostStyle
-// comment for the override-chain rationale). Also carries the FOCUS-RING
-// REMOVAL override vars (this pass) — see FilesTab.tsx's TREE_THEME doc
-// comment for the full `focusBorder` → `list.focusOutline` →
-// `--trees-theme-focus-ring` chain writeup on why `focusBorder` alone can't
-// zero the ring and these two `-override` vars are the reliable mechanism.
-// Both are needed: `--trees-focus-ring-color-override` for a focused-but-
-// unselected row, `--trees-selected-focused-border-color-override` for a row
-// that's both focused AND selected (the common case right after a click).
-const TREE_GIT_STATUS_VARS = {
-  '--trees-padding-inline-override': '0px',
-  '--trees-git-added-color-override': '#3fb950',
-  '--trees-git-modified-color-override': '#d29922',
-  '--trees-git-deleted-color-override': '#f85149',
-  '--trees-git-renamed-color-override': '#58a6ff',
-  '--trees-git-untracked-color-override': '#6e7681',
-  '--trees-focus-ring-color-override': 'transparent',
-  '--trees-selected-focused-border-color-override': 'transparent'
-} as const
+// TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
+// ./treeConfig.ts (shared with FilesTab.tsx — see that module's doc comment
+// for the full override-chain writeup this used to carry inline here).
 
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
@@ -994,10 +961,16 @@ function PrSlimHeader({
 // regardless of the controller's own isOpen state (same quirk FilesTab's
 // TreePane works around), so this override keys the box's actual show/hide
 // off the SAME `data-open` attribute the library stamps on it.
+// Appends TREE_DIR_GIT_CHANGE_CSS (treeConfig.ts) — the directory-level
+// git-status-rollup theming (roadmap item 3), especially relevant here since
+// this IS the changed-files tree: a collapsed folder containing changed
+// files gets a subtle accent dot + tint, computed automatically by
+// @pierre/trees from the same setGitStatus payload this pane already sends.
 const SEARCH_BOX_VISIBILITY_CSS = `
   [data-file-tree-search-container][data-open="false"] {
     display: none;
   }
+  ${TREE_DIR_GIT_CHANGE_CSS}
 `
 
 interface DiffTreePaneProps {
@@ -1097,12 +1070,57 @@ function DiffTreePane({
 }: DiffTreePaneProps): React.JSX.Element {
   const paths = useMemo(() => files.map((f) => f.path), [files])
 
+  // Roadmap item 5 (OPTIONAL — per-row +N/-M line-change badge). `files` is
+  // keyed by path already, so a plain Map is the cheapest lookup for the
+  // decoration renderer below (recomputed only when `files` itself changes).
+  const changeCountsByPath = useMemo(
+    () => new Map(files.map((f) => [f.path, { additions: f.additions, deletions: f.deletions }])),
+    [files]
+  )
+  // `renderRowDecoration` is a CONSTRUCTION-ONLY option (verified against
+  // node_modules/@pierre/trees/dist/react/useFileTree.js: `new FileTree(options)`
+  // runs inside `useState(() => ...)`, so every option including this one is
+  // captured exactly once and later renders' fresh `options` are ignored
+  // entirely — same reason FilesTab.tsx routes its `renaming.onRename`/
+  // `onError` through a ref instead of passing them directly). So this reads
+  // through a ref kept current every render, and the function identity handed
+  // to `useFileTree` below never changes.
+  const changeCountsRef = useRef(changeCountsByPath)
+  useLayoutEffect(() => {
+    changeCountsRef.current = changeCountsByPath
+  })
+
   const { model } = useFileTree({
     paths,
     initialExpansion: 'open',
     search: true,
     flattenEmptyDirectories: flattenEmptyDirs,
-    unsafeCSS: SEARCH_BOX_VISIBILITY_CSS
+    unsafeCSS: SEARCH_BOX_VISIBILITY_CSS,
+    // Batch 1b (treeConfig.ts): per-filetype icons, compact density, sticky
+    // folders — same construction-time fields FilesTab.tsx's TreePane passes.
+    icons: TREE_ICONS,
+    density: TREE_DENSITY,
+    ...TREE_RENDER_OPTIONS,
+    // Roadmap item 5 (OPTIONAL): a subtle +N/-M badge in trees' own
+    // renderRowDecoration lane — CONFIRMED (dist/render/FileTreeView.js) this
+    // composes in a SEPARATE `decorationLaneEnabled` slot alongside the
+    // built-in git-status letter/dot lane (`gitLaneActive`), so it can never
+    // clobber or crowd the status letter GitTab.tsx:966's doc comment cares
+    // about preserving. Directories get no badge (only files carry line
+    // counts); a file with a zero/zero count (e.g. a pure rename) also gets
+    // no badge rather than a pointless "+0 -0".
+    renderRowDecoration: ({ item }) => {
+      if (item.kind !== 'file') return null
+      const counts = changeCountsRef.current.get(item.path)
+      if (counts == null || (counts.additions === 0 && counts.deletions === 0)) return null
+      const parts: string[] = []
+      if (counts.additions > 0) parts.push(`+${counts.additions}`)
+      if (counts.deletions > 0) parts.push(`-${counts.deletions}`)
+      return {
+        text: parts.join(' '),
+        title: `${counts.additions} added, ${counts.deletions} deleted`
+      }
+    }
   })
   const selection = useFileTreeSelection(model)
   // Search-icon-toggle (Fix 2) — same visibility pattern FilesTab's TreePane
@@ -1119,6 +1137,13 @@ function DiffTreePane({
   // Push the fresh path list + git-status decorations into the tree whenever
   // the diff result changes — imperative, matching FilesTab's §7 pattern
   // (useFileTree only consumes its `paths` option at construction time).
+  //
+  // SKIPPED (Batch 1b, roadmap item 4 — prepared tree input): see
+  // FilesTab.tsx's `applyOptions` doc comment for the full writeup on why
+  // `preparePresortedFileTreeInput`/`prepareFileTreeInput` isn't adopted for
+  // this resetPaths call — same silent-misorder risk, and this tree's path
+  // count (bounded by a single git diff's changed-file count) is nowhere
+  // near the "large path list" case that API targets.
   useEffect(() => {
     model.resetPaths(paths)
     model.setGitStatus(toTreeGitStatus(files))
@@ -1193,9 +1218,11 @@ function DiffTreePane({
     [search.isOpen, toggleSearch]
   )
 
+  // Theme + git-status/focus-ring host CSS vars — shared with FilesTab.tsx
+  // via treeConfig.ts's `treeHostStyle()` (see that module for the full
+  // override-chain writeup this used to carry inline here).
   const hostStyle = useMemo(() => {
-    const vars = themeToTreeStyles(TREE_THEME)
-    return { height: '100%', ...vars, ...TREE_GIT_STATUS_VARS } as React.CSSProperties
+    return { height: '100%', ...treeHostStyle() } as React.CSSProperties
   }, [])
 
   return (
