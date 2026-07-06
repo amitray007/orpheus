@@ -143,6 +143,20 @@ const TREE_IGNORED_DIM_CSS = `
 // pair the smoke test's <PatchDiff> used. `themeType: 'dark'` picks dark.
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
+// ── Crash fix #2 — plain-text render threshold ──────────────────────────────
+// <PierreFile> is NOT virtualized — it materializes every line into
+// shadow-DOM and Shiki-tokenizes the whole file synchronously on the render
+// thread. Independent of the 3MB read cap (files.ts's MAX_READ_BYTES): a
+// merely large-but-under-3MB file can still jank/freeze the UI for hundreds
+// of ms. Above either threshold, default to a plain <pre> (no highlighting)
+// with a "Load with highlighting anyway" affordance. Line count is checked
+// FIRST since it's the common case (a big generated/data file); max line
+// length catches the minified-single-line case a line-count check alone
+// would miss (files.ts's FileContents.maxLineLength, from the same bounded
+// scan as lineCount — no extra client-side re-scan of the file text).
+const PLAIN_TEXT_LINE_THRESHOLD = 5000
+const PLAIN_TEXT_LINE_LENGTH_THRESHOLD = 5000
+
 // --- Tier → visible-paths + dim wiring (§11) -------------------------------
 // From the tagged listDir entries + the two popover toggles, compute (a) the
 // flat path list fed to the tree via resetPaths and (b) which of those paths
@@ -911,6 +925,11 @@ function ContentPane({
   // `path` differs from `result.path`, the fetch for `path` hasn't landed yet.
   const [result, setResult] = useState<LoadedFile | null>(null)
   const [image, setImage] = useState<LoadedImage | null>(null)
+  // Crash fix #2 — per-path "load with highlighting anyway" override for a
+  // file over the plain-text threshold. Lives here (not in ContentBody, which
+  // is pure presentation) so switching files and back within the same Files-
+  // tab session doesn't re-ask for a path already force-shown.
+  const [highlightAnyway, setHighlightAnyway] = useState<ReadonlySet<string>>(() => new Set())
   // Guards a stale readFile resolving after the selection moved on — only the
   // most-recent requested path may commit its result. Shared between the two
   // fetch effects below since only one of them is ever active for a given path.
@@ -977,6 +996,15 @@ function ContentPane({
       wrapLines={wrapLines}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
+      highlightAnyway={path !== null && highlightAnyway.has(path)}
+      onHighlightAnyway={() =>
+        path !== null &&
+        setHighlightAnyway((prev) => {
+          const next = new Set(prev)
+          next.add(path)
+          return next
+        })
+      }
     />
   )
 }
@@ -991,6 +1019,10 @@ interface ContentBodyProps {
   wrapLines: boolean
   onDirtyChange: (dirty: boolean) => void
   onSaved: () => void
+  /** Crash fix #2 — true when the CURRENT path has been force-shown past the
+   *  plain-text threshold via "Load with highlighting anyway". */
+  highlightAnyway: boolean
+  onHighlightAnyway: () => void
 }
 
 /** Pure presentation split out of ContentPane so the routing branches (empty /
@@ -1007,7 +1039,9 @@ function ContentBody({
   autoSave,
   wrapLines,
   onDirtyChange,
-  onSaved
+  onSaved,
+  highlightAnyway,
+  onHighlightAnyway
 }: ContentBodyProps): React.JSX.Element {
   if (path === null) {
     return <ViewerMessage text="Select a file to view" />
@@ -1061,14 +1095,18 @@ function ContentBody({
             seam. Paint the scroll container the SAME editor.background so the
             whole viewer region reads as one dark surface (matches the editor). */}
         <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
-          <PierreFile
-            file={{ name: contents.name, contents: contents.contents }}
-            options={{
-              theme: VIEWER_THEME,
-              themeType: 'dark',
-              overflow: wrapLines ? 'wrap' : 'scroll'
-            }}
-          />
+          {isPlainTextEligible(contents) && !highlightAnyway ? (
+            <PlainTextViewer contents={contents.contents} onHighlightAnyway={onHighlightAnyway} />
+          ) : (
+            <PierreFile
+              file={{ name: contents.name, contents: contents.contents }}
+              options={{
+                theme: VIEWER_THEME,
+                themeType: 'dark',
+                overflow: wrapLines ? 'wrap' : 'scroll'
+              }}
+            />
+          )}
         </div>
         {contents.truncated && (
           <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
@@ -1099,6 +1137,50 @@ function ViewerMessage({ text }: { text: string }): React.JSX.Element {
   return (
     <div className="flex-1 flex items-center justify-center min-h-0">
       <span className="text-xs text-text-muted select-none">{text}</span>
+    </div>
+  )
+}
+
+/** Crash fix #2 — true when `contents` is over the plain-text render
+ *  threshold (line count OR max line length — see the consts' doc comment).
+ *  `lineCount`/`maxLineLength` come from files.ts's bounded scan, already
+ *  computed server-side, so this is a plain comparison with no client-side
+ *  re-scan of the file text. */
+function isPlainTextEligible(contents: FileContents): boolean {
+  return (
+    contents.lineCount > PLAIN_TEXT_LINE_THRESHOLD ||
+    contents.maxLineLength > PLAIN_TEXT_LINE_LENGTH_THRESHOLD
+  )
+}
+
+/** Crash fix #2 — the default view for a file over the plain-text threshold:
+ *  an unhighlighted `<pre>` (a single text node, no Shiki tokenize pass, no
+ *  shadow-DOM-per-line) plus a "Load with highlighting anyway" affordance for
+ *  users who want the full <PierreFile> experience despite the cost. */
+function PlainTextViewer({
+  contents,
+  onHighlightAnyway
+}: {
+  contents: string
+  onHighlightAnyway: () => void
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-shrink-0 px-3 py-1 flex items-center justify-between border-b border-border-default">
+        <span className="text-[10px] text-text-muted select-none">
+          Large file — showing plain text
+        </span>
+        <button
+          type="button"
+          onClick={onHighlightAnyway}
+          className="text-[10px] text-accent hover:underline select-none"
+        >
+          Load with highlighting anyway
+        </button>
+      </div>
+      <pre className="flex-1 min-h-0 overflow-auto m-0 px-3 py-2 text-xs text-text-primary whitespace-pre font-mono">
+        {contents}
+      </pre>
     </div>
   )
 }

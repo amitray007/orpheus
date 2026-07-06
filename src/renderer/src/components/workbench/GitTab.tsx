@@ -335,6 +335,9 @@ const TREE_GIT_STATUS_VARS = {
 
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
+// Crash fix #2 (belt-and-suspenders) — see buildDiffOptions' doc comment.
+const DIFF_TOKENIZE_MAX_LINE_LENGTH = 1000
+
 // Live-refresh debounce — coalesces bursts from either push source (a save
 // touching several files, a `git add -A`) into one git:diff refetch.
 //
@@ -1266,6 +1269,40 @@ function DiffMessage({ text }: { text: string }): React.JSX.Element {
   )
 }
 
+/** Crash fix #1 — the default view for a `file.oversized` diff: a lightweight
+ *  placeholder instead of feeding the full patch into the non-virtualized
+ *  <PatchDiff> (which would materialize every line into shadow-DOM and
+ *  Shiki-tokenize it synchronously, the whole-app OOM/crash root cause). `N
+ *  lines` uses `additions + deletions` — already computed server-side from
+ *  the full chunk, so this needs no client-side re-scan of the patch text.
+ *  "Show anyway" hands control back to the caller for power users who want
+ *  to pay the cost knowingly. */
+function OversizedDiffPlaceholder({
+  lineCount,
+  onShowAnyway
+}: {
+  lineCount: number
+  onShowAnyway: () => void
+}): React.JSX.Element {
+  return (
+    <div
+      className="flex-1 flex flex-col items-center justify-center min-h-0 gap-2"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
+      <span className="text-xs text-text-muted select-none">
+        Large diff hidden — {lineCount.toLocaleString()} lines
+      </span>
+      <button
+        type="button"
+        onClick={onShowAnyway}
+        className="text-xs text-accent hover:underline select-none"
+      >
+        Show anyway
+      </button>
+    </div>
+  )
+}
+
 // --- Phase 2 edge states: not-a-repo (+ Git init) / clean ---------------------
 
 /** Shared empty-state shell — centered icon + title + sub-line + optional
@@ -1486,7 +1523,14 @@ function buildDiffOptions(
     theme: VIEWER_THEME,
     themeType: 'dark',
     diffStyle,
-    overflow: wrapLines ? 'wrap' : 'scroll'
+    overflow: wrapLines ? 'wrap' : 'scroll',
+    // Crash fix #2 (belt-and-suspenders) — the oversized-file gate above
+    // already keeps genuinely huge patches out of <PatchDiff> entirely, but a
+    // single extremely long line (a minified bundle's one-liner, still under
+    // the oversized byte/line thresholds) would otherwise force a full
+    // synchronous Shiki tokenize pass on that line. Cap it so Pierre falls
+    // back to plaintext for any one line beyond this length instead.
+    tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH
   }
   if (composers === null) return base
   return {
@@ -1539,6 +1583,12 @@ function DiffContentPane({
   localWiring,
   allowGithubComments
 }: DiffContentPaneProps): React.JSX.Element {
+  // Crash fix #1 — per-file "show anyway" override for an oversized diff.
+  // Lives here (not keyed to a single file, since DiffContentPane itself
+  // isn't remounted per selection — only the inner <PatchDiff key={path}> is)
+  // so switching away and back to an already-force-shown file doesn't ask
+  // again within the same Git-tab session.
+  const [shownAnyway, setShownAnyway] = useState<ReadonlySet<string>>(() => new Set())
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
   if (file.binary) {
@@ -1546,6 +1596,20 @@ function DiffContentPane({
       return <BinaryImageBody workspaceId={workspaceId} path={file.path} />
     }
     return <DiffMessage text="Binary file — no preview" />
+  }
+  if (file.oversized && !shownAnyway.has(file.path)) {
+    return (
+      <OversizedDiffPlaceholder
+        lineCount={file.additions + file.deletions}
+        onShowAnyway={() =>
+          setShownAnyway((prev) => {
+            const next = new Set(prev)
+            next.add(file.path)
+            return next
+          })
+        }
+      />
+    )
   }
   // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
   // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR

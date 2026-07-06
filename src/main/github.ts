@@ -21,6 +21,39 @@ import type {
 
 const execFile = promisify(childProcess.execFile)
 
+// Every cache in this module lives in the long-lived main process for the
+// life of the app. TTL alone only governs FRESHNESS on read — it never frees
+// memory, since an expired entry just sits there until something happens to
+// read that exact key again. Long sessions with many distinct cwd/branch/PR
+// keys (many worktrees, many PRs browsed over days) would otherwise grow
+// these Maps monotonically forever. putWithEviction bounds each cache: every
+// WRITE first prunes TTL-expired entries, then (if still over the cap) evicts
+// oldest-inserted entries FIFO until back at/under the cap. Reads are
+// untouched — an evicted key just re-fetches on next read, same as a TTL
+// miss; eviction can never surface stale/wrong data.
+const MAX_CACHE_ENTRIES = 200
+
+function putWithEviction<V extends { fetchedAt: number }>(
+  cache: Map<string, V>,
+  key: string,
+  value: V,
+  ttlMs: number,
+  maxEntries: number = MAX_CACHE_ENTRIES
+): void {
+  cache.set(key, value)
+
+  const now = Date.now()
+  for (const [k, entry] of cache) {
+    if (now - entry.fetchedAt >= ttlMs) cache.delete(k)
+  }
+
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey === undefined) break
+    cache.delete(oldestKey)
+  }
+}
+
 // In-memory cache keyed on `${cwd}\0${branch}`. Each entry holds the resolved
 // PR (or null = "no PR for this branch") and the unix ms it was fetched.
 // Hot tabs in Orpheus tend to re-render dozens of rows per second; without the
@@ -56,7 +89,7 @@ export async function getPrForBranch(cwd: string, branch: string): Promise<GhPul
   const promise = fetchPrFromGh(cwd, branch).finally(() => inflight.delete(key))
   inflight.set(key, promise)
   const value = await promise
-  prCache.set(key, { value, fetchedAt: Date.now() })
+  putWithEviction(prCache, key, { value, fetchedAt: Date.now() }, TTL_MS)
   return value
 }
 
@@ -168,11 +201,6 @@ function deriveChecks(
   if (anyFailure) return 'failure'
   if (anyPending) return 'pending'
   return 'success'
-}
-
-/** Invalidate every cache entry — used when the user opts to refresh manually. */
-export function clearGithubPrCache(): void {
-  prCache.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -301,13 +329,8 @@ export async function getPrDetail(cwd: string | null): Promise<GhPullRequestDeta
   const promise = fetchPrDetailFromGh(cwd, pr.number).finally(() => detailInflight.delete(key))
   detailInflight.set(key, promise)
   const value = await promise
-  detailCache.set(key, { value, fetchedAt: Date.now() })
+  putWithEviction(detailCache, key, { value, fetchedAt: Date.now() }, DETAIL_TTL_MS)
   return value
-}
-
-/** Invalidate every detail-cache entry — manual "Refresh" affordance. */
-export function clearGithubPrDetailCache(): void {
-  detailCache.clear()
 }
 
 // Raw gh JSON shapes (loose/untyped fields only, kept local to this module —
@@ -617,11 +640,6 @@ function reviewCommentsCacheKey(cwd: string, prNumber: number): string {
   return `${cwd}\0${prNumber}`
 }
 
-/** Invalidate every review-comments cache entry — manual "Refresh" affordance. */
-export function clearGithubReviewCommentsCache(): void {
-  reviewCommentsCache.clear()
-}
-
 // Raw shape of one element from `gh api .../pulls/{n}/comments` — only the
 // fields Phase 4a actually consumes (see pr-comments.md's confirmed key
 // list for the full set gh returns; everything else is left off this repo's
@@ -775,7 +793,12 @@ export async function getPrReviewComments(
   )
   reviewCommentsInflight.set(key, promise)
   const value = await promise
-  reviewCommentsCache.set(key, { value, fetchedAt: Date.now() })
+  putWithEviction(
+    reviewCommentsCache,
+    key,
+    { value, fetchedAt: Date.now() },
+    REVIEW_COMMENTS_TTL_MS
+  )
   return value
 }
 

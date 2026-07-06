@@ -1505,6 +1505,16 @@ export type GitDiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | '
  * and the renderer shows "Binary" instead of a line-count, routing image
  * extensions to an <img> preview (via files:readImage) and everything else to
  * a "no preview" placeholder rather than rendering the (blank) patch.
+ *
+ * `oversized` (crash fix #1 — see gitDiff.ts's OVERSIZED_LINE_THRESHOLD/
+ * OVERSIZED_BYTE_THRESHOLD) is true when the patch chunk exceeds a per-file
+ * line/byte cap. `additions`/`deletions`/`status`/`binary` are always computed
+ * from the FULL chunk regardless of this flag, so counts and comment
+ * line-anchoring stay correct — `oversized` only tells the renderer's
+ * DiffContentPane to hide the patch behind a "Large diff hidden — show
+ * anyway" placeholder instead of feeding it straight into the non-virtualized
+ * <PatchDiff>, which would otherwise materialize every line into shadow-DOM
+ * and Shiki-tokenize it synchronously (the whole-app OOM/crash root cause).
  */
 export type GitDiffFile = {
   path: string
@@ -1514,6 +1524,7 @@ export type GitDiffFile = {
   deletions: number
   oldPath?: string
   binary: boolean
+  oversized?: boolean
 }
 
 /**
@@ -1554,6 +1565,20 @@ export type FileContents = {
   truncated: boolean
   /** True when null bytes were detected; `contents` is empty. */
   binary: boolean
+  /**
+   * Crash fix #2 — cheap newline count over the read `contents` (bounded
+   * `indexOf` scan in files.ts, not a full `.split('\n')` allocation), so the
+   * renderer can gate full-file Shiki highlighting on line count without
+   * re-scanning a multi-MB string client-side. 0 for `binary`/empty files.
+   */
+  lineCount: number
+  /**
+   * Crash fix #2 — length of the longest line seen during that SAME bounded
+   * scan (capped — see files.ts's MAX_LINE_LENGTH_SCAN), so a minified
+   * single-line blob (low `lineCount`, huge single line) is also caught. 0
+   * for `binary`/empty files.
+   */
+  maxLineLength: number
 }
 
 /**

@@ -260,7 +260,49 @@ const EMPTY_CONTENTS: FileContents = {
   name: '',
   size: 0,
   truncated: false,
-  binary: false
+  binary: false,
+  lineCount: 0,
+  maxLineLength: 0
+}
+
+// ── Cheap line-shape scan (crash fix #2) ────────────────────────────────────
+// Bounds the scan itself so a multi-MB minified single-line file doesn't turn
+// "count the lines" into an O(n) worst case with a huge constant (scanning
+// literally every byte of a 3MB buffer looking for a newline that never
+// comes). Once either cap is hit, the result is already decisive: `lineCount`
+// past MAX_LINE_COUNT_SCAN is "plenty of lines", and `maxLineLength` past
+// MAX_LINE_LENGTH_SCAN is "plenty long" — the renderer only needs a threshold
+// comparison, not an exact count.
+const MAX_LINE_COUNT_SCAN = 20_000
+const MAX_LINE_LENGTH_SCAN = 20_000
+
+/** Cheap bounded scan for line count + longest line length — no `.split`
+ *  allocation, just a single forward pass with two early-exit caps. */
+function scanLineShape(text: string): { lineCount: number; maxLineLength: number } {
+  let lineCount = text.length > 0 ? 1 : 0
+  let maxLineLength = 0
+  let lineStart = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') {
+      maxLineLength = Math.max(maxLineLength, i - lineStart)
+      lineStart = i + 1
+      lineCount++
+      if (lineCount >= MAX_LINE_COUNT_SCAN && maxLineLength >= MAX_LINE_LENGTH_SCAN) break
+    } else if (i - lineStart >= MAX_LINE_LENGTH_SCAN) {
+      // This line alone already exceeds the length cap — record it and skip
+      // ahead to the next newline rather than continuing to increment i one
+      // byte at a time through the rest of a huge minified line.
+      maxLineLength = Math.max(maxLineLength, MAX_LINE_LENGTH_SCAN)
+      const next = text.indexOf('\n', i)
+      if (next === -1) break
+      lineStart = next + 1
+      lineCount++
+      i = next
+      if (lineCount >= MAX_LINE_COUNT_SCAN) break
+    }
+  }
+  maxLineLength = Math.max(maxLineLength, Math.min(text.length - lineStart, MAX_LINE_LENGTH_SCAN))
+  return { lineCount, maxLineLength }
 }
 
 /**
@@ -315,11 +357,21 @@ async function readFileContents(cwd: string, relPath: string): Promise<FileConte
   }
 
   if (looksBinary(buf)) {
-    return { contents: '', name, size, truncated: false, binary: true }
+    return {
+      contents: '',
+      name,
+      size,
+      truncated: false,
+      binary: true,
+      lineCount: 0,
+      maxLineLength: 0
+    }
   }
 
   const truncated = size > MAX_READ_BYTES
-  return { contents: buf.toString('utf8'), name, size, truncated, binary: false }
+  const contents = buf.toString('utf8')
+  const { lineCount, maxLineLength } = scanLineShape(contents)
+  return { contents, name, size, truncated, binary: false, lineCount, maxLineLength }
 }
 
 // ---------------------------------------------------------------------------

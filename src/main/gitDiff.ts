@@ -32,6 +32,20 @@ const execFile = promisify(childProcess.execFile)
 // case. Matches the spirit of files.ts's own read caps.
 const MAX_BUFFER = 32 * 1024 * 1024
 
+// ── Per-file oversized cap (crash fix #1) ───────────────────────────────────
+// The Git diff pane (<PatchDiff>) is NOT virtualized — it materializes every
+// diff line into shadow-DOM and Shiki-tokenizes the whole patch synchronously.
+// A single huge changed file (committed lockfile, generated bundle, big
+// rebase) can push the renderer into a multi-hundred-MB heap / OOM crash.
+// Line count is the primary signal (a minified single-line blob can still be
+// small in line count but huge in bytes, so byte size is checked too) — either
+// threshold flags the file `oversized`. The patch text is still SHIPPED on the
+// wire (renderer gates the RENDER, not the fetch — see GitTab.tsx's
+// DiffContentPane "show anyway" override); trimming the wire payload itself is
+// a separate, not-yet-needed optimization (rank 6 in the perf audit).
+const OVERSIZED_LINE_THRESHOLD = 2500
+const OVERSIZED_BYTE_THRESHOLD = 512 * 1024
+
 // `gh pr diff` on a big PR (60+ files, #117 style) is considerably larger
 // than a single working-tree diff — a generous cap well above the observed
 // ~14k-line/#117 case while still bounding worst case. Timeout is longer too:
@@ -116,14 +130,41 @@ function isBinaryPatchChunk(chunk: string): boolean {
   return /^Binary files .+ differ$/m.test(chunk) || /^GIT binary patch$/m.test(chunk)
 }
 
+/** True when a patch chunk exceeds the oversized line/byte threshold (crash
+ *  fix #1). Byte length is a cheap `.length` check (no scan); line count
+ *  needs a single pass but short-circuits via `indexOf` rather than
+ *  allocating a full `.split('\n')` array, so a multi-hundred-KB chunk isn't
+ *  itself an extra O(n) allocation on top of the ones `countPatchLines`
+ *  already does. Checked in this order (bytes first) since it's the cheaper
+ *  test and covers the "one giant minified line" case that a line-count
+ *  check alone would miss. */
+function isOversizedPatchChunk(chunk: string): boolean {
+  if (chunk.length > OVERSIZED_BYTE_THRESHOLD) return true
+  let lines = 0
+  let idx = 0
+  while (lines <= OVERSIZED_LINE_THRESHOLD) {
+    idx = chunk.indexOf('\n', idx)
+    if (idx === -1) break
+    idx++
+    lines++
+  }
+  return lines > OVERSIZED_LINE_THRESHOLD
+}
+
 /** Build one `GitDiffFile` from a single-file patch chunk (already split out
- *  of the combined `git diff HEAD` output). */
+ *  of the combined `git diff HEAD` output). additions/deletions/status/binary
+ *  are always computed from the FULL chunk before the oversized check runs
+ *  (crash fix #1) — so the tree's "+N -M" counts and comment line-anchoring
+ *  stay correct for an oversized file exactly as they are for a normal one;
+ *  only the RENDERER'S decision to feed `patch` into <PatchDiff> is gated by
+ *  `oversized`, not this function's own output. */
 function fileFromChunk(chunk: string): GitDiffFile {
   const { path, oldPath } = parsePatchPaths(chunk)
   const status = parsePatchStatus(chunk, path, oldPath)
   const { additions, deletions } = countPatchLines(chunk)
   const binary = isBinaryPatchChunk(chunk)
-  return { path, status, patch: chunk, additions, deletions, oldPath, binary }
+  const oversized = !binary && isOversizedPatchChunk(chunk)
+  return { path, status, patch: chunk, additions, deletions, oldPath, binary, oversized }
 }
 
 /** Tracked changes (staged + unstaged, combined) vs HEAD, split per file. */
