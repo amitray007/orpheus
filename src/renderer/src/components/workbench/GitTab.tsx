@@ -350,6 +350,15 @@ function DiffTreeToolbar({
     <div className="flex items-center h-7 px-1">
       <button
         type="button"
+        // Re-click-to-close fix (mirrors FilesTab's TreeToolbar — see its
+        // comment): @pierre/trees' search `<input>` closes search on its own
+        // blur by default, and a plain button click's mousedown fires BEFORE
+        // its click, stealing focus from the still-open search input and
+        // closing search synchronously — so onToggleSearch then reads a
+        // stale "already closed" state and reopens it instead of leaving it
+        // closed. Blocking the default mousedown action keeps focus on the
+        // input so no blur-close race precedes onToggleSearch.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onToggleSearch}
         aria-pressed={searchOpen}
         title="Search changed files"

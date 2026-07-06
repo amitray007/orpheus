@@ -333,6 +333,17 @@ function TreeToolbar({
     <div className="flex items-center h-7 px-1">
       <button
         type="button"
+        // Re-click-to-close fix: @pierre/trees' search `<input>` closes
+        // search on its OWN blur (searchBlurBehavior defaults to "close" —
+        // see FileTreeView.js). A normal button click first fires
+        // mousedown (which shifts DOM focus to this button, blurring the
+        // still-focused search input and closing search SYNCHRONOUSLY)
+        // and only then fires click/onToggleSearch — which then reads
+        // `searchOpen` as already-false and REOPENS it, so a re-click while
+        // the input has focus visually does nothing. Blocking the default
+        // mousedown action keeps focus on the input, so no blur-close fires
+        // before onToggleSearch runs, and it observes the TRUE open state.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onToggleSearch}
         aria-pressed={searchOpen}
         title="Search files"
