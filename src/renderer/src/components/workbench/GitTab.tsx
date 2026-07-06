@@ -289,6 +289,7 @@ import {
   type GhSubmitResult
 } from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
+import { preloadDiffHighlighter } from './diffHighlighterPreload'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -337,6 +338,21 @@ const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
 // Crash fix #2 (belt-and-suspenders) — see buildDiffOptions' doc comment.
 const DIFF_TOKENIZE_MAX_LINE_LENGTH = 1000
+
+// Pierre-adoption Batch 1a — whole-diff byte cap (distinct from the per-LINE
+// cap above). BaseCodeOptions.tokenizeMaxLength (confirmed in
+// node_modules/@pierre/diffs/dist/types.d.ts:300) bounds the TOTAL bytes
+// Pierre will tokenize with Shiki before falling back to plain (uncoloured)
+// text for the rest — belt-and-suspenders alongside the OversizedDiffPlaceholder
+// gate above `buildDiffOptions`' caller: that gate keeps genuinely huge patches
+// out of <PatchDiff> entirely, while this handles the mid-size case (a
+// large-but-ordinary-line-length file that's under the placeholder's
+// byte/line thresholds but would still be a heavy synchronous tokenize pass).
+// Pierre's own default (DEFAULT_TOKENIZE_MAX_LENGTH, dist/constants.js) is
+// 100_000 bytes; 750_000 gives real-world diffs (a few thousand lines) full
+// highlighting while still bailing out gracefully to plaintext well before
+// the OversizedDiffPlaceholder's own much larger hard cap.
+const DIFF_TOKENIZE_MAX_LENGTH = 750_000
 
 // Live-refresh debounce — coalesces bursts from either push source (a save
 // touching several files, a `git add -A`) into one git:diff refetch.
@@ -1520,7 +1536,39 @@ function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT'
  *  its own comment. This function's return value still only depends on
  *  primitives (diffStyle/wrapLines/hasComposers), which is what lets the
  *  caller's memo actually recognize two calls as equal instead of always
- *  observing a new object and forcing a full diff DOM re-apply. */
+ *  observing a new object and forcing a full diff DOM re-apply.
+ *
+ *  Pierre-adoption Batch 1a (docs/learnings/pierre-libraries.md,
+ *  scratchpad/pierre-roadmap.json "quick-win" items) — four static option
+ *  fields confirmed against node_modules/@pierre/diffs/dist/types.d.ts's
+ *  `BaseDiffOptions`/`BaseCodeOptions` before adding (versions drift; every
+ *  field name/value below was checked against the installed 1.2.12, not
+ *  assumed from the README):
+ *   - `lineDiffType: 'word-alt'` — CDP-verified (this pass) that Pierre
+ *     already renders per-token intra-line highlighting on a MODIFIED line
+ *     (an added/deleted line has no counterpart to diff against, so it's
+ *     solid — that's correct, not a bug) even without this field set, since
+ *     'word-alt' is BaseDiffOptions' own default. Set explicitly anyway so
+ *     the choice is documented in code, not just inherited silently, and so
+ *     a future Pierre version changing its default doesn't silently change
+ *     Orpheus's rendering.
+ *   - `tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH` — see that constant's own
+ *     comment: a whole-diff byte cap distinct from `tokenizeMaxLineLength`
+ *     above, belt-and-suspenders alongside (not a replacement for) the
+ *     OversizedDiffPlaceholder gate the caller applies before this component
+ *     ever mounts <PatchDiff>.
+ *   - `diffIndicators: 'classic'` — GitHub-style +/-  glyphs in the gutter
+ *     instead of the default 'bars' (a plain colored vertical bar with no
+ *     glyph). Chosen over 'bars' because Orpheus's Git tab is explicitly a
+ *     git-review surface where users already have a GitHub-diff mental
+ *     model — the +/- glyph reads faster than a color-only bar at a glance,
+ *     and CDP-verified (this pass) that 'classic' renders cleanly against
+ *     the pierre-dark gutter background.
+ *   - `hunkSeparators: 'line-info'` — KEPT (already the default) rather than
+ *     changed, since 'line-info' is what renders the "N unmodified lines"
+ *     collapsed-context band the task requires stay visible. Set explicitly
+ *     for the same self-documentation reason as lineDiffType above.
+ */
 function buildDiffOptions(
   diffStyle: DiffStyle,
   wrapLines: boolean,
@@ -1537,7 +1585,18 @@ function buildDiffOptions(
     // the oversized byte/line thresholds) would otherwise force a full
     // synchronous Shiki tokenize pass on that line. Cap it so Pierre falls
     // back to plaintext for any one line beyond this length instead.
-    tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH
+    tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH,
+    // Whole-diff cap — see DIFF_TOKENIZE_MAX_LENGTH's own comment.
+    tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH,
+    // Word/token-level intra-line diff highlighting — see this function's
+    // own doc comment for why this is set explicitly despite matching the
+    // library default.
+    lineDiffType: 'word-alt',
+    // GitHub-style +/- gutter glyphs — see this function's own doc comment.
+    diffIndicators: 'classic',
+    // Renders the "N unmodified lines" collapsed-context band — already the
+    // library default; set explicitly for self-documentation.
+    hunkSeparators: 'line-info'
   }
   if (!hasComposers) return base
   return {
@@ -1899,6 +1958,17 @@ export function GitTab({
   worktreeParentCwd,
   worktreeBranch
 }: GitTabProps): React.JSX.Element {
+  // Pierre-adoption Batch 1a, quick-win #4 — warm @pierre/diffs' shared Shiki
+  // highlighter once per app lifetime so the first <PatchDiff> mount below
+  // doesn't pay Shiki's cold-resolve cost on the user's first paint. Cheap to
+  // call on every GitTab mount (tab switch, workspace change): the module's
+  // own guard makes every call after the very first a no-op. See
+  // diffHighlighterPreload.ts's own header for the full rationale + why no
+  // `preferredHighlighter` is passed.
+  useEffect(() => {
+    preloadDiffHighlighter()
+  }, [])
+
   const [files, setFiles] = useState<GitDiffFile[]>([])
   // Phase 2: `repo` starts optimistic (`true`) so a first-paint flash of the
   // "Not a git repository" empty state doesn't show for an ordinary repo
