@@ -43,7 +43,7 @@ import {
   type FileTreeRenameEvent,
   type FileTreeSortComparator
 } from '@pierre/trees'
-import { File as PierreFile } from '@pierre/diffs/react'
+import { File as PierreFile, Virtualizer } from '@pierre/diffs/react'
 import { List, MagnifyingGlass, FolderPlus, FilePlus } from '@phosphor-icons/react'
 import type { FileEntry, FileContents, FileImage, GitStatusEntry } from '@shared/types'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
@@ -126,17 +126,24 @@ const TREE_IGNORED_DIM_CSS = `
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
 // ── Crash fix #2 — plain-text render threshold ──────────────────────────────
-// <PierreFile> is NOT virtualized — it materializes every line into
-// shadow-DOM and Shiki-tokenizes the whole file synchronously on the render
-// thread. Independent of the 3MB read cap (files.ts's MAX_READ_BYTES): a
-// merely large-but-under-3MB file can still jank/freeze the UI for hundreds
-// of ms. Above either threshold, default to a plain <pre> (no highlighting)
-// with a "Load with highlighting anyway" affordance. Line count is checked
-// FIRST since it's the common case (a big generated/data file); max line
-// length catches the minified-single-line case a line-count check alone
-// would miss (files.ts's FileContents.maxLineLength, from the same bounded
-// scan as lineCount — no extra client-side re-scan of the file text).
-const PLAIN_TEXT_LINE_THRESHOLD = 5000
+// Pierre adoption batch 2a: <PierreFile> now renders inside a <Virtualizer>
+// (see ContentBody below), so it windows to VirtualizedFile instead of
+// materializing every line into shadow-DOM — a 30k+ line file now costs a
+// few hundred DOM rows, not tens of thousands. That's why this cap was
+// raised substantially (6x) rather than removed: virtualization windows the
+// DOM, but Shiki still tokenizes the WHOLE file text synchronously on the
+// render thread on first mount (the not-yet-landed worker-pool batch would
+// move that off-thread) — so a merely large-but-under-3MB file can still
+// jank the UI for a noticeable stretch even though the DOM stays small.
+// Independent of the 3MB read cap (files.ts's MAX_READ_BYTES). Above either
+// threshold, default to a plain <pre> (no highlighting) with a "Load with
+// highlighting anyway" affordance — the ultimate safety net above the new
+// (much higher) cap. Line count is checked FIRST since it's the common case
+// (a big generated/data file); max line length catches the
+// minified-single-line case a line-count check alone would miss (files.ts's
+// FileContents.maxLineLength, from the same bounded scan as lineCount — no
+// extra client-side re-scan of the file text).
+const PLAIN_TEXT_LINE_THRESHOLD = 30_000
 const PLAIN_TEXT_LINE_LENGTH_THRESHOLD = 5000
 
 // --- Tier → visible-paths + dim wiring (§11) -------------------------------
@@ -1065,11 +1072,32 @@ function ContentBody({
             background behind its actual text extent — empty space below the
             last line / right of short lines would show the PANEL background as a
             seam. Paint the scroll container the SAME editor.background so the
-            whole viewer region reads as one dark surface (matches the editor). */}
-        <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
-          {isPlainTextEligible(contents) && !highlightAnyway ? (
+            whole viewer region reads as one dark surface (matches the editor).
+            Pierre adoption batch 2a — line-level virtualization: <Virtualizer>
+            IS the scroll root (it renders the fixed-height `overflow` div +
+            calls `.setup(root)` on mount, see node_modules/@pierre/diffs/dist/
+            components/Virtualizer.js). <PierreFile>'s internal useFileInstance
+            hook calls useVirtualizer() and, when it finds this ancestor,
+            mounts VirtualizedFile instead of File — same <PierreFile> JSX, no
+            extra prop. Only wrapped on the highlighted-viewer branch (not the
+            plain-text <pre> branch below, which has no Pierre instance to
+            virtualize — an unused <Virtualizer> would just be a no-op
+            ResizeObserver, so it's simpler to gate it on the branch that
+            needs it). See buildDiffOptions'/OversizedDiffPlaceholder's GitTab
+            counterparts for the identical mechanism + annotation-compat
+            verification (this viewer has no annotations to worry about). */}
+        {isPlainTextEligible(contents) && !highlightAnyway ? (
+          <div
+            className="flex-1 min-h-0 overflow-auto"
+            style={{ backgroundColor: PIERRE_VIEWER_BG }}
+          >
             <PlainTextViewer contents={contents.contents} onHighlightAnyway={onHighlightAnyway} />
-          ) : (
+          </div>
+        ) : (
+          <Virtualizer
+            className="flex-1 min-h-0 overflow-auto"
+            style={{ backgroundColor: PIERRE_VIEWER_BG }}
+          >
             <PierreFile
               file={{ name: contents.name, contents: contents.contents }}
               options={{
@@ -1078,8 +1106,8 @@ function ContentBody({
                 overflow: wrapLines ? 'wrap' : 'scroll'
               }}
             />
-          )}
-        </div>
+          </Virtualizer>
+        )}
         {contents.truncated && (
           <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
             file truncated at 3MB

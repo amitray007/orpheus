@@ -1512,9 +1512,12 @@ export type GitDiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | '
  * from the FULL chunk regardless of this flag, so counts and comment
  * line-anchoring stay correct — `oversized` only tells the renderer's
  * DiffContentPane to hide the patch behind a "Large diff hidden — show
- * anyway" placeholder instead of feeding it straight into the non-virtualized
- * <PatchDiff>, which would otherwise materialize every line into shadow-DOM
- * and Shiki-tokenize it synchronously (the whole-app OOM/crash root cause).
+ * anyway" placeholder instead of feeding it straight into <PatchDiff>. As of
+ * Pierre adoption batch 2a, <PatchDiff> renders inside a <Virtualizer> (only
+ * ~visible rows hit shadow-DOM), so this cap was raised substantially rather
+ * than removed — it now exists mainly to protect against the still-
+ * synchronous whole-patch Shiki tokenize pass on an astronomically large
+ * single file, not DOM size.
  */
 export type GitDiffFile = {
   path: string

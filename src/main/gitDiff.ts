@@ -34,18 +34,26 @@ const execFile = promisify(childProcess.execFile)
 const MAX_BUFFER = 32 * 1024 * 1024
 
 // ── Per-file oversized cap (crash fix #1) ───────────────────────────────────
-// The Git diff pane (<PatchDiff>) is NOT virtualized — it materializes every
-// diff line into shadow-DOM and Shiki-tokenizes the whole patch synchronously.
-// A single huge changed file (committed lockfile, generated bundle, big
-// rebase) can push the renderer into a multi-hundred-MB heap / OOM crash.
-// Line count is the primary signal (a minified single-line blob can still be
-// small in line count but huge in bytes, so byte size is checked too) — either
-// threshold flags the file `oversized`. The patch text is still SHIPPED on the
-// wire (renderer gates the RENDER, not the fetch — see GitTab.tsx's
-// DiffContentPane "show anyway" override); trimming the wire payload itself is
-// a separate, not-yet-needed optimization (rank 6 in the perf audit).
-const OVERSIZED_LINE_THRESHOLD = 2500
-const OVERSIZED_BYTE_THRESHOLD = 512 * 1024
+// Pierre adoption batch 2a: the Git diff pane (<PatchDiff>) is now wrapped in
+// <Virtualizer> (GitTab.tsx's DiffContentPane), so it renders windowed
+// (VirtualizedFileDiff) instead of materializing every diff line into
+// shadow-DOM — a 50k-line diff now costs a few hundred DOM rows, not 50k.
+// That's why this cap was raised substantially (20x) rather than removed:
+// virtualization windows the DOM, but Shiki still tokenizes the WHOLE patch
+// text synchronously on the main thread on first render (that's the separate
+// worker-pool batch, not yet landed) — so an astronomically large single-file
+// patch (a multi-MB committed lockfile/bundle) can still stall/OOM the
+// renderer even though the DOM itself stays small. Line count is the primary
+// signal (a minified single-line blob can still be small in line count but
+// huge in bytes, so byte size is checked too) — either threshold flags the
+// file `oversized`, which still gates the OversizedDiffPlaceholder as the
+// ultimate safety net (see GitTab.tsx's DiffContentPane "show anyway"
+// override). The patch text is still SHIPPED on the wire regardless
+// (renderer gates the RENDER, not the fetch); trimming the wire payload
+// itself is a separate, not-yet-needed optimization (rank 6 in the perf
+// audit).
+const OVERSIZED_LINE_THRESHOLD = 50_000
+const OVERSIZED_BYTE_THRESHOLD = 8 * 1024 * 1024
 
 // `gh pr diff` on a big PR (60+ files, #117 style) is considerably larger
 // than a single working-tree diff — a generous cap well above the observed

@@ -242,7 +242,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
-import { PatchDiff } from '@pierre/diffs/react'
+import { PatchDiff, Virtualizer } from '@pierre/diffs/react'
 import {
   List,
   Rows,
@@ -1313,11 +1313,18 @@ function DiffMessage({ text }: { text: string }): React.JSX.Element {
 }
 
 /** Crash fix #1 — the default view for a `file.oversized` diff: a lightweight
- *  placeholder instead of feeding the full patch into the non-virtualized
- *  <PatchDiff> (which would materialize every line into shadow-DOM and
- *  Shiki-tokenize it synchronously, the whole-app OOM/crash root cause). `N
- *  lines` uses `additions + deletions` — already computed server-side from
- *  the full chunk, so this needs no client-side re-scan of the patch text.
+ *  placeholder instead of feeding the full patch into <PatchDiff>. Pierre
+ *  adoption batch 2a wraps the diff pane in <Virtualizer>, so <PatchDiff>
+ *  now renders windowed (VirtualizedFileDiff) — only ~visible rows hit
+ *  shadow-DOM — which is why gitDiff.ts's OVERSIZED_LINE_THRESHOLD/
+ *  OVERSIZED_BYTE_THRESHOLD were raised substantially rather than removed:
+ *  Shiki still tokenizes the whole patch text synchronously on the main
+ *  thread (virtualization windows the DOM, not the tokenize pass — that's
+ *  the separate, not-yet-landed worker-pool batch), so an astronomically
+ *  large patch can still stall/crash the renderer. This placeholder is kept
+ *  as the ultimate safety net above the new (much higher) cap. `N lines`
+ *  uses `additions + deletions` — already computed server-side from the
+ *  full chunk, so this needs no client-side re-scan of the patch text.
  *  "Show anyway" hands control back to the caller for power users who want
  *  to pay the cost knowingly. */
 function OversizedDiffPlaceholder({
@@ -1773,7 +1780,33 @@ function DiffContentPaneImpl({
     )
   }
   return (
-    <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
+    // Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
+    // the scroll root itself (it renders the fixed-height `overflow`
+    // container + an inner content div and calls `.setup(root)` on mount, see
+    // node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
+    // PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
+    // (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
+    // useVirtualizer() internally and, when non-null, instantiates
+    // VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
+    // needed, no `metrics` required (VirtualizedFileDiff's constructor
+    // defaults it — see computeVirtualFileMetrics.js). This replaces the
+    // previous plain `overflow-auto` div, which is exactly the scroll root
+    // <Virtualizer> now owns.
+    //
+    // Annotation/gutter compatibility (verified against the installed
+    // 1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
+    // only overrides layout/visibility bookkeeping — `renderAnnotation`/
+    // `renderGutterUtility`/`lineAnnotations` are rendered by the same
+    // shared `renderDiffChildren` template (light-DOM children projected
+    // into Pierre's shadow-DOM slots) regardless of virtualization, and
+    // `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
+    // to line numbers independent of which lines are currently windowed —
+    // scrolling a commented line back into view re-materializes its row
+    // (and slot) exactly like any other line.
+    <Virtualizer
+      className="flex-1 min-h-0 overflow-auto"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
       <PatchDiff
         key={file.path}
         patch={file.patch}
@@ -1803,7 +1836,7 @@ function DiffContentPaneImpl({
             : undefined
         }
       />
-    </div>
+    </Virtualizer>
   )
 }
 
