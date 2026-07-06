@@ -134,6 +134,7 @@ import './commands/ws-ls.js'
 import './commands/ws-status.js'
 import './commands/ws-wait.js'
 import './commands/ws-send.js'
+import './commands/reviews.js'
 import './commands/project.js'
 // help.ts / ai.ts are the agent-facing documentation layer (see help-model.ts
 // for the shared doc model both are built from). Imported last since they
@@ -501,6 +502,9 @@ registerCommand('whoami', {
 // 'ws wait'    is registered by src/commands/ws-wait.ts (imported at top of file)
 // 'ws send'    is registered by src/commands/ws-send.ts (imported at top of file)
 
+// 'reviews list', 'reviews resolve', 'reviews unresolve' are registered by
+// src/commands/reviews.ts (imported at top of file)
+
 // 'project ls' and 'project show' are registered by src/commands/project.ts (imported at top of file)
 
 // ---------------------------------------------------------------------------
@@ -538,6 +542,9 @@ Commands:
   ws read             Read workspace transcript
   ws wait             Wait for workspace(s) to reach a terminal state
   ws send             Send input to a workspace
+  reviews list        List local review comments
+  reviews resolve     Mark a local review comment as resolved
+  reviews unresolve   Mark a local review comment as unresolved
   project ls          List projects
   project show        Show project details
   help                Show full CLI reference (text/md/json)

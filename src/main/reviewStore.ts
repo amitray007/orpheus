@@ -21,11 +21,12 @@
 // src/main/commandServer.ts's `reviews.list` dispatch action (see its own
 // comment) surfaces the same data over the existing `orpheus` CLI/HTTP
 // command channel, so an agent doesn't need direct DB access at all — just
-// `orpheus cmd reviews.list --workspaceId <id>` (or the equivalent HTTP
-// POST /cmd body). A future `reviews.add`/`reviews.resolve` write action is
-// the natural next step (not added here — this phase's mandate is read
-// access + the store itself, see the module's own task notes) and would
-// slot into the SAME dispatch table alongside this one.
+// `orpheus reviews list` (or the equivalent HTTP POST /cmd body with
+// action: 'reviews.list'). The write-side counterpart,
+// `reviews.setResolved` (also in commandServer.ts's dispatch table), plus
+// the `orpheus reviews resolve|unresolve <id>` CLI commands, close the loop:
+// an agent can list unresolved comments, act on them (`ws send`), and mark
+// them resolved — all without touching the renderer.
 //
 // CRUD mirrors src/main/footerActions.ts's shape: plain better-sqlite3
 // prepared statements against getDb(), row <-> LocalReviewComment mapping

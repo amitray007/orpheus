@@ -20,7 +20,10 @@ import { getProject } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
-import { listByWorkspace as listLocalReviewComments } from './reviewStore'
+import {
+  listByWorkspace as listLocalReviewComments,
+  setResolved as setLocalReviewCommentResolved
+} from './reviewStore'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -526,6 +529,26 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
       if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
       return listLocalReviewComments(workspaceId)
+    },
+
+    // Resolve-back — the write-side counterpart to reviews.list, mirrored
+    // shape/auth/error handling exactly (same workspaceId convention as
+    // reviews.list/whoami.resolve, same reviewStore.ts function the
+    // reviews:setResolved IPC handler uses). This closes the CLI/command-server
+    // parity gap flagged in reviewStore.ts's own header comment and in
+    // docs/learnings/agent-review-loop.md — an agent can now flip a local
+    // review comment's resolved flag from outside the renderer, completing
+    // the read -> act (ws send) -> resolve loop.
+    // Args:
+    //   id         (required) — the review comment id to update
+    //   resolved   (required, boolean) — the new resolved value
+    // Comment ids are globally unique (randomUUID), so — unlike reviews.list —
+    // there is no workspaceId to resolve/scope by here; mirrors the
+    // reviews:setResolved IPC handler, which also takes only { id, resolved }.
+    'reviews.setResolved': (args) => {
+      if (typeof args.id !== 'string' || args.id === '') throw new Error('args.id is required')
+      if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
+      return setLocalReviewCommentResolved(args.id, args.resolved)
     }
   }
 }
