@@ -395,6 +395,16 @@ export interface InvokeChannelMap {
   // existing `git:log` — CommitsTab.tsx only ever has `workspaceId`, same as
   // GitTab's other props, and has no other route to a raw cwd string.
   'git:logForWorkspace': { req: [{ workspaceId: string; limit?: number }]; res: GitCommit[] }
+  // Workbench Git tab — Pierre adoption batch 4 (safe/read-only slice):
+  // conflict DETECTION only, no resolution write-back. Resolves `workspaceId`
+  // -> cwd like git:diff/git:init above, then runs a read-only `git status
+  // --porcelain=v1` and returns the repo-relative paths whose XY code is one
+  // of the nine "unmerged" combinations (UU/AA/DD/AU/UA/DU/UD — see
+  // src/main/git.ts's getConflictedPaths). Total (never rejects) — `[]` for a
+  // non-repo, a clean tree, or any git failure. The renderer (GitTab.tsx) uses
+  // this to gate its @pierre/diffs <UnresolvedFile> conflict-viewer branch;
+  // it performs NO git mutation of any kind.
+  'git:conflicts': { req: [{ workspaceId: string }]; res: string[] }
   // Workbench Files tab — file tree + viewer data sources (Stage A). All three
   // resolve the workspace's cwd from `workspaceId` internally; res types live
   // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.

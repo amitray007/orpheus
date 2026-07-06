@@ -14,7 +14,14 @@
 // `workspaceId`, never a raw cwd.
 // ---------------------------------------------------------------------------
 
-import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
+import {
+  getGitStatus,
+  listBranches,
+  listCommits,
+  countCommits,
+  gitInit,
+  getConflictedPaths
+} from '../git'
 import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
 import {
   getPrForBranch,
@@ -78,6 +85,16 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('git:logForWorkspace', (_e, { workspaceId, limit }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return Promise.resolve(cwd ? listCommits(cwd, { limit }) : [])
+  })
+
+  // Pierre adoption batch 4 (safe/read-only slice) — merge-conflict
+  // DETECTION only. Resolves workspaceId -> cwd like git:diff/git:init above,
+  // then defers to git.ts's getConflictedPaths (a read-only `git status
+  // --porcelain=v1` scan for unmerged XY codes). No git mutation of any kind
+  // — resolution/write-back is explicitly deferred, see git.ts's doc comment.
+  handle('git:conflicts', (_e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? getConflictedPaths(cwd) : Promise.resolve([])
   })
 
   // ---------------------------------------------------------------------------

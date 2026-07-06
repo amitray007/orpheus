@@ -237,12 +237,58 @@
 //     subtle by default (muted icon, transparent bg) and only turns
 //     accent-filled on `:hover`/`:focus-visible` of the button itself --
 //     purely a CSS change, no positioning logic touched.
+//
+// Pierre adoption batch 4 (this pass) — merge-conflict DETECTION + DISPLAY,
+// the explicitly-scoped SAFE/READ-ONLY half of the roadmap's "in-app
+// merge-conflict resolution UI" item (scratchpad/pierre-roadmap.json's
+// "build-on-top" group). Writes NOTHING — no `resolveConflict`/write-back, no
+// hunk accept/reject, no git mutation of any kind; that's deliberately
+// deferred to a later batch.
+//
+//   Detection (main) — a new read-only `git:conflicts` IPC (src/main/git.ts's
+//     getConflictedPaths) runs `git status --porcelain=v1` and returns the
+//     repo-relative paths whose XY code is one of the nine "unmerged"
+//     combinations (UU/AA/DD/AU/UA/DU/UD). Fetched alongside the working-tree
+//     diff (initial load + the same debounced git:statusChanged/files:changed
+//     refresh this component already drives) into `conflictedPaths` state — a
+//     plain `ReadonlySet<string>` so DiffContentPane can do an O(1) membership
+//     check per selected file.
+//
+//   Display (renderer) — `parseMergeConflictDiffFromFile` and
+//     `useUnresolvedFileInstance` (the roadmap's guessed "headless parser")
+//     turned out NOT to be part of @pierre/diffs' public API surface: neither
+//     is re-exported from `.` or `./react` in the installed 1.2.12 (verified
+//     against node_modules/@pierre/diffs/dist/{index,react/index}.d.ts — both
+//     only exist under the package's un-exported `dist/utils/`/
+//     `dist/react/utils/` paths, which Node's `exports` map blocks from being
+//     deep-imported). What IS public and exactly fits this slice:
+//       - `<UnresolvedFile>` (from `@pierre/diffs/react`) — takes a plain
+//         `FileContents {name, contents}` (the raw on-disk text, conflict
+//         markers included — exactly what `files:readFile` already returns)
+//         and renders Pierre's own current/incoming(/diff3 base) conflict
+//         regions. `mergeConflictActionsType: 'none'` disables the built-in
+//         accept/reject action slots entirely — no custom disabled-button
+//         chrome needed, Pierre just doesn't render any action UI in that
+//         mode. `onMergeConflictAction`/`onMergeConflictResolve` are left
+//         unset — nothing is wired to resolve/write back.
+//       - `MERGE_CONFLICT_START_MARKER_REGEX` (from `@pierre/diffs`, the base
+//         package — also not re-exported under `/react`, imported directly)
+//         — the SAME regex (`^<{7,}`) Pierre's own internal parser uses to
+//         find conflict-region starts, reused here (client-side, per selected
+//         file's raw contents) purely to compute the "N conflicts" badge
+//         count, since the count-producing internals aren't reachable.
+//     ConflictDiffPane (below) is a NEW branch inside DiffContentPane, gated
+//     on `conflictedPaths.has(file.path)` — every non-conflicted file (the
+//     overwhelmingly common case) renders through the exact same
+//     <PatchDiff>/<Virtualizer> path as before, untouched. Dormant whenever
+//     the repo has no live conflict (the ordinary case), by construction.
 // ---------------------------------------------------------------------------
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
-import { PatchDiff, Virtualizer } from '@pierre/diffs/react'
+import { PatchDiff, UnresolvedFile, Virtualizer } from '@pierre/diffs/react'
+import { MERGE_CONFLICT_START_MARKER_REGEX } from '@pierre/diffs'
 import {
   List,
   Rows,
@@ -258,6 +304,7 @@ import {
   Check
 } from '@phosphor-icons/react'
 import type {
+  FileContents as GitFileContents,
   FileImage,
   GhPullRequest,
   GhPullRequestDetail,
@@ -1289,6 +1336,15 @@ interface DiffContentPaneProps {
    *  Local] SourceToggle entirely in working-tree mode — there's no PR to
    *  post a GitHub comment to there, so the composer is local-only. */
   allowGithubComments: boolean
+  /** Pierre adoption batch 4 (safe/read-only slice) — repo-relative paths
+   *  currently reported as merge-conflicted (`git status`'s unmerged XY
+   *  codes — see src/main/git.ts's getConflictedPaths). When the selected
+   *  `file.path` is a member, DiffContentPane renders ConflictDiffPane
+   *  (@pierre/diffs' <UnresolvedFile>, read-only) instead of the normal
+   *  <PatchDiff> — see the module header's "Display" note. Empty in the
+   *  overwhelmingly common case (no live conflict), so this branch is
+   *  dormant by construction until a real conflict exists. */
+  conflictedPaths: ReadonlySet<string>
 }
 
 /** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
@@ -1653,6 +1709,115 @@ function buildDiffOptions(
   }
 }
 
+// --- Pierre adoption batch 4 — merge-conflict DETECTION + DISPLAY (READ-ONLY) ---
+
+/** Counts conflict regions in a conflicted file's raw contents by scanning
+ *  for `<<<<<<<` conflict-start markers, one per region — the SAME regex
+ *  (`MERGE_CONFLICT_START_MARKER_REGEX`, `^<{7,}`) @pierre/diffs' own
+ *  internal parser (parseMergeConflictDiffFromFile) uses to find conflict
+ *  boundaries. Reimplemented here (rather than calling that parser directly)
+ *  because it — and the `useUnresolvedFileInstance` hook that surfaces its
+ *  `actions`/`markerRows` output — are NOT part of the package's public API:
+ *  verified against the installed 1.2.12's dist/{index,react/index}.d.ts,
+ *  both only live under `dist/utils/`/`dist/react/utils/`, which the
+ *  package's `exports` map doesn't expose for deep-import. This is a plain
+ *  per-line regex test (no parsing/rendering), matching the module header's
+ *  "Display" note. */
+function countConflictRegions(contents: string): number {
+  let count = 0
+  for (const line of contents.split('\n')) {
+    if (MERGE_CONFLICT_START_MARKER_REGEX.test(line)) count++
+  }
+  return count
+}
+
+/** Pierre-adoption batch 4 — the conflict-viewer branch of the diff pane,
+ *  rendered instead of the normal <PatchDiff> whenever the selected file's
+ *  path is in `conflictedPaths` (see the module header's "Display" note).
+ *  READ-ONLY: fetches the file's raw on-disk contents (conflict markers
+ *  included) via the existing `files:readFile` IPC — the same one FilesTab's
+ *  text viewer and this file's own BinaryImageBody use — and feeds them
+ *  straight into @pierre/diffs/react's `<UnresolvedFile>`, which parses the
+ *  `<<<<<<<`/`|||||||`/`=======`/`>>>>>>>` markers (diff3 base region
+ *  included, if present) and renders the current/incoming regions itself; no
+ *  client-side diff/patch construction needed.
+ *
+ *  `mergeConflictActionsType: 'none'` is the entire "no resolve buttons"
+ *  requirement — Pierre renders NO accept/reject action slots at all in that
+ *  mode (confirmed against components/UnresolvedFile.d.ts's
+ *  `MergeConflictActionsTypeOption`), so there's no disabled-button chrome to
+ *  build. `onMergeConflictAction`/`onMergeConflictResolve` are left
+ *  unset — nothing here ever calls `resolveConflict` or `files:writeFile`;
+ *  that write-back path is explicitly deferred to a later batch.
+ *
+ *  The "N conflicts" badge uses `countConflictRegions` on the SAME fetched
+ *  contents (not a second read) — see that function's doc comment for why
+ *  it's a local regex scan rather than a call into Pierre's own (non-public)
+ *  parser. */
+function ConflictDiffPane({
+  workspaceId,
+  path,
+  wrapLines
+}: {
+  workspaceId: string
+  path: string
+  wrapLines: boolean
+}): React.JSX.Element {
+  const [loaded, setLoaded] = useState<{ path: string; file: GitFileContents } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.api.files
+      .readFile(workspaceId, path)
+      .then((file) => {
+        if (!cancelled) setLoaded({ path, file })
+      })
+      .catch((e) => {
+        console.error('[GitTab] readFile (conflict view) failed:', e)
+        if (!cancelled) setLoaded({ path, file: null as unknown as GitFileContents })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, path])
+
+  const current = loaded && loaded.path === path ? loaded.file : null
+  if (current === null) return <DiffMessage text="Loading…" />
+  if (current.binary) return <DiffMessage text="Binary file — no conflict preview" />
+
+  const conflictCount = countConflictRegions(current.contents)
+  const fileName = path.split('/').pop() ?? path
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
+      <div className="flex-shrink-0 flex items-center gap-2 h-7 px-3 border-b border-border-default">
+        <GitMerge size={13} className="text-amber-400" />
+        <span className="text-[11px] text-text-muted select-none">
+          {conflictCount} conflict{conflictCount === 1 ? '' : 's'} remaining — resolution coming
+          soon
+        </span>
+      </div>
+      <Virtualizer className="flex-1 min-h-0 overflow-auto">
+        <UnresolvedFile
+          key={path}
+          file={{ name: fileName, contents: current.contents }}
+          options={{
+            theme: VIEWER_THEME,
+            themeType: 'dark',
+            overflow: wrapLines ? 'wrap' : 'scroll',
+            tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH,
+            tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH,
+            lineDiffType: 'word-alt',
+            diffIndicators: 'classic',
+            // READ-ONLY — disables Pierre's own accept/reject action slots
+            // entirely (see this component's doc comment).
+            mergeConflictActionsType: 'none'
+          }}
+        />
+      </Virtualizer>
+    </div>
+  )
+}
+
 /** Right pane: the selected file's patch rendered via @pierre/diffs'
  *  <PatchDiff>, themed pierre-dark to match the Files-tab viewer, styled
  *  unified or split per the header toggle, word-wrapped per the ⚙ popover's
@@ -1695,7 +1860,8 @@ function DiffContentPaneImpl({
   onRefetchThreads,
   localComments,
   localWiring,
-  allowGithubComments
+  allowGithubComments,
+  conflictedPaths
 }: DiffContentPaneProps): React.JSX.Element {
   // Crash fix #1 — per-file "show anyway" override for an oversized diff.
   // Lives here (not keyed to a single file, since DiffContentPane itself
@@ -1792,6 +1958,15 @@ function DiffContentPaneImpl({
 
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
+  // Pierre adoption batch 4 (safe/read-only slice) — a conflicted file's
+  // `git diff HEAD` patch chunk isn't a meaningful 2-way diff (the working
+  // copy holds unresolved 3-way conflict markers, not a clean edit), so this
+  // check runs BEFORE the binary/oversized branches below and takes over the
+  // whole pane with the read-only Pierre conflict viewer instead. See the
+  // module header's "Display" note + ConflictDiffPane's own doc comment.
+  if (conflictedPaths.has(file.path)) {
+    return <ConflictDiffPane workspaceId={workspaceId} path={file.path} wrapLines={wrapLines} />
+  }
   if (file.binary) {
     if (isImagePath(file.path)) {
       return <BinaryImageBody workspaceId={workspaceId} path={file.path} />
@@ -2051,6 +2226,28 @@ function fetchForMode(
   return mode === 'pr' ? fetchPrDiff(workspaceId, onSettled) : fetchDiff(workspaceId, onSettled)
 }
 
+/** Pierre adoption batch 4 (safe/read-only slice) — fetch the READ-ONLY
+ *  `git:conflicts` list for `workspaceId`, reporting the settled value as a
+ *  `ReadonlySet<string>` via `onSettled` (falls back to an empty set on
+ *  failure — no conflicts detected renders identically to "no live conflict",
+ *  never blocking the diff pane). Working-tree-only, same rationale as
+ *  fetchDiff's own PR-diff-mode exclusion: a PR diff (`base...head` against
+ *  committed history) can't itself be "conflicted" the way a live working
+ *  tree can — see GitTab's PR-diff-mode fetch effect, which never calls
+ *  this. */
+function fetchConflicts(
+  workspaceId: string,
+  onSettled: (paths: ReadonlySet<string>) => void
+): void {
+  window.api.git
+    .conflicts(workspaceId)
+    .then((paths) => onSettled(new Set(paths)))
+    .catch((e) => {
+      console.error('[GitTab] git:conflicts failed:', e)
+      onSettled(new Set())
+    })
+}
+
 /**
  * Workbench Git tab — Phase 1 body: a changed-files tree (left, collapsible)
  * and a per-file diff viewer (right). Mounted only while the Git tab is the
@@ -2073,7 +2270,14 @@ export function GitTab({
   }, [])
 
   const [files, setFiles] = useState<GitDiffFile[]>([])
-  // Phase 2: `repo` starts optimistic (`true`) so a first-paint flash of the
+  // Pierre adoption batch 4 (safe/read-only slice) — repo-relative paths
+  // currently reported as merge-conflicted, from the new read-only
+  // `git:conflicts` IPC (see src/main/git.ts's getConflictedPaths). Fetched
+  // alongside the working-tree diff (initial load + the same debounced
+  // git:statusChanged/files:changed refresh below) and threaded down to
+  // DiffContentPane so it can gate its ConflictDiffPane branch. Empty (`new
+  // Set()`) in the ordinary case — no live conflict in the repo.
+  const [conflictedPaths, setConflictedPaths] = useState<ReadonlySet<string>>(() => new Set())
   // "Not a git repository" empty state doesn't show for an ordinary repo
   // while the initial git:diff round-trip is still in flight — `loading`
   // below already gates the tree/diff panes on the same round-trip, so this
@@ -2218,6 +2422,10 @@ export function GitTab({
     // reviewThreads, this has no PR dependency, so it's unconditional here
     // rather than gated behind the PR-detection push).
     setLocalReviews([])
+    // Pierre adoption batch 4 — same reset for the conflict-detection set: a
+    // new workspace's conflicted-paths list is fetched fresh below (unlike
+    // reviewThreads, this has no PR dependency, so it's unconditional here).
+    setConflictedPaths(new Set())
     // Phase 4b: same reset for open pending composers — a composer anchored
     // to the PREVIOUS workspace's file/line has no meaning in the new one.
     resetComposers()
@@ -2244,6 +2452,11 @@ export function GitTab({
     // dependency (unlike reviewThreads), so this fires unconditionally on
     // every workspace switch rather than waiting on a PR-detection push.
     fetchLocalReviews(workspaceId, setLocalReviews)
+    // Pierre adoption batch 4 — fetch the new workspace's conflicted-paths
+    // list. Working-tree-only (see fetchConflicts' own doc comment) — safe to
+    // fire unconditionally here since a fresh workspace always starts back in
+    // 'working' mode (set above).
+    fetchConflicts(workspaceId, setConflictedPaths)
     return fetchDiff(workspaceId, (result) => {
       applyDiff(result)
       setLoading(false)
@@ -2280,6 +2493,12 @@ export function GitTab({
     // entering PR-diff mode fresh has no composers of its own yet.
     resetComposers()
     lastAppliedSigRef.current = null
+    // Pierre adoption batch 4 — conflict detection is working-tree-only (see
+    // fetchConflicts' own doc comment): entering PR-diff mode clears the set
+    // (a PR diff's files can never match a working-tree conflicted path
+    // anyway); switching back to working-tree mode refetches it fresh.
+    setConflictedPaths(new Set())
+    if (diffMode !== 'pr') fetchConflicts(workspaceId, setConflictedPaths)
     return fetchForMode(diffMode, workspaceId, (result) => {
       applyDiff(result)
       setLoading(false)
@@ -2355,6 +2574,11 @@ export function GitTab({
         debounceRef.current = null
         cleanupRef.current?.()
         cleanupRef.current = fetchDiff(workspaceId, applyDiff)
+        // Pierre adoption batch 4 — refresh the conflict-detection set on the
+        // SAME debounced tick as the diff refetch above (a status/file change
+        // that moves the diff may also resolve or introduce a conflict).
+        // Already gated working-tree-only by this function's own early return.
+        fetchConflicts(workspaceId, setConflictedPaths)
       }, REFRESH_DEBOUNCE_MS)
     }
     const scheduleRefreshPrDetail = (): void => {
@@ -2948,6 +3172,7 @@ export function GitTab({
           localComments={localReviews}
           localWiring={localCommentWiring}
           allowGithubComments={diffMode === 'pr'}
+          conflictedPaths={conflictedPaths}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -3008,6 +3233,9 @@ interface GitTabBodyProps {
   /** Phase 5 FIX 1 — see DiffContentPaneProps' own doc comment; threaded
    *  straight through to DiffContentPane. */
   allowGithubComments: boolean
+  /** Pierre adoption batch 4 — see DiffContentPaneProps' own doc comment;
+   *  threaded straight through to DiffContentPane. */
+  conflictedPaths: ReadonlySet<string>
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -3043,6 +3271,7 @@ function GitTabBodyImpl({
   localComments,
   localWiring,
   allowGithubComments,
+  conflictedPaths,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -3100,6 +3329,7 @@ function GitTabBodyImpl({
           localComments={localComments}
           localWiring={localWiring}
           allowGithubComments={allowGithubComments}
+          conflictedPaths={conflictedPaths}
         />
       </div>
     </div>

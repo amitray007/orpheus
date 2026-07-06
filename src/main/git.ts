@@ -116,6 +116,55 @@ export async function gitInit(cwd: string): Promise<{ ok: true } | { ok: false; 
   }
 }
 
+/**
+ * The nine `git status --porcelain=v1` XY codes that mean "unmerged" (a
+ * genuine merge conflict, not just a staged/unstaged edit) — one entry per
+ * side-combination git can report: both added (AA), both modified (UU), one
+ * side deleted (DU/UD), one side added-the-other-didn't (AU/UA), one side
+ * deleted-the-other-didn't (DD is both-deleted, a real conflict too). Kept as
+ * a Set (not a regex) so the membership check below is a single O(1) lookup
+ * per porcelain line, and so this list is easy to audit against `git help
+ * status`'s own "Unmerged" table (which enumerates exactly these nine).
+ */
+const UNMERGED_XY_CODES = new Set(['UU', 'AA', 'DD', 'AU', 'UA', 'DU', 'UD'])
+
+/**
+ * READ-ONLY conflict detection (Pierre adoption batch 4, safe slice) — runs
+ * `git status --porcelain=v1` and returns the repo-relative paths of every
+ * currently-unmerged (conflicted) file, using the same XY-code table `git
+ * status`'s own "Unmerged paths" section is built from. This performs no
+ * writes of any kind (no `git add`/`checkout --ours`/`merge --continue`) —
+ * it's purely a read used to gate the Git tab's conflict-viewer branch (see
+ * GitTab.tsx's `conflictedPaths`).
+ *
+ * Total — never throws: any failure (not a repo, git missing, timeout)
+ * resolves to `[]`, matching getGitStatus's own swallow-everything contract
+ * so a conflict-detection hiccup never blocks the rest of the Git tab from
+ * rendering.
+ */
+export async function getConflictedPaths(cwd: string): Promise<string[]> {
+  if (!cwd) return []
+  try {
+    const { stdout } = await execFile(
+      'git',
+      ['-C', cwd, '-c', 'core.quotePath=false', 'status', '--porcelain=v1'],
+      { timeout: 2000 }
+    )
+    const paths: string[] = []
+    for (const line of stdout.split('\n')) {
+      if (line.length < 3) continue
+      const xy = line.slice(0, 2)
+      if (!UNMERGED_XY_CODES.has(xy)) continue
+      // Porcelain v1 unmerged lines are `XY <path>` with no rename arrow (a
+      // conflicted entry is never ALSO a rename) — slice(3) drops "XY ".
+      paths.push(line.slice(3).trim())
+    }
+    return paths
+  } catch {
+    return []
+  }
+}
+
 export type GitBranchInfo = {
   name: string
   isCurrent: boolean

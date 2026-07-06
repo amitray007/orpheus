@@ -448,7 +448,11 @@ const api = {
     // Workbench Git tab (Phase 3c) — Commits sub-tab's no-PR fallback.
     // Resolves the workspace's cwd internally, like diff/init above.
     logForWorkspace: (workspaceId: string, limit?: number): Promise<GitCommit[]> =>
-      invoke('git:logForWorkspace', { workspaceId, limit })
+      invoke('git:logForWorkspace', { workspaceId, limit }),
+    // Pierre adoption batch 4 (safe/read-only slice) — conflict DETECTION
+    // only (no resolve/write-back). Resolves the workspace's cwd internally,
+    // like diff/init above. See src/main/git.ts::getConflictedPaths.
+    conflicts: (workspaceId: string): Promise<string[]> => invoke('git:conflicts', { workspaceId })
   },
   // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
   // from `workspaceId` in the main process; see src/main/ipc/files.ts.
