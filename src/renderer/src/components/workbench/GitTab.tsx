@@ -152,6 +152,28 @@
 // direction). A PR disappearing (branch switch/close) while PR-diff mode is
 // active falls back to working-tree mode, same fallback pattern the
 // Details/Checks sub-tabs already use for PR loss.
+//
+// Phase 4b — starting a comment (this pass): COMPOSE UI ONLY, no
+// posting/network (that's Phase 4c). Adds the "add a comment" entry points
+// on the PR diff (PR-diff mode only, same gating as 4a's read-only threads):
+// a hover gutter "+" (@pierre/diffs' `enableGutterUtility` +
+// `renderGutterUtility` + `onGutterUtilityClick`, see buildDiffOptions/
+// GutterAddCommentButton below) and select-a-range-to-comment
+// (`enableLineSelection` + `onLineSelected`, same buildDiffOptions — scoped
+// to the FINAL committed selection, single-line-anchored via
+// `anchorFromRange`'s end-of-range rule, see that function's own comment).
+// Both open a "pending composer" (useReviewComposers.ts) rendered into the
+// SAME `renderAnnotation` slot 4a's read-only threads use — `annotationsForFile`
+// now merges GhReviewCommentThread[] (4a) and PendingComposer[] (4b) into one
+// `ReviewAnnotationMeta` union, and `renderReviewCommentAnnotation` routes
+// each to <ReviewCommentThread> or the new <CommentComposer> (git/
+// CommentComposer.tsx) accordingly. Pending composers reset on file/mode/PR
+// change (see the composer-reset effects near reviewComposers' declaration)
+// since an in-progress draft anchored to a since-navigated-away-from
+// file/line/PR has nothing left to anchor to. `CommentComposer`'s "Comment"
+// button calls a still-stubbed `onSubmit` (GitTab's `submitReviewComment` —
+// logs the draft and closes the composer) rather than posting anywhere;
+// Phase 4c wires that to the real GitHub-post IPC.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -168,6 +190,7 @@ import {
   CheckCircle,
   GitMerge,
   GitPullRequest,
+  Plus,
   X
 } from '@phosphor-icons/react'
 import type {
@@ -179,7 +202,7 @@ import type {
   GitDiffFile,
   GitStatusEntry
 } from '@shared/types'
-import type { DiffLineAnnotation } from '@pierre/diffs'
+import type { DiffLineAnnotation, FileDiffOptions, SelectedLineRange } from '@pierre/diffs'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
 import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
@@ -192,6 +215,8 @@ import { CommitsTab } from './git/CommitsTab'
 import { DetailsTab } from './git/DetailsTab'
 import { ChecksTab } from './git/ChecksTab'
 import { ReviewCommentThread } from './git/ReviewCommentThread'
+import { CommentComposer, type CommentDraft } from './git/CommentComposer'
+import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
 
 // Same minimal dark ThemeLike shape FilesTab uses for its tree — kept as its
 // own const (rather than importing FilesTab's) so this component doesn't
@@ -266,7 +291,15 @@ function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
   return files.map((f) => ({ path: f.path, status: f.status }))
 }
 
-// --- PR review-comment inline annotations (Phase 4a) -------------------------
+// --- PR review-comment inline annotations (Phase 4a + 4b) --------------------
+
+/** The annotation metadata union rendered into the SAME `renderAnnotation`
+ *  slot (Phase 4b): either an existing GitHub thread (4a, read-only) or a
+ *  pending composer the user just opened via the gutter "+"/select-to-comment
+ *  (4b, this phase). `renderReviewCommentAnnotation` below routes on `kind`. */
+export type ReviewAnnotationMeta =
+  | { kind: 'thread'; thread: GhReviewCommentThread }
+  | { kind: 'pending'; composer: PendingComposer }
 
 /** Maps a GitHub review-comment thread onto Pierre's side-relative
  *  `DiffLineAnnotation` (see docs/learnings/pr-comments.md §Q2 "Mapping to
@@ -283,36 +316,95 @@ function toTreeGitStatus(files: readonly GitDiffFile[]): GitStatusEntry[] {
  *  render them distinctly if that reads better in practice. */
 function threadToAnnotation(
   thread: GhReviewCommentThread
-): DiffLineAnnotation<GhReviewCommentThread> {
+): DiffLineAnnotation<ReviewAnnotationMeta> {
   const lineNumber = thread.subjectType === 'file' ? 0 : (thread.line ?? 0)
   return {
     side: thread.side === 'LEFT' ? 'deletions' : 'additions',
     lineNumber,
-    metadata: thread
+    metadata: { kind: 'thread', thread }
   }
 }
 
-/** Filters the full thread list down to ONE file's threads and maps each to
- *  a Pierre annotation — DiffContentPane renders one file's <PatchDiff> at a
- *  time, so this is recomputed per selected file (memoized by the caller).
- *  Threads with `line === null` AND `subjectType !== 'file'` (an outdated
- *  line-anchored comment with no `originalLine` fallback either — shouldn't
- *  happen per pr-comments.md's "original_line is never null" finding, but
- *  guarded defensively) are skipped rather than guessing lineNumber 0, which
- *  would misleadingly render them as file-level. */
-function annotationsForFile(
-  threads: readonly GhReviewCommentThread[],
-  path: string
-): DiffLineAnnotation<GhReviewCommentThread>[] {
-  return threads
-    .filter((t) => t.path === path && (t.subjectType === 'file' || t.line !== null))
-    .map(threadToAnnotation)
+/** Maps an open pending composer (Phase 4b) onto the same annotation shape —
+ *  `side`/`line` come straight from the composer's own anchor (set at
+ *  gutter-"+"-click time, see `useReviewComposers`'s `open`), no `line ??
+ *  originalLine` fallback needed since a pending composer is always anchored
+ *  to a line actually rendered in the CURRENT PR diff (it can only be opened
+ *  by clicking a line that's on screen right now). */
+function composerToAnnotation(composer: PendingComposer): DiffLineAnnotation<ReviewAnnotationMeta> {
+  return {
+    side: composer.side === 'LEFT' ? 'deletions' : 'additions',
+    lineNumber: composer.line,
+    metadata: { kind: 'pending', composer }
+  }
 }
 
+/** Filters + merges the full thread list and the open pending composers down
+ *  to ONE file's annotations — DiffContentPane renders one file's
+ *  <PatchDiff> at a time, so this is recomputed per selected file (memoized
+ *  by the caller). Threads with `line === null` AND `subjectType !== 'file'`
+ *  (an outdated line-anchored comment with no `originalLine` fallback either
+ *  — shouldn't happen per pr-comments.md's "original_line is never null"
+ *  finding, but guarded defensively) are skipped rather than guessing
+ *  lineNumber 0, which would misleadingly render them as file-level. */
+function annotationsForFile(
+  threads: readonly GhReviewCommentThread[],
+  composers: readonly PendingComposer[],
+  path: string
+): DiffLineAnnotation<ReviewAnnotationMeta>[] {
+  const threadAnnotations = threads
+    .filter((t) => t.path === path && (t.subjectType === 'file' || t.line !== null))
+    .map(threadToAnnotation)
+  const composerAnnotations = composers.filter((c) => c.path === path).map(composerToAnnotation)
+  return [...threadAnnotations, ...composerAnnotations]
+}
+
+/** Routes one merged annotation to its card: an existing GitHub thread (4a,
+ *  read-only) or a pending composer (4b). `onCancelComposer`/`onSubmitComposer`
+ *  are only ever actually invoked for a 'pending' annotation, which — per
+ *  `annotationsForFile` — can only exist when DiffContentPane was given a
+ *  real (non-null) `composers` wiring object in the first place; they're
+ *  still typed as optional (rather than required) so callers in a context
+ *  with no composers at all (there are none today, but this keeps the helper
+ *  honest about what it needs) don't have to invent placeholder callbacks. */
 function renderReviewCommentAnnotation(
-  annotation: DiffLineAnnotation<GhReviewCommentThread>
+  annotation: DiffLineAnnotation<ReviewAnnotationMeta>,
+  onCancelComposer?: (id: string) => void,
+  onSubmitComposer?: (draft: CommentDraft) => void
 ): React.ReactNode {
-  return <ReviewCommentThread thread={annotation.metadata} />
+  if (annotation.metadata.kind === 'pending') {
+    const { composer } = annotation.metadata
+    return (
+      <CommentComposer
+        draft={composer}
+        onCancel={() => onCancelComposer?.(composer.id)}
+        onSubmit={(draft) => onSubmitComposer?.(draft)}
+      />
+    )
+  }
+  return <ReviewCommentThread thread={annotation.metadata.thread} />
+}
+
+/** Phase 4b — the gutter "+" add-comment button, passed to @pierre/diffs'
+ *  `renderGutterUtility` (only in PR-diff mode; see DiffContentPane). Pierre
+ *  positions/shows this on whichever line is currently hovered on its own
+ *  (see docs/learnings/pierre-libraries.md §13 + InteractionManager's
+ *  ensureGutterUtilityNode/showUtilityOnLine) — this component only needs to
+ *  render the glyph; the click itself is wired via `options.
+ *  onGutterUtilityClick`, not an onClick here (Pierre's InteractionManager
+ *  owns pointer handling on the gutter-utility slot so hover/selection stay
+ *  in sync — see its `startGutterSelectionFromPointerDown`). */
+function GutterAddCommentButton(): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className="gcc-gutter-add"
+      title="Add a comment on this line"
+      tabIndex={-1}
+    >
+      <Plus size={11} weight="bold" />
+    </button>
+  )
 }
 
 // Raster image extensions (Fix 4) — a changed binary file with one of these
@@ -770,6 +862,24 @@ interface DiffContentPaneProps {
    *  anchor to the PR diff, not the live working tree (see
    *  docs/learnings/pr-comments.md's Q1 gap note). */
   reviewThreads: readonly GhReviewCommentThread[] | null
+  /** Phase 4b — the "add a comment" affordance (gutter "+" + select-to-
+   *  comment) is PR-diff-mode-only, same reasoning as reviewThreads: a
+   *  working-tree diff has no PR to anchor a posted comment to. `null` here
+   *  means "don't wire the affordance at all" (working-tree mode) rather
+   *  than "no composers open" — GitTab passes the real composers object only
+   *  while `diffMode === 'pr'`. */
+  composers: ReviewComposerWiring | null
+}
+
+/** Phase 4b — the subset of `useReviewComposers`'s result DiffContentPane
+ *  needs, plus the (still-stubbed) submit callback. Kept as its own small
+ *  interface (rather than threading the whole hook result down) so this
+ *  pane's prop surface only names what it actually uses. */
+interface ReviewComposerWiring {
+  composers: readonly PendingComposer[]
+  open: (path: string, side: 'LEFT' | 'RIGHT', line: number) => void
+  close: (id: string) => void
+  onSubmit: (draft: CommentDraft) => void
 }
 
 function DiffMessage({ text }: { text: string }): React.JSX.Element {
@@ -962,6 +1072,67 @@ function BinaryImageBody({
   )
 }
 
+/** Phase 4b — converts a Pierre `SelectedLineRange` (from either
+ *  `onGutterUtilityClick`'s single-line click or `onLineSelected`'s
+ *  select-a-range gesture) into the anchor a pending composer opens at.
+ *  Scoped to SINGLE-LINE comments only, per the task's explicit fallback:
+ *  "If range-comments are fiddly, single-line via the gutter '+' is the
+ *  priority" — a multi-line selection (`start !== end`) opens its composer
+ *  on the range's END line (matches GitHub's own "comment on lines X-Y"
+ *  UX, which anchors the thread to the last line of the range), keeping
+ *  the anchor itself always a single line/side pair rather than modeling a
+ *  true range-comment (Pierre's own `SelectedLineRange` has no notion of
+ *  "the comment's line" distinct from start/end — GitHub's `start_line`/
+ *  `line` split is a server-side concept this UI doesn't need to model
+ *  before Phase 4c actually posts anything). */
+function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT' | 'RIGHT' } {
+  const side = (range.endSide ?? range.side) === 'deletions' ? 'LEFT' : 'RIGHT'
+  return { line: range.end, side }
+}
+
+/** Phase 4b — builds the `options` object passed to <PatchDiff> in PR-diff
+ *  mode: the base viewer options (theme/diffStyle/overflow, unchanged since
+ *  Phase 1) plus the gutter-"+"/line-selection interaction options, ONLY
+ *  when `composers` is non-null (i.e. `diffMode === 'pr'` — see
+ *  DiffContentPaneProps' doc comment). Extracted so DiffContentPane's own
+ *  body doesn't inline this branching logic into the JSX (cognitive-
+ *  complexity ceiling). */
+function buildDiffOptions(
+  diffStyle: DiffStyle,
+  wrapLines: boolean,
+  path: string,
+  composers: ReviewComposerWiring | null
+): FileDiffOptions<ReviewAnnotationMeta> {
+  const base: FileDiffOptions<ReviewAnnotationMeta> = {
+    theme: VIEWER_THEME,
+    themeType: 'dark',
+    diffStyle,
+    overflow: wrapLines ? 'wrap' : 'scroll'
+  }
+  if (composers === null) return base
+  return {
+    ...base,
+    enableGutterUtility: true,
+    onGutterUtilityClick: (range) => {
+      const { line, side } = anchorFromRange(range)
+      composers.open(path, side, line)
+    },
+    // Select-to-comment: scoped to reporting the FINAL committed selection
+    // (`onLineSelected`, fired once per gesture) rather than every
+    // in-progress tick (`onLineSelectionChange`) — opening a composer per
+    // intermediate frame while the user is still dragging would be noisy
+    // and would fight the "one composer per exact anchor" de-dupe in
+    // useReviewComposers.open. A `null` range means the selection was
+    // cleared (e.g. clicking elsewhere) — nothing to open.
+    enableLineSelection: true,
+    onLineSelected: (range) => {
+      if (range === null) return
+      const { line, side } = anchorFromRange(range)
+      composers.open(path, side, line)
+    }
+  }
+}
+
 /** Right pane: the selected file's patch rendered via @pierre/diffs'
  *  <PatchDiff>, themed pierre-dark to match the Files-tab viewer, styled
  *  unified or split per the header toggle, word-wrapped per the ⚙ popover's
@@ -972,14 +1143,21 @@ function BinaryImageBody({
  *  `Binary files … differ` marker with no real hunks, which PatchDiff would
  *  render as a blank pane. Image extensions route to BinaryImageBody
  *  (current on-disk image via files:readImage); every other binary file
- *  gets a plain "no preview" placeholder. */
+ *  gets a plain "no preview" placeholder.
+ *
+ *  Phase 4b: the gutter "+"/select-to-comment affordance (renderGutterUtility
+ *  + the interaction options from buildDiffOptions) is wired ONLY when
+ *  `composers` is non-null — i.e. PR-diff mode (see DiffContentPaneProps'
+ *  doc comment); working-tree mode passes `composers={null}` from GitTab and
+ *  gets exactly the pre-4b <PatchDiff>, unchanged. */
 function DiffContentPane({
   workspaceId,
   file,
   diffStyle,
   wrapLines,
   loading,
-  reviewThreads
+  reviewThreads,
+  composers
 }: DiffContentPaneProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -989,28 +1167,40 @@ function DiffContentPane({
     }
     return <DiffMessage text="Binary file — no preview" />
   }
-  // Phase 4a: only computed while reviewThreads is non-null (PR-diff mode
+  // Phase 4a/4b: only computed while reviewThreads is non-null (PR-diff mode
   // with a loaded/attempted comment fetch) — annotationsForFile itself
-  // returns [] for a file with no threads, which PatchDiff renders exactly
-  // like an omitted lineAnnotations prop (a plain diff, no annotations).
+  // returns [] for a file with no threads/composers, which PatchDiff renders
+  // exactly like an omitted lineAnnotations prop (a plain diff, no
+  // annotations).
   const lineAnnotations =
-    reviewThreads !== null ? annotationsForFile(reviewThreads, file.path) : undefined
+    reviewThreads !== null
+      ? annotationsForFile(reviewThreads, composers?.composers ?? [], file.path)
+      : undefined
+  const options = buildDiffOptions(diffStyle, wrapLines, file.path, composers)
   return (
     <div className="flex-1 min-h-0 overflow-auto" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
       <PatchDiff
         key={file.path}
         patch={file.patch}
-        options={{
-          theme: VIEWER_THEME,
-          themeType: 'dark',
-          diffStyle,
-          overflow: wrapLines ? 'wrap' : 'scroll'
-        }}
+        options={options}
         lineAnnotations={lineAnnotations}
-        renderAnnotation={renderReviewCommentAnnotation}
+        renderAnnotation={(annotation) =>
+          renderReviewCommentAnnotation(annotation, composers?.close, composers?.onSubmit)
+        }
+        renderGutterUtility={composers !== null ? renderGutterUtility : undefined}
       />
     </div>
   )
+}
+
+/** Phase 4b — `renderGutterUtility`'s React node factory: the getHoveredLine
+ *  callback Pierre passes isn't needed here (the button doesn't need to know
+ *  WHICH line is hovered — Pierre only shows/positions it on the hovered
+ *  line in the first place; the actual line/side comes from
+ *  `onGutterUtilityClick`'s own `SelectedLineRange` argument, wired in
+ *  buildDiffOptions above), so this ignores its argument. */
+function renderGutterUtility(): React.ReactNode {
+  return <GutterAddCommentButton />
 }
 
 // --- Root ------------------------------------------------------------------
@@ -1182,6 +1372,26 @@ export function GitTab({
   // same as "no annotations" so a failed/pending fetch never blocks the
   // diff itself from rendering.
   const [reviewThreads, setReviewThreads] = useState<GhReviewCommentThread[] | null>(null)
+  // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
+  // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
+  // at every point below that clears it (workspace switch, PR loss, leaving
+  // PR-diff mode) PLUS on file/mode change specifically (the task's "Reset
+  // pending composers on file/mode/PR change") since an open composer
+  // anchored to file A's line 12 has no meaning once the user has navigated
+  // to file B — see the file-change effect below.
+  // Destructured (rather than kept as one `reviewComposers` object) so every
+  // effect/callback below can depend on the STABLE individual function
+  // identities (`open`/`close`/`reset` are each memoized with empty deps in
+  // useReviewComposers.ts) instead of the wrapping object, which changes
+  // identity on every composer open/close — depending on the whole object
+  // would make e.g. the workspace-switch effect re-run on every keystroke's
+  // worth of composer churn, not just on an actual workspace change.
+  const {
+    composers: openComposers,
+    open: openComposer,
+    close: closeComposer,
+    reset: resetComposers
+  } = useReviewComposers()
 
   // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
   // runs through nextSelection so the tab auto-selects the first changed
@@ -1244,6 +1454,9 @@ export function GitTab({
     // PR-diff mode (if it even has a PR) must not render the PREVIOUS
     // workspace's stale comment threads while its own fetch is in flight.
     setReviewThreads(null)
+    // Phase 4b: same reset for open pending composers — a composer anchored
+    // to the PREVIOUS workspace's file/line has no meaning in the new one.
+    resetComposers()
     // A PR-only sub-tab (Details/Checks) carried over from the PREVIOUS
     // workspace has no backing strip segment here (hasPr is about to be
     // false until/unless this workspace's own PR push says otherwise) —
@@ -1267,7 +1480,7 @@ export function GitTab({
       applyDiff(result)
       setLoading(false)
     })
-  }, [workspaceId, applyDiff])
+  }, [workspaceId, applyDiff, resetComposers])
 
   // Phase 4-pre: refetch whenever the [Working tree | PR diff] toggle
   // switches mode. Deliberately its own effect (not folded into the
@@ -1294,6 +1507,10 @@ export function GitTab({
     setLoading(true)
     setFiles([])
     setSelectedPath(null)
+    // Phase 4b: a mode flip (working <-> pr) invalidates any open composers
+    // — working-tree mode can't show them at all (no PR to anchor to), and
+    // entering PR-diff mode fresh has no composers of its own yet.
+    resetComposers()
     lastAppliedSigRef.current = null
     return fetchForMode(diffMode, workspaceId, (result) => {
       applyDiff(result)
@@ -1412,6 +1629,9 @@ export function GitTab({
         // above rather than leaving stale threads around for whatever the
         // (possibly PR-less) working-tree view renders next.
         setReviewThreads(null)
+        // Phase 4b: same for any open pending composers — they belonged to
+        // the PR that just disappeared.
+        resetComposers()
       } else if (diffModeRef.current === 'pr') {
         // Phase 4-pre: the PR changed (branch switch to a DIFFERENT PR'd
         // branch, or the same PR updated) while already viewing PR-diff mode
@@ -1428,7 +1648,7 @@ export function GitTab({
         fetchReviewComments(workspaceId, setReviewThreads)
       }
     })
-  }, [workspaceId, applyDiff])
+  }, [workspaceId, applyDiff, resetComposers])
 
   // Phase 4a: fetch (or clear) review-comment threads on entering/leaving
   // PR-diff mode. Deliberately its own effect (not folded into the
@@ -1565,6 +1785,44 @@ export function GitTab({
     [files, selectedPath]
   )
 
+  // Phase 4b: reset open pending composers whenever the selected FILE changes
+  // — an in-progress composer anchored to the previously-viewed file's line
+  // has no visible home once DiffContentPane swaps to a different file's
+  // <PatchDiff> (per the task's "Reset pending composers on file/mode/PR
+  // change"). A no-op (via useReviewComposers' own length-0 guard) whenever
+  // there's nothing open, so this is cheap on every ordinary file click too.
+  useEffect(() => {
+    resetComposers()
+  }, [selectedPath, resetComposers])
+
+  // Phase 4b: "Comment" stub — 4c wires this to the real GitHub-post IPC
+  // (posting a new review comment). Today it just closes the composer that
+  // produced the draft (matching a successful-post UX without actually
+  // posting anything) and logs the draft so it's visible for manual
+  // spot-checking during this phase; no network call happens here.
+  const submitReviewComment = useCallback(
+    (draft: CommentDraft) => {
+      console.log('[GitTab] pending comment draft (posting not yet wired):', draft)
+      closeComposer(draft.id)
+    },
+    [closeComposer]
+  )
+
+  // Phase 4b: the wiring DiffContentPane needs to drive the gutter "+"/
+  // select-to-comment affordance — only meaningful in PR-diff mode (see
+  // DiffContentPaneProps' `composers` doc comment); GitTabBody passes `null`
+  // through in working-tree mode so DiffContentPane never wires the
+  // interaction options at all there.
+  const reviewComposerWiring: ReviewComposerWiring = useMemo(
+    () => ({
+      composers: openComposers,
+      open: openComposer,
+      close: closeComposer,
+      onSubmit: submitReviewComment
+    }),
+    [openComposers, openComposer, closeComposer, submitReviewComment]
+  )
+
   const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])
 
   // Fix 2: the ⚙ diff-options popover's Wrap-lines toggle — APP-WIDE view
@@ -1649,6 +1907,7 @@ export function GitTab({
           gitInitError={gitInitError}
           diffMode={diffMode}
           reviewThreads={reviewThreads}
+          composers={diffMode === 'pr' ? reviewComposerWiring : null}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -1678,6 +1937,10 @@ interface GitTabBodyProps {
   /** Phase 4a — see DiffContentPaneProps' own doc comment; threaded straight
    *  through to DiffContentPane. */
   reviewThreads: readonly GhReviewCommentThread[] | null
+  /** Phase 4b — see DiffContentPaneProps' own doc comment; threaded straight
+   *  through to DiffContentPane. Already `null` in working-tree mode (GitTab
+   *  derives this from `diffMode` before passing it down). */
+  composers: ReviewComposerWiring | null
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -1703,6 +1966,7 @@ function GitTabBody({
   gitInitError,
   diffMode,
   reviewThreads,
+  composers,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
@@ -1729,6 +1993,7 @@ function GitTabBody({
           wrapLines={wrapLines}
           loading={false}
           reviewThreads={diffMode === 'pr' ? reviewThreads : null}
+          composers={composers}
         />
       </div>
     </div>
