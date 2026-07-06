@@ -909,7 +909,10 @@ export type GhPullRequestDetail = {
 // a workspace with no PR at all (it anchors to workspace + path/line, not to
 // a GitHub PR). `line`/`side` are nullable for a file-level (not
 // line-anchored) comment, mirroring GhReviewCommentThread's own
-// `subjectType: 'file'` case above.
+// `subjectType: 'file'` case above. `startLine` is nullable/present only for
+// a true multi-line range comment (Pierre Batch 3's select-to-comment
+// gesture) — null means the comment is single-line and `line` alone anchors
+// it, exactly as before; when present, the comment spans startLine..line.
 // ---------------------------------------------------------------------------
 
 export type LocalReviewComment = {
@@ -918,6 +921,7 @@ export type LocalReviewComment = {
   prNumber: number | null
   path: string
   line: number | null
+  startLine: number | null
   side: GhReviewCommentSide | null
   body: string
   author: string // e.g. 'you' — local comments have no real GitHub identity

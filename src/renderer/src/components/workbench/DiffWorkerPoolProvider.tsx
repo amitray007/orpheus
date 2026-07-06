@@ -87,11 +87,28 @@ function createDiffWorker(): Worker {
   })
 }
 
+// useTokenTransformer: true — REQUIRED for token-hover (Pierre adoption Batch 3,
+// GitTab.tsx/FilesTab.tsx's onTokenEnter/onTokenLeave wiring + TokenHoverPopover).
+// When this pool is active, DiffHunksRenderer.getRenderOptions()/FileRenderer's
+// equivalent fully ignore each <PatchDiff>/<File> instance's own
+// onTokenEnter/onTokenLeave-derived useTokenTransformer and instead use this
+// pool-wide, worker-manager-owned option (WorkerPoolManager defaults it to
+// false, and nothing in @pierre/diffs ever calls setRenderOptions to flip it
+// afterward — it's the host app's job). Without this, no token span gets the
+// data-char attribute the hover feature depends on, so the popover never
+// appears — confirmed via live CDP session (zero data-char attributes on any
+// token). Since GitTab.tsx and FilesTab.tsx always wire the token-hover
+// handlers unconditionally, there's no case where this pool should tokenize
+// without the data-char markup, so it's set once here, app-wide.
 export function DiffWorkerPoolProvider({ children }: { children: ReactNode }): React.JSX.Element {
   return (
     <WorkerPoolContextProvider
       poolOptions={{ workerFactory: createDiffWorker }}
-      highlighterOptions={{ langs: [...WORKER_POOL_LANGS], preferredHighlighter: 'shiki-js' }}
+      highlighterOptions={{
+        langs: [...WORKER_POOL_LANGS],
+        preferredHighlighter: 'shiki-js',
+        useTokenTransformer: true
+      }}
     >
       {children}
     </WorkerPoolContextProvider>

@@ -83,6 +83,10 @@ export interface CommentDraft {
   id: string
   path: string
   line: number
+  /** Pierre adoption Batch 3 — the range's START line for a true multi-line
+   *  select-to-comment gesture; undefined for a plain single-line comment.
+   *  See useReviewComposers.ts's PendingComposer for the same field. */
+  startLine?: number
   side: 'LEFT' | 'RIGHT'
   body: string
 }
@@ -97,7 +101,7 @@ export interface CommentDraft {
 export type GhSubmitResult = { ok: true } | { ok: false; error: string }
 
 export interface CommentComposerProps {
-  draft: Pick<CommentDraft, 'id' | 'path' | 'line' | 'side'>
+  draft: Pick<CommentDraft, 'id' | 'path' | 'line' | 'side' | 'startLine'>
   /** Posts the draft for real (Phase 4c) — GitTab/ReviewCommentThread/
    *  DetailsTab each pass a closure that calls the matching github:* IPC and
    *  resolves to a `GhSubmitResult`. This component awaits it to drive its
@@ -199,11 +203,24 @@ export function CommentComposer({
 
   const canSubmit = body.trim().length > 0 && !submitting
 
+  // Pierre adoption Batch 3 — a range label, shown ONLY for a true
+  // multi-line selection (startLine present and different from the anchor
+  // line). Math.min/max defends against a bottom-to-top drag, where Pierre's
+  // own SelectedLineRange doesn't guarantee start <= end. The common
+  // single-line case (startLine undefined or === line) renders nothing extra
+  // here — pixel-identical to the pre-Batch-3 composer.
+  const { startLine, line } = draft
+  const rangeLabel =
+    startLine !== undefined && startLine !== line
+      ? `Commenting on lines ${Math.min(startLine, line)}–${Math.max(startLine, line)}`
+      : null
+
   return (
     <div className="gcc-composer">
       {source !== undefined && onSourceChange !== undefined && (
         <SourceToggle value={source} onChange={onSourceChange} disabled={submitting} />
       )}
+      {rangeLabel !== null && <div className="gcc-range-label">{rangeLabel}</div>}
       <textarea
         className="gcc-textarea"
         value={body}

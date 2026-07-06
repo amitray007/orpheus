@@ -48,6 +48,7 @@ type ReviewCommentRow = {
   workspace_id: string
   pr_number: number | null
   path: string
+  start_line: number | null
   line: number | null
   side: string | null
   body: string
@@ -68,6 +69,7 @@ function fromRow(row: ReviewCommentRow): LocalReviewComment {
     prNumber: row.pr_number,
     path: row.path,
     line: row.line,
+    startLine: row.start_line,
     side: coerceSide(row.side),
     body: row.body,
     author: row.author,
@@ -98,6 +100,9 @@ export interface AddReviewCommentInput {
   prNumber?: number | null
   path: string
   line?: number | null
+  /** The range's START line — only set for a true multi-line comment (see
+   *  LocalReviewComment's own doc comment). Defaults to null (single-line). */
+  startLine?: number | null
   side?: GhReviewCommentSide | null
   body: string
   /** Defaults to 'you' — local comments have no real GitHub identity. */
@@ -110,16 +115,29 @@ export function add(input: AddReviewCommentInput): LocalReviewComment {
   const now = Date.now()
   const prNumber = input.prNumber ?? null
   const line = input.line ?? null
+  const startLine = input.startLine ?? null
   const side = input.side ?? null
   const author = input.author ?? 'you'
 
   db.prepare(
     `
     INSERT INTO review_comments
-      (id, workspace_id, pr_number, path, line, side, body, author, resolved, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      (id, workspace_id, pr_number, path, line, start_line, side, body, author, resolved, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
   `
-  ).run(id, input.workspaceId, prNumber, input.path, line, side, input.body, author, now, now)
+  ).run(
+    id,
+    input.workspaceId,
+    prNumber,
+    input.path,
+    line,
+    startLine,
+    side,
+    input.body,
+    author,
+    now,
+    now
+  )
 
   return fromRow(
     db.prepare('SELECT * FROM review_comments WHERE id = ?').get(id) as ReviewCommentRow

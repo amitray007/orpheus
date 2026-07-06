@@ -251,6 +251,16 @@ export function LocalCommentThread({
   ]
     .filter(Boolean)
     .join(' ')
+  // Pierre adoption Batch 3 — a range indicator, shown only when this
+  // comment actually spans multiple lines (startLine present and different
+  // from the anchor `line`). Math.min/max defends against a bottom-to-top
+  // drag, same as CommentComposer.tsx's own rangeLabel. The common
+  // single-line case (startLine null, or no line at all) renders nothing
+  // extra — matches today's output exactly.
+  const rangeLabel =
+    comment.startLine !== null && comment.line !== null && comment.startLine !== comment.line
+      ? `Lines ${Math.min(comment.startLine, comment.line)}–${Math.max(comment.startLine, comment.line)}`
+      : null
   return (
     <div className={cardClass}>
       <div className="rc-row rc-row--root">
@@ -262,6 +272,7 @@ export function LocalCommentThread({
               {formatRelative(new Date(comment.createdAt).toISOString())}
             </span>
             <span className="source-tag source-tag--local">Local</span>
+            {rangeLabel !== null && <span className="rc-time">{rangeLabel}</span>}
             {comment.resolved && <span className="rc-time">Resolved</span>}
           </div>
           <CommentBody body={comment.body} />

@@ -363,6 +363,7 @@ export interface InvokeChannelMap {
         prNumber?: number | null
         path: string
         line?: number | null
+        startLine?: number | null
         side?: GhReviewCommentSide | null
         body: string
       }

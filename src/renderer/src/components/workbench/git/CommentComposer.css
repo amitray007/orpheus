@@ -62,6 +62,15 @@
   cursor: not-allowed;
 }
 
+/* Pierre adoption Batch 3 — the "Commenting on lines N–M" indicator, shown
+   only for a true multi-line select-to-comment gesture (see
+   CommentComposer.tsx's own rangeLabel computation). Absent entirely for the
+   common single-line case. */
+.gcc-range-label {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+
 .gcc-textarea {
   width: 100%;
   resize: vertical;

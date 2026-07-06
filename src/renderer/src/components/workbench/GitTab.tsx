@@ -288,6 +288,8 @@ import {
   type GhSubmitResult
 } from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
+import { useTokenHoverPopover } from './git/useTokenHoverPopover'
+import { TokenHoverPopover } from './git/TokenHoverPopover'
 import { preloadDiffHighlighter } from './diffHighlighterPreload'
 import {
   treeHostStyle,
@@ -1296,7 +1298,7 @@ interface DiffContentPaneProps {
  *  only names what it actually uses. */
 interface ReviewComposerWiring {
   composers: readonly PendingComposer[]
-  open: (path: string, side: 'LEFT' | 'RIGHT', line: number) => void
+  open: (path: string, side: 'LEFT' | 'RIGHT', line: number, startLine?: number) => void
   close: (id: string) => void
   onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
 }
@@ -1533,17 +1535,20 @@ function BinaryImageBody({
 }
 
 /** Phase 4b — converts a Pierre `SelectedLineRange` (from `onLineSelected`'s
- *  select-a-range gesture) into the anchor a pending composer opens at.
- *  Scoped to SINGLE-LINE comments only, per the task's explicit fallback:
- *  "If range-comments are fiddly, single-line via the gutter '+' is the
- *  priority" — a multi-line selection (`start !== end`) opens its composer
- *  on the range's END line (matches GitHub's own "comment on lines X-Y"
- *  UX, which anchors the thread to the last line of the range), keeping
- *  the anchor itself always a single line/side pair rather than modeling a
- *  true range-comment (Pierre's own `SelectedLineRange` has no notion of
- *  "the comment's line" distinct from start/end — GitHub's `start_line`/
- *  `line` split is a server-side concept this UI doesn't need to model
- *  before Phase 4c actually posts anything). */
+ *  select-a-range gesture) into the anchor a pending composer opens at: the
+ *  range's END line/side (matches GitHub's own "comment on lines X-Y" UX,
+ *  which anchors the thread to the last line of the range) — the anchor
+ *  itself is always a single line/side pair, never a range, matching
+ *  GitHub's server-side `start_line`/`line` split (the anchor IS `line`).
+ *
+ *  Pierre adoption Batch 3: a true multi-line selection is no longer thrown
+ *  away — this function's own job stays scoped to anchor computation only
+ *  (still returns just `{line, side}`), but ITS CALLER now also reads
+ *  `range.start` directly (when `range.start !== range.end`) and threads it
+ *  through `composers.open` as an extra `startLine` payload alongside this
+ *  anchor. Single-line selection (`start === end`) is unaffected — the
+ *  caller passes `undefined` for `startLine` in that case, which is a no-op
+ *  change from the prior single-line-only behavior. */
 function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT' | 'RIGHT' } {
   const side = (range.endSide ?? range.side) === 'deletions' ? 'LEFT' : 'RIGHT'
   return { line: range.end, side }
@@ -1720,8 +1725,21 @@ function DiffContentPaneImpl({
     const { composers: currentComposers, path: currentPath } = latestRef.current
     if (currentComposers === null) return
     const { line, side } = anchorFromRange(range)
-    currentComposers.open(currentPath, side, line)
+    // A true multi-line drag (start !== end) threads its START line through
+    // as an extra `startLine` payload on the SAME anchor — see
+    // anchorFromRange's own doc comment + useReviewComposers.open's updated
+    // signature. Single-line selection (the common case) passes undefined,
+    // which is a no-op change from the prior behavior.
+    const startLine = range.start !== range.end ? range.start : undefined
+    currentComposers.open(currentPath, side, line, startLine)
   }, [])
+
+  // Pierre adoption Batch 3 — token hover popover, wired unconditionally
+  // (not gated on hasComposers, unlike select-to-comment below): it's a
+  // passive, read-only affordance orthogonal to composers/annotations. See
+  // TokenHoverPopover.tsx's own header for the controller's ref-stability
+  // rationale (onTokenEnter/onTokenLeave are stable, empty-deps callbacks).
+  const tokenHover = useTokenHoverPopover()
 
   // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
   // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
@@ -1750,12 +1768,27 @@ function DiffContentPaneImpl({
   // into buildDiffOptions) — react-hooks' ref-safety lint rule flags a
   // ref-closing callback passed into any function call during render, but
   // accepts it being placed directly into an object literal the same way a
-  // DOM `ref` prop is accepted.
+  // DOM `ref` prop is accepted. `onTokenEnter`/`onTokenLeave` are spread the
+  // same way, unconditionally (not gated on hasComposers) — both are stable
+  // (empty deps) so adding them here doesn't add a new dependency to this
+  // memo's array.
   const hasComposers = composers !== null
   const options = useMemo(() => {
     const base = buildDiffOptions(diffStyle, wrapLines, hasComposers)
-    return hasComposers ? { ...base, onLineSelected } : base
-  }, [diffStyle, wrapLines, hasComposers, onLineSelected])
+    const withTokenHover = {
+      ...base,
+      onTokenEnter: tokenHover.onTokenEnter,
+      onTokenLeave: tokenHover.onTokenLeave
+    }
+    return hasComposers ? { ...withTokenHover, onLineSelected } : withTokenHover
+  }, [
+    diffStyle,
+    wrapLines,
+    hasComposers,
+    onLineSelected,
+    tokenHover.onTokenEnter,
+    tokenHover.onTokenLeave
+  ])
 
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -1780,63 +1813,73 @@ function DiffContentPaneImpl({
     )
   }
   return (
-    // Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
-    // the scroll root itself (it renders the fixed-height `overflow`
-    // container + an inner content div and calls `.setup(root)` on mount, see
-    // node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
-    // PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
-    // (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
-    // useVirtualizer() internally and, when non-null, instantiates
-    // VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
-    // needed, no `metrics` required (VirtualizedFileDiff's constructor
-    // defaults it — see computeVirtualFileMetrics.js). This replaces the
-    // previous plain `overflow-auto` div, which is exactly the scroll root
-    // <Virtualizer> now owns.
-    //
-    // Annotation/gutter compatibility (verified against the installed
-    // 1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
-    // only overrides layout/visibility bookkeeping — `renderAnnotation`/
-    // `renderGutterUtility`/`lineAnnotations` are rendered by the same
-    // shared `renderDiffChildren` template (light-DOM children projected
-    // into Pierre's shadow-DOM slots) regardless of virtualization, and
-    // `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
-    // to line numbers independent of which lines are currently windowed —
-    // scrolling a commented line back into view re-materializes its row
-    // (and slot) exactly like any other line.
-    <Virtualizer
-      className="flex-1 min-h-0 overflow-auto"
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-    >
-      <PatchDiff
-        key={file.path}
-        patch={file.patch}
-        options={options}
-        lineAnnotations={lineAnnotations}
-        renderAnnotation={(annotation) =>
-          renderReviewCommentAnnotation(
-            annotation,
-            workspaceId,
-            onRefetchThreads,
-            composers?.close,
-            composers?.onSubmit,
-            localWiring ?? undefined,
-            allowGithubComments
-          )
-        }
-        renderGutterUtility={
-          composers !== null
-            ? (getHoveredLine) => (
-                <GutterAddCommentButton
-                  getHoveredLine={getHoveredLine}
-                  onAdd={(lineNumber, side) =>
-                    composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
-                  }
-                />
-              )
-            : undefined
-        }
+    <>
+      {/* Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
+          the scroll root itself (it renders the fixed-height `overflow`
+          container + an inner content div and calls `.setup(root)` on mount, see
+          node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
+          PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
+          (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
+          useVirtualizer() internally and, when non-null, instantiates
+          VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
+          needed, no `metrics` required (VirtualizedFileDiff's constructor
+          defaults it — see computeVirtualFileMetrics.js). This replaces the
+          previous plain `overflow-auto` div, which is exactly the scroll root
+          <Virtualizer> now owns.
+
+          Annotation/gutter compatibility (verified against the installed
+          1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
+          only overrides layout/visibility bookkeeping — `renderAnnotation`/
+          `renderGutterUtility`/`lineAnnotations` are rendered by the same
+          shared `renderDiffChildren` template (light-DOM children projected
+          into Pierre's shadow-DOM slots) regardless of virtualization, and
+          `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
+          to line numbers independent of which lines are currently windowed —
+          scrolling a commented line back into view re-materializes its row
+          (and slot) exactly like any other line. Token hover (Pierre adoption
+          batch 3) needs no virtualization-aware code of its own: Pierre's
+          InteractionManager operates on the currently-mounted DOM regardless
+          of windowing, same as the gutter utility above. */}
+      <Virtualizer
+        className="flex-1 min-h-0 overflow-auto"
+        style={{ backgroundColor: PIERRE_VIEWER_BG }}
+      >
+        <PatchDiff
+          key={file.path}
+          patch={file.patch}
+          options={options}
+          lineAnnotations={lineAnnotations}
+          renderAnnotation={(annotation) =>
+            renderReviewCommentAnnotation(
+              annotation,
+              workspaceId,
+              onRefetchThreads,
+              composers?.close,
+              composers?.onSubmit,
+              localWiring ?? undefined,
+              allowGithubComments
+            )
+          }
+          renderGutterUtility={
+            composers !== null
+              ? (getHoveredLine) => (
+                  <GutterAddCommentButton
+                    getHoveredLine={getHoveredLine}
+                    onAdd={(lineNumber, side) =>
+                      composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
+                    }
+                  />
+                )
+              : undefined
+          }
+        />
+      </Virtualizer>
+      <TokenHoverPopover
+        state={tokenHover.state}
+        onMouseEnter={tokenHover.cancelHide}
+        onMouseLeave={tokenHover.scheduleHide}
       />
-    </Virtualizer>
+    </>
   )
 }
 
@@ -2659,6 +2702,7 @@ export function GitTab({
           prNumber: pr?.number ?? null,
           path: draft.path,
           line: draft.line,
+          startLine: draft.startLine ?? null,
           side: draft.side,
           body: draft.body
         })

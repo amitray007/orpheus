@@ -72,6 +72,8 @@ import { ImageZoomBar } from './ImageZoomBar'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
 import { useFilesTreeMutations, type TreeModel } from './useFilesTreeMutations'
 import { showConfirmModalReact } from '../../lib/overlayClient'
+import { useTokenHoverPopover } from './git/useTokenHoverPopover'
+import { TokenHoverPopover } from './git/TokenHoverPopover'
 
 // TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
 // ./treeConfig.ts (shared with GitTab.tsx — both trees are the same dark
@@ -1022,6 +1024,15 @@ function ContentBody({
   highlightAnyway,
   onHighlightAnyway
 }: ContentBodyProps): React.JSX.Element {
+  // Pierre adoption Batch 3 — token hover popover, shared controller with
+  // GitTab.tsx's own wiring (see TokenHoverPopover.tsx's header). Called
+  // unconditionally here (rules-of-hooks) even though its output is only
+  // actually used by the highlighted-viewer branch below — ContentBody
+  // itself is always mounted (never conditionally) whenever ContentPane
+  // renders, so this satisfies the same "hooks run every render" invariant
+  // GitTab's DiffContentPaneImpl documents for its own hoisted hooks.
+  const tokenHover = useTokenHoverPopover()
+
   if (path === null) {
     return <ViewerMessage text="Select a file to view" />
   }
@@ -1103,11 +1114,24 @@ function ContentBody({
               options={{
                 theme: VIEWER_THEME,
                 themeType: 'dark',
-                overflow: wrapLines ? 'wrap' : 'scroll'
+                overflow: wrapLines ? 'wrap' : 'scroll',
+                // Pierre adoption Batch 3 — token hover. Both handlers are
+                // stable (empty-deps useCallback, see TokenHoverPopover.tsx),
+                // so spreading them here doesn't destabilize anything —
+                // FilesTab's `options` object isn't memoized to begin with
+                // (unlike GitTab's PatchDiff options), so there's no
+                // reapply-avoidance discipline to preserve here.
+                onTokenEnter: tokenHover.onTokenEnter,
+                onTokenLeave: tokenHover.onTokenLeave
               }}
             />
           </Virtualizer>
         )}
+        <TokenHoverPopover
+          state={tokenHover.state}
+          onMouseEnter={tokenHover.cancelHide}
+          onMouseLeave={tokenHover.scheduleHide}
+        />
         {contents.truncated && (
           <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
             file truncated at 3MB

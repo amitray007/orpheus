@@ -21,6 +21,11 @@ export interface PendingComposer {
   id: string
   path: string
   line: number
+  /** Pierre adoption Batch 3 — the range's START line, present only for a
+   *  true multi-line select-to-comment gesture (`startLine !== line`).
+   *  Undefined for the common single-line case (gutter "+" click, or a
+   *  single-line drag where start === end). */
+  startLine?: number
   side: 'LEFT' | 'RIGHT'
 }
 
@@ -33,8 +38,13 @@ export interface UseReviewComposersResult {
    *  by path itself, same as it does for reviewThreads/annotationsForFile). */
   composers: readonly PendingComposer[]
   /** Opens (or re-focuses, if one already exists at this exact anchor) a
-   *  composer at `path`/`side`/`line`. */
-  open: (path: string, side: 'LEFT' | 'RIGHT', line: number) => void
+   *  composer at `path`/`side`/`line`. `startLine` (Pierre adoption Batch 3)
+   *  is the range's start for a true multi-line selection — omitted (or
+   *  equal to `line`) for a plain single-line comment. Re-opening at an
+   *  anchor that already has an open composer keeps the EXISTING composer
+   *  unchanged (same de-dupe-by-anchor behavior as before) rather than
+   *  updating its startLine — acceptable per this feature's small scope. */
+  open: (path: string, side: 'LEFT' | 'RIGHT', line: number, startLine?: number) => void
   /** Closes the composer with the given id (Cancel, or after a future
    *  Phase-4c submit succeeds). */
   close: (id: string) => void
@@ -49,14 +59,17 @@ export interface UseReviewComposersResult {
 export function useReviewComposers(): UseReviewComposersResult {
   const [composers, setComposers] = useState<PendingComposer[]>([])
 
-  const open = useCallback((path: string, side: 'LEFT' | 'RIGHT', line: number) => {
-    const key = keyFor(path, side, line)
-    setComposers((prev) => {
-      if (prev.some((c) => keyFor(c.path, c.side, c.line) === key)) return prev
-      const id = `pending-${key}-${Date.now()}-${Math.round(Math.random() * 1e6)}`
-      return [...prev, { id, path, side, line }]
-    })
-  }, [])
+  const open = useCallback(
+    (path: string, side: 'LEFT' | 'RIGHT', line: number, startLine?: number) => {
+      const key = keyFor(path, side, line)
+      setComposers((prev) => {
+        if (prev.some((c) => keyFor(c.path, c.side, c.line) === key)) return prev
+        const id = `pending-${key}-${Date.now()}-${Math.round(Math.random() * 1e6)}`
+        return [...prev, { id, path, side, line, startLine }]
+      })
+    },
+    []
+  )
 
   const close = useCallback((id: string) => {
     setComposers((prev) => prev.filter((c) => c.id !== id))

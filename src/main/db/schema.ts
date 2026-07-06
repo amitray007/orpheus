@@ -702,6 +702,13 @@ export const schema: SchemaDef = {
       workspace_id: TEXT_NOT_NULL,
       pr_number: 'INTEGER',
       path: TEXT_NOT_NULL,
+      // Nullable: most local comments are single-line, so start_line stays
+      // null and `line` remains the sole anchor exactly as before. When a
+      // comment covers a range (Pierre Batch 3's multi-line select-to-
+      // comment), start_line holds the range's START and `line` continues to
+      // hold the END line (the anchor, matching GitHub's own start_line/line
+      // split convention).
+      start_line: 'INTEGER',
       line: 'INTEGER',
       side: 'TEXT',
       body: TEXT_NOT_NULL,

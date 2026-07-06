@@ -13,8 +13,8 @@ import { listByWorkspace, add, setResolved, remove } from '../reviewStore'
 export function registerReviewsIpc(): void {
   handle('reviews:list', (_e, { workspaceId }) => listByWorkspace(workspaceId))
 
-  handle('reviews:add', (_e, { workspaceId, prNumber, path, line, side, body }) =>
-    add({ workspaceId, prNumber, path, line, side, body })
+  handle('reviews:add', (_e, { workspaceId, prNumber, path, line, startLine, side, body }) =>
+    add({ workspaceId, prNumber, path, line, startLine, side, body })
   )
 
   handle('reviews:setResolved', (_e, { id, resolved }) => setResolved(id, resolved))
