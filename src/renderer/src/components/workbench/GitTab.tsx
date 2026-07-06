@@ -42,12 +42,17 @@
 //     TreeToolbar search-icon-toggle fix). NOTE: "search in git commits" is a
 //     separate ask — the Commits sub-tab is a Phase-3 stub today, so
 //     commit-search lands there, not here; this only searches changed FILES.
-//   FIX 3 — the per-row +/- counts are right-aligned with tabular-nums so
-//     they line up column-wise regardless of digit count.
-//   FIX 4 — binary files (gitDiff.ts now flags `binary: boolean`) show
-//     "Binary" instead of a meaningless "-0 +0", and the diff pane renders the
-//     current image (via files:readImage) for image extensions or a "no
-//     preview" placeholder for other binary files, instead of a blank PatchDiff.
+//   FIX 3 — (superseded) a custom per-row "+N -M" count decoration was tried
+//     and then explicitly reversed: the changed-files tree renders NO custom
+//     row content at all now — just @pierre/trees' own native git-status
+//     letter (U/M/A/D/R) via `setGitStatus`/`toTreeGitStatus`, see the
+//     "Changed-files tree pane" section below for why.
+//   FIX 4 — binary files (gitDiff.ts flags `binary: boolean`) never reach
+//     <PatchDiff> (which would render a blank pane for one); the diff pane
+//     instead renders the current image (via files:readImage) for image
+//     extensions, or a "no preview" placeholder for other binary files. (The
+//     changed-files ROW no longer shows a "Binary" label — see FIX 3 above —
+//     this is the diff PANE's own binary handling only.)
 //
 // Phase 2 — edge states (docs/brainstorms/2026-07-06-git-tab-requirements.md
 // states 1 "not a git repo" + 2 "clean/no changes"; mockup's Edge-states
@@ -65,12 +70,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
-import {
-  themeToTreeStyles,
-  type TreeThemeInput,
-  type FileTreeRowDecorationContext,
-  type FileTreeRowDecorationRenderer
-} from '@pierre/trees'
+import { themeToTreeStyles, type TreeThemeInput } from '@pierre/trees'
 import { PatchDiff } from '@pierre/diffs/react'
 import { List, Rows, Columns, MagnifyingGlass, GitBranch, CheckCircle } from '@phosphor-icons/react'
 import type { FileImage, GitDiffFile, GitStatusEntry } from '@shared/types'
@@ -268,63 +268,31 @@ function WorktreeChip({
 
 // --- Changed-files tree pane ---------------------------------------------------
 
-// Fix 3: the per-row +/- decoration text is right-aligned by the library's
-// own `[data-item-section="decoration"]` CSS (text-align: end; flex: 1 1 0;
-// justify-content: flex-end) already, but plain decimal text of varying
-// digit-width still visually "wiggles" against that shared right edge (e.g.
-// "-0 +0" vs "-128 +34" don't line up column-wise) since the flex lane has no
-// fixed width and each row's text is only as wide as its own content, and
-// proportional-width digit glyphs don't align even when they ARE the same
-// character count. Two fixes, both via unsafeCSS (the tree's shadow-DOM
-// escape hatch — same one FilesTab uses for TREE_IGNORED_DIM_CSS):
-//   (a) `font-variant-numeric: tabular-nums` on the decoration span so every
-//       digit glyph has the same advance width;
-//   (b) a fixed `min-width` on the decoration LANE itself so all rows share
-//       the same lane boundary regardless of how many digits their own count
-//       has (rather than each row's flex box just hugging its own text).
-// The decoration API (@pierre/trees' FileTreeRowDecorationRenderer) only
-// supports ONE plain-text (or icon) span per row — no per-token color
-// spans — so true two-color "-D +A" (red minus, green plus) isn't reachable
-// through this slot; the text itself is colored by git-status via the
-// SAME override-chain FilesTab's ignored-dim rule already relies on
-// (data-item-git-status), giving deletions-heavy rows a red-leaning tint and
-// additions a green-leaning one where the underlying status makes that
-// meaningful (added/untracked → green, deleted → red, modified/renamed →
-// neutral) — see the `data-item-git-status` rules below. Binary files
-// (Fix 4) render "Binary" here instead of a "-0 +0" that would otherwise be
-// meaningless.
-const DECORATION_LANE_CSS = `
-  [data-item-section="decoration"] {
-    min-width: 72px;
-  }
-  [data-item-section="decoration"] > span {
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: 'tnum' 1;
-  }
-  [data-item-git-status="added"] [data-item-section="decoration"] > span,
-  [data-item-git-status="untracked"] [data-item-section="decoration"] > span {
-    color: var(--trees-git-added-color-override, #3fb950);
-  }
-  [data-item-git-status="deleted"] [data-item-section="decoration"] > span {
-    color: var(--trees-git-deleted-color-override, #f85149);
-  }
+// Redesign (this pass, reversed per follow-up direction): the user first
+// asked for a custom "+N -M" count decoration; then explicitly reversed that
+// — drop the counts entirely and keep ONLY Pierre's own native git-status
+// LETTER (the "U"/"M"/"A"/"D"/"R" the user actually wanted, "we had
+// previously"). So this pane no longer injects any custom row content at
+// all: no `renderRowDecoration`, no `unsafeCSS` lane styling, no "Binary"
+// label. `setGitStatus(toTreeGitStatus(files))` below (already wired) is the
+// ENTIRE mechanism — @pierre/trees renders that letter + a
+// `data-item-git-status`-colored icon/row on its own
+// (dist/render/FileTreeView.js's `getBuiltInGitStatusDecoration` /
+// `GIT_STATUS_LABEL`), nothing else needed here. See git history on this
+// file for the removed custom-decoration approach if it's ever revisited.
+//
+// The one unsafeCSS rule that DOES still need to be injected is unrelated to
+// git-status rendering at all: it's Fix 2's search-icon-toggle visibility
+// fix (see DiffTreeToolbar below) — @pierre/trees always mounts its
+// `[data-file-tree-search-container]` box once `search: true` is passed,
+// regardless of the controller's own isOpen state (same quirk FilesTab's
+// TreePane works around), so this override keys the box's actual show/hide
+// off the SAME `data-open` attribute the library stamps on it.
+const SEARCH_BOX_VISIBILITY_CSS = `
   [data-file-tree-search-container][data-open="false"] {
     display: none;
   }
 `
-
-/** Fixed-width-padded "-D +A" decoration text for one changed file — pads
- *  each number to 3 characters (right-aligned, non-breaking spaces so the
- *  browser doesn't collapse them) so the tabular-nums glyphs line up at a
- *  consistent column even before the lane's own min-width kicks in. Binary
- *  files show "Binary" instead — their additions/deletions are always 0,
- *  which would otherwise render the exact "-0 +0" the user reported as
- *  meaningless. */
-function decorationText(file: GitDiffFile): string {
-  if (file.binary) return 'Binary'
-  const pad = (n: number): string => n.toString().padStart(3, ' ')
-  return `-${pad(file.deletions)} +${pad(file.additions)}`
-}
 
 interface DiffTreePaneProps {
   files: readonly GitDiffFile[]
@@ -393,34 +361,12 @@ function DiffTreeToolbar({
  *  the auto-selected path once its path is actually present in the tree. */
 function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): React.JSX.Element {
   const paths = useMemo(() => files.map((f) => f.path), [files])
-  // Keyed by path so the decoration renderer (an imperative callback, not a
-  // reactive prop — @pierre/trees calls it per-row at render time) always
-  // reads the CURRENT diff result rather than a stale closure over `files`
-  // from construction time.
-  const filesByPathRef = useRef<Map<string, GitDiffFile>>(new Map())
-  useEffect(() => {
-    filesByPathRef.current = new Map(files.map((f) => [f.path, f]))
-  }, [files])
-
-  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(
-    (ctx: FileTreeRowDecorationContext) => {
-      if (ctx.item.kind !== 'file') return null
-      const file = filesByPathRef.current.get(ctx.item.path)
-      if (!file) return null
-      return {
-        text: decorationText(file),
-        title: `${file.deletions} deleted, ${file.additions} added`
-      }
-    },
-    []
-  )
 
   const { model } = useFileTree({
     paths,
     initialExpansion: 'open',
     search: true,
-    unsafeCSS: DECORATION_LANE_CSS,
-    renderRowDecoration
+    unsafeCSS: SEARCH_BOX_VISIBILITY_CSS
   })
   const selection = useFileTreeSelection(model)
   // Search-icon-toggle (Fix 2) — same visibility pattern FilesTab's TreePane
