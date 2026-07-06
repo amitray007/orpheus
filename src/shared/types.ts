@@ -290,6 +290,12 @@ export type AppUiState = {
   // toggle, persisted so it survives an app restart.
   /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`). Default true (on). */
   gitDiffWrapLines: boolean
+  // Workbench changed-files/file TREE pane width (v69) — SHARED between the
+  // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
+  // before this; now a draggable divider persists one shared width so long
+  // filenames don't truncate). Clamped 160–560px, default 240 (mirrors the
+  // sidebarWidth clamp-at-read pattern in src/main/uiState.ts).
+  workbenchTreeWidth: number
   updatedAt: number
 }
 

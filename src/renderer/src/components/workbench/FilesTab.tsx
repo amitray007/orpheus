@@ -61,6 +61,7 @@ import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { PreviewPane } from './PreviewPane'
 import { isRenderablePath } from './previewRender'
 import { TreeOptionsPopover, type TreeOptionsState } from './TreeOptionsPopover'
+import { useTreeWidthDrag } from './useTreeWidthDrag'
 import { useImageZoomPan } from './useImageZoomPan'
 import { ImageZoomBar } from './ImageZoomBar'
 import { FilesTreeContextMenu } from './FilesTreeContextMenu'
@@ -1235,6 +1236,18 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
     })
   }, [])
 
+  // Draggable tree/code split (live QA finding: the fixed `w-60` truncated
+  // long filenames). SHARED width with the Git tab's DiffTreePane — both
+  // read/write the same `AppUiState.workbenchTreeWidth` (see
+  // useTreeWidthDrag.ts's module header). Falls back to
+  // UI_STATE_DEFAULTS.workbenchTreeWidth while the initial uiState.get()
+  // hasn't resolved yet, same fallback idiom as treeOptions above.
+  const persistedTreeWidth = uiState?.workbenchTreeWidth ?? UI_STATE_DEFAULTS.workbenchTreeWidth
+  const commitTreeWidth = useCallback((width: number) => {
+    updateUiState({ workbenchTreeWidth: width })
+  }, [])
+  const treeWidthDrag = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
+
   const toggleTree = useCallback(() => {
     const cur = getFilesTabEntry(workspaceId)
     setFilesTabEntry(workspaceId, { ...cur, treeOpen: !cur.treeOpen })
@@ -1292,7 +1305,8 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             it from layout so the viewer takes the full width. */}
         <div
           hidden={!treeOpen}
-          className="w-60 flex-shrink-0 min-h-0 border-r border-border-default"
+          style={{ width: treeWidthDrag.width }}
+          className="flex-shrink-0 min-h-0"
         >
           <TreePane
             // Sort order + flatten-empty-dirs are construction-only options on
@@ -1316,6 +1330,18 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             onExpandedPathsChange={setExpandedPaths}
           />
         </div>
+        {treeOpen && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize file tree"
+            onMouseDown={treeWidthDrag.beginDrag}
+            className={[
+              'w-1 flex-shrink-0 cursor-col-resize hover:bg-accent/40 transition-colors duration-150 border-r border-border-default',
+              treeWidthDrag.isDragging ? 'bg-accent/40' : 'bg-transparent'
+            ].join(' ')}
+          />
+        )}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
           <ContentPane
             workspaceId={workspaceId}

@@ -529,8 +529,11 @@ export const schema: SchemaDef = {
       // Files-tab tree VIEW preferences (v67) — moved out of the in-memory
       // per-workspace filesTabStore so they're app-wide + survive restart
       // (mirrors UI_STATE_DEFAULTS.filesShowHidden/… in
-      // src/shared/uiStateDefaults.ts). filesFlattenEmptyDirs defaults to 1
-      // (Fix 3 — flatten empty dirs is ON by default).
+      // src/shared/uiStateDefaults.ts). files_flatten_empty_dirs is a SHARED
+      // Files+Git setting (Git tab's ⚙ "Flatten empty folders" toggle reads/
+      // writes this same column — see GitDiffOptionsPopover.tsx) and now
+      // defaults to 0/OFF — each folder is its own expandable row rather than
+      // collapsing single-child dir chains into an unreadable breadcrumb.
       files_show_hidden: bool('files_show_hidden', '0'),
       files_dim_gitignored: bool('files_dim_gitignored', '1'),
       files_wrap_lines: bool('files_wrap_lines', '1'),
@@ -540,12 +543,23 @@ export const schema: SchemaDef = {
         default: "'default'",
         check: enumCheck('files_sort_order', FILES_SORT_ORDER)
       },
-      files_flatten_empty_dirs: bool('files_flatten_empty_dirs', '1'),
+      files_flatten_empty_dirs: bool('files_flatten_empty_dirs', '0'),
       // Workbench Git-tab diff VIEW preferences (v68) — app-wide, same
       // pattern as the files_* columns above: the Git tab's ⚙ options
       // popover's "Wrap lines" toggle (mirrors UI_STATE_DEFAULTS.gitDiffWrapLines
       // in src/shared/uiStateDefaults.ts). Default 1 (wrap on).
       git_diff_wrap_lines: bool('git_diff_wrap_lines', '1'),
+      // Workbench tree/code split pane width (v69) — draggable divider width,
+      // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors
+      // UI_STATE_DEFAULTS.workbenchTreeWidth / WORKBENCH_TREE_WIDTH_MIN..MAX
+      // in src/shared/uiStateDefaults.ts — same clamp-at-read pattern as
+      // sidebar_width above).
+      workbench_tree_width: {
+        type: 'INTEGER',
+        notNull: true,
+        default: '240',
+        check: 'CHECK (workbench_tree_width BETWEEN 160 AND 560)'
+      },
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

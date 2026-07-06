@@ -13,7 +13,9 @@ import {
   VALID_STATUS_POLL_INTERVALS_SEC,
   VALID_FILES_SORT_ORDERS,
   SIDEBAR_WIDTH_MIN,
-  SIDEBAR_WIDTH_MAX
+  SIDEBAR_WIDTH_MAX,
+  WORKBENCH_TREE_WIDTH_MIN,
+  WORKBENCH_TREE_WIDTH_MAX
 } from '../shared/uiStateDefaults'
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,8 @@ type AppUiStateRow = {
   files_flatten_empty_dirs: number
   // Workbench Git-tab diff view preferences (v68)
   git_diff_wrap_lines: number
+  // Workbench tree/code split pane width (v69)
+  workbench_tree_width: number
   // Diagnostics capture toggles (v56)
   diag_error: number | null
   diag_lifecycle: number | null
@@ -108,6 +112,12 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
   // Clamp sidebar_width to valid range at read time — guards against manual DB edits
   const rawWidth = row.sidebar_width ?? UI_STATE_DEFAULTS.sidebarWidth
   const clampedWidth = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, rawWidth))
+  // Clamp workbench_tree_width the same way (see sidebar_width above).
+  const rawTreeWidth = row.workbench_tree_width ?? UI_STATE_DEFAULTS.workbenchTreeWidth
+  const clampedTreeWidth = Math.min(
+    WORKBENCH_TREE_WIDTH_MAX,
+    Math.max(WORKBENCH_TREE_WIDTH_MIN, rawTreeWidth)
+  )
   return {
     sidebarCollapsed: row.sidebar_collapsed === 1,
     // 'dashboard' was a valid kind in older DB rows — coerce to 'sessions' on read.
@@ -181,6 +191,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     filesFlattenEmptyDirs: (row.files_flatten_empty_dirs ?? 1) === 1,
     // Workbench Git-tab diff view preferences (v68) — default true (wrap on)
     gitDiffWrapLines: (row.git_diff_wrap_lines ?? 1) === 1,
+    // Workbench tree/code split pane width (v69) — shared Files+Git divider width
+    workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
     diagError: row.diag_error == null ? true : row.diag_error === 1,
     diagLifecycle: row.diag_lifecycle === 1,
@@ -281,6 +293,17 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('gitDiffWrapLines' in patch && patch.gitDiffWrapLines !== undefined) {
     if (typeof patch.gitDiffWrapLines !== 'boolean') {
       throw new Error('uiState: gitDiffWrapLines must be a boolean')
+    }
+  }
+  if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
+    if (
+      typeof patch.workbenchTreeWidth !== 'number' ||
+      patch.workbenchTreeWidth < WORKBENCH_TREE_WIDTH_MIN ||
+      patch.workbenchTreeWidth > WORKBENCH_TREE_WIDTH_MAX
+    ) {
+      throw new Error(
+        `uiState: workbenchTreeWidth must be a number between ${WORKBENCH_TREE_WIDTH_MIN} and ${WORKBENCH_TREE_WIDTH_MAX}`
+      )
     }
   }
   validateFilesViewPatch(patch)
@@ -403,6 +426,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     filesFlattenEmptyDirs: 'files_flatten_empty_dirs',
     // Workbench Git-tab diff view preferences (v68)
     gitDiffWrapLines: 'git_diff_wrap_lines',
+    // Workbench tree/code split pane width (v69)
+    workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)
     diagError: 'diag_error',
     diagLifecycle: 'diag_lifecycle',

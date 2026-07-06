@@ -246,6 +246,7 @@ import { useUiState, updateUiState } from '../../lib/uiStateStore'
 import { openPrUrl } from '../../lib/overlayClient'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
+import { useTreeWidthDrag } from './useTreeWidthDrag'
 import { useImageZoomPan } from './useImageZoomPan'
 import { ImageZoomBar } from './ImageZoomBar'
 import { CommitsTab } from './git/CommitsTab'
@@ -910,6 +911,13 @@ interface DiffTreePaneProps {
   files: readonly GitDiffFile[]
   selected: string | null
   onSelectFile: (path: string | null) => void
+  /** Collapse single-child directory chains into one flattened row — the
+   *  SHARED Files+Git setting (AppUiState.filesFlattenEmptyDirs). CONSTRUCTION-
+   *  ONLY on `useFileTree` (see TreeOptionsPopover.tsx's doc comment on
+   *  `flattenEmptyDirectories` — no post-construction reconfigure path), so
+   *  GitTab remounts this pane via a `key` when it changes, exactly like
+   *  FilesTab's TreePane does for the same option. */
+  flattenEmptyDirs: boolean
 }
 
 // Shared icon-button class for the changed-files tree's own header toolbar —
@@ -980,13 +988,19 @@ function DiffTreeToolbar({
  *  null out `selectedPath`; it can only be advanced by a genuine new
  *  non-null pick (a user click) or by this push effect explicitly selecting
  *  the auto-selected path once its path is actually present in the tree. */
-function DiffTreePane({ files, selected, onSelectFile }: DiffTreePaneProps): React.JSX.Element {
+function DiffTreePane({
+  files,
+  selected,
+  onSelectFile,
+  flattenEmptyDirs
+}: DiffTreePaneProps): React.JSX.Element {
   const paths = useMemo(() => files.map((f) => f.path), [files])
 
   const { model } = useFileTree({
     paths,
     initialExpansion: 'open',
     search: true,
+    flattenEmptyDirectories: flattenEmptyDirs,
     unsafeCSS: SEARCH_BOX_VISIBILITY_CSS
   })
   const selection = useFileTreeSelection(model)
@@ -2310,12 +2324,32 @@ export function GitTab({
   // preference, persisted via AppUiState.gitDiffWrapLines (same
   // files_wrap_lines pattern FilesTab's TreeOptionsPopover uses). Falls back
   // to UI_STATE_DEFAULTS while the initial uiState.get() hasn't resolved yet.
+  //
+  // "Flatten empty folders" is a SEPARATE toggle in the same popover, reading/
+  // writing the SHARED AppUiState.filesFlattenEmptyDirs value the Files tab's
+  // TreeOptionsPopover already owns — toggling it here follows in the Files
+  // tab too (and vice versa), see GitDiffOptionsPopover.tsx's doc comment.
   const uiState = useUiState()
   const wrapLines = uiState?.gitDiffWrapLines ?? UI_STATE_DEFAULTS.gitDiffWrapLines
-  const diffOptions = useMemo(() => ({ wrapLines }), [wrapLines])
-  const setDiffOptions = useCallback((next: { wrapLines: boolean }) => {
-    updateUiState({ gitDiffWrapLines: next.wrapLines })
+  const flattenEmptyDirs = uiState?.filesFlattenEmptyDirs ?? UI_STATE_DEFAULTS.filesFlattenEmptyDirs
+  const diffOptions = useMemo(
+    () => ({ wrapLines, flattenEmptyDirs }),
+    [wrapLines, flattenEmptyDirs]
+  )
+  const setDiffOptions = useCallback((next: { wrapLines: boolean; flattenEmptyDirs: boolean }) => {
+    updateUiState({
+      gitDiffWrapLines: next.wrapLines,
+      filesFlattenEmptyDirs: next.flattenEmptyDirs
+    })
   }, [])
+
+  // Draggable tree/code split — SHARED width with FilesTab's tree (see
+  // useTreeWidthDrag.ts's module header).
+  const persistedTreeWidth = uiState?.workbenchTreeWidth ?? UI_STATE_DEFAULTS.workbenchTreeWidth
+  const commitTreeWidth = useCallback((width: number) => {
+    updateUiState({ workbenchTreeWidth: width })
+  }, [])
+  const treeWidthDrag = useTreeWidthDrag(persistedTreeWidth, commitTreeWidth)
 
   // Phase 2: the hide-tree icon + unified/split toggle + ⚙ wrap popover only
   // make sense once there's an actual diff to view — while loading, or in
@@ -2404,6 +2438,10 @@ export function GitTab({
           selectedPath={selectedPath}
           selectedFile={selectedFile}
           treeOpen={treeOpen}
+          treeWidth={treeWidthDrag.width}
+          isTreeWidthDragging={treeWidthDrag.isDragging}
+          onBeginTreeWidthDrag={treeWidthDrag.beginDrag}
+          flattenEmptyDirs={flattenEmptyDirs}
           diffStyle={diffStyle}
           wrapLines={wrapLines}
           workspaceId={workspaceId}
@@ -2431,6 +2469,14 @@ interface GitTabBodyProps {
   selectedPath: string | null
   selectedFile: GitDiffFile | null
   treeOpen: boolean
+  /** Draggable tree/code split — SHARED width with FilesTab (see
+   *  useTreeWidthDrag.ts's module header). */
+  treeWidth: number
+  isTreeWidthDragging: boolean
+  onBeginTreeWidthDrag: (e: React.MouseEvent) => void
+  /** SHARED Files+Git tree setting (AppUiState.filesFlattenEmptyDirs) — see
+   *  DiffTreePaneProps' own doc comment. */
+  flattenEmptyDirs: boolean
   diffStyle: DiffStyle
   wrapLines: boolean
   workspaceId: string
@@ -2477,6 +2523,10 @@ function GitTabBody({
   selectedPath,
   selectedFile,
   treeOpen,
+  treeWidth,
+  isTreeWidthDragging,
+  onBeginTreeWidthDrag,
+  flattenEmptyDirs,
   diffStyle,
   wrapLines,
   workspaceId,
@@ -2504,9 +2554,30 @@ function GitTabBody({
 
   return (
     <div className="flex-1 min-h-0 flex">
-      <div hidden={!treeOpen} className="w-60 flex-shrink-0 min-h-0 border-r border-border-default">
-        <DiffTreePane files={files} selected={selectedPath} onSelectFile={onSelectFile} />
+      <div hidden={!treeOpen} style={{ width: treeWidth }} className="flex-shrink-0 min-h-0">
+        <DiffTreePane
+          // See DiffTreePaneProps' flattenEmptyDirs doc comment: construction-
+          // only option on useFileTree, so changing it remounts via this key
+          // (mirrors FilesTab's treeKey).
+          key={String(flattenEmptyDirs)}
+          files={files}
+          selected={selectedPath}
+          onSelectFile={onSelectFile}
+          flattenEmptyDirs={flattenEmptyDirs}
+        />
       </div>
+      {treeOpen && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize changed-files tree"
+          onMouseDown={onBeginTreeWidthDrag}
+          className={[
+            'w-1 flex-shrink-0 cursor-col-resize hover:bg-accent/40 transition-colors duration-150 border-r border-border-default',
+            isTreeWidthDragging ? 'bg-accent/40' : 'bg-transparent'
+          ].join(' ')}
+        />
+      )}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         <DiffContentPane
           workspaceId={workspaceId}

@@ -13,17 +13,30 @@ export const UI_STATE_DEFAULTS = {
   archivedWorkspaceLimit: 20,
   // Files-tab tree view preferences (v67) — mirrors app_ui_state's
   // files_show_hidden/files_dim_gitignored/files_wrap_lines/files_sort_order/
-  // files_flatten_empty_dirs SQL DEFAULTs in schema.ts. flattenEmptyDirs
-  // defaults to true (Fix 3 — single-child dir chains collapse by default).
+  // files_flatten_empty_dirs SQL DEFAULTs in schema.ts. flattenEmptyDirs is a
+  // SHARED Files+Git setting (see GitDiffOptionsPopover's "Flatten empty
+  // folders" toggle) and now defaults to FALSE — each folder gets its own
+  // expandable row rather than collapsing single-child dir chains into an
+  // unreadable breadcrumb (live QA finding on the Git tab's tree).
   filesShowHidden: false,
   filesDimGitignored: true,
   filesWrapLines: true,
   filesSortOrder: 'default' as const,
-  filesFlattenEmptyDirs: true,
+  filesFlattenEmptyDirs: false,
   // Workbench Git-tab diff view preferences (v68) — mirrors app_ui_state's
   // git_diff_wrap_lines SQL DEFAULT in schema.ts.
-  gitDiffWrapLines: true
+  gitDiffWrapLines: true,
+  // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
+  // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
+  // and GitTab's DiffTreePane (one draggable divider width for both).
+  workbenchTreeWidth: 240
 } as const
+
+// Draggable tree-pane width clamp bounds (px), shared by FilesTab and GitTab.
+// Mirrors the SQL CHECK constraint on app_ui_state.workbench_tree_width in
+// schema.ts.
+export const WORKBENCH_TREE_WIDTH_MIN = 160
+export const WORKBENCH_TREE_WIDTH_MAX = 560
 
 // Valid values for app_ui_state.files_sort_order — mirrors TreeSortOrder in
 // TreeOptionsPopover.tsx and the SQL CHECK constraint in schema.ts.

@@ -3,14 +3,25 @@
 //
 // The ⚙ diff-options popover for the Workbench Git tab (Fix 2) — mirrors
 // TreeOptionsPopover.tsx's anchoring/overlay recipe exactly (captured anchor
-// rect + a portaled interactive Overlay owning outside-click/Escape dismiss),
-// scaled down to the one required toggle: "Wrap lines", which drives
-// @pierre/diffs' <PatchDiff> `overflow: 'wrap' | 'scroll'` option (same knob
-// FilesTab's viewer already exposes for its <File> component). The
-// unified/split `diffStyle` toggle stays in GitTab's header strip (already a
-// dedicated icon toggle, DiffStyleToggle) rather than folding into this
-// popover — it's a primary, frequently-used control, unlike the tree's
-// Show-hidden/Dim-gitignored/Sort/Flatten knobs which are genuinely secondary.
+// rect + a portaled interactive Overlay owning outside-click/Escape dismiss).
+// Two toggles today:
+//   - "Wrap lines" — drives @pierre/diffs' <PatchDiff> `overflow: 'wrap' |
+//     'scroll'` option (same knob FilesTab's viewer already exposes for its
+//     <File> component).
+//   - "Flatten empty folders" (live-QA fix) — the changed-files TREE's
+//     `flattenEmptyDirectories` construction option. This is a SHARED
+//     Files+Git setting: it reads/writes the SAME AppUiState value the Files
+//     tab's TreeOptionsPopover already owns (`filesFlattenEmptyDirs` /
+//     `files_flatten_empty_dirs` — see uiStateDefaults.ts/schema.ts). Toggling
+//     it in either tab's popover follows through to the other; the column
+//     name stays `files_*` to avoid a migration even though the setting is no
+//     longer Files-only — think of it as "the shared tree flatten setting"
+//     rather than a Files-tab-specific one. Default OFF (each folder its own
+//     expandable row, rather than collapsing dir chains into a breadcrumb).
+// The unified/split `diffStyle` toggle stays in GitTab's header strip
+// (already a dedicated icon toggle, DiffStyleToggle) rather than folding
+// into this popover — it's a primary, frequently-used control, unlike Wrap/
+// Flatten which are genuinely secondary.
 // ---------------------------------------------------------------------------
 
 import { useRef, useState } from 'react'
@@ -23,6 +34,10 @@ export interface GitDiffOptionsState {
   /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`
    *  vs `'scroll'`). Default true (on) — mirrors Files tab's wrapLines. */
   wrapLines: boolean
+  /** Collapse single-child directory chains in the changed-files tree into
+   *  one flattened row. SHARED with the Files tab (AppUiState.
+   *  filesFlattenEmptyDirs) — see module header. Default false (off). */
+  flattenEmptyDirs: boolean
 }
 
 interface GitDiffOptionsPopoverProps {
@@ -100,6 +115,11 @@ export function GitDiffOptionsPopover({
             label="Wrap lines"
             value={options.wrapLines}
             onChange={(v) => onChange({ ...options, wrapLines: v })}
+          />
+          <PopoverRow
+            label="Flatten empty folders"
+            value={options.flattenEmptyDirs}
+            onChange={(v) => onChange({ ...options, flattenEmptyDirs: v })}
           />
         </div>
       </Overlay>
