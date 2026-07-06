@@ -432,6 +432,10 @@ const api = {
     // Resolves the workspace's cwd internally, like files:*. See
     // src/main/gitDiff.ts.
     diff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:diff', { workspaceId }),
+    // Workbench Git tab (Phase 4-pre) — the [Working tree | PR diff]
+    // toggle's PR-diff data source. Resolves the workspace's cwd internally,
+    // like diff above. See src/main/gitDiff.ts::getPrDiff.
+    prDiff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:prDiff', { workspaceId }),
     // Workbench Git tab (Phase 2) — "Not a git repository" empty state's
     // Git-init button. Resolves the workspace's cwd internally, like diff
     // above. Total (never rejects) — see src/main/git.ts's gitInit.

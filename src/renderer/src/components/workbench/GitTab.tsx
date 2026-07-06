@@ -133,6 +133,25 @@
 // 5 minutes, so this doesn't hammer `gh`). `prDetail` resets to null exactly
 // where `pr` resets to null (workspace switch, PR loss) so a stale previous
 // workspace's/PR's rich data never leaks into the new one.
+//
+// Phase 4-pre — PR-diff mode (this pass): the prerequisite for Phase 4a's
+// inline PR review comments, which anchor to the PR DIFF (branch vs base),
+// not the working-tree diff this component has rendered since Phase 1. Adds
+// a `diffMode: 'working' | 'pr'` state and a [Working tree | PR diff]
+// segmented toggle (DiffModeToggle), shown only once `pr !== null` (no PR ->
+// no toggle, tab stays exactly as before). Both modes feed the SAME
+// DiffTreePane/DiffContentPane — `git:prDiff` (src/main/gitDiff.ts's
+// getPrDiff) returns the identical `GitDiffResult` shape `git:diff` does, by
+// reusing this module's own splitPatchByFile/fileFromChunk parsers server-
+// side (gh pr diff emits the same `diff --git` format). Refresh cadence
+// differs deliberately by mode: working-tree mode keeps its existing
+// git:statusChanged/files:changed debounce; PR-diff mode refetches on mode
+// switch and on `github:prChanged` (a PR diff is base...head against
+// committed history — a working-tree file save has no bearing on it, so
+// it's NOT wired to files:changed, per the task's explicit "avoid churn"
+// direction). A PR disappearing (branch switch/close) while PR-diff mode is
+// active falls back to working-tree mode, same fallback pattern the
+// Details/Checks sub-tabs already use for PR loss.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -220,6 +239,11 @@ const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 const REFRESH_DEBOUNCE_MS = 130
 
 export type DiffStyle = 'unified' | 'split'
+
+/** Phase 4-pre — the Diff sub-tab's data-source mode: the uncommitted
+ *  working-tree diff (default, unchanged from Phase 1) vs the full PR diff
+ *  (base...head, via `gh pr diff`). See the module header's Phase 4-pre note. */
+export type DiffMode = 'working' | 'pr'
 
 export interface GitTabProps {
   /** The owning claude workspace's id — resolves to the workspace cwd in the
@@ -338,6 +362,46 @@ function DiffStyleToggle({ value, onChange }: DiffStyleToggleProps): React.JSX.E
       >
         <Columns size={14} />
       </button>
+    </div>
+  )
+}
+
+// --- Diff-mode segmented toggle (Phase 4-pre) --------------------------------
+
+interface DiffModeToggleProps {
+  value: DiffMode
+  onChange: (mode: DiffMode) => void
+}
+
+/** [Working tree | PR diff] segmented control — only rendered by GitTab while
+ *  a PR exists for the current branch (see the module header's Phase 4-pre
+ *  note: PR review comments anchor to the PR diff, not the working-tree
+ *  diff, so this toggle is the prerequisite for Phase 4a's inline comments).
+ *  Matches SubTabStrip's compact pill-segment visual language rather than
+ *  DiffStyleToggle's icon-only style — this needs readable labels, not icons,
+ *  since "working tree" vs "PR diff" isn't obviously representable as a
+ *  glyph pair. */
+function DiffModeToggle({ value, onChange }: DiffModeToggleProps): React.JSX.Element {
+  const seg = (mode: DiffMode, label: string): React.JSX.Element => (
+    <button
+      key={mode}
+      type="button"
+      onClick={() => onChange(mode)}
+      aria-pressed={value === mode}
+      className={[
+        'px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-100',
+        value === mode
+          ? 'bg-surface-raised text-text-primary'
+          : 'text-text-muted hover:text-text-secondary'
+      ].join(' ')}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-overlay/60 border border-border-default/60">
+      {seg('working', 'Working tree')}
+      {seg('pr', 'PR diff')}
     </div>
   )
 }
@@ -740,6 +804,23 @@ function CleanState({ branch }: { branch: string | null }): React.JSX.Element {
   )
 }
 
+/** Phase 4-pre — PR-diff mode's own empty state: `files.length === 0` while
+ *  viewing PR diff means the fetch itself came back empty (no PR / no gh /
+ *  network failure — see gitDiff.ts::getPrDiff's safety-net note; a PR that
+ *  genuinely has zero changed files can't exist on GitHub). Distinct copy
+ *  from CleanState's "working tree is clean" — that phrasing would be
+ *  actively misleading here, since the PR diff has nothing to do with the
+ *  working tree at all. */
+function PrDiffEmptyState(): React.JSX.Element {
+  return (
+    <EmptyStateShell
+      icon={<GitPullRequest size={40} weight="regular" />}
+      title="No PR diff available"
+      subtitle="Couldn't load the PR's diff right now. Try switching back to Working tree, or check that `gh` is authenticated."
+    />
+  )
+}
+
 // A settled files:readImage result, tagged with the path it belongs to —
 // the same stale-guard shape FilesTab's LoadedImage uses, so a fast
 // re-selection while a fetch is in flight can't commit a mismatched image.
@@ -929,6 +1010,42 @@ function fetchDiff(workspaceId: string, onSettled: (result: DiffSettleResult) =>
   }
 }
 
+/** Fetch the PR diff (Phase 4-pre) for `workspaceId` — same shape/contract as
+ *  fetchDiff above, just backed by `git:prDiff` (gh pr diff <n>) instead of
+ *  the working-tree `git:diff`. Kept as its own function (rather than a
+ *  parameterized fetchDiff) so each mode's console-error label stays
+ *  distinct and the mode-dispatch below reads as a plain if/else. */
+function fetchPrDiff(
+  workspaceId: string,
+  onSettled: (result: DiffSettleResult) => void
+): () => void {
+  let cancelled = false
+  window.api.git
+    .prDiff(workspaceId)
+    .then((result) => {
+      if (!cancelled) onSettled({ repo: result.repo, files: result.files })
+    })
+    .catch((e) => {
+      console.error('[GitTab] git:prDiff failed:', e)
+      if (!cancelled) onSettled({ repo: true, files: [] })
+    })
+  return () => {
+    cancelled = true
+  }
+}
+
+/** Diff-mode dispatcher — the [Working tree | PR diff] toggle's data-source
+ *  switch (Phase 4-pre). Both branches share the exact same
+ *  fetch/cancel/onSettled contract, so every call site (initial load, mode
+ *  switch, live-refresh) can stay mode-agnostic by just calling this. */
+function fetchForMode(
+  mode: DiffMode,
+  workspaceId: string,
+  onSettled: (result: DiffSettleResult) => void
+): () => void {
+  return mode === 'pr' ? fetchPrDiff(workspaceId, onSettled) : fetchDiff(workspaceId, onSettled)
+}
+
 /**
  * Workbench Git tab — Phase 1 body: a changed-files tree (left, collapsible)
  * and a per-file diff viewer (right). Mounted only while the Git tab is the
@@ -950,6 +1067,12 @@ export function GitTab({
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [treeOpen, setTreeOpen] = useState(true)
   const [diffStyle, setDiffStyle] = useState<DiffStyle>('unified')
+  // Phase 4-pre: the Diff sub-tab's data-source mode — 'working' (default,
+  // unchanged Phase 1 behavior) or 'pr' (gh pr diff, gated on a PR existing —
+  // see the module header's Phase 4-pre note). Reset to 'working' on every
+  // workspace switch (below) so a PR-diff view never survives into a
+  // different workspace that may have no PR at all.
+  const [diffMode, setDiffMode] = useState<DiffMode>('working')
   const [subTab, setSubTab] = useState<GitSubTab>('diff')
   const [branch, setBranch] = useState<string | null>(null)
   const [gitInitRunning, setGitInitRunning] = useState(false)
@@ -987,6 +1110,13 @@ export function GitTab({
     setSelectedPath((prev) => nextSelection(result.files, prev))
   }, [])
 
+  // Phase 4-pre: tracks which `diffMode` was last fetched, so the mode-switch
+  // effect (below the workspace-change effect) can tell "the user actually
+  // flipped the toggle" apart from "diffMode just got reset to 'working' as
+  // a side effect of a workspace switch" — see that effect's own comment for
+  // why the distinction matters (double-fetch avoidance).
+  const lastFetchedModeForWorkspaceRef = useRef<DiffMode>('working')
+
   // Initial load + workspace change. Resets files/selectedPath alongside
   // loading — otherwise DiffTreePane/DiffContentPane would briefly render the
   // PREVIOUS workspace's changed files/diff (loading=true but stale `files`)
@@ -997,6 +1127,13 @@ export function GitTab({
     setFiles([])
     setSelectedPath(null)
     setGitInitError(null)
+    // A new workspace always starts back on the working-tree view — a
+    // PR-diff selection from the PREVIOUS workspace has no guarantee the new
+    // one even has a PR (see the module header's Phase 4-pre note); the
+    // toggle itself won't render until this workspace's own PR-detection
+    // settles, so falling back here keeps the state consistent with what's
+    // visible.
+    setDiffMode('working')
     // A new workspace starts with no known PR until its own
     // `github:prChanged` push arrives (see the subscription effect below) —
     // otherwise a switch from a PR'd workspace to a non-PR one would keep
@@ -1023,11 +1160,47 @@ export function GitTab({
     // state. Purely a correctness/future-proofing reset; harmless either way
     // since files/selectedPath were already reset directly above.
     lastAppliedSigRef.current = null
+    // Guards the mode-switch effect below from re-firing its own redundant
+    // fetch for this same workspace-change tick — see that effect's comment.
+    lastFetchedModeForWorkspaceRef.current = 'working'
     return fetchDiff(workspaceId, (result) => {
       applyDiff(result)
       setLoading(false)
     })
   }, [workspaceId, applyDiff])
+
+  // Phase 4-pre: refetch whenever the [Working tree | PR diff] toggle
+  // switches mode. Deliberately its own effect (not folded into the
+  // workspace-change effect above) so switching modes on the SAME workspace
+  // doesn't also reset pr/prDetail/subTab — only the diff data itself needs
+  // to change.
+  //
+  // `lastFetchedModeForWorkspaceRef` guards against a redundant duplicate
+  // fetch: the workspace-change effect above already fetches 'working' mode
+  // (and resets `diffMode` to 'working') as part of handling a workspace
+  // switch, so without this guard, EVERY workspace switch would ALSO trigger
+  // this effect (since `diffMode` may be transitioning pr -> working) and
+  // fire a second, redundant git:diff round-trip. The guard tracks which
+  // mode was last fetched for the CURRENT workspace/mode pair and skips a
+  // repeat.
+  useEffect(() => {
+    if (lastFetchedModeForWorkspaceRef.current === diffMode) return undefined
+    lastFetchedModeForWorkspaceRef.current = diffMode
+    // Intentional: switching modes must show "Loading…" (with no stale
+    // prior-mode data) immediately; the settled result arrives asynchronously
+    // via fetchForMode's callback below. (No eslint-disable needed here — the
+    // early-return guard above means this isn't the unconditional
+    // top-of-effect setState the react-hooks/set-state-in-effect rule flags.)
+    setLoading(true)
+    setFiles([])
+    setSelectedPath(null)
+    lastAppliedSigRef.current = null
+    return fetchForMode(diffMode, workspaceId, (result) => {
+      applyDiff(result)
+      setLoading(false)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- workspaceId intentionally excluded: this effect's guard already re-derives correctly on a workspace change (the workspace-change effect above sets the ref to 'working' in the same tick it resets diffMode to 'working', so this effect sees a no-op match and skips, exactly as intended).
+  }, [diffMode])
 
   // Working-tree watcher (src/main/filesWatcher.ts) — see the module header's
   // PERF FIX note. Mirrors FilesTab.tsx's own watchStart/watchStop effect
@@ -1056,12 +1229,26 @@ export function GitTab({
   // .git watcher, already running unconditionally since terminal:mount) and
   // files:changed (working-tree edits — filesWatcher.ts, now driven by THIS
   // tab via the watchStart/watchStop effect above) both indicate the working
-  // tree may have moved; refetch git:diff, debounced so a burst of either
+  // TREE may have moved; refetch git:diff, debounced so a burst of either
   // collapses into one round-trip.
+  //
+  // Phase 4-pre: deliberately WORKING-TREE-ONLY. A PR diff is `base...head`
+  // against already-committed history — neither a working-tree file save nor
+  // the local index changing has any bearing on it (see the module header's
+  // Phase 4-pre note: "don't wire PR-diff to files:changed, avoid churn").
+  // `diffModeRef` (kept in sync below, same "latest value without an effect
+  // dependency" pattern the existing `prRef` below uses) lets this callback
+  // check the CURRENT mode without resubscribing/restarting the debounce
+  // timer on every toggle flip.
+  const diffModeRef = useRef(diffMode)
+  useEffect(() => {
+    diffModeRef.current = diffMode
+  }, [diffMode])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => {
     const scheduleRefetch = (): void => {
+      if (diffModeRef.current !== 'working') return
       if (debounceRef.current !== null) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
@@ -1113,9 +1300,26 @@ export function GitTab({
         // (inside this event callback) rather than in the prDetail-fetch
         // effect below, for the same cascading-render reason noted above.
         setPrDetail(null)
+        // Phase 4-pre: the PR-diff toggle is about to unmount out from under
+        // the user for the same reason the Details/Checks tabs are above —
+        // fall back to the working-tree view rather than leaving `diffMode`
+        // pointed at 'pr' with no PR left to diff against. The mode-switch
+        // effect (which owns fetching) reacts to this state change on its
+        // own; no fetch call needed here.
+        setDiffMode((prev) => (prev === 'pr' ? 'working' : prev))
+      } else if (diffModeRef.current === 'pr') {
+        // Phase 4-pre: the PR changed (branch switch to a DIFFERENT PR'd
+        // branch, or the same PR updated) while already viewing PR-diff mode
+        // — refetch so the pane reflects the new/updated PR rather than the
+        // previous one's stale diff. The mode-switch effect's own `diffMode`
+        // dependency won't re-fire here (the mode itself didn't change), so
+        // this is the one place that needs an explicit refetch call for this
+        // case.
+        cleanupRef.current?.()
+        cleanupRef.current = fetchPrDiff(workspaceId, applyDiff)
       }
     })
-  }, [workspaceId])
+  }, [workspaceId, applyDiff])
 
   // Phase 3b foundation: fetch the rich `github:prDetail` payload backing the
   // Commits/Details/Checks sub-tabs (see the module header's "Phase 3b
@@ -1252,6 +1456,19 @@ export function GitTab({
             <GitDiffOptionsPopover options={diffOptions} onChange={setDiffOptions} />
           </>
         )}
+        {
+          // Phase 4-pre: the [Working tree | PR diff] toggle — shown only
+          // while the Diff sub-tab is active AND a PR exists for this branch
+          // (see the module header's Phase 4-pre note: PR-diff mode has
+          // nothing to show without a PR to diff against, so no PR means no
+          // toggle and the tab stays working-tree-only, unchanged from
+          // Phase 1/2/3). Independent of `showDiffControls` (loading/edge
+          // states) so the toggle doesn't pop in/out as the working tree's
+          // OWN load state flickers — it only tracks PR existence.
+          pr !== null && subTab === 'diff' && (
+            <DiffModeToggle value={diffMode} onChange={setDiffMode} />
+          )
+        }
         <div className="ml-auto flex items-center gap-2">
           <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
           <SubTabStrip active={subTab} onChange={setSubTab} hasPr={pr !== null} />
@@ -1280,6 +1497,7 @@ export function GitTab({
           branch={branch}
           gitInitRunning={gitInitRunning}
           gitInitError={gitInitError}
+          diffMode={diffMode}
           onSelectFile={setSelectedPath}
           onGitInit={runGitInit}
         />
@@ -1301,6 +1519,11 @@ interface GitTabBodyProps {
   branch: string | null
   gitInitRunning: boolean
   gitInitError: string | null
+  /** Phase 4-pre — which empty state to render for `files.length === 0`:
+   *  'working' keeps the existing not-a-repo/clean-tree branches; 'pr' shows
+   *  PrDiffEmptyState instead (a PR-diff fetch has no "not a repo"/"clean
+   *  tree" concept of its own — see that component's doc comment). */
+  diffMode: DiffMode
   onSelectFile: (path: string | null) => void
   onGitInit: () => void
 }
@@ -1324,14 +1547,19 @@ function GitTabBody({
   branch,
   gitInitRunning,
   gitInitError,
+  diffMode,
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
   if (loading) return <DiffMessage text="Loading…" />
-  if (!repo) {
-    return <NotARepoState onInit={onGitInit} running={gitInitRunning} error={gitInitError} />
+  if (diffMode === 'pr') {
+    if (files.length === 0) return <PrDiffEmptyState />
+  } else {
+    if (!repo) {
+      return <NotARepoState onInit={onGitInit} running={gitInitRunning} error={gitInitError} />
+    }
+    if (files.length === 0) return <CleanState branch={branch} />
   }
-  if (files.length === 0) return <CleanState branch={branch} />
 
   return (
     <div className="flex-1 min-h-0 flex">

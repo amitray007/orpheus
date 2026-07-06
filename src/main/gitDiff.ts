@@ -22,6 +22,8 @@
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
 import type { GitDiffFile, GitDiffFileStatus, GitDiffResult } from '../shared/types'
+import { getPrDetail } from './github'
+import { getUserShellPath } from './shellHelpers'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -29,6 +31,13 @@ const execFile = promisify(childProcess.execFile)
 // well above any realistic single-workspace diff while still bounding worst
 // case. Matches the spirit of files.ts's own read caps.
 const MAX_BUFFER = 32 * 1024 * 1024
+
+// `gh pr diff` on a big PR (60+ files, #117 style) is considerably larger
+// than a single working-tree diff — a generous cap well above the observed
+// ~14k-line/#117 case while still bounding worst case. Timeout is longer too:
+// this shells out to GitHub, not just local git.
+const PR_DIFF_MAX_BUFFER = 16 * 1024 * 1024
+const PR_DIFF_TIMEOUT_MS = 15_000
 
 /** True if `cwd` is inside a git working tree; swallows every failure. */
 async function isGitRepo(cwd: string): Promise<boolean> {
@@ -215,4 +224,69 @@ export async function getWorkingTreeDiff(cwd: string): Promise<GitDiffResult> {
 
   const [tracked, untracked] = await Promise.all([trackedDiffFiles(cwd), untrackedDiffFiles(cwd)])
   return { repo: true, files: [...tracked, ...untracked] }
+}
+
+// ---------------------------------------------------------------------------
+// PR diff (Phase 4-pre) — `gh pr diff <n>` (base...head), reusing the SAME
+// splitPatchByFile/fileFromChunk parsers above: `gh pr diff` emits the
+// identical `diff --git a/... b/...` unified-patch format `git diff` does
+// (verified against PR #117 — 14298 `diff --git` lines), so no new parser is
+// needed. This is deliberately simpler than getWorkingTreeDiff: `gh pr diff`
+// already includes every changed file in the PR (added/modified/deleted/
+// renamed, binary included) in one shot — there's no working-tree-only
+// concept of "untracked" files to special-case here.
+// ---------------------------------------------------------------------------
+
+/** Resolve the PATH to hand the `gh` invocation below — same rationale as
+ *  github.ts's own resolveGhPathEnv (Finder-launched Electron gets a
+ *  stripped PATH), duplicated locally rather than imported since github.ts
+ *  doesn't export it (kept module-private there). */
+async function resolveGhPathEnv(): Promise<string> {
+  let shellPath = ''
+  try {
+    shellPath = await getUserShellPath()
+  } catch {
+    shellPath = ''
+  }
+  return shellPath || process.env['PATH'] || ''
+}
+
+/**
+ * PR diff for the Workbench Git tab's [Working tree | PR diff] toggle
+ * (Phase 4-pre): the full `base...head` unified diff for the PR opened
+ * against `cwd`'s current branch, via `gh pr diff <number>`. Reuses
+ * `getPrDetail` purely to resolve the PR number (it already does cwd ->
+ * branch -> PR resolution, cached) rather than re-deriving branch/PR
+ * lookup here.
+ *
+ * Total — never throws: no cwd / no branch / no PR / gh missing / unauth /
+ * network / oversized output all resolve to `{ repo: <best-effort>, files:
+ * [] }`. This is a safety net, not the primary gate — the renderer only
+ * offers PR-diff mode when it already knows (via the existing PR-detection
+ * state) that a PR exists, so an empty result here should be rare in
+ * practice.
+ */
+export async function getPrDiff(cwd: string): Promise<GitDiffResult> {
+  if (!cwd) return { repo: false, files: [] }
+  const repo = await isGitRepo(cwd)
+  if (!repo) return { repo: false, files: [] }
+
+  const detail = await getPrDetail(cwd)
+  if (!detail) return { repo: true, files: [] }
+
+  try {
+    const pathEnv = await resolveGhPathEnv()
+    const { stdout } = await execFile('gh', ['pr', 'diff', String(detail.number)], {
+      cwd,
+      env: { ...process.env, PATH: pathEnv },
+      timeout: PR_DIFF_TIMEOUT_MS,
+      maxBuffer: PR_DIFF_MAX_BUFFER
+    })
+    return { repo: true, files: splitPatchByFile(stdout).map(fileFromChunk) }
+  } catch {
+    // gh missing / unauth / network / output over maxBuffer — render nothing;
+    // the renderer's toggle only appears when a PR is already known to
+    // exist, so this degrades to an empty PR-diff pane rather than a crash.
+    return { repo: true, files: [] }
+  }
 }

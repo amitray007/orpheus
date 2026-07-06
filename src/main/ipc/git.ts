@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { getGitStatus, listBranches, listCommits, countCommits, gitInit } from '../git'
-import { getWorkingTreeDiff } from '../gitDiff'
+import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
 import { getPrForBranch, getPrDetail } from '../github'
 import { handle } from './handle'
 
@@ -48,6 +48,15 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('git:diff', (_e, { workspaceId }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return cwd ? getWorkingTreeDiff(cwd) : Promise.resolve({ repo: false, files: [] })
+  })
+
+  // Workbench Git tab, Phase 4-pre — the [Working tree | PR diff] toggle's
+  // PR-diff data source. Resolves workspaceId -> cwd like git:diff, then
+  // defers to gitDiff.ts's getPrDiff (gh pr diff <n> -> the SAME
+  // splitPatchByFile/fileFromChunk parsers git:diff uses).
+  handle('git:prDiff', (_e, { workspaceId }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? getPrDiff(cwd) : Promise.resolve({ repo: false, files: [] })
   })
 
   handle('git:init', (_e, { workspaceId }) => {

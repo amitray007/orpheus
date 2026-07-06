@@ -306,6 +306,14 @@ export interface InvokeChannelMap {
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.
   'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult }
+  // Workbench Git tab — Phase 4-pre PR-diff mode (the [Working tree | PR
+  // diff] toggle). Resolves `workspaceId` -> cwd -> current branch's PR ->
+  // `gh pr diff <n>`, parsed with the SAME splitPatchByFile/fileFromChunk
+  // git:diff uses (identical `diff --git` format) — see
+  // src/main/gitDiff.ts::getPrDiff. Total (never rejects); `{ repo, files:
+  // [] }` when there's no PR/no gh/network failure (safety net — the
+  // renderer only offers this mode once it already knows a PR exists).
+  'git:prDiff': { req: [{ workspaceId: string }]; res: GitDiffResult }
   // Workbench Git tab — Phase 2 "Not a git repository" empty state's Git-init
   // button. Resolves `workspaceId` -> cwd like git:diff; total (never
   // rejects) so the renderer can show inline success/failure feedback. See
