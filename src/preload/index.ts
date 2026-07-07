@@ -633,6 +633,12 @@ const api = {
   notifications: {
     test: (): Promise<void> => invoke('notifications:test')
   },
+  // Git tab avatars (Avatar.tsx) — fetch-once, disk-cached GitHub avatar as a
+  // data URI. Total — resolves `null` on any fetch/network/fs failure so the
+  // renderer can fall back to the direct sized CDN url, then initials.
+  avatar: {
+    get: (url: string): Promise<string | null> => invoke('avatar:get', { url })
+  },
   updates: {
     check: (): Promise<UpdateCheckResult> => invoke('updates:check'),
     install: (): Promise<void> => invoke('updates:install'),

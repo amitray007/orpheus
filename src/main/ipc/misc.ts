@@ -16,6 +16,7 @@ import { showContextMenu } from '../contextMenu'
 import { fireTestNotification } from '../osNotifications'
 import { resolveMainWorktree, NotAGitRepoError } from '../worktrees'
 import { resolveOfferedModes } from '../orpheusConfig'
+import { getCachedAvatar } from '../avatarCache'
 import { handle } from './handle'
 
 export interface MiscIpcDeps {
@@ -102,4 +103,10 @@ export function registerMiscIpc(deps: MiscIpcDeps): void {
     if (!win) return null
     return showContextMenu(items, win)
   })
+
+  // ---------------------------------------------------------------------------
+  // Avatar cache IPC (Git tab Avatar.tsx — fetch-once, disk-cached avatars)
+  // ---------------------------------------------------------------------------
+
+  handle('avatar:get', (_e, { url }: { url: string }) => getCachedAvatar(url))
 }

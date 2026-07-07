@@ -467,6 +467,13 @@ export interface InvokeChannelMap {
   // stale until the next tab open. AT MOST ONE watcher runs at a time.
   'files:watchStart': { req: [{ workspaceId: string }]; res: void }
   'files:watchStop': { req: [{ workspaceId: string }]; res: void }
+  // Git tab avatars (Avatar.tsx) — fetch-once, disk-cached GitHub avatar.
+  // `url` is the GitHub CDN url captured alongside a comment/review (see
+  // src/main/avatarCache.ts); resolves to a small `data:image/...;base64,...`
+  // URI, or `null` on any fetch/network/fs failure (never rejects — the
+  // renderer falls back to the direct sized CDN url, then the initials
+  // circle).
+  'avatar:get': { req: [{ url: string }]; res: string | null }
   'updates:check': { req: []; res: UpdateCheckResult }
   'updates:install': { req: []; res: void }
   'updates:restart': { req: []; res: void }
