@@ -672,8 +672,21 @@ export function GitTab({
   // keep their EXISTING object identity across a redundant refetch (nothing
   // downstream re-renders or remounts). `lastAppliedSigRef` starts `null` so
   // the very first settle always applies (there's nothing to compare yet).
+  //
+  // BUG FIX (stuck-loading) — `result.unchanged` (fetchDiff's
+  // belt-and-suspenders marker for main's `{ unchanged: true }` sentinel
+  // reaching onSettled — see its own doc comment) is a hard no-op here: its
+  // `files`/`repo` are meaningless placeholders, not a real settle, so
+  // applying them would be wrong (they'd wipe an already-correct `files[]`
+  // back to empty). This branch never touches lastAppliedSigRef either —
+  // there's no new signature to remember. It's still up to EACH CALL SITE
+  // to clear `loading` itself on this path (this function only ever owns
+  // files/repo/selection, never `loading`) — see the mount/mode-switch
+  // effects below, which is exactly where a "real" settle would have cleared
+  // it too.
   const lastAppliedSigRef = useRef<string | null>(null)
   const applyDiff = useCallback((result: DiffSettleResult) => {
+    if (result.unchanged) return
     const sig = diffSignature(result)
     if (sig === lastAppliedSigRef.current) return
     lastAppliedSigRef.current = sig
@@ -760,10 +773,25 @@ export function GitTab({
     // fire unconditionally here since a fresh workspace always starts back in
     // 'working' mode (set above).
     fetchConflicts(workspaceId, setConflictedPaths)
-    return fetchDiff(workspaceId, (result) => {
-      applyDiff(result)
-      setLoading(false)
-    })
+    // BUG FIX (stuck-loading) — `forceFresh: true`: this is the first fetch
+    // after the full state reset just above (files=[], lastAppliedSigRef =
+    // null). Main's own signature cache (gitDiff.ts) is keyed by workspaceId
+    // and OUTLIVES this component's mount/unmount, so without forceFresh a
+    // reopened tab (or a workspace switched back to) could replay the SAME
+    // `{ unchanged: true }` sentinel main last emitted to a PREVIOUS mount of
+    // this tab — which this fresh instance has no data to fall back on. See
+    // gitDiff.ts's getWorkingTreeDiff + diffFetch.ts's fetchDiff for the full
+    // writeup. `setLoading(false)` runs unconditionally here (not inside
+    // applyDiff, which now no-ops on `result.unchanged`) so loading always
+    // clears even on that belt-and-suspenders path.
+    return fetchDiff(
+      workspaceId,
+      (result) => {
+        applyDiff(result)
+        setLoading(false)
+      },
+      { forceFresh: true }
+    )
   }, [workspaceId, applyDiff, resetComposers])
 
   // Phase 4-pre: refetch whenever the [Working tree | PR diff] toggle
@@ -802,10 +830,21 @@ export function GitTab({
     // anyway); switching back to working-tree mode refetches it fresh.
     setConflictedPaths(new Set())
     if (diffMode !== 'pr') fetchConflicts(workspaceId, setConflictedPaths)
-    return fetchForMode(diffMode, workspaceId, (result) => {
-      applyDiff(result)
-      setLoading(false)
-    })
+    // BUG FIX (stuck-loading) — `forceFresh: true`, same rationale as the
+    // workspace-change effect above: this is the first working-tree fetch
+    // after this effect's own state reset just above, so it must not be able
+    // to receive a stale `{ unchanged: true }` sentinel left over from a
+    // PREVIOUS mount/mode-stretch of this same workspaceId. `setLoading(false)`
+    // runs unconditionally (applyDiff no-ops on `result.unchanged`).
+    return fetchForMode(
+      diffMode,
+      workspaceId,
+      (result) => {
+        applyDiff(result)
+        setLoading(false)
+      },
+      { forceFresh: true }
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps -- workspaceId intentionally excluded: this effect's guard already re-derives correctly on a workspace change (the workspace-change effect above sets the ref to 'working' in the same tick it resets diffMode to 'working', so this effect sees a no-op match and skips, exactly as intended).
   }, [diffMode])
 

@@ -50,6 +50,13 @@ import type { DiffMode } from '../../GitTab'
 export interface DiffSettleResult {
   repo: boolean
   files: GitDiffFile[]
+  /** BUG FIX (stuck-loading) — true only for the belt-and-suspenders path:
+   *  main's `{ unchanged: true }` sentinel reached `onSettled` anyway (see
+   *  fetchDiff's own doc comment for when that happens). `files` is a
+   *  meaningless empty array on this branch — GitTab's `applyDiff` MUST
+   *  ignore `files`/`repo` here and only clear `loading`, never treat this as
+   *  "clean tree". Absent (undefined) on every other settle. */
+  unchanged?: boolean
 }
 
 /** Fix 1 — the auto-select rule applied every time a fresh `files[]` result
@@ -122,21 +129,44 @@ function isUnchangedDiffResult(result: GitDiffOrUnchanged): result is GitDiffUnc
  *  the `{ unchanged: true }` sentinel (see GitDiffUnchangedResult's own doc
  *  comment) when main's own last-signature cache for this workspaceId
  *  matched: that means NOTHING changed since the last settle already applied
- *  by `applyDiff`'s own diffSignature idempotency, so `onSettled` is simply
- *  never called — same observable effect as calling it with an
- *  identical-signature result (a no-op), just without the wasted
- *  files[]-shaped allocation/compare. The renderer's own diffSignature guard
- *  in `applyDiff` stays as the backstop for every OTHER path into this
- *  callback (fetchPrDiff, which is untouched by this fix). */
+ *  by `applyDiff`'s own diffSignature idempotency. The renderer's own
+ *  diffSignature guard in `applyDiff` stays as the backstop for every OTHER
+ *  path into this callback (fetchPrDiff, which is untouched by this fix).
+ *
+ *  BUG FIX (stuck-loading) — TWO changes work together here, because the
+ *  sentinel above is UNSAFE on its own whenever the CURRENT renderer
+ *  instance hasn't itself already applied a full result (main's cache
+ *  outlives GitTab's mount/unmount — see gitDiff.ts's getWorkingTreeDiff doc
+ *  comment):
+ *
+ *  1. `forceFresh` (passed straight to `window.api.git.diff`) — callers that
+ *     just reset their own state (GitTab's mount effect, its mode-switch
+ *     effect) pass `true` so main is FORCED to skip its cache lookup and
+ *     return a full result. This is the actual fix: it guarantees the first
+ *     fetch after a state reset can never receive the sentinel at all.
+ *  2. Even so, `onSettled` is now ALWAYS called on the unchanged path too
+ *     (with `{ unchanged: true }`, no files) rather than silently skipped —
+ *     belt-and-suspenders for a race the `forceFresh` fetch doesn't cover:
+ *     the DEBOUNCED live-refresh (which intentionally omits `forceFresh`, to
+ *     keep the no-op perf win) settling for real. That path is only ever
+ *     reached once this SAME renderer instance has already applied a full
+ *     result (loading is already false by then), so treating "unchanged" as
+ *     "nothing to do but clear/keep loading false" is safe there — it is
+ *     `forceFresh` that makes it safe on the (re)mount path specifically. */
 export function fetchDiff(
   workspaceId: string,
-  onSettled: (result: DiffSettleResult) => void
+  onSettled: (result: DiffSettleResult) => void,
+  opts?: { forceFresh?: boolean }
 ): () => void {
   let cancelled = false
   window.api.git
-    .diff(workspaceId)
+    .diff(workspaceId, opts?.forceFresh)
     .then((result) => {
-      if (cancelled || isUnchangedDiffResult(result)) return
+      if (cancelled) return
+      if (isUnchangedDiffResult(result)) {
+        onSettled({ repo: true, files: [], unchanged: true })
+        return
+      }
       onSettled({ repo: result.repo, files: result.files })
     })
     .catch((e) => {
@@ -215,13 +245,21 @@ export function fetchLocalReviews(
 /** Diff-mode dispatcher — the [Working tree | PR diff] toggle's data-source
  *  switch (Phase 4-pre). Both branches share the exact same
  *  fetch/cancel/onSettled contract, so every call site (initial load, mode
- *  switch, live-refresh) can stay mode-agnostic by just calling this. */
+ *  switch, live-refresh) can stay mode-agnostic by just calling this.
+ *
+ *  `opts.forceFresh` (BUG FIX — stuck-loading) passes through to fetchDiff's
+ *  own `forceFresh` for the working-tree branch only — `fetchPrDiff` has no
+ *  main-side cache to bypass (git:prDiff is never part of the unchanged-
+ *  sentinel union), so it's simply ignored on that branch. */
 export function fetchForMode(
   mode: DiffMode,
   workspaceId: string,
-  onSettled: (result: DiffSettleResult) => void
+  onSettled: (result: DiffSettleResult) => void,
+  opts?: { forceFresh?: boolean }
 ): () => void {
-  return mode === 'pr' ? fetchPrDiff(workspaceId, onSettled) : fetchDiff(workspaceId, onSettled)
+  return mode === 'pr'
+    ? fetchPrDiff(workspaceId, onSettled)
+    : fetchDiff(workspaceId, onSettled, opts)
 }
 
 /** Pierre adoption batch 4 (safe/read-only slice) — fetch the READ-ONLY

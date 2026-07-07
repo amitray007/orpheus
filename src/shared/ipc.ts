@@ -382,7 +382,16 @@ export interface InvokeChannelMap {
   // changed since the last `git:diff` call (see GitDiffUnchangedResult's own
   // doc comment). `git:prDiff` below is intentionally NOT part of this union —
   // it keeps the plain `GitDiffResult` shape unchanged.
-  'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult | GitDiffUnchangedResult }
+  // BUG FIX (stuck-loading) — optional `forceFresh` bypasses the main-side
+  // signature-cache LOOKUP for this one call (see gitDiff.ts's
+  // getWorkingTreeDiff doc comment): the cache lives for the main process's
+  // lifetime, independent of the renderer's Git tab mount/unmount, so a
+  // reopened tab must be able to force a full result rather than risk
+  // replaying a stale `{ unchanged: true }` from a previous mount.
+  'git:diff': {
+    req: [{ workspaceId: string; forceFresh?: boolean }]
+    res: GitDiffResult | GitDiffUnchangedResult
+  }
   // Workbench Git tab — Phase 4-pre PR-diff mode (the [Working tree | PR
   // diff] toggle). Resolves `workspaceId` -> cwd -> current branch's PR ->
   // `gh pr diff <n>`, parsed with the SAME splitPatchByFile/fileFromChunk

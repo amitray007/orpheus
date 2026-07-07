@@ -438,8 +438,15 @@ const api = {
     // src/main/gitDiff.ts. PERF FIX (main-side diff no-op detection): the
     // resolved type is a UNION with GitDiffUnchangedResult — see that type's
     // own doc comment; GitTab.tsx's fetchDiff narrows it before use.
-    diff: (workspaceId: string): Promise<GitDiffResult | GitDiffUnchangedResult> =>
-      invoke('git:diff', { workspaceId }),
+    // BUG FIX (stuck-loading) — optional `forceFresh` bypasses main's
+    // signature-cache lookup for this one call (see git:diff's own doc
+    // comment in src/shared/ipc.ts); GitTab.tsx passes this on the first
+    // fetch after a state reset (mount, mode switch).
+    diff: (
+      workspaceId: string,
+      forceFresh?: boolean
+    ): Promise<GitDiffResult | GitDiffUnchangedResult> =>
+      invoke('git:diff', { workspaceId, forceFresh }),
     // Workbench Git tab (Phase 4-pre) — the [Working tree | PR diff]
     // toggle's PR-diff data source. Resolves the workspace's cwd internally,
     // like diff above. See src/main/gitDiff.ts::getPrDiff.

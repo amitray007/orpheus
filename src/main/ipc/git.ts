@@ -66,9 +66,19 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // `{ unchanged: true }` sentinel instead of re-serializing `files[]`. A
   // workspace switch always misses (different key), so the first fetch after
   // a switch is guaranteed to return the full result, never a stale sentinel.
-  handle('git:diff', (_e, { workspaceId }) => {
+  //
+  // BUG FIX (stuck-loading) — `forceFresh` passes straight through to
+  // getWorkingTreeDiff (see its own doc comment): the renderer's Git tab
+  // fully unmounts/remounts on tab switch (not a sticky surface), so the
+  // cache above can outlive the renderer instance that's asking. GitTab.tsx
+  // sets this on the first fetch after every state reset (mount, mode
+  // switch) so a stale cache entry from a PREVIOUS mount can never return
+  // `{ unchanged: true }` to a renderer that has no data to fall back on.
+  handle('git:diff', (_e, { workspaceId, forceFresh }) => {
     const cwd = getWorkspaceCwd(workspaceId)
-    return cwd ? getWorkingTreeDiff(cwd, workspaceId) : Promise.resolve({ repo: false, files: [] })
+    return cwd
+      ? getWorkingTreeDiff(cwd, workspaceId, forceFresh)
+      : Promise.resolve({ repo: false, files: [] })
   })
 
   // Workbench Git tab, Phase 4-pre — the [Working tree | PR diff] toggle's

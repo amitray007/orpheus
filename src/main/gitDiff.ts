@@ -414,10 +414,28 @@ function combinedDiffSignature(files: readonly GitDiffFile[]): string {
  * comment for the cache-key/workspace-switch-is-always-a-miss guarantee.
  * Omitting it (or a non-repo/failure result) always returns the full
  * `GitDiffResult`, unchanged from before this fix.
+ *
+ * BUG FIX (stuck-loading) — `forceFresh` (default false) bypasses the
+ * signature-cache LOOKUP for this call (the cache is still WRITTEN below, so
+ * a subsequent non-forced call in the same session can still no-op against
+ * it). This exists because the cache is keyed by workspaceId and lives for
+ * the lifetime of the main process — it is NOT cleared when the renderer's
+ * Git tab unmounts/remounts (GitTab.tsx fully unmounts on tab switch; it
+ * isn't a sticky surface like a workspace terminal). Without `forceFresh`,
+ * reopening the tab (or switching workspaces back) after nothing has changed
+ * on disk would replay the SAME signature the cache already holds from the
+ * PREVIOUS mount, returning `{ unchanged: true }` to a renderer instance that
+ * has no data of its own yet (fresh `files: []`, `lastAppliedSigRef: null`)
+ * — a result the renderer can safely acknowledge (clear loading) but must
+ * NOT mistake for "nothing to show". The renderer (GitTab.tsx) passes
+ * `forceFresh: true` on exactly the two fetches that follow a state reset —
+ * initial mount and a diff-mode switch — and omits it for the debounced
+ * at-rest live-refresh, which is what this cache exists to optimize.
  */
 export async function getWorkingTreeDiff(
   cwd: string,
-  workspaceId?: string
+  workspaceId?: string,
+  forceFresh = false
 ): Promise<GitDiffResult | GitDiffUnchangedResult> {
   if (!cwd) return { repo: false, files: [] }
   if (!(await isGitRepo(cwd))) return { repo: false, files: [] }
@@ -427,7 +445,7 @@ export async function getWorkingTreeDiff(
 
   if (workspaceId !== undefined) {
     const signature = combinedDiffSignature(files)
-    if (lastDiffSignatureByWorkspace.get(workspaceId) === signature) {
+    if (!forceFresh && lastDiffSignatureByWorkspace.get(workspaceId) === signature) {
       return { repo: true, unchanged: true }
     }
     lastDiffSignatureByWorkspace.set(workspaceId, signature)
