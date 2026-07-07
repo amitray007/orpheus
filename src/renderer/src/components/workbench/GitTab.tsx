@@ -1,345 +1,78 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/GitTab.tsx
 //
-// Workbench Git tab — Phase 1: the working-tree DIFF VIEWER foundation
-// (docs/brainstorms/2026-07-06-git-tab-requirements.md states 3 "uncommitted
-// changes, no PR" + 4 "ahead of base, no PR"). NO PR chrome, comments, or
-// Details/Checks tabs — those are later phases; the [Diff | Commits] strip
-// below only builds Diff, Commits is a stub.
+// Workbench Git tab — a changed-files tree (left, @pierre/trees) + a per-file
+// diff viewer (right, @pierre/diffs' <PatchDiff>), fed by `git:diff`/
+// `git:prDiff` (src/main/gitDiff.ts). This root owns the diff-data state
+// machine (files/selection/diffMode) and the PR-data state machine (pr/
+// prDetail/reviewThreads/localReviews) plus every effect that fetches for
+// them; the presentational pieces (PrSlimHeader, DiffControls, the review-
+// annotation routing layer, DiffContentPane, the empty states, and the pure
+// fetch/signature helpers) live under ./git/diff/ — see that folder for their
+// own doc comments. GitTab.tsx is the only externally-imported symbol (see
+// WorkbenchPanel.tsx).
 //
-// Layout mirrors FilesTab.tsx (see its module header): a changed-files TREE
-// (left, @pierre/trees, git-status-decorated) + a diff PANE (right,
-// @pierre/diffs' <PatchDiff>) fed by the new `git:diff` IPC's per-file patch
-// strings (src/main/gitDiff.ts). Reuses FilesTab's dark-theme idioms
-// (TREE_THEME/themeToTreeStyles, the git-status dot color overrides,
-// PIERRE_VIEWER_BG) rather than re-deriving a second palette — see
-// docs/learnings/pierre-libraries.md §5/§13.
+// Sticky-surface invariant: this tab is mounted/unmounted by WorkbenchPanel
+// as the user switches Workbench tabs (Git isn't a persistent libghostty
+// surface like a workspace terminal — it fully remounts). It DRIVES
+// filesWatcher.ts itself (watchStart on mount / watchStop on unmount, mirror
+// of FilesTab.tsx) — safe because Git and Files are mutually exclusive tabs,
+// so at most one of them ever holds the single-active-watcher slot.
 //
-// Header row (h-8, like FilesTab's): a hide-tree icon, a unified/split icon
-// toggle (diffStyle), a worktree/local chip, and a [Diff | Commits] sub-tab
-// strip (Commits is a Phase-3 stub).
+// Live refresh: `git:statusChanged` (src/main/git.ts's .git watcher, running
+// unconditionally since terminal:mount) covers branch/index changes;
+// `files:changed` (filesWatcher.ts, driven by this tab) covers working-tree
+// edits neither alone would catch. Both are debounced into one git:diff
+// refetch. The idempotent `diffSignature` no-op (applyDiff) is what keeps
+// this fast at rest: an unchanged result skips every setState, so a
+// never-settling `.git/index` rewrite (or main's own dedup racing a real
+// edit) can never flicker the tree/diff.
 //
-// Live refresh: subscribes to `git:statusChanged` (src/main/git.ts's .git
-// watcher — started unconditionally on terminal:mount, covers branch/index
-// changes) AND `files:changed` (filesWatcher.ts — working-tree file
-// create/edit/delete). git.ts's watcher alone is NOT enough: it only covers
-// `.git/HEAD` + `.git/index`, so a bare file save never touches either and
-// never fires it — the tab would only refresh incidentally (e.g. via a
-// staging operation) and feel slow/stale for a plain edit.
+// PR-diff vs working-tree distinction: `diffMode` picks between the
+// uncommitted working tree (`git:diff`) and the full PR diff (`git:prDiff`,
+// base...head via `gh pr diff`) — both resolve to the identical
+// `GitDiffResult` shape. PR review comments (GhReviewCommentThread) anchor to
+// the PR diff, not the live working tree, so `reviewThreads`/GitHub-comment
+// posting are PR-diff-mode-only; LOCAL (Orpheus-owned) review comments have
+// no PR requirement and work in both modes (see DiffContentPaneProps'
+// `allowGithubComments` in git/diff/DiffContentPane.tsx for how the composer
+// itself gates on this).
 //
-// PERF FIX (this pass): GitTab now DRIVES filesWatcher.ts itself — starting
-// the working-tree watch on mount and stopping it on unmount, exactly like
-// FilesTab.tsx does (see its own watchStart/watchStop effect). This used to
-// be explicitly disallowed here ("must NOT call files:watchStart, would
-// fight the single-active invariant") because filesWatcher.ts allows only
-// ONE active watcher app-wide. That reasoning no longer blocks this: the Git
-// and Files tabs are mutually exclusive Workbench tabs (WorkbenchPanel mounts
-// at most one of them at a time), so whichever one is active owns the
-// single watcher slot for as long as it's shown, and there is never a moment
-// both are mounted to contend over it. Unmount (tab switch, workspace
-// change) always stops the watch it started, so the handoff to the other
-// tab's own watchStart is clean.
+// Annotation model: one merged per-file list — GitHub threads + pending
+// composers + local comments — feeds <PatchDiff>'s `renderAnnotation` slot
+// (see git/diff/reviewAnnotations.ts + renderReviewCommentAnnotation.tsx).
+// Pending composers reset on file/mode/PR change since an in-progress draft
+// anchored to a since-navigated-away-from file/line/PR has nothing left to
+// anchor to.
 //
-// Combined with the idempotent applyDiff no-op below (diffSignature), this
-// is what makes updates fast WITHOUT reintroducing the flicker loop that was
-// just fixed: the watcher now fires promptly on a real change, but an
-// unchanged git:diff result is still a complete no-op (no re-render).
-//
-// Gating: mounted only while the Git tab is the active, non-dormant
-// Workbench tab (see WorkbenchPanel) — git:diff is never fetched while the
-// tab isn't visible.
-//
-// Phase 1 refinements (this pass):
-//   FIX 1 — auto-select the first changed file when the diff loads/refreshes
-//     and nothing is selected (or the prior selection dropped out), so the
-//     tab shows a diff immediately instead of an empty "Select a file" state.
-//   FIX 2 — a ⚙ GitDiffOptionsPopover (mirrors FilesTab's TreeOptionsPopover)
-//     holding a "Wrap lines" toggle for the diff viewer, persisted app-wide
-//     via AppUiState.gitDiffWrapLines (same files_wrap_lines pattern), plus a
-//     search-icon toggle for the changed-files tree (mirrors FilesTab's
-//     TreeToolbar search-icon-toggle fix). NOTE: "search in git commits" is a
-//     separate ask — the Commits sub-tab is a Phase-3 stub today, so
-//     commit-search lands there, not here; this only searches changed FILES.
-//   FIX 3 — (superseded) a custom per-row "+N -M" count decoration was tried
-//     and then explicitly reversed: the changed-files tree renders NO custom
-//     row content at all now — just @pierre/trees' own native git-status
-//     letter (U/M/A/D/R) via `setGitStatus`/`toTreeGitStatus`, see the
-//     "Changed-files tree pane" section below for why.
-//   FIX 4 — binary files (gitDiff.ts flags `binary: boolean`) never reach
-//     <PatchDiff> (which would render a blank pane for one); the diff pane
-//     instead renders the current image (via files:readImage) for image
-//     extensions, or a "no preview" placeholder for other binary files. (The
-//     changed-files ROW no longer shows a "Binary" label — see FIX 3 above —
-//     this is the diff PANE's own binary handling only.)
-//
-// Phase 2 — edge states (docs/brainstorms/2026-07-06-git-tab-requirements.md
-// states 1 "not a git repo" + 2 "clean/no changes"; mockup's Edge-states
-// panel): `git:diff`'s result now carries a `repo: boolean` discriminator
-// (src/shared/types.ts's GitDiffResult) so this component can tell "not a
-// git repo" apart from "clean tree" — both previously resolved to the same
-// empty `files: []}`. Three render branches: `!repo` → a centered empty
-// state with a "Git init" button (calls the new `git:init` IPC, then
-// explicitly refetches `git:diff` — the watcher may not pick up a brand-new
-// `.git` dir immediately, so this doesn't rely on live-refresh); `repo &&
-// files.length === 0` → a centered "No changes" empty state; otherwise the
-// unchanged Phase-1 tree+diff view.
-//
-// Phase 3a — PR detection + slim header (docs/brainstorms/
-// 2026-07-06-git-tab-requirements.md "Full-PR experience" → slim header;
-// mockup's `.pr-header--slim`). `startGitWatch` (src/main/git.ts, started
-// unconditionally on `terminal:mount` — see index.ts) resolves the current
-// branch's PR via `getPrForBranch` and pushes it over `github:prChanged` —
-// once on the initial watch registration, and again every time the branch
-// changes (plus, as of the fetch-on-mount fix below, again on a re-mount).
-// This component subscribes to `window.api.github.onPrChanged` (same pattern
-// as its existing `git:statusChanged` subscription) and stores whatever
-// arrives. `pr: null` (no PR / no `gh` / no remote / detached HEAD) renders
-// the header as it did before this phase — the slim header is additive,
-// gated entirely on `pr !== null`.
-//
-// BUG FIX (this pass) — fetch-on-mount fallback: the push above is a
-// ONE-SHOT event that fires asynchronously at `terminal:mount` time, a
-// window that's usually already closed by the time the user actually opens
-// Workbench → Git (GitTab unmounts while its own sub-tab isn't active — see
-// the module header's Gating note), so `pr` stayed null forever for a
-// perfectly normal PR'd branch: the Details/Checks tabs, the [Working tree |
-// PR diff] toggle, and inline review comments were all unreachable. The
-// PR-detection effect below now ALSO calls `github:prForWorkspace` directly
-// on mount/workspace-change (in addition to keeping the onPrChanged
-// subscription, which still handles live updates while mounted) — see
-// src/main/github.ts::getPrForWorkspace + src/shared/ipc.ts's own comment on
-// this channel. Once this fetch sets `pr`, the existing prDetail/
-// reviewThreads effects below (keyed on `pr.number`/`pr.state`) cascade
-// exactly as they already did for a push-delivered `pr`.
-//
-// Slim header fields, matching the mockup's `renderPrHeader` 1:1: a colored
-// status badge (open/draft/merged/closed → the app's own `--color-gh-*`
-// tokens, reusing `PrChip`'s STATE_COLOR/STATE_LABEL rather than
-// re-deriving a second copy), the PR title (clickable → `openPrUrl`, no
-// separate link button/icon per the requirements doc), `#<number>`, and the
-// branch. `GhPullRequest` doesn't carry a base-ref field (see
-// shared/types.ts) — the doc explicitly allows "best-effort" here for 3a,
-// so the arrow only renders when a base is available; today that's never,
-// so it's just the branch chip alone until a future phase threads
-// `baseRefName` through `getPrForBranch`. The existing worktree chip stays
-// in the header row unchanged.
-//
-// Tab-strip growth: `[Diff | Commits]` becomes `[Diff | Commits | Details |
-// Checks]` once `pr !== null` — Details/Checks are stubs this phase
-// ("Coming soon" placeholders, same convention the Commits stub already
-// uses); 3c/3d build their real content. No PR → the strip (and the rest of
-// the tab) is completely unchanged from Phase 1/2.
-//
-// PR-header polish (this pass, live-QA follow-up) — two fixes:
-//   FIX 1 — the sub-tab strip used to render a bare "local" pill (from
-//     WorktreeChip) immediately left of [Diff|Commits|Details|Checks] for
-//     every non-worktree workspace (the common case), reading as a stray
-//     extra tab segment rather than a deliberate indicator. Root-caused to
-//     WorktreeChip always rendering SOME text ("worktree · x" or "local")
-//     instead of nothing when there's nothing notable to say — fixed by
-//     having it render `null` for the non-worktree case (see its own doc
-//     comment) rather than visually hiding/repositioning the same string.
-//   FIX 2 — PrSlimHeader is now one full-width `flex flex-wrap` row (badge,
-//     title, #id, branch chip+copy, worktree chip) instead of a cramped
-//     top-left block with wasted width and a truncated title; a long title
-//     wraps instead of ellipsizing. The branch chip grew a copy-icon button
-//     (BranchCopyButton, mirroring git/CommitsTab.tsx's CommitShaCopyButton
-//     copy/timeout-reset-to-check pattern). The worktree chip — now a no-op
-//     for the common non-worktree case per Fix 1 — moved into this row
-//     (after the branch chip) for the has-PR case; the no-PR case still
-//     renders it (a no-op for non-worktrees) beside the sub-tab strip, since
-//     there's no PR header row for it to live in there.
-//
-// Phase 3b foundation (this pass) — the three-parallel-agent split. The
-// Commits/Details/Checks sub-tabs are now their OWN files under ./git/
-// (CommitsTab.tsx / DetailsTab.tsx / ChecksTab.tsx), each a self-contained
-// placeholder receiving `{ prDetail, workspaceId, branch }` as props — so a
-// later pass can build out each tab's real content in parallel, with each
-// agent editing only its own file (no shared-file collision with GitTab.tsx
-// or with each other). This component's only new responsibility is fetching
-// the rich `github:prDetail` payload (src/shared/types.ts's
-// GhPullRequestDetail — meta, labels, assignees, reviews, milestone,
-// commits[], checks[], general comments) into `prDetail` state and handing it
-// down: once on PR detection/change (the existing `onPrChanged` push below
-// already tells us a PR now exists or changed), and again whenever the
-// working-tree diff refetches (mirrors the existing refresh cadence rather
-// than adding a second poll loop — the IPC itself is cached server-side for
-// 5 minutes, so this doesn't hammer `gh`). `prDetail` resets to null exactly
-// where `pr` resets to null (workspace switch, PR loss) so a stale previous
-// workspace's/PR's rich data never leaks into the new one.
-//
-// Phase 4-pre — PR-diff mode (this pass): the prerequisite for Phase 4a's
-// inline PR review comments, which anchor to the PR DIFF (branch vs base),
-// not the working-tree diff this component has rendered since Phase 1. Adds
-// a `diffMode: 'working' | 'pr'` state and a [Working tree | PR diff]
-// segmented toggle (DiffModeToggle), shown only once `pr !== null` (no PR ->
-// no toggle, tab stays exactly as before). Both modes feed the SAME
-// DiffTreePane/DiffContentPane — `git:prDiff` (src/main/gitDiff.ts's
-// getPrDiff) returns the identical `GitDiffResult` shape `git:diff` does, by
-// reusing this module's own splitPatchByFile/fileFromChunk parsers server-
-// side (gh pr diff emits the same `diff --git` format). Refresh cadence
-// differs deliberately by mode: working-tree mode keeps its existing
-// git:statusChanged/files:changed debounce; PR-diff mode refetches on mode
-// switch and on `github:prChanged` (a PR diff is base...head against
-// committed history — a working-tree file save has no bearing on it, so
-// it's NOT wired to files:changed, per the task's explicit "avoid churn"
-// direction). A PR disappearing (branch switch/close) while PR-diff mode is
-// active falls back to working-tree mode, same fallback pattern the
-// Details/Checks sub-tabs already use for PR loss.
-//
-// Phase 4b — starting a comment (this pass): COMPOSE UI ONLY, no
-// posting/network (that's Phase 4c). Adds the "add a comment" entry points
-// on the PR diff (PR-diff mode only, same gating as 4a's read-only threads):
-// a hover gutter "+" (@pierre/diffs' `enableGutterUtility` +
-// `renderGutterUtility` + `onGutterUtilityClick`, see buildDiffOptions/
-// GutterAddCommentButton below) and select-a-range-to-comment
-// (`enableLineSelection` + `onLineSelected`, same buildDiffOptions — scoped
-// to the FINAL committed selection, single-line-anchored via
-// `anchorFromRange`'s end-of-range rule, see that function's own comment).
-// Both open a "pending composer" (useReviewComposers.ts) rendered into the
-// SAME `renderAnnotation` slot 4a's read-only threads use — `annotationsForFile`
-// now merges GhReviewCommentThread[] (4a) and PendingComposer[] (4b) into one
-// `ReviewAnnotationMeta` union, and `renderReviewCommentAnnotation` routes
-// each to <ReviewCommentThread> or the new <CommentComposer> (git/
-// CommentComposer.tsx) accordingly. Pending composers reset on file/mode/PR
-// change (see the composer-reset effects near reviewComposers' declaration)
-// since an in-progress draft anchored to a since-navigated-away-from
-// file/line/PR has nothing left to anchor to. `CommentComposer`'s "Comment"
-// button calls a still-stubbed `onSubmit` (GitTab's `submitReviewComment` —
-// logs the draft and closes the composer) rather than posting anywhere;
-// Phase 4c wires that to the real GitHub-post IPC.
-//
-// Phase 5 (this pass, live-QA follow-up) — two comment-UX fixes:
-//   FIX 1 — LOCAL comments now work in WORKING-TREE mode too, not just
-//     PR-diff mode. `composers`/`localWiring` are now passed to
-//     DiffContentPane UNCONDITIONALLY (both modes) instead of only while
-//     `diffMode === 'pr'` — the gutter "+"/select-to-comment affordance and
-//     the local-comment cards (resolve/delete) now render on the
-//     working-tree diff exactly like they already did on the PR diff.
-//     GitHub comments stay PR-diff-only (`reviewThreads` is still `null` in
-//     working-tree mode, unchanged) since they anchor to the PR, not the
-//     working tree. The new `allowGithubComments` prop (`diffMode === 'pr'`)
-//     gates whether the pending-composer's [GitHub | Local] SourceToggle
-//     renders at all -- in working-tree mode there's no PR to post a GitHub
-//     comment to, so the composer is local-only (no toggle) rather than
-//     showing a toggle with a disabled/meaningless GitHub option.
-//     `submitComment`'s dispatcher now also checks `diffModeRef` (not just
-//     `commentSourceRef`) so a stale 'github' toggle selection carried over
-//     from a previous PR-diff-mode session can never route a
-//     working-tree-mode submit to `submitGithubReviewComment` (which has no
-//     PR to post against there).
-//   FIX 2 -- the gutter "+" is GitHub-style already (Pierre's
-//     `renderGutterUtility` mounts ONE slot per file that the underlying
-//     custom element repositions to track the currently-hovered row -- see
-//     GutterAddCommentButton's doc comment) but LOOKED like an always-on
-//     accent-filled pill rather than a subtle affordance that only reads as
-//     "accented" on hover. CommentComposer.css's `.gcc-gutter-add` is now
-//     subtle by default (muted icon, transparent bg) and only turns
-//     accent-filled on `:hover`/`:focus-visible` of the button itself --
-//     purely a CSS change, no positioning logic touched.
-//
-// Pierre adoption batch 4 (this pass) — merge-conflict DETECTION + DISPLAY,
-// the explicitly-scoped SAFE/READ-ONLY half of the roadmap's "in-app
-// merge-conflict resolution UI" item (scratchpad/pierre-roadmap.json's
-// "build-on-top" group). Writes NOTHING — no `resolveConflict`/write-back, no
-// hunk accept/reject, no git mutation of any kind; that's deliberately
-// deferred to a later batch.
-//
-//   Detection (main) — a new read-only `git:conflicts` IPC (src/main/git.ts's
-//     getConflictedPaths) runs `git status --porcelain=v1` and returns the
-//     repo-relative paths whose XY code is one of the nine "unmerged"
-//     combinations (UU/AA/DD/AU/UA/DU/UD). Fetched alongside the working-tree
-//     diff (initial load + the same debounced git:statusChanged/files:changed
-//     refresh this component already drives) into `conflictedPaths` state — a
-//     plain `ReadonlySet<string>` so DiffContentPane can do an O(1) membership
-//     check per selected file.
-//
-//   Display (renderer) — `parseMergeConflictDiffFromFile` and
-//     `useUnresolvedFileInstance` (the roadmap's guessed "headless parser")
-//     turned out NOT to be part of @pierre/diffs' public API surface: neither
-//     is re-exported from `.` or `./react` in the installed 1.2.12 (verified
-//     against node_modules/@pierre/diffs/dist/{index,react/index}.d.ts — both
-//     only exist under the package's un-exported `dist/utils/`/
-//     `dist/react/utils/` paths, which Node's `exports` map blocks from being
-//     deep-imported). What IS public and exactly fits this slice:
-//       - `<UnresolvedFile>` (from `@pierre/diffs/react`) — takes a plain
-//         `FileContents {name, contents}` (the raw on-disk text, conflict
-//         markers included — exactly what `files:readFile` already returns)
-//         and renders Pierre's own current/incoming(/diff3 base) conflict
-//         regions. `mergeConflictActionsType: 'none'` disables the built-in
-//         accept/reject action slots entirely — no custom disabled-button
-//         chrome needed, Pierre just doesn't render any action UI in that
-//         mode. `onMergeConflictAction`/`onMergeConflictResolve` are left
-//         unset — nothing is wired to resolve/write back.
-//       - `MERGE_CONFLICT_START_MARKER_REGEX` (from `@pierre/diffs`, the base
-//         package — also not re-exported under `/react`, imported directly)
-//         — the SAME regex (`^<{7,}`) Pierre's own internal parser uses to
-//         find conflict-region starts, reused here (client-side, per selected
-//         file's raw contents) purely to compute the "N conflicts" badge
-//         count, since the count-producing internals aren't reachable.
-//     ConflictDiffPane (below) is a NEW branch inside DiffContentPane, gated
-//     on `conflictedPaths.has(file.path)` — every non-conflicted file (the
-//     overwhelmingly common case) renders through the exact same
-//     <PatchDiff>/<Virtualizer> path as before, untouched. Dormant whenever
-//     the repo has no live conflict (the ordinary case), by construction.
+// Merge-conflict display: `conflictedPaths` (from the read-only
+// `git:conflicts` IPC) is working-tree-only — a PR diff is against committed
+// history and can't itself be "conflicted" the way a live working tree can.
+// A conflicted file renders via @pierre/diffs' read-only `<UnresolvedFile>`
+// (ConflictDiffPane) instead of the normal <PatchDiff>; nothing here writes
+// a resolution back (no accept/reject, no git mutation) — that's deferred.
 // ---------------------------------------------------------------------------
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
-import { PatchDiff, UnresolvedFile, Virtualizer } from '@pierre/diffs/react'
-import { MERGE_CONFLICT_START_MARKER_REGEX } from '@pierre/diffs'
-import {
-  List,
-  Rows,
-  Columns,
-  MagnifyingGlass,
-  GitBranch,
-  CheckCircle,
-  GitMerge,
-  GitPullRequest,
-  Plus,
-  X,
-  Copy,
-  Check
-} from '@phosphor-icons/react'
+import { List, MagnifyingGlass } from '@phosphor-icons/react'
 import type {
-  FileContents as GitFileContents,
-  FileImage,
   GhPullRequest,
   GhPullRequestDetail,
-  GhPullRequestState,
   GhReviewCommentThread,
   GitDiffFile,
-  GitDiffResult,
-  GitDiffUnchangedResult,
   GitStatusEntry,
   LocalReviewComment
 } from '@shared/types'
-import type { DiffLineAnnotation, FileDiffOptions, SelectedLineRange } from '@pierre/diffs'
 import { UI_STATE_DEFAULTS } from '@shared/uiStateDefaults'
-import { Button } from '../Button'
 import { useUiState, updateUiState } from '../../lib/uiStateStore'
-import { openPrUrl } from '../../lib/overlayClient'
-import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { GitDiffOptionsPopover } from './GitDiffOptionsPopover'
 import { useTreeWidthDrag, TREE_WIDTH_CSS_VAR } from './useTreeWidthDrag'
-import { useImageZoomPan } from './useImageZoomPan'
-import { ImageZoomBar } from './ImageZoomBar'
-import { CommitsTab } from './git/CommitsTab'
-import { DetailsTab } from './git/DetailsTab'
-import { ChecksTab } from './git/ChecksTab'
-import { ReviewCommentThread, LocalCommentThread } from './git/ReviewCommentThread'
-import {
-  CommentComposer,
-  type CommentDraft,
-  type CommentSource,
-  type GhSubmitResult
-} from './git/CommentComposer'
-import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
+import { useReviewComposers } from './git/useReviewComposers'
 import { useTokenHoverPopover } from './git/useTokenHoverPopover'
-import type { UseTokenHoverPopoverResult } from './git/useTokenHoverPopover'
 import { TokenHoverPopover } from './git/TokenHoverPopover'
+import type { CommentDraft, GhSubmitResult, CommentSource } from './git/CommentComposer'
 import { preloadDiffHighlighter } from './diffHighlighterPreload'
 import {
   treeHostStyle,
@@ -348,30 +81,34 @@ import {
   TREE_RENDER_OPTIONS,
   TREE_DIR_GIT_CHANGE_CSS
 } from './treeConfig'
+import { CommitsTab } from './git/CommitsTab'
+import { DetailsTab } from './git/DetailsTab'
+import { ChecksTab } from './git/ChecksTab'
+import { PrSlimHeader, WorktreeChip } from './git/diff/PrSlimHeader'
+import { DiffStyleToggle, DiffModeToggle } from './git/diff/DiffControls'
+import type { LocalCommentWiring } from './git/diff/reviewAnnotations'
+import { DiffContentPane, DiffMessage, type ReviewComposerWiring } from './git/diff/DiffContentPane'
+import { NotARepoState, CleanState, PrDiffEmptyState } from './git/diff/diffEmptyStates'
+import {
+  fetchConflicts,
+  fetchDiff,
+  fetchForMode,
+  fetchLocalReviews,
+  fetchPrDiff,
+  fetchReviewComments,
+  diffSignature,
+  nextSelection,
+  EMPTY_CONFLICTS,
+  type DiffSettleResult
+} from './git/diff/diffFetch'
 
 // TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
 // ./treeConfig.ts (shared with FilesTab.tsx — see that module's doc comment
 // for the full override-chain writeup this used to carry inline here).
-
-const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
-
-// Crash fix #2 (belt-and-suspenders) — see buildDiffOptions' doc comment.
-const DIFF_TOKENIZE_MAX_LINE_LENGTH = 1000
-
-// Pierre-adoption Batch 1a — whole-diff byte cap (distinct from the per-LINE
-// cap above). BaseCodeOptions.tokenizeMaxLength (confirmed in
-// node_modules/@pierre/diffs/dist/types.d.ts:300) bounds the TOTAL bytes
-// Pierre will tokenize with Shiki before falling back to plain (uncoloured)
-// text for the rest — belt-and-suspenders alongside the OversizedDiffPlaceholder
-// gate above `buildDiffOptions`' caller: that gate keeps genuinely huge patches
-// out of <PatchDiff> entirely, while this handles the mid-size case (a
-// large-but-ordinary-line-length file that's under the placeholder's
-// byte/line thresholds but would still be a heavy synchronous tokenize pass).
-// Pierre's own default (DEFAULT_TOKENIZE_MAX_LENGTH, dist/constants.js) is
-// 100_000 bytes; 750_000 gives real-world diffs (a few thousand lines) full
-// highlighting while still bailing out gracefully to plaintext well before
-// the OversizedDiffPlaceholder's own much larger hard cap.
-const DIFF_TOKENIZE_MAX_LENGTH = 750_000
+//
+// VIEWER_THEME + the diff-options builder/tokenize caps now live in
+// ./git/diff/DiffContentPane.tsx (Wave 3 Phase A extraction) alongside the
+// rest of the diff-content-pane presentational surface.
 
 // Live-refresh debounce — coalesces bursts from either push source (a save
 // touching several files, a `git add -A`) into one git:diff refetch.
@@ -388,15 +125,16 @@ const DIFF_TOKENIZE_MAX_LENGTH = 750_000
 // doesn't reintroduce the flicker loop that fix addressed.
 const REFRESH_DEBOUNCE_MS = 130
 
-// Not exported — GitTab is the module's only external-facing symbol (see
-// WorkbenchPanel.tsx's sole import below); every type here is internal-only
-// (knip-flagged dead export surface otherwise).
-type DiffStyle = 'unified' | 'split'
+// Exported — the git/diff/ presentational modules (DiffControls.tsx,
+// DiffContentPane.tsx, diffFetch.ts) import these two types from here rather
+// than re-declaring them, since GitTab is the sole owner of the `diffStyle`/
+// `diffMode` state itself.
+export type DiffStyle = 'unified' | 'split'
 
-/** Phase 4-pre — the Diff sub-tab's data-source mode: the uncommitted
- *  working-tree diff (default, unchanged from Phase 1) vs the full PR diff
- *  (base...head, via `gh pr diff`). See the module header's Phase 4-pre note. */
-type DiffMode = 'working' | 'pr'
+/** The Diff sub-tab's data-source mode: the uncommitted working-tree diff
+ *  (default) vs the full PR diff (base...head, via `gh pr diff`) — see the
+ *  module header's "PR-diff vs working-tree distinction" note. */
+export type DiffMode = 'working' | 'pr'
 
 interface GitTabProps {
   /** The owning claude workspace's id — resolves to the workspace cwd in the
@@ -441,248 +179,13 @@ function selectOnlyPath(model: SingleSelectableTreeModel, path: string): void {
   model.getItem(path)?.select()
 }
 
-// --- PR review-comment inline annotations (Phase 4a + 4b) --------------------
-
-/** The annotation metadata union rendered into the SAME `renderAnnotation`
- *  slot (Phase 4b/4d): an existing GitHub thread (4a, read-only), a pending
- *  composer the user just opened via the gutter "+"/select-to-comment (4b),
- *  or a LOCAL (Orpheus-owned) review comment (4d — see reviewStore.ts's own
- *  header for the 3-source model this completes). `renderReviewCommentAnnotation`
- *  below routes on `kind`. */
-type ReviewAnnotationMeta =
-  | { kind: 'thread'; thread: GhReviewCommentThread }
-  | { kind: 'pending'; composer: PendingComposer }
-  | { kind: 'local'; comment: LocalReviewComment }
-
-/** Maps a GitHub review-comment thread onto Pierre's side-relative
- *  `DiffLineAnnotation` (see docs/learnings/pr-comments.md §Q2 "Mapping to
- *  Pierre's DiffLineAnnotation"): `RIGHT`→`additions`/`LEFT`→`deletions`
- *  (Pierre's `lineNumber` is side-relative — new-file for additions, old-file
- *  for deletions — matching GitHub's line/original_line semantics 1:1, no
- *  further transform needed), and `lineNumber` from the thread's own
- *  `line` (root comment's `line ?? originalLine`, already resolved
- *  server-side by groupReviewCommentsIntoThreads — see src/main/github.ts).
- *  A `subjectType: 'file'` thread (no per-line anchor) maps to `lineNumber: 0`
- *  per Pierre's own documented file-level-annotation convention
- *  (`dist/types.d.ts`'s doc comment on `DiffLineAnnotation`) — 4a doesn't
- *  special-case file-level comments beyond this placement; a future phase can
- *  render them distinctly if that reads better in practice. */
-function threadToAnnotation(
-  thread: GhReviewCommentThread
-): DiffLineAnnotation<ReviewAnnotationMeta> {
-  const lineNumber = thread.subjectType === 'file' ? 0 : (thread.line ?? 0)
-  return {
-    side: thread.side === 'LEFT' ? 'deletions' : 'additions',
-    lineNumber,
-    metadata: { kind: 'thread', thread }
-  }
-}
-
-/** Maps an open pending composer (Phase 4b) onto the same annotation shape —
- *  `side`/`line` come straight from the composer's own anchor (set at
- *  gutter-"+"-click time, see `useReviewComposers`'s `open`), no `line ??
- *  originalLine` fallback needed since a pending composer is always anchored
- *  to a line actually rendered in the CURRENT PR diff (it can only be opened
- *  by clicking a line that's on screen right now). */
-function composerToAnnotation(composer: PendingComposer): DiffLineAnnotation<ReviewAnnotationMeta> {
-  return {
-    side: composer.side === 'LEFT' ? 'deletions' : 'additions',
-    lineNumber: composer.line,
-    metadata: { kind: 'pending', composer }
-  }
-}
-
-/** Phase 4d — maps a LOCAL review comment onto the same annotation shape.
- *  `side`/`line` come straight from the comment's own anchor (set at
- *  reviews:add time — see GitTab's addLocalComment); a null `line` (a
- *  file-level local comment, mirroring GhReviewCommentThread's `subjectType:
- *  'file'`) maps to `lineNumber: 0`, same convention threadToAnnotation above
- *  already uses for a file-level GitHub thread. A null `side` defaults to
- *  'additions' (RIGHT) — every local comment created via the current gutter-
- *  "+"/select-to-comment entry points always sets a real side, so this only
- *  matters for a hypothetical future file-level-only entry point. */
-function localCommentToAnnotation(
-  comment: LocalReviewComment
-): DiffLineAnnotation<ReviewAnnotationMeta> {
-  return {
-    side: comment.side === 'LEFT' ? 'deletions' : 'additions',
-    lineNumber: comment.line ?? 0,
-    metadata: { kind: 'local', comment }
-  }
-}
-
-/** Filters + merges the full thread list and the open pending composers down
- *  to ONE file's annotations — DiffContentPane renders one file's
- *  <PatchDiff> at a time, so this is recomputed per selected file (memoized
- *  by the caller). Threads with `line === null` AND `subjectType !== 'file'`
- *  (an outdated line-anchored comment with no `originalLine` fallback either
- *  — shouldn't happen per pr-comments.md's "original_line is never null"
- *  finding, but guarded defensively) are skipped rather than guessing
- *  lineNumber 0, which would misleadingly render them as file-level. */
-function annotationsForFile(
-  threads: readonly GhReviewCommentThread[],
-  composers: readonly PendingComposer[],
-  localComments: readonly LocalReviewComment[],
-  path: string
-): DiffLineAnnotation<ReviewAnnotationMeta>[] {
-  const threadAnnotations = threads
-    .filter((t) => t.path === path && (t.subjectType === 'file' || t.line !== null))
-    .map(threadToAnnotation)
-  const composerAnnotations = composers.filter((c) => c.path === path).map(composerToAnnotation)
-  // Phase 4d: local comments merge into the SAME per-file annotation list as
-  // GitHub threads/pending composers — completing the 3-source model inline
-  // on the same diff (github-from-others / my-github / LOCAL).
-  const localAnnotations = localComments
-    .filter((c) => c.path === path)
-    .map(localCommentToAnnotation)
-  return [...threadAnnotations, ...composerAnnotations, ...localAnnotations]
-}
-
-// A composer with no wired onSubmit (shouldn't happen per the doc comment
-// below, but keeps the optional-callback fallback honest about its own
-// return type instead of silently resolving `undefined` where a
-// `GhSubmitResult` is expected).
-const NO_SUBMIT_WIRED: GhSubmitResult = { ok: false, error: 'Comment posting is not available' }
-
-/** Phase 4d — the subset of local-comment wiring `renderReviewCommentAnnotation`
- *  needs to route a `kind: 'local'` annotation to its card, PLUS the
- *  [GitHub | Local] source-toggle state for the pending NEW-comment composer
- *  (a 'pending' annotation is also routed by this same function — see the
- *  'pending' branch below). Kept as its own small interface (rather than more
- *  loose optional params) so the growing parameter list stays readable —
- *  mirrors ReviewComposerWiring's own "named wiring bag" shape below. */
-interface LocalCommentWiring {
-  onToggleResolved: (comment: LocalReviewComment) => void
-  onDelete: (comment: LocalReviewComment) => void
-  commentSource: CommentSource
-  onCommentSourceChange: (source: CommentSource) => void
-}
-
-/** Routes one merged annotation to its card: an existing GitHub thread (4a,
- *  read-only, with a Reply affordance as of 4c — see ReviewCommentThread.tsx),
- *  a pending composer (4b/4c), or a LOCAL review comment (4d — see
- *  reviewStore.ts's header for the 3-source model). `onCancelComposer`/
- *  `onSubmitComposer` are only ever actually invoked for a 'pending'
- *  annotation, which — per `annotationsForFile` — can only exist when
- *  DiffContentPane was given a real (non-null) `composers` wiring object in
- *  the first place; they're still typed as optional (rather than required)
- *  so callers in a context with no composers at all (there are none today,
- *  but this keeps the helper honest about what it needs) don't have to
- *  invent placeholder callbacks. Same optionality for `localWiring` — a
- *  'local' annotation can only exist once GitTab has fetched local comments
- *  at all, but the helper doesn't assume that. `workspaceId` is threaded
- *  through to ReviewCommentThread so its own Reply composer can post via
- *  github:replyToReviewComment + trigger the same onRefetch callback a
- *  new-comment post does. */
-function renderReviewCommentAnnotation(
-  annotation: DiffLineAnnotation<ReviewAnnotationMeta>,
-  workspaceId: string,
-  onRefetchThreads: () => void,
-  onCancelComposer?: (id: string) => void,
-  onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>,
-  localWiring?: LocalCommentWiring,
-  // Phase 5 FIX 1: whether the pending-composer's [GitHub | Local]
-  // SourceToggle should render at all -- only true in PR-diff mode (there's
-  // a PR to post a GitHub comment to). In working-tree mode this is false,
-  // so `source`/`onSourceChange` are omitted entirely (both undefined) rather
-  // than passed-but-pointless: CommentComposer already treats `source ===
-  // undefined` as "no toggle, local-only composer" (see its own doc
-  // comment) -- exactly the working-tree-mode UX this fix wants.
-  allowGithub = false
-): React.ReactNode {
-  if (annotation.metadata.kind === 'pending') {
-    const { composer } = annotation.metadata
-    return (
-      <CommentComposer
-        draft={composer}
-        onCancel={() => onCancelComposer?.(composer.id)}
-        onSubmit={(draft) => onSubmitComposer?.(draft) ?? Promise.resolve(NO_SUBMIT_WIRED)}
-        source={allowGithub ? localWiring?.commentSource : undefined}
-        onSourceChange={allowGithub ? localWiring?.onCommentSourceChange : undefined}
-      />
-    )
-  }
-  if (annotation.metadata.kind === 'local') {
-    const { comment } = annotation.metadata
-    return (
-      <LocalCommentThread
-        comment={comment}
-        onToggleResolved={(c) => localWiring?.onToggleResolved(c)}
-        onDelete={(c) => localWiring?.onDelete(c)}
-      />
-    )
-  }
-  return (
-    <ReviewCommentThread
-      thread={annotation.metadata.thread}
-      workspaceId={workspaceId}
-      onReplyPosted={onRefetchThreads}
-    />
-  )
-}
-
-/** BUG FIX (this pass) — Pierre's `@pierre/diffs` has TWO mutually exclusive
- *  gutter-utility APIs, and the previous code set both at once: `options.
- *  onGutterUtilityClick` (a built-in, non-custom-render click handler) AND
- *  the React `renderGutterUtility` prop (a custom-render React node,
- *  auto-detected by the library and translated into `options.
- *  renderGutterUtility` — see `useFileDiffInstance.mergeFileDiffOptions` in
- *  @pierre/diffs' own source). `InteractionManager` throws "Cannot use both
- *  'onGutterUtilityClick' and 'renderGutterUtility'" the instant BOTH end up
- *  non-null in its resolved options — which happened on every PR-diff-mode
- *  render, crashing the whole app to the error boundary. This was dormant
- *  since Phase 4b introduced it: PR-diff mode was unreachable until this
- *  pass's `pr`-state fix made it reachable for the first time, so this
- *  latent crash never actually fired in practice until now.
- *
- *  FIX: since a custom React node IS wanted here (GutterAddCommentButton),
- *  only the `renderGutterUtility` prop is used — `onGutterUtilityClick`/
- *  `enableGutterUtility` are removed from buildDiffOptions entirely. The
- *  click itself is now wired directly on the button's own onClick, reading
- *  the currently-hovered line via the `getHoveredLine` accessor Pierre passes
- *  into `renderGutterUtility(getHoveredLine)` (see renderDiffChildren.tsx) —
- *  the same line/side data `onGutterUtilityClick`'s `SelectedLineRange`
- *  argument used to carry, just sourced from the render-prop's own accessor
- *  instead of a second parallel callback. */
-function GutterAddCommentButton({
-  getHoveredLine,
-  onAdd
-}: {
-  getHoveredLine: () => { lineNumber: number; side: 'additions' | 'deletions' } | undefined
-  onAdd: (lineNumber: number, side: 'additions' | 'deletions') => void
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      className="gcc-gutter-add"
-      title="Add a comment on this line"
-      tabIndex={-1}
-      onClick={() => {
-        const hovered = getHoveredLine()
-        if (hovered) onAdd(hovered.lineNumber, hovered.side)
-      }}
-    >
-      <Plus size={11} weight="bold" />
-    </button>
-  )
-}
-
-// Raster image extensions (Fix 4) — a changed binary file with one of these
-// extensions renders as an <img> (via files:readImage) instead of a "no
-// preview" placeholder. Kept as its own small const (not imported from
-// FilesTab, which doesn't export its equivalent IMAGE_EXTENSIONS/isImagePath)
-// — same "duplicated small literal, independently editable" rationale the
-// module header already applies to TREE_THEME. SVG is deliberately excluded:
-// it's XML/text source, so a changed .svg with actual hunks still renders as
-// a normal text PatchDiff (only a truly binary .svg — rare — would fall
-// through to the generic "Binary file" placeholder below).
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'])
-
-function isImagePath(path: string): boolean {
-  const dot = path.lastIndexOf('.')
-  if (dot === -1) return false
-  return IMAGE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
-}
+// PR review-comment inline annotations: ReviewAnnotationMeta/
+// annotationsForFile/LocalCommentWiring live in ./git/diff/reviewAnnotations.ts;
+// renderReviewCommentAnnotation and GutterAddCommentButton (their own
+// files, split for react-refresh/only-export-components) live alongside
+// it under ./git/diff/. The binary-image extension check (IMAGE_EXTENSIONS/
+// isImagePath) now lives alongside DiffContentPane in
+// ./git/diff/DiffContentPane.tsx, which is the only consumer.
 
 // --- Sub-tab strip -----------------------------------------------------------
 
@@ -728,299 +231,34 @@ function SubTabStrip({ active, onChange, hasPr }: SubTabStripProps): React.JSX.E
   )
 }
 
-// --- Diff-style icon toggle ---------------------------------------------------
-
-interface DiffStyleToggleProps {
-  value: DiffStyle
-  onChange: (style: DiffStyle) => void
-}
-
-/** Unified/split icon toggle — Rows (stacked horizontal lines) for unified,
- *  Columns (two vertical columns) for split, matching the requirements doc's
- *  "SVG icon toggle, not text" cross-cutting rule. */
-function DiffStyleToggle({ value, onChange }: DiffStyleToggleProps): React.JSX.Element {
-  const btnClass = (active: boolean): string =>
-    [
-      'p-1 rounded',
-      active
-        ? 'bg-surface-raised text-text-primary'
-        : 'text-text-muted hover:bg-surface-raised hover:text-text-primary'
-    ].join(' ')
-  return (
-    <div className="flex items-center gap-0.5">
-      <button
-        type="button"
-        onClick={() => onChange('unified')}
-        aria-pressed={value === 'unified'}
-        title="Unified diff"
-        className={btnClass(value === 'unified')}
-      >
-        <Rows size={14} />
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange('split')}
-        aria-pressed={value === 'split'}
-        title="Split diff"
-        className={btnClass(value === 'split')}
-      >
-        <Columns size={14} />
-      </button>
-    </div>
-  )
-}
-
-// --- Diff-mode segmented toggle (Phase 4-pre) --------------------------------
-
-interface DiffModeToggleProps {
-  value: DiffMode
-  onChange: (mode: DiffMode) => void
-}
-
-/** [Working tree | PR diff] segmented control — only rendered by GitTab while
- *  a PR exists for the current branch (see the module header's Phase 4-pre
- *  note: PR review comments anchor to the PR diff, not the working-tree
- *  diff, so this toggle is the prerequisite for Phase 4a's inline comments).
- *  Matches SubTabStrip's compact pill-segment visual language rather than
- *  DiffStyleToggle's icon-only style — this needs readable labels, not icons,
- *  since "working tree" vs "PR diff" isn't obviously representable as a
- *  glyph pair. */
-function DiffModeToggle({ value, onChange }: DiffModeToggleProps): React.JSX.Element {
-  const seg = (mode: DiffMode, label: string): React.JSX.Element => (
-    <button
-      key={mode}
-      type="button"
-      onClick={() => onChange(mode)}
-      aria-pressed={value === mode}
-      className={[
-        'px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-100',
-        value === mode
-          ? 'bg-surface-raised text-text-primary'
-          : 'text-text-muted hover:text-text-secondary'
-      ].join(' ')}
-    >
-      {label}
-    </button>
-  )
-  return (
-    <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-overlay/60 border border-border-default/60">
-      {seg('working', 'Working tree')}
-      {seg('pr', 'PR diff')}
-    </div>
-  )
-}
-
-// --- Worktree chip ------------------------------------------------------------
-
-/** "worktree · <branch>" — the app already tracks worktreeParentCwd/
- *  worktreeBranch per workspace (see WorkspaceTitleBar's own worktree chip),
- *  so this is pure presentation over props passed down from WorkspaceView, no
- *  new IPC needed.
- *
- *  BUG FIX (this pass) — the stray "local" pill: this component used to
- *  render a literal "local" pill for the (extremely common) main-checkout
- *  case, sitting in the sub-tab-strip row right next to
- *  [Diff|Commits|Details|Checks] — from a QA glance it read as a bogus extra
- *  segment glued onto the tab strip, not as a deliberate "this is not a
- *  worktree" indicator. Root cause: a worktree-vs-main-checkout distinction
- *  doesn't need an always-visible "local" pill to make its point — it only
- *  needs to say something when there IS something notable to say (i.e. this
- *  workspace IS an isolated worktree). So this now renders `null` entirely
- *  for the non-worktree case; only a genuine worktree gets a chip, which
- *  GitTab now places in the PR slim header row (Fix 2) — see PrSlimHeader —
- *  rather than in the sub-tab-strip row this used to occupy. */
-function WorktreeChip({
-  worktreeParentCwd,
-  worktreeBranch
-}: {
-  worktreeParentCwd: string | null
-  worktreeBranch: string | null
-}): React.JSX.Element | null {
-  if (worktreeParentCwd === null) return null
-  return (
-    <span
-      title={`Worktree branch: ${worktreeBranch ?? 'unknown'}\nParent repo: ${worktreeParentCwd}`}
-      className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium text-text-muted bg-surface-overlay/60 border border-border-default/60 select-none whitespace-nowrap"
-    >
-      {`worktree · ${worktreeBranch ?? '?'}`}
-    </span>
-  )
-}
-
-// --- Branch copy button --------------------------------------------------------
-
-/** Copy-to-clipboard button for the PR header's branch chip — mirrors
- *  git/CommitsTab.tsx's `CommitShaCopyButton` pattern 1:1 (copy via
- *  `navigator.clipboard`, flip to a Check icon for ~1.2s, reset on unmount/
- *  re-click via the same cleanup-timer shape) rather than re-deriving a
- *  second copy-button implementation for a branch name instead of a SHA. */
-function BranchCopyButton({ branch }: { branch: string }): React.JSX.Element {
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (!copied) return
-    const id = setTimeout(() => setCopied(false), 1200)
-    return () => clearTimeout(id)
-  }, [copied])
-
-  async function handleCopy(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(branch)
-      setCopied(true)
-    } catch (err) {
-      console.error('[GitTab] clipboard copy failed:', err)
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => void handleCopy()}
-      aria-label={copied ? 'Copied branch name' : `Copy branch name ${branch}`}
-      title={copied ? 'Copied' : 'Copy branch name'}
-      className="p-0.5 rounded text-text-muted hover:text-text-primary transition-colors duration-150 cursor-pointer"
-    >
-      {copied ? (
-        <Check size={10} weight="bold" className="text-emerald-400" />
-      ) : (
-        <Copy size={10} weight="bold" />
-      )}
-    </button>
-  )
-}
-
-// --- PR slim header (Phase 3a) ------------------------------------------------
-
-// Badge color/label/icon per PR state — same vocabulary PrChip.tsx already
-// established (github/PrChip.tsx's STATE_COLOR/STATE_LABEL) for the sidebar/
-// kanban/title-bar chip. Duplicated here as small literals rather than
-// imported: PrChip's own component renders its OWN compact pill shape
-// (rounded-full pixel badge, tokenized bg colors) that doesn't match the
-// mockup's `.pr-badge` (solid color chip, white text, pill icon+label) this
-// header specifically asks for — see docs/brainstorms/git-tab-mockup's
-// `renderPrHeader`. Same "duplicated small literal, independently editable"
-// rationale the module already applies to TREE_THEME/IMAGE_EXTENSIONS.
-const PR_BADGE_BG: Record<GhPullRequestState, string> = {
-  open: 'bg-gh-open',
-  draft: 'bg-gh-draft',
-  merged: 'bg-gh-merged',
-  closed: 'bg-gh-closed'
-}
-
-const PR_BADGE_LABEL: Record<GhPullRequestState, string> = {
-  open: 'Open',
-  draft: 'Draft',
-  merged: 'Merged',
-  closed: 'Closed'
-}
-
-function PrBadgeIcon({ state }: { state: GhPullRequestState }): React.JSX.Element {
-  if (state === 'merged') return <GitMerge size={11} weight="fill" />
-  if (state === 'closed') return <X size={11} weight="bold" />
-  return <GitPullRequest size={11} weight={state === 'draft' ? 'regular' : 'fill'} />
-}
-
-/** Full-PR slim header (requirements doc's "Full-PR experience" → slim
- *  header; mockup's `.pr-header--slim`/`renderPrHeader`): status badge, a
- *  clickable title (→ `openPrUrl`, no separate link button per the doc),
- *  `#<number>`, and the current branch. Rendered ABOVE the existing tab
- *  header row, only while a PR is detected for this branch — `pr === null`
- *  (no PR / no `gh` / no remote / detached HEAD) means this never mounts and
- *  the rest of the tab is visually unchanged from Phase 1/2.
- *
- *  Base branch: `GhPullRequest` (shared/types.ts) has no base-ref field
- *  today, so — per the doc's "keep 3a simple: branch shown; base
- *  best-effort" — this only shows the head branch; a future pass can thread
- *  `baseRefName` through `getPrForBranch` and add the mockup's
- *  `branch → base` arrow here without changing this component's shape.
- *
- *  REDESIGN (this pass) — full-width, wrapping single row. Previously this
- *  crammed [badge][title #id/branch two-line stack] into the top-left with a
- *  large empty expanse to the right of a `truncate`d title — on a long real
- *  PR title that meant the header wasted most of its width AND ellipsized
- *  the one thing (the title) a reviewer most wants to actually read in full.
- *  Now it's ONE `flex flex-wrap` row — badge, title, #id, branch chip (+copy),
- *  worktree chip — that fills the header's width and wraps to a second line
- *  when it doesn't fit, instead of truncating or overflowing. `gap-x`/`gap-y`
- *  give both the inline spacing and a sane row-gap once it wraps. The title
- *  is `min-w-0` + no `truncate`/`whitespace-nowrap` so long titles can break
- *  across lines like any other wrapped inline content, and it keeps its
- *  `openPrUrl` click/hover-underline behavior unchanged from before.
- *
- *  Worktree chip: moved here (Fix 1) from the sub-tab-strip row, where it
- *  used to render a bare "local" pill for the (common) main-checkout case —
- *  see WorktreeChip's own doc comment for the root-cause writeup. It's
- *  `null` for a main checkout, so nothing renders for the common case; a
- *  genuine worktree gets its chip placed after the branch chip, per the
- *  task's "place it sensibly in the row" direction. */
-function PrSlimHeader({
-  pr,
-  branch,
-  worktreeParentCwd,
-  worktreeBranch
-}: {
-  pr: GhPullRequest
-  branch: string | null
-  worktreeParentCwd: string | null
-  worktreeBranch: string | null
-}): React.JSX.Element {
-  return (
-    <div className="flex-shrink-0 px-3.5 py-2.5 border-b border-border-default bg-surface-raised">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <span
-          className={`flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-bold px-1.5 py-0.5 rounded-full text-white tracking-wide ${PR_BADGE_BG[pr.state]}`}
-        >
-          <PrBadgeIcon state={pr.state} />
-          {PR_BADGE_LABEL[pr.state]}
-        </span>
-        <button
-          type="button"
-          onClick={() => openPrUrl(pr.url)}
-          title="Open in browser"
-          className="min-w-0 text-left text-[15px] font-semibold text-text-primary cursor-pointer hover:underline"
-        >
-          {pr.title}
-        </button>
-        <span className="flex-shrink-0 text-[11.5px] text-text-muted">#{pr.number}</span>
-        {branch !== null && (
-          <span className="flex-shrink-0 inline-flex items-center gap-1 font-mono text-[11px] px-1.5 py-0 rounded bg-surface-overlay border border-border-default text-text-secondary">
-            {branch}
-            <BranchCopyButton branch={branch} />
-          </span>
-        )}
-        <WorktreeChip worktreeParentCwd={worktreeParentCwd} worktreeBranch={worktreeBranch} />
-      </div>
-    </div>
-  )
-}
+// DiffStyleToggle/DiffModeToggle now live in ./git/diff/DiffControls.tsx.
+// WorktreeChip/PrSlimHeader (+ their BranchCopyButton/PR-badge helpers) now
+// live in ./git/diff/PrSlimHeader.tsx.
 
 // --- Changed-files tree pane ---------------------------------------------------
 
-// Redesign (this pass, reversed per follow-up direction): the user first
-// asked for a custom "+N -M" count decoration; then explicitly reversed that
-// — drop the counts entirely and keep ONLY Pierre's own native git-status
-// LETTER (the "U"/"M"/"A"/"D"/"R" the user actually wanted, "we had
-// previously"). So this pane no longer injects any custom row content at
-// all: no `renderRowDecoration`, no `unsafeCSS` lane styling, no "Binary"
-// label. `setGitStatus(toTreeGitStatus(files))` below (already wired) is the
-// ENTIRE mechanism — @pierre/trees renders that letter + a
-// `data-item-git-status`-colored icon/row on its own
-// (dist/render/FileTreeView.js's `getBuiltInGitStatusDecoration` /
-// `GIT_STATUS_LABEL`), nothing else needed here. See git history on this
-// file for the removed custom-decoration approach if it's ever revisited.
+// Git-status letter: `setGitStatus(toTreeGitStatus(files))` below is the
+// ENTIRE mechanism for the native "U"/"M"/"A"/"D"/"R" status letter —
+// @pierre/trees renders that letter + a `data-item-git-status`-colored icon/
+// row on its own (dist/render/FileTreeView.js's `getBuiltInGitStatusDecoration`
+// / `GIT_STATUS_LABEL`), no custom row content needed for it. A SEPARATE
+// per-row "+N -M" line-change badge IS injected via `renderRowDecoration`
+// (below, in the `useFileTree` options) — that's roadmap item 5, added in
+// Batch 1b; see its own doc comment for why it can't clobber the git-status
+// letter lane.
 //
-// The one unsafeCSS rule that DOES still need to be injected is unrelated to
-// git-status rendering at all: it's Fix 2's search-icon-toggle visibility
-// fix (see DiffTreeToolbar below) — @pierre/trees always mounts its
-// `[data-file-tree-search-container]` box once `search: true` is passed,
-// regardless of the controller's own isOpen state (same quirk FilesTab's
-// TreePane works around), so this override keys the box's actual show/hide
-// off the SAME `data-open` attribute the library stamps on it.
-// Appends TREE_DIR_GIT_CHANGE_CSS (treeConfig.ts) — the directory-level
-// git-status-rollup theming (roadmap item 3), especially relevant here since
-// this IS the changed-files tree: a collapsed folder containing changed
-// files gets a subtle accent dot + tint, computed automatically by
-// @pierre/trees from the same setGitStatus payload this pane already sends.
+// The unsafeCSS rule below is unrelated to either of those: it's Fix 2's
+// search-icon-toggle visibility fix (see DiffTreeToolbar below) — @pierre/
+// trees always mounts its `[data-file-tree-search-container]` box once
+// `search: true` is passed, regardless of the controller's own isOpen state
+// (same quirk FilesTab's TreePane works around), so this override keys the
+// box's actual show/hide off the SAME `data-open` attribute the library
+// stamps on it. Appends TREE_DIR_GIT_CHANGE_CSS (treeConfig.ts) — the
+// directory-level git-status-rollup theming (roadmap item 3), especially
+// relevant here since this IS the changed-files tree: a collapsed folder
+// containing changed files gets a subtle accent dot + tint, computed
+// automatically by @pierre/trees from the same setGitStatus payload this
+// pane already sends.
 const SEARCH_BOX_VISIBILITY_CSS = `
   [data-file-tree-search-container][data-open="false"] {
     display: none;
@@ -1160,10 +398,10 @@ function DiffTreePane({
     // renderRowDecoration lane — CONFIRMED (dist/render/FileTreeView.js) this
     // composes in a SEPARATE `decorationLaneEnabled` slot alongside the
     // built-in git-status letter/dot lane (`gitLaneActive`), so it can never
-    // clobber or crowd the status letter GitTab.tsx:966's doc comment cares
-    // about preserving. Directories get no badge (only files carry line
-    // counts); a file with a zero/zero count (e.g. a pure rename) also gets
-    // no badge rather than a pointless "+0 -0".
+    // clobber or crowd the git-status letter this pane's own header comment
+    // (above) cares about preserving. Directories get no badge (only files
+    // carry line counts); a file with a zero/zero count (e.g. a pure rename)
+    // also gets no badge rather than a pointless "+0 -0".
     renderRowDecoration: ({ item }) => {
       if (item.kind !== 'file') return null
       const counts = changeCountsRef.current.get(item.path)
@@ -1287,1050 +525,26 @@ function DiffTreePane({
   )
 }
 
-// --- Diff content pane ---------------------------------------------------------
-
-interface DiffContentPaneProps {
-  workspaceId: string
-  file: GitDiffFile | null
-  diffStyle: DiffStyle
-  wrapLines: boolean
-  loading: boolean
-  /** Phase 4a — PR review-comment threads for the CURRENTLY selected file
-   *  only (already filtered by path), or null when annotations don't apply
-   *  (working-tree mode, or no PR-diff comments loaded yet/failed). GitTab
-   *  only ever passes a non-null list while `diffMode === 'pr'` — GitHub
-   *  comments anchor to the PR diff, not the live working tree (see
-   *  docs/learnings/pr-comments.md's Q1 gap note) — this stays PR-diff-only
-   *  even after Phase 5's FIX 1 below. */
-  reviewThreads: readonly GhReviewCommentThread[] | null
-  /** Phase 4b — the "add a comment" affordance (gutter "+" + select-to-
-   *  comment). `null` means "don't wire the affordance at all" (no diff
-   *  loaded); a non-null value means it's ALWAYS available now (Phase 5 FIX
-   *  1: previously PR-diff-mode-only, since a GitHub post has nothing to
-   *  anchor to without a PR — but a LOCAL comment (reviews:add) needs no PR
-   *  at all, so GitTab now passes this unconditionally in both modes; see
-   *  `allowGithubComments` below for how the composer still knows whether
-   *  GitHub is actually a valid destination). */
-  composers: ReviewComposerWiring | null
-  /** Phase 4c — refetches `reviewThreads` (GitTab's own `fetchReviewComments`
-   *  helper, bound to `setReviewThreads`). Passed down to ReviewCommentThread
-   *  via renderReviewCommentAnnotation so a successful Reply post refreshes
-   *  the thread list the same way a new-comment post does. A no-op function
-   *  in working-tree mode (nothing ever renders a thread there to reply to,
-   *  so this is never actually invoked in that mode — kept required rather
-   *  than optional so every call site is explicit about wiring it). */
-  onRefetchThreads: () => void
-  /** Phase 4d — LOCAL review comments for the CURRENTLY selected file only
-   *  (GitTab passes the full per-workspace list; `annotationsForFile` filters
-   *  by path the same way it already does for threads/composers). A plain
-   *  array (never null) in EITHER mode as of Phase 5 FIX 1 — local comments
-   *  have no PR requirement, so there's no "not applicable" state, only
-   *  "empty so far", in both working-tree and PR-diff mode. */
-  localComments: readonly LocalReviewComment[]
-  /** Phase 4d — resolve/delete actions for a LOCAL comment's card, plus the
-   *  source toggle wiring for the NEW-comment composer (GitHub vs Local —
-   *  see CommentComposer.tsx's own SourceToggle). Phase 5 FIX 1: passed
-   *  unconditionally now (both modes), same reasoning as `composers` above —
-   *  `allowGithubComments` (not this being non-null) is what actually gates
-   *  whether the SourceToggle itself renders. */
-  localWiring: LocalCommentWiring | null
-  /** Phase 5 FIX 1 — `diffMode === 'pr'`: whether GitHub is a valid
-   *  destination for a NEW comment right now. Threaded down (rather than
-   *  inferring it from `reviewThreads !== null`, which can legitimately be
-   *  null in PR-diff mode too, e.g. a failed fetch) so
-   *  renderReviewCommentAnnotation can omit the pending composer's [GitHub |
-   *  Local] SourceToggle entirely in working-tree mode — there's no PR to
-   *  post a GitHub comment to there, so the composer is local-only. */
-  allowGithubComments: boolean
-  /** Pierre adoption batch 4 (safe/read-only slice) — repo-relative paths
-   *  currently reported as merge-conflicted (`git status`'s unmerged XY
-   *  codes — see src/main/git.ts's getConflictedPaths). When the selected
-   *  `file.path` is a member, DiffContentPane renders ConflictDiffPane
-   *  (@pierre/diffs' <UnresolvedFile>, read-only) instead of the normal
-   *  <PatchDiff> — see the module header's "Display" note. Empty in the
-   *  overwhelmingly common case (no live conflict), so this branch is
-   *  dormant by construction until a real conflict exists. */
-  conflictedPaths: ReadonlySet<string>
-  /** PERF FIX (token-hover lift) — `useTokenHoverPopover` now lives in the
-   *  PARENT (GitTabBody), not in this memoized pane, so a hovered token's
-   *  setState re-renders only the tiny sibling <TokenHoverPopover>, not this
-   *  pane's whole <PatchDiff> subtree. Both are the hook's own stable
-   *  (empty-deps useCallback) identities — see useTokenHoverPopover.ts's own
-   *  doc comment — so threading them down here doesn't destabilize the
-   *  `options` useMemo below or defeat this component's React.memo. */
-  onTokenEnter: UseTokenHoverPopoverResult['onTokenEnter']
-  onTokenLeave: UseTokenHoverPopoverResult['onTokenLeave']
-}
-
-/** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
- *  needs, plus the submit callback (Phase 4c: now a real async post, see
- *  GitTab's `submitReviewComment`). Kept as its own small interface (rather
- *  than threading the whole hook result down) so this pane's prop surface
- *  only names what it actually uses. */
-interface ReviewComposerWiring {
-  composers: readonly PendingComposer[]
-  open: (path: string, side: 'LEFT' | 'RIGHT', line: number, startLine?: number) => void
-  close: (id: string) => void
-  onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
-}
-
-function DiffMessage({ text }: { text: string }): React.JSX.Element {
-  return (
-    <div
-      className="flex-1 flex items-center justify-center min-h-0"
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-    >
-      <span className="text-xs text-text-muted select-none">{text}</span>
-    </div>
-  )
-}
-
-/** Crash fix #1 — the default view for a `file.oversized` diff: a lightweight
- *  placeholder instead of feeding the full patch into <PatchDiff>. Pierre
- *  adoption batch 2a wraps the diff pane in <Virtualizer>, so <PatchDiff>
- *  now renders windowed (VirtualizedFileDiff) — only ~visible rows hit
- *  shadow-DOM — which is why gitDiff.ts's OVERSIZED_LINE_THRESHOLD/
- *  OVERSIZED_BYTE_THRESHOLD were raised substantially rather than removed:
- *  Shiki still tokenizes the whole patch text synchronously on the main
- *  thread (virtualization windows the DOM, not the tokenize pass — that's
- *  the separate, not-yet-landed worker-pool batch), so an astronomically
- *  large patch can still stall/crash the renderer. This placeholder is kept
- *  as the ultimate safety net above the new (much higher) cap. `N lines`
- *  uses `additions + deletions` — already computed server-side from the
- *  full chunk, so this needs no client-side re-scan of the patch text.
- *  "Show anyway" hands control back to the caller for power users who want
- *  to pay the cost knowingly. */
-function OversizedDiffPlaceholder({
-  lineCount,
-  onShowAnyway
-}: {
-  lineCount: number
-  onShowAnyway: () => void
-}): React.JSX.Element {
-  return (
-    <div
-      className="flex-1 flex flex-col items-center justify-center min-h-0 gap-2"
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-    >
-      <span className="text-xs text-text-muted select-none">
-        Large diff hidden — {lineCount.toLocaleString()} lines
-      </span>
-      <button
-        type="button"
-        onClick={onShowAnyway}
-        className="text-xs text-accent hover:underline select-none"
-      >
-        Show anyway
-      </button>
-    </div>
-  )
-}
-
-// --- Phase 2 edge states: not-a-repo (+ Git init) / clean ---------------------
-
-/** Shared empty-state shell — centered icon + title + sub-line + optional
- *  action, matching the mockup's `.empty-state` (docs/brainstorms/
- *  git-tab-mockup/styles.css): centered column, muted 40px icon at 55%
- *  opacity, 13.5px title, 12px muted sub-line capped ~320px wide. Reuses
- *  PIERRE_VIEWER_BG so the edge states sit on the same dark viewer surface
- *  the diff pane itself uses, rather than introducing a third background. */
-function EmptyStateShell({
-  icon,
-  title,
-  subtitle,
-  children
-}: {
-  icon: React.ReactNode
-  title: string
-  subtitle: string
-  children?: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <div
-      className="flex-1 flex flex-col items-center justify-center gap-2.5 min-h-0 px-10 text-center"
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-    >
-      <div className="text-text-muted opacity-55">{icon}</div>
-      <div className="text-[13.5px] font-semibold text-text-primary">{title}</div>
-      <div className="text-xs text-text-muted max-w-[320px]">{subtitle}</div>
-      {children}
-    </div>
-  )
-}
-
-/** State 1 (mockup) — `!repo`: this workspace's cwd isn't a git working tree
- *  at all. A primary "Git init" button runs `git:init`, then the caller
- *  refetches `git:diff` explicitly (a brand-new `.git` may not be picked up
- *  by the existing watchers immediately — see the module header). Inline
- *  status text stands in for a toast (the app has no global toast/notice
- *  mechanism to reuse — see the module header's Phase 2 note); the button is
- *  disabled while the init call is in flight. */
-function NotARepoState({
-  onInit,
-  running,
-  error
-}: {
-  onInit: () => void
-  running: boolean
-  error: string | null
-}): React.JSX.Element {
-  return (
-    <EmptyStateShell
-      icon={<GitBranch size={40} weight="regular" />}
-      title="Not a git repository"
-      subtitle="This workspace's folder isn't tracked by git yet. Initialize a repository here to start tracking changes."
-    >
-      <Button size="sm" onClick={onInit} loading={running} disabled={running}>
-        <GitBranch size={14} />
-        Git init
-      </Button>
-      {error !== null && <span className="text-xs text-red-400 max-w-[320px]">{error}</span>}
-    </EmptyStateShell>
-  )
-}
-
-/** State 2 (mockup) — `repo && files.length === 0`: a real repo with a clean
- *  working tree. `branch` comes from the existing `git:statusChanged` push
- *  GitTab already subscribes to for live-refresh (no new IPC round-trip) —
- *  it's `null` until that first push arrives (or on a branch-less/detached
- *  HEAD repo), in which case this falls back to the branch-less "No changes"
- *  copy rather than blocking the empty state on one. */
-function CleanState({ branch }: { branch: string | null }): React.JSX.Element {
-  const title = branch !== null ? `No changes on ${branch}` : 'No changes'
-  return (
-    <EmptyStateShell
-      icon={<CheckCircle size={40} weight="regular" />}
-      title={title}
-      subtitle="The working tree is clean. Nothing to review yet."
-    />
-  )
-}
-
-/** Phase 4-pre — PR-diff mode's own empty state: `files.length === 0` while
- *  viewing PR diff means the fetch itself came back empty (no PR / no gh /
- *  network failure — see gitDiff.ts::getPrDiff's safety-net note; a PR that
- *  genuinely has zero changed files can't exist on GitHub). Distinct copy
- *  from CleanState's "working tree is clean" — that phrasing would be
- *  actively misleading here, since the PR diff has nothing to do with the
- *  working tree at all. */
-function PrDiffEmptyState(): React.JSX.Element {
-  return (
-    <EmptyStateShell
-      icon={<GitPullRequest size={40} weight="regular" />}
-      title="No PR diff available"
-      subtitle="Couldn't load the PR's diff right now. Try switching back to Working tree, or check that `gh` is authenticated."
-    />
-  )
-}
-
-// A settled files:readImage result, tagged with the path it belongs to —
-// the same stale-guard shape FilesTab's LoadedImage uses, so a fast
-// re-selection while a fetch is in flight can't commit a mismatched image.
-interface LoadedGitImage {
-  path: string
-  image: FileImage
-}
-
-/** Fix 4 (image branch): fetches + renders the CURRENT on-disk image for a
- *  changed binary file whose extension is a recognized raster format, via
- *  the existing files:readImage IPC — the same one FilesTab's ImageBody
- *  uses. Showing the current/new version is the documented minimum (a
- *  before/after diff is a nice-to-have the task explicitly says to skip if
- *  non-trivial — it would need a second read of the file at HEAD, which
- *  files:readImage has no revision parameter for).
- *
- *  FIX 2: reuses FilesTab's zoom/pan exactly (useImageZoomPan + ImageZoomBar,
- *  see FilesTab.tsx's ImageBody) rather than reimplementing it — same
- *  `useImageZoomPan(path)` keyed on path so zoom/pan resets whenever the
- *  selected file changes, same pan-container wiring (wheel/pointer handlers
- *  + `zoom.style` transform + `zoom.cursorClassName`), same floating
- *  `<ImageZoomBar>`. The non-image "Binary file — no preview" placeholder in
- *  DiffContentPane is untouched — this only applies to the image branch. */
-function BinaryImageBody({
-  workspaceId,
-  path
-}: {
-  workspaceId: string
-  path: string
-}): React.JSX.Element {
-  const [loaded, setLoaded] = useState<LoadedGitImage | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    window.api.files
-      .readImage(workspaceId, path)
-      .then((image) => {
-        if (!cancelled) setLoaded({ path, image })
-      })
-      .catch((e) => {
-        console.error('[GitTab] readImage failed:', e)
-        if (!cancelled) setLoaded({ path, image: { ok: false, error: 'denied' } })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId, path])
-
-  // Zoom/pan state resets whenever the viewed path changes — keyed on
-  // `path` (not the loaded image), matching FilesTab's ImageBody comment on
-  // why it's keyed on the SELECTION rather than the settled fetch.
-  const zoom = useImageZoomPan(path)
-
-  const current = loaded && loaded.path === path ? loaded.image : null
-  if (current === null) return <DiffMessage text="Loading…" />
-  if (!current.ok) {
-    if (current.error === 'too-large') {
-      return <DiffMessage text="Image too large to preview (over 5 MB)" />
-    }
-    return <DiffMessage text="Could not load image" />
-  }
-  return (
-    <div
-      className={`relative flex-1 min-h-0 flex items-center justify-center overflow-hidden ${zoom.cursorClassName}`}
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-      onWheel={zoom.onWheel}
-      onPointerDown={zoom.onPointerDown}
-      onPointerMove={zoom.onPointerMove}
-      onPointerUp={zoom.onPointerUp}
-      onPointerCancel={zoom.onPointerUp}
-    >
-      <img
-        src={current.dataUrl}
-        alt=""
-        draggable={false}
-        className="max-w-full max-h-full object-contain"
-        style={zoom.style}
-      />
-      <ImageZoomBar zoom={zoom} />
-    </div>
-  )
-}
-
-/** Phase 4b — converts a Pierre `SelectedLineRange` (from `onLineSelected`'s
- *  select-a-range gesture) into the anchor a pending composer opens at: the
- *  range's END line/side (matches GitHub's own "comment on lines X-Y" UX,
- *  which anchors the thread to the last line of the range) — the anchor
- *  itself is always a single line/side pair, never a range, matching
- *  GitHub's server-side `start_line`/`line` split (the anchor IS `line`).
- *
- *  Pierre adoption Batch 3: a true multi-line selection is no longer thrown
- *  away — this function's own job stays scoped to anchor computation only
- *  (still returns just `{line, side}`), but ITS CALLER now also reads
- *  `range.start` directly (when `range.start !== range.end`) and threads it
- *  through `composers.open` as an extra `startLine` payload alongside this
- *  anchor. Single-line selection (`start === end`) is unaffected — the
- *  caller passes `undefined` for `startLine` in that case, which is a no-op
- *  change from the prior single-line-only behavior. */
-function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT' | 'RIGHT' } {
-  const side = (range.endSide ?? range.side) === 'deletions' ? 'LEFT' : 'RIGHT'
-  return { line: range.end, side }
-}
-
-/** Phase 4b — builds the BASE `options` object passed to <PatchDiff>: theme/
- *  diffStyle/overflow (unchanged since Phase 1) plus the crash-fix-#2
- *  tokenize cap. Extracted so DiffContentPane's own body doesn't inline this
- *  into the JSX (cognitive-complexity ceiling).
- *
- *  BUG FIX (this pass): the gutter-"+" click is now wired entirely through
- *  `renderGutterUtility`/`GutterAddCommentButton`'s own onClick (see that
- *  component's doc comment for the full root-cause writeup) — `options` no
- *  longer sets `enableGutterUtility`/`onGutterUtilityClick` at all, since
- *  those conflict with the `renderGutterUtility` React prop DiffContentPane
- *  also passes and crash @pierre/diffs' InteractionManager.
- *
- *  PERF FIX (LAG-LAYER #5): deliberately does NOT take `onLineSelected` as a
- *  parameter (it used to) — react-hooks' ref-safety lint rule flags passing
- *  a ref-closing callback into ANY function call during render, even one
- *  that never invokes it synchronously. The caller (DiffContentPaneImpl)
- *  instead spreads this function's return value into its OWN inline object
- *  literal inside `useMemo` and sets `onLineSelected` there directly — see
- *  its own comment. This function's return value still only depends on
- *  primitives (diffStyle/wrapLines/hasComposers), which is what lets the
- *  caller's memo actually recognize two calls as equal instead of always
- *  observing a new object and forcing a full diff DOM re-apply.
- *
- *  Pierre-adoption Batch 1a (docs/learnings/pierre-libraries.md,
- *  scratchpad/pierre-roadmap.json "quick-win" items) — four static option
- *  fields confirmed against node_modules/@pierre/diffs/dist/types.d.ts's
- *  `BaseDiffOptions`/`BaseCodeOptions` before adding (versions drift; every
- *  field name/value below was checked against the installed 1.2.12, not
- *  assumed from the README):
- *   - `lineDiffType: 'word-alt'` — CDP-verified (this pass) that Pierre
- *     already renders per-token intra-line highlighting on a MODIFIED line
- *     (an added/deleted line has no counterpart to diff against, so it's
- *     solid — that's correct, not a bug) even without this field set, since
- *     'word-alt' is BaseDiffOptions' own default. Set explicitly anyway so
- *     the choice is documented in code, not just inherited silently, and so
- *     a future Pierre version changing its default doesn't silently change
- *     Orpheus's rendering.
- *   - `tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH` — see that constant's own
- *     comment: a whole-diff byte cap distinct from `tokenizeMaxLineLength`
- *     above, belt-and-suspenders alongside (not a replacement for) the
- *     OversizedDiffPlaceholder gate the caller applies before this component
- *     ever mounts <PatchDiff>.
- *   - `diffIndicators: 'classic'` — GitHub-style +/-  glyphs in the gutter
- *     instead of the default 'bars' (a plain colored vertical bar with no
- *     glyph). Chosen over 'bars' because Orpheus's Git tab is explicitly a
- *     git-review surface where users already have a GitHub-diff mental
- *     model — the +/- glyph reads faster than a color-only bar at a glance,
- *     and CDP-verified (this pass) that 'classic' renders cleanly against
- *     the pierre-dark gutter background.
- *   - `hunkSeparators: 'line-info'` — KEPT (already the default) rather than
- *     changed, since 'line-info' is what renders the "N unmodified lines"
- *     collapsed-context band the task requires stay visible. Set explicitly
- *     for the same self-documentation reason as lineDiffType above.
- */
-function buildDiffOptions(
-  diffStyle: DiffStyle,
-  wrapLines: boolean,
-  hasComposers: boolean
-): FileDiffOptions<ReviewAnnotationMeta> {
-  const base: FileDiffOptions<ReviewAnnotationMeta> = {
-    theme: VIEWER_THEME,
-    themeType: 'dark',
-    diffStyle,
-    overflow: wrapLines ? 'wrap' : 'scroll',
-    // Crash fix #2 (belt-and-suspenders) — the oversized-file gate above
-    // already keeps genuinely huge patches out of <PatchDiff> entirely, but a
-    // single extremely long line (a minified bundle's one-liner, still under
-    // the oversized byte/line thresholds) would otherwise force a full
-    // synchronous Shiki tokenize pass on that line. Cap it so Pierre falls
-    // back to plaintext for any one line beyond this length instead.
-    tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH,
-    // Whole-diff cap — see DIFF_TOKENIZE_MAX_LENGTH's own comment.
-    tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH,
-    // Word/token-level intra-line diff highlighting — see this function's
-    // own doc comment for why this is set explicitly despite matching the
-    // library default.
-    lineDiffType: 'word-alt',
-    // GitHub-style +/- gutter glyphs — see this function's own doc comment.
-    diffIndicators: 'classic',
-    // Renders the "N unmodified lines" collapsed-context band — already the
-    // library default; set explicitly for self-documentation.
-    hunkSeparators: 'line-info'
-  }
-  if (!hasComposers) return base
-  return {
-    ...base,
-    // Select-to-comment: scoped to reporting the FINAL committed selection
-    // (`onLineSelected`, fired once per gesture) rather than every
-    // in-progress tick (`onLineSelectionChange`) — opening a composer per
-    // intermediate frame while the user is still dragging would be noisy
-    // and would fight the "one composer per exact anchor" de-dupe in
-    // useReviewComposers.open. A `null` range means the selection was
-    // cleared (e.g. clicking elsewhere) — nothing to open. `onLineSelected`
-    // itself is set by the caller (see this function's own doc comment on
-    // why it can't be a parameter here).
-    enableLineSelection: true
-  }
-}
-
-// --- Pierre adoption batch 4 — merge-conflict DETECTION + DISPLAY (READ-ONLY) ---
-
-/** Counts conflict regions in a conflicted file's raw contents by scanning
- *  for `<<<<<<<` conflict-start markers, one per region — the SAME regex
- *  (`MERGE_CONFLICT_START_MARKER_REGEX`, `^<{7,}`) @pierre/diffs' own
- *  internal parser (parseMergeConflictDiffFromFile) uses to find conflict
- *  boundaries. Reimplemented here (rather than calling that parser directly)
- *  because it — and the `useUnresolvedFileInstance` hook that surfaces its
- *  `actions`/`markerRows` output — are NOT part of the package's public API:
- *  verified against the installed 1.2.12's dist/{index,react/index}.d.ts,
- *  both only live under `dist/utils/`/`dist/react/utils/`, which the
- *  package's `exports` map doesn't expose for deep-import. This is a plain
- *  per-line regex test (no parsing/rendering), matching the module header's
- *  "Display" note. */
-function countConflictRegions(contents: string): number {
-  let count = 0
-  for (const line of contents.split('\n')) {
-    if (MERGE_CONFLICT_START_MARKER_REGEX.test(line)) count++
-  }
-  return count
-}
-
-/** Pierre-adoption batch 4 — the conflict-viewer branch of the diff pane,
- *  rendered instead of the normal <PatchDiff> whenever the selected file's
- *  path is in `conflictedPaths` (see the module header's "Display" note).
- *  READ-ONLY: fetches the file's raw on-disk contents (conflict markers
- *  included) via the existing `files:readFile` IPC — the same one FilesTab's
- *  text viewer and this file's own BinaryImageBody use — and feeds them
- *  straight into @pierre/diffs/react's `<UnresolvedFile>`, which parses the
- *  `<<<<<<<`/`|||||||`/`=======`/`>>>>>>>` markers (diff3 base region
- *  included, if present) and renders the current/incoming regions itself; no
- *  client-side diff/patch construction needed.
- *
- *  `mergeConflictActionsType: 'none'` is the entire "no resolve buttons"
- *  requirement — Pierre renders NO accept/reject action slots at all in that
- *  mode (confirmed against components/UnresolvedFile.d.ts's
- *  `MergeConflictActionsTypeOption`), so there's no disabled-button chrome to
- *  build. `onMergeConflictAction`/`onMergeConflictResolve` are left
- *  unset — nothing here ever calls `resolveConflict` or `files:writeFile`;
- *  that write-back path is explicitly deferred to a later batch.
- *
- *  The "N conflicts" badge uses `countConflictRegions` on the SAME fetched
- *  contents (not a second read) — see that function's doc comment for why
- *  it's a local regex scan rather than a call into Pierre's own (non-public)
- *  parser. */
-function ConflictDiffPane({
-  workspaceId,
-  path,
-  wrapLines
-}: {
-  workspaceId: string
-  path: string
-  wrapLines: boolean
-}): React.JSX.Element {
-  const [loaded, setLoaded] = useState<{ path: string; file: GitFileContents } | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    window.api.files
-      .readFile(workspaceId, path)
-      .then((file) => {
-        if (!cancelled) setLoaded({ path, file })
-      })
-      .catch((e) => {
-        console.error('[GitTab] readFile (conflict view) failed:', e)
-        if (!cancelled) setLoaded({ path, file: null as unknown as GitFileContents })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId, path])
-
-  const current = loaded && loaded.path === path ? loaded.file : null
-  if (current === null) return <DiffMessage text="Loading…" />
-  if (current.binary) return <DiffMessage text="Binary file — no conflict preview" />
-
-  const conflictCount = countConflictRegions(current.contents)
-  const fileName = path.split('/').pop() ?? path
-
-  return (
-    <div className="flex-1 min-h-0 flex flex-col" style={{ backgroundColor: PIERRE_VIEWER_BG }}>
-      <div className="flex-shrink-0 flex items-center gap-2 h-7 px-3 border-b border-border-default">
-        <GitMerge size={13} className="text-amber-400" />
-        <span className="text-[11px] text-text-muted select-none">
-          {conflictCount} conflict{conflictCount === 1 ? '' : 's'} remaining — resolution coming
-          soon
-        </span>
-      </div>
-      <Virtualizer className="flex-1 min-h-0 overflow-auto">
-        <UnresolvedFile
-          key={path}
-          file={{ name: fileName, contents: current.contents }}
-          options={{
-            theme: VIEWER_THEME,
-            themeType: 'dark',
-            overflow: wrapLines ? 'wrap' : 'scroll',
-            tokenizeMaxLineLength: DIFF_TOKENIZE_MAX_LINE_LENGTH,
-            tokenizeMaxLength: DIFF_TOKENIZE_MAX_LENGTH,
-            lineDiffType: 'word-alt',
-            diffIndicators: 'classic',
-            // READ-ONLY — disables Pierre's own accept/reject action slots
-            // entirely (see this component's doc comment).
-            mergeConflictActionsType: 'none'
-          }}
-        />
-      </Virtualizer>
-    </div>
-  )
-}
-
-/** Right pane: the selected file's patch rendered via @pierre/diffs'
- *  <PatchDiff>, themed pierre-dark to match the Files-tab viewer, styled
- *  unified or split per the header toggle, word-wrapped per the ⚙ popover's
- *  Wrap-lines toggle. Empty/loading/no-selection states mirror FilesTab's
- *  ViewerMessage convention.
- *
- *  Fix 4: a `binary` file never reaches <PatchDiff> — its patch chunk is a
- *  `Binary files … differ` marker with no real hunks, which PatchDiff would
- *  render as a blank pane. Image extensions route to BinaryImageBody
- *  (current on-disk image via files:readImage); every other binary file
- *  gets a plain "no preview" placeholder.
- *
- *  Phase 4b/5: the gutter "+"/select-to-comment affordance
- *  (renderGutterUtility + the select-to-comment option from
- *  buildDiffOptions) is wired whenever `composers` is non-null — as of
- *  Phase 5 FIX 1 that's BOTH modes (see DiffContentPaneProps' doc comment):
- *  working-tree mode gets a local-only composer, PR-diff mode gets the full
- *  [GitHub | Local] composer. See GutterAddCommentButton's doc comment for
- *  the bug fix (Phase 4c) to how the gutter "+" click itself is wired. */
-/** PERF FIX (LAG-LAYER #5): every value this ref carries is read ONLY from
- *  inside the stable `onLineSelected` callback below (never during render),
- *  so `DiffContentPaneImpl` can build that callback ONCE (empty deps) instead
- *  of on every render — which in turn lets `buildDiffOptions`'s return value
- *  be memoized on plain primitives instead of always allocating a fresh
- *  `options` object (defeating Pierre's `areOptionsEqual` and forcing a full
- *  diff DOM re-apply). */
-interface LatestSelectHandlerInputs {
-  path: string
-  composers: ReviewComposerWiring | null
-}
-
-function DiffContentPaneImpl({
-  workspaceId,
-  file,
-  diffStyle,
-  wrapLines,
-  loading,
-  reviewThreads,
-  composers,
-  onRefetchThreads,
-  localComments,
-  localWiring,
-  allowGithubComments,
-  conflictedPaths,
-  onTokenEnter,
-  onTokenLeave
-}: DiffContentPaneProps): React.JSX.Element {
-  // Crash fix #1 — per-file "show anyway" override for an oversized diff.
-  // Lives here (not keyed to a single file, since DiffContentPane itself
-  // isn't remounted per selection — only the inner <PatchDiff key={path}> is)
-  // so switching away and back to an already-force-shown file doesn't ask
-  // again within the same Git-tab session.
-  const [shownAnyway, setShownAnyway] = useState<ReadonlySet<string>>(() => new Set())
-
-  // PERF FIX (LAG-LAYER #5): the hooks below must run UNCONDITIONALLY on
-  // every render (rules-of-hooks) — so they're hoisted above every early
-  // return (loading/no-selection/binary/oversized), even though their
-  // OUTPUT is only actually used by the plain-diff JSX at the bottom. This
-  // is what lets `lineAnnotations`/`options` stay referentially stable
-  // across an unrelated re-render (e.g. the tree-drag commit, prDetail
-  // ticks) instead of forcing @pierre/diffs to re-apply the whole diff DOM.
-  const path = file?.path ?? null
-  const latestRef = useRef<LatestSelectHandlerInputs>({ path: path ?? '', composers })
-  useEffect(() => {
-    latestRef.current = { path: path ?? '', composers }
-  })
-
-  // Stable identity (empty deps) for the whole component lifetime — reads
-  // the CURRENT path/composers off latestRef rather than closing over the
-  // render's own values, so it never needs to be recreated.
-  const onLineSelected = useCallback((range: SelectedLineRange | null) => {
-    if (range === null) return
-    const { composers: currentComposers, path: currentPath } = latestRef.current
-    if (currentComposers === null) return
-    const { line, side } = anchorFromRange(range)
-    // A true multi-line drag (start !== end) threads its START line through
-    // as an extra `startLine` payload on the SAME anchor — see
-    // anchorFromRange's own doc comment + useReviewComposers.open's updated
-    // signature. Single-line selection (the common case) passes undefined,
-    // which is a no-op change from the prior behavior.
-    const startLine = range.start !== range.end ? range.start : undefined
-    currentComposers.open(currentPath, side, line, startLine)
-  }, [])
-
-  // Pierre adoption Batch 3 — token hover popover. PERF FIX (token-hover
-  // lift): the controller hook itself now lives one level UP in GitTabBody
-  // (not here) so a hovered token's setState no longer re-renders this whole
-  // pane's <PatchDiff> subtree — only `onTokenEnter`/`onTokenLeave` (both
-  // stable, empty-deps callbacks per useTokenHoverPopover.ts's own doc
-  // comment) flow down as props, wired unconditionally (not gated on
-  // hasComposers, unlike select-to-comment below): it's a passive, read-only
-  // affordance orthogonal to composers/annotations.
-
-  // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
-  // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
-  // localWiring is non-null (now true in BOTH modes as of Phase 5 FIX 1) —
-  // annotationsForFile itself returns [] for a file with no threads/
-  // composers/local comments, which PatchDiff renders exactly like an
-  // omitted lineAnnotations prop (a plain diff, no annotations). Memoized so
-  // an unrelated re-render (tree-drag commit, prDetail poll tick) doesn't
-  // reallocate a fresh (but content-equal) array every time — a fresh array
-  // identity alone is enough to make @pierre/diffs treat annotations as
-  // "changed" and re-apply the diff DOM.
-  const showAnnotations = reviewThreads !== null || localWiring !== null
-  const composerList = composers?.composers ?? EMPTY_COMPOSERS
-  const lineAnnotations = useMemo(
-    () =>
-      showAnnotations && path !== null
-        ? annotationsForFile(reviewThreads ?? [], composerList, localComments, path)
-        : undefined,
-    [showAnnotations, reviewThreads, composerList, localComments, path]
-  )
-
-  // Memoized on primitives + the composers-WIRING identity only — see
-  // buildDiffOptions' own doc comment for why this is the fix for the
-  // "fresh onLineSelected every render" forceRender bug. `onLineSelected` is
-  // spread in via this OWN inline object literal (not passed as an argument
-  // into buildDiffOptions) — react-hooks' ref-safety lint rule flags a
-  // ref-closing callback passed into any function call during render, but
-  // accepts it being placed directly into an object literal the same way a
-  // DOM `ref` prop is accepted. `onTokenEnter`/`onTokenLeave` are spread the
-  // same way, unconditionally (not gated on hasComposers) — both are stable
-  // (empty deps) so adding them here doesn't add a new dependency to this
-  // memo's array.
-  const hasComposers = composers !== null
-  const options = useMemo(() => {
-    const base = buildDiffOptions(diffStyle, wrapLines, hasComposers)
-    const withTokenHover = {
-      ...base,
-      onTokenEnter,
-      onTokenLeave
-    }
-    return hasComposers ? { ...withTokenHover, onLineSelected } : withTokenHover
-  }, [diffStyle, wrapLines, hasComposers, onLineSelected, onTokenEnter, onTokenLeave])
-
-  if (loading) return <DiffMessage text="Loading…" />
-  if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
-  // Pierre adoption batch 4 (safe/read-only slice) — a conflicted file's
-  // `git diff HEAD` patch chunk isn't a meaningful 2-way diff (the working
-  // copy holds unresolved 3-way conflict markers, not a clean edit), so this
-  // check runs BEFORE the binary/oversized branches below and takes over the
-  // whole pane with the read-only Pierre conflict viewer instead. See the
-  // module header's "Display" note + ConflictDiffPane's own doc comment.
-  if (conflictedPaths.has(file.path)) {
-    return <ConflictDiffPane workspaceId={workspaceId} path={file.path} wrapLines={wrapLines} />
-  }
-  if (file.binary) {
-    if (isImagePath(file.path)) {
-      return <BinaryImageBody workspaceId={workspaceId} path={file.path} />
-    }
-    return <DiffMessage text="Binary file — no preview" />
-  }
-  if (file.oversized && !shownAnyway.has(file.path)) {
-    return (
-      <OversizedDiffPlaceholder
-        lineCount={file.additions + file.deletions}
-        onShowAnyway={() =>
-          setShownAnyway((prev) => {
-            const next = new Set(prev)
-            next.add(file.path)
-            return next
-          })
-        }
-      />
-    )
-  }
-  return (
-    // PERF FIX (token-hover lift): this pane no longer renders its own
-    // <TokenHoverPopover> — the parent (GitTabBody) owns the hook + popover
-    // now so a hovered token's setState doesn't re-render this subtree (see
-    // DiffContentPaneProps' onTokenEnter/onTokenLeave doc comment). This
-    // used to be a <> Fragment wrapping <Virtualizer> + <TokenHoverPopover>;
-    // with the popover gone, <Virtualizer> is the sole root element and the
-    // Fragment is gone too.
-    //
-    // Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
-    // the scroll root itself (it renders the fixed-height `overflow`
-    // container + an inner content div and calls `.setup(root)` on mount, see
-    // node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
-    // PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
-    // (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
-    // useVirtualizer() internally and, when non-null, instantiates
-    // VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
-    // needed, no `metrics` required (VirtualizedFileDiff's constructor
-    // defaults it — see computeVirtualFileMetrics.js). This replaces the
-    // previous plain `overflow-auto` div, which is exactly the scroll root
-    // <Virtualizer> now owns.
-    //
-    // Annotation/gutter compatibility (verified against the installed
-    // 1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
-    // only overrides layout/visibility bookkeeping — `renderAnnotation`/
-    // `renderGutterUtility`/`lineAnnotations` are rendered by the same
-    // shared `renderDiffChildren` template (light-DOM children projected
-    // into Pierre's shadow-DOM slots) regardless of virtualization, and
-    // `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
-    // to line numbers independent of which lines are currently windowed —
-    // scrolling a commented line back into view re-materializes its row
-    // (and slot) exactly like any other line. Token hover (Pierre adoption
-    // batch 3) needs no virtualization-aware code of its own: Pierre's
-    // InteractionManager operates on the currently-mounted DOM regardless
-    // of windowing, same as the gutter utility above.
-    <Virtualizer
-      className="flex-1 min-h-0 overflow-auto"
-      style={{ backgroundColor: PIERRE_VIEWER_BG }}
-    >
-      <PatchDiff
-        key={file.path}
-        patch={file.patch}
-        options={options}
-        lineAnnotations={lineAnnotations}
-        renderAnnotation={(annotation) =>
-          renderReviewCommentAnnotation(
-            annotation,
-            workspaceId,
-            onRefetchThreads,
-            composers?.close,
-            composers?.onSubmit,
-            localWiring ?? undefined,
-            allowGithubComments
-          )
-        }
-        renderGutterUtility={
-          composers !== null
-            ? (getHoveredLine) => (
-                <GutterAddCommentButton
-                  getHoveredLine={getHoveredLine}
-                  onAdd={(lineNumber, side) =>
-                    composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
-                  }
-                />
-              )
-            : undefined
-        }
-      />
-    </Virtualizer>
-  )
-}
-
-/** PERF FIX (LAG-LAYER #5) — a stable empty-array fallback for `composers?.
- *  composers` so `lineAnnotations`'s useMemo deps don't see a fresh `[]`
- *  identity every render when `composers` is null. */
-const EMPTY_COMPOSERS: readonly PendingComposer[] = []
-
-/** PERF FIX (LAG-LAYER #4/#5): memoized so an unrelated re-render one level
- *  up (prDetail poll tick, tree-drag width COMMIT on mouseup, branch churn)
- *  doesn't force @pierre/diffs to re-apply the entire (non-virtualized) diff
- *  DOM — React.memo's shallow prop comparison short-circuits the re-render
- *  entirely when every prop is referentially unchanged, which is now the
- *  common case since the props this pane receives are themselves stabilized
- *  in GitTab/GitTabBody. */
-const DiffContentPane = memo(DiffContentPaneImpl)
+// DiffContentPane (+ DiffMessage, OversizedDiffPlaceholder, BinaryImageBody,
+// anchorFromRange, buildDiffOptions, ConflictDiffPane, ReviewComposerWiring)
+// now lives in ./git/diff/DiffContentPane.tsx — see that module's own header.
+// Empty states (EmptyStateShell, NotARepoState, CleanState, PrDiffEmptyState)
+// now live in ./git/diff/diffEmptyStates.tsx.
 
 // --- Root ------------------------------------------------------------------
 
-/** Fix 1 — the auto-select rule applied every time a fresh `files[]` result
- *  settles (initial load, live-refresh refetch): keep the current selection
- *  if that path is STILL present in the new result (a refresh must not yank
- *  the user off the file they're looking at); otherwise fall back to the
- *  first changed file so the tab always shows a diff by default instead of
- *  the empty "Select a file" state. Returns null only when `files` itself is
- *  empty (a clean tree — nothing to select). Pure so it's trivially testable
- *  and keeps the effects below declarative. */
-function nextSelection(files: readonly GitDiffFile[], current: string | null): string | null {
-  if (current !== null && files.some((f) => f.path === current)) return current
-  return files[0]?.path ?? null
-}
-
-/** A settled `git:diff` result, as GitTab needs it: the discriminator plus
- *  the files. Named separately from GitDiffResult so a network/IPC failure
- *  (caught below) can still produce a value of this shape — `repo: true`
- *  with an empty `files[]` is the deliberate "assume it's a repo, just
- *  couldn't read it right now" fallback, matching the old pre-Phase-2
- *  behavior of silently resolving to an empty diff on any failure. */
-interface DiffSettleResult {
-  repo: boolean
-  files: GitDiffFile[]
-}
-
-// Loop-breaker (perf fix — see src/main/git.ts's statusSignature comment for
-// the root cause): `git diff`/`git status` opportunistically rewrite
-// `.git/index`'s stat-cache as a side effect of running them, which on some
-// repos never "settles" — every read re-touches the index, re-firing the
-// main-process watcher, pushing another `git:statusChanged`/`files:changed`
-// event, scheduling another refetch, forever. src/main/git.ts now dedupes
-// its OWN push on an unchanged status, which stops most of this at the
-// source — but this signature is the renderer-side backstop: even if a
-// refetch DOES fire (a real edit, a burst the main-process dedupe didn't
-// catch, a future new event source), applying an IDENTICAL result is a
-// no-op — no setFiles/setSelectedPath, so no re-render, no tree-flicker, no
-// <PatchDiff> remount. A real change always produces a different signature
-// (any changed patch text changes its own entry) and still applies.
-//
-// PERF FIX (LAG-LAYER #7): this used to concatenate every file's FULL patch
-// TEXT into one giant string per settle (`path\x00status\x00patch`, joined by
-// `\x01`) purely to build a comparison key — on a large diff that's a
-// multi-MB string allocation on every debounced live-refresh, just to detect
-// a no-op. `f.sig` (src/main/gitDiff.ts's fileFromChunk) is a cyrb53 content
-// hash already computed ONCE per file in main over the exact same
-// path+status+patch inputs, so combining those short per-file hashes here is
-// O(files.length) string-building instead of O(total-diff-bytes) — same
-// correctness (a same-length content edit still changes its file's hash, so
-// still registers as a change; see gitDiff.ts's own doc comment for why this
-// is a 53-bit hash, not 32-bit or length-only). The `\x00`/`\x01` separators
-// are no longer needed (no raw patch text flows through this function
-// anymore) but kept as the join delimiter for consistency/no-collision with
-// any hash value itself.
-function diffSignature(result: DiffSettleResult): string {
-  if (!result.repo) return 'no-repo'
-  return result.files.map((f) => f.sig).join('\x01')
-}
-
-/** The union `window.api.git.diff` actually resolves with (see
- *  GitDiffUnchangedResult's own doc comment) — named locally so
- *  `isUnchangedDiffResult`'s signature reads plainly. */
-type GitDiffOrUnchanged = GitDiffResult | GitDiffUnchangedResult
-
-/** True iff `git:diff` returned the additive main-side no-op sentinel (see
- *  GitDiffUnchangedResult's own doc comment) instead of a real
- *  `GitDiffResult`. Narrows the union `fetchDiff` receives from
- *  `window.api.git.diff` before it can safely read `.files`. */
-function isUnchangedDiffResult(result: GitDiffOrUnchanged): result is GitDiffUnchangedResult {
-  return 'unchanged' in result && result.unchanged === true
-}
-
-/** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
- *  refetch effect below and the initial-load effect share one code path,
- *  keeping GitTab's own body under the cognitive-complexity ceiling.
- *
- *  PERF FIX (main-side diff no-op detection) — `git:diff` may resolve with
- *  the `{ unchanged: true }` sentinel (see GitDiffUnchangedResult's own doc
- *  comment) when main's own last-signature cache for this workspaceId
- *  matched: that means NOTHING changed since the last settle already applied
- *  by `applyDiff`'s own diffSignature idempotency, so `onSettled` is simply
- *  never called — same observable effect as calling it with an
- *  identical-signature result (a no-op), just without the wasted
- *  files[]-shaped allocation/compare. The renderer's own diffSignature guard
- *  in `applyDiff` stays as the backstop for every OTHER path into this
- *  callback (fetchPrDiff, which is untouched by this fix). */
-function fetchDiff(workspaceId: string, onSettled: (result: DiffSettleResult) => void): () => void {
-  let cancelled = false
-  window.api.git
-    .diff(workspaceId)
-    .then((result) => {
-      if (cancelled || isUnchangedDiffResult(result)) return
-      onSettled({ repo: result.repo, files: result.files })
-    })
-    .catch((e) => {
-      console.error('[GitTab] git:diff failed:', e)
-      if (!cancelled) onSettled({ repo: true, files: [] })
-    })
-  return () => {
-    cancelled = true
-  }
-}
-
-/** Fetch the PR diff (Phase 4-pre) for `workspaceId` — same shape/contract as
- *  fetchDiff above, just backed by `git:prDiff` (gh pr diff <n>) instead of
- *  the working-tree `git:diff`. Kept as its own function (rather than a
- *  parameterized fetchDiff) so each mode's console-error label stays
- *  distinct and the mode-dispatch below reads as a plain if/else. */
-function fetchPrDiff(
-  workspaceId: string,
-  onSettled: (result: DiffSettleResult) => void
-): () => void {
-  let cancelled = false
-  window.api.git
-    .prDiff(workspaceId)
-    .then((result) => {
-      if (!cancelled) onSettled({ repo: result.repo, files: result.files })
-    })
-    .catch((e) => {
-      console.error('[GitTab] git:prDiff failed:', e)
-      if (!cancelled) onSettled({ repo: true, files: [] })
-    })
-  return () => {
-    cancelled = true
-  }
-}
-
-/** Fetch review-comment threads (Phase 4a) for `workspaceId`'s current PR,
- *  reporting the settled value (or null on failure) via `onSettled`. Fire-
- *  and-forget by design (unlike fetchDiff/fetchPrDiff, callers here don't
- *  need a cancel token — this is only called from the onPrChanged event
- *  callback's "PR changed while already in PR-diff mode" branch, a single
- *  one-shot refetch, not a mount/dependency-driven effect that could race a
- *  cleanup). */
-function fetchReviewComments(
-  workspaceId: string,
-  onSettled: (threads: GhReviewCommentThread[] | null) => void
-): void {
-  window.api.github
-    .prReviewComments(workspaceId)
-    .then(onSettled)
-    .catch((e) => {
-      console.error('[GitTab] github:prReviewComments failed:', e)
-      onSettled(null)
-    })
-}
-
-/** Phase 4d — fetch the LOCAL review-comment store's full list for
- *  `workspaceId`, reporting the settled value via `onSettled` (falls back to
- *  `[]` on failure — an empty list renders identically to "no local comments
- *  yet", never blocking the diff pane). Fire-and-forget, same shape as
- *  fetchReviewComments above (this is also only ever called as a one-shot
- *  refetch after a mutation or on workspace change, never inside a bare
- *  mount effect that needs its own cancel token). */
-function fetchLocalReviews(
-  workspaceId: string,
-  onSettled: (comments: LocalReviewComment[]) => void
-): void {
-  window.api.reviews
-    .list(workspaceId)
-    .then(onSettled)
-    .catch((e) => {
-      console.error('[GitTab] reviews:list failed:', e)
-      onSettled([])
-    })
-}
-
-/** Diff-mode dispatcher — the [Working tree | PR diff] toggle's data-source
- *  switch (Phase 4-pre). Both branches share the exact same
- *  fetch/cancel/onSettled contract, so every call site (initial load, mode
- *  switch, live-refresh) can stay mode-agnostic by just calling this. */
-function fetchForMode(
-  mode: DiffMode,
-  workspaceId: string,
-  onSettled: (result: DiffSettleResult) => void
-): () => void {
-  return mode === 'pr' ? fetchPrDiff(workspaceId, onSettled) : fetchDiff(workspaceId, onSettled)
-}
-
-/** Pierre adoption batch 4 (safe/read-only slice) — fetch the READ-ONLY
- *  `git:conflicts` list for `workspaceId`, reporting the settled value as a
- *  `ReadonlySet<string>` via `onSettled` (falls back to an empty set on
- *  failure — no conflicts detected renders identically to "no live conflict",
- *  never blocking the diff pane). Working-tree-only, same rationale as
- *  fetchDiff's own PR-diff-mode exclusion: a PR diff (`base...head` against
- *  committed history) can't itself be "conflicted" the way a live working
- *  tree can — see GitTab's PR-diff-mode fetch effect, which never calls
- *  this. */
-// PERF FIX (conflicted-paths identity) — a shared empty-set instance for the
-// dominant (no live conflict) case. Returning this SAME reference every time
-// `paths.length === 0` settles means the fetch effect below can skip its
-// setState entirely on the common "still no conflicts" tick — see
-// setConflictedPathsIfChanged's own doc comment for the non-empty case.
-const EMPTY_CONFLICTS: ReadonlySet<string> = new Set()
-
-/** True iff `a` and `b` contain exactly the same members (order-independent).
- *  `conflictedPaths` is only ever read via `.has()` (never iterated or
- *  mutated — see its own doc comment), so two sets with identical membership
- *  are interchangeable for every consumer; reusing the OLD reference in that
- *  case is what lets memo'd GitTabBody/DiffContentPane skip a re-render. */
-function sameSetContents(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  if (a === b) return true
-  if (a.size !== b.size) return false
-  for (const path of a) {
-    if (!b.has(path)) return false
-  }
-  return true
-}
-
-/** PERF FIX (conflicted-paths identity) — apply a freshly-fetched conflict
- *  list via React's updater form so a same-contents result reuses the PREVIOUS
- *  Set identity instead of always committing a fresh one. `fetchConflicts`
- *  runs on every debounced settle (same tick as every diff refetch) even in
- *  the dominant no-conflict case, so without this a fresh (but
- *  content-identical) Set flows into memo'd GitTabBody/DiffContentPane every
- *  single file save, failing their shallow prop comparison and re-rendering
- *  the diff pane (re-running <PatchDiff>'s layout effect) for no reason. */
-function setConflictedPathsIfChanged(
-  setConflictedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>,
-  paths: readonly string[]
-): void {
-  if (paths.length === 0) {
-    setConflictedPaths((prev) => (prev.size === 0 ? prev : EMPTY_CONFLICTS))
-    return
-  }
-  const next = new Set(paths)
-  setConflictedPaths((prev) => (sameSetContents(prev, next) ? prev : next))
-}
-
-function fetchConflicts(
-  workspaceId: string,
-  setConflictedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>
-): void {
-  window.api.git
-    .conflicts(workspaceId)
-    .then((paths) => setConflictedPathsIfChanged(setConflictedPaths, paths))
-    .catch((e) => {
-      console.error('[GitTab] git:conflicts failed:', e)
-      setConflictedPathsIfChanged(setConflictedPaths, [])
-    })
-}
+// The pure diff-fetch/signature helpers (nextSelection, diffSignature,
+// isUnchangedDiffResult, fetchDiff, fetchPrDiff, fetchForMode,
+// fetchReviewComments, fetchLocalReviews, fetchConflicts, EMPTY_CONFLICTS,
+// sameSetContents/setConflictedPathsIfChanged) now live in
+// ./git/diff/diffFetch.ts — see that module's own header. `DiffSettleResult`
+// is imported from there too.
 
 /**
- * Workbench Git tab — Phase 1 body: a changed-files tree (left, collapsible)
- * and a per-file diff viewer (right). Mounted only while the Git tab is the
- * active, non-dormant Workbench tab (see WorkbenchPanel).
+ * Workbench Git tab root — a changed-files tree (left, collapsible) and a
+ * per-file diff viewer (right), plus the PR chrome (slim header, sub-tab
+ * strip, Details/Checks/Commits) once a PR is detected. Mounted only while
+ * the Git tab is the active, non-dormant Workbench tab (see WorkbenchPanel).
  */
 export function GitTab({
   workspaceId,
