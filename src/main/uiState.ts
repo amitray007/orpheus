@@ -96,6 +96,8 @@ type AppUiStateRow = {
   files_flatten_empty_dirs: number
   // Workbench Git-tab diff view preferences (v68)
   git_diff_wrap_lines: number
+  // Token-hover popover (Pierre Batch 3)
+  token_hover_enabled: number
   // Workbench tree/code split pane width (v69)
   workbench_tree_width: number
   // Diagnostics capture toggles (v56)
@@ -191,6 +193,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     filesFlattenEmptyDirs: (row.files_flatten_empty_dirs ?? 1) === 1,
     // Workbench Git-tab diff view preferences (v68) — default true (wrap on)
     gitDiffWrapLines: (row.git_diff_wrap_lines ?? 1) === 1,
+    // Token-hover popover (Pierre Batch 3) — default false (off)
+    tokenHoverEnabled: (row.token_hover_enabled ?? 0) === 1,
     // Workbench tree/code split pane width (v69) — shared Files+Git divider width
     workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
@@ -293,6 +297,11 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('gitDiffWrapLines' in patch && patch.gitDiffWrapLines !== undefined) {
     if (typeof patch.gitDiffWrapLines !== 'boolean') {
       throw new Error('uiState: gitDiffWrapLines must be a boolean')
+    }
+  }
+  if ('tokenHoverEnabled' in patch && patch.tokenHoverEnabled !== undefined) {
+    if (typeof patch.tokenHoverEnabled !== 'boolean') {
+      throw new Error('uiState: tokenHoverEnabled must be a boolean')
     }
   }
   if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
@@ -426,6 +435,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     filesFlattenEmptyDirs: 'files_flatten_empty_dirs',
     // Workbench Git-tab diff view preferences (v68)
     gitDiffWrapLines: 'git_diff_wrap_lines',
+    // Token-hover popover (Pierre Batch 3)
+    tokenHoverEnabled: 'token_hover_enabled',
     // Workbench tree/code split pane width (v69)
     workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)

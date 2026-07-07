@@ -26,6 +26,11 @@ export const UI_STATE_DEFAULTS = {
   // Workbench Git-tab diff view preferences (v68) — mirrors app_ui_state's
   // git_diff_wrap_lines SQL DEFAULT in schema.ts.
   gitDiffWrapLines: true,
+  // Token-hover popover (Pierre Batch 3) — mirrors app_ui_state's
+  // token_hover_enabled SQL DEFAULT in schema.ts. Opt-in, default OFF (was
+  // always-on and intrusive while just reading — see GitDiffOptionsPopover /
+  // TreeOptionsPopover "Token hover" toggle).
+  tokenHoverEnabled: false,
   // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
   // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
   // and GitTab's DiffTreePane (one draggable divider width for both).

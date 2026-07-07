@@ -886,6 +886,10 @@ interface ContentPaneProps {
    *  <File> `overflow` option and the editor's CodeMirror line-wrapping
    *  Compartment. Threaded down to ContentBody unchanged. */
   wrapLines: boolean
+  /** Token-hover popover toggle (default OFF) — gates whether the viewer's
+   *  Pierre <File> wires onTokenEnter/onTokenLeave at all. Threaded down to
+   *  ContentBody unchanged. See AppUiState.tokenHoverEnabled's doc comment. */
+  tokenHoverEnabled: boolean
   onDirtyChange: (dirty: boolean) => void
   /** Fired after the editor saves the file to disk — FilesTab uses this to
    *  refresh the tree's git-status dots. */
@@ -903,6 +907,7 @@ function ContentPane({
   mode,
   autoSave,
   wrapLines,
+  tokenHoverEnabled,
   onDirtyChange,
   onSaved
 }: ContentPaneProps): React.JSX.Element {
@@ -980,6 +985,7 @@ function ContentPane({
       mode={mode}
       autoSave={autoSave}
       wrapLines={wrapLines}
+      tokenHoverEnabled={tokenHoverEnabled}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
       highlightAnyway={path !== null && highlightAnyway.has(path)}
@@ -1003,6 +1009,9 @@ interface ContentBodyProps {
   mode: FilesViewMode
   autoSave: boolean
   wrapLines: boolean
+  /** Token-hover popover toggle (default OFF) — see ContentPaneProps' doc
+   *  comment. */
+  tokenHoverEnabled: boolean
   onDirtyChange: (dirty: boolean) => void
   onSaved: () => void
   /** Crash fix #2 — true when the CURRENT path has been force-shown past the
@@ -1024,6 +1033,7 @@ function ContentBody({
   mode,
   autoSave,
   wrapLines,
+  tokenHoverEnabled,
   onDirtyChange,
   onSaved,
   highlightAnyway,
@@ -1035,7 +1045,11 @@ function ContentBody({
   // actually used by the highlighted-viewer branch below — ContentBody
   // itself is always mounted (never conditionally) whenever ContentPane
   // renders, so this satisfies the same "hooks run every render" invariant
-  // GitTab's DiffContentPaneImpl documents for its own hoisted hooks.
+  // GitTab's DiffContentPaneImpl documents for its own hoisted hooks. The
+  // hook is ALWAYS called (rules-of-hooks) regardless of tokenHoverEnabled —
+  // only the WIRING below (onTokenEnter/onTokenLeave passed to Pierre's
+  // <File> + whether <TokenHoverPopover> mounts) is gated on the setting, per
+  // AppUiState.tokenHoverEnabled's default-OFF doc comment.
   const tokenHover = useTokenHoverPopover()
 
   if (path === null) {
@@ -1120,23 +1134,30 @@ function ContentBody({
                 theme: VIEWER_THEME,
                 themeType: 'dark',
                 overflow: wrapLines ? 'wrap' : 'scroll',
-                // Pierre adoption Batch 3 — token hover. Both handlers are
-                // stable (empty-deps useCallback, see TokenHoverPopover.tsx),
-                // so spreading them here doesn't destabilize anything —
-                // FilesTab's `options` object isn't memoized to begin with
-                // (unlike GitTab's PatchDiff options), so there's no
-                // reapply-avoidance discipline to preserve here.
-                onTokenEnter: tokenHover.onTokenEnter,
-                onTokenLeave: tokenHover.onTokenLeave
+                // Pierre adoption Batch 3 — token hover, now opt-in (default
+                // OFF — see AppUiState.tokenHoverEnabled's doc comment). Both
+                // handlers are stable (empty-deps useCallback, see
+                // TokenHoverPopover.tsx), so spreading them here doesn't
+                // destabilize anything — FilesTab's `options` object isn't
+                // memoized to begin with (unlike GitTab's PatchDiff options),
+                // so there's no reapply-avoidance discipline to preserve
+                // here. When OFF, both are simply omitted (Pierre's own
+                // onTokenEnter/onTokenLeave are optional) so no hover
+                // listener is wired at all.
+                ...(tokenHoverEnabled
+                  ? { onTokenEnter: tokenHover.onTokenEnter, onTokenLeave: tokenHover.onTokenLeave }
+                  : {})
               }}
             />
           </Virtualizer>
         )}
-        <TokenHoverPopover
-          state={tokenHover.state}
-          onMouseEnter={tokenHover.cancelHide}
-          onMouseLeave={tokenHover.scheduleHide}
-        />
+        {tokenHoverEnabled && (
+          <TokenHoverPopover
+            state={tokenHover.state}
+            onMouseEnter={tokenHover.cancelHide}
+            onMouseLeave={tokenHover.scheduleHide}
+          />
+        )}
         {contents.truncated && (
           <div className="flex-shrink-0 px-3 py-1 text-[10px] text-text-muted border-t border-border-default select-none">
             file truncated at 3MB
@@ -1392,6 +1413,11 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
   // debounced auto-save.
   const uiState = useUiState()
   const autoSave = uiState?.filesAutoSave ?? false
+  // Token-hover popover toggle (default OFF — see AppUiState.tokenHoverEnabled's
+  // doc comment + TreeOptionsPopover's "Token hover" toggle). Same fallback
+  // idiom as autoSave/treeOptions above while the initial uiState.get() hasn't
+  // resolved yet.
+  const tokenHoverEnabled = uiState?.tokenHoverEnabled ?? UI_STATE_DEFAULTS.tokenHoverEnabled
 
   // The ⚙ tree-options (Fix 2): APP-WIDE view preferences, not per-workspace
   // session state — moved out of filesTabStore into the DB-backed AppUiState
@@ -1407,9 +1433,10 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
       dimGitignored: uiState?.filesDimGitignored ?? UI_STATE_DEFAULTS.filesDimGitignored,
       wrapLines: uiState?.filesWrapLines ?? UI_STATE_DEFAULTS.filesWrapLines,
       sortOrder: uiState?.filesSortOrder ?? UI_STATE_DEFAULTS.filesSortOrder,
-      flattenEmptyDirs: uiState?.filesFlattenEmptyDirs ?? UI_STATE_DEFAULTS.filesFlattenEmptyDirs
+      flattenEmptyDirs: uiState?.filesFlattenEmptyDirs ?? UI_STATE_DEFAULTS.filesFlattenEmptyDirs,
+      tokenHoverEnabled
     }),
-    [uiState]
+    [uiState, tokenHoverEnabled]
   )
   const setTreeOptions = useCallback((next: TreeOptionsState) => {
     updateUiState({
@@ -1417,7 +1444,8 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
       filesDimGitignored: next.dimGitignored,
       filesWrapLines: next.wrapLines,
       filesSortOrder: next.sortOrder,
-      filesFlattenEmptyDirs: next.flattenEmptyDirs
+      filesFlattenEmptyDirs: next.flattenEmptyDirs,
+      tokenHoverEnabled: next.tokenHoverEnabled
     })
   }, [])
 
@@ -1553,6 +1581,7 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
             mode={mode}
             autoSave={autoSave}
             wrapLines={treeOptions.wrapLines}
+            tokenHoverEnabled={tokenHoverEnabled}
             onDirtyChange={setDirty}
             onSaved={bumpRefresh}
           />

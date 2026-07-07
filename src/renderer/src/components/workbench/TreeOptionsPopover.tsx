@@ -12,10 +12,11 @@
 // with GitDiffOptionsPopover.tsx) with a quiet "View" group header over
 // toggle rows — "Show hidden files", "Dim gitignored", "Wrap lines" — plus a
 // "Tree" group with "Sort order" (a compact segmented [Default | Name]
-// control) and "Flatten empty dirs" (a toggle). All five settings are
-// persisted per-workspace in filesTabStore's `TreeOptionsState` (see
-// filesTabStore.ts's DEFAULT_FILES_TAB_ENTRY + the per-key store `equals`)
-// — see §11.
+// control), "Flatten empty dirs" (a toggle), and "Token hover" (gates the
+// Pierre Batch 3 token-hover popover — SHARED with GitDiffOptionsPopover's
+// own toggle, AppUiState.tokenHoverEnabled, default OFF). All settings are
+// persisted app-wide in AppUiState (see FilesTab.tsx's `treeOptions`/
+// `setTreeOptions`), surviving an app restart — see §11.
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
@@ -55,6 +56,10 @@ export interface TreeOptionsState {
    *  (`a/b/c/` → one row) via @pierre/trees' `flattenEmptyDirectories`.
    *  Default OFF. */
   flattenEmptyDirs: boolean
+  /** Token-hover popover in the editor/viewer (AppUiState.tokenHoverEnabled)
+   *  — SHARED with the Git tab's own GitDiffOptionsPopover toggle. Default
+   *  OFF. */
+  tokenHoverEnabled: boolean
 }
 
 const SORT_OPTIONS: ReadonlyArray<{ value: TreeSortOrder; label: string }> = [
@@ -186,6 +191,11 @@ export function TreeOptionsPopover({
             label="Flatten empty dirs"
             value={options.flattenEmptyDirs}
             onChange={(v) => onChange({ ...options, flattenEmptyDirs: v })}
+          />
+          <PopoverRow
+            label="Token hover"
+            value={options.tokenHoverEnabled}
+            onChange={(v) => onChange({ ...options, tokenHoverEnabled: v })}
           />
         </div>
       </Overlay>

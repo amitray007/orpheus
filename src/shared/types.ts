@@ -290,6 +290,11 @@ export type AppUiState = {
   // toggle, persisted so it survives an app restart.
   /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`). Default true (on). */
   gitDiffWrapLines: boolean
+  // Token-hover popover (Pierre Batch 3) — hovering a syntax token shows a
+  // floating card with token text + line:col + copy. Fires in BOTH the Files
+  // tab's editor/viewer (FilesTab.tsx) and the Git tab's diff (GitTab.tsx).
+  // Intrusive while just reading, so it's opt-in. Default false (off).
+  tokenHoverEnabled: boolean
   // Workbench changed-files/file TREE pane width (v69) — SHARED between the
   // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
   // before this; now a draggable divider persists one shared width so long

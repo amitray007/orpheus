@@ -1376,16 +1376,23 @@ export function GitTab({
   const uiState = useUiState()
   const wrapLines = uiState?.gitDiffWrapLines ?? UI_STATE_DEFAULTS.gitDiffWrapLines
   const flattenEmptyDirs = uiState?.filesFlattenEmptyDirs ?? UI_STATE_DEFAULTS.filesFlattenEmptyDirs
+  // Token-hover popover toggle (default OFF — see AppUiState.tokenHoverEnabled's
+  // doc comment). SHARED with the Files tab's own TreeOptionsPopover toggle.
+  const tokenHoverEnabled = uiState?.tokenHoverEnabled ?? UI_STATE_DEFAULTS.tokenHoverEnabled
   const diffOptions = useMemo(
-    () => ({ wrapLines, flattenEmptyDirs }),
-    [wrapLines, flattenEmptyDirs]
+    () => ({ wrapLines, flattenEmptyDirs, tokenHoverEnabled }),
+    [wrapLines, flattenEmptyDirs, tokenHoverEnabled]
   )
-  const setDiffOptions = useCallback((next: { wrapLines: boolean; flattenEmptyDirs: boolean }) => {
-    updateUiState({
-      gitDiffWrapLines: next.wrapLines,
-      filesFlattenEmptyDirs: next.flattenEmptyDirs
-    })
-  }, [])
+  const setDiffOptions = useCallback(
+    (next: { wrapLines: boolean; flattenEmptyDirs: boolean; tokenHoverEnabled: boolean }) => {
+      updateUiState({
+        gitDiffWrapLines: next.wrapLines,
+        filesFlattenEmptyDirs: next.flattenEmptyDirs,
+        tokenHoverEnabled: next.tokenHoverEnabled
+      })
+    },
+    []
+  )
 
   // Draggable tree/code split — SHARED width with FilesTab's tree (see
   // useTreeWidthDrag.ts's module header).
@@ -1507,6 +1514,7 @@ export function GitTab({
           flattenEmptyDirs={flattenEmptyDirs}
           diffStyle={diffStyle}
           wrapLines={wrapLines}
+          tokenHoverEnabled={tokenHoverEnabled}
           workspaceId={workspaceId}
           branch={branch}
           gitInitRunning={gitInitRunning}
@@ -1553,6 +1561,11 @@ interface GitTabBodyProps {
   flattenEmptyDirs: boolean
   diffStyle: DiffStyle
   wrapLines: boolean
+  /** Token-hover popover toggle (AppUiState.tokenHoverEnabled, default OFF)
+   *  — gates whether onTokenEnter/onTokenLeave get wired into DiffContentPane
+   *  at all and whether <TokenHoverPopover> mounts. See its own doc comment
+   *  in shared/types.ts. */
+  tokenHoverEnabled: boolean
   workspaceId: string
   branch: string | null
   gitInitRunning: boolean
@@ -1610,6 +1623,7 @@ function GitTabBodyImpl({
   flattenEmptyDirs,
   diffStyle,
   wrapLines,
+  tokenHoverEnabled,
   workspaceId,
   branch,
   gitInitRunning,
@@ -1635,7 +1649,15 @@ function GitTabBodyImpl({
   // onTokenLeave as the hook's own stable (empty-deps useCallback)
   // identities, so its shallow prop comparison short-circuits and <PatchDiff>
   // never re-renders on hover. See useTokenHoverPopover.ts's own doc comment.
+  //
+  // Always called unconditionally regardless of `tokenHoverEnabled` (rules-
+  // of-hooks) — only the WIRING below is gated: when the setting is OFF,
+  // DiffContentPane gets these stable no-op handlers instead (its own
+  // onTokenEnter/onTokenLeave props are non-optional), so @pierre/diffs never
+  // attaches a hover listener at all, and <TokenHoverPopover> doesn't mount.
   const tokenHover = useTokenHoverPopover()
+  const noopTokenEnter = useCallback(() => {}, [])
+  const noopTokenLeave = useCallback(() => {}, [])
 
   if (loading) return <DiffMessage text="Loading…" />
   if (diffMode === 'pr') {
@@ -1692,19 +1714,22 @@ function GitTabBodyImpl({
           localWiring={localWiring}
           allowGithubComments={allowGithubComments}
           conflictedPaths={conflictedPaths}
-          onTokenEnter={tokenHover.onTokenEnter}
-          onTokenLeave={tokenHover.onTokenLeave}
+          onTokenEnter={tokenHoverEnabled ? tokenHover.onTokenEnter : noopTokenEnter}
+          onTokenLeave={tokenHoverEnabled ? tokenHover.onTokenLeave : noopTokenLeave}
         />
       </div>
       {/* PERF FIX (token-hover lift): lives here now (a GitTabBody sibling of
           DiffContentPane), not inside DiffContentPaneImpl — see the hook call
           above + DiffContentPaneProps' onTokenEnter/onTokenLeave doc
-          comment. */}
-      <TokenHoverPopover
-        state={tokenHover.state}
-        onMouseEnter={tokenHover.cancelHide}
-        onMouseLeave={tokenHover.scheduleHide}
-      />
+          comment. Setting-gated (default OFF): when disabled, DiffContentPane
+          gets no-op handlers above and this popover doesn't mount at all. */}
+      {tokenHoverEnabled && (
+        <TokenHoverPopover
+          state={tokenHover.state}
+          onMouseEnter={tokenHover.cancelHide}
+          onMouseLeave={tokenHover.scheduleHide}
+        />
+      )}
     </div>
   )
 }

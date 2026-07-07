@@ -549,6 +549,13 @@ export const schema: SchemaDef = {
       // popover's "Wrap lines" toggle (mirrors UI_STATE_DEFAULTS.gitDiffWrapLines
       // in src/shared/uiStateDefaults.ts). Default 1 (wrap on).
       git_diff_wrap_lines: bool('git_diff_wrap_lines', '1'),
+      // Token-hover popover (Pierre Batch 3) — hovering a syntax token shows a
+      // floating card w/ token text + line:col + copy, in BOTH the Files tab's
+      // editor/viewer and the Git tab's diff. Was always-on and intrusive
+      // while just reading, so it's now opt-in via the ⚙ options popovers
+      // (mirrors UI_STATE_DEFAULTS.tokenHoverEnabled in
+      // src/shared/uiStateDefaults.ts). Default 0 (off).
+      token_hover_enabled: bool('token_hover_enabled', '0'),
       // Workbench tree/code split pane width (v69) — draggable divider width,
       // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors
       // UI_STATE_DEFAULTS.workbenchTreeWidth / WORKBENCH_TREE_WIDTH_MIN..MAX

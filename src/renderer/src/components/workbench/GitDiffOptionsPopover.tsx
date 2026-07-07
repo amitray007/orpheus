@@ -20,6 +20,12 @@
 //     longer Files-only — think of it as "the shared tree flatten setting"
 //     rather than a Files-tab-specific one. Default OFF (each folder its own
 //     expandable row, rather than collapsing dir chains into a breadcrumb).
+//   - "Token hover" — gates the Pierre Batch 3 token-hover popover (hover a
+//     syntax token → a floating card w/ token text + line:col + copy) on the
+//     diff. Was always-on and intrusive while just reading, so it's now
+//     opt-in — reads/writes AppUiState.tokenHoverEnabled, the SAME value the
+//     Files tab's TreeOptionsPopover exposes for its editor/viewer. Default
+//     OFF.
 // The unified/split `diffStyle` toggle stays in GitTab's header strip
 // (already a dedicated icon toggle, DiffStyleToggle) rather than folding
 // into this popover — it's a primary, frequently-used control, unlike Wrap/
@@ -40,6 +46,10 @@ interface GitDiffOptionsState {
    *  one flattened row. SHARED with the Files tab (AppUiState.
    *  filesFlattenEmptyDirs) — see module header. Default false (off). */
   flattenEmptyDirs: boolean
+  /** Token-hover popover on the diff (AppUiState.tokenHoverEnabled) — SHARED
+   *  with the Files tab (TreeOptionsPopover's own "Token hover" toggle). See
+   *  module header. Default false (off). */
+  tokenHoverEnabled: boolean
 }
 
 interface GitDiffOptionsPopoverProps {
@@ -105,6 +115,11 @@ export function GitDiffOptionsPopover({
             label="Flatten empty folders"
             value={options.flattenEmptyDirs}
             onChange={(v) => onChange({ ...options, flattenEmptyDirs: v })}
+          />
+          <PopoverRow
+            label="Token hover"
+            value={options.tokenHoverEnabled}
+            onChange={(v) => onChange({ ...options, tokenHoverEnabled: v })}
           />
         </div>
       </Overlay>
