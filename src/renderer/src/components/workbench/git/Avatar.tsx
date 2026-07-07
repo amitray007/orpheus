@@ -2,29 +2,38 @@
 // src/renderer/src/components/workbench/git/Avatar.tsx
 //
 // Shared avatar renderer for the Git tab's Details/ReviewCommentThread
-// surfaces: a real GitHub avatar <img> when the call site's data source
-// captured an avatarUrl (currently only GhReviewComment — see its doc
-// comment in shared/types.ts for which `gh` field carries it and why the
-// other Gh* comment/review/reviewer types don't), falling back to the
-// existing initials-circle (avatarColor.ts's initialsOf/avatarColorFor) when
-// avatarUrl is null/empty OR the image fails to load (broken URL, offline,
+// surfaces: a real GitHub avatar <img>, falling back to the existing
+// initials-circle (avatarColor.ts's initialsOf/avatarColorFor) when no
+// avatar can be resolved OR the image fails to load (broken URL, offline,
 // blocked, revoked GitHub avatar).
+//
+// Two avatar URL sources, in priority order:
+//   1. `avatarUrl` — captured directly by the call site's data source
+//      (currently only GhReviewComment; see its doc comment in
+//      shared/types.ts for which `gh` field carries it and why the other
+//      Gh* comment/review/reviewer types don't).
+//   2. `login` — for every OTHER call site (general comments, reviews,
+//      reviewers, assignees) that has a login but no avatarUrl, we build
+//      `https://github.com/<login>.png?size=<px>`, which 302-redirects to
+//      the real avatars CDN for any real GitHub user. A bot login's
+//      trailing `[bot]` suffix is stripped for this constructed URL (GitHub
+//      doesn't serve `github.com/foo[bot].png`) while the ORIGINAL login is
+//      kept for the initials fallback. A login that isn't a real GitHub
+//      user 404s → onError → initials (correct degrade).
 //
 // The CSP (src/renderer/index.html) already allowlists
 // `https://avatars.githubusercontent.com` and `https://github.com` in
-// img-src, so a real avatar <img> loads fine — the "CSP forbids remote
-// avatar fetches" claim that used to live on avatarColor.ts's doc comment was
-// stale (there was never a captured avatar_url to try loading, so the CSP
-// allowance went untested/unused until now). No CSP change needed here.
+// img-src, so both avatar URL sources load fine.
 //
 // Fast + cached: main process (src/main/avatarCache.ts) fetches the avatar
-// ONCE (sized down to ~40px via a `s=` query param — GitHub serves full-res
-// otherwise) and persists it to disk as a data URI, served instantly (and
-// offline) on every subsequent load via the `avatar:get` IPC. This component
-// degrades through three tiers, never blocking render: cached data-URI (once
-// the IPC resolves) → direct sized CDN url (immediate, while the IPC is
-// in flight, or if it resolves null) → initials circle (avatarUrl absent, or
-// the <img> itself fails to load).
+// URL ONCE (sized down to ~40px via a size param) and persists it to disk as
+// a data URI, served instantly (and offline) on every subsequent load via
+// the `avatar:get` IPC — this applies identically whether the URL came from
+// `avatarUrl` or was constructed from `login`, since both are just URLs to
+// the same cache. This component degrades through three tiers, never
+// blocking render: cached data-URI (once the IPC resolves) → direct sized
+// url (immediate, while the IPC is in flight, or if it resolves null) →
+// initials circle (no url resolvable, or the <img> itself fails to load).
 //
 // Kept as its own component file (not folded into avatarColor.ts) because a
 // `.tsx` file that exports both a component and plain functions trips the
@@ -56,13 +65,30 @@ function sizedAvatarUrl(url: string, px: number = AVATAR_RENDER_PX): string {
   }
 }
 
+/** Build a `github.com/<login>.png?size=<px>` url — GitHub redirects this to
+ *  the real avatars CDN for any real user login, giving every call site with
+ *  just a login (no captured avatarUrl) a real avatar. Strips a trailing
+ *  `[bot]` suffix (e.g. `coderabbitai[bot]` → `coderabbitai`) since
+ *  `github.com/<login>[bot].png` isn't a valid path — the ORIGINAL login is
+ *  still used for the initials fallback/alt text, only the constructed url
+ *  is affected. Returns null for an empty login (nothing to build from). */
+function loginAvatarUrl(login: string, px: number = AVATAR_RENDER_PX * 2): string | null {
+  const trimmed = login.trim()
+  if (!trimmed) return null
+  const bareLogin = trimmed.replace(/\[bot\]$/, '')
+  return `https://github.com/${encodeURIComponent(bareLogin)}.png?size=${px}`
+}
+
 export interface AvatarProps {
-  /** GitHub login, used for the initials/color fallback and the <img>'s alt
-   *  text. Empty string renders '?' (see initialsOf). */
+  /** GitHub login, used for the initials/color fallback, the <img>'s alt
+   *  text, and (when avatarUrl is absent) to construct a
+   *  `github.com/<login>.png` avatar url. Empty string renders '?' (see
+   *  initialsOf) since there's nothing to build a url from either. */
   login: string
   /** Real avatar image URL, when the call site's data source captured one.
-   *  Null/undefined/empty renders the initials fallback directly, no image
-   *  attempted. */
+   *  Null/undefined/empty falls back to a url constructed from `login`
+   *  (see `loginAvatarUrl`); only an empty `login` too renders the initials
+   *  fallback directly with no image attempted. */
   avatarUrl?: string | null
   /** Square size in px — matches the existing initials-circle call sites
    *  (DetailsTab's old `Avatar` default 24, ReviewCommentThread's `rc-avatar`
@@ -76,51 +102,60 @@ export interface AvatarProps {
   className?: string
 }
 
-/** Shared avatar renderer: a real GitHub avatar image when `avatarUrl` is
- *  present, falling back to the existing initials-circle (initialsOf +
- *  avatarColorFor) when it's null/empty OR the image fails to load (broken
- *  URL, offline, blocked). The onError→fallback flip uses local state rather
- *  than trying to pre-validate the URL — simplest correct handling for an
- *  <img> that may 404/timeout after mount.
+/** Shared avatar renderer: a real GitHub avatar image whenever one can be
+ *  resolved — either `avatarUrl` (captured directly) or a url constructed
+ *  from `login` (`github.com/<login>.png`, redirects to the real CDN) —
+ *  falling back to the existing initials-circle (initialsOf + avatarColorFor)
+ *  when neither is available OR the image fails to load (broken URL,
+ *  offline, blocked, unknown login). The onError→fallback flip uses local
+ *  state rather than trying to pre-validate the URL — simplest correct
+ *  handling for an <img> that may 404/timeout after mount.
  *
  *  Three-tier degrade for the `src`, never blocking render: the direct sized
- *  CDN url (tier 2) is derived straight from `avatarUrl` so it's available
- *  from the very first render, then a `useEffect` asks main's fetch-once
- *  disk cache (`window.api.avatar.get`) for a data URI and swaps it in once
- *  resolved (tier 1 — fast + works offline on repeat visits) via `cachedSrc`
- *  state, which is ONLY ever written from that async callback (never
- *  synchronously in the effect body, to avoid a cascading-render setState).
- *  If the cache call resolves null (fetch/network failure) or is still in
- *  flight, the derived CDN url stays. If the <img> itself then fails to load
- *  (`onError`), tier 3 (initials) takes over. */
+ *  url (tier 2) is derived synchronously from `avatarUrl` (preferred) or
+ *  `login` so it's available from the very first render, then a `useEffect`
+ *  asks main's fetch-once disk cache (`window.api.avatar.get`) for a data URI
+ *  and swaps it in once resolved (tier 1 — fast + works offline on repeat
+ *  visits) via `cachedSrc` state, which is ONLY ever written from that async
+ *  callback (never synchronously in the effect body, to avoid a
+ *  cascading-render setState). If the cache call resolves null (fetch/network
+ *  failure) or is still in flight, the derived url stays. If the <img> itself
+ *  then fails to load (`onError`), tier 3 (initials) takes over. */
 export function Avatar({ login, avatarUrl, size = 24, className }: AvatarProps): React.JSX.Element {
   const hasAvatarUrl = typeof avatarUrl === 'string' && avatarUrl.length > 0
-  const fallbackSrc = hasAvatarUrl ? sizedAvatarUrl(avatarUrl) : null
+  // Resolve the url to attempt: the captured avatarUrl wins when present;
+  // otherwise construct one from login so every call site with just a login
+  // (general comments, reviews, reviewers, assignees) still gets a real
+  // avatar instead of always falling straight to initials.
+  const resolvedUrl = hasAvatarUrl ? avatarUrl : loginAvatarUrl(login)
+  const hasResolvedUrl = resolvedUrl !== null
+  const fallbackSrc = hasAvatarUrl ? sizedAvatarUrl(avatarUrl) : resolvedUrl
 
   // Cached data-URI, once main's disk cache resolves one for the CURRENT
-  // avatarUrl. Paired with the url it was resolved for (rather than reset via
-  // an effect) so a stale cached image from a previous login is ignored the
-  // instant avatarUrl changes, with no synchronous setState-in-effect needed.
+  // resolvedUrl. Paired with the url it was resolved for (rather than reset
+  // via an effect) so a stale cached image from a previous login is ignored
+  // the instant resolvedUrl changes, with no synchronous setState-in-effect
+  // needed.
   const [cachedSrc, setCachedSrc] = useState<{ forUrl: string; dataUri: string } | null>(null)
 
   useEffect(() => {
-    if (!hasAvatarUrl) return
+    if (!hasResolvedUrl) return
 
     let cancelled = false
     window.api.avatar
-      .get(avatarUrl)
+      .get(resolvedUrl)
       .then((dataUri) => {
-        if (!cancelled && dataUri) setCachedSrc({ forUrl: avatarUrl, dataUri })
+        if (!cancelled && dataUri) setCachedSrc({ forUrl: resolvedUrl, dataUri })
       })
       .catch(() => {
-        // Cache lookup failed — the derived sized CDN url stays as `src`.
+        // Cache lookup failed — the derived sized/constructed url stays as `src`.
       })
     return () => {
       cancelled = true
     }
-  }, [avatarUrl, hasAvatarUrl])
+  }, [resolvedUrl, hasResolvedUrl])
 
-  const src = cachedSrc && cachedSrc.forUrl === avatarUrl ? cachedSrc.dataUri : fallbackSrc
+  const src = cachedSrc && cachedSrc.forUrl === resolvedUrl ? cachedSrc.dataUri : fallbackSrc
 
   // "Broken" (img onError) is paired with the src it failed for, same trick
   // as cachedSrc above — so swapping from a broken CDN url to a freshly

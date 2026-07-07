@@ -36,11 +36,13 @@ import { app } from 'electron'
 // its own uncached fallback path (cached data-URI → sized CDN url → initials).
 export const AVATAR_CACHE_PX = 40
 
-// Cap the on-disk cache at ~500 entries. Each cached image is a few KB
-// (40px, jpeg/png), so 500 entries is roughly 1-2 MB total — avatars rarely
-// churn per project, so this comfortably covers real usage without needing
-// an LRU structure; a simple mtime-oldest prune on write is enough.
-const MAX_CACHE_ENTRIES = 500
+// Cap the on-disk cache at ~150 entries. Each cached image is a few KB
+// (40px, jpeg/png), so 150 entries is roughly ~300 KB total — 150 distinct
+// commenters/reviewers/assignees per install is already generous, and
+// avatars rarely churn per project, so this comfortably covers real usage
+// without needing an LRU structure; a simple mtime-oldest prune on write is
+// enough.
+const MAX_CACHE_ENTRIES = 150
 
 let cacheDirReady: Promise<string> | null = null
 
