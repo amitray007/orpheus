@@ -77,7 +77,12 @@
 }
 
 /* -------------------------------------------------------------------------
- * Avatar (initial circle — no external images, CSP forbids remote fetches)
+ * Avatar — shared by the <Avatar> component (avatarColor.tsx): a real
+ * GitHub avatar <img> when one was captured, else an initials-circle <span>
+ * fallback (also used for a broken/blocked image, or a data source that
+ * never carries an avatar — e.g. assignees). Sizing/shape rules here apply
+ * to both element types; the color/font/line-height rules only matter for
+ * the initials-circle fallback (harmless no-ops on an <img>).
  * ---------------------------------------------------------------------- */
 
 .details-avatar {

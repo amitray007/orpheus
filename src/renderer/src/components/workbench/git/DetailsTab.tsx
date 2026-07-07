@@ -40,7 +40,7 @@ import type {
 } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
-import { initialsOf, avatarColorFor } from './avatarColor'
+import { Avatar } from './Avatar'
 import './DetailsTab.css'
 
 export interface DetailsTabProps {
@@ -82,22 +82,6 @@ function formatDate(iso: string | null): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function Avatar({ login, size = 24 }: { login: string; size?: number }): React.JSX.Element {
-  return (
-    <span
-      className="details-avatar"
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.max(9, Math.round(size * 0.4)),
-        background: avatarColorFor(login)
-      }}
-    >
-      {initialsOf(login)}
-    </span>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Description card
 // ---------------------------------------------------------------------------
@@ -114,7 +98,7 @@ function DescriptionCard({ prDetail }: { prDetail: GhPullRequestDetail }): React
   return (
     <div className="details-desc-card">
       <div className="details-desc-card__strip">
-        <Avatar login={author} size={22} />
+        <Avatar login={author} size={22} className="details-avatar" />
         <span className="details-desc-card__byline">
           <b>{author}</b> opened this pull request on {formatDate(prDetail.createdAt)}
         </span>
@@ -200,12 +184,14 @@ function ReviewGlyph({ state }: { state: GhReview['state'] }): React.JSX.Element
  *  requirement. */
 function CommentCard({
   author,
+  avatarUrl,
   at,
   body,
   cacheKey,
   reviewState
 }: {
   author: string
+  avatarUrl: string | null
   at: string | null
   body: string
   cacheKey: string
@@ -214,7 +200,7 @@ function CommentCard({
   const bodyHtml = useMemo(() => renderToSafeHtml(body, cacheKey), [body, cacheKey])
   return (
     <div className="comment-card">
-      <Avatar login={author} size={20} />
+      <Avatar login={author} avatarUrl={avatarUrl} size={20} className="details-avatar" />
       <div className="comment-body">
         <span className="comment-author">{author}</span>
         {reviewState !== undefined && (
@@ -239,6 +225,7 @@ function CommentEntry({ comment }: { comment: GhGeneralComment }): React.JSX.Ele
       <div className="timeline-entry__card">
         <CommentCard
           author={comment.author}
+          avatarUrl={comment.avatarUrl}
           at={comment.createdAt}
           body={comment.body}
           cacheKey="comment.md"
@@ -261,6 +248,7 @@ function ReviewEntry({ review }: { review: GhReview }): React.JSX.Element {
       <div className="timeline-entry__card">
         <CommentCard
           author={review.author}
+          avatarUrl={review.avatarUrl}
           at={review.submittedAt}
           body={review.body}
           cacheKey="review.md"
@@ -387,6 +375,7 @@ function SidebarSection({
 interface ReviewerRow {
   login: string
   state: GhReview['state'] | 'pending'
+  avatarUrl: string | null
 }
 
 function buildReviewerRows(
@@ -394,12 +383,17 @@ function buildReviewerRows(
   reviews: readonly GhReview[]
 ): ReviewerRow[] {
   const rows = new Map<string, ReviewerRow>()
-  for (const req of reviewRequests) rows.set(req.login, { login: req.login, state: 'pending' })
+  for (const req of reviewRequests)
+    rows.set(req.login, { login: req.login, state: 'pending', avatarUrl: req.avatarUrl })
   // Later reviews win over an earlier state for the same author (e.g. a
   // CHANGES_REQUESTED superseded by a later APPROVED) — reviews are already
   // in gh's own returned order, so a simple overwrite-on-iterate is correct.
   for (const review of reviews)
-    rows.set(review.author, { login: review.author, state: review.state })
+    rows.set(review.author, {
+      login: review.author,
+      state: review.state,
+      avatarUrl: review.avatarUrl
+    })
   return Array.from(rows.values())
 }
 
@@ -427,7 +421,16 @@ function ReviewersSection({ prDetail }: { prDetail: GhPullRequestDetail }): Reac
             <span
               className={row.state === 'pending' ? 'reviewer-avatar pending' : 'reviewer-avatar'}
             >
-              {row.state === 'pending' ? '' : <Avatar login={row.login} size={18} />}
+              {row.state === 'pending' ? (
+                ''
+              ) : (
+                <Avatar
+                  login={row.login}
+                  avatarUrl={row.avatarUrl}
+                  size={18}
+                  className="details-avatar"
+                />
+              )}
             </span>
             <span className="reviewer-name">
               {row.login} · {REVIEWER_STATE_LABEL[row.state]}
@@ -447,7 +450,7 @@ function AssigneesSection({ assignees }: { assignees: readonly string[] }): Reac
       ) : (
         assignees.map((login) => (
           <div className="sidebar-person-row" key={login}>
-            <Avatar login={login} size={18} />
+            <Avatar login={login} avatarUrl={null} size={18} className="details-avatar" />
             <span className="reviewer-name">{login}</span>
           </div>
         ))

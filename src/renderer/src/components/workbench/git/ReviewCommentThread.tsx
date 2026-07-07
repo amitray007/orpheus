@@ -32,7 +32,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { GhReviewCommentThread, LocalReviewComment } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
-import { initialsOf, avatarColorFor } from './avatarColor'
+import { Avatar } from './Avatar'
 import { relativeTimeIso } from './relativeTime'
 import './ReviewCommentThread.css'
 
@@ -68,12 +68,17 @@ function formatRelative(iso: string): string {
   })
 }
 
-function ThreadAvatar({ login }: { login: string }): React.JSX.Element {
-  return (
-    <span className="rc-avatar" style={{ background: avatarColorFor(login) }}>
-      {initialsOf(login)}
-    </span>
-  )
+function ThreadAvatar({
+  login,
+  avatarUrl
+}: {
+  login: string
+  avatarUrl?: string | null
+}): React.JSX.Element {
+  // size=20 matches .rc-avatar's own width/height (ReviewCommentThread.css) —
+  // <Avatar>'s size prop sets an inline style, which would otherwise win over
+  // the class's 20px and resize the circle to the component's 24px default.
+  return <Avatar login={login} avatarUrl={avatarUrl} size={20} className="rc-avatar" />
 }
 
 function CommentBody({ body }: { body: string }): React.JSX.Element {
@@ -90,18 +95,20 @@ function CommentBody({ body }: { body: string }): React.JSX.Element {
  *  identical (GitHub renders both the same way inline). */
 function CommentRow({
   authorLogin,
+  avatarUrl,
   createdAt,
   body,
   isRoot
 }: {
   authorLogin: string
+  avatarUrl?: string | null
   createdAt: string
   body: string
   isRoot: boolean
 }): React.JSX.Element {
   return (
     <div className={isRoot ? 'rc-row rc-row--root' : 'rc-row rc-row--reply'}>
-      <ThreadAvatar login={authorLogin} />
+      <ThreadAvatar login={authorLogin} avatarUrl={avatarUrl} />
       <div className="rc-row-main">
         <div className="rc-row-head">
           <span className="rc-author">{authorLogin || 'unknown'}</span>
@@ -198,6 +205,7 @@ export function ReviewCommentThread({
         <CommentRow
           key={comment.id}
           authorLogin={comment.authorLogin}
+          avatarUrl={comment.avatarUrl}
           createdAt={comment.createdAt}
           body={comment.body}
           isRoot={i === 0}

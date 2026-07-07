@@ -527,14 +527,16 @@ function parseLabels(raw: RawGhLabel[] | null | undefined): GhLabel[] {
 function parseReviewRequests(raw: RawGhReviewRequest[] | null | undefined): GhReviewRequest[] {
   if (!raw) return []
   return raw.map((r) => {
+    // avatarUrl is always null here — `gh pr view --json reviewRequests` has
+    // no avatar field (see GhReviewRequest.avatarUrl's doc comment).
     if ('requestedReviewer' in r && r.requestedReviewer) {
       const rr = r.requestedReviewer
-      return { login: rr.login ?? rr.name ?? '', isTeam: rr.__typename === 'Team' }
+      return { login: rr.login ?? rr.name ?? '', isTeam: rr.__typename === 'Team', avatarUrl: null }
     }
     if ('login' in r) {
-      return { login: r.login ?? r.name ?? '', isTeam: r.__typename === 'Team' }
+      return { login: r.login ?? r.name ?? '', isTeam: r.__typename === 'Team', avatarUrl: null }
     }
-    return { login: '', isTeam: false }
+    return { login: '', isTeam: false, avatarUrl: null }
   })
 }
 
@@ -554,9 +556,12 @@ function normalizeReviewState(raw: string | undefined): GhReviewState {
 
 function parseReviews(raw: RawGhReview[] | null | undefined): GhReview[] {
   if (!raw) return []
+  // avatarUrl is always null here — `gh pr view --json reviews` has no
+  // avatar field (see GhReview.avatarUrl's doc comment).
   return raw.map((r) => ({
     id: String(r.id ?? ''),
     author: r.author?.login ?? '',
+    avatarUrl: null,
     state: normalizeReviewState(r.state),
     submittedAt: r.submittedAt ?? null,
     body: r.body ?? ''
@@ -631,9 +636,12 @@ function parseChecks(raw: RawGhCheck[] | null | undefined): GhCheck[] {
 
 function parseGeneralComments(raw: RawGhComment[] | null | undefined): GhGeneralComment[] {
   if (!raw) return []
+  // avatarUrl is always null here — `gh pr view --json comments` has no
+  // avatar field (see GhGeneralComment.avatarUrl's doc comment).
   return raw.map((c) => ({
     id: c.id ?? '',
     author: c.author?.login ?? '',
+    avatarUrl: null,
     authorAssociation: c.authorAssociation ?? '',
     body: c.body ?? '',
     createdAt: c.createdAt ?? '',
@@ -681,7 +689,7 @@ type RawGhReviewComment = {
   side?: string
   subject_type?: string
   body?: string
-  user?: { login?: string | null } | null
+  user?: { login?: string | null; avatar_url?: string | null } | null
   created_at?: string
   html_url?: string
 }
@@ -701,6 +709,11 @@ function parseRawReviewComment(raw: RawGhReviewComment): GhReviewComment {
     subjectType: raw.subject_type === 'file' ? 'file' : 'line',
     body: raw.body ?? '',
     authorLogin: raw.user?.login ?? '',
+    // Unlike the gh-pr-view-sourced parsers above, this REST endpoint
+    // (`gh api .../pulls/{n}/comments`) does return a real avatar_url per
+    // comment — verified live against PR #117 (see GhReviewComment.avatarUrl's
+    // doc comment in shared/types.ts).
+    avatarUrl: raw.user?.avatar_url ?? null,
     createdAt: raw.created_at ?? '',
     htmlUrl: raw.html_url ?? ''
   }

@@ -1,20 +1,23 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/git/avatarColor.ts
 //
-// Shared GitHub-login -> initials/avatar-color helpers, used by both
-// DetailsTab.tsx (the description card, timeline comments, sidebar
-// reviewer/assignee rows) and ReviewCommentThread.tsx (inline PR review
-// threads). These were previously byte-identical copies in each file — the
-// whole point of `avatarColorFor` is that the SAME login always maps to the
-// SAME color everywhere it renders (description card, timeline, sidebar,
-// inline review thread), so duplicating it risked the two copies drifting
-// (a hash-function tweak in one file silently NOT applying to the other).
-// Hoisted here as a pure, stateless module (no React, no app state) so both
-// call sites stay simple imports.
+// Shared GitHub-login -> initials/avatar-color helpers, used by the shared
+// <Avatar> component (./Avatar.tsx) as its no-image fallback rendering, and
+// previously used directly by DetailsTab.tsx / ReviewCommentThread.tsx before
+// both call sites switched to <Avatar>. These were originally byte-identical
+// copies in each file — the whole point of `avatarColorFor` is that the SAME
+// login always maps to the SAME color everywhere it renders (description
+// card, timeline, sidebar, inline review thread), so duplicating it risked
+// the two copies drifting (a hash-function tweak in one file silently NOT
+// applying to the other). Hoisted here as a pure, stateless module (no React,
+// no app state, kept a plain .ts rather than .tsx so it can freely export
+// multiple non-component functions without tripping the
+// react-refresh/only-export-components lint rule that a `.tsx` file with
+// mixed component/non-component exports would hit).
 // ---------------------------------------------------------------------------
 
-/** GitHub-login → 1-2 letter avatar initial, deterministic (no external
- *  images — CSP forbids remote avatar fetches anyway). */
+/** GitHub-login → 1-2 letter avatar initial. Used as <Avatar>'s fallback
+ *  rendering when no avatarUrl is available (or the image fails to load). */
 export function initialsOf(login: string): string {
   const trimmed = login.trim()
   if (trimmed.length === 0) return '?'

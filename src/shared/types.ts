@@ -779,6 +779,13 @@ export type GhReviewState = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DI
 export type GhReview = {
   id: string
   author: string // login
+  // Always null today: `gh pr view --json reviews` only exposes
+  // `author.login`, not an avatar field (verified live against PR #117 —
+  // GraphQL's fixed field list under `--json` has no avatarUrl passthrough
+  // for the reviews array). Kept nullable so <Avatar> can fall back to
+  // initials without a special case, and so a future GraphQL-based fetch can
+  // populate it without a type change.
+  avatarUrl: string | null
   state: GhReviewState
   submittedAt: string | null // ISO
   body: string
@@ -787,6 +794,9 @@ export type GhReview = {
 export type GhReviewRequest = {
   login: string // requested reviewer (user or team)
   isTeam: boolean
+  // Same caveat as GhReview.avatarUrl — `gh pr view --json reviewRequests`
+  // has no avatar field either; always null today.
+  avatarUrl: string | null
 }
 
 export type GhCommit = {
@@ -817,6 +827,9 @@ export type GhCheck = {
 export type GhGeneralComment = {
   id: string
   author: string
+  // Same caveat as GhReview.avatarUrl above — `gh pr view --json comments`
+  // exposes only `author.login`, no avatar field; always null today.
+  avatarUrl: string | null
   authorAssociation: string
   body: string
   createdAt: string
@@ -852,6 +865,12 @@ export type GhReviewComment = {
   subjectType: 'line' | 'file'
   body: string
   authorLogin: string
+  // Unlike GhReview/GhReviewRequest/GhGeneralComment above, this DOES carry a
+  // real avatar: `gh api repos/{owner}/{repo}/pulls/{n}/comments` returns each
+  // comment's full `user` object (REST, not the `gh pr view --json` GraphQL
+  // field list), including `user.avatar_url` — verified live against PR #117
+  // (coderabbitai[bot] resolved to a real avatars.githubusercontent.com URL).
+  avatarUrl: string | null
   createdAt: string
   htmlUrl: string
 }
