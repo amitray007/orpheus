@@ -189,25 +189,83 @@ function ReviewGlyph({ state }: { state: GhReview['state'] }): React.JSX.Element
   return <span aria-hidden="true">◐</span>
 }
 
+/** Shared comment-card body: author/time/source-tag header strip + sanitized
+ *  markdown body below, via the SAME renderToSafeHtml pipeline the
+ *  description card and general comments use. `reviewState`, when present,
+ *  adds the review's glyph + state label as a header adornment (e.g. a
+ *  COMMENTED review reads "alice reviewed · commented" above its body) so a
+ *  review-with-body card still communicates it was a review, not a plain
+ *  general comment — while rendering through the exact same card markup/CSS
+ *  (`.comment-card`) as CommentEntry, per the fix's "reuse, don't fork"
+ *  requirement. */
+function CommentCard({
+  author,
+  at,
+  body,
+  cacheKey,
+  reviewState
+}: {
+  author: string
+  at: string | null
+  body: string
+  cacheKey: string
+  reviewState?: GhReview['state']
+}): React.JSX.Element {
+  const bodyHtml = useMemo(() => renderToSafeHtml(body, cacheKey), [body, cacheKey])
+  return (
+    <div className="comment-card">
+      <Avatar login={author} size={20} />
+      <div className="comment-body">
+        <span className="comment-author">{author}</span>
+        {reviewState !== undefined && (
+          <span className="comment-review-state"> {REVIEW_STATE_LABEL[reviewState]}</span>
+        )}
+        <span className="comment-time">{formatDate(at)}</span>
+        <span className="source-tag source-tag--github">GitHub</span>
+        {/* bodyHtml is DOMPurify-sanitized (see DescriptionCard's identical usage above). */}
+        <div
+          className="comment-text details-desc-card__body"
+          dangerouslySetInnerHTML={{ __html: bodyHtml }}
+        />
+      </div>
+    </div>
+  )
+}
+
 function CommentEntry({ comment }: { comment: GhGeneralComment }): React.JSX.Element {
-  const bodyHtml = useMemo(() => renderToSafeHtml(comment.body, 'comment.md'), [comment.body])
   return (
     <div className="timeline-entry">
       <span className="timeline-entry__dot" />
       <div className="timeline-entry__card">
-        <div className="comment-card">
-          <Avatar login={comment.author} size={20} />
-          <div className="comment-body">
-            <span className="comment-author">{comment.author}</span>
-            <span className="comment-time">{formatDate(comment.createdAt)}</span>
-            <span className="source-tag source-tag--github">GitHub</span>
-            {/* bodyHtml is DOMPurify-sanitized (see DescriptionCard's identical usage above). */}
-            <div
-              className="comment-text details-desc-card__body"
-              dangerouslySetInnerHTML={{ __html: bodyHtml }}
-            />
-          </div>
-        </div>
+        <CommentCard
+          author={comment.author}
+          at={comment.createdAt}
+          body={comment.body}
+          cacheKey="comment.md"
+        />
+      </div>
+    </div>
+  )
+}
+
+/** A review with a non-empty body carries actual reviewer feedback (a
+ *  COMMENTED review's summary text, or an APPROVED/CHANGES_REQUESTED review
+ *  submitted alongside a comment) — that content was previously dropped
+ *  entirely, showing only the bare "X commented" event row. Render it as the
+ *  same comment card general comments use (via CommentCard above), with the
+ *  review state as a header adornment, so the text is never lost. */
+function ReviewEntry({ review }: { review: GhReview }): React.JSX.Element {
+  return (
+    <div className="timeline-entry">
+      <span className="timeline-entry__dot" />
+      <div className="timeline-entry__card">
+        <CommentCard
+          author={review.author}
+          at={review.submittedAt}
+          body={review.body}
+          cacheKey="review.md"
+          reviewState={review.state}
+        />
       </div>
     </div>
   )
@@ -226,13 +284,19 @@ function Timeline({ prDetail }: { prDetail: GhPullRequestDetail }): React.JSX.El
   }
   return (
     <div className="details-timeline">
-      {timeline.map((item) =>
-        item.kind === 'review' ? (
-          <ReviewEventRow key={`review-${item.review.id}`} review={item.review} />
+      {timeline.map((item) => {
+        if (item.kind === 'comment') {
+          return <CommentEntry key={`comment-${item.comment.id}`} comment={item.comment} />
+        }
+        // has body -> show it as a card (with the state label/glyph); empty
+        // body (a pure APPROVED/CHANGES_REQUESTED/etc with no text) stays the
+        // compact event row.
+        return item.review.body.trim().length > 0 ? (
+          <ReviewEntry key={`review-${item.review.id}`} review={item.review} />
         ) : (
-          <CommentEntry key={`comment-${item.comment.id}`} comment={item.comment} />
+          <ReviewEventRow key={`review-${item.review.id}`} review={item.review} />
         )
-      )}
+      })}
     </div>
   )
 }
