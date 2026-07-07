@@ -99,18 +99,25 @@ export function CleanState({ branch }: { branch: string | null }): React.JSX.Ele
 }
 
 /** Phase 4-pre — PR-diff mode's own empty state: `files.length === 0` while
- *  viewing PR diff means the fetch itself came back empty (no PR / no gh /
- *  network failure — see gitDiff.ts::getPrDiff's safety-net note; a PR that
- *  genuinely has zero changed files can't exist on GitHub). Distinct copy
- *  from CleanState's "working tree is clean" — that phrasing would be
- *  actively misleading here, since the PR diff has nothing to do with the
- *  working tree at all. */
+ *  viewing PR diff means every fetch tier came back empty (see
+ *  gitDiff.ts::getPrDiff's three-tier doc comment — `gh pr diff`, then the
+ *  GitHub files API, then a sync-gated local fallback, in that order). By
+ *  the time this renders, the size-cap case (`gh pr diff`'s HTTP 406
+ *  "too_large") has almost always already been recovered by the files-API
+ *  tier — this only shows when `gh` itself is unusable (missing/unauth/
+ *  offline) and the local tree isn't an exact match for the PR's head
+ *  commit either. Copy is deliberately non-committal about WHICH of those
+ *  happened (no reason is plumbed across IPC) rather than guessing "auth"
+ *  specifically, which was misleading in the too-large case this replaces.
+ *  Distinct copy from CleanState's "working tree is clean" — that phrasing
+ *  would be actively misleading here, since the PR diff has nothing to do
+ *  with the working tree at all. */
 export function PrDiffEmptyState(): React.JSX.Element {
   return (
     <EmptyStateShell
       icon={<GitPullRequest size={40} weight="regular" />}
       title="No PR diff available"
-      subtitle="Couldn't load the PR's diff right now. Try switching back to Working tree, or check that `gh` is authenticated."
+      subtitle="Couldn't load the PR diff. It may be too large for GitHub, `gh` may not be authenticated, or the base branch isn't available locally. Try switching back to Working tree, or open the PR on GitHub."
     />
   )
 }

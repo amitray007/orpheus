@@ -461,20 +461,269 @@ async function resolveGhPathEnv(): Promise<string> {
   return shellPath || process.env['PATH'] || ''
 }
 
+/** Runs a `gh` subcommand with the resolved shell PATH — same env-resolution
+ *  rationale as the rest of this module's `gh` calls, factored out so the
+ *  primary (`gh pr diff`) and fallback (`gh api .../files`) paths share one
+ *  spawn helper instead of duplicating the `resolveGhPathEnv` + execFile
+ *  boilerplate. */
+async function runGhLocal(
+  cwd: string,
+  args: readonly string[],
+  opts: { timeout: number; maxBuffer: number }
+): Promise<string> {
+  const pathEnv = await resolveGhPathEnv()
+  const { stdout } = await execFile('gh', args as string[], {
+    cwd,
+    env: { ...process.env, PATH: pathEnv },
+    timeout: opts.timeout,
+    maxBuffer: opts.maxBuffer
+  })
+  return stdout
+}
+
+// ---------------------------------------------------------------------------
+// Fallback #1 — GitHub REST "list PR files" API (`gh api .../pulls/<n>/files
+// --paginate`). `gh pr diff` fails outright on a large PR (HTTP 406
+// "PullRequest.diff too_large" — GitHub caps the combined-diff endpoint at
+// 20k lines; confirmed on this repo's own PR #117, ~21k lines). The
+// `pulls/{n}/files` REST endpoint has NO such combined-size cap — it's
+// paginated per-file (`--paginate` transparently concatenates every page
+// into one JSON array), so it's the authoritative PR diff regardless of PR
+// size, sourced from GitHub itself (no local-sync/accuracy concern — unlike
+// diffing local git refs, this can never disagree with what GitHub shows).
+//
+// Each element's own `patch` field is ALREADY a valid unified-diff hunk
+// blob (`@@ ... @@` lines onward) but is missing the `diff --git a/x b/x` +
+// `---`/`+++` header lines `fileFromChunk` (and `PatchDiff`) expect — so
+// each is reassembled into a synthetic `diff --git` chunk here and run
+// through the SAME `fileFromChunk` parser the local-diff/`gh pr diff` paths
+// use, rather than hand-building `GitDiffFile`s from the API's own
+// additions/deletions/status fields. That keeps exactly one code path
+// responsible for turning patch text into `GitDiffFile` (status/additions/
+// deletions/oversized/sig all derived identically), and means a change to
+// that derivation logic doesn't need a second parallel implementation here.
+// ---------------------------------------------------------------------------
+
+const PR_FILES_API_TIMEOUT_MS = 30_000
+// A --paginate'd files listing for a very large PR (96 files on #117) is
+// bigger than the single `gh pr diff` maxBuffer above (each entry repeats
+// blob_url/contents_url/raw_url plus the patch text) — generous headroom.
+const PR_FILES_API_MAX_BUFFER = 32 * 1024 * 1024
+
+/** Raw shape of one element of `gh api repos/:owner/:repo/pulls/<n>/files`
+ *  (GitHub REST "List pull requests files"). `patch` is `undefined` for a
+ *  small number of files GitHub declines to diff individually (observed on
+ *  #117: a few very large generated files) — those are emitted as
+ *  `oversized` `GitDiffFile`s with real additions/deletions but no patch
+ *  text, same as this module's own OVERSIZED_* caps do for an in-band huge
+ *  file. */
+type RawGhPrFile = {
+  filename: string
+  status: string
+  additions: number
+  deletions: number
+  patch?: string
+  previous_filename?: string
+}
+
+/** Map the REST API's own `status` enum (`added|removed|modified|renamed|
+ *  copied|changed|unchanged`) onto this module's `GitDiffFileStatus`. Treats
+ *  `copied`/`changed`/`unchanged` (rare — GitHub emits these for rewrites/
+ *  detected copies) as `modified`, matching how `fileFromChunk` would
+ *  classify an ordinary content change with no add/delete/rename markers. */
+function apiStatusToGitDiffStatus(status: string): GitDiffFileStatus {
+  if (status === 'added') return 'added'
+  if (status === 'removed') return 'deleted'
+  if (status === 'renamed') return 'renamed'
+  return 'modified'
+}
+
+/** Reassemble one REST API file entry into a synthetic `diff --git` chunk
+ *  so it can flow through the SAME `fileFromChunk` parser as every other
+ *  diff source in this module (see the fallback's module doc above). The
+ *  `---`/`+++` lines are the only part `fileFromChunk` actually inspects
+ *  beyond the `diff --git` line itself (for new/deleted-file framing it
+ *  looks at `new file mode`/`deleted file mode`, which the API doesn't give
+ *  us — so those are synthesized too from `status`). */
+function reassembleApiFileChunk(file: RawGhPrFile): string {
+  const path = file.filename
+  const oldPath = file.status === 'renamed' ? (file.previous_filename ?? path) : path
+  const isAdded = file.status === 'added'
+  const isRemoved = file.status === 'removed'
+  const header = [
+    `diff --git a/${oldPath} b/${path}`,
+    ...(isAdded ? ['new file mode 100644'] : []),
+    ...(isRemoved ? ['deleted file mode 100644'] : []),
+    `--- ${isAdded ? '/dev/null' : `a/${oldPath}`}`,
+    `+++ ${isRemoved ? '/dev/null' : `b/${path}`}`
+  ].join('\n')
+  return file.patch ? `${header}\n${file.patch}\n` : `${header}\n`
+}
+
+/** A file entry whose `patch` is absent (GitHub declined to diff it inline
+ *  — large generated files, e.g. lockfiles, on #117) can't be run through
+ *  `fileFromChunk` (there are no hunk lines to classify/count), so it's
+ *  built directly from the API's own additions/deletions/status, flagged
+ *  `oversized` so the renderer shows the same "Large diff hidden — show
+ *  anyway" placeholder it already uses for an in-band huge file — just
+ *  without a patch to reveal even if the user clicks through. */
+function apiFileWithoutPatch(file: RawGhPrFile): GitDiffFile {
+  const path = file.filename
+  const status = apiStatusToGitDiffStatus(file.status)
+  const oldPath =
+    file.status === 'renamed' && file.previous_filename ? file.previous_filename : undefined
+  const sig = cyrb53(`${path} ${status} ${file.additions} ${file.deletions} no-patch`)
+  return {
+    path,
+    status,
+    patch: '',
+    additions: file.additions,
+    deletions: file.deletions,
+    oldPath,
+    binary: false,
+    oversized: true,
+    sig
+  }
+}
+
+/** One REST API file entry -> one `GitDiffFile`, via the reassembled-chunk +
+ *  `fileFromChunk` path when a patch is present, or the direct/oversized
+ *  path when it isn't. */
+function apiFileToGitDiffFile(file: RawGhPrFile): GitDiffFile {
+  if (!file.patch) return apiFileWithoutPatch(file)
+  return fileFromChunk(reassembleApiFileChunk(file))
+}
+
+/** Fallback #1 for `getPrDiff`: the GitHub REST "list PR files" endpoint,
+ *  which — unlike `gh pr diff`'s combined-diff endpoint — has no whole-PR
+ *  size cap. Returns `null` (not `[]`) on any failure so the caller can tell
+ *  "fetched, PR has zero files" (impossible in practice) apart from "this
+ *  path failed, try the next fallback" — never throws. */
+async function fetchPrDiffViaFilesApi(
+  cwd: string,
+  prNumber: number
+): Promise<GitDiffFile[] | null> {
+  try {
+    const stdout = await runGhLocal(
+      cwd,
+      ['api', `repos/:owner/:repo/pulls/${prNumber}/files`, '--paginate'],
+      { timeout: PR_FILES_API_TIMEOUT_MS, maxBuffer: PR_FILES_API_MAX_BUFFER }
+    )
+    const raw = JSON.parse(stdout) as RawGhPrFile[]
+    if (!Array.isArray(raw)) return null
+    return raw.map(apiFileToGitDiffFile)
+  } catch {
+    // gh missing / unauth / network / non-JSON / over maxBuffer — let the
+    // caller fall through to the next (local-diff) fallback.
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fallback #2 (last resort) — sync-gated local `git diff <base>...HEAD`.
+// Only used when BOTH `gh pr diff` and the files-API fallback above fail
+// (gh missing entirely / fully unauthenticated / no network at all). A local
+// diff can only stand in for the PR's actual diff when local HEAD is
+// EXACTLY the PR's head commit (`headRefOid`) — otherwise (unpushed local
+// commits, a force-push/rebase upstream the local branch hasn't seen, etc.)
+// the local tree and the PR's true diff can silently disagree. So this path
+// is sync-gated: it verifies local `HEAD` == `headRefOid` before ever
+// producing output, and returns `null` (not a possibly-wrong diff) when
+// they differ.
+// ---------------------------------------------------------------------------
+
+const LOCAL_FALLBACK_MAX_BUFFER = 32 * 1024 * 1024
+const LOCAL_FALLBACK_TIMEOUT_MS = 10_000
+
+/** Resolve local `HEAD`'s full commit SHA — null on any git failure. */
+async function resolveLocalHeadSha(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'rev-parse', 'HEAD'], { timeout: 2000 })
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** First ref that actually resolves, in preference order: `origin/<base>`
+ *  (the base as GitHub itself would diff against) first, then the bare
+ *  local `<base>` branch if the remote-tracking ref isn't present locally.
+ *  Read-only — `rev-parse --verify` only, no fetch. */
+async function resolveBaseRef(cwd: string, baseRefName: string): Promise<string | null> {
+  for (const candidate of [`origin/${baseRefName}`, baseRefName]) {
+    try {
+      await execFile('git', ['-C', cwd, 'rev-parse', '--verify', candidate], { timeout: 2000 })
+      return candidate
+    } catch {
+      // Doesn't exist locally — try the next candidate.
+    }
+  }
+  return null
+}
+
+/** Sync-gated local fallback: returns the `base...HEAD` diff ONLY when local
+ *  `HEAD` exactly matches the PR's `headRefOid` (guaranteeing the local tree
+ *  IS the PR's commits, not merely "close") AND a usable base ref can be
+ *  resolved locally. Returns `null` — never a possibly-inaccurate diff — the
+ *  moment either check fails, so the caller degrades to the empty state
+ *  instead of silently rendering a diff that could disagree with GitHub's. */
+async function fetchPrDiffViaLocalGit(
+  cwd: string,
+  baseRefName: string,
+  headRefOid: string
+): Promise<GitDiffFile[] | null> {
+  const localHead = await resolveLocalHeadSha(cwd)
+  if (!localHead || localHead !== headRefOid) return null
+
+  const baseRef = await resolveBaseRef(cwd, baseRefName)
+  if (!baseRef) return null
+
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'diff', `${baseRef}...HEAD`], {
+      timeout: LOCAL_FALLBACK_TIMEOUT_MS,
+      maxBuffer: LOCAL_FALLBACK_MAX_BUFFER
+    })
+    return splitPatchByFile(stdout).map(fileFromChunk)
+  } catch {
+    return null
+  }
+}
+
+/** The PR's head commit SHA (`headRefOid`), derived from `getPrDetail`'s
+ *  already-cached `commits[]` (chronological, oldest first — verified
+ *  against `gh pr view --json headRefOid` on #117: `commits.at(-1).oid` is
+ *  exactly `headRefOid`) rather than a separate `gh pr view --json
+ *  headRefOid` call. Null when the detail has no commits (shouldn't happen
+ *  for a real PR, but this whole module is total-never-throws). */
+function headRefOidFromDetail(detail: { commits: { oid: string }[] }): string | null {
+  return detail.commits.at(-1)?.oid ?? null
+}
+
 /**
  * PR diff for the Workbench Git tab's [Working tree | PR diff] toggle
  * (Phase 4-pre): the full `base...head` unified diff for the PR opened
- * against `cwd`'s current branch, via `gh pr diff <number>`. Reuses
- * `getPrDetail` purely to resolve the PR number (it already does cwd ->
- * branch -> PR resolution, cached) rather than re-deriving branch/PR
- * lookup here.
+ * against `cwd`'s current branch. Reuses `getPrDetail` purely to resolve the
+ * PR number/base/head (it already does cwd -> branch -> PR resolution,
+ * cached) rather than re-deriving branch/PR lookup here.
+ *
+ * Three-tier, in order:
+ *  1. `gh pr diff <number>` — fast, exact, GitHub's own combined-diff
+ *     endpoint. Fails outright on a large PR (HTTP 406 "too_large" — capped
+ *     at 20k lines; confirmed on this repo's PR #117, ~21k lines).
+ *  2. GitHub REST "list PR files" API (`gh api .../pulls/<n>/files
+ *     --paginate`) — no whole-PR size cap, still authoritative (sourced
+ *     from GitHub, not local git), reassembled into the same per-file patch
+ *     shape as (1). This is the primary path for a large PR.
+ *  3. Sync-gated local `git diff <base>...HEAD` — last resort, only when
+ *     `gh` itself is unusable (missing/unauth/offline) AND local HEAD is
+ *     byte-identical to the PR's `headRefOid` (never used when the local
+ *     tree could disagree with GitHub's actual diff).
  *
  * Total — never throws: no cwd / no branch / no PR / gh missing / unauth /
- * network / oversized output all resolve to `{ repo: <best-effort>, files:
- * [] }`. This is a safety net, not the primary gate — the renderer only
- * offers PR-diff mode when it already knows (via the existing PR-detection
- * state) that a PR exists, so an empty result here should be rare in
- * practice.
+ * network / all three tiers failing all resolve to `{ repo: <best-effort>,
+ * files: [] }`. The renderer only offers PR-diff mode when it already knows
+ * (via the existing PR-detection state) that a PR exists, so an empty
+ * result here should be rare in practice.
  */
 export async function getPrDiff(cwd: string): Promise<GitDiffResult> {
   if (!cwd) return { repo: false, files: [] }
@@ -485,18 +734,26 @@ export async function getPrDiff(cwd: string): Promise<GitDiffResult> {
   if (!detail) return { repo: true, files: [] }
 
   try {
-    const pathEnv = await resolveGhPathEnv()
-    const { stdout } = await execFile('gh', ['pr', 'diff', String(detail.number)], {
-      cwd,
-      env: { ...process.env, PATH: pathEnv },
+    const stdout = await runGhLocal(cwd, ['pr', 'diff', String(detail.number)], {
       timeout: PR_DIFF_TIMEOUT_MS,
       maxBuffer: PR_DIFF_MAX_BUFFER
     })
     return { repo: true, files: splitPatchByFile(stdout).map(fileFromChunk) }
   } catch {
-    // gh missing / unauth / network / output over maxBuffer — render nothing;
-    // the renderer's toggle only appears when a PR is already known to
-    // exist, so this degrades to an empty PR-diff pane rather than a crash.
-    return { repo: true, files: [] }
+    // `gh pr diff` failed — most commonly HTTP 406 "too_large" on a big PR,
+    // but really any gh-pr-diff failure. Fall through to the files API.
   }
+
+  const viaApi = await fetchPrDiffViaFilesApi(cwd, detail.number)
+  if (viaApi) return { repo: true, files: viaApi }
+
+  const headRefOid = headRefOidFromDetail(detail)
+  if (headRefOid) {
+    const viaLocal = await fetchPrDiffViaLocalGit(cwd, detail.baseRefName, headRefOid)
+    if (viaLocal) return { repo: true, files: viaLocal }
+  }
+
+  // All three tiers failed (gh missing / unauth / network down entirely, or
+  // local git out of sync with the PR's head) — render nothing.
+  return { repo: true, files: [] }
 }
