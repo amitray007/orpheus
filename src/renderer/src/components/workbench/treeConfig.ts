@@ -36,9 +36,11 @@
 //     stamps `data-item-contains-git-change="true"` on any collapsed
 //     directory row whose subtree contains a change — CONFIRMED verbatim in
 //     the built JS. That attribute existing was the only unverified part of
-//     the roadmap's claim; it's real. TREE_DIR_GIT_CHANGE_CSS below is the
-//     THEME half — Pierre computes the flag, we style it (no built-in visual
-//     treatment ships for it out of the box).
+//     the roadmap's claim; it's real. Pierre in fact ALREADY ships a built-in
+//     visual treatment for it (see TREE_DIR_GIT_CHANGE_CSS below) — an
+//     earlier pass here didn't notice that and layered a redundant custom
+//     dot + background tint on top, which caused a real bug (see that
+//     constant's doc comment).
 // ---------------------------------------------------------------------------
 
 import { themeToTreeStyles, type TreeThemeInput, type FileTreeIcons } from '@pierre/trees'
@@ -210,29 +212,55 @@ export const TREE_RENDER_OPTIONS: Pick<FileTreeRenderOptions, 'stickyFolders'> =
 // nothing to wire there. `data-item-contains-git-change="true"` is the real,
 // confirmed attribute a collapsed directory row carries when its subtree has
 // a change (dist/render/rowAttributes.js's `computeFileTreeRowElementAttributes`
-// — grepped directly, not guessed). Pierre ships no default VISUAL treatment
-// for that flag (unlike `data-item-git-status`, which the bundled stylesheet
-// already colors), so this is the `unsafeCSS` escape-hatch rule that gives it
-// one: a small accent dot after the folder name, plus a subtly tinted
-// background so a collapsed folder with edits reads as "has changes inside"
-// without needing to expand it. Folder rows only (`data-item-type="folder"`)
-// — a changed FILE already gets its own `data-item-git-status` letter/dot, so
-// this rule would be redundant (and visually noisy) on file rows.
-export const TREE_DIR_GIT_CHANGE_CSS = `
-  [data-item-type="folder"][data-item-contains-git-change="true"] {
-    background-color: color-mix(in srgb, var(--trees-git-modified-color-override, #e2a93a) 6%, transparent);
-  }
-  [data-item-type="folder"][data-item-contains-git-change="true"]::after {
-    content: '';
-    display: inline-block;
-    width: 5px;
-    height: 5px;
-    margin-left: 6px;
-    border-radius: 999px;
-    background-color: var(--trees-git-modified-color-override, #e2a93a);
-    vertical-align: middle;
-  }
-`
+// — grepped directly, not guessed).
+//
+// CORRECTED (post-middle-ground-pass bug): the original version of this rule
+// added its OWN `background-color` tint on `[data-item-type="folder"]
+// [data-item-contains-git-change="true"]` plus a custom `::after` dot,
+// believing Pierre shipped no visual treatment for the flag at all. That was
+// wrong, and the tint half was actively harmful. Pierre's bundled stylesheet
+// (dist/style.js) already renders `getBuiltInGitStatusDecoration()`
+// (dist/render/FileTreeView.js) for this exact case — a `file-tree-icon-dot`
+// in the row's own `[data-item-section="git"]` lane, pre-wired to
+// `[data-item-contains-git-change="true"] > [data-item-section="git"] {
+// color: var(--trees-git-modified-color); opacity: .5; }`, which already
+// resolves through `--trees-git-modified-color-override` (TREE_HOST_VARS
+// above) — i.e. it already renders in Orpheus's warm accent color with zero
+// extra CSS. That lane is a fixed-width flex sibling of the row's text
+// content, so it can never collide with anything inside the name.
+//
+// The redundant custom `::after` dot this rule ALSO added just doubled up
+// visually (two dots) — cosmetic, but the `background-color` tint on the
+// folder row is what caused a real, confirmed-via-CDP bug: on a FLATTENED
+// breadcrumb row (`flattenEmptyDirectories` collapsing a run of single-child
+// directories into one row, e.g. `.codex / agents`), each path segment is its
+// own `<Truncate>` instance with an internal ellipsis-fade cover element,
+// `[data-truncate-marker]`. That cover's paint color comes from
+// `--truncate-marker-background-color`, which Pierre's base `[data-type=
+// "item"]` rule sets ONCE to `var(--trees-bg)` (dist/style.js) — a static
+// snapshot of the tree's plain background, not a live reference to whatever
+// background-color the row currently has. Every other state that changes the
+// row's actual background (hover, selected, focus) has a matching Pierre rule
+// that ALSO re-derives `--truncate-marker-background-color`/
+// `-background-overlay-color` in the same breath, so the marker stays in
+// sync. This rule's tint did not, and had no way to given it lives in a
+// separate injected stylesheet block appended after Pierre's own rules — so
+// each segment's truncate-marker cover kept painting the stale plain
+// `--trees-bg` dark color while the row itself now had a lighter amber tint
+// behind it, producing a dark rounded-rectangle "box" under/between each
+// truncated breadcrumb segment. Confirmed live via CDP: a flattened,
+// git-changed `.codex / agents` row rendered two distinct dark boxes, one per
+// segment, exactly matching the reported artifact.
+//
+// FIX: delete the custom tint + dot entirely and let Pierre's own built-in
+// decoration carry the feature — it already reads in the right color, has no
+// per-segment collision surface, and needs no upkeep as new row states are
+// added. This constant is kept (rather than deleted + updated both tabs'
+// imports) purely so FilesTab.tsx/GitTab.tsx's existing
+// `${TREE_DIR_GIT_CHANGE_CSS}` interpolation stays a no-op import instead of
+// requiring an edit in either file for what is now an intentionally-empty
+// rule.
+export const TREE_DIR_GIT_CHANGE_CSS = ``
 
 // --- Scroll-flicker fix (post-Batch-1b) --------------------------------------
 // ROOT CAUSE (confirmed via CDP on a live build — MutationObserver +
