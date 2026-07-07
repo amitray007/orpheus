@@ -213,8 +213,12 @@ function SubTabStrip({ active, onChange, hasPr }: SubTabStripProps): React.JSX.E
       aria-pressed={active === value}
       className={[
         'px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-100',
+        // Active segment: a warm accent-tinted fill (was a flat
+        // bg-surface-raised with no accent participation at all) so the
+        // active [Diff|Commits|Details|Checks] segment reads consistently
+        // with the rest of the warmed-up chrome, not as a gray pill.
         active === value
-          ? 'bg-surface-raised text-text-primary'
+          ? 'bg-accent/20 text-text-primary'
           : 'text-text-muted hover:text-text-secondary'
       ].join(' ')}
     >
@@ -1376,7 +1380,15 @@ export function GitTab({
           worktreeBranch={worktreeBranch}
         />
       )}
-      <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
+      {
+        // bg-surface-overlay (one step up from the panel's own surface-raised
+        // background) gives this control row a distinct header BAND instead
+        // of blending flat into the panel — cohesive with PrSlimHeader's own
+        // surface-raised band above it and the diff content below, so the
+        // chrome reads as layered bands rather than one flat gray field
+        // (middle-ground chrome-warmth pass).
+      }
+      <div className="h-8 flex-shrink-0 border-b border-border-default bg-surface-overlay flex items-center px-1 gap-1">
         {showDiffControls && (
           <>
             <button

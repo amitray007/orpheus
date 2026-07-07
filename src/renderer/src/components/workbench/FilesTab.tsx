@@ -1296,7 +1296,11 @@ function ModeToggle({ mode, onChange, dirty, previewEnabled }: ModeToggleProps):
           disabled
             ? 'text-text-muted/40 cursor-not-allowed'
             : active
-              ? 'bg-surface-raised text-text-primary'
+              ? // Warm accent-tinted fill for the active segment — matches
+                // GitTab's SubTabStrip so [Viewer|Editor|Preview] and
+                // [Diff|Commits|Details|Checks] read as the same segmented-
+                // control family instead of one warm, one gray.
+                'bg-accent/20 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'
         ].join(' ')}
       >
@@ -1465,7 +1469,13 @@ export function FilesTab({ workspaceId }: FilesTabProps): React.JSX.Element {
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-      <div className="h-8 flex-shrink-0 border-b border-border-default flex items-center px-1 gap-1">
+      {
+        // bg-surface-overlay gives this toolbar row a distinct header band
+        // over the panel's own surface-raised background — mirrors the same
+        // fix on GitTab's equivalent row so both tabs' chrome reads as one
+        // cohesive layered system (middle-ground chrome-warmth pass).
+      }
+      <div className="h-8 flex-shrink-0 border-b border-border-default bg-surface-overlay flex items-center px-1 gap-1">
         <button
           type="button"
           onClick={toggleTree}

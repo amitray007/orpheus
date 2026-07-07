@@ -46,35 +46,47 @@ import type { FileTreeDensity, FileTreeRenderOptions } from '@pierre/trees'
 
 // Dark theme for the tree's shadow DOM — same minimal ThemeLike shape the
 // smoke test proved (docs/learnings/pierre-libraries.md §5.1). Anchored on
-// Orpheus's dark palette + the #7c8cff accent for links.
+// Orpheus's dark palette + its warm GOLD accent (main.css `--color-accent:
+// #d4a847`, the midnight-theme default) instead of the earlier hardcoded
+// purple (#7c8cff), which clashed with the rest of the app's accent-tinted
+// surface language and was a big reason the tree read gray/dead next to the
+// warm chrome around it.
 //
-// FOCUS-RING REMOVAL: `focusBorder` here does NOT drive the selected/focused
-// row's outline ring by itself — `themeToTreeStyles` doesn't read
-// `focusBorder` directly at all; it goes through `@pierre/theming`'s
-// `normalizeThemeColors`, which folds `focusBorder` into `list.focusOutline`
-// (first non-transparent of the two) and that becomes
-// `--trees-theme-focus-ring`. The tree's own bundled CSS then resolves the
-// ring color through `--trees-focus-ring-color-override` →
-// `--trees-theme-focus-ring` → `--trees-accent` (see
-// node_modules/@pierre/trees/dist/style.js's `[data-item-focused="true"]:before`
-// rule) — so simply setting `focusBorder: 'transparent'` here would only drop
-// out of the chain and fall through to `--trees-accent`, NOT actually zero the
-// ring. The reliable fix is the `-override` CSS vars in TREE_HOST_VARS below
-// (win the chain unconditionally). `focusBorder` is left as-is (harmless —
-// its own link in the chain is now moot since the override wins first) rather
-// than removed, so a future theme swap that drops the override doesn't
-// silently reintroduce a stray ring with no explanation.
+// The tree mounts in a shadow root (see FilesTab/GitTab's `hostStyle`), so it
+// can't read the app's live CSS custom properties (`--color-accent` etc.) —
+// there's no cross-shadow-boundary inheritance for values baked into
+// `themeToTreeStyles`'s output. Instead we resolve the app's gold accent hex
+// literally here (kept in sync by eye with main.css's `[data-theme='midnight']`
+// block — that's the theme the tree host always uses, independent of the
+// user's actual `data-theme`/`data-accent` picks, same as before this pass).
+//
+// `list.activeSelectionBackground`/`hoverBackground` mirror main.css's own
+// `color-mix(in oklch, var(--color-accent) N%, <surface>)` pattern (see the
+// `--color-surface-raised`/`overlay` recipe up top) so a selected/hovered row
+// reads as a warm accent-tinted surface, not a flat gray block. Pre-resolved
+// to LITERAL hex here (not a live `color-mix()` string): @pierre/theming's
+// `normalizeThemeColors` runs `relativeLuminance`/`parseHexRgba` over these
+// values (surface-match + hover-legibility repairs) and only understands hex
+// — a `color-mix()` string would parse as `null` luminance there. Harmless in
+// practice (the repairs just no-op on an unparseable value), but a literal
+// hex keeps this path exercised the same way the library's own contrast
+// checks expect, rather than silently relying on a null-luminance bypass.
 export const TREE_THEME: TreeThemeInput = {
   name: 'orpheus-dark',
   type: 'dark',
   bg: '#15161a',
   fg: '#e6e6ea',
   colors: {
-    'list.activeSelectionBackground': '#2a2c3a',
-    'list.focusBackground': '#2a2c3a',
-    'list.hoverBackground': '#1f2028',
-    focusBorder: '#7c8cff',
-    'textLink.foreground': '#7c8cff'
+    // ~9% gold (#d4a847) mixed into a #1c1c22 raised-surface base — a touch
+    // richer than the app's own 4% surface-raised tint since this is an
+    // ACTIVE selection state, not ambient chrome.
+    'list.activeSelectionBackground': '#2d2925',
+    'list.focusBackground': '#2d2925',
+    // ~5% gold mixed into a #1a1b20 base — lighter/lower-contrast than the
+    // selection so hover reads as a preview, not a second selection.
+    'list.hoverBackground': '#232222',
+    focusBorder: '#d4a847',
+    'textLink.foreground': '#d4a847'
   }
 }
 
@@ -93,12 +105,16 @@ export const TREE_HOST_VARS = {
   // resolves each `--trees-git-<x>-color` through a `-color-override` seam
   // first (var(--trees-git-<x>-color-override, var(--trees-status-…))), so
   // setting the override on this host unconditionally wins the chain and
-  // inherits into the shadow root. GitHub-dark diff palette:
-  '--trees-git-added-color-override': '#3fb950', // green — new/added
-  '--trees-git-modified-color-override': '#d29922', // amber — modified
-  '--trees-git-deleted-color-override': '#f85149', // red — deleted
-  '--trees-git-renamed-color-override': '#58a6ff', // blue — renamed
-  '--trees-git-untracked-color-override': '#6e7681', // muted gray — untracked
+  // inherits into the shadow root. Bumped a step brighter/more-saturated than
+  // GitHub-dark's own diff palette so the +N/-M badges + status letters read
+  // as PRESENT against the tree's dark bg rather than washed out — still the
+  // same green/amber/red/blue semantic family, just pushed toward the vivid
+  // end (middle-ground pass; see module header).
+  '--trees-git-added-color-override': '#4ae168', // green — new/added
+  '--trees-git-modified-color-override': '#e2a93a', // amber — modified
+  '--trees-git-deleted-color-override': '#ff6b6b', // red — deleted
+  '--trees-git-renamed-color-override': '#6db3ff', // blue — renamed
+  '--trees-git-untracked-color-override': '#6e7681', // muted gray — untracked (deliberately unchanged)
   // Ignored drives the DIMMED rows (0.62 opacity via the ignored-dim CSS
   // rule); keep it a low-contrast gray so it stays de-emphasized.
   '--trees-git-ignored-color-override': '#484f58',
@@ -123,30 +139,38 @@ export function treeHostStyle(): Record<string, string> {
 }
 
 // --- Batch 1b: icons + density + sticky folders -----------------------------
+// (Middle-ground visual pass: icons bumped 'standard' -> 'complete', density
+// bumped 'compact' -> 'default' — see below.)
 //
-// Per-filetype icons (roadmap item 1). `set: 'standard'` is the mid-tier
-// built-in icon set (`FileTreeBuiltInIconSet = 'minimal' | 'standard' |
-// 'complete'`, dist/iconConfig.d.ts) — richer than 'minimal' (which only
-// covers file/folder/chevron/dot/lock), without pulling in 'complete's long
-// tail of framework-specific marks we don't need. `colored: true` turns on
-// the built-in set's semantic per-language colors (dist/builtInIcons.d.ts's
-// `isColoredBuiltInIconSet`) instead of flat monochrome glyphs — this is what
-// actually makes .ts/.tsx/.css/.json/.py/.md read as different languages at a
-// glance, not just different generic-file icons.
-export const TREE_ICONS: FileTreeIcons = { set: 'standard', colored: true }
+// Per-filetype icons (roadmap item 1). `set: 'complete'` (one of
+// `FileTreeBuiltInIconSet = 'minimal' | 'standard' | 'complete'`,
+// dist/iconConfig.d.ts) is the fullest built-in icon set — broader filetype +
+// framework-file coverage than 'standard' with fewer dull generic-file
+// fallbacks. Same delivery mechanism as 'standard' (dist/builtInIcons.js's
+// inline `<svg><symbol>` sprite string baked into the published JS — no
+// network fetch, no external asset, CSP-safe; verified no new import paths
+// appear for 'complete' vs 'standard' in the shipped bundle). `colored: true`
+// turns on the built-in set's semantic per-language colors
+// (dist/builtInIcons.d.ts's `isColoredBuiltInIconSet`) instead of flat
+// monochrome glyphs — this is what actually makes .ts/.tsx/.css/.json/.py/.md
+// read as different languages at a glance, not just different generic-file
+// icons.
+export const TREE_ICONS: FileTreeIcons = { set: 'complete', colored: true }
 
-// Density + render tuning (roadmap item 2). 'compact' (one of
-// `FileTreeDensityKeyword`, dist/model/density.d.ts) fits more rows on screen
-// for large repos — Orpheus's sidebar is narrow and vertical space is at a
-// premium. `stickyFolders: true` (FileTreeRenderOptions, publicTypes.d.ts)
-// pins the current parent directory's row while scrolling deep into its
-// children, so users don't lose track of which folder they're inside.
-// itemHeight/overscan are left at their built-in defaults — 'compact'
-// already derives its own itemHeight via FILE_TREE_DENSITY_PRESETS, and the
-// default overscan is generous enough for our tree sizes (no jank observed
-// in manual QA); tuning either further is unnecessary complexity for the
-// win being pursued here.
-export const TREE_DENSITY: FileTreeDensity = 'compact'
+// Density + render tuning (roadmap item 2). 'default' (one of
+// `FileTreeDensityKeyword`, dist/model/density.d.ts — itemHeight 30 vs
+// 'compact's 24) gives rows ~6px more breathing room; user feedback on the
+// prior 'compact' pass was that the tree read too cramped, so this dials back
+// to Pierre's own middle preset rather than 'relaxed' (itemHeight 36, too
+// loose for Orpheus's narrow sidebar). `stickyFolders: true`
+// (FileTreeRenderOptions, publicTypes.d.ts) pins the current parent
+// directory's row while scrolling deep into its children, so users don't
+// lose track of which folder they're inside. itemHeight/overscan are left at
+// their built-in defaults — 'default' already derives its own itemHeight via
+// FILE_TREE_DENSITY_PRESETS, and the default overscan is generous enough for
+// our tree sizes (no jank observed in manual QA); tuning either further is
+// unnecessary complexity for the win being pursued here.
+export const TREE_DENSITY: FileTreeDensity = 'default'
 export const TREE_RENDER_OPTIONS: Pick<FileTreeRenderOptions, 'stickyFolders'> = {
   stickyFolders: true
 }
@@ -168,7 +192,7 @@ export const TREE_RENDER_OPTIONS: Pick<FileTreeRenderOptions, 'stickyFolders'> =
 // this rule would be redundant (and visually noisy) on file rows.
 export const TREE_DIR_GIT_CHANGE_CSS = `
   [data-item-type="folder"][data-item-contains-git-change="true"] {
-    background-color: color-mix(in srgb, var(--trees-git-modified-color-override, #d29922) 6%, transparent);
+    background-color: color-mix(in srgb, var(--trees-git-modified-color-override, #e2a93a) 6%, transparent);
   }
   [data-item-type="folder"][data-item-contains-git-change="true"]::after {
     content: '';
@@ -177,7 +201,7 @@ export const TREE_DIR_GIT_CHANGE_CSS = `
     height: 5px;
     margin-left: 6px;
     border-radius: 999px;
-    background-color: var(--trees-git-modified-color-override, #d29922);
+    background-color: var(--trees-git-modified-color-override, #e2a93a);
     vertical-align: middle;
   }
 `

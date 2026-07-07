@@ -96,9 +96,15 @@ export function WorkbenchTabStrip({
               'flex items-center gap-1 px-2 py-1 rounded text-xs font-medium whitespace-nowrap',
               'transition-colors duration-150 cursor-pointer',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
+              // Active tab: a stronger warm accent fill + a thin accent
+              // border so it visibly pops against the inactive tabs (this
+              // strip has no bottom rule to key an underline off of — it's
+              // an inline row, not a bordered strip — so the "pop" comes
+              // from fill contrast, not a border-tick). Bumped from a flat
+              // bg-accent/15 with no border in the earlier pass.
               isActive
-                ? 'bg-accent/15 text-text-primary'
-                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+                ? 'bg-accent/20 text-text-primary border border-accent/40'
+                : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay border border-transparent'
             ].join(' ')}
           >
             <Icon size={12} className="flex-shrink-0" />
