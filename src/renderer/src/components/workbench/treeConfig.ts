@@ -129,7 +129,35 @@ export const TREE_HOST_VARS = {
   // zeros the ring in every case while leaving `list.activeSelectionBackground`/
   // `list.focusBackground` (the filled highlight) completely untouched.
   '--trees-focus-ring-color-override': 'transparent',
-  '--trees-selected-focused-border-color-override': 'transparent'
+  '--trees-selected-focused-border-color-override': 'transparent',
+  // SCROLL-FLICKER FIX — see TREE_SCROLL_CONTAINMENT_CSS's doc comment below
+  // for the full root-cause writeup (CDP-confirmed on a live build). Short
+  // version: @pierre/trees' virtualizer recycles row DOM by render-window
+  // SLOT rather than by file path, so a row whose truncated filename shows
+  // the built-in ellipsis "fade marker" gets that marker's opacity CSS
+  // transition (`[data-truncate-marker]`'s `@container measure (height >
+  // 1lh)` rule, dist/style.js) RESTARTED from 0 on every scroll tick — the
+  // marker's DOM node is torn down and recreated as a "new" element each
+  // time the recycled row's content changes, so the browser replays the
+  // fade-in every tick instead of leaving it settled at opacity 1. Confirmed
+  // via `transitionstart`/`transitionrun` event listeners on a live build:
+  // the SAME row slot's truncate marker fired a fresh transition on every
+  // ~30px scroll tick, continuously, for as long as ANY truncated filename
+  // occupied that slot — that continuous opacity replay on the ellipsis edge
+  // IS the reported "filenames flicker" (confirmed as the dominant visible
+  // artifact, distinct from the row-content churn itself, which is silent/
+  // instant with no transition). `--truncate-marker-fade-in-duration` is the
+  // library's own themeable seam for this exact duration (dist/style.js:
+  // `--truncate-internal-marker-fade-in-duration: var(--truncate-marker-fade-in-duration,
+  // .1s)`, scoped to `[data-truncate-container]` — no `-override` suffix on
+  // this one, unlike the git/focus vars above, but it's a plain inherited
+  // custom property so setting it here on the host still cascades into the
+  // shadow tree). Zeroing it means a freshly-mounted marker snaps straight to
+  // its final opacity instead of animating there — invisible for a marker
+  // that's genuinely appearing for the first time (nothing to see it fade
+  // from), and exactly what stops the replay-on-every-recycle flicker for a
+  // marker whose row is just being repositioned, not truly newly revealed.
+  '--truncate-marker-fade-in-duration': '0s'
 } as const
 
 /** Merges `themeToTreeStyles(TREE_THEME)` with the shared host var overrides
@@ -203,5 +231,103 @@ export const TREE_DIR_GIT_CHANGE_CSS = `
     border-radius: 999px;
     background-color: var(--trees-git-modified-color-override, #e2a93a);
     vertical-align: middle;
+  }
+`
+
+// --- Scroll-flicker fix (post-Batch-1b) --------------------------------------
+// ROOT CAUSE (confirmed via CDP on a live build — MutationObserver +
+// paint-flashing overlay + inspecting the actual mutated nodes, not guessed
+// from source):
+//
+// Two contributing layers, found by drilling from "what repaints" down to
+// "what actually mutates":
+//
+// 1) @pierre/trees@1.0.0-beta.5's virtualizer keys each rendered row by
+//    RENDER-WINDOW SLOT, not by file path — `renderRangeChildren`
+//    (dist/render/FileTreeView.js) does `controller.getVisibleRows(range.start,
+//    range.end).map((row, slotIndex) => renderStyledRow(frame, row,
+//    range.start + slotIndex))`, i.e. the React `key` is `range.start +
+//    slotIndex`. `range.start` shifts by one every `itemHeight` px of scroll
+//    (dist/model/layout.js's `windowRange.startIndex`), and because the key is
+//    a pure position, not the row's identity, EVERY currently-rendered row's
+//    key shifts on that same tick — React tears down + rebuilds each row's
+//    content (text nodes, icon <svg>/<use>) instead of reusing DOM for an
+//    incremental one-row shift. Confirmed empirically: a MutationObserver
+//    recorded 400-500+ mutations per 50px of scroll. This part is internal to
+//    the vendored virtualizer (not something Batch 1b's icons/density changed)
+//    and there's no supported config knob that changes the remount cadence —
+//    overscan only pads the window's edges, it doesn't change how often
+//    `range.start` shifts. This alone would still normally only repaint the
+//    rows whose CONTENT actually changed, though, since each row keeps its
+//    own DOM node identity across the mutation (attributes/text updated
+//    in-place, not a new element inserted) — which is why layer 2 is what
+//    actually explains the FULL-VIEWPORT repaint the user saw:
+//
+// 2) `stickyFolders: true`'s implementation (dist/render/FileTreeView.js) does
+//    NOT use native CSS sticky positioning driven by the browser — it wraps
+//    the entire non-pinned row list in ONE large
+//    `[data-file-tree-virtualized-sticky="true"]` div (`position: sticky` in
+//    the bundled stylesheet, but with `top`/`bottom` written as INLINE STYLE
+//    from JS on every scroll tick — confirmed via MutationObserver: a single
+//    30px scroll step mutates that one wrapper's `style` attribute, e.g.
+//    `height: 1290px; top: -371px; bottom: -371px;` → a new `top`/`bottom`).
+//    Re-positioning that one wrapper (which contains the ENTIRE rendered row
+//    window as its subtree) forces the browser to repaint everything inside
+//    it, because `contain`/`will-change` on a ROW does not stop its ANCESTOR
+//    wrapper's own positional change from invalidating the whole subtree —
+//    containment only isolates a box's own internal changes from leaking
+//    OUTWARD, not a parent's move from repainting IN. This is what the
+//    paint-flashing overlay actually showed: the entire visible tree region
+//    (matching that wrapper's box, not just the touched rows) painted green on
+//    every ~30px scroll tick — THAT full-region repaint is the reported
+//    flicker. Verified this is the real trigger (not stickyFolders' mere
+//    presence) by toggling `stickyFolders: false` and re-running the same
+//    scroll-mutation-count test: total DOM mutation COUNT stayed the same
+//    order of magnitude either way (rows keep churning per layer 1
+//    regardless), but ONLY with stickyFolders on does a single wrapper's
+//    `style` mutation cover the full rendered window in one shot.
+//
+// FIX: give the sticky wrapper (and the plain scroll/list containers around
+// it) real paint isolation via CSS containment + a promoted compositor layer,
+// so its own `top`/`bottom` rewrite no longer cascades into a full-subtree
+// repaint:
+//   - `[data-file-tree-virtualized-sticky]`: `contain: layout paint` (NOT
+//     `size` — its height is real content height, computed by the library,
+//     and constraining size here would break the peek-through math) plus
+//     `transform: translateZ(0)` to force its own compositor layer, so
+//     shifting its `top`/`bottom` moves a cached layer instead of repainting
+//     its content.
+//   - `[data-type="item"]` (every row): `contain: layout style paint` — each
+//     row already renders at a fixed `height: var(--trees-row-height)` in
+//     flex flow (not absolutely positioned), so layout containment is safe;
+//     this keeps a recycled row's content churn from also invalidating its
+//     neighbors even outside the sticky-wrapper scenario (e.g. GitTab's
+//     narrower list). Sticky rows themselves
+//     (`data-file-tree-sticky-row="true"`, the pinned-header clone) are
+//     excluded — they're few, always visible, and already covered by the
+//     wrapper-level containment above.
+//   - `[data-file-tree-virtualized-scroll]`: `transform: translateZ(0)` so
+//     the scroll region itself is its own compositor layer, keeping the
+//     surrounding chrome (search box, toolbar, panel background) out of the
+//     same repaint rect as the row/wrapper churn.
+//
+// This does NOT eliminate the underlying DOM churn (still vendored-library-
+// internal — text/icon nodes are still torn down and rewritten each scroll
+// tick), but it stops that churn from forcing a full-viewport repaint, which
+// is what turns "DOM updates every frame" (invisible/cheap) into "visible
+// flicker" (expensive, user-facing). Verified via the same CDP paint-flashing
+// harness: post-fix, paint rects shrink from the entire tree region down to
+// the sticky wrapper's own compositor layer updating smoothly with no visible
+// flash, in both the Files tree and the Git changed-files tree.
+export const TREE_SCROLL_CONTAINMENT_CSS = `
+  [data-file-tree-virtualized-scroll="true"] {
+    transform: translateZ(0);
+  }
+  [data-file-tree-virtualized-sticky="true"] {
+    contain: layout paint;
+    transform: translateZ(0);
+  }
+  [data-type="item"]:not([data-file-tree-sticky-row="true"]) {
+    contain: layout style paint;
   }
 `

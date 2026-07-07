@@ -79,7 +79,8 @@ import {
   TREE_ICONS,
   TREE_DENSITY,
   TREE_RENDER_OPTIONS,
-  TREE_DIR_GIT_CHANGE_CSS
+  TREE_DIR_GIT_CHANGE_CSS,
+  TREE_SCROLL_CONTAINMENT_CSS
 } from './treeConfig'
 import { CommitsTab } from './git/CommitsTab'
 import { DetailsTab } from './git/DetailsTab'
@@ -262,12 +263,16 @@ function SubTabStrip({ active, onChange, hasPr }: SubTabStripProps): React.JSX.E
 // relevant here since this IS the changed-files tree: a collapsed folder
 // containing changed files gets a subtle accent dot + tint, computed
 // automatically by @pierre/trees from the same setGitStatus payload this
-// pane already sends.
+// pane already sends. Also appends TREE_SCROLL_CONTAINMENT_CSS (treeConfig.ts)
+// — the scroll-flicker fix; see that constant's doc comment for the
+// CDP-confirmed root cause writeup (shared with FilesTab's tree, same
+// underlying @pierre/trees virtualizer).
 const SEARCH_BOX_VISIBILITY_CSS = `
   [data-file-tree-search-container][data-open="false"] {
     display: none;
   }
   ${TREE_DIR_GIT_CHANGE_CSS}
+  ${TREE_SCROLL_CONTAINMENT_CSS}
 `
 
 interface DiffTreePaneProps {

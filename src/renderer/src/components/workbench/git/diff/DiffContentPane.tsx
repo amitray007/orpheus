@@ -295,13 +295,33 @@ function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT'
  *  tokenize cap. Extracted so DiffContentPane's own body doesn't inline this
  *  into the JSX (cognitive-complexity ceiling).
  *
- *  BUG FIX: the gutter-"+" click is now wired entirely through
+ *  BUG FIX: the gutter-"+" click is wired entirely through
  *  `renderGutterUtility`/`GutterAddCommentButton`'s own onClick (see that
  *  component's doc comment in reviewAnnotations.tsx for the full root-cause
- *  writeup) — `options` no longer sets `enableGutterUtility`/
- *  `onGutterUtilityClick` at all, since those conflict with the
- *  `renderGutterUtility` React prop DiffContentPane also passes and crash
- *  @pierre/diffs' InteractionManager.
+ *  writeup) — `options` does NOT set `onGutterUtilityClick`, since that
+ *  conflicts with the `renderGutterUtility` React prop DiffContentPane also
+ *  passes (`InteractionManager.resolveEnableGutterUtilityOption` throws
+ *  "Cannot use both 'onGutterUtilityClick' and 'renderGutterUtility'" the
+ *  instant BOTH are non-null).
+ *
+ *  REGRESSION FIX (invisible gutter "+", this pass): the prior comment above
+ *  ALSO dropped `enableGutterUtility: true` from `options` in the same edit,
+ *  on the (incorrect) assumption it was part of the same conflict.
+ *  `enableGutterUtility` is actually an independent flag —
+ *  `InteractionManager`'s constructor only calls `ensureGutterUtilityNode()`
+ *  (the code that creates the `[data-gutter-utility-slot]` element Pierre
+ *  positions at the hovered line's gutter) `if (enableGutterUtility)` — a
+ *  plain truthiness check with NO reference to `onGutterUtilityClick` or
+ *  `renderGutterUtility` (confirmed against the installed 1.2.12's
+ *  managers/InteractionManager.js). Without `enableGutterUtility: true`, the
+ *  slot is never created at all regardless of `renderGutterUtility` being
+ *  set — so the "+" render prop below was correctly wired but had nowhere to
+ *  mount, in BOTH working-tree and PR-diff mode, since the crash-fix
+ *  landed. `resolveEnableGutterUtilityOption`'s throw guard only fires when
+ *  `onGutterUtilityClick` is ALSO non-null (verified: `if
+ *  (onGutterUtilityClick != null && renderGutterUtility != null) throw`), so
+ *  restoring `enableGutterUtility: true` alongside `renderGutterUtility`
+ *  (with `onGutterUtilityClick` still omitted) cannot reopen the crash.
  *
  *  PERF FIX (LAG-LAYER #5): deliberately does NOT take `onLineSelected` as a
  *  parameter (it used to) — react-hooks' ref-safety lint rule flags passing
@@ -386,7 +406,14 @@ function buildDiffOptions(
     // cleared (e.g. clicking elsewhere) — nothing to open. `onLineSelected`
     // itself is set by the caller (see this function's own doc comment on
     // why it can't be a parameter here).
-    enableLineSelection: true
+    enableLineSelection: true,
+    // REGRESSION FIX (invisible gutter "+") — see this function's own doc
+    // comment above: required for @pierre/diffs' InteractionManager to ever
+    // create the `[data-gutter-utility-slot]` element `renderGutterUtility`
+    // renders into. Safe alongside `renderGutterUtility` since
+    // `onGutterUtilityClick` (the option that actually conflicts with it) is
+    // never set here.
+    enableGutterUtility: true
   }
 }
 

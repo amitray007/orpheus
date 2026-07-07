@@ -61,7 +61,8 @@ import {
   TREE_ICONS,
   TREE_DENSITY,
   TREE_RENDER_OPTIONS,
-  TREE_DIR_GIT_CHANGE_CSS
+  TREE_DIR_GIT_CHANGE_CSS,
+  TREE_SCROLL_CONTAINMENT_CSS
 } from './treeConfig'
 import { PIERRE_VIEWER_BG } from './editor/chromeTheme'
 import { PreviewPane } from './PreviewPane'
@@ -113,7 +114,9 @@ import { TokenHoverPopover } from './git/TokenHoverPopover'
 // subtree contains a change gets a subtle accent dot + tint, computed
 // automatically by @pierre/trees from the same setGitStatus payload this
 // pane already sends (see treeConfig.ts's doc comment for the verified
-// `data-item-contains-git-change` attribute).
+// `data-item-contains-git-change` attribute). Also appends
+// TREE_SCROLL_CONTAINMENT_CSS (treeConfig.ts) — the scroll-flicker fix; see
+// that constant's doc comment for the CDP-confirmed root cause writeup.
 const TREE_IGNORED_DIM_CSS = `
   [data-item-git-status="ignored"] {
     opacity: 0.62;
@@ -122,6 +125,7 @@ const TREE_IGNORED_DIM_CSS = `
     display: none;
   }
   ${TREE_DIR_GIT_CHANGE_CSS}
+  ${TREE_SCROLL_CONTAINMENT_CSS}
 `
 
 // Pierre's bundled dark/light themes for the <File> viewer (§8) — the same
