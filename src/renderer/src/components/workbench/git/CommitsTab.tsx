@@ -45,6 +45,7 @@ import type React from 'react'
 import { Check, Copy, GitCommit as GitCommitIcon } from '@phosphor-icons/react'
 import type { GhCommit, GhPullRequestDetail, GitCommit } from '@shared/types'
 import { openPrUrl } from '../../../lib/overlayClient'
+import { relativeTimeMs } from './relativeTime'
 
 export interface CommitsTabProps {
   /** The current branch's PR detail, or null when there's no PR for this
@@ -139,22 +140,20 @@ function groupCommitsByDate(commits: readonly CommitRowData[]): CommitDateGroup[
 }
 
 // ---------------------------------------------------------------------------
-// Relative time — no existing shared helper in the renderer (checked); kept
-// tiny and local rather than pulling in a date library for one label.
+// Relative time — Fix #14 (Workbench audit): hoisted to ./relativeTime.ts,
+// shared with ReviewCommentThread.tsx's own formatter. This site's exact
+// prior behavior (floor-based bucketing, "Nmo ago" past 30 days) is
+// preserved via the `round: false` default + this local `monthsAgoTail`.
 // ---------------------------------------------------------------------------
 
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms
-  const s = Math.floor(diff / 1000)
-  if (s < 60) return 'just now'
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d ago`
+function monthsAgoTail(ms: number): string {
+  const d = Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24))
   const mo = Math.floor(d / 30)
   return `${mo}mo ago`
+}
+
+function relativeTime(ms: number): string {
+  return relativeTimeMs(ms, { tail: monthsAgoTail })
 }
 
 // ---------------------------------------------------------------------------

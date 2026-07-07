@@ -10,13 +10,31 @@
 // A tiny subscriber set bridges CM's `update(viewUpdate)` into the React tree
 // so the match count / inputs track the live doc + selection.
 //
+// `update(viewUpdate)` fires on EVERY CodeMirror ViewUpdate — scroll,
+// geometry, focus, viewport recycling — not just doc/selection/query changes.
+// Unconditionally notifying subscribers here means each subscriber's
+// re-render (which re-walks the search cursor up to MATCH_COUNT_CAP matches)
+// runs on every scroll tick too, even though the match count can't have
+// changed. Gate notification to updates that can actually change what the
+// panel renders: the document, the selection (the current-match index is
+// derived from it), or the search query itself (case/regex/whole-word
+// toggles, or the query text) — and skip pure viewport/scroll churn.
+//
 // Kept in its own module (not EditorSearchPanel.tsx) so the component file only
 // exports components — satisfying react-refresh/only-export-components.
 // ---------------------------------------------------------------------------
 
 import { createRoot, type Root } from 'react-dom/client'
-import type { EditorView, Panel } from '@codemirror/view'
+import type { EditorView, Panel, ViewUpdate } from '@codemirror/view'
+import { getSearchQuery } from '@codemirror/search'
 import { EditorSearchPanel } from './EditorSearchPanel'
+
+/** True when this update could change anything the search panel renders
+ *  (match count, current-match index, or the query fields themselves). */
+function isRelevantUpdate(update: ViewUpdate): boolean {
+  if (update.docChanged || update.selectionSet) return true
+  return !getSearchQuery(update.startState).eq(getSearchQuery(update.state))
+}
 
 /** Pass to `search({ createPanel })`. Returns a top-pinned Panel hosting a
  *  React root. */
@@ -41,7 +59,8 @@ export function makeSearchPanel(view: EditorView): Panel {
       root = createRoot(dom)
       root.render(<EditorSearchPanel view={view} subscribe={subscribe} />)
     },
-    update() {
+    update(update: ViewUpdate) {
+      if (!isRelevantUpdate(update)) return
       for (const cb of subscribers) cb()
     },
     destroy() {

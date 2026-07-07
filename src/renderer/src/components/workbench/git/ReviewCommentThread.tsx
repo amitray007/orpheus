@@ -20,9 +20,11 @@
 // ./avatarColor.ts (hoisted — the whole point of `avatarColorFor` is that
 // the SAME login maps to the SAME color everywhere, so keeping two
 // independently-editable copies risked them drifting apart). The relative-
-// date formatter below stays local/duplicated on purpose: DetailsTab's
-// `formatDate` is an absolute-date formatter serving a different visual
-// need (see this file's own `formatRelative` doc comment).
+// date formatter below is now similarly hoisted to ./relativeTime.ts (Fix
+// #14, Workbench audit), shared with CommitsTab.tsx's own relative-time
+// label — DetailsTab's `formatDate` remains separate, since it's an
+// absolute-date formatter serving a different visual need (see this file's
+// own `formatRelative` doc comment).
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
@@ -31,6 +33,7 @@ import type { GhReviewCommentThread, LocalReviewComment } from '@shared/types'
 import { renderToSafeHtml } from '../previewRender'
 import { CommentComposer, type CommentDraft, type GhSubmitResult } from './CommentComposer'
 import { initialsOf, avatarColorFor } from './avatarColor'
+import { relativeTimeIso } from './relativeTime'
 import './ReviewCommentThread.css'
 
 export interface ReviewCommentThreadProps {
@@ -48,22 +51,21 @@ export interface ReviewCommentThreadProps {
 
 /** ISO timestamp -> relative-ish short label. Inline review threads are
  *  usually recent/actionable (unlike DetailsTab's PR-spanning timeline), so a
- *  compact "3d ago" reads better here than DetailsTab's absolute date — kept
- *  as its own small formatter rather than reusing DetailsTab's absolute
- *  `formatDate` for that reason. */
+ *  compact "3d ago" reads better here than DetailsTab's absolute date. Fix
+ *  #14 (Workbench audit): now backed by the shared ./relativeTime.ts helper
+ *  (round-based bucketing + an absolute-date tail past 30 days) rather than
+ *  its own copy — behavior is unchanged, only the implementation moved. */
 function formatRelative(iso: string): string {
-  const d = new Date(iso)
-  const ms = d.getTime()
-  if (Number.isNaN(ms)) return ''
-  const diffSec = Math.max(0, Math.round((Date.now() - ms) / 1000))
-  if (diffSec < 60) return 'just now'
-  const diffMin = Math.round(diffSec / 60)
-  if (diffMin < 60) return `${diffMin}m ago`
-  const diffHr = Math.round(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h ago`
-  const diffDay = Math.round(diffHr / 24)
-  if (diffDay < 30) return `${diffDay}d ago`
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  return relativeTimeIso(iso, {
+    round: true,
+    clampFuture: true,
+    tail: (ms) =>
+      new Date(ms).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      })
+  })
 }
 
 function ThreadAvatar({ login }: { login: string }): React.JSX.Element {

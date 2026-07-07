@@ -7,20 +7,22 @@
 // A small SlidersHorizontal icon button sitting beside the hamburger tree
 // toggle in FilesTab's header. Clicking opens a compact popover (reusing the
 // NewWorkspaceMenu/DropdownChip anchoring recipe: captured anchor rect + a
-// portaled interactive Overlay that owns outside-click/Escape dismiss) with a
-// quiet "View" group header over toggle rows — "Show hidden files", "Dim
-// gitignored", "Wrap lines" — plus a "Tree" group with "Sort order" (a
-// compact segmented [Default | Name] control) and "Flatten empty dirs" (a
-// toggle). All five settings are persisted per-workspace in filesTabStore's
-// `TreeOptionsState` (see filesTabStore.ts's DEFAULT_FILES_TAB_ENTRY + the
-// per-key store `equals`) — see §11.
+// portaled interactive Overlay that owns outside-click/Escape dismiss, now
+// hoisted to ./useAnchoredPopover.ts — Fix #16, Workbench audit — and shared
+// with GitDiffOptionsPopover.tsx) with a quiet "View" group header over
+// toggle rows — "Show hidden files", "Dim gitignored", "Wrap lines" — plus a
+// "Tree" group with "Sort order" (a compact segmented [Default | Name]
+// control) and "Flatten empty dirs" (a toggle). All five settings are
+// persisted per-workspace in filesTabStore's `TreeOptionsState` (see
+// filesTabStore.ts's DEFAULT_FILES_TAB_ENTRY + the per-key store `equals`)
+// — see §11.
 // ---------------------------------------------------------------------------
 
-import { useRef, useState } from 'react'
 import type React from 'react'
 import { SlidersHorizontal } from '@phosphor-icons/react'
 import { Overlay } from '../ui/Overlay'
 import { Toggle } from '../dashboard/settings/primitives'
+import { useAnchoredPopover } from './useAnchoredPopover'
 
 /** Sort applied to the tree's visible rows. `'default'` is Pierre's built-in
  *  dirs-first/alpha ordering (@pierre/trees' own `sort: 'default'`); `'name'`
@@ -64,10 +66,6 @@ interface TreeOptionsPopoverProps {
   options: TreeOptionsState
   onChange: (next: TreeOptionsState) => void
 }
-
-// Anchor position captured on click so the overlay can position via `fixed`
-// without reading a ref during render (mirrors NewWorkspaceMenu).
-type AnchorPos = { top: number; left: number }
 
 /** A single compact toggle row: label left, Toggle right (popover density —
  *  no per-row border/description, just `py-1.5`, matching §11). */
@@ -134,20 +132,7 @@ export function TreeOptionsPopover({
   options,
   onChange
 }: TreeOptionsPopoverProps): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [anchorPos, setAnchorPos] = useState<AnchorPos | null>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-
-  function handleTriggerClick(e: React.MouseEvent): void {
-    e.stopPropagation()
-    if (open) {
-      setOpen(false)
-      return
-    }
-    const rect = buttonRef.current?.getBoundingClientRect()
-    if (rect) setAnchorPos({ top: rect.bottom + 4, left: rect.left })
-    setOpen(true)
-  }
+  const { open, setOpen, anchorPos, buttonRef, handleTriggerClick } = useAnchoredPopover()
 
   return (
     <>

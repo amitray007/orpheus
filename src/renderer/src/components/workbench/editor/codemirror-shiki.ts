@@ -28,10 +28,14 @@
 // ------------
 // Shiki is a whole-document, grammar-based highlighter — it has no incremental
 // tokenizer. Running it over an entire large file on every keystroke would be
-// far too slow. Instead we tokenize only the lines CodeMirror is actually
-// showing (`view.visibleRanges`), which keeps highlight cost bounded by the
-// viewport, not the file. A `ViewPlugin` recomputes decorations whenever the
-// doc changes, the viewport moves, or the highlighter finishes loading. Each
+// far too slow. Instead we tokenize only what CodeMirror is actually showing
+// (`view.visibleRanges`), which keeps highlight cost bounded by the viewport,
+// not the file. Each visible range is tokenized as ONE joined block (not
+// line-by-line) so Shiki's grammar state carries correctly across lines
+// within that range — block comments, template literals, and JSX/HTML spans
+// stay coloured consistently instead of resetting every line (see
+// `highlightBlock`). A `ViewPlugin` recomputes decorations whenever the doc
+// changes, the viewport moves, or the highlighter finishes loading. Each
 // Shiki token becomes a `Decoration.mark` carrying an inline colour (+ bold/
 // italic/underline) sourced from the same `pierre-dark` theme Pierre's <File>
 // renders with, so editor tokens match the viewer exactly.
@@ -108,60 +112,83 @@ function markFor(style: string): Decoration {
 }
 
 /**
- * Tokenize a single visible line via Shiki and append its token decorations to
- * `builder`, offset to the line's absolute document position `lineStart`.
- * Ranges must be added to a `RangeSetBuilder` in ascending order, and Shiki
- * returns tokens left-to-right, so per-line appends stay ordered.
+ * Tokenize one visible BLOCK (the joined text of a contiguous run of visible
+ * lines) via a single Shiki call and append its token decorations to
+ * `builder`, mapped back to absolute document positions via `blockStart`.
+ *
+ * TextMate/Shiki grammars are STATEFUL across lines — block comments,
+ * template literals, JSX/HTML spans, and triple-quoted strings all depend on
+ * which construct is open when a line starts. Tokenizing each visible line in
+ * isolation (one `codeToTokensBase` call per line) restarts the grammar from
+ * its root state on every line, so any of those multi-line constructs get
+ * mis-coloured from line 2 onward. Calling `codeToTokensBase` ONCE on the
+ * whole joined block preserves that cross-line state for everything the
+ * block covers, at the cost of remaining imperfect for constructs that started
+ * ABOVE the visible viewport (acceptable — full-document tokenization would
+ * defeat the point of viewport-scoped highlighting).
+ *
+ * `codeToTokensBase` returns one token array per input line, but critically
+ * each token's `offset` is relative to the WHOLE input string passed in (i.e.
+ * block-relative), not reset per line — so tokens from every line of the
+ * block can be mapped with the same `blockStart + token.offset` formula.
+ * Ranges must be added to a `RangeSetBuilder` in ascending order; Shiki
+ * returns lines top-to-bottom and tokens left-to-right within a line, so
+ * flattening in order preserves that.
  */
-function highlightLine(
+function highlightBlock(
   builder: RangeSetBuilder<Decoration>,
   highlighter: ShikiTokenizer,
-  text: string,
-  lineStart: number,
+  block: string,
+  blockStart: number,
   theme: string,
   lang: string
 ): void {
-  if (text.length === 0) return
+  if (block.length === 0) return
   let lines: ThemedToken[][]
   try {
-    lines = highlighter.codeToTokensBase(text, { lang, theme, includeExplanation: false })
+    lines = highlighter.codeToTokensBase(block, { lang, theme, includeExplanation: false })
   } catch {
-    return // grammar hiccup on a partial line — leave it uncoloured, never throw.
+    return // grammar hiccup on the block — leave it uncoloured, never throw.
   }
-  const tokens = lines[0]
-  if (!tokens) return
-  for (const token of tokens) {
-    const from = lineStart + token.offset
-    const to = from + token.content.length
-    if (to <= from) continue
-    const style = tokenStyle(token)
-    if (style) builder.add(from, to, markFor(style))
+  for (const lineTokens of lines) {
+    for (const token of lineTokens) {
+      const from = blockStart + token.offset
+      const to = from + token.content.length
+      if (to <= from) continue
+      const style = tokenStyle(token)
+      if (style) builder.add(from, to, markFor(style))
+    }
   }
 }
 
 /**
- * Compute the decoration set for the editor's current viewport. Only lines that
- * intersect `view.visibleRanges` are tokenized, so highlight cost tracks the
- * viewport, not the document size.
+ * Compute the decoration set for the editor's current viewport. Each entry in
+ * `view.visibleRanges` is tokenized as ONE joined block (not per line), so
+ * Shiki's grammar state carries across the lines within that visible range —
+ * see `highlightBlock`. Highlight cost still tracks the viewport, not the
+ * document size: one `codeToTokensBase` call per visible range instead of one
+ * per visible line.
  */
 function buildDecorations(view: EditorView, config: ShikiHighlightConfig): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>()
   const { highlighter, theme, lang } = config
   if (lang === 'text' || lang === 'plaintext') return builder.finish()
   // Guard: if the requested lang/theme isn't actually loaded, tokenizing would
-  // throw per-line; bail to plain text instead.
+  // throw; bail to plain text instead.
   if (!highlighter.getLoadedThemes().includes(theme)) return builder.finish()
   const langLoaded = lang === 'ansi' || highlighter.getLoadedLanguages().includes(lang)
   if (!langLoaded) return builder.finish()
 
   const doc = view.state.doc
   for (const { from, to } of view.visibleRanges) {
-    let pos = from
-    while (pos <= to) {
-      const line = doc.lineAt(pos)
-      highlightLine(builder, highlighter, line.text, line.from, theme, lang)
-      pos = line.to + 1
-    }
+    // Extend to full line boundaries so the joined block contains whole lines
+    // (matching how `codeToTokensBase` splits its input on `\n`), then join
+    // with `doc.sliceString` so `blockStart` (the first line's `.from`) plus
+    // Shiki's block-relative `token.offset` lands on the right document pos.
+    const startLine = doc.lineAt(from)
+    const endLine = doc.lineAt(to)
+    const block = doc.sliceString(startLine.from, endLine.to)
+    highlightBlock(builder, highlighter, block, startLine.from, theme, lang)
   }
   return builder.finish()
 }

@@ -183,11 +183,18 @@ export function CommentComposer({
     setError(null)
     onSubmit({ ...draft, body: trimmed })
       .then((result) => {
-        // On success, the caller (GitTab/ReviewCommentThread/DetailsTab)
-        // closes this composer / triggers a refetch — this component just
-        // stops showing its own in-flight state. On failure, surface the
-        // error and leave `body` untouched so the click can be retried.
-        if (!result.ok) {
+        // On success, the caller (GitTab/ReviewCommentThread) typically
+        // unmounts this composer / triggers a refetch — but DetailsTab's
+        // GeneralCommentComposer is PERSISTENT (always rendered at the
+        // bottom of the timeline, never unmounted on success), so this
+        // component must clear its own in-flight state and posted text
+        // itself rather than assuming the caller will do it via unmount.
+        // For the unmount-on-success callers this state update simply
+        // targets an unmounting instance, which is harmless in React 19.
+        if (result.ok) {
+          setSubmitting(false)
+          setBody('')
+        } else {
           setSubmitting(false)
           setError(result.error)
         }

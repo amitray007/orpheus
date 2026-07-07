@@ -389,11 +389,36 @@ async function refreshGitForDir(dir: string): Promise<void> {
   if (!entry) return
   if (entry.clients.size === 0) return
 
-  // Re-run git status for each client workspace; detect branch changes and
-  // refresh PRs if the branch flipped. Each client is independent (keyed by
-  // its own workspaceId/webContents), so fan these out in parallel instead
-  // of serializing one git subprocess round-trip per client.
-  // also addresses PERF-5
+  // PERF FIX #11: `git status` is a property of the watched DIRECTORY, not of
+  // any individual client — every client sharing this `entry` watches the
+  // same `dir`, so their status is always identical. The previous
+  // implementation called `getGitStatus(cwd)` once PER CLIENT, all in
+  // parallel, on every watcher tick — N clients sharing one directory (e.g.
+  // two workspaces open on the same repo/worktree) meant N identical `git
+  // rev-parse`/`git diff --shortstat`/`git status --porcelain` subprocess
+  // trios firing simultaneously for a single real change. Hoisting the call
+  // to run ONCE per tick (keyed on `dir`, the same resolved path
+  // `gitWatchers` itself is keyed on) and fanning the one result out below
+  // collapses that to exactly one subprocess trio per tick regardless of
+  // client count. `getGitStatus` already swallows its own internal failures
+  // and resolves to `null` rather than throwing — the try/catch here is kept
+  // purely as an extra safety net so a future change to that contract can't
+  // reintroduce an unhandled rejection into this watcher tick.
+  let status: GitStatus | null = null
+  try {
+    status = await getGitStatus(dir)
+  } catch {
+    // git may be unavailable or the directory may have been removed — skip
+  }
+
+  // Per-client fan-out of the single shared status: each client still does
+  // its OWN signature-skip check (a client only gets a push when the status
+  // actually changed since the last push made TO THAT CLIENT — a newly
+  // mounted client's lastStatusSig may differ from an existing client's even
+  // though the underlying repo status is identical) and its OWN branch-based
+  // PR resolution (`client.cwd` is used for `getPrForBranch` — PR resolution
+  // stays per-client since it composes with that client's own cwd/branch
+  // bookkeeping, not the shared directory-level status).
   //
   // LOOP-BREAKER (see docs/learnings — Workbench Git tab flicker): `git
   // status`/`git diff` opportunistically refresh + rewrite `.git/index`'s
@@ -408,47 +433,36 @@ async function refreshGitForDir(dir: string): Promise<void> {
   // the source — a real change still pushes (and its downstream watcher
   // re-tick, if any, is itself a no-op next time and stops there).
   const clientList = Array.from(entry.clients.entries())
-  await Promise.all(
-    clientList.map(async ([workspaceId, client]) => {
-      const { cwd, webContents, lastBranch } = client
-      if (webContents.isDestroyed()) return
+  const sig = status !== null ? statusSignature(status) : null
+  for (const [workspaceId, client] of clientList) {
+    const { cwd, webContents, lastBranch } = client
+    if (webContents.isDestroyed()) continue
 
-      let status: GitStatus | null = null
-      try {
-        status = await getGitStatus(cwd)
-      } catch {
-        // git may be unavailable or cwd may have been deleted — skip
-      }
+    if (status !== null && sig !== null && sig !== client.lastStatusSig) {
+      client.lastStatusSig = sig
+      webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+    }
 
-      if (!webContents.isDestroyed() && status !== null) {
-        const sig = statusSignature(status)
-        if (sig !== client.lastStatusSig) {
-          client.lastStatusSig = sig
-          webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
-        }
+    // If branch changed, also refresh the PR
+    const newBranch = status?.branch ?? null
+    if (newBranch !== lastBranch) {
+      client.lastBranch = newBranch
+      if (newBranch) {
+        getPrForBranch(cwd, newBranch)
+          .then((pr) => {
+            if (!webContents.isDestroyed()) {
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+            }
+          })
+          .catch(() => {
+            /* gh unavailable — ignore */
+          })
+      } else if (!webContents.isDestroyed()) {
+        // Detached HEAD or no branch — clear the PR chip
+        webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
       }
-
-      // If branch changed, also refresh the PR
-      const newBranch = status?.branch ?? null
-      if (newBranch !== lastBranch) {
-        client.lastBranch = newBranch
-        if (newBranch) {
-          getPrForBranch(cwd, newBranch)
-            .then((pr) => {
-              if (!webContents.isDestroyed()) {
-                webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
-              }
-            })
-            .catch(() => {
-              /* gh unavailable — ignore */
-            })
-        } else if (!webContents.isDestroyed()) {
-          // Detached HEAD or no branch — clear the PR chip
-          webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
-        }
-      }
-    })
-  )
+    }
+  }
 }
 
 function scheduleRefresh(dir: string): void {

@@ -21,6 +21,15 @@ import type {
 
 const execFile = promisify(childProcess.execFile)
 
+// Fallback timeout/maxBuffer for `runGh` (see below) when a call site omits
+// `opts` entirely. Matches the smallest/most-conservative limits any current
+// call site uses (the `gh pr list` list-view fetch) — every call site today
+// passes its own explicit `opts`, so these defaults are not actually
+// exercised by existing behavior; they exist only so `runGh` has a safe
+// fallback if a future caller forgets to pass one.
+const DEFAULT_GH_TIMEOUT_MS = 4000
+const DEFAULT_GH_MAX_BUFFER = 1024 * 1024
+
 // Every cache in this module lives in the long-lived main process for the
 // life of the app. TTL alone only governs FRESHNESS on read — it never frees
 // memory, since an expired entry just sits there until something happens to
@@ -111,12 +120,43 @@ async function resolveGhPathEnv(): Promise<string> {
   return shellPath || process.env['PATH'] || ''
 }
 
-async function fetchPrFromGh(cwd: string, branch: string): Promise<GhPullRequest | null> {
+/**
+ * DEDUP FIX (7-site `gh` call scaffold): every `gh` invocation in this module
+ * resolved `resolveGhPathEnv()` and hand-built the same `execFile('gh', args,
+ * { cwd, env: { ...process.env, PATH: pathEnv }, timeout, maxBuffer })` shape
+ * — copy-pasted at 7 call sites (list/detail/review-comments fetch, the
+ * write-context resolver, and the three write ops). `runGh` centralizes the
+ * PATH resolution + execFile boilerplate; every caller still supplies its OWN
+ * `timeout`/`maxBuffer` via `opts` — those limits are NOT unified into one
+ * shared default because the sites use genuinely distinct values (a 1MB/4s
+ * list-view fetch vs a 4-16MB/10-15s detail/comments/PR-diff fetch); a shared
+ * default that silently truncated a large `gh` response would be a correctness
+ * regression, not a cleanup. `opts` is optional only so a caller with no
+ * strong opinion can omit it — every current call site passes both explicitly.
+ * Returns raw stdout, matching every call site's existing `{ stdout }`
+ * destructure; error handling / `extractGhErrorMessage` stays at each call
+ * site since the write sites need the full failed-execFile error object (for
+ * `err.stdout`), not just a thrown Error.
+ */
+async function runGh(
+  cwd: string,
+  args: readonly string[],
+  opts?: { timeout?: number; maxBuffer?: number }
+): Promise<string> {
   const pathEnv = await resolveGhPathEnv()
+  const { stdout } = await execFile('gh', args as string[], {
+    cwd,
+    env: { ...process.env, PATH: pathEnv },
+    timeout: opts?.timeout ?? DEFAULT_GH_TIMEOUT_MS,
+    maxBuffer: opts?.maxBuffer ?? DEFAULT_GH_MAX_BUFFER
+  })
+  return stdout
+}
 
+async function fetchPrFromGh(cwd: string, branch: string): Promise<GhPullRequest | null> {
   try {
-    const { stdout } = await execFile(
-      'gh',
+    const stdout = await runGh(
+      cwd,
       [
         'pr',
         'list',
@@ -129,12 +169,7 @@ async function fetchPrFromGh(cwd: string, branch: string): Promise<GhPullRequest
         '--json',
         'number,state,isDraft,title,url,author,reviewDecision,statusCheckRollup'
       ],
-      {
-        cwd,
-        env: { ...process.env, PATH: pathEnv },
-        timeout: 4000,
-        maxBuffer: 1024 * 1024
-      }
+      { timeout: 4000, maxBuffer: 1024 * 1024 }
     )
     const arr = JSON.parse(stdout) as Array<{
       number: number
@@ -412,19 +447,11 @@ async function fetchPrDetailFromGh(
   cwd: string,
   prNumber: number
 ): Promise<GhPullRequestDetail | null> {
-  const pathEnv = await resolveGhPathEnv()
-
   try {
-    const { stdout } = await execFile(
-      'gh',
-      ['pr', 'view', String(prNumber), '--json', DETAIL_FIELDS],
-      {
-        cwd,
-        env: { ...process.env, PATH: pathEnv },
-        timeout: DETAIL_TIMEOUT_MS,
-        maxBuffer: DETAIL_MAX_BUFFER
-      }
-    )
+    const stdout = await runGh(cwd, ['pr', 'view', String(prNumber), '--json', DETAIL_FIELDS], {
+      timeout: DETAIL_TIMEOUT_MS,
+      maxBuffer: DETAIL_MAX_BUFFER
+    })
     const raw = JSON.parse(stdout) as RawGhPrDetail
     return parsePrDetail(raw)
   } catch {
@@ -727,10 +754,9 @@ async function fetchReviewCommentsFromGh(
   cwd: string,
   prNumber: number
 ): Promise<GhReviewCommentThread[] | null> {
-  const pathEnv = await resolveGhPathEnv()
   try {
-    const { stdout } = await execFile(
-      'gh',
+    const stdout = await runGh(
+      cwd,
       [
         'api',
         `repos/{owner}/{repo}/pulls/${prNumber}/comments`,
@@ -743,12 +769,7 @@ async function fetchReviewCommentsFromGh(
         // into per-page chunks.
         '--slurp'
       ],
-      {
-        cwd,
-        env: { ...process.env, PATH: pathEnv },
-        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
-        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
-      }
+      { timeout: REVIEW_COMMENTS_TIMEOUT_MS, maxBuffer: REVIEW_COMMENTS_MAX_BUFFER }
     )
     const pages = JSON.parse(stdout) as RawGhReviewComment[][]
     const raw = pages.flat()
@@ -900,13 +921,11 @@ async function resolvePrWriteContext(
   if (!branch) return null
   const pr = await getPrForBranch(cwd, branch)
   if (!pr) return null
-  const pathEnv = await resolveGhPathEnv()
   try {
-    const { stdout } = await execFile(
-      'gh',
-      ['pr', 'view', String(pr.number), '--json', 'headRefOid'],
-      { cwd, env: { ...process.env, PATH: pathEnv }, timeout: 8000, maxBuffer: 64 * 1024 }
-    )
+    const stdout = await runGh(cwd, ['pr', 'view', String(pr.number), '--json', 'headRefOid'], {
+      timeout: 8000,
+      maxBuffer: 64 * 1024
+    })
     const parsed = JSON.parse(stdout) as { headRefOid?: string }
     if (!parsed.headRefOid) return null
     return { prNumber: pr.number, headOid: parsed.headRefOid }
@@ -949,10 +968,9 @@ export async function postReviewComment(
   if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
   const commitId = args.commitId && args.commitId.length > 0 ? args.commitId : ctx.headOid
 
-  const pathEnv = await resolveGhPathEnv()
   try {
-    const { stdout } = await execFile(
-      'gh',
+    const stdout = await runGh(
+      cwd,
       [
         'api',
         `repos/{owner}/{repo}/pulls/${ctx.prNumber}/comments`,
@@ -967,12 +985,7 @@ export async function postReviewComment(
         '-f',
         `side=${side}`
       ],
-      {
-        cwd,
-        env: { ...process.env, PATH: pathEnv },
-        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
-        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
-      }
+      { timeout: REVIEW_COMMENTS_TIMEOUT_MS, maxBuffer: REVIEW_COMMENTS_MAX_BUFFER }
     )
     const raw = JSON.parse(stdout) as RawGhReviewComment
     reviewCommentsCache.delete(reviewCommentsCacheKey(cwd, ctx.prNumber))
@@ -1005,22 +1018,16 @@ export async function replyToReviewComment(
   const ctx = await resolvePrWriteContext(cwd)
   if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
 
-  const pathEnv = await resolveGhPathEnv()
   try {
-    const { stdout } = await execFile(
-      'gh',
+    const stdout = await runGh(
+      cwd,
       [
         'api',
         `repos/{owner}/{repo}/pulls/${ctx.prNumber}/comments/${commentId}/replies`,
         '-f',
         `body=${body}`
       ],
-      {
-        cwd,
-        env: { ...process.env, PATH: pathEnv },
-        timeout: REVIEW_COMMENTS_TIMEOUT_MS,
-        maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
-      }
+      { timeout: REVIEW_COMMENTS_TIMEOUT_MS, maxBuffer: REVIEW_COMMENTS_MAX_BUFFER }
     )
     const raw = JSON.parse(stdout) as RawGhReviewComment
     reviewCommentsCache.delete(reviewCommentsCacheKey(cwd, ctx.prNumber))
@@ -1052,11 +1059,8 @@ export async function postGeneralComment(
   const ctx = await resolvePrWriteContext(cwd)
   if (!ctx) return { ok: false, error: 'No pull request found for this branch' }
 
-  const pathEnv = await resolveGhPathEnv()
   try {
-    await execFile('gh', ['pr', 'comment', String(ctx.prNumber), '--body', body], {
-      cwd,
-      env: { ...process.env, PATH: pathEnv },
+    await runGh(cwd, ['pr', 'comment', String(ctx.prNumber), '--body', body], {
       timeout: REVIEW_COMMENTS_TIMEOUT_MS,
       maxBuffer: REVIEW_COMMENTS_MAX_BUFFER
     })

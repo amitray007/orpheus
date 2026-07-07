@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/workbench/GitDiffOptionsPopover.tsx
 //
-// The ⚙ diff-options popover for the Workbench Git tab (Fix 2) — mirrors
-// TreeOptionsPopover.tsx's anchoring/overlay recipe exactly (captured anchor
-// rect + a portaled interactive Overlay owning outside-click/Escape dismiss).
+// The ⚙ diff-options popover for the Workbench Git tab (Fix 2) — shares
+// TreeOptionsPopover.tsx's anchoring/overlay recipe (captured anchor rect + a
+// portaled interactive Overlay owning outside-click/Escape dismiss) via the
+// hoisted ./useAnchoredPopover.ts hook (Fix #16, Workbench audit) rather than
+// each file keeping its own copy of that state/handler.
 // Two toggles today:
 //   - "Wrap lines" — drives @pierre/diffs' <PatchDiff> `overflow: 'wrap' |
 //     'scroll'` option (same knob FilesTab's viewer already exposes for its
@@ -24,11 +26,11 @@
 // Flatten which are genuinely secondary.
 // ---------------------------------------------------------------------------
 
-import { useRef, useState } from 'react'
 import type React from 'react'
 import { SlidersHorizontal } from '@phosphor-icons/react'
 import { Overlay } from '../ui/Overlay'
 import { Toggle } from '../dashboard/settings/primitives'
+import { useAnchoredPopover } from './useAnchoredPopover'
 
 export interface GitDiffOptionsState {
   /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`
@@ -44,10 +46,6 @@ interface GitDiffOptionsPopoverProps {
   options: GitDiffOptionsState
   onChange: (next: GitDiffOptionsState) => void
 }
-
-// Anchor position captured on click so the overlay can position via `fixed`
-// without reading a ref during render (mirrors TreeOptionsPopover/NewWorkspaceMenu).
-type AnchorPos = { top: number; left: number }
 
 function PopoverRow({
   label,
@@ -70,20 +68,7 @@ export function GitDiffOptionsPopover({
   options,
   onChange
 }: GitDiffOptionsPopoverProps): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [anchorPos, setAnchorPos] = useState<AnchorPos | null>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-
-  function handleTriggerClick(e: React.MouseEvent): void {
-    e.stopPropagation()
-    if (open) {
-      setOpen(false)
-      return
-    }
-    const rect = buttonRef.current?.getBoundingClientRect()
-    if (rect) setAnchorPos({ top: rect.bottom + 4, left: rect.left })
-    setOpen(true)
-  }
+  const { open, setOpen, anchorPos, buttonRef, handleTriggerClick } = useAnchoredPopover()
 
   return (
     <>

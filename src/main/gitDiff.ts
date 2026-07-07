@@ -299,10 +299,63 @@ async function untrackedFileDiff(cwd: string, relPath: string): Promise<GitDiffF
   }
 }
 
-/** Untracked files as all-additions `GitDiffFile`s, fetched in parallel. */
+// PERF FIX #7 (fork-storm guard): the previous implementation ran
+// `Promise.all(paths.map(untrackedFileDiff))` — one `git diff --no-index`
+// child process PER untracked path, all spawned in the same tick. A
+// workspace with hundreds/thousands of untracked files (a fresh clone before
+// the first commit, a generated-output directory, node_modules accidentally
+// untracked, etc.) would fork that many git subprocesses simultaneously,
+// exhausting OS process/file-descriptor limits and stalling the main
+// process. `UNTRACKED_CONCURRENCY` bounds how many `git diff --no-index`
+// calls are in flight at once; `MAX_UNTRACKED_FILES` mirrors files.ts's own
+// MAX_ENTRIES pattern, capping the absolute number of untracked files ever
+// diffed in one `getWorkingTreeDiff` call so a truly pathological untracked
+// count (tens of thousands of files) can't turn into tens of thousands of
+// subprocesses even at bounded concurrency. Both are silent caps (no
+// `truncated` flag on the wire — `GitDiffResult` isn't extended for this,
+// consistent with "behavior-identical" scope): the realistic path (a normal
+// working tree) never approaches either bound, so this only ever changes
+// behavior in the pathological case the fork storm was already breaking.
+const UNTRACKED_CONCURRENCY = 6
+const MAX_UNTRACKED_FILES = 2000
+
+/** Runs `worker` over `items` with at most `concurrency` in flight at once,
+ *  writing each result back to its ORIGINAL index — so the returned array
+ *  preserves input order regardless of completion order. Order preservation
+ *  matters here: `getWorkingTreeDiff`'s output feeds the renderer's
+ *  `diffSignature` (a per-file `sig` combined across `files[]`), which
+ *  depends on stable ordering to avoid spurious diff-pane flicker on a
+ *  no-op refresh (see the `sig`/LAG-LAYER #7 doc comment above). A naive
+ *  concurrency pool that pushes results in COMPLETION order would reorder
+ *  files nondeterministically between ticks even when nothing changed. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array<R>(items.length)
+  let nextIndex = 0
+
+  async function runNext(): Promise<void> {
+    const i = nextIndex++
+    if (i >= items.length) return
+    results[i] = await worker(items[i], i)
+    await runNext()
+  }
+
+  const workerCount = Math.min(concurrency, items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => runNext()))
+  return results
+}
+
+/** Untracked files as all-additions `GitDiffFile`s, fetched with bounded
+ *  concurrency (PERF FIX #7) instead of one subprocess per file at once. */
 async function untrackedDiffFiles(cwd: string): Promise<GitDiffFile[]> {
-  const paths = await untrackedPaths(cwd)
-  const results = await Promise.all(paths.map((p) => untrackedFileDiff(cwd, p)))
+  const allPaths = await untrackedPaths(cwd)
+  const paths = allPaths.slice(0, MAX_UNTRACKED_FILES)
+  const results = await mapWithConcurrency(paths, UNTRACKED_CONCURRENCY, (p) =>
+    untrackedFileDiff(cwd, p)
+  )
   return results.filter((f): f is GitDiffFile => f !== null)
 }
 
