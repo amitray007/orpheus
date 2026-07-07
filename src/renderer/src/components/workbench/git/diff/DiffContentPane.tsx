@@ -19,10 +19,14 @@
 // read-only merge-conflict viewer branch (<UnresolvedFile>).
 // ReviewComposerWiring — the subset of useReviewComposers' result this pane
 // needs, plus the submit callback.
+// DiffPaneErrorBoundary — crash fix (React #185 "Show anyway" investigation):
+// a diff-pane-local error boundary so a future @pierre/diffs render throw
+// degrades to an inline message instead of tearing down the whole workspace
+// view via the app-level boundary.
 // DiffContentPane (memoized) — the exported pane itself.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo, Component } from 'react'
 import type React from 'react'
 import { PatchDiff, UnresolvedFile, Virtualizer } from '@pierre/diffs/react'
 import { MERGE_CONFLICT_START_MARKER_REGEX } from '@pierre/diffs'
@@ -136,6 +140,51 @@ function OversizedDiffPlaceholder({
         Show anyway
       </button>
     </div>
+  )
+}
+
+/** CRASH FIX (React #185 / "Maximum update depth exceeded" — the "Show
+ *  anyway" crash): a very large PR falls back to GitHub's REST "list PR
+ *  files" API (gitDiff.ts's `getPrDiff` tier 2), and that API declines to
+ *  return `patch` text at all for a handful of files per PR (large generated
+ *  files — observed on this repo's own PR #117: gitDiff.ts itself, plus
+ *  several `src/shared/*` files touched only cosmetically). `apiFileWithoutPatch`
+ *  (gitDiff.ts) marks those `oversized: true` with real additions/deletions
+ *  but `patch: ''` — a genuinely empty string, not a small-but-real patch.
+ *
+ *  Before this fix, "Show anyway" on such a file unconditionally rendered
+ *  `<PatchDiff patch={''}>`. @pierre/diffs' `getSingularPatch` (called from
+ *  `PatchDiff`'s own `usePatch` -> `useMemo`) parses the patch and THROWS
+ *  ("FileDiff: Provided patch must contain exactly 1 file diff") the instant
+ *  it doesn't resolve to exactly one file's hunks — verified live via CDP:
+ *  clicking "Show anyway" on `gitDiff.ts` (PR #117, patch: '') threw exactly
+ *  that error out of a `useMemo` during render, with no error boundary
+ *  local to the diff pane to catch it — it propagated to the app-level
+ *  boundary, tearing down the whole workspace view (`terminal.hide`), which
+ *  is what surfaces to the user/diagnostics as React error #185 (React's
+ *  render-phase throw recovery repeatedly re-invoking the failing render
+ *  before the boundary gives up).
+ *
+ *  Fix: detect a patch with no real diff content (empty/whitespace-only, or
+ *  missing every marker @pierre/diffs' own parser requires to recognize a
+ *  file — a `diff --git`/`Index:`/`---`+`+++` header pair) BEFORE ever
+ *  constructing <PatchDiff>, and render a plain "not available" message
+ *  instead. This is checked both in the oversized-placeholder branch (so
+ *  "Show anyway" for a patch-less oversized file shows the graceful message
+ *  rather than a button that crashes when clicked) and, as defense in depth,
+ *  on the normal (non-oversized) render path — a non-oversized file should
+ *  never have an empty patch in practice (fileFromChunk always derives
+ *  `patch` from a real chunk), but guarding both call sites means a future
+ *  diff-source change can't reopen this exact crash by constructing a
+ *  `GitDiffFile` with a blank patch outside the oversized path. */
+function hasRenderablePatch(patch: string): boolean {
+  const trimmed = patch.trim()
+  if (trimmed.length === 0) return false
+  return (
+    trimmed.includes('diff --git ') ||
+    trimmed.startsWith('Index: ') ||
+    (trimmed.includes('\n--- ') && trimmed.includes('\n+++ ')) ||
+    (trimmed.startsWith('--- ') && trimmed.includes('\n+++ '))
   )
 }
 
@@ -689,6 +738,18 @@ function DiffContentPaneImpl({
     }
     return <DiffMessage text="Binary file — no preview" />
   }
+  // CRASH FIX (React #185 "Show anyway" crash — see hasRenderablePatch's own
+  // doc comment): a patch-less oversized file (GitHub's files-API fallback
+  // declined to diff it — gitDiff.ts's apiFileWithoutPatch) has nothing for
+  // "Show anyway" to reveal, and feeding its empty `patch` into <PatchDiff>
+  // is exactly what threw during render and crashed the workspace view. This
+  // check runs BEFORE the `shownAnyway` gate below so it takes precedence
+  // even if the path was already force-shown in a PRIOR selection (can't
+  // happen today since `oversized` without a patch is a stable server-derived
+  // property, but keeps this branch authoritative regardless of that state).
+  if (file.oversized && !hasRenderablePatch(file.patch)) {
+    return <DiffMessage text="Diff not available for this file — view it on GitHub" />
+  }
   if (file.oversized && !shownAnyway.has(file.path)) {
     return (
       <OversizedDiffPlaceholder
@@ -702,6 +763,15 @@ function DiffContentPaneImpl({
         }
       />
     )
+  }
+  // Defense in depth (same crash fix): a non-oversized file should never
+  // reach here with a non-renderable patch (fileFromChunk always derives
+  // `patch` from a real matched chunk) — but guarding the <PatchDiff> mount
+  // itself means a future diff-source change can't reopen the exact same
+  // render-phase throw by constructing a `GitDiffFile` with a blank/degenerate
+  // patch outside the oversized path above.
+  if (!hasRenderablePatch(file.patch)) {
+    return <DiffMessage text="Diff not available for this file" />
   }
   return (
     // PERF FIX (token-hover lift): this pane no longer renders its own
@@ -787,4 +857,60 @@ const EMPTY_COMPOSERS: readonly PendingComposer[] = []
  *  entirely when every prop is referentially unchanged, which is now the
  *  common case since the props this pane receives are themselves stabilized
  *  in GitTab/GitTabBody. */
-export const DiffContentPane = memo(DiffContentPaneImpl)
+const MemoizedDiffContentPane = memo(DiffContentPaneImpl)
+
+interface DiffPaneErrorBoundaryState {
+  error: string | null
+}
+
+/** CRASH FIX (React #185 "Show anyway" crash) — defense in depth alongside
+ *  `hasRenderablePatch`'s render-time guard above. That guard fixes the
+ *  KNOWN cause (an empty/degenerate `file.patch` reaching <PatchDiff>), but
+ *  @pierre/diffs is a third-party rendering engine this codebase doesn't
+ *  control end to end — a different malformed-patch shape (or a future
+ *  Pierre version) could throw from the same `usePatch`/`getSingularPatch`
+ *  path in a way `hasRenderablePatch`'s heuristic doesn't anticipate. Before
+ *  this fix there was only ONE error boundary in the whole app
+ *  (`AppErrorBoundary`, main.tsx), so any throw here tore down the ENTIRE
+ *  workspace view (confirmed live via CDP: the diagnostics' `terminal.hide`
+ *  immediately following the React error). Scoping a boundary to just this
+ *  pane means a future Pierre throw degrades to an inline message in the
+ *  diff pane only — the file tree, terminal, and rest of the workspace stay
+ *  alive. Keyed on `file?.path` by the caller (see `DiffContentPane` below)
+ *  so switching to a different file after a crash doesn't stay stuck on the
+ *  error card — a fresh path remounts a fresh (non-errored) boundary. */
+class DiffPaneErrorBoundary extends Component<
+  { children: React.ReactNode },
+  DiffPaneErrorBoundaryState
+> {
+  state: DiffPaneErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: unknown): DiffPaneErrorBoundaryState {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.error('[DiffContentPane] render error (caught locally):', error)
+  }
+
+  render(): React.ReactNode {
+    if (this.state.error) {
+      return <DiffMessage text="Couldn't render this diff — try selecting the file again" />
+    }
+    return this.props.children
+  }
+}
+
+/** Exported wrapper — same props/identity contract as before (still a plain
+ *  component GitTab/GitTabBody renders unchanged), now with the local error
+ *  boundary in between. `key={file?.path ?? null}` on the boundary resets
+ *  its caught-error state whenever the selected file changes, so a crash on
+ *  one file doesn't leave every subsequent selection stuck on the fallback
+ *  card. */
+export function DiffContentPane(props: DiffContentPaneProps): React.JSX.Element {
+  return (
+    <DiffPaneErrorBoundary key={props.file?.path ?? null}>
+      <MemoizedDiffContentPane {...props} />
+    </DiffPaneErrorBoundary>
+  )
+}
