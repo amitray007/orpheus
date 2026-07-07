@@ -149,12 +149,11 @@
   padding: 0;
   border: none;
   border-radius: 4px;
-  /* Always visible at rest: a clearly-readable accent-coloured "+" glyph on a
-     transparent background (not the near-invisible muted grey it was). Hover/
-     focus upgrades it to the filled accent pill below — matching the reference:
-     a plain accent "+" per line, a filled pill on the hovered line. */
-  background: transparent;
-  color: var(--color-accent);
+  /* Always the filled accent PILL (box + "+" inside), visible at rest — not just
+     on hover. Per the reference: a solid accent-background "+" button on the
+     line's gutter at all times. Hover just deepens to the hover accent. */
+  background: var(--color-accent);
+  color: var(--color-accent-on);
   cursor: pointer;
   line-height: 0;
   transition:
@@ -163,7 +162,7 @@
 }
 .gcc-gutter-add:hover,
 .gcc-gutter-add:focus-visible {
-  background: var(--color-accent);
+  background: var(--color-accent-hover);
   color: var(--color-accent-on);
   outline: none;
 }
