@@ -89,6 +89,7 @@ import type {
   WriteFileResult,
   FilesMutationResult,
   GitDiffResult,
+  GitDiffUnchangedResult,
   GhPullRequestDetail,
   GhReviewCommentThread,
   GhReviewComment,
@@ -375,7 +376,13 @@ export interface InvokeChannelMap {
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.
-  'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult }
+  // PERF FIX (main-side diff no-op detection) — `res` is a UNION with
+  // GitDiffUnchangedResult: main may return the additive `{ unchanged: true }`
+  // sentinel instead of `files[]` when this exact workspace's diff hasn't
+  // changed since the last `git:diff` call (see GitDiffUnchangedResult's own
+  // doc comment). `git:prDiff` below is intentionally NOT part of this union —
+  // it keeps the plain `GitDiffResult` shape unchanged.
+  'git:diff': { req: [{ workspaceId: string }]; res: GitDiffResult | GitDiffUnchangedResult }
   // Workbench Git tab — Phase 4-pre PR-diff mode (the [Working tree | PR
   // diff] toggle). Resolves `workspaceId` -> cwd -> current branch's PR ->
   // `gh pr diff <n>`, parsed with the SAME splitPatchByFile/fileFromChunk

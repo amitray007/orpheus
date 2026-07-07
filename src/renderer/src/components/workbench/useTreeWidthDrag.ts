@@ -45,8 +45,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { WORKBENCH_TREE_WIDTH_MIN, WORKBENCH_TREE_WIDTH_MAX } from '@shared/uiStateDefaults'
 
-export { WORKBENCH_TREE_WIDTH_MIN, WORKBENCH_TREE_WIDTH_MAX }
-
 /** CSS custom property the drag writes to imperatively — see the module
  *  header's PERF FIX note. Consumers set `width: var(--tree-width)` (or
  *  reference this constant) on the SAME element `treeWidthVarRef` attaches

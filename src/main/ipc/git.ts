@@ -60,9 +60,15 @@ export function registerGitIpc(deps: GitIpcDeps): void {
     return result
   })
 
+  // PERF FIX (main-side diff no-op detection) — workspaceId is threaded
+  // through as the cache key for getWorkingTreeDiff's own last-signature
+  // cache (see gitDiff.ts's own doc comment): a match returns the additive
+  // `{ unchanged: true }` sentinel instead of re-serializing `files[]`. A
+  // workspace switch always misses (different key), so the first fetch after
+  // a switch is guaranteed to return the full result, never a stale sentinel.
   handle('git:diff', (_e, { workspaceId }) => {
     const cwd = getWorkspaceCwd(workspaceId)
-    return cwd ? getWorkingTreeDiff(cwd) : Promise.resolve({ repo: false, files: [] })
+    return cwd ? getWorkingTreeDiff(cwd, workspaceId) : Promise.resolve({ repo: false, files: [] })
   })
 
   // Workbench Git tab, Phase 4-pre — the [Working tree | PR diff] toggle's

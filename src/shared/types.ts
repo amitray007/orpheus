@@ -1561,6 +1561,30 @@ export type GitDiffResult = {
 }
 
 /**
+ * PERF FIX (main-side diff no-op detection) — an ADDITIVE sentinel returned
+ * by `git:diff` ONLY (never `git:prDiff` — see src/main/ipc/git.ts's handler)
+ * when the freshly-computed working-tree diff is byte-for-byte identical to
+ * the last one emitted for the SAME workspaceId (src/main/gitDiff.ts caches
+ * the last-emitted signature per workspaceId). Lets main skip re-serializing/
+ * structured-cloning the full `files[]` (multi-MB patch text on a large diff)
+ * across IPC on a live-refresh settle that changed nothing, instead of only
+ * skipping the renderer's OWN setState (the pre-existing diffSignature guard
+ * in GitTab.tsx, kept as the renderer-side backstop).
+ *
+ * This is a UNION on `git:diff`'s return type, not a change to `GitDiffResult`
+ * itself — `git:prDiff` and every other consumer of `GitDiffResult` are
+ * unaffected. The renderer MUST check `unchanged` before touching `.files`
+ * (see GitTab.tsx's `isUnchangedDiffResult`, used by `fetchDiff`) — the cache
+ * is keyed by workspaceId, so a workspace switch is always a cache MISS and
+ * never returns this sentinel for the first fetch after a switch (see
+ * gitDiff.ts's `getWorkingTreeDiff`'s own doc comment on the cache key).
+ */
+export type GitDiffUnchangedResult = {
+  repo: true
+  unchanged: true
+}
+
+/**
  * Text contents of a single file for the viewer.
  *
  * `binary` is true when null bytes were detected — `contents` is then empty

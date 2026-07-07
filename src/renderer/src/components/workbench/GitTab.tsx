@@ -311,6 +311,8 @@ import type {
   GhPullRequestState,
   GhReviewCommentThread,
   GitDiffFile,
+  GitDiffResult,
+  GitDiffUnchangedResult,
   GitStatusEntry,
   LocalReviewComment
 } from '@shared/types'
@@ -336,6 +338,7 @@ import {
 } from './git/CommentComposer'
 import { useReviewComposers, type PendingComposer } from './git/useReviewComposers'
 import { useTokenHoverPopover } from './git/useTokenHoverPopover'
+import type { UseTokenHoverPopoverResult } from './git/useTokenHoverPopover'
 import { TokenHoverPopover } from './git/TokenHoverPopover'
 import { preloadDiffHighlighter } from './diffHighlighterPreload'
 import {
@@ -385,14 +388,17 @@ const DIFF_TOKENIZE_MAX_LENGTH = 750_000
 // doesn't reintroduce the flicker loop that fix addressed.
 const REFRESH_DEBOUNCE_MS = 130
 
-export type DiffStyle = 'unified' | 'split'
+// Not exported — GitTab is the module's only external-facing symbol (see
+// WorkbenchPanel.tsx's sole import below); every type here is internal-only
+// (knip-flagged dead export surface otherwise).
+type DiffStyle = 'unified' | 'split'
 
 /** Phase 4-pre — the Diff sub-tab's data-source mode: the uncommitted
  *  working-tree diff (default, unchanged from Phase 1) vs the full PR diff
  *  (base...head, via `gh pr diff`). See the module header's Phase 4-pre note. */
-export type DiffMode = 'working' | 'pr'
+type DiffMode = 'working' | 'pr'
 
-export interface GitTabProps {
+interface GitTabProps {
   /** The owning claude workspace's id — resolves to the workspace cwd in the
    *  main process (see src/main/gitDiff.ts via src/main/ipc/git.ts). */
   workspaceId: string
@@ -443,7 +449,7 @@ function selectOnlyPath(model: SingleSelectableTreeModel, path: string): void {
  *  or a LOCAL (Orpheus-owned) review comment (4d — see reviewStore.ts's own
  *  header for the 3-source model this completes). `renderReviewCommentAnnotation`
  *  below routes on `kind`. */
-export type ReviewAnnotationMeta =
+type ReviewAnnotationMeta =
   | { kind: 'thread'; thread: GhReviewCommentThread }
   | { kind: 'pending'; composer: PendingComposer }
   | { kind: 'local'; comment: LocalReviewComment }
@@ -1345,6 +1351,15 @@ interface DiffContentPaneProps {
    *  overwhelmingly common case (no live conflict), so this branch is
    *  dormant by construction until a real conflict exists. */
   conflictedPaths: ReadonlySet<string>
+  /** PERF FIX (token-hover lift) — `useTokenHoverPopover` now lives in the
+   *  PARENT (GitTabBody), not in this memoized pane, so a hovered token's
+   *  setState re-renders only the tiny sibling <TokenHoverPopover>, not this
+   *  pane's whole <PatchDiff> subtree. Both are the hook's own stable
+   *  (empty-deps useCallback) identities — see useTokenHoverPopover.ts's own
+   *  doc comment — so threading them down here doesn't destabilize the
+   *  `options` useMemo below or defeat this component's React.memo. */
+  onTokenEnter: UseTokenHoverPopoverResult['onTokenEnter']
+  onTokenLeave: UseTokenHoverPopoverResult['onTokenLeave']
 }
 
 /** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
@@ -1861,7 +1876,9 @@ function DiffContentPaneImpl({
   localComments,
   localWiring,
   allowGithubComments,
-  conflictedPaths
+  conflictedPaths,
+  onTokenEnter,
+  onTokenLeave
 }: DiffContentPaneProps): React.JSX.Element {
   // Crash fix #1 — per-file "show anyway" override for an oversized diff.
   // Lives here (not keyed to a single file, since DiffContentPane itself
@@ -1900,12 +1917,14 @@ function DiffContentPaneImpl({
     currentComposers.open(currentPath, side, line, startLine)
   }, [])
 
-  // Pierre adoption Batch 3 — token hover popover, wired unconditionally
-  // (not gated on hasComposers, unlike select-to-comment below): it's a
-  // passive, read-only affordance orthogonal to composers/annotations. See
-  // TokenHoverPopover.tsx's own header for the controller's ref-stability
-  // rationale (onTokenEnter/onTokenLeave are stable, empty-deps callbacks).
-  const tokenHover = useTokenHoverPopover()
+  // Pierre adoption Batch 3 — token hover popover. PERF FIX (token-hover
+  // lift): the controller hook itself now lives one level UP in GitTabBody
+  // (not here) so a hovered token's setState no longer re-renders this whole
+  // pane's <PatchDiff> subtree — only `onTokenEnter`/`onTokenLeave` (both
+  // stable, empty-deps callbacks per useTokenHoverPopover.ts's own doc
+  // comment) flow down as props, wired unconditionally (not gated on
+  // hasComposers, unlike select-to-comment below): it's a passive, read-only
+  // affordance orthogonal to composers/annotations.
 
   // Phase 4a/4b/4d/5: only computed while EITHER reviewThreads is non-null
   // (PR-diff mode with a loaded/attempted GitHub comment fetch) OR
@@ -1943,18 +1962,11 @@ function DiffContentPaneImpl({
     const base = buildDiffOptions(diffStyle, wrapLines, hasComposers)
     const withTokenHover = {
       ...base,
-      onTokenEnter: tokenHover.onTokenEnter,
-      onTokenLeave: tokenHover.onTokenLeave
+      onTokenEnter,
+      onTokenLeave
     }
     return hasComposers ? { ...withTokenHover, onLineSelected } : withTokenHover
-  }, [
-    diffStyle,
-    wrapLines,
-    hasComposers,
-    onLineSelected,
-    tokenHover.onTokenEnter,
-    tokenHover.onTokenLeave
-  ])
+  }, [diffStyle, wrapLines, hasComposers, onLineSelected, onTokenEnter, onTokenLeave])
 
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -1988,73 +2000,74 @@ function DiffContentPaneImpl({
     )
   }
   return (
-    <>
-      {/* Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
-          the scroll root itself (it renders the fixed-height `overflow`
-          container + an inner content div and calls `.setup(root)` on mount, see
-          node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
-          PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
-          (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
-          useVirtualizer() internally and, when non-null, instantiates
-          VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
-          needed, no `metrics` required (VirtualizedFileDiff's constructor
-          defaults it — see computeVirtualFileMetrics.js). This replaces the
-          previous plain `overflow-auto` div, which is exactly the scroll root
-          <Virtualizer> now owns.
-
-          Annotation/gutter compatibility (verified against the installed
-          1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
-          only overrides layout/visibility bookkeeping — `renderAnnotation`/
-          `renderGutterUtility`/`lineAnnotations` are rendered by the same
-          shared `renderDiffChildren` template (light-DOM children projected
-          into Pierre's shadow-DOM slots) regardless of virtualization, and
-          `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
-          to line numbers independent of which lines are currently windowed —
-          scrolling a commented line back into view re-materializes its row
-          (and slot) exactly like any other line. Token hover (Pierre adoption
-          batch 3) needs no virtualization-aware code of its own: Pierre's
-          InteractionManager operates on the currently-mounted DOM regardless
-          of windowing, same as the gutter utility above. */}
-      <Virtualizer
-        className="flex-1 min-h-0 overflow-auto"
-        style={{ backgroundColor: PIERRE_VIEWER_BG }}
-      >
-        <PatchDiff
-          key={file.path}
-          patch={file.patch}
-          options={options}
-          lineAnnotations={lineAnnotations}
-          renderAnnotation={(annotation) =>
-            renderReviewCommentAnnotation(
-              annotation,
-              workspaceId,
-              onRefetchThreads,
-              composers?.close,
-              composers?.onSubmit,
-              localWiring ?? undefined,
-              allowGithubComments
-            )
-          }
-          renderGutterUtility={
-            composers !== null
-              ? (getHoveredLine) => (
-                  <GutterAddCommentButton
-                    getHoveredLine={getHoveredLine}
-                    onAdd={(lineNumber, side) =>
-                      composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
-                    }
-                  />
-                )
-              : undefined
-          }
-        />
-      </Virtualizer>
-      <TokenHoverPopover
-        state={tokenHover.state}
-        onMouseEnter={tokenHover.cancelHide}
-        onMouseLeave={tokenHover.scheduleHide}
+    // PERF FIX (token-hover lift): this pane no longer renders its own
+    // <TokenHoverPopover> — the parent (GitTabBody) owns the hook + popover
+    // now so a hovered token's setState doesn't re-render this subtree (see
+    // DiffContentPaneProps' onTokenEnter/onTokenLeave doc comment). This
+    // used to be a <> Fragment wrapping <Virtualizer> + <TokenHoverPopover>;
+    // with the popover gone, <Virtualizer> is the sole root element and the
+    // Fragment is gone too.
+    //
+    // Line-level virtualization (Pierre adoption batch 2a) — <Virtualizer> is
+    // the scroll root itself (it renders the fixed-height `overflow`
+    // container + an inner content div and calls `.setup(root)` on mount, see
+    // node_modules/@pierre/diffs/dist/components/Virtualizer.js). Its mere
+    // PRESENCE as a React context ancestor is the entire switch: <PatchDiff>
+    // (→ useFileDiffInstance, dist/react/utils/useFileDiffInstance.js) calls
+    // useVirtualizer() internally and, when non-null, instantiates
+    // VirtualizedFileDiff instead of FileDiff — same <PatchDiff> JSX, no prop
+    // needed, no `metrics` required (VirtualizedFileDiff's constructor
+    // defaults it — see computeVirtualFileMetrics.js). This replaces the
+    // previous plain `overflow-auto` div, which is exactly the scroll root
+    // <Virtualizer> now owns.
+    //
+    // Annotation/gutter compatibility (verified against the installed
+    // 1.2.12 dist, not assumed): VirtualizedFileDiff EXTENDS FileDiff and
+    // only overrides layout/visibility bookkeeping — `renderAnnotation`/
+    // `renderGutterUtility`/`lineAnnotations` are rendered by the same
+    // shared `renderDiffChildren` template (light-DOM children projected
+    // into Pierre's shadow-DOM slots) regardless of virtualization, and
+    // `setLineAnnotations`/`syncLineAnnotations` keep annotation state keyed
+    // to line numbers independent of which lines are currently windowed —
+    // scrolling a commented line back into view re-materializes its row
+    // (and slot) exactly like any other line. Token hover (Pierre adoption
+    // batch 3) needs no virtualization-aware code of its own: Pierre's
+    // InteractionManager operates on the currently-mounted DOM regardless
+    // of windowing, same as the gutter utility above.
+    <Virtualizer
+      className="flex-1 min-h-0 overflow-auto"
+      style={{ backgroundColor: PIERRE_VIEWER_BG }}
+    >
+      <PatchDiff
+        key={file.path}
+        patch={file.patch}
+        options={options}
+        lineAnnotations={lineAnnotations}
+        renderAnnotation={(annotation) =>
+          renderReviewCommentAnnotation(
+            annotation,
+            workspaceId,
+            onRefetchThreads,
+            composers?.close,
+            composers?.onSubmit,
+            localWiring ?? undefined,
+            allowGithubComments
+          )
+        }
+        renderGutterUtility={
+          composers !== null
+            ? (getHoveredLine) => (
+                <GutterAddCommentButton
+                  getHoveredLine={getHoveredLine}
+                  onAdd={(lineNumber, side) =>
+                    composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
+                  }
+                />
+              )
+            : undefined
+        }
       />
-    </>
+    </Virtualizer>
   )
 }
 
@@ -2131,15 +2144,40 @@ function diffSignature(result: DiffSettleResult): string {
   return result.files.map((f) => f.sig).join('\x01')
 }
 
+/** The union `window.api.git.diff` actually resolves with (see
+ *  GitDiffUnchangedResult's own doc comment) — named locally so
+ *  `isUnchangedDiffResult`'s signature reads plainly. */
+type GitDiffOrUnchanged = GitDiffResult | GitDiffUnchangedResult
+
+/** True iff `git:diff` returned the additive main-side no-op sentinel (see
+ *  GitDiffUnchangedResult's own doc comment) instead of a real
+ *  `GitDiffResult`. Narrows the union `fetchDiff` receives from
+ *  `window.api.git.diff` before it can safely read `.files`. */
+function isUnchangedDiffResult(result: GitDiffOrUnchanged): result is GitDiffUnchangedResult {
+  return 'unchanged' in result && result.unchanged === true
+}
+
 /** Fetch the working-tree diff for `workspaceId`. Extracted so the debounced
  *  refetch effect below and the initial-load effect share one code path,
- *  keeping GitTab's own body under the cognitive-complexity ceiling. */
+ *  keeping GitTab's own body under the cognitive-complexity ceiling.
+ *
+ *  PERF FIX (main-side diff no-op detection) — `git:diff` may resolve with
+ *  the `{ unchanged: true }` sentinel (see GitDiffUnchangedResult's own doc
+ *  comment) when main's own last-signature cache for this workspaceId
+ *  matched: that means NOTHING changed since the last settle already applied
+ *  by `applyDiff`'s own diffSignature idempotency, so `onSettled` is simply
+ *  never called — same observable effect as calling it with an
+ *  identical-signature result (a no-op), just without the wasted
+ *  files[]-shaped allocation/compare. The renderer's own diffSignature guard
+ *  in `applyDiff` stays as the backstop for every OTHER path into this
+ *  callback (fetchPrDiff, which is untouched by this fix). */
 function fetchDiff(workspaceId: string, onSettled: (result: DiffSettleResult) => void): () => void {
   let cancelled = false
   window.api.git
     .diff(workspaceId)
     .then((result) => {
-      if (!cancelled) onSettled({ repo: result.repo, files: result.files })
+      if (cancelled || isUnchangedDiffResult(result)) return
+      onSettled({ repo: result.repo, files: result.files })
     })
     .catch((e) => {
       console.error('[GitTab] git:diff failed:', e)
@@ -2235,16 +2273,57 @@ function fetchForMode(
  *  committed history) can't itself be "conflicted" the way a live working
  *  tree can — see GitTab's PR-diff-mode fetch effect, which never calls
  *  this. */
+// PERF FIX (conflicted-paths identity) — a shared empty-set instance for the
+// dominant (no live conflict) case. Returning this SAME reference every time
+// `paths.length === 0` settles means the fetch effect below can skip its
+// setState entirely on the common "still no conflicts" tick — see
+// setConflictedPathsIfChanged's own doc comment for the non-empty case.
+const EMPTY_CONFLICTS: ReadonlySet<string> = new Set()
+
+/** True iff `a` and `b` contain exactly the same members (order-independent).
+ *  `conflictedPaths` is only ever read via `.has()` (never iterated or
+ *  mutated — see its own doc comment), so two sets with identical membership
+ *  are interchangeable for every consumer; reusing the OLD reference in that
+ *  case is what lets memo'd GitTabBody/DiffContentPane skip a re-render. */
+function sameSetContents(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a === b) return true
+  if (a.size !== b.size) return false
+  for (const path of a) {
+    if (!b.has(path)) return false
+  }
+  return true
+}
+
+/** PERF FIX (conflicted-paths identity) — apply a freshly-fetched conflict
+ *  list via React's updater form so a same-contents result reuses the PREVIOUS
+ *  Set identity instead of always committing a fresh one. `fetchConflicts`
+ *  runs on every debounced settle (same tick as every diff refetch) even in
+ *  the dominant no-conflict case, so without this a fresh (but
+ *  content-identical) Set flows into memo'd GitTabBody/DiffContentPane every
+ *  single file save, failing their shallow prop comparison and re-rendering
+ *  the diff pane (re-running <PatchDiff>'s layout effect) for no reason. */
+function setConflictedPathsIfChanged(
+  setConflictedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>,
+  paths: readonly string[]
+): void {
+  if (paths.length === 0) {
+    setConflictedPaths((prev) => (prev.size === 0 ? prev : EMPTY_CONFLICTS))
+    return
+  }
+  const next = new Set(paths)
+  setConflictedPaths((prev) => (sameSetContents(prev, next) ? prev : next))
+}
+
 function fetchConflicts(
   workspaceId: string,
-  onSettled: (paths: ReadonlySet<string>) => void
+  setConflictedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>
 ): void {
   window.api.git
     .conflicts(workspaceId)
-    .then((paths) => onSettled(new Set(paths)))
+    .then((paths) => setConflictedPathsIfChanged(setConflictedPaths, paths))
     .catch((e) => {
       console.error('[GitTab] git:conflicts failed:', e)
-      onSettled(new Set())
+      setConflictedPathsIfChanged(setConflictedPaths, [])
     })
 }
 
@@ -2275,9 +2354,10 @@ export function GitTab({
   // `git:conflicts` IPC (see src/main/git.ts's getConflictedPaths). Fetched
   // alongside the working-tree diff (initial load + the same debounced
   // git:statusChanged/files:changed refresh below) and threaded down to
-  // DiffContentPane so it can gate its ConflictDiffPane branch. Empty (`new
-  // Set()`) in the ordinary case — no live conflict in the repo.
-  const [conflictedPaths, setConflictedPaths] = useState<ReadonlySet<string>>(() => new Set())
+  // DiffContentPane so it can gate its ConflictDiffPane branch. Empty
+  // (EMPTY_CONFLICTS — see its own doc comment) in the ordinary case — no
+  // live conflict in the repo.
+  const [conflictedPaths, setConflictedPaths] = useState<ReadonlySet<string>>(EMPTY_CONFLICTS)
   // "Not a git repository" empty state doesn't show for an ordinary repo
   // while the initial git:diff round-trip is still in flight — `loading`
   // below already gates the tree/diff panes on the same round-trip, so this
@@ -3275,6 +3355,18 @@ function GitTabBodyImpl({
   onSelectFile,
   onGitInit
 }: GitTabBodyProps): React.JSX.Element {
+  // PERF FIX (token-hover lift) — the controller hook now lives HERE, one
+  // level up from DiffContentPane, instead of inside DiffContentPaneImpl.
+  // Called unconditionally (rules-of-hooks) before every early return below
+  // so hook order never varies with `loading`/`diffMode`/`files.length`. A
+  // hovered token's setState now re-renders only THIS component (cheap: a
+  // handful of memoized/prop-stable children plus the tiny popover below) —
+  // DiffContentPane is wrapped in React.memo and receives onTokenEnter/
+  // onTokenLeave as the hook's own stable (empty-deps useCallback)
+  // identities, so its shallow prop comparison short-circuits and <PatchDiff>
+  // never re-renders on hover. See useTokenHoverPopover.ts's own doc comment.
+  const tokenHover = useTokenHoverPopover()
+
   if (loading) return <DiffMessage text="Loading…" />
   if (diffMode === 'pr') {
     if (files.length === 0) return <PrDiffEmptyState />
@@ -3330,8 +3422,19 @@ function GitTabBodyImpl({
           localWiring={localWiring}
           allowGithubComments={allowGithubComments}
           conflictedPaths={conflictedPaths}
+          onTokenEnter={tokenHover.onTokenEnter}
+          onTokenLeave={tokenHover.onTokenLeave}
         />
       </div>
+      {/* PERF FIX (token-hover lift): lives here now (a GitTabBody sibling of
+          DiffContentPane), not inside DiffContentPaneImpl — see the hook call
+          above + DiffContentPaneProps' onTokenEnter/onTokenLeave doc
+          comment. */}
+      <TokenHoverPopover
+        state={tokenHover.state}
+        onMouseEnter={tokenHover.cancelHide}
+        onMouseLeave={tokenHover.scheduleHide}
+      />
     </div>
   )
 }

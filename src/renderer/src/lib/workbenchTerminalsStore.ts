@@ -80,12 +80,3 @@ export function setWorkbenchTerminalsEntry(
 export function removeWorkbenchTerminalsEntry(workspaceId: string): void {
   store.remove(workspaceId)
 }
-
-/**
- * Subscribe to one workspace's terminals entry. Re-renders only when THIS
- * workspace's entry changes. Returns the shared DEFAULT entry (stable
- * reference) when the workspace has never been set.
- */
-export function useWorkbenchTerminalsEntry(workspaceId: string): WorkbenchTerminalsEntry {
-  return store.useKey(workspaceId) ?? DEFAULT_WORKBENCH_TERMINALS_ENTRY
-}

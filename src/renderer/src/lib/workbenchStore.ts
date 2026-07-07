@@ -85,11 +85,6 @@ const store = createPerKeyStore<WorkbenchEntry>({
     prev.activeTab === next.activeTab
 })
 
-/** Read a workspace's current entry, defaulting to dormant/DEFAULT_WORKBENCH_WIDTH if never set. */
-export function getWorkbenchEntry(workspaceId: string): WorkbenchEntry {
-  return store.raw.get(workspaceId) ?? DEFAULT_WORKBENCH_ENTRY
-}
-
 /** Write a workspace's entry. No-op if field-shallow-equal to the current entry. */
 export function setWorkbenchEntry(workspaceId: string, entry: WorkbenchEntry): void {
   store.set(workspaceId, entry)

@@ -21,7 +21,12 @@
 
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
-import type { GitDiffFile, GitDiffFileStatus, GitDiffResult } from '../shared/types'
+import type {
+  GitDiffFile,
+  GitDiffFileStatus,
+  GitDiffResult,
+  GitDiffUnchangedResult
+} from '../shared/types'
 import { cyrb53 } from '../shared/hash'
 import { getPrDetail } from './github'
 import { getUserShellPath } from './shellHelpers'
@@ -359,6 +364,37 @@ async function untrackedDiffFiles(cwd: string): Promise<GitDiffFile[]> {
   return results.filter((f): f is GitDiffFile => f !== null)
 }
 
+// PERF FIX (main-side diff no-op detection) — caches the last-emitted
+// COMBINED signature (join of every file's own `sig`, same shape as the
+// renderer's diffSignature in GitTab.tsx) per workspaceId, so a debounced
+// live-refresh settle that produced byte-for-byte the same diff as last time
+// can skip re-serializing `files[]` (a multi-MB structured-clone on a large
+// diff) across IPC entirely — see GitDiffUnchangedResult's own doc comment.
+//
+// Keyed by workspaceId (NOT cwd) per the caller's contract (src/main/ipc/
+// git.ts passes the same workspaceId it resolves cwd from) — a workspace
+// switch always looks up a DIFFERENT key, so the very first fetch after a
+// switch is unconditionally a cache miss (`.get` returns undefined) and
+// falls through to a real fetch + full `files[]` response. This is what
+// guarantees the sentinel can never mask a genuinely different workspace's
+// diff as "unchanged".
+//
+// A plain Map (not an LRU/bounded cache): one entry per currently-known
+// workspaceId, cleared implicitly by workspace archival never re-querying
+// this workspaceId again — the same "small, session-bounded key space"
+// property files.ts/git.ts's own per-cwd caches rely on elsewhere in this
+// codebase. Module-level (not per-call) so it persists across the debounced
+// refetches that are the whole point of this cache.
+const lastDiffSignatureByWorkspace = new Map<string, string>()
+
+/** Same combining scheme as GitTab.tsx's own `diffSignature` (kept in sync
+ *  deliberately — both must treat an identical `files[]` as equal): join
+ *  every file's own cyrb53 `sig` (already unique per path+status+patch) with
+ *  a separator that can't collide with a hash value itself. */
+function combinedDiffSignature(files: readonly GitDiffFile[]): string {
+  return files.map((f) => f.sig).join('\x01')
+}
+
 /**
  * Working-tree diff for the Workbench Git tab: tracked changes (staged +
  * unstaged combined vs HEAD) plus untracked files, each as a ready-to-render
@@ -370,13 +406,34 @@ async function untrackedDiffFiles(cwd: string): Promise<GitDiffFile[]> {
  * "not a git repo" from "clean tree" (both were indistinguishable `{files:
  * []}` before). `repo: false` short-circuits before any diff subprocess
  * runs, same as before.
+ *
+ * `workspaceId` (PERF FIX — main-side diff no-op detection) is OPTIONAL and
+ * purely additive: when provided, a result identical to the last one emitted
+ * for this SAME workspaceId returns the `{ unchanged: true }` sentinel
+ * instead of the full `files[]` — see GitDiffUnchangedResult's own doc
+ * comment for the cache-key/workspace-switch-is-always-a-miss guarantee.
+ * Omitting it (or a non-repo/failure result) always returns the full
+ * `GitDiffResult`, unchanged from before this fix.
  */
-export async function getWorkingTreeDiff(cwd: string): Promise<GitDiffResult> {
+export async function getWorkingTreeDiff(
+  cwd: string,
+  workspaceId?: string
+): Promise<GitDiffResult | GitDiffUnchangedResult> {
   if (!cwd) return { repo: false, files: [] }
   if (!(await isGitRepo(cwd))) return { repo: false, files: [] }
 
   const [tracked, untracked] = await Promise.all([trackedDiffFiles(cwd), untrackedDiffFiles(cwd)])
-  return { repo: true, files: [...tracked, ...untracked] }
+  const files = [...tracked, ...untracked]
+
+  if (workspaceId !== undefined) {
+    const signature = combinedDiffSignature(files)
+    if (lastDiffSignatureByWorkspace.get(workspaceId) === signature) {
+      return { repo: true, unchanged: true }
+    }
+    lastDiffSignatureByWorkspace.set(workspaceId, signature)
+  }
+
+  return { repo: true, files }
 }
 
 // ---------------------------------------------------------------------------

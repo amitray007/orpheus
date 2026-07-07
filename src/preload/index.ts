@@ -34,6 +34,7 @@ import type {
   WriteFileResult,
   FilesMutationResult,
   GitDiffResult,
+  GitDiffUnchangedResult,
   GhPullRequest,
   GhPullRequestDetail,
   GhReviewCommentThread,
@@ -434,8 +435,11 @@ const api = {
       subscribe(PUSH_CHANNELS.gitStatusChanged, cb),
     // Workbench Git tab (Phase 1) — per-file working-tree diff patches.
     // Resolves the workspace's cwd internally, like files:*. See
-    // src/main/gitDiff.ts.
-    diff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:diff', { workspaceId }),
+    // src/main/gitDiff.ts. PERF FIX (main-side diff no-op detection): the
+    // resolved type is a UNION with GitDiffUnchangedResult — see that type's
+    // own doc comment; GitTab.tsx's fetchDiff narrows it before use.
+    diff: (workspaceId: string): Promise<GitDiffResult | GitDiffUnchangedResult> =>
+      invoke('git:diff', { workspaceId }),
     // Workbench Git tab (Phase 4-pre) — the [Working tree | PR diff]
     // toggle's PR-diff data source. Resolves the workspace's cwd internally,
     // like diff above. See src/main/gitDiff.ts::getPrDiff.

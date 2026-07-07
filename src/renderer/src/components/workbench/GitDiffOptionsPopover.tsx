@@ -32,7 +32,7 @@ import { Overlay } from '../ui/Overlay'
 import { Toggle } from '../dashboard/settings/primitives'
 import { useAnchoredPopover } from './useAnchoredPopover'
 
-export interface GitDiffOptionsState {
+interface GitDiffOptionsState {
   /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`
    *  vs `'scroll'`). Default true (on) — mirrors Files tab's wrapLines. */
   wrapLines: boolean

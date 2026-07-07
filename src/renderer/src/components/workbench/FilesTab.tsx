@@ -6,7 +6,8 @@
 // (docs/plans/2026-07-02-001-feat-workbench-panes-plan.md;
 // docs/brainstorms/2026-07-02-workbench-panes-requirements.md §5.3).
 //
-// Data flow (mirrors the Pierre smoke test — see __pierre_smoke__.tsx and
+// Data flow (originally prototyped against a throwaway Pierre smoke test,
+// since deleted now that this tab and GitTab.tsx are the real thing — see
 // docs/learnings/pierre-libraries.md §7/§8):
 //   - TREE: `files:listDir(workspaceId)` → flat repo-relative POSIX paths
 //     (dirs trailing-slash, files not) → seeded into `useFileTree({ paths })`.
@@ -31,7 +32,7 @@
 // Theming: both Pierre components render inside shadow roots (§4) — Tailwind
 // can't reach in. The tree is themed via `themeToTreeStyles(theme)` applied to
 // a host wrapper div (CSS-var bridge); the viewer via `options.theme`
-// (Pierre's bundled dark/light). Same theme shape as __pierre_smoke__.tsx.
+// (Pierre's bundled dark/light).
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
