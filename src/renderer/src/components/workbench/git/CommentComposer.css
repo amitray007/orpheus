@@ -149,8 +149,12 @@
   padding: 0;
   border: none;
   border-radius: 4px;
+  /* Always visible at rest: a clearly-readable accent-coloured "+" glyph on a
+     transparent background (not the near-invisible muted grey it was). Hover/
+     focus upgrades it to the filled accent pill below — matching the reference:
+     a plain accent "+" per line, a filled pill on the hovered line. */
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-accent);
   cursor: pointer;
   line-height: 0;
   transition:
