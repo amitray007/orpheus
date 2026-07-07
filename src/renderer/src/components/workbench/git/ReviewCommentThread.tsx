@@ -145,6 +145,11 @@ function ReplySection({
     [rootCommentId]
   )
 
+  // A reply always posts to GitHub (there is no local-reply concept) — this
+  // composer never passes `allowGithub`, so CommentComposer only ever calls
+  // `onSubmit` with source `'local'` (its single-button fallback's fixed
+  // argument — see CommentComposer.tsx's own doc comment); the second
+  // parameter is accepted but intentionally unused here.
   const handleSubmit = useCallback(
     async (d: CommentDraft): Promise<GhSubmitResult> => {
       const result = await window.api.github.replyToReviewComment(

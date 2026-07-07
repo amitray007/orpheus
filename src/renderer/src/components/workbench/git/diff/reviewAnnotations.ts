@@ -27,7 +27,6 @@
 
 import type { GhReviewCommentThread, LocalReviewComment } from '@shared/types'
 import type { DiffLineAnnotation } from '@pierre/diffs'
-import type { CommentSource } from '../CommentComposer'
 import type { PendingComposer } from '../useReviewComposers'
 
 // --- PR review-comment inline annotations (Phase 4a + 4b) --------------------
@@ -128,16 +127,17 @@ export function annotationsForFile(
 }
 
 /** Phase 4d — the subset of local-comment wiring `renderReviewCommentAnnotation`
- *  needs to route a `kind: 'local'` annotation to its card, PLUS the
- *  [GitHub | Local] source-toggle state for the pending NEW-comment composer
- *  (a 'pending' annotation is also routed by that same function — see its
- *  'pending' branch). Kept as its own small interface (rather than more
- *  loose optional params) so the growing parameter list stays readable —
- *  mirrors ReviewComposerWiring's own "named wiring bag" shape in
- *  DiffContentPane.tsx. */
+ *  needs to route a `kind: 'local'` annotation to its card. Kept as its own
+ *  small interface (rather than more loose optional params) so the growing
+ *  parameter list stays readable — mirrors ReviewComposerWiring's own "named
+ *  wiring bag" shape in DiffContentPane.tsx.
+ *
+ *  Phase 5: no longer carries the [GitHub | Local] source-toggle state —
+ *  removed entirely (see CommentComposer.tsx's module header for the
+ *  3-button redesign that replaced it; the pending-composer's destination is
+ *  now decided by WHICH button the user clicks, not a separately-tracked
+ *  toggle value). */
 export interface LocalCommentWiring {
   onToggleResolved: (comment: LocalReviewComment) => void
   onDelete: (comment: LocalReviewComment) => void
-  commentSource: CommentSource
-  onCommentSourceChange: (source: CommentSource) => void
 }

@@ -30,51 +30,31 @@
 // treatment, independently editable" rationale that module already
 // documents.
 //
-// Phase 4d — an optional [GitHub | Local] SOURCE toggle, shown only when the
-// caller passes `source`/`onSourceChange` (GitTab's new-line-comment composer
-// is the only call site that does; Reply/general-comment composers post to a
-// fixed destination and never render this). Lets a brand-new comment either
-// post to GitHub (4c's github:postReviewComment) or save to the LOCAL store
-// (reviews:add) — GitTab routes `onSubmit` based on the CURRENT toggle value
-// at submit time (see its own submitReviewComment/addLocalComment split).
+// Phase 5 (this pass) — REPLACED the old [GitHub | Local] SOURCE TOGGLE +
+// single "Comment" button with 3 explicit action buttons for the ONE call
+// site that can post to either destination (GitTab's new-line-comment
+// composer, gated via the new `allowGithub` prop): Cancel (left), then
+// [GitHub] Comment + [Local] Comment (right) — the button the user CLICKS
+// decides the destination, no separate toggle state to keep in sync with
+// which button reads as "the" action. `onSubmit` now takes the chosen
+// `CommentSource` as its second argument so the caller (GitTab's
+// `submitComment`) routes on the value the click itself carried, rather than
+// reading a ref to a toggle that could drift from what's on screen (the
+// exact class of bug the old toggle design left open — see GitTab.tsx's
+// prior `commentSourceRef` doc comment). Reply (ReviewCommentThread) and the
+// Details-tab general comment each still post to exactly ONE fixed
+// destination and are UNCHANGED — they don't pass `allowGithub`, so this
+// component renders its original single button for them (see `allowGithub`'s
+// own doc comment below).
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
 import { useCallback, useState } from 'react'
+import { GithubLogo, HardDrive } from '@phosphor-icons/react'
 import './CommentComposer.css'
 
-/** Phase 4d — which store a new comment is being drafted for. */
+/** Which store a comment is posted/saved to. */
 export type CommentSource = 'github' | 'local'
-
-interface SourceToggleProps {
-  value: CommentSource
-  onChange: (source: CommentSource) => void
-  disabled: boolean
-}
-
-/** [GitHub | Local] segmented control — compact pill segments matching the
- *  rest of the Git tab's toggle language (GitTab.tsx's DiffModeToggle/
- *  SubTabStrip). Disabled while a submit is in flight, same as the textarea. */
-function SourceToggle({ value, onChange, disabled }: SourceToggleProps): React.JSX.Element {
-  const seg = (source: CommentSource, label: string): React.JSX.Element => (
-    <button
-      key={source}
-      type="button"
-      onClick={() => onChange(source)}
-      aria-pressed={value === source}
-      disabled={disabled}
-      className={value === source ? 'gcc-source-seg gcc-source-seg--active' : 'gcc-source-seg'}
-    >
-      {label}
-    </button>
-  )
-  return (
-    <div className="gcc-source-toggle">
-      {seg('github', 'GitHub')}
-      {seg('local', 'Local')}
-    </div>
-  )
-}
 
 export interface CommentDraft {
   /** The pending composer's own id (see useReviewComposers.ts) — lets the
@@ -110,14 +90,14 @@ export interface CommentComposerProps {
    *  on a `{ ok: true }` result (this component only renders, it doesn't
    *  know how to invalidate the caller's data).
    *
-   *  Phase 4d: when `source`/`onSourceChange` are wired (see below), `onSubmit`
-   *  is called with whichever source is CURRENTLY selected at submit time
-   *  (`source` itself, read fresh by the caller — this component doesn't
-   *  thread it through the draft object, since `CommentDraft` is also the
-   *  shape ReviewCommentThread's Reply composer uses, which has no source
-   *  concept at all). GitTab's own onSubmit closure reads its `commentSource`
-   *  state directly rather than needing it passed back here. */
-  onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
+   *  Phase 5: `onSubmit` now receives the SOURCE the user's click chose as
+   *  its second argument. Single-destination callers (Reply, general
+   *  comment) simply ignore it — their closures already only know how to
+   *  post to their one fixed destination. The dual-destination caller
+   *  (GitTab's new-line composer, `allowGithub={true}`) reads it to route
+   *  between `github:postReviewComment` and `reviews:add` (see GitTab's
+   *  `submitComment`). */
+  onSubmit: (draft: CommentDraft, source: CommentSource) => Promise<GhSubmitResult>
   /** Closes/removes this pending composer (its annotation entry) without
    *  submitting anything. Disabled while a submit is in flight — cancelling
    *  mid-post would orphan the composer's error/success handling. */
@@ -128,28 +108,67 @@ export interface CommentComposerProps {
    *  copy. */
   placeholder?: string
   /** Button label — "Comment" (new comment / general comment) vs "Reply"
-   *  (ReviewCommentThread's reply composer). Defaults to "Comment". */
+   *  (ReviewCommentThread's reply composer). Defaults to "Comment". Ignored
+   *  when `allowGithub` is true (the two buttons carry their own
+   *  source-specific labels — see the module header). */
   submitLabel?: string
-  /** Phase 4d — the SOURCE toggle's current value. Omitted entirely (the
-   *  default) means "don't render the toggle at all" — only GitTab's
-   *  new-line-comment composer wires this; Reply/general-comment composers
-   *  post to one fixed destination and have no toggle. */
-  source?: CommentSource
-  /** Phase 4d — called when the user flips the [GitHub | Local] toggle.
-   *  Required together with `source` (both omitted or both present) so the
-   *  toggle is fully controlled by the caller, matching GitTab's own
-   *  controlled-state convention elsewhere (diffMode, diffStyle, etc.). */
-  onSourceChange?: (source: CommentSource) => void
+  /** Phase 5 — when true, renders BOTH the [GitHub] Comment and [Local]
+   *  Comment buttons (PR-diff mode: there's a real PR to post a GitHub
+   *  comment to, per GitTab's `allowGithubComments`). When false/omitted
+   *  (the default), renders the ORIGINAL single button, submitting with
+   *  source `'local'` — every existing single-destination caller
+   *  (Reply/general-comment, both always-GitHub in practice; working-tree
+   *  mode's local-only new-line composer) keeps its one-button UI exactly as
+   *  before. Only GitTab's new-line-comment composer in PR-diff mode passes
+   *  `true`. */
+  allowGithub?: boolean
 }
 
-/** The inline "start a comment" compose box — a markdown textarea + Comment/
- *  Cancel buttons. "Comment"/"Reply" IS the confirmation (no extra modal,
- *  per the task's explicit UX direction) — clicking it awaits the real
- *  `onSubmit` IPC call, showing "Posting…" + a disabled button meanwhile.
- *  On success, this component does nothing further itself (the caller closes
- *  the composer / refetches, since only the caller knows what "success"
- *  should do next); on failure, it surfaces the error inline and leaves the
- *  typed body in place so the user can retry without retyping.
+/** One of the two Phase-5 destination buttons (GitHub/Local) shown when
+ *  `allowGithub` is true. Disabled while ANY submit is in flight (not just
+ *  its own) — posting to one destination while the other button is also
+ *  clickable would let a fast double-click fire two concurrent submits for
+ *  the same draft. `busy` (this specific button's own in-flight state) swaps
+ *  its label to "Posting…", matching the pre-Phase-5 single-button
+ *  behavior. */
+function DestinationButton({
+  icon,
+  label,
+  busyLabel,
+  busy,
+  disabled,
+  primary,
+  onClick
+}: {
+  icon: React.ReactNode
+  label: string
+  busyLabel: string
+  busy: boolean
+  disabled: boolean
+  primary: boolean
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className={primary ? 'gcc-btn gcc-btn--primary' : 'gcc-btn gcc-btn--secondary'}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {!busy && icon}
+      {busy ? busyLabel : label}
+    </button>
+  )
+}
+
+/** The inline "start a comment" compose box — a markdown textarea + action
+ *  buttons. Clicking a submit button IS the confirmation (no extra modal, per
+ *  the task's explicit UX direction) — it awaits the real `onSubmit` IPC
+ *  call, showing "Posting…" + a disabled button meanwhile. On success, this
+ *  component does nothing further itself (the caller closes the composer /
+ *  refetches, since only the caller knows what "success" should do next); on
+ *  failure, it surfaces the error inline and leaves the typed body in place
+ *  so the user can retry without retyping.
  *  Uncontrolled-from-outside: the typed body lives in this component's own
  *  state, not lifted to the caller, since nothing outside needs to observe
  *  keystrokes — only the final submitted/cancelled draft matters. */
@@ -159,54 +178,56 @@ export function CommentComposer({
   onCancel,
   placeholder = 'Leave a comment on this line…',
   submitLabel,
-  source,
-  onSourceChange
+  allowGithub = false
 }: CommentComposerProps): React.JSX.Element {
   const [body, setBody] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  // Phase 5: which destination is CURRENTLY posting — null when nothing is
+  // in flight, otherwise the source the clicked button carried. Replaces the
+  // old plain `submitting` boolean so the two-button case can show
+  // "Posting…" on ONLY the clicked button (see DestinationButton's own doc
+  // comment on why BOTH buttons are still disabled meanwhile).
+  const [submittingSource, setSubmittingSource] = useState<CommentSource | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Phase 4d: when the source toggle is wired, the button label follows the
-  // CURRENT source so "Comment" always reads as "post to GitHub" vs "save
-  // locally" rather than a fixed generic label — defaults to the original
-  // "Comment" copy when no toggle is wired (Reply/general-comment composers,
-  // and the 'github' source itself, which keeps the original wording).
-  const resolvedSubmitLabel = submitLabel ?? (source === 'local' ? 'Save locally' : 'Comment')
+  const submitting = submittingSource !== null
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setBody(e.target.value)
   }, [])
 
-  const handleSubmit = useCallback(() => {
-    const trimmed = body.trim()
-    if (trimmed.length === 0 || submitting) return
-    setSubmitting(true)
-    setError(null)
-    onSubmit({ ...draft, body: trimmed })
-      .then((result) => {
-        // On success, the caller (GitTab/ReviewCommentThread) typically
-        // unmounts this composer / triggers a refetch — but DetailsTab's
-        // GeneralCommentComposer is PERSISTENT (always rendered at the
-        // bottom of the timeline, never unmounted on success), so this
-        // component must clear its own in-flight state and posted text
-        // itself rather than assuming the caller will do it via unmount.
-        // For the unmount-on-success callers this state update simply
-        // targets an unmounting instance, which is harmless in React 19.
-        if (result.ok) {
-          setSubmitting(false)
-          setBody('')
-        } else {
-          setSubmitting(false)
-          setError(result.error)
-        }
-      })
-      .catch((e) => {
-        // Belt-and-suspenders: onSubmit closures are expected to always
-        // resolve to a GhSubmitResult (never reject), but a thrown error
-        // must still surface here rather than vanish silently.
-        setSubmitting(false)
-        setError(e instanceof Error ? e.message : String(e))
-      })
-  }, [body, draft, onSubmit, submitting])
+  const handleSubmit = useCallback(
+    (source: CommentSource) => {
+      const trimmed = body.trim()
+      if (trimmed.length === 0 || submitting) return
+      setSubmittingSource(source)
+      setError(null)
+      onSubmit({ ...draft, body: trimmed }, source)
+        .then((result) => {
+          // On success, the caller (GitTab/ReviewCommentThread) typically
+          // unmounts this composer / triggers a refetch — but DetailsTab's
+          // GeneralCommentComposer is PERSISTENT (always rendered at the
+          // bottom of the timeline, never unmounted on success), so this
+          // component must clear its own in-flight state and posted text
+          // itself rather than assuming the caller will do it via unmount.
+          // For the unmount-on-success callers this state update simply
+          // targets an unmounting instance, which is harmless in React 19.
+          if (result.ok) {
+            setSubmittingSource(null)
+            setBody('')
+          } else {
+            setSubmittingSource(null)
+            setError(result.error)
+          }
+        })
+        .catch((e) => {
+          // Belt-and-suspenders: onSubmit closures are expected to always
+          // resolve to a GhSubmitResult (never reject), but a thrown error
+          // must still surface here rather than vanish silently.
+          setSubmittingSource(null)
+          setError(e instanceof Error ? e.message : String(e))
+        })
+    },
+    [body, draft, onSubmit, submitting]
+  )
 
   const canSubmit = body.trim().length > 0 && !submitting
 
@@ -224,9 +245,6 @@ export function CommentComposer({
 
   return (
     <div className="gcc-composer">
-      {source !== undefined && onSourceChange !== undefined && (
-        <SourceToggle value={source} onChange={onSourceChange} disabled={submitting} />
-      )}
       {rangeLabel !== null && <div className="gcc-range-label">{rangeLabel}</div>}
       <textarea
         className="gcc-textarea"
@@ -244,24 +262,46 @@ export function CommentComposer({
         </div>
       )}
       <div className="gcc-footer">
-        {submitting && <span className="gcc-hint">Posting…</span>}
+        <button
+          type="button"
+          className="gcc-btn gcc-btn--cancel"
+          onClick={onCancel}
+          disabled={submitting}
+        >
+          Cancel
+        </button>
         <div className="gcc-actions">
-          <button
-            type="button"
-            className="gcc-btn gcc-btn--cancel"
-            onClick={onCancel}
-            disabled={submitting}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="gcc-btn gcc-btn--primary"
-            disabled={!canSubmit}
-            onClick={handleSubmit}
-          >
-            {submitting ? 'Posting…' : resolvedSubmitLabel}
-          </button>
+          {allowGithub ? (
+            <>
+              <DestinationButton
+                icon={<GithubLogo size={13} weight="fill" />}
+                label="Comment"
+                busyLabel="Posting…"
+                busy={submittingSource === 'github'}
+                disabled={!canSubmit}
+                primary={false}
+                onClick={() => handleSubmit('github')}
+              />
+              <DestinationButton
+                icon={<HardDrive size={13} weight="fill" />}
+                label="Comment"
+                busyLabel="Posting…"
+                busy={submittingSource === 'local'}
+                disabled={!canSubmit}
+                primary={true}
+                onClick={() => handleSubmit('local')}
+              />
+            </>
+          ) : (
+            <button
+              type="button"
+              className="gcc-btn gcc-btn--primary"
+              disabled={!canSubmit}
+              onClick={() => handleSubmit('local')}
+            >
+              {submitting ? 'Posting…' : (submitLabel ?? 'Comment')}
+            </button>
+          )}
         </div>
       </div>
     </div>

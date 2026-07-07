@@ -16,7 +16,12 @@
 import type React from 'react'
 import type { DiffLineAnnotation } from '@pierre/diffs'
 import { ReviewCommentThread, LocalCommentThread } from '../ReviewCommentThread'
-import { CommentComposer, type CommentDraft, type GhSubmitResult } from '../CommentComposer'
+import {
+  CommentComposer,
+  type CommentDraft,
+  type CommentSource,
+  type GhSubmitResult
+} from '../CommentComposer'
 import type { LocalCommentWiring, ReviewAnnotationMeta } from './reviewAnnotations'
 
 // A composer with no wired onSubmit (shouldn't happen per the doc comment
@@ -46,15 +51,15 @@ export function renderReviewCommentAnnotation(
   workspaceId: string,
   onRefetchThreads: () => void,
   onCancelComposer?: (id: string) => void,
-  onSubmitComposer?: (draft: CommentDraft) => Promise<GhSubmitResult>,
+  onSubmitComposer?: (draft: CommentDraft, source: CommentSource) => Promise<GhSubmitResult>,
   localWiring?: LocalCommentWiring,
-  // Phase 5 FIX 1: whether the pending-composer's [GitHub | Local]
-  // SourceToggle should render at all -- only true in PR-diff mode (there's
-  // a PR to post a GitHub comment to). In working-tree mode this is false,
-  // so `source`/`onSourceChange` are omitted entirely (both undefined) rather
-  // than passed-but-pointless: CommentComposer already treats `source ===
-  // undefined` as "no toggle, local-only composer" (see its own doc
-  // comment) -- exactly the working-tree-mode UX this fix wants.
+  // Phase 5: whether the pending-composer's dual [GitHub] Comment/[Local]
+  // Comment BUTTONS should both render (`CommentComposer`'s `allowGithub`
+  // prop) -- only true in PR-diff mode (there's a PR to post a GitHub
+  // comment to). In working-tree mode this is false, so the composer falls
+  // back to its single-button UI (submits with source 'local' — see
+  // CommentComposer.tsx's own doc comment) -- exactly the working-tree-mode
+  // UX this fix wants.
   allowGithub = false
 ): React.ReactNode {
   if (annotation.metadata.kind === 'pending') {
@@ -63,9 +68,10 @@ export function renderReviewCommentAnnotation(
       <CommentComposer
         draft={composer}
         onCancel={() => onCancelComposer?.(composer.id)}
-        onSubmit={(draft) => onSubmitComposer?.(draft) ?? Promise.resolve(NO_SUBMIT_WIRED)}
-        source={allowGithub ? localWiring?.commentSource : undefined}
-        onSourceChange={allowGithub ? localWiring?.onCommentSourceChange : undefined}
+        onSubmit={(draft, source) =>
+          onSubmitComposer?.(draft, source) ?? Promise.resolve(NO_SUBMIT_WIRED)
+        }
+        allowGithub={allowGithub}
       />
     )
   }

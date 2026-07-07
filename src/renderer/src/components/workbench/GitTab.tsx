@@ -625,19 +625,6 @@ export function GitTab({
   // Fetched on workspace change (below) and refetched after every local
   // mutation (add/resolve/delete — see refetchLocalReviews).
   const [localReviews, setLocalReviews] = useState<LocalReviewComment[]>([])
-  // Phase 4d: the NEW-comment composer's [GitHub | Local] source toggle —
-  // app-session state (not persisted), defaults to 'github' since that's the
-  // pre-4d behavior every existing composer already has. Lives in GitTab
-  // (not the composer itself) so it survives a composer being closed/
-  // reopened at a different line within the same session, matching how
-  // diffStyle/diffMode are already lifted up rather than kept per-composer.
-  // Phase 5: the toggle itself only ever RENDERS in PR-diff mode
-  // (`allowGithubComments`/`allowGithub` gating in renderReviewCommentAnnotation)
-  // — this value can still carry a stale 'github' selection across a mode
-  // flip since it's not reset on `diffMode` change, which is exactly why
-  // `submitComment` below ALSO checks `diffModeRef` rather than trusting
-  // this alone.
-  const [commentSource, setCommentSource] = useState<CommentSource>('github')
   // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
   // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
   // at every point below that clears it (workspace switch, PR loss, leaving
@@ -1282,31 +1269,24 @@ export function GitTab({
     [workspaceId, pr, closeComposer, refetchLocalReviews]
   )
 
-  // Phase 4d: the NEW-comment composer's submit dispatcher — routes to
-  // whichever store the [GitHub | Local] toggle currently points at.
-  // `commentSourceRef` (kept in sync below) lets this read the CURRENT
-  // toggle value without needing it as a dependency of every composer-open
-  // closure — same "latest value via ref" pattern the file already uses for
-  // diffModeRef/prRef.
+  // Phase 5 (3-button composer redesign): the NEW-comment composer's submit
+  // dispatcher — routes on the `source` the CLICKED button carried (see
+  // CommentComposer.tsx's module header), replacing the old design where a
+  // separate toggle's LAST-SET value was read back out of a ref at submit
+  // time. That ref-based design could drift from what the user actually saw
+  // on screen (submit reading a stale toggle value); an explicit source
+  // argument threaded straight from the click cannot drift.
   //
-  // Phase 5 FIX 1: also consults `diffModeRef` — working-tree mode's
-  // composer never renders the SourceToggle at all (see
-  // renderReviewCommentAnnotation's `allowGithub` gating), but
-  // `commentSource` is app-session state that can carry a stale 'github'
-  // value over from a PRIOR PR-diff-mode session on the same workspace (the
-  // toggle isn't reset just because the mode flipped — see its own
-  // declaration comment). Without this check, submitting a working-tree
-  // composer right after leaving PR-diff mode with 'github' selected would
-  // silently attempt `submitGithubReviewComment` against a mode with no PR
-  // diff open. `diffModeRef.current !== 'pr'` always forces the local path,
-  // regardless of the toggle's last value.
-  const commentSourceRef = useRef(commentSource)
-  useEffect(() => {
-    commentSourceRef.current = commentSource
-  }, [commentSource])
+  // `diffModeRef.current !== 'pr'` still forces the local path even if
+  // `source === 'github'` somehow reached here — working-tree mode's
+  // composer never renders the GitHub button at all (see
+  // renderReviewCommentAnnotation's `allowGithub` gating, itself sourced from
+  // `allowGithubComments` which is false outside PR-diff mode), so this is
+  // belt-and-suspenders against a stale button reference rather than a path
+  // expected to trigger in practice.
   const submitComment = useCallback(
-    (draft: CommentDraft): Promise<GhSubmitResult> =>
-      diffModeRef.current !== 'pr' || commentSourceRef.current === 'local'
+    (draft: CommentDraft, source: CommentSource): Promise<GhSubmitResult> =>
+      diffModeRef.current !== 'pr' || source === 'local'
         ? submitLocalComment(draft)
         : submitGithubReviewComment(draft),
     [submitLocalComment, submitGithubReviewComment]
@@ -1350,16 +1330,16 @@ export function GitTab({
   )
 
   // Phase 4d: the wiring DiffContentPane needs for LOCAL comment cards
-  // (resolve/delete) plus the source-toggle state/setter for the pending
-  // NEW-comment composer — see LocalCommentWiring's own doc comment.
+  // (resolve/delete) — see LocalCommentWiring's own doc comment. Phase 5:
+  // no longer carries the [GitHub | Local] source-toggle state (removed
+  // entirely — see CommentComposer.tsx's module header for the 3-button
+  // redesign that replaced it).
   const localCommentWiring: LocalCommentWiring = useMemo(
     () => ({
       onToggleResolved: toggleLocalResolved,
-      onDelete: deleteLocalComment,
-      commentSource,
-      onCommentSourceChange: setCommentSource
+      onDelete: deleteLocalComment
     }),
-    [toggleLocalResolved, deleteLocalComment, commentSource]
+    [toggleLocalResolved, deleteLocalComment]
   )
 
   const toggleTree = useCallback(() => setTreeOpen((v) => !v), [])

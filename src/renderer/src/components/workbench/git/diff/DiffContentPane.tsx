@@ -43,7 +43,7 @@ import { PIERRE_VIEWER_BG } from '../../editor/chromeTheme'
 import { useImageZoomPan } from '../../useImageZoomPan'
 import { ImageZoomBar } from '../../ImageZoomBar'
 import type { DiffStyle } from '../../GitTab'
-import type { CommentDraft, GhSubmitResult } from '../CommentComposer'
+import type { CommentDraft, CommentSource, GhSubmitResult } from '../CommentComposer'
 import type { PendingComposer } from '../useReviewComposers'
 import type { UseTokenHoverPopoverResult } from '../useTokenHoverPopover'
 import {
@@ -90,6 +90,46 @@ function isImagePath(path: string): boolean {
   if (dot === -1) return false
   return IMAGE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
 }
+
+// FIX 1 (gutter "+" overlapping the line number) — @pierre/diffs' own shipped
+// style (node_modules/@pierre/diffs/dist/style.js) positions
+// `[data-gutter-utility-slot]` as `position: absolute; top: 0; bottom: 0;
+// right: 0; justify-content: flex-end` — and that slot element is appended
+// (InteractionManager.showUtilityOnLine) DIRECTLY INTO the hovered line's OWN
+// `numberElement` (the `[data-column-number]` cell that renders the line
+// digits, confirmed against dist/managers/InteractionManager.js's
+// `ensureGutterUtilityNode`/`showUtilityOnLine`). Since that cell right-aligns
+// its digits (`[data-column-number]` is `text-align: right`) and the slot is
+// ALSO right-anchored inside the very same box, the "+" renders on top of the
+// digits instead of beside them (confirmed live via CDP on a 2-digit line
+// number — see this pass's screenshots) — there is no separate "gutter
+// utility column" for it to occupy.
+//
+// FIX: `unsafeCSS` composes into `@layer unsafe` (dist/utils/cssWrappers.js'
+// `wrapUnsafeCSS` + `LAYER_ORDER`), the LAST/highest-priority layer among
+// `base, theme, rendered, unsafe` — so this cleanly overrides the shipped
+// `@layer base` rule instead of fighting its specificity. `left: 100%` moves
+// the slot's own containing-block anchor from the number cell's RIGHT edge
+// (where the digits sit) to just PAST it — the number cell is
+// `box-sizing: content-box` with its digits confined to `[data-line-number-
+// content]` well within that box, so `left: 100%` lands in the cell's own
+// `padding-right`/border gap, i.e. between the numbers and the code — exactly
+// Pierre's OWN reference screenshot the task points at (the "+" in its own
+// space, never covering a digit, at any digit count: 1/2/3-digit line
+// numbers all share the same right edge, so this isn't just a 2-digit fix).
+// A small `margin-left` gives the button breathing room instead of touching
+// the last digit; `justify-content: flex-start` (overriding the shipped
+// `flex-end`) keeps the button LEFT-aligned within its own (now
+// right-of-the-number) box rather than still snapping to whichever edge is
+// farthest away.
+const GUTTER_UTILITY_SLOT_CSS = `
+  [data-gutter-utility-slot] {
+    left: 100%;
+    right: auto;
+    justify-content: flex-start;
+    margin-left: 3px;
+  }
+`
 
 export function DiffMessage({ text }: { text: string }): React.JSX.Element {
   return (
@@ -375,6 +415,13 @@ function buildDiffOptions(
     themeType: 'dark',
     diffStyle,
     overflow: wrapLines ? 'wrap' : 'scroll',
+    // FIX 1 — see GUTTER_UTILITY_SLOT_CSS's own doc comment above. Applied
+    // unconditionally (not just when `hasComposers`) since the slot only
+    // ever MOUNTS when `enableGutterUtility`/`renderGutterUtility` are set
+    // below (hasComposers-gated already), so this override is inert dead CSS
+    // in the no-composers case anyway — simplest to keep it on the shared
+    // `base` rather than duplicating the whole options object per branch.
+    unsafeCSS: GUTTER_UTILITY_SLOT_CSS,
     // Crash fix #2 (belt-and-suspenders) — the oversized-file gate above
     // already keeps genuinely huge patches out of <PatchDiff> entirely, but a
     // single extremely long line (a minified bundle's one-liner, still under
@@ -628,7 +675,10 @@ export interface ReviewComposerWiring {
   composers: readonly PendingComposer[]
   open: (path: string, side: 'LEFT' | 'RIGHT', line: number, startLine?: number) => void
   close: (id: string) => void
-  onSubmit: (draft: CommentDraft) => Promise<GhSubmitResult>
+  /** Phase 5 — takes the SOURCE the user's clicked button carried (see
+   *  CommentComposer.tsx's module header for the 3-button redesign this
+   *  replaced the old toggle-plus-ref design with). */
+  onSubmit: (draft: CommentDraft, source: CommentSource) => Promise<GhSubmitResult>
 }
 
 /** PERF FIX (LAG-LAYER #5): every value this ref carries is read ONLY from
