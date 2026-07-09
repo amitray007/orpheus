@@ -3,14 +3,25 @@
 //
 // Workbench Git tab — a changed-files tree (left, @pierre/trees) + a per-file
 // diff viewer (right, @pierre/diffs' <PatchDiff>), fed by `git:diff`/
-// `git:prDiff` (src/main/gitDiff.ts). This root owns the diff-data state
-// machine (files/selection/diffMode) and the PR-data state machine (pr/
-// prDetail/reviewThreads/localReviews) plus every effect that fetches for
-// them; the presentational pieces (PrSlimHeader, DiffControls, the review-
-// annotation routing layer, DiffContentPane, the empty states, and the pure
-// fetch/signature helpers) live under ./git/diff/ — see that folder for their
-// own doc comments. GitTab.tsx is the only externally-imported symbol (see
-// WorkbenchPanel.tsx).
+// `git:prDiff` (src/main/gitDiff.ts).
+//
+// Phase B extraction (see docs/learnings/gittab-state-machine.md, the
+// baseline spec this pass was verified against): the diff-data state machine
+// (files/selection/diffMode/diffStyle/conflictedPaths/branch/git-init) now
+// lives in `./git/diff/useGitDiffData.ts`, and the PR-data state machine
+// (pr/prDetail/reviewThreads/localReviews + the submit/refetch callbacks)
+// lives in `./git/diff/usePrState.ts`. GitTab itself still owns the
+// INTERWOVEN shared orchestration that spans both — the workspace-change
+// effect (resets both hooks' state + composers in one exact order, then
+// fires the initial fetch), the single combined onStatusChanged/
+// onFilesChanged subscription, the onPrChanged PR-loss cascade, the shared
+// `cleanupRef`, and composer state (`useReviewComposers`) — see each hook's
+// own module header for the extraction boundary and the "MUST stay in
+// GitTab" rationale. The presentational pieces (PrSlimHeader, DiffControls,
+// the review-annotation routing layer, DiffContentPane, the empty states, and
+// the pure fetch/signature helpers) live under ./git/diff/ — see that folder
+// for their own doc comments. GitTab.tsx is the only externally-imported
+// symbol (see WorkbenchPanel.tsx).
 //
 // Sticky-surface invariant: this tab is mounted/unmounted by WorkbenchPanel
 // as the user switches Workbench tabs (Git isn't a persistent libghostty
@@ -58,8 +69,6 @@ import type React from 'react'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelection } from '@pierre/trees/react'
 import { List, MagnifyingGlass } from '@phosphor-icons/react'
 import type {
-  GhPullRequest,
-  GhPullRequestDetail,
   GhReviewCommentThread,
   GitDiffFile,
   GitStatusEntry,
@@ -90,18 +99,9 @@ import { DiffStyleToggle, DiffModeToggle } from './git/diff/DiffControls'
 import type { LocalCommentWiring } from './git/diff/reviewAnnotations'
 import { DiffContentPane, DiffMessage, type ReviewComposerWiring } from './git/diff/DiffContentPane'
 import { NotARepoState, CleanState, PrDiffEmptyState } from './git/diff/diffEmptyStates'
-import {
-  fetchConflicts,
-  fetchDiff,
-  fetchForMode,
-  fetchLocalReviews,
-  fetchPrDiff,
-  fetchReviewComments,
-  diffSignature,
-  nextSelection,
-  EMPTY_CONFLICTS,
-  type DiffSettleResult
-} from './git/diff/diffFetch'
+import { fetchDiff, fetchPrDiff, fetchReviewComments } from './git/diff/diffFetch'
+import { useGitDiffData } from './git/diff/useGitDiffData'
+import { usePrState } from './git/diff/usePrState'
 
 // TREE_THEME + the host git-status/focus-ring CSS-var overrides now live in
 // ./treeConfig.ts (shared with FilesTab.tsx — see that module's doc comment
@@ -111,20 +111,11 @@ import {
 // ./git/diff/DiffContentPane.tsx (Wave 3 Phase A extraction) alongside the
 // rest of the diff-content-pane presentational surface.
 
-// Live-refresh debounce — coalesces bursts from either push source (a save
-// touching several files, a `git add -A`) into one git:diff refetch.
-//
-// Perf fix (this pass): GitTab now drives filesWatcher.ts itself (see the
-// watchStart/watchStop effect below), so a working-tree create/edit fires
-// `files:changed` immediately instead of waiting on git.ts's much coarser
-// `.git/HEAD`+`.git/index` watch. Tuned down from the original 200ms to
-// 130ms now that the fast path is wired — still enough to coalesce a burst
-// of files:changed events from a multi-file save/`git add -A` into one
-// git:diff round-trip, without feeling laggy. The idempotent applyDiff
-// no-op (see diffSignature below) is what keeps this safe at rest — a
-// shorter debounce just means a REAL change reaches the screen sooner, it
-// doesn't reintroduce the flicker loop that fix addressed.
-const REFRESH_DEBOUNCE_MS = 130
+// Live-refresh debounce (REFRESH_DEBOUNCE_MS, 130ms) — coalesces bursts from
+// either push source (a save touching several files, a `git add -A`) into
+// one git:diff refetch. Now lives in ./git/diff/useGitDiffData.ts alongside
+// the `scheduleRefetch` function it tunes (Phase B extraction) — see that
+// module's own copy of this comment for the full perf-history writeup.
 
 // Exported — the git/diff/ presentational modules (DiffControls.tsx,
 // DiffContentPane.tsx, diffFetch.ts) import these two types from here rather
@@ -571,67 +562,19 @@ export function GitTab({
     preloadDiffHighlighter()
   }, [])
 
-  const [files, setFiles] = useState<GitDiffFile[]>([])
-  // Pierre adoption batch 4 (safe/read-only slice) — repo-relative paths
-  // currently reported as merge-conflicted, from the new read-only
-  // `git:conflicts` IPC (see src/main/git.ts's getConflictedPaths). Fetched
-  // alongside the working-tree diff (initial load + the same debounced
-  // git:statusChanged/files:changed refresh below) and threaded down to
-  // DiffContentPane so it can gate its ConflictDiffPane branch. Empty
-  // (EMPTY_CONFLICTS — see its own doc comment) in the ordinary case — no
-  // live conflict in the repo.
-  const [conflictedPaths, setConflictedPaths] = useState<ReadonlySet<string>>(EMPTY_CONFLICTS)
-  // "Not a git repository" empty state doesn't show for an ordinary repo
-  // while the initial git:diff round-trip is still in flight — `loading`
-  // below already gates the tree/diff panes on the same round-trip, so this
-  // mirrors that convention rather than introducing a third loading state.
-  const [repo, setRepo] = useState(true)
-  const [loading, setLoading] = useState(true)
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [treeOpen, setTreeOpen] = useState(true)
-  const [diffStyle, setDiffStyle] = useState<DiffStyle>('unified')
-  // Phase 4-pre: the Diff sub-tab's data-source mode — 'working' (default,
-  // unchanged Phase 1 behavior) or 'pr' (gh pr diff, gated on a PR existing —
-  // see the module header's Phase 4-pre note). Reset to 'working' on every
-  // workspace switch (below) so a PR-diff view never survives into a
-  // different workspace that may have no PR at all.
-  const [diffMode, setDiffMode] = useState<DiffMode>('working')
   const [subTab, setSubTab] = useState<GitSubTab>('diff')
-  const [branch, setBranch] = useState<string | null>(null)
-  const [gitInitRunning, setGitInitRunning] = useState(false)
-  const [gitInitError, setGitInitError] = useState<string | null>(null)
-  // Phase 3a: the PR for the current branch, or null (no PR / no `gh` / no
-  // remote / detached HEAD). Populated by BOTH the `github:prChanged` push
-  // (live updates while mounted) AND a direct `github:prForWorkspace` fetch
-  // on mount/workspace-change (the bug fix — see the module header's "BUG
-  // FIX (this pass)" note for why the push alone isn't reliable).
-  const [pr, setPr] = useState<GhPullRequest | null>(null)
-  // Phase 3b foundation: the rich PR payload (GhPullRequestDetail) backing
-  // the Commits/Details/Checks sub-tabs — see the module header's "Phase 3b
-  // foundation" note. Null until fetched (or when there's no PR at all).
-  const [prDetail, setPrDetail] = useState<GhPullRequestDetail | null>(null)
-  // Phase 4a: line-anchored PR review-comment threads, fetched only while
-  // `diffMode === 'pr'` (comments anchor to the PR diff, not the working
-  // tree — see docs/learnings/pr-comments.md's Q1 gap note). `null` means
-  // "not applicable / not yet loaded" (working-tree mode, or before the
-  // first PR-diff-mode fetch settles) — DiffContentPane treats null the
-  // same as "no annotations" so a failed/pending fetch never blocks the
-  // diff itself from rendering.
-  const [reviewThreads, setReviewThreads] = useState<GhReviewCommentThread[] | null>(null)
-  // Phase 4d: the LOCAL (Orpheus-owned) review-comment store's full list for
-  // this workspace — see reviewStore.ts's own header. Unlike reviewThreads,
-  // this is a plain array (never null): local comments have no PR
-  // requirement, so there's no "not applicable" state, only "empty so far".
-  // Fetched on workspace change (below) and refetched after every local
-  // mutation (add/resolve/delete — see refetchLocalReviews).
-  const [localReviews, setLocalReviews] = useState<LocalReviewComment[]>([])
+
   // Phase 4b: open "start a comment" composers (gutter "+"/select-to-comment)
   // — see useReviewComposers.ts's own header. Reset alongside reviewThreads
   // at every point below that clears it (workspace switch, PR loss, leaving
   // PR-diff mode) PLUS on file/mode change specifically (the task's "Reset
   // pending composers on file/mode/PR change") since an open composer
   // anchored to file A's line 12 has no meaning once the user has navigated
-  // to file B — see the file-change effect below.
+  // to file B — see the file-change effect below. Composer state is a THIRD
+  // concern neither useGitDiffData nor usePrState owns outright (both need
+  // write-access to reset it) — kept here in GitTab and threaded into both
+  // hooks as a plain `reset`/`close` parameter, per the spec's §6 point 6.
   // Destructured (rather than kept as one `reviewComposers` object) so every
   // effect/callback below can depend on the STABLE individual function
   // identities (`open`/`close`/`reset` are each memoized with empty deps in
@@ -646,89 +589,105 @@ export function GitTab({
     reset: resetComposers
   } = useReviewComposers()
 
-  // Fix 1: every settled `files[]` (initial load AND live-refresh refetch)
-  // runs through nextSelection so the tab auto-selects the first changed
-  // file when nothing is selected (or the prior selection dropped out),
-  // while preserving an existing selection that's still present. Wraps
-  // `setFiles`/`setRepo` so every call site below gets this for free, rather
-  // than repeating the selection-derivation at each of the two settle points.
+  // Phase B extraction — see docs/learnings/gittab-state-machine.md §5/§6 for
+  // the full boundary writeup. useGitDiffData owns files/repo/loading/
+  // selectedPath/diffStyle/diffMode/conflictedPaths/branch/git-init plus every
+  // effect that's diff-only (mode-switch, file watcher, diffModeRef sync).
+  // usePrState owns pr/prDetail/reviewThreads/localReviews plus every
+  // effect/callback that's PR-only (fetch-on-mount fallback, reviewThreads-
+  // fetch, prDetail-fetch, the submit/refetch callbacks). Declared in THIS
+  // order (diff hook before PR hook) so their internal effects run in the
+  // SAME relative order the pre-extraction single-component version had
+  // (React's per-component effect-ordering guarantee is by DECLARATION
+  // order) — see useGitDiffData.ts's header for why this matters.
   //
-  // Perf fix — idempotent by signature (see diffSignature's comment): a
-  // settled result IDENTICAL to what's already applied is a no-op — skips
-  // setRepo/setFiles/setSelectedPath entirely so `files`/the selected file
-  // keep their EXISTING object identity across a redundant refetch (nothing
-  // downstream re-renders or remounts). `lastAppliedSigRef` starts `null` so
-  // the very first settle always applies (there's nothing to compare yet).
-  //
-  // BUG FIX (stuck-loading) — `result.unchanged` (fetchDiff's
-  // belt-and-suspenders marker for main's `{ unchanged: true }` sentinel
-  // reaching onSettled — see its own doc comment) is a hard no-op here: its
-  // `files`/`repo` are meaningless placeholders, not a real settle, so
-  // applying them would be wrong (they'd wipe an already-correct `files[]`
-  // back to empty). This branch never touches lastAppliedSigRef either —
-  // there's no new signature to remember. It's still up to EACH CALL SITE
-  // to clear `loading` itself on this path (this function only ever owns
-  // files/repo/selection, never `loading`) — see the mount/mode-switch
-  // effects below, which is exactly where a "real" settle would have cleared
-  // it too.
-  const lastAppliedSigRef = useRef<string | null>(null)
-  const applyDiff = useCallback((result: DiffSettleResult) => {
-    if (result.unchanged) return
-    const sig = diffSignature(result)
-    if (sig === lastAppliedSigRef.current) return
-    lastAppliedSigRef.current = sig
-    setRepo(result.repo)
-    setFiles(result.files)
-    setSelectedPath((prev) => nextSelection(result.files, prev))
-  }, [])
+  // What stays HERE (not inside either hook) — the interwoven shared bits
+  // the spec's §6 calls out by name:
+  //   1. The workspace-change effect below — resets BOTH hooks' state (via
+  //      their exposed `resetForWorkspaceChange`) AND composers, in the
+  //      exact original step order, synchronously, BEFORE firing the initial
+  //      forceFresh fetch (the stuck-loading fix's ordering).
+  //   2. The single combined onStatusChanged/onFilesChanged subscription
+  //      below — calls BOTH hooks' `scheduleRefetch`/`scheduleRefreshPrDetail`
+  //      from ONE listener (LAG-LAYER #9's perf fix), and owns clearing BOTH
+  //      hooks' debounce refs + the shared cleanupRef in its own teardown.
+  //   3. The onPrChanged subscription below — its PR-loss cascade writes to
+  //      usePrState's setters AND useGitDiffData's setDiffMode AND composer
+  //      state, all in ONE synchronous callback (never split across hooks).
+  //   4. `cleanupRef` (from useGitDiffData) — shared across the diff-side
+  //      debounced refetch, runGitInit, AND onPrChanged's PR-diff refetch.
+  //   5. `submitComment`/`reviewComposerWiring`/`localCommentWiring` below —
+  //      cross-concern glue combining `diffModeRef` (diff hook) with the
+  //      submit callbacks (PR hook) and composer state (here).
+  const {
+    files,
+    repo,
+    loading,
+    setLoading,
+    selectedPath,
+    setSelectedPath,
+    diffStyle,
+    setDiffStyle,
+    diffMode,
+    setDiffMode,
+    diffModeRef,
+    conflictedPaths,
+    branch,
+    setBranch,
+    gitInitRunning,
+    gitInitError,
+    runGitInit,
+    applyDiff,
+    cleanupRef,
+    debounceRef,
+    scheduleRefetch,
+    resetForWorkspaceChange: resetDiffForWorkspaceChange
+  } = useGitDiffData(workspaceId, resetComposers)
 
-  // Phase 4-pre: tracks which `diffMode` was last fetched, so the mode-switch
-  // effect (below the workspace-change effect) can tell "the user actually
-  // flipped the toggle" apart from "diffMode just got reset to 'working' as
-  // a side effect of a workspace switch" — see that effect's own comment for
-  // why the distinction matters (double-fetch avoidance).
-  const lastFetchedModeForWorkspaceRef = useRef<DiffMode>('working')
+  const {
+    pr,
+    setPr,
+    prDetail,
+    setPrDetail,
+    reviewThreads,
+    setReviewThreads,
+    localReviews,
+    refetchReviewThreads,
+    refetchPrDetail,
+    submitGithubReviewComment,
+    submitLocalComment,
+    toggleLocalResolved,
+    deleteLocalComment,
+    scheduleRefreshPrDetail,
+    prDetailDebounceRef,
+    resetForWorkspaceChange: resetPrForWorkspaceChange
+  } = usePrState(workspaceId, diffMode, closeComposer)
 
-  // Initial load + workspace change. Resets files/selectedPath alongside
-  // loading — otherwise DiffTreePane/DiffContentPane would briefly render the
-  // PREVIOUS workspace's changed files/diff (loading=true but stale `files`)
-  // until the new workspace's git:diff settles (CodeRabbit finding, fixed).
+  // Initial load + workspace change (spec §3.2) — THE most important effect
+  // for ordering (see docs/learnings/gittab-state-machine.md §3.2/§6 point 1
+  // for the full writeup this comment summarizes). Resets BOTH hooks' state
+  // (via their exposed reset functions) AND composers/subTab, synchronously,
+  // in the SAME order the pre-extraction single-effect version used, THEN
+  // fires the initial forceFresh diff fetch — this ordering IS the
+  // stuck-loading fix. Kept as ONE block here (not split into each hook's own
+  // mount effect) precisely because the spec calls out that a naive split
+  // risks the two hooks' resets running in a different relative order than
+  // before, or racing a fast/cached fetch response.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: a workspace switch must show "Loading…" (with no stale prior-workspace data) immediately rather than waiting; the settled result arrives asynchronously via fetchDiff's callback below.
-    setLoading(true)
-    setFiles([])
-    setSelectedPath(null)
-    setGitInitError(null)
-    // A new workspace always starts back on the working-tree view — a
-    // PR-diff selection from the PREVIOUS workspace has no guarantee the new
-    // one even has a PR (see the module header's Phase 4-pre note); the
-    // toggle itself won't render until this workspace's own PR-detection
-    // settles, so falling back here keeps the state consistent with what's
-    // visible.
-    setDiffMode('working')
-    // A new workspace starts with no known PR until its own
-    // `github:prChanged` push arrives (see the subscription effect below) —
-    // otherwise a switch from a PR'd workspace to a non-PR one would keep
-    // showing the PREVIOUS workspace's slim header/tab-strip growth.
-    setPr(null)
-    // Same reset for the rich PR-detail payload (Phase 3b foundation) — a
-    // new workspace's Commits/Details/Checks tabs must not render the
-    // PREVIOUS workspace's PR data while the fresh prDetail fetch (below,
-    // keyed off `pr`) is still in flight.
-    setPrDetail(null)
-    // Phase 4a: same reset for review-comment threads — a new workspace's
-    // PR-diff mode (if it even has a PR) must not render the PREVIOUS
-    // workspace's stale comment threads while its own fetch is in flight.
-    setReviewThreads(null)
-    // Phase 4d: same reset for the LOCAL review-comment store — a new
-    // workspace's local comments are fetched fresh below (unlike
-    // reviewThreads, this has no PR dependency, so it's unconditional here
-    // rather than gated behind the PR-detection push).
-    setLocalReviews([])
-    // Pierre adoption batch 4 — same reset for the conflict-detection set: a
-    // new workspace's conflicted-paths list is fetched fresh below (unlike
-    // reviewThreads, this has no PR dependency, so it's unconditional here).
-    setConflictedPaths(new Set())
+    // Intentional: a workspace switch must show "Loading…" (with no stale
+    // prior-workspace data) immediately rather than waiting; the settled
+    // result arrives asynchronously via fetchDiff's callback below.
+    // resetDiffForWorkspaceChange sets loading=true as its own first step —
+    // no eslint-disable needed here since the direct setState calls it makes
+    // are inside a plain function call the rule doesn't see through (only
+    // the setSubTab call below, the first RAW setState the rule can see in
+    // this effect body, needs the disable).
+    resetDiffForWorkspaceChange()
+    // Phase 3a/3b/4a/4d: PR-side reset (pr/prDetail/reviewThreads/
+    // localReviews -> null/[]) + the unconditional fetchLocalReviews call —
+    // no PR dependency for localReviews, so it fires regardless of whether
+    // this workspace has one.
+    resetPrForWorkspaceChange(workspaceId)
     // Phase 4b: same reset for open pending composers — a composer anchored
     // to the PREVIOUS workspace's file/line has no meaning in the new one.
     resetComposers()
@@ -739,38 +698,20 @@ export function GitTab({
     // path below applies for an in-place PR-loss on the SAME workspace;
     // this covers the workspace-switch case that push wouldn't necessarily
     // fire for (CodeRabbit finding, fixed).
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- same intentional-reset rationale as resetDiffForWorkspaceChange above; the lint rule can't see through that function call to know loading/etc. were already reset there, so it flags this next direct setState call as if it were the first in the effect body.
     setSubTab((prev) => (prev === 'details' || prev === 'checks' ? 'diff' : prev))
-    // A new workspace has nothing in common with whatever signature the
-    // PREVIOUS workspace last applied — reset so applyDiff can't mistake a
-    // coincidentally-identical result (e.g. two different clean repos both
-    // signature to the same "no changes" value) for a no-op and skip
-    // applying the new workspace's (already correct, just-reset-above)
-    // state. Purely a correctness/future-proofing reset; harmless either way
-    // since files/selectedPath were already reset directly above.
-    lastAppliedSigRef.current = null
-    // Guards the mode-switch effect below from re-firing its own redundant
-    // fetch for this same workspace-change tick — see that effect's comment.
-    lastFetchedModeForWorkspaceRef.current = 'working'
-    // Phase 4d: fetch the new workspace's local review comments — no PR
-    // dependency (unlike reviewThreads), so this fires unconditionally on
-    // every workspace switch rather than waiting on a PR-detection push.
-    fetchLocalReviews(workspaceId, setLocalReviews)
-    // Pierre adoption batch 4 — fetch the new workspace's conflicted-paths
-    // list. Working-tree-only (see fetchConflicts' own doc comment) — safe to
-    // fire unconditionally here since a fresh workspace always starts back in
-    // 'working' mode (set above).
-    fetchConflicts(workspaceId, setConflictedPaths)
     // BUG FIX (stuck-loading) — `forceFresh: true`: this is the first fetch
     // after the full state reset just above (files=[], lastAppliedSigRef =
-    // null). Main's own signature cache (gitDiff.ts) is keyed by workspaceId
-    // and OUTLIVES this component's mount/unmount, so without forceFresh a
-    // reopened tab (or a workspace switched back to) could replay the SAME
-    // `{ unchanged: true }` sentinel main last emitted to a PREVIOUS mount of
-    // this tab — which this fresh instance has no data to fall back on. See
-    // gitDiff.ts's getWorkingTreeDiff + diffFetch.ts's fetchDiff for the full
-    // writeup. `setLoading(false)` runs unconditionally here (not inside
-    // applyDiff, which now no-ops on `result.unchanged`) so loading always
-    // clears even on that belt-and-suspenders path.
+    // null, both inside resetDiffForWorkspaceChange). Main's own signature
+    // cache (gitDiff.ts) is keyed by workspaceId and OUTLIVES this
+    // component's mount/unmount, so without forceFresh a reopened tab (or a
+    // workspace switched back to) could replay the SAME `{ unchanged: true }`
+    // sentinel main last emitted to a PREVIOUS mount of this tab — which this
+    // fresh instance has no data to fall back on. See gitDiff.ts's
+    // getWorkingTreeDiff + diffFetch.ts's fetchDiff for the full writeup.
+    // `setLoading(false)` runs unconditionally here (not inside applyDiff,
+    // which no-ops on `result.unchanged`) so loading always clears even on
+    // that belt-and-suspenders path.
     return fetchDiff(
       workspaceId,
       (result) => {
@@ -779,148 +720,29 @@ export function GitTab({
       },
       { forceFresh: true }
     )
-  }, [workspaceId, applyDiff, resetComposers])
-
-  // Phase 4-pre: refetch whenever the [Working tree | PR diff] toggle
-  // switches mode. Deliberately its own effect (not folded into the
-  // workspace-change effect above) so switching modes on the SAME workspace
-  // doesn't also reset pr/prDetail/subTab — only the diff data itself needs
-  // to change.
-  //
-  // `lastFetchedModeForWorkspaceRef` guards against a redundant duplicate
-  // fetch: the workspace-change effect above already fetches 'working' mode
-  // (and resets `diffMode` to 'working') as part of handling a workspace
-  // switch, so without this guard, EVERY workspace switch would ALSO trigger
-  // this effect (since `diffMode` may be transitioning pr -> working) and
-  // fire a second, redundant git:diff round-trip. The guard tracks which
-  // mode was last fetched for the CURRENT workspace/mode pair and skips a
-  // repeat.
-  useEffect(() => {
-    if (lastFetchedModeForWorkspaceRef.current === diffMode) return undefined
-    lastFetchedModeForWorkspaceRef.current = diffMode
-    // Intentional: switching modes must show "Loading…" (with no stale
-    // prior-mode data) immediately; the settled result arrives asynchronously
-    // via fetchForMode's callback below. (No eslint-disable needed here — the
-    // early-return guard above means this isn't the unconditional
-    // top-of-effect setState the react-hooks/set-state-in-effect rule flags.)
-    setLoading(true)
-    setFiles([])
-    setSelectedPath(null)
-    // Phase 4b: a mode flip (working <-> pr) invalidates any open composers
-    // — working-tree mode can't show them at all (no PR to anchor to), and
-    // entering PR-diff mode fresh has no composers of its own yet.
-    resetComposers()
-    lastAppliedSigRef.current = null
-    // Pierre adoption batch 4 — conflict detection is working-tree-only (see
-    // fetchConflicts' own doc comment): entering PR-diff mode clears the set
-    // (a PR diff's files can never match a working-tree conflicted path
-    // anyway); switching back to working-tree mode refetches it fresh.
-    setConflictedPaths(new Set())
-    if (diffMode !== 'pr') fetchConflicts(workspaceId, setConflictedPaths)
-    // BUG FIX (stuck-loading) — `forceFresh: true`, same rationale as the
-    // workspace-change effect above: this is the first working-tree fetch
-    // after this effect's own state reset just above, so it must not be able
-    // to receive a stale `{ unchanged: true }` sentinel left over from a
-    // PREVIOUS mount/mode-stretch of this same workspaceId. `setLoading(false)`
-    // runs unconditionally (applyDiff no-ops on `result.unchanged`).
-    return fetchForMode(
-      diffMode,
-      workspaceId,
-      (result) => {
-        applyDiff(result)
-        setLoading(false)
-      },
-      { forceFresh: true }
-    )
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- workspaceId intentionally excluded: this effect's guard already re-derives correctly on a workspace change (the workspace-change effect above sets the ref to 'working' in the same tick it resets diffMode to 'working', so this effect sees a no-op match and skips, exactly as intended).
-  }, [diffMode])
-
-  // Working-tree watcher (src/main/filesWatcher.ts) — see the module header's
-  // PERF FIX note. Mirrors FilesTab.tsx's own watchStart/watchStop effect
-  // exactly: start the main-process watch on mount (or workspaceId change),
-  // stop it on unmount, same .catch-only error handling (a failed
-  // start/stop here just means live-refresh degrades to the git.ts-only
-  // signal, not a crash). GitTab is only ever mounted while it's the active
-  // Workbench tab (see the module header's Gating note), so this start/stop
-  // is exactly scoped to "while the Git tab is showing" — same lifecycle
-  // FilesTab uses for "while the Files tab is showing". The two tabs being
-  // mutually exclusive is what makes both safely calling watchStart/watchStop
-  // non-conflicting: at most one of them is ever mounted at a time, so at
-  // most one of them ever holds filesWatcher's single-active slot.
-  useEffect(() => {
-    window.api.files
-      .watchStart(workspaceId)
-      .catch((e) => console.error('[GitTab] watchStart failed:', e))
-    return () => {
-      window.api.files
-        .watchStop(workspaceId)
-        .catch((e) => console.error('[GitTab] watchStop failed:', e))
-    }
-  }, [workspaceId])
+  }, [
+    workspaceId,
+    applyDiff,
+    setLoading,
+    resetDiffForWorkspaceChange,
+    resetPrForWorkspaceChange,
+    resetComposers
+  ])
 
   // Live refresh: git:statusChanged (branch/index change — src/main/git.ts's
   // .git watcher, already running unconditionally since terminal:mount) and
-  // files:changed (working-tree edits — filesWatcher.ts, now driven by THIS
-  // tab via the watchStart/watchStop effect above) both indicate the working
-  // TREE may have moved; refetch git:diff, debounced so a burst of either
-  // collapses into one round-trip.
-  //
-  // Phase 4-pre: deliberately WORKING-TREE-ONLY. A PR diff is `base...head`
-  // against already-committed history — neither a working-tree file save nor
-  // the local index changing has any bearing on it (see the module header's
-  // Phase 4-pre note: "don't wire PR-diff to files:changed, avoid churn").
-  // `diffModeRef` (kept in sync below, same "latest value without an effect
-  // dependency" pattern the existing `prRef` below uses) lets this callback
-  // check the CURRENT mode without resubscribing/restarting the debounce
-  // timer on every toggle flip.
-  const diffModeRef = useRef(diffMode)
+  // files:changed (working-tree edits — filesWatcher.ts, driven by
+  // useGitDiffData's own watchStart/watchStop effect) both indicate the
+  // working TREE may have moved. PERF FIX (LAG-LAYER #9): kept as ONE
+  // combined onStatusChanged listener (not two, one per hook) — two
+  // independent listeners on the same event previously meant every real
+  // status change did double dispatch work; splitting this across
+  // useGitDiffData/usePrState would resurrect that regression, so both
+  // hooks expose a plain callback (`scheduleRefetch`/`scheduleRefreshPrDetail`)
+  // this ONE subscription calls instead of subscribing themselves. `branch`
+  // is diff-hook state (feeds PrSlimHeader) but is only ever SET from this
+  // shared listener, so its setter is threaded through from useGitDiffData.
   useEffect(() => {
-    diffModeRef.current = diffMode
-  }, [diffMode])
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cleanupRef = useRef<(() => void) | null>(null)
-  // PERF FIX (LAG-LAYER #9): `prDetail`'s own onStatusChanged refresh used to
-  // be a SEPARATE subscription (see the module header's old "Phase 3b
-  // foundation" comment, now folded in below) — two independent listeners on
-  // the same event meant every real status change did double dispatch work.
-  // Collapsed into this ONE onStatusChanged listener: one filter, one
-  // cleanup. prDetail refresh is debounced on its OWN timer (not folded into
-  // scheduleRefetch's timer) and fires OUTSIDE the `diffModeRef` guard —
-  // it must run in BOTH diff modes (a PR's checks/commits can update while
-  // viewing PR-diff mode too), unlike the diff refetch which is
-  // working-tree-only. `prRef` (kept in sync just below) lets it skip the
-  // network round-trip entirely when there's no PR to refresh.
-  const prRef = useRef(pr)
-  useEffect(() => {
-    prRef.current = pr
-  }, [pr])
-  const prDetailDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    const scheduleRefetch = (): void => {
-      if (diffModeRef.current !== 'working') return
-      if (debounceRef.current !== null) clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => {
-        debounceRef.current = null
-        cleanupRef.current?.()
-        cleanupRef.current = fetchDiff(workspaceId, applyDiff)
-        // Pierre adoption batch 4 — refresh the conflict-detection set on the
-        // SAME debounced tick as the diff refetch above (a status/file change
-        // that moves the diff may also resolve or introduce a conflict).
-        // Already gated working-tree-only by this function's own early return.
-        fetchConflicts(workspaceId, setConflictedPaths)
-      }, REFRESH_DEBOUNCE_MS)
-    }
-    const scheduleRefreshPrDetail = (): void => {
-      if (prRef.current === null) return
-      if (prDetailDebounceRef.current !== null) clearTimeout(prDetailDebounceRef.current)
-      prDetailDebounceRef.current = setTimeout(() => {
-        prDetailDebounceRef.current = null
-        window.api.github
-          .prDetail(workspaceId)
-          .then(setPrDetail)
-          .catch((e2) => console.error('[GitTab] github:prDetail refresh failed:', e2))
-      }, REFRESH_DEBOUNCE_MS)
-    }
     const unsubStatus = window.api.git.onStatusChanged((e) => {
       if (e.workspaceId !== workspaceId) return
       setBranch(e.status.branch)
@@ -933,60 +755,37 @@ export function GitTab({
     return () => {
       unsubStatus()
       unsubFiles()
+      /* eslint-disable react-hooks/exhaustive-deps -- `debounceRef`/
+         `prDetailDebounceRef`/`cleanupRef` are mutable timer-handle/cancel-fn
+         BOXES (from useGitDiffData / usePrState), not DOM refs — this cleanup
+         deliberately reads whatever is CURRENTLY pending at teardown time (the
+         latest scheduled timer / in-flight fetch), not a value snapshotted when
+         this effect ran; that's the entire point of a ref here, matching the
+         pre-extraction single-effect version's identical `.current` reads in
+         its own cleanup. Clearing BOTH debounce timers (diff + prDetail) on
+         teardown is required: a stale workspace's pending prDetail refresh must
+         not survive a workspace switch and clobber the new workspace's data. */
       if (debounceRef.current !== null) clearTimeout(debounceRef.current)
       if (prDetailDebounceRef.current !== null) clearTimeout(prDetailDebounceRef.current)
       cleanupRef.current?.()
       cleanupRef.current = null
+      /* eslint-enable react-hooks/exhaustive-deps */
     }
-  }, [workspaceId, applyDiff])
+  }, [
+    workspaceId,
+    scheduleRefetch,
+    scheduleRefreshPrDetail,
+    setBranch,
+    debounceRef,
+    prDetailDebounceRef,
+    cleanupRef
+  ])
 
-  // BUG FIX (this pass): fetch-on-mount fallback for `pr` — see the module
-  // header's "BUG FIX" note for the full root-cause writeup. `startGitWatch`'s
-  // initial `github:prChanged` push (subscribed to just below) is a ONE-SHOT
-  // event fired asynchronously at `terminal:mount` time; by the time the user
-  // actually navigates to the Git sub-tab (GitTab is unmounted until then —
-  // see the module header's Gating note) that push has almost always already
-  // fired, so the subscription below is registered too late to ever catch it
-  // and `pr` stayed null forever. This effect calls `github:prForWorkspace`
-  // directly on mount and on every workspace change, in ADDITION to the
-  // subscription (which still owns live updates while mounted — a branch
-  // switch or PR update while the tab is open). Guarded against
-  // setState-after-unmount the same way fetchDiff/fetchPrDiff above are;
-  // deliberately does NOT reset `pr` to null itself on cleanup — the
-  // workspace-change effect already does that reset synchronously (so no
-  // stale-previous-workspace flash), and a fast unmount/remount here should
-  // just let the next mount's own fetch settle rather than racing a clear.
-  useEffect(() => {
-    let cancelled = false
-    window.api.github
-      .prForWorkspace(workspaceId)
-      .then((fetchedPr) => {
-        if (cancelled) return
-        // Race guard: `onPrChanged`'s live subscription (below) may resolve
-        // a fresher, real PR before this slower fetch settles (both hit the
-        // same cwd/branch, but the push can win the race) — never let this
-        // fetch clobber an already-set non-null `pr` back to null. A genuine
-        // PR-loss (branch switch, close) is still handled by the push's own
-        // `e.pr === null` branch below, which this guard doesn't touch.
-        setPr((prev) => (prev !== null && fetchedPr === null ? prev : fetchedPr))
-      })
-      .catch((e) => {
-        console.error('[GitTab] github:prForWorkspace failed:', e)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId])
-
-  // Phase 3a: PR detection. `startGitWatch` (src/main/git.ts, running
-  // unconditionally since terminal:mount) already resolves the current
-  // branch's PR and pushes it over `github:prChanged` — once on initial
-  // watch registration, again on every branch change, and again on a
-  // re-mount (self-heal fix, same pass) — subscribed to here for LIVE
-  // updates while mounted; the fetch-on-mount effect above covers the
-  // one-shot-push-already-fired gap this subscription alone can't. Filtered
-  // to this workspace the same way the git:statusChanged/files:changed
-  // subscriptions above are.
+  // Phase 3a: PR detection — the onPrChanged subscription (unchanged, kept
+  // in GitTab per spec §6 point 2: its PR-loss cascade writes to BOTH hooks'
+  // state AND composer state in one synchronous callback, which must not
+  // split across effects/hooks — see the doc comment on `e.pr === null`
+  // below for the full "why here, not an effect keyed on pr" rationale).
   useEffect(() => {
     return window.api.github.onPrChanged((e) => {
       if (e.workspaceId !== workspaceId) return
@@ -1004,15 +803,16 @@ export function GitTab({
         setSubTab((prev) => (prev === 'details' || prev === 'checks' ? 'diff' : prev))
         // Same "clear immediately rather than wait on a round-trip" reset
         // for the rich PR-detail payload (Phase 3b foundation) — done here
-        // (inside this event callback) rather than in the prDetail-fetch
-        // effect below, for the same cascading-render reason noted above.
+        // (inside this event callback) rather than in usePrState's own
+        // prDetail-fetch effect, for the same cascading-render reason noted
+        // above.
         setPrDetail(null)
         // Phase 4-pre: the PR-diff toggle is about to unmount out from under
         // the user for the same reason the Details/Checks tabs are above —
         // fall back to the working-tree view rather than leaving `diffMode`
-        // pointed at 'pr' with no PR left to diff against. The mode-switch
-        // effect (which owns fetching) reacts to this state change on its
-        // own; no fetch call needed here.
+        // pointed at 'pr' with no PR left to diff against. useGitDiffData's
+        // own mode-switch effect (which owns fetching) reacts to this state
+        // change on its own; no fetch call needed here.
         setDiffMode((prev) => (prev === 'pr' ? 'working' : prev))
         // Phase 4a: the review-comment threads belonged to the PR that just
         // disappeared — clear them alongside the diffMode/prDetail resets
@@ -1026,10 +826,12 @@ export function GitTab({
         // Phase 4-pre: the PR changed (branch switch to a DIFFERENT PR'd
         // branch, or the same PR updated) while already viewing PR-diff mode
         // — refetch so the pane reflects the new/updated PR rather than the
-        // previous one's stale diff. The mode-switch effect's own `diffMode`
-        // dependency won't re-fire here (the mode itself didn't change), so
-        // this is the one place that needs an explicit refetch call for this
-        // case.
+        // previous one's stale diff. useGitDiffData's own mode-switch
+        // effect's `diffMode` dependency won't re-fire here (the mode itself
+        // didn't change), so this is the one place that needs an explicit
+        // refetch call for this case. `cleanupRef` is the SAME shared ref
+        // useGitDiffData's debounced live-refresh + runGitInit use — only
+        // the latest in-flight fetch's callback may ever apply.
         cleanupRef.current?.()
         cleanupRef.current = fetchPrDiff(workspaceId, applyDiff)
         // Phase 4a: same "PR changed while already in PR-diff mode" case —
@@ -1038,112 +840,17 @@ export function GitTab({
         fetchReviewComments(workspaceId, setReviewThreads)
       }
     })
-  }, [workspaceId, applyDiff, resetComposers])
-
-  // Phase 4a: fetch (or clear) review-comment threads on entering/leaving
-  // PR-diff mode. Deliberately its own effect (not folded into the
-  // mode-switch effect above, which owns the DIFF fetch) so a PR-diff-mode
-  // refetch of the diff itself doesn't also need to know about comments —
-  // this just tracks `diffMode`/`pr` directly. `diffMode !== 'pr'` clears
-  // threads to null (working-tree mode never shows annotations — comments
-  // anchor to the PR diff, not the live working tree, per
-  // docs/learnings/pr-comments.md's Q1 gap note) rather than leaving a stale
-  // PR-diff-mode fetch around for a mode the user just switched away from.
-  //
-  // `reviewThreadsClearedRef` guards the "clear" branch's setState so it's
-  // not an unconditional top-of-effect call (react-hooks/set-state-in-effect
-  // flags that shape) — it only actually clears once per non-PR-diff
-  // stretch, mirroring the mode-switch effect's own early-return-guard
-  // pattern above.
-  const reviewThreadsClearedRef = useRef(true)
-  useEffect(() => {
-    if (diffMode !== 'pr' || pr === null) {
-      if (!reviewThreadsClearedRef.current) {
-        reviewThreadsClearedRef.current = true
-        setReviewThreads(null)
-      }
-      return undefined
-    }
-    reviewThreadsClearedRef.current = false
-    let cancelled = false
-    window.api.github
-      .prReviewComments(workspaceId)
-      .then((threads) => {
-        if (!cancelled) setReviewThreads(threads)
-      })
-      .catch((e) => {
-        console.error('[GitTab] github:prReviewComments failed:', e)
-        if (!cancelled) setReviewThreads(null)
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the PRIMITIVE pr?.number rather than the whole `pr` object, same rationale as the prDetail-fetch effect above: onPrChanged may push a referentially-new-but-equal PR on every branch-watch tick, and this effect must not refetch on those no-op pushes.
-  }, [workspaceId, diffMode, pr?.number])
-
-  // Phase 3b foundation: fetch the rich `github:prDetail` payload backing the
-  // Commits/Details/Checks sub-tabs (see the module header's "Phase 3b
-  // foundation" note) whenever a PR exists for this workspace/branch —
-  // re-runs on `pr.number`/`pr.state` change (a new/updated PR, e.g. after a
-  // branch switch or a merge/close) rather than on the whole `pr` object
-  // reference, since `onPrChanged` above may push an equivalent-but-new
-  // object on every branch-watch tick. The `pr === null` case needs no work
-  // here at all — `prDetail` is already cleared synchronously wherever `pr`
-  // itself is cleared (the workspace-switch reset above, and the
-  // onPrChanged(null) branch above), so this effect simply has nothing to
-  // fetch and skips straight to a no-op cleanup (avoids a setState-in-effect
-  // lint error from clearing it a second time here).
-  useEffect(() => {
-    if (pr === null) return undefined
-    let cancelled = false
-    window.api.github
-      .prDetail(workspaceId)
-      .then((detail) => {
-        if (!cancelled) setPrDetail(detail)
-      })
-      .catch((e) => {
-        console.error('[GitTab] github:prDetail failed:', e)
-        if (!cancelled) setPrDetail(null)
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the PRIMITIVE pr?.number/pr?.state rather than the whole `pr` object: onPrChanged (above) may push a referentially-new-but-equal PR on every branch-watch tick, and this effect must not refetch prDetail on those no-op pushes.
-  }, [workspaceId, pr?.number, pr?.state])
-
-  // PERF FIX (LAG-LAYER #9): prDetail's own status-driven refresh used to be
-  // a second, independent `git:statusChanged` subscription here — it's now
-  // folded into the single onStatusChanged listener above (see that effect's
-  // own doc comment); `prRef` is declared there too since both the diff- and
-  // prDetail-refresh callbacks need the SAME "latest pr without an effect
-  // dependency" ref.
-
-  // Phase 2 Git-init: runs git:init, then — regardless of outcome — clears
-  // the running flag; on success, explicitly refetches git:diff (a brand-new
-  // `.git` dir may not be picked up by the existing watchers immediately, so
-  // this doesn't rely on live-refresh) which naturally moves the tab into
-  // the clean-state render branch once `repo` flips true with empty `files`.
-  const runGitInit = useCallback(() => {
-    setGitInitRunning(true)
-    setGitInitError(null)
-    window.api.git
-      .init(workspaceId)
-      .then((result) => {
-        if (result.ok) {
-          cleanupRef.current?.()
-          cleanupRef.current = fetchDiff(workspaceId, applyDiff)
-        } else {
-          setGitInitError(result.error)
-        }
-      })
-      .catch((e) => {
-        console.error('[GitTab] git:init failed:', e)
-        setGitInitError(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        setGitInitRunning(false)
-      })
-  }, [workspaceId, applyDiff])
+  }, [
+    workspaceId,
+    applyDiff,
+    resetComposers,
+    diffModeRef,
+    cleanupRef,
+    setPr,
+    setPrDetail,
+    setDiffMode,
+    setReviewThreads
+  ])
 
   // If the currently-selected file drops out of the diff (e.g. the user
   // committed/discarded it externally), `selectedFile` below simply derives
@@ -1166,109 +873,6 @@ export function GitTab({
     resetComposers()
   }, [selectedPath, resetComposers])
 
-  // Phase 4c: shared refetch-on-success callback — both a new-comment post
-  // (submitGithubReviewComment below) and a Reply post (ReviewCommentThread's
-  // own composer, via renderReviewCommentAnnotation's onRefetchThreads) need
-  // to refresh reviewThreads after a successful write so the just-posted
-  // comment/reply shows up as part of its thread immediately. Reuses the
-  // existing fetchReviewComments one-shot helper (defined above, alongside
-  // fetchDiff/fetchPrDiff) rather than duplicating its .then/.catch shape.
-  const refetchReviewThreads = useCallback(() => {
-    fetchReviewComments(workspaceId, setReviewThreads)
-  }, [workspaceId])
-
-  // Phase 4d: same "refetch after a successful write" callback for the LOCAL
-  // review-comment store — add/resolve/delete all need localReviews to
-  // reflect the just-applied mutation immediately rather than waiting for
-  // the next incidental refresh (there is no live-refresh/push channel for
-  // this local, mutation-driven data — see reviewStore.ts's header).
-  const refetchLocalReviews = useCallback(() => {
-    fetchLocalReviews(workspaceId, setLocalReviews)
-  }, [workspaceId])
-
-  // Phase 4c: same "refetch after a successful write" callback for the
-  // Details tab's general-comment composer — a successful github:
-  // postGeneralComment needs prDetail.comments.general to include the new
-  // comment so it shows up in the timeline immediately. Direct one-shot
-  // fetch (not wrapped in its own named helper like fetchReviewComments)
-  // since this is the only caller.
-  const refetchPrDetail = useCallback(() => {
-    window.api.github
-      .prDetail(workspaceId)
-      .then(setPrDetail)
-      .catch((e) => console.error('[GitTab] github:prDetail refetch failed:', e))
-  }, [workspaceId])
-
-  // Phase 4c: posts a NEW line-anchored review comment for real, via
-  // github:postReviewComment. `commitId` is the PR's head commit sha — taken
-  // from `prDetail.commits` (gh returns them oldest-first, confirmed live:
-  // `commits[commits.length - 1].oid === headRefOid`), so the comment
-  // anchors to the SAME commit the PR diff currently being viewed is
-  // rendered against. Left undefined when prDetail/commits haven't loaded
-  // yet (rare — PR-diff mode implies a PR exists, so prDetail is normally
-  // already populated by the time a composer can even open); the main
-  // process resolves its own live head sha in that case (see
-  // resolvePrWriteContext in src/main/github.ts), so omitting it here still
-  // succeeds rather than failing outright.
-  //
-  // On success: close the composer (removes it from openComposers) AND
-  // refetch reviewThreads so the newly-posted comment appears as a thread
-  // immediately, rather than waiting for the next incidental refresh. On
-  // failure: return the result as-is so CommentComposer keeps the composer
-  // open with the typed body + shows the inline error (never silently
-  // swallowed) — closeComposer/refetch are NOT called on failure, matching
-  // the task's "composer stays with the text so the user can retry".
-  const submitGithubReviewComment = useCallback(
-    async (draft: CommentDraft): Promise<GhSubmitResult> => {
-      const headOid = prDetail?.commits[prDetail.commits.length - 1]?.oid
-      const result = await window.api.github.postReviewComment({
-        workspaceId,
-        path: draft.path,
-        line: draft.line,
-        side: draft.side,
-        body: draft.body,
-        commitId: headOid
-      })
-      if (!result.ok) return result
-      closeComposer(draft.id)
-      refetchReviewThreads()
-      return { ok: true }
-    },
-    [workspaceId, prDetail, closeComposer, refetchReviewThreads]
-  )
-
-  // Phase 4d: saves a NEW comment to the LOCAL store instead of posting to
-  // GitHub — the [GitHub | Local] source toggle's 'local' branch. reviews:add
-  // is total (a plain SQLite insert — see reviewStore.ts), so this can't fail
-  // the way a `gh` network call can; still wrapped in the SAME
-  // Promise<GhSubmitResult> contract CommentComposer expects (so it's a
-  // drop-in alternative to submitGithubReviewComment, not a special case the
-  // composer needs to know about) with a .catch belt-and-suspenders for an
-  // unexpected IPC failure. `prNumber` is threaded from `pr` (Phase 3a) so a
-  // local comment made while viewing a PR's diff records which PR it was
-  // made against — even though local comments don't require one.
-  const submitLocalComment = useCallback(
-    async (draft: CommentDraft): Promise<GhSubmitResult> => {
-      try {
-        await window.api.reviews.add({
-          workspaceId,
-          prNumber: pr?.number ?? null,
-          path: draft.path,
-          line: draft.line,
-          startLine: draft.startLine ?? null,
-          side: draft.side,
-          body: draft.body
-        })
-      } catch (e) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) }
-      }
-      closeComposer(draft.id)
-      refetchLocalReviews()
-      return { ok: true }
-    },
-    [workspaceId, pr, closeComposer, refetchLocalReviews]
-  )
-
   // Phase 5 (3-button composer redesign): the NEW-comment composer's submit
   // dispatcher — routes on the `source` the CLICKED button carried (see
   // CommentComposer.tsx's module header), replacing the old design where a
@@ -1283,35 +887,15 @@ export function GitTab({
   // renderReviewCommentAnnotation's `allowGithub` gating, itself sourced from
   // `allowGithubComments` which is false outside PR-diff mode), so this is
   // belt-and-suspenders against a stale button reference rather than a path
-  // expected to trigger in practice.
+  // expected to trigger in practice. Cross-concern glue (diffModeRef from the
+  // diff hook + submit callbacks from the PR hook) — stays in GitTab per the
+  // spec's §6 point 9.
   const submitComment = useCallback(
     (draft: CommentDraft, source: CommentSource): Promise<GhSubmitResult> =>
       diffModeRef.current !== 'pr' || source === 'local'
         ? submitLocalComment(draft)
         : submitGithubReviewComment(draft),
-    [submitLocalComment, submitGithubReviewComment]
-  )
-
-  // Phase 4d: resolve-toggle + delete for a LOCAL comment's card — both
-  // mutate via the reviewStore IPCs then refetch, mirroring
-  // submitLocalComment's own refetch-on-success convention.
-  const toggleLocalResolved = useCallback(
-    (comment: LocalReviewComment) => {
-      window.api.reviews
-        .setResolved(comment.id, !comment.resolved)
-        .then(refetchLocalReviews)
-        .catch((e) => console.error('[GitTab] reviews:setResolved failed:', e))
-    },
-    [refetchLocalReviews]
-  )
-  const deleteLocalComment = useCallback(
-    (comment: LocalReviewComment) => {
-      window.api.reviews
-        .delete(comment.id)
-        .then(refetchLocalReviews)
-        .catch((e) => console.error('[GitTab] reviews:delete failed:', e))
-    },
-    [refetchLocalReviews]
+    [submitLocalComment, submitGithubReviewComment, diffModeRef]
   )
 
   // Phase 4b/5: the wiring DiffContentPane needs to drive the gutter "+"/
