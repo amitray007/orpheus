@@ -421,6 +421,13 @@ export interface InvokeChannelMap {
   // this to gate its @pierre/diffs <UnresolvedFile> conflict-viewer branch;
   // it performs NO git mutation of any kind.
   'git:conflicts': { req: [{ workspaceId: string }]; res: string[] }
+  // Per-hunk "Revert" feature (setting-gated, AppUiState.hunkActionsEnabled) —
+  // READ-ONLY `git show HEAD:<path>`, the file's content at HEAD. Resolves
+  // `workspaceId` -> cwd like git:diff/git:init above. Total (never
+  // rejects) — `null` for an untracked/new file (no HEAD version), a
+  // non-repo, or any git failure. See docs/learnings/hunk-accept-reject.md
+  // and src/main/git.ts's getFileAtHead.
+  'git:showHead': { req: [{ workspaceId: string; path: string }]; res: string | null }
   // Workbench Files tab — file tree + viewer data sources (Stage A). All three
   // resolve the workspace's cwd from `workspaceId` internally; res types live
   // in src/shared/types.ts. See docs/learnings/pierre-libraries.md §7.

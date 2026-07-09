@@ -463,7 +463,12 @@ const api = {
     // Pierre adoption batch 4 (safe/read-only slice) — conflict DETECTION
     // only (no resolve/write-back). Resolves the workspace's cwd internally,
     // like diff/init above. See src/main/git.ts::getConflictedPaths.
-    conflicts: (workspaceId: string): Promise<string[]> => invoke('git:conflicts', { workspaceId })
+    conflicts: (workspaceId: string): Promise<string[]> => invoke('git:conflicts', { workspaceId }),
+    // Per-hunk "Revert" feature (setting-gated) — the file's content at HEAD,
+    // for processFile's oldFile side. Resolves the workspace's cwd
+    // internally, like diff/init above. See src/main/git.ts::getFileAtHead.
+    showHead: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('git:showHead', { workspaceId, path })
   },
   // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
   // from `workspaceId` in the main process; see src/main/ipc/files.ts.

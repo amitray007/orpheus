@@ -943,19 +943,59 @@ export function GitTab({
   // Token-hover popover toggle (default OFF — see AppUiState.tokenHoverEnabled's
   // doc comment). SHARED with the Files tab's own TreeOptionsPopover toggle.
   const tokenHoverEnabled = uiState?.tokenHoverEnabled ?? UI_STATE_DEFAULTS.tokenHoverEnabled
+  // Per-hunk "Revert" toggle (default OFF — see
+  // AppUiState.hunkActionsEnabled's doc comment). Git-diff only.
+  const hunkActionsEnabled = uiState?.hunkActionsEnabled ?? UI_STATE_DEFAULTS.hunkActionsEnabled
   const diffOptions = useMemo(
-    () => ({ wrapLines, flattenEmptyDirs, tokenHoverEnabled }),
-    [wrapLines, flattenEmptyDirs, tokenHoverEnabled]
+    () => ({ wrapLines, flattenEmptyDirs, tokenHoverEnabled, hunkActionsEnabled }),
+    [wrapLines, flattenEmptyDirs, tokenHoverEnabled, hunkActionsEnabled]
   )
   const setDiffOptions = useCallback(
-    (next: { wrapLines: boolean; flattenEmptyDirs: boolean; tokenHoverEnabled: boolean }) => {
+    (next: {
+      wrapLines: boolean
+      flattenEmptyDirs: boolean
+      tokenHoverEnabled: boolean
+      hunkActionsEnabled: boolean
+    }) => {
       updateUiState({
         gitDiffWrapLines: next.wrapLines,
         filesFlattenEmptyDirs: next.flattenEmptyDirs,
-        tokenHoverEnabled: next.tokenHoverEnabled
+        tokenHoverEnabled: next.tokenHoverEnabled,
+        hunkActionsEnabled: next.hunkActionsEnabled
       })
     },
     []
+  )
+
+  // Per-hunk "Revert" (setting-gated) — DiffContentPane calls this after
+  // every revert attempt (success or failure). BUG FIX (stale-diff-after-
+  // revert): this used to call `scheduleRefetch()`, which (a) debounces
+  // 130ms and (b) omits `forceFresh`, so it can hit main's own
+  // last-signature cache (see gitDiff.ts's getWorkingTreeDiff doc comment) —
+  // observed live: the hunk genuinely reverted on disk, but the diff pane
+  // kept showing the pre-revert patch until switching files away and back
+  // (which forces a fresh fetch via the mode/selection-reset path). A
+  // direct user click on "Revert" is exactly the case
+  // docs/learnings/hunk-accept-reject.md §4 point 8 calls out as needing an
+  // IMMEDIATE, uncached refetch, not the live-refresh debounce built for
+  // background file-watch churn. Calling fetchDiff directly with
+  // `forceFresh: true` (same pattern as runGitInit's post-init refetch
+  // below) bypasses BOTH the debounce and the signature-cache lookup, so
+  // the very next tick reflects the just-written file — no stale render,
+  // no need to navigate away and back. `conflictedPaths` isn't refetched
+  // here (unlike scheduleRefetch's tick) — reverting a hunk can't itself
+  // create/resolve a merge conflict, and useGitDiffData doesn't expose its
+  // conflicts setter outside the hook, so there's nothing meaningful to
+  // refresh on this path. No toast/banner infra exists in this codebase's
+  // workbench today, so a failure is logged like every other best-effort
+  // IPC call here rather than inventing new UI chrome for this one feature.
+  const handleHunkReverted = useCallback(
+    (error: string | null) => {
+      if (error !== null) console.error('[GitTab] hunk revert failed:', error)
+      cleanupRef.current?.()
+      cleanupRef.current = fetchDiff(workspaceId, applyDiff, { forceFresh: true })
+    },
+    [workspaceId, applyDiff, cleanupRef]
   )
 
   // Draggable tree/code split — SHARED width with FilesTab's tree (see
@@ -1079,6 +1119,8 @@ export function GitTab({
           diffStyle={diffStyle}
           wrapLines={wrapLines}
           tokenHoverEnabled={tokenHoverEnabled}
+          hunkActionsEnabled={hunkActionsEnabled}
+          onHunkReverted={handleHunkReverted}
           workspaceId={workspaceId}
           branch={branch}
           gitInitRunning={gitInitRunning}
@@ -1130,6 +1172,14 @@ interface GitTabBodyProps {
    *  at all and whether <TokenHoverPopover> mounts. See its own doc comment
    *  in shared/types.ts. */
   tokenHoverEnabled: boolean
+  /** Per-hunk "Revert" affordance toggle (AppUiState.hunkActionsEnabled,
+   *  default OFF) — threaded straight through to DiffContentPane. See its
+   *  own doc comment / docs/learnings/hunk-accept-reject.md. */
+  hunkActionsEnabled: boolean
+  /** Called after every revert attempt (success or failure) — threaded
+   *  straight through to DiffContentPane. See GitTab's own doc comment on
+   *  handleHunkReverted. */
+  onHunkReverted: (error: string | null) => void
   workspaceId: string
   branch: string | null
   gitInitRunning: boolean
@@ -1188,6 +1238,8 @@ function GitTabBodyImpl({
   diffStyle,
   wrapLines,
   tokenHoverEnabled,
+  hunkActionsEnabled,
+  onHunkReverted,
   workspaceId,
   branch,
   gitInitRunning,
@@ -1280,6 +1332,8 @@ function GitTabBodyImpl({
           conflictedPaths={conflictedPaths}
           onTokenEnter={tokenHoverEnabled ? tokenHover.onTokenEnter : noopTokenEnter}
           onTokenLeave={tokenHoverEnabled ? tokenHover.onTokenLeave : noopTokenLeave}
+          hunkActionsEnabled={hunkActionsEnabled}
+          onHunkReverted={onHunkReverted}
         />
       </div>
       {/* PERF FIX (token-hover lift): lives here now (a GitTabBody sibling of

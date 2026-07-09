@@ -31,6 +31,11 @@ export const UI_STATE_DEFAULTS = {
   // always-on and intrusive while just reading — see GitDiffOptionsPopover /
   // TreeOptionsPopover "Token hover" toggle).
   tokenHoverEnabled: false,
+  // Per-hunk "Revert" on the working-tree diff — mirrors app_ui_state's
+  // hunk_actions_enabled SQL DEFAULT in schema.ts. Opt-in, default OFF (it
+  // mutates the working tree — see GitDiffOptionsPopover's "Hunk revert"
+  // toggle and docs/learnings/hunk-accept-reject.md).
+  hunkActionsEnabled: false,
   // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
   // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
   // and GitTab's DiffTreePane (one draggable divider width for both).

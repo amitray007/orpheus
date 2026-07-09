@@ -53,6 +53,8 @@ import {
 } from './reviewAnnotations'
 import { renderReviewCommentAnnotation } from './renderReviewCommentAnnotation'
 import { GutterAddCommentButton } from './GutterAddCommentButton'
+import { GutterRevertHunkButton } from './GutterRevertHunkButton'
+import { hunkIndexForLine, revertHunk } from './hunkRevert'
 
 const VIEWER_THEME = { dark: 'pierre-dark', light: 'pierre-light' } as const
 
@@ -408,7 +410,8 @@ function anchorFromRange(range: SelectedLineRange): { line: number; side: 'LEFT'
 function buildDiffOptions(
   diffStyle: DiffStyle,
   wrapLines: boolean,
-  hasComposers: boolean
+  hasComposers: boolean,
+  hunkActionsEnabled: boolean
 ): FileDiffOptions<ReviewAnnotationMeta> {
   const base: FileDiffOptions<ReviewAnnotationMeta> = {
     theme: VIEWER_THEME,
@@ -441,9 +444,20 @@ function buildDiffOptions(
     // library default; set explicitly for self-documentation.
     hunkSeparators: 'line-info'
   }
-  if (!hasComposers) return base
+  // REGRESSION FIX (invisible gutter "+") — see this function's own doc
+  // comment above: required for @pierre/diffs' InteractionManager to ever
+  // create the `[data-gutter-utility-slot]` element `renderGutterUtility`
+  // renders into. Safe alongside `renderGutterUtility` since
+  // `onGutterUtilityClick` (the option that actually conflicts with it) is
+  // never set here. Gated on EITHER affordance needing the slot — the
+  // per-hunk "Revert" button (hunkActionsEnabled) needs this exactly like
+  // the comment "+" (hasComposers) does, and either alone is enough to
+  // justify creating the slot.
+  const withGutterUtility =
+    hasComposers || hunkActionsEnabled ? { ...base, enableGutterUtility: true } : base
+  if (!hasComposers) return withGutterUtility
   return {
-    ...base,
+    ...withGutterUtility,
     // Select-to-comment: scoped to reporting the FINAL committed selection
     // (`onLineSelected`, fired once per gesture) rather than every
     // in-progress tick (`onLineSelectionChange`) — opening a composer per
@@ -452,15 +466,9 @@ function buildDiffOptions(
     // useReviewComposers.open. A `null` range means the selection was
     // cleared (e.g. clicking elsewhere) — nothing to open. `onLineSelected`
     // itself is set by the caller (see this function's own doc comment on
-    // why it can't be a parameter here).
-    enableLineSelection: true,
-    // REGRESSION FIX (invisible gutter "+") — see this function's own doc
-    // comment above: required for @pierre/diffs' InteractionManager to ever
-    // create the `[data-gutter-utility-slot]` element `renderGutterUtility`
-    // renders into. Safe alongside `renderGutterUtility` since
-    // `onGutterUtilityClick` (the option that actually conflicts with it) is
-    // never set here.
-    enableGutterUtility: true
+    // why it can't be a parameter here). Comment-composer-only — the
+    // per-hunk "Revert" affordance doesn't use line selection.
+    enableLineSelection: true
   }
 }
 
@@ -664,6 +672,16 @@ export interface DiffContentPaneProps {
    *  `options` useMemo below or defeat this component's React.memo. */
   onTokenEnter: UseTokenHoverPopoverResult['onTokenEnter']
   onTokenLeave: UseTokenHoverPopoverResult['onTokenLeave']
+  /** Per-hunk "Revert" affordance (AppUiState.hunkActionsEnabled, default
+   *  OFF — see docs/learnings/hunk-accept-reject.md). When true, the gutter
+   *  utility slot ALSO renders a "Revert hunk" button alongside the existing
+   *  comment "+" (see GutterRevertHunkButton's own doc comment on how the
+   *  two coexist in one shared slot). Mutates the working tree directly on
+   *  click — see hunkRevert.ts. */
+  hunkActionsEnabled: boolean
+  /** Called after a successful (or failed) revert so the caller can refetch
+   *  the diff / surface an error toast. `null` on success with no error. */
+  onHunkReverted: (error: string | null) => void
 }
 
 /** Phase 4b/4c — the subset of `useReviewComposers`'s result DiffContentPane
@@ -707,7 +725,9 @@ function DiffContentPaneImpl({
   allowGithubComments,
   conflictedPaths,
   onTokenEnter,
-  onTokenLeave
+  onTokenLeave,
+  hunkActionsEnabled,
+  onHunkReverted
 }: DiffContentPaneProps): React.JSX.Element {
   // Crash fix #1 — per-file "show anyway" override for an oversized diff.
   // Lives here (not keyed to a single file, since DiffContentPane itself
@@ -744,6 +764,37 @@ function DiffContentPaneImpl({
     // which is a no-op change from the prior behavior.
     const startLine = range.start !== range.end ? range.start : undefined
     currentComposers.open(currentPath, side, line, startLine)
+  }, [])
+
+  // Per-hunk "Revert" (setting-gated, hunkActionsEnabled) — an in-flight
+  // guard prevents double-firing while the async fetch/write is pending (the
+  // button has no visual "loading" state; a second click before the first
+  // completes would race two writes against the same file). Reads the
+  // CURRENT `file`/`workspaceId`/`onHunkReverted` off latestRevertRef rather
+  // than closing over render values, matching onLineSelected's own stable-
+  // identity pattern above.
+  const revertInFlightRef = useRef(false)
+  const latestRevertRef = useRef({ workspaceId, file, onHunkReverted })
+  useEffect(() => {
+    latestRevertRef.current = { workspaceId, file, onHunkReverted }
+  })
+  const handleRevertHunk = useCallback((lineNumber: number) => {
+    const {
+      workspaceId: currentWorkspaceId,
+      file: currentFile,
+      onHunkReverted: notify
+    } = latestRevertRef.current
+    if (currentFile === null || revertInFlightRef.current) return
+    const hunkIndex = hunkIndexForLine(currentFile.patch, lineNumber)
+    if (hunkIndex === null) return
+    revertInFlightRef.current = true
+    revertHunk(currentWorkspaceId, currentFile, hunkIndex)
+      .then((result) => {
+        notify(result.ok ? null : result.error)
+      })
+      .finally(() => {
+        revertInFlightRef.current = false
+      })
   }, [])
 
   // Pierre adoption Batch 3 — token hover popover. PERF FIX (token-hover
@@ -788,14 +839,22 @@ function DiffContentPaneImpl({
   // memo's array.
   const hasComposers = composers !== null
   const options = useMemo(() => {
-    const base = buildDiffOptions(diffStyle, wrapLines, hasComposers)
+    const base = buildDiffOptions(diffStyle, wrapLines, hasComposers, hunkActionsEnabled)
     const withTokenHover = {
       ...base,
       onTokenEnter,
       onTokenLeave
     }
     return hasComposers ? { ...withTokenHover, onLineSelected } : withTokenHover
-  }, [diffStyle, wrapLines, hasComposers, onLineSelected, onTokenEnter, onTokenLeave])
+  }, [
+    diffStyle,
+    wrapLines,
+    hasComposers,
+    hunkActionsEnabled,
+    onLineSelected,
+    onTokenEnter,
+    onTokenLeave
+  ])
 
   if (loading) return <DiffMessage text="Loading…" />
   if (file === null) return <DiffMessage text="Select a changed file to view its diff" />
@@ -890,7 +949,31 @@ function DiffContentPaneImpl({
       style={{ backgroundColor: PIERRE_VIEWER_BG }}
     >
       <PatchDiff
-        key={file.path}
+        // BUG FIX (stale-diff-after-revert) — root-caused via CDP + a temp
+        // render trace: @pierre/diffs' VirtualizedFileDiff.render()
+        // (dist/components/VirtualizedFileDiff.js) does
+        // `this.fileDiff ??= fileDiff ?? ...` — a nullish-coalescing
+        // ASSIGNMENT that only ever sets `this.fileDiff` once, on the
+        // instance's first render. Every subsequent render() call's fresh
+        // `fileDiff` (derived from THIS `patch` prop via PatchDiff's own
+        // `usePatch` memo) is silently discarded — confirmed live: after a
+        // hunk revert, React re-rendered this component with the correctly
+        // reduced `patch` (verified via console trace), but the mounted
+        // <PatchDiff> instance kept painting the OLD content, because
+        // <Virtualizer> makes VirtualizedFileDiff (not plain FileDiff) the
+        // active class, and that assignment-once bug means an existing
+        // instance can NEVER pick up new patch content — only a fresh
+        // instance (a real unmount/remount) sees it. `key={file.path}`
+        // alone doesn't change across a revert (same file, same path), so
+        // React reused the same instance and hit the bug. Keying on
+        // `file.sig` too (the per-file cyrb53 content hash already computed
+        // server-side — src/main/gitDiff.ts's fileFromChunk, the SAME hash
+        // diffSignature/the tree already use) forces a real remount
+        // whenever this file's content changes for ANY reason (hunk revert,
+        // external edit, etc.), not just when switching to a different
+        // file. This is an application-level workaround for a library
+        // bug — not something fixable from this side of the dependency.
+        key={`${file.path}:${file.sig}`}
         patch={file.patch}
         options={options}
         lineAnnotations={lineAnnotations}
@@ -906,15 +989,47 @@ function DiffContentPaneImpl({
           )
         }
         renderGutterUtility={
-          composers !== null
-            ? (getHoveredLine) => (
-                <GutterAddCommentButton
-                  getHoveredLine={getHoveredLine}
-                  onAdd={(lineNumber, side) =>
-                    composers.open(file.path, side === 'deletions' ? 'LEFT' : 'RIGHT', lineNumber)
-                  }
-                />
-              )
+          composers !== null || hunkActionsEnabled
+            ? (getHoveredLine) => {
+                const commentButton =
+                  composers !== null ? (
+                    <GutterAddCommentButton
+                      getHoveredLine={getHoveredLine}
+                      onAdd={(lineNumber, side) =>
+                        composers.open(
+                          file.path,
+                          side === 'deletions' ? 'LEFT' : 'RIGHT',
+                          lineNumber
+                        )
+                      }
+                    />
+                  ) : null
+                // GutterRevertHunkButton renders `null` itself when the LIVE
+                // hovered line isn't inside a hunk — see its own doc comment
+                // on why this can't be decided here at render time. Always
+                // mounted (not conditionally) so its internal pointermove
+                // listener stays attached across every hover, not just the
+                // render tick where a hunk line happened to be hovered.
+                const revertButton = hunkActionsEnabled ? (
+                  <GutterRevertHunkButton
+                    getHoveredLine={getHoveredLine}
+                    isHunkLine={(lineNumber) => hunkIndexForLine(file.patch, lineNumber) !== null}
+                    onRevert={handleRevertHunk}
+                    title={
+                      file.status === 'added' || file.status === 'untracked'
+                        ? 'Revert (empties this new file)'
+                        : 'Revert hunk'
+                    }
+                  />
+                ) : null
+                if (commentButton === null) return revertButton
+                return (
+                  <div className="gcc-gutter-utility-row">
+                    {commentButton}
+                    {revertButton}
+                  </div>
+                )
+              }
             : undefined
         }
       />

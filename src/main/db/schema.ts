@@ -556,6 +556,12 @@ export const schema: SchemaDef = {
       // (mirrors UI_STATE_DEFAULTS.tokenHoverEnabled in
       // src/shared/uiStateDefaults.ts). Default 0 (off).
       token_hover_enabled: bool('token_hover_enabled', '0'),
+      // Per-hunk "Revert" on the working-tree diff — a hunk-hover affordance
+      // in the Git tab's diff pane that reverts one hunk to its HEAD content
+      // via files:writeFile (mirrors UI_STATE_DEFAULTS.hunkActionsEnabled in
+      // src/shared/uiStateDefaults.ts). Opt-in since it mutates the working
+      // tree. Default 0 (off).
+      hunk_actions_enabled: bool('hunk_actions_enabled', '0'),
       // Workbench tree/code split pane width (v69) — draggable divider width,
       // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors
       // UI_STATE_DEFAULTS.workbenchTreeWidth / WORKBENCH_TREE_WIDTH_MIN..MAX

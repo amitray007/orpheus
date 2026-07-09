@@ -26,6 +26,11 @@
 //     opt-in — reads/writes AppUiState.tokenHoverEnabled, the SAME value the
 //     Files tab's TreeOptionsPopover exposes for its editor/viewer. Default
 //     OFF.
+//   - "Revert hunks" — gates the per-hunk "Revert" affordance in the diff
+//     pane (reverts one hunk back to its HEAD content by writing the
+//     resolved file text via files:writeFile — see
+//     docs/learnings/hunk-accept-reject.md). Mutates the working tree, so
+//     opt-in — reads/writes AppUiState.hunkActionsEnabled. Default OFF.
 // The unified/split `diffStyle` toggle stays in GitTab's header strip
 // (already a dedicated icon toggle, DiffStyleToggle) rather than folding
 // into this popover — it's a primary, frequently-used control, unlike Wrap/
@@ -50,6 +55,9 @@ interface GitDiffOptionsState {
    *  with the Files tab (TreeOptionsPopover's own "Token hover" toggle). See
    *  module header. Default false (off). */
   tokenHoverEnabled: boolean
+  /** Per-hunk "Revert" affordance (AppUiState.hunkActionsEnabled) — Git-diff
+   *  only (no Files-tab equivalent). See module header. Default false (off). */
+  hunkActionsEnabled: boolean
 }
 
 interface GitDiffOptionsPopoverProps {
@@ -120,6 +128,11 @@ export function GitDiffOptionsPopover({
             label="Token hover"
             value={options.tokenHoverEnabled}
             onChange={(v) => onChange({ ...options, tokenHoverEnabled: v })}
+          />
+          <PopoverRow
+            label="Revert hunks"
+            value={options.hunkActionsEnabled}
+            onChange={(v) => onChange({ ...options, hunkActionsEnabled: v })}
           />
         </div>
       </Overlay>

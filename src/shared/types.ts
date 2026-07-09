@@ -295,6 +295,13 @@ export type AppUiState = {
   // tab's editor/viewer (FilesTab.tsx) and the Git tab's diff (GitTab.tsx).
   // Intrusive while just reading, so it's opt-in. Default false (off).
   tokenHoverEnabled: boolean
+  // Per-hunk "Revert" on the working-tree diff (Pierre content-transform
+  // adoption) — a hunk-hover affordance in the Git tab's diff pane that
+  // reverts ONE hunk back to its HEAD content by writing the resolved file
+  // text via files:writeFile (see docs/learnings/hunk-accept-reject.md).
+  // Mutates the working tree directly, so opt-in like tokenHoverEnabled
+  // above. Default false (off).
+  hunkActionsEnabled: boolean
   // Workbench changed-files/file TREE pane width (v69) — SHARED between the
   // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
   // before this; now a draggable divider persists one shared width so long

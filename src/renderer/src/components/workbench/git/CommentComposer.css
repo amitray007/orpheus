@@ -166,3 +166,50 @@
   color: var(--color-accent-on);
   outline: none;
 }
+
+/* Wrapper for the gutter-utility slot when BOTH the comment "+" and the
+   per-hunk "Revert" button (setting-gated, hunkActionsEnabled) are shown for
+   the same hovered line — @pierre/diffs only exposes one renderGutterUtility
+   slot per line (see GutterRevertHunkButton's own doc comment), so
+   DiffContentPane renders them as siblings inside this flex row rather than
+   each fighting for the slot on its own. */
+.gcc-gutter-utility-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Per-hunk "Revert" gutter button — deliberately muted/outlined rather than
+   accent-filled like .gcc-gutter-add: it's a MUTATING action (overwrites
+   the file on disk), so it shouldn't visually compete with the primary
+   comment affordance for attention at rest, only reveal itself as available
+   on hover/focus. */
+.gcc-gutter-revert {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: 4px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  line-height: 0;
+  transition:
+    background-color 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+.gcc-gutter-revert:hover,
+.gcc-gutter-revert:focus-visible {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  border-color: var(--color-text-muted);
+  outline: none;
+}
+.gcc-gutter-revert:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

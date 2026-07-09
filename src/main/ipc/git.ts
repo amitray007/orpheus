@@ -20,7 +20,8 @@ import {
   listCommits,
   countCommits,
   gitInit,
-  getConflictedPaths
+  getConflictedPaths,
+  getFileAtHead
 } from '../git'
 import { getWorkingTreeDiff, getPrDiff } from '../gitDiff'
 import {
@@ -111,6 +112,16 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('git:conflicts', (_e, { workspaceId }) => {
     const cwd = getWorkspaceCwd(workspaceId)
     return cwd ? getConflictedPaths(cwd) : Promise.resolve([])
+  })
+
+  // Per-hunk "Revert" feature (setting-gated, hunkActionsEnabled) — READ-ONLY
+  // `git show HEAD:<path>`, the pre-image `processFile` needs to compute a
+  // hunk-reverted file's full text (see docs/learnings/hunk-accept-reject.md).
+  // Resolves workspaceId -> cwd like git:diff/git:init above. Total (never
+  // rejects) — null for an untracked/new file, non-repo, or any git failure.
+  handle('git:showHead', (_e, { workspaceId, path }) => {
+    const cwd = getWorkspaceCwd(workspaceId)
+    return cwd ? getFileAtHead(cwd, path) : Promise.resolve(null)
   })
 
   // ---------------------------------------------------------------------------

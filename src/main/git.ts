@@ -165,6 +165,30 @@ export async function getConflictedPaths(cwd: string): Promise<string[]> {
   }
 }
 
+/**
+ * READ-ONLY — the file's content at `HEAD` (`git show HEAD:<path>`), for the
+ * per-hunk "Revert" feature's `processFile(patch, { oldFile, newFile })` call
+ * (see docs/learnings/hunk-accept-reject.md). No git mutation of any kind.
+ *
+ * Returns `null` when the path has no HEAD version — untracked/new files
+ * (git errors on an unknown path), a non-repo, or any other git failure.
+ * The caller treats `null` the same way (oldFile.contents = '') since a
+ * new-file diff's "old" side is genuinely empty either way. Total — never
+ * throws, matching getConflictedPaths' own swallow-everything contract.
+ */
+export async function getFileAtHead(cwd: string, path: string): Promise<string | null> {
+  if (!cwd || !path) return null
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'show', `HEAD:${path}`], {
+      timeout: 3000,
+      maxBuffer: 1024 * 1024 * 20
+    })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
 export type GitBranchInfo = {
   name: string
   isCurrent: boolean

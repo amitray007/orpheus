@@ -98,6 +98,8 @@ type AppUiStateRow = {
   git_diff_wrap_lines: number
   // Token-hover popover (Pierre Batch 3)
   token_hover_enabled: number
+  // Per-hunk "Revert" on the working-tree diff
+  hunk_actions_enabled: number
   // Workbench tree/code split pane width (v69)
   workbench_tree_width: number
   // Diagnostics capture toggles (v56)
@@ -195,6 +197,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     gitDiffWrapLines: (row.git_diff_wrap_lines ?? 1) === 1,
     // Token-hover popover (Pierre Batch 3) — default false (off)
     tokenHoverEnabled: (row.token_hover_enabled ?? 0) === 1,
+    // Per-hunk "Revert" on the working-tree diff — default false (off)
+    hunkActionsEnabled: (row.hunk_actions_enabled ?? 0) === 1,
     // Workbench tree/code split pane width (v69) — shared Files+Git divider width
     workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
@@ -302,6 +306,11 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('tokenHoverEnabled' in patch && patch.tokenHoverEnabled !== undefined) {
     if (typeof patch.tokenHoverEnabled !== 'boolean') {
       throw new Error('uiState: tokenHoverEnabled must be a boolean')
+    }
+  }
+  if ('hunkActionsEnabled' in patch && patch.hunkActionsEnabled !== undefined) {
+    if (typeof patch.hunkActionsEnabled !== 'boolean') {
+      throw new Error('uiState: hunkActionsEnabled must be a boolean')
     }
   }
   if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
@@ -437,6 +446,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     gitDiffWrapLines: 'git_diff_wrap_lines',
     // Token-hover popover (Pierre Batch 3)
     tokenHoverEnabled: 'token_hover_enabled',
+    // Per-hunk "Revert" on the working-tree diff
+    hunkActionsEnabled: 'hunk_actions_enabled',
     // Workbench tree/code split pane width (v69)
     workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)
