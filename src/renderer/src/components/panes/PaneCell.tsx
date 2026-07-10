@@ -37,6 +37,7 @@
 // ---------------------------------------------------------------------------
 
 import { useEffect, useRef, useState } from 'react'
+import { DotsSixVertical, Columns, Rows, Pencil, Stop, Play, X } from '@phosphor-icons/react'
 import { useInlineRename } from '@/lib/useInlineRename'
 
 // See TerminalTab.tsx's own MIN_SURFACE_PX doc comment for the full
@@ -413,7 +414,7 @@ export function PaneCell({
         onDragEnd={onDragEnd}
         className="flex h-7 flex-shrink-0 cursor-grab items-center gap-1.5 border-b border-border-default bg-surface-overlay pl-1.5 pr-1 active:cursor-grabbing select-none"
       >
-        <span className="text-text-muted text-xs opacity-60 tracking-[-2px]">⠿</span>
+        <DotsSixVertical size={13} className="flex-shrink-0 text-text-muted opacity-60" />
         <span
           className={[
             'h-1.5 w-1.5 flex-shrink-0 rounded-full',
@@ -447,85 +448,91 @@ export function PaneCell({
           </span>
         )}
 
+        {/* Edit — sits immediately beside the name/label (or the edit input
+            above, when already editing), not in the far-right controls
+            cluster. Hover/focus-reveal like the other controls, with a small
+            gap from the name so it never overlaps the truncated label.
+            Toggles the inline input above, which commits on blur/Enter and
+            cancels on Escape; committing a changed command relaunches the
+            surface (usePaneSurface's command-change branch destroys the old
+            process and mounts a fresh one). */}
+        <button
+          type="button"
+          title="Edit setup rule"
+          className="ml-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition-opacity duration-150 hover:bg-surface-raised hover:text-accent cursor-pointer group-hover:opacity-100 group-focus-within:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation()
+            editValue.seed(command)
+            setEditing(true)
+          }}
+        >
+          <Pencil size={12} weight="regular" />
+        </button>
+
         {/* Split buttons — hover/focus-reveal, matching mockup .splitbtns. */}
         <div className="flex gap-px opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
           <button
             type="button"
-            title="split right"
-            className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-accent cursor-pointer"
+            title="Split right"
+            className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-accent cursor-pointer"
             onClick={(e) => {
               e.stopPropagation()
               onSplit(paneId, 'v')
             }}
           >
-            ▏
+            <Columns size={13} weight="regular" />
           </button>
           <button
             type="button"
-            title="split below"
-            className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-accent cursor-pointer"
+            title="Split down"
+            className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-accent cursor-pointer"
             onClick={(e) => {
               e.stopPropagation()
               onSplit(paneId, 'h')
             }}
           >
-            ▁
+            <Rows size={13} weight="regular" />
           </button>
         </div>
 
-        {/* Edit / stop-start / close — hover/focus-reveal, matching mockup
-            .tctrls. Edit toggles an inline input (above) that commits on
-            blur/Enter and cancels on Escape; committing a changed command
-            relaunches the surface (usePaneSurface's command-change branch
-            destroys the old process and mounts a fresh one). */}
+        {/* Stop/start + close — hover/focus-reveal, matching mockup .tctrls.
+            (Edit now lives beside the pane name, above.) */}
         <div className="flex opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-          <button
-            type="button"
-            title="edit setup rule"
-            className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-text-primary cursor-pointer"
-            onClick={(e) => {
-              e.stopPropagation()
-              editValue.seed(command)
-              setEditing(true)
-            }}
-          >
-            ✎
-          </button>
           {running ? (
             <button
               type="button"
-              title="stop"
-              className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-[#e07a7a] cursor-pointer"
+              title="Stop"
+              className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-[#e07a7a] cursor-pointer"
               onClick={(e) => {
                 e.stopPropagation()
                 setRunning(false)
               }}
             >
-              ◼
+              <Stop size={12} weight="regular" />
             </button>
           ) : (
             <button
               type="button"
-              title="start"
-              className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-text-primary cursor-pointer"
+              title="Start"
+              className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-text-primary cursor-pointer"
               onClick={(e) => {
                 e.stopPropagation()
                 setRunning(true)
               }}
             >
-              ▶
+              <Play size={12} weight="regular" />
             </button>
           )}
           <button
             type="button"
-            title="close"
-            className="flex h-5 w-5 items-center justify-center rounded text-text-muted text-[11px] hover:bg-surface-raised hover:text-text-primary cursor-pointer"
+            title="Close"
+            className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-text-primary cursor-pointer"
             onClick={(e) => {
               e.stopPropagation()
               handleClose()
             }}
           >
-            ✕
+            <X size={12} weight="regular" />
           </button>
         </div>
       </div>

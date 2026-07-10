@@ -4,7 +4,7 @@
 // Panes v2 — top-level Panels · Layouts · split Panes
 // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U5, R6,
 // R9, KTD6). The top-level Panes view shell: a header (panel/layout crumb,
-// pane-count cap badge, ＋ Add pane, ⋯ options dropdown, ⤢ Pop out) over a
+// pane-count cap badge, ＋ Add pane, ⋯ options dropdown) over a
 // flush split-tree "stage", matching the mockup's `.main`/`.vhead`/`.stage`
 // layout (scratchpad/panes-final2.html) exactly.
 //
@@ -49,10 +49,11 @@ const CAP_LAYOUT = 4
  *  of the panel's layouts. */
 const CAP_PANEL = 12
 
-/** How long a transient inline status message (Pop-out stub, cap-hit
- *  warnings) stays visible before clearing itself. This repo has no global
- *  toast/notice system (confirmed in workbench/git/diff/diffEmptyStates.tsx)
- *  — local transient text is the established substitute. */
+/** How long a transient inline status message (restart/stop-layout stubs,
+ *  cap-hit warnings) stays visible before clearing itself. This repo has no
+ *  global toast/notice system (confirmed in
+ *  workbench/git/diff/diffEmptyStates.tsx) — local transient text is the
+ *  established substitute. */
 const TRANSIENT_MESSAGE_MS = 1500
 
 /** Sums countLeaves across every layout in a panel — the panel-wide pane
@@ -267,9 +268,6 @@ export function PanesView(): React.JSX.Element {
   const handleStopLayout = useCallback(() => {
     showTransientMessage('stopped layout') // stub — real stop lands in U8
   }, [showTransientMessage])
-  const handlePopOut = useCallback(() => {
-    showTransientMessage('own-window mode — a later phase')
-  }, [showTransientMessage])
 
   // The unique overlay id for this menu — stable across renders so repeated
   // opens/closes target the same child-window overlay slot (mirrors
@@ -317,7 +315,6 @@ export function PanesView(): React.JSX.Element {
         optionsButtonRef={optionsButtonRef}
         onAddPane={handleAddPaneFromHeader}
         onOpenOptions={() => void openOptionsMenu()}
-        onPopOut={handlePopOut}
         transientMessage={transientMessage}
       />
 
@@ -392,7 +389,6 @@ interface PanesHeaderProps {
   optionsButtonRef: React.RefObject<HTMLButtonElement | null>
   onAddPane: () => void
   onOpenOptions: () => void
-  onPopOut: () => void
   transientMessage: string | null
 }
 
@@ -408,7 +404,6 @@ function PanesHeader({
   optionsButtonRef,
   onAddPane,
   onOpenOptions,
-  onPopOut,
   transientMessage
 }: PanesHeaderProps): React.JSX.Element {
   const warn = panelPaneTotal >= 10
@@ -450,19 +445,9 @@ function PanesHeader({
         </button>
       ) : null}
 
-      <div className="flex items-center gap-2">
-        {transientMessage ? (
-          <span className="font-mono text-[11px] text-text-muted">{transientMessage}</span>
-        ) : null}
-        <button
-          type="button"
-          title="own-window mode (later phase)"
-          onClick={onPopOut}
-          className="flex h-6 items-center gap-1.5 rounded-md border border-border-default px-2.5 text-[11px] text-text-muted hover:border-border-hover hover:text-text-secondary cursor-pointer"
-        >
-          ⤢ Pop out
-        </button>
-      </div>
+      {transientMessage ? (
+        <span className="font-mono text-[11px] text-text-muted">{transientMessage}</span>
+      ) : null}
     </div>
   )
 }
