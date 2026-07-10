@@ -1,11 +1,14 @@
 // ---------------------------------------------------------------------------
 // src/renderer/src/components/dashboard/PanelsSection.tsx
 //
-// Panes v2 — sidebar "Panels" tree (Panes v2 U6). Renders the Panels ·
+// Panes v2 — sidebar "Panels" tree (Panes v2 U6, extended in U7 with the
+// Projects-sidebar UX parity pass: auto-focus new layout, delete, context
+// menu + inline rename, running-state loader). Renders the Panels ·
 // Layouts hierarchy inside the real Orpheus sidebar, reusing the exact
 // visual treatment of ProjectRow (panel rows) and WorkspaceSubRow (layout
-// sub-rows) from Sidebar.tsx — without pulling in their hover-card/rename/
-// drag-reorder/context-menu machinery, which is out of scope for this unit.
+// sub-rows) from Sidebar.tsx — including their hover-delete/rename/
+// context-menu affordances — without pulling in drag-reorder, which stays
+// out of scope for this unit.
 //
 // Extracted into its own file (rather than inlined in Sidebar.tsx) because
 // Sidebar.tsx is already large (~1450 lines) and its own top-level function
@@ -27,10 +30,17 @@
 
 import type React from 'react'
 import { useCallback, useEffect, useState } from 'react'
-import { CaretDown, CaretRight, Plus, Stack } from '@phosphor-icons/react'
+import { CaretDown, CaretRight, Plus, Stack, Trash } from '@phosphor-icons/react'
 import type { PaneLayout, PanePanel } from '@shared/types'
 import { Identicon } from '../Identicon'
+import { ContextMenu } from '../ContextMenu'
+import type { ContextMenuItem } from '../ContextMenu'
+import { ActivityIndicator } from './ActivityIndicator'
 import { SectionHeader } from './SidebarNavItems'
+import { useSidebarBounds } from './SidebarBoundsContext'
+import { useInlineRename } from '@/lib/useInlineRename'
+import { RenameInput } from './settings/primitives'
+import { showConfirmModalReact } from '@/lib/overlayClient'
 import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
@@ -89,23 +99,138 @@ async function createLayoutFlow(
   }
 }
 
+/** Confirm-then-delete a layout. Hard delete (FK CASCADE removes its
+ *  terminals) — layouts have no archive concept, unlike workspaces, so this
+ *  mirrors the worktree-archive confirm pattern (Dashboard.tsx's
+ *  runWorktreeArchiveFlow) rather than a soft-archive one. */
+async function confirmDeleteLayout(layout: PaneLayout): Promise<boolean> {
+  const result = await showConfirmModalReact({
+    title: 'Delete layout?',
+    body: `Delete layout "${layout.name}"? This removes its panes.`,
+    buttons: [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'confirm', label: 'Delete', style: 'danger' }
+    ]
+  })
+  return result.buttonId === 'confirm'
+}
+
+/** Confirm-then-delete a panel. Heavier than a layout delete (cascades
+ *  through every layout + terminal it owns), so the copy calls that out
+ *  explicitly. Never offered for the 'general' panel — see PanelRow's menu
+ *  construction, which omits Delete entirely when kind === 'general'. */
+async function confirmDeletePanel(panel: PanePanel, layoutCount: number): Promise<boolean> {
+  const layoutNote =
+    layoutCount > 0 ? ` and its ${layoutCount} layout${layoutCount === 1 ? '' : 's'}` : ''
+  const result = await showConfirmModalReact({
+    title: 'Delete panel?',
+    body: `Delete panel "${panel.name}"${layoutNote}? This cannot be undone.`,
+    buttons: [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'confirm', label: 'Delete', style: 'danger' }
+    ]
+  })
+  return result.buttonId === 'confirm'
+}
+
 // ---------------------------------------------------------------------------
 // Layout sub-row — styled like WorkspaceSubRow (32px row, pl-8 indent, white
-// active bar).
+// active bar), including its hover-delete button, context menu, and inline
+// rename.
 // ---------------------------------------------------------------------------
 
 interface LayoutSubRowProps {
   layout: PaneLayout
   active: boolean
+  renaming: boolean
   onSelect: () => void
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onDelete: () => void
 }
 
-function LayoutSubRow({ layout, active, onSelect }: LayoutSubRowProps): React.JSX.Element {
-  // Placeholder proxy for "is this layout running": a layout with a
-  // persisted split tree has at least one terminal pane. Real live-process
-  // state (whether those panes' shells are actually alive) lands in U7/U8
-  // once native surfaces are wired to panels/layouts.
-  const isLive = layout.splitTree !== null
+/** The layout row's leading status-icon slot: an animated braille spinner
+ *  (mirrors WorkspaceSubRow's ActivityIndicator) when the layout is
+ *  "running", else the static Stack icon.
+ *
+ *  Placeholder signal (U8 will wire real per-pane process tracking): a
+ *  layout counts as "running" here when it's the currently active/open
+ *  layout AND has at least one pane. This is a visual mirror of the
+ *  workspace loader, not a true liveness check — it lights up in-context.
+ */
+function LayoutStatusIcon({
+  active,
+  isRunning
+}: {
+  active: boolean
+  isRunning: boolean
+}): React.JSX.Element {
+  if (isRunning) {
+    return <ActivityIndicator detail="working" />
+  }
+  return (
+    <Stack
+      size={12}
+      weight={active ? 'fill' : 'regular'}
+      className={active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'}
+    />
+  )
+}
+
+function LayoutSubRow({
+  layout,
+  active,
+  renaming,
+  onSelect,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onDelete
+}: LayoutSubRowProps): React.JSX.Element {
+  // See LayoutStatusIcon's comment — placeholder "is this layout running"
+  // proxy until U8 wires real per-pane process tracking. Active + has panes.
+  const isRunning = active && layout.splitTree !== null
+
+  const [hovered, setHovered] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const sidebarBoundsRef = useSidebarBounds()
+  const rename = useInlineRename(layout.name, (trimmed) => onFinishRename(trimmed))
+
+  useEffect(() => {
+    if (renaming) rename.seed(layout.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming])
+
+  function handleRenameCommit(): void {
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== layout.name
+    rename.commit()
+    if (!willCommit) onCancelRename()
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    if (!rect || rect.width < 200) {
+      void window.api.contextMenu
+        .show([
+          { label: 'Rename', action: 'rename' },
+          { label: 'Delete', action: 'delete' }
+        ])
+        .then((action) => {
+          if (action === 'rename') onBeginRename()
+          else if (action === 'delete') onDelete()
+        })
+      return
+    }
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  const menuItems: ContextMenuItem[] = [
+    { label: 'Rename', onClick: onBeginRename },
+    { label: 'Delete', onClick: onDelete, destructive: true }
+  ]
 
   return (
     <div
@@ -115,6 +240,9 @@ function LayoutSubRow({ layout, active, onSelect }: LayoutSubRowProps): React.JS
           ? 'bg-text-primary/10 text-text-primary border-l-2 border-text-primary'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
       ].join(' ')}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onContextMenu={handleContextMenu}
     >
       <button
         type="button"
@@ -123,30 +251,58 @@ function LayoutSubRow({ layout, active, onSelect }: LayoutSubRowProps): React.JS
         aria-label={layout.name}
       >
         <span className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-          <Stack
-            size={12}
-            weight={active ? 'fill' : 'regular'}
-            className={
-              active ? 'text-text-primary' : 'text-text-muted group-hover:text-text-secondary'
-            }
-          />
+          <LayoutStatusIcon active={active} isRunning={isRunning} />
         </span>
-        <span className="text-xs truncate min-w-0 flex-1 leading-none">{layout.name}</span>
+        {renaming ? (
+          <RenameInput
+            ariaLabel="Rename layout"
+            value={rename.value}
+            onChange={(e) => rename.setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameCommit()
+              if (e.key === 'Escape') onCancelRename()
+            }}
+            onBlur={handleRenameCommit}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="bg-surface-overlay border border-accent/40 rounded px-1.5 py-0 outline-none text-xs text-text-primary min-w-0 flex-1"
+          />
+        ) : (
+          <span className="text-xs truncate min-w-0 flex-1 leading-none">{layout.name}</span>
+        )}
       </button>
-      <span className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-        {isLive ? (
-          <span className="text-[11px] leading-none text-emerald-400" aria-label="running">
-            ●
-          </span>
-        ) : null}
-      </span>
+      {!renaming && hovered && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+          aria-label="Delete layout"
+          title="Delete layout"
+        >
+          <Trash size={13} />
+        </button>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+          boundsRef={sidebarBoundsRef ?? undefined}
+        />
+      )}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
 // Panel row — styled like ProjectRow (identicon, name, layout count, expand
-// caret, gold active bar).
+// caret, gold active bar), including its context menu + inline rename.
+// Delete is context-menu-only (no hover button) since removing a panel is
+// heavier than removing a layout — and is omitted entirely for 'general'.
 // ---------------------------------------------------------------------------
 
 interface PanelRowProps {
@@ -154,9 +310,14 @@ interface PanelRowProps {
   active: boolean
   expanded: boolean
   layoutCount: number
+  renaming: boolean
   onSelect: () => void
   onToggleExpand: () => void
   onAddLayout: () => void
+  onBeginRename: () => void
+  onFinishRename: (newName: string) => void
+  onCancelRename: () => void
+  onDelete: () => void
 }
 
 function PanelRow({
@@ -164,10 +325,55 @@ function PanelRow({
   active,
   expanded,
   layoutCount,
+  renaming,
   onSelect,
   onToggleExpand,
-  onAddLayout
+  onAddLayout,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onDelete
 }: PanelRowProps): React.JSX.Element {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const sidebarBoundsRef = useSidebarBounds()
+  const rename = useInlineRename(panel.name, (trimmed) => onFinishRename(trimmed))
+  const isGeneral = panel.kind === 'general'
+
+  useEffect(() => {
+    if (renaming) rename.seed(panel.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming])
+
+  function handleRenameCommit(): void {
+    const trimmed = rename.value.trim()
+    const willCommit = trimmed && trimmed !== panel.name
+    rename.commit()
+    if (!willCommit) onCancelRename()
+  }
+
+  function handleContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
+    if (!rect || rect.width < 200) {
+      void window.api.contextMenu
+        .show([
+          { label: 'Rename', action: 'rename' },
+          ...(isGeneral ? [] : [{ label: 'Delete', action: 'delete' }])
+        ])
+        .then((action) => {
+          if (action === 'rename') onBeginRename()
+          else if (action === 'delete') onDelete()
+        })
+      return
+    }
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  const menuItems: ContextMenuItem[] = [
+    { label: 'Rename', onClick: onBeginRename },
+    ...(isGeneral ? [] : [{ label: 'Delete', onClick: onDelete, destructive: true }])
+  ]
+
   return (
     <div
       className={[
@@ -176,6 +382,7 @@ function PanelRow({
           ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
       ].join(' ')}
+      onContextMenu={handleContextMenu}
     >
       <button
         type="button"
@@ -187,37 +394,64 @@ function PanelRow({
         <span className="relative inline-flex items-center flex-shrink-0">
           <Identicon seed={panel.dir ?? panel.id} size={20} />
         </span>
-        <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
-          <span className="truncate">{panel.name}</span>
-          <span className="text-xs text-text-muted flex-shrink-0">· {layoutCount}</span>
-        </span>
+        {renaming ? (
+          <RenameInput
+            ariaLabel="Rename panel"
+            value={rename.value}
+            onChange={(e) => rename.setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameCommit()
+              if (e.key === 'Escape') onCancelRename()
+            }}
+            onBlur={handleRenameCommit}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="bg-surface-overlay border border-accent/40 rounded px-2 py-0.5 outline-none text-sm font-medium text-text-primary min-w-0 flex-1"
+          />
+        ) : (
+          <span className="text-sm truncate min-w-0 flex-1 flex items-center gap-1.5">
+            <span className="truncate">{panel.name}</span>
+            <span className="text-xs text-text-muted flex-shrink-0">· {layoutCount}</span>
+          </span>
+        )}
       </button>
-      <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onAddLayout()
-          }}
-          className="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          title="Add layout"
-          aria-label="Add layout"
-        >
-          <Plus size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggleExpand()
-          }}
-          className="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-          title={expanded ? 'Collapse' : 'Expand layouts'}
-          aria-label={expanded ? 'Collapse layouts' : 'Expand layouts'}
-        >
-          {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
-        </button>
-      </div>
+      {!renaming && (
+        <div className="flex items-center gap-0.5 pr-1 flex-shrink-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onAddLayout()
+            }}
+            className="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            title="Add layout"
+            aria-label="Add layout"
+          >
+            <Plus size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand()
+            }}
+            className="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            title={expanded ? 'Collapse' : 'Expand layouts'}
+            aria-label={expanded ? 'Collapse layouts' : 'Expand layouts'}
+          >
+            {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
+          </button>
+        </div>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+          boundsRef={sidebarBoundsRef ?? undefined}
+        />
+      )}
     </div>
   )
 }
@@ -230,12 +464,26 @@ export function PanelsSection(): React.JSX.Element {
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layoutsByPanel, setLayoutsByPanel] = useState<Map<string, PaneLayout[]>>(new Map())
   const [expandedPanelIds, setExpandedPanelIds] = useState<Set<string>>(new Set())
+  const [renamingPanelId, setRenamingPanelId] = useState<string | null>(null)
+  const [renamingLayoutId, setRenamingLayoutId] = useState<string | null>(null)
   const { activePanelId, activeLayoutId } = usePanesSelection()
 
   const loadPanels = useCallback(() => {
     window.api.panes
       .listPanels()
-      .then(setPanels)
+      .then((loaded) => {
+        setPanels(loaded)
+        // Seed expand state from the persisted expandedInSidebar flag on
+        // each panel row (issue #1) — mirrors Dashboard.tsx's restore of
+        // expandedProjectIds from projects.expandedInSidebar. Only applied
+        // once, on first load: subsequent loadPanels() calls (e.g. after
+        // creating a panel) must NOT clobber expand/collapse toggles the
+        // user has made locally since the initial load.
+        setExpandedPanelIds((prev) => {
+          if (prev.size > 0) return prev
+          return new Set(loaded.filter((p) => p.expandedInSidebar).map((p) => p.id))
+        })
+      })
       .catch((err) => console.error('[PanelsSection] listPanels failed', err))
   }, [])
 
@@ -268,16 +516,28 @@ export function PanelsSection(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- layoutsByPanel is read, not a dep: including it would refetch every time any panel's layouts load
   }, [expandedPanelIds, activePanelId, loadLayouts])
 
+  // Persist the expand/collapse flag for a single panel (issue #1) — fire
+  // and forget, mirrors how ProjectRow's expand toggle calls
+  // window.api.projects.setExpandedInSidebar without awaiting it.
+  function persistExpanded(panelId: string, expanded: boolean): void {
+    window.api.panes
+      .setPanelExpanded(panelId, expanded)
+      .catch((err) => console.error('[PanelsSection] setPanelExpanded failed', err, panelId))
+  }
+
   function handleSelectPanel(panelId: string): void {
     setActivePanel(panelId)
     setExpandedPanelIds((prev) => new Set(prev).add(panelId))
+    persistExpanded(panelId, true)
   }
 
   function handleToggleExpand(panelId: string): void {
     setExpandedPanelIds((prev) => {
       const next = new Set(prev)
-      if (next.has(panelId)) next.delete(panelId)
-      else next.add(panelId)
+      const nowExpanded = !next.has(panelId)
+      if (nowExpanded) next.add(panelId)
+      else next.delete(panelId)
+      persistExpanded(panelId, nowExpanded)
       return next
     })
   }
@@ -287,16 +547,80 @@ export function PanelsSection(): React.JSX.Element {
       loadPanels()
       setActivePanel(newPanelId)
       setExpandedPanelIds((prev) => new Set(prev).add(newPanelId))
+      persistExpanded(newPanelId, true)
     })
   }
 
+  // Issue #8 — auto-focus the newly created layout. setActivePanel(panelId)
+  // unconditionally resets activeLayoutId to null (see
+  // panesSelectionStore.ts's setActivePanel), so setActiveLayout MUST run
+  // AFTER setActivePanel or the fresh selection gets clobbered back to null
+  // right after being set. Ordering below is deliberate — do not reorder.
   function handleAddLayout(panel: PanePanel): void {
     void createLayoutFlow(panel, (newLayoutId) => {
       loadLayouts(panel.id)
       setActivePanel(panel.id)
       setActiveLayout(newLayoutId)
       setExpandedPanelIds((prev) => new Set(prev).add(panel.id))
+      persistExpanded(panel.id, true)
     })
+  }
+
+  // Issue #4 — delete a layout, confirm first (destructive, FK CASCADE takes
+  // its terminals with it). If the deleted layout was the active one, clear
+  // the selection so PanesView's seeding effect can pick a replacement (or
+  // show its empty state) rather than pointing at a now-missing id.
+  function handleDeleteLayout(panel: PanePanel, layout: PaneLayout): void {
+    void (async () => {
+      const confirmed = await confirmDeleteLayout(layout)
+      if (!confirmed) return
+      try {
+        await window.api.panes.deleteLayout(layout.id)
+        loadLayouts(panel.id)
+        if (activeLayoutId === layout.id) setActiveLayout(null)
+      } catch (err) {
+        console.error('[PanelsSection] deleteLayout failed', err, layout.id)
+      }
+    })()
+  }
+
+  // Issue #4/#7 — delete a panel (context-menu only, never for 'general').
+  // Clears the panel from local state + selection so the sidebar doesn't
+  // keep pointing at a row that no longer exists.
+  function handleDeletePanel(panel: PanePanel): void {
+    void (async () => {
+      const layoutCount = layoutsByPanel.get(panel.id)?.length ?? 0
+      const confirmed = await confirmDeletePanel(panel, layoutCount)
+      if (!confirmed) return
+      try {
+        await window.api.panes.deletePanel(panel.id)
+        loadPanels()
+        setLayoutsByPanel((prev) => {
+          const next = new Map(prev)
+          next.delete(panel.id)
+          return next
+        })
+        if (activePanelId === panel.id) setActivePanel(null)
+      } catch (err) {
+        console.error('[PanelsSection] deletePanel failed', err, panel.id)
+      }
+    })()
+  }
+
+  function handleRenameLayout(panel: PanePanel, layout: PaneLayout, newName: string): void {
+    window.api.panes
+      .updateLayout(layout.id, { name: newName })
+      .then(() => loadLayouts(panel.id))
+      .catch((err) => console.error('[PanelsSection] updateLayout (rename) failed', err, layout.id))
+    setRenamingLayoutId(null)
+  }
+
+  function handleRenamePanel(panel: PanePanel, newName: string): void {
+    window.api.panes
+      .updatePanel(panel.id, { name: newName })
+      .then(() => loadPanels())
+      .catch((err) => console.error('[PanelsSection] updatePanel (rename) failed', err, panel.id))
+    setRenamingPanelId(null)
   }
 
   const addPanelButton = (
@@ -327,9 +651,14 @@ export function PanelsSection(): React.JSX.Element {
                   active={activePanelId === panel.id}
                   expanded={expanded}
                   layoutCount={layouts.length}
+                  renaming={renamingPanelId === panel.id}
                   onSelect={() => handleSelectPanel(panel.id)}
                   onToggleExpand={() => handleToggleExpand(panel.id)}
                   onAddLayout={() => handleAddLayout(panel)}
+                  onBeginRename={() => setRenamingPanelId(panel.id)}
+                  onFinishRename={(name) => handleRenamePanel(panel, name)}
+                  onCancelRename={() => setRenamingPanelId(null)}
+                  onDelete={() => handleDeletePanel(panel)}
                 />
                 {expanded && (
                   <div className="flex flex-col gap-0.5 mt-0.5">
@@ -338,10 +667,15 @@ export function PanelsSection(): React.JSX.Element {
                         key={layout.id}
                         layout={layout}
                         active={activePanelId === panel.id && activeLayoutId === layout.id}
+                        renaming={renamingLayoutId === layout.id}
                         onSelect={() => {
                           setActivePanel(panel.id)
                           setActiveLayout(layout.id)
                         }}
+                        onBeginRename={() => setRenamingLayoutId(layout.id)}
+                        onFinishRename={(name) => handleRenameLayout(panel, layout, name)}
+                        onCancelRename={() => setRenamingLayoutId(null)}
+                        onDelete={() => handleDeleteLayout(panel, layout)}
                       />
                     ))}
                     <button
