@@ -9,9 +9,9 @@
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
-import { GitBranch, Terminal, Folder, SquaresFour } from '@phosphor-icons/react'
+import { GitBranch, Terminal, Folder } from '@phosphor-icons/react'
 
-export type WorkbenchTabId = 'git' | 'terminal' | 'files' | 'panes'
+export type WorkbenchTabId = 'git' | 'terminal' | 'files'
 
 export interface WorkbenchTabDef {
   id: WorkbenchTabId
@@ -19,10 +19,9 @@ export interface WorkbenchTabDef {
   icon: React.ComponentType<{ size?: number; className?: string }>
 }
 
-// Order matches the requirements doc: Git · Terminal · Files · Panes.
+// Order matches the requirements doc: Git · Terminal · Files.
 export const WORKBENCH_TABS: readonly WorkbenchTabDef[] = [
   { id: 'git', label: 'Git', icon: GitBranch },
   { id: 'terminal', label: 'Terminal', icon: Terminal },
-  { id: 'files', label: 'Files', icon: Folder },
-  { id: 'panes', label: 'Panes', icon: SquaresFour }
+  { id: 'files', label: 'Files', icon: Folder }
 ]

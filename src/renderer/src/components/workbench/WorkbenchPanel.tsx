@@ -30,7 +30,6 @@ import type React from 'react'
 import { useWorkbenchApi } from './workbenchReducer'
 import { ComingSoon } from './ComingSoon'
 import { TerminalTab } from './TerminalTab'
-import { PanesTab } from './PanesTab'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
 import { WORKBENCH_TABS } from './workbenchTabs'
@@ -217,14 +216,6 @@ export function WorkbenchPanel({
   // own mount-effect cleanup. `active` (not JSX presence/dormant's width:0)
   // drives hide/re-mount.
   const terminalTabActive = !dormant && activeTab === 'terminal'
-  // Same rationale as terminalTabActive above, applied to the Panes tab:
-  // PanesTab is rendered at this SAME stable tree position across dormant/
-  // open/expanded (never behind an early `id === activeTab` return like
-  // Files/Git below) so React never tears it down on a mere close-to-dormant
-  // — every pane's native surface must survive tab switches and Workbench
-  // collapse the same way the Terminal tab's does. `active` drives each
-  // pane's own hide/re-mount, not JSX presence.
-  const panesTabActive = !dormant && activeTab === 'panes'
 
   function handleDividerMouseDown(e: React.MouseEvent): void {
     // Available width = the claude column's current rendered width plus the
@@ -298,8 +289,6 @@ export function WorkbenchPanel({
                 active={terminalTabActive}
                 animating={animating}
               />
-            ) : id === 'panes' ? (
-              <PanesTab workspaceId={workspaceId} active={panesTabActive} animating={animating} />
             ) : id === 'files' ? (
               id === activeTab && !dormant && <FilesTab workspaceId={workspaceId} />
             ) : id === 'git' ? (
