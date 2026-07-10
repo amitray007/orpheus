@@ -735,6 +735,33 @@ export const schema: SchemaDef = {
       idx_review_comments_workspace_path: ['workspace_id', 'path'],
       idx_review_comments_workspace: ['workspace_id']
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // panes — Workbench Panes tab (U12). N persistent terminal panes tiled
+  // within a claude workspace's Panes tab, each running a user-declared
+  // COMMAND (not just a shell — see src/main/paneStore.ts). Reopening the
+  // workspace re-runs each pane's command fresh (the row is metadata only;
+  // no output/scrollback is persisted). `position` is the 0-based
+  // left-to-right tile order; `size_fraction` is this pane's share of the
+  // tiled axis, with 0 meaning "unset" (the renderer computes an equal
+  // split across all panes sized 0).
+  // ---------------------------------------------------------------------
+  panes: {
+    columns: {
+      id: TEXT_PK,
+      workspace_id: TEXT_NOT_NULL,
+      command: TEXT_NOT_NULL,
+      title: 'TEXT',
+      position: INTEGER_NOT_NULL,
+      size_fraction: { type: 'REAL', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_panes_workspace: ['workspace_id']
+    }
   }
 }
 

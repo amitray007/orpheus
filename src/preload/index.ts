@@ -41,6 +41,7 @@ import type {
   GhReviewComment,
   GhReviewCommentSide,
   LocalReviewComment,
+  Pane,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -565,6 +566,49 @@ const api = {
     setResolved: (id: string, resolved: boolean): Promise<LocalReviewComment> =>
       invoke('reviews:setResolved', { id, resolved }),
     delete: (id: string): Promise<void> => invoke('reviews:delete', { id })
+  },
+  // Workbench Panes tab (U12). CRUD for the declared per-workspace terminal
+  // panes (src/main/paneStore.ts) plus the pane SURFACE ops — a dedicated
+  // native slot per pane (`pane:<workspaceId>:<paneId>`), unlike workbench.*
+  // above which shares ONE slot per claude workspace. See src/main/index.ts's
+  // "Workbench Panes tab IPC (U12)" section for the full rationale.
+  panes: {
+    list: (workspaceId: string): Promise<Pane[]> => invoke('panes:list', { workspaceId }),
+    create: (args: {
+      workspaceId: string
+      command: string
+      title?: string | null
+      position: number
+      sizeFraction?: number
+    }): Promise<Pane> => invoke('panes:create', args),
+    update: (
+      id: string,
+      patch: {
+        command?: string
+        title?: string | null
+        position?: number
+        sizeFraction?: number
+      }
+    ): Promise<Pane> => invoke('panes:update', { id, ...patch }),
+    delete: (id: string): Promise<void> => invoke('panes:delete', { id }),
+    mount: (
+      workspaceId: string,
+      paneId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      command: string
+    ): Promise<TerminalMountResult> =>
+      invoke('pane:mount', { workspaceId, paneId, rect, scaleFactor, command }),
+    resize: (
+      workspaceId: string,
+      paneId: string,
+      rect: TerminalRect,
+      scaleFactor: number
+    ): Promise<void> => invoke('pane:resize', { workspaceId, paneId, rect, scaleFactor }),
+    hide: (workspaceId: string, paneId: string): Promise<void> =>
+      invoke('pane:hide', { workspaceId, paneId }),
+    destroy: (workspaceId: string, paneId: string): Promise<void> =>
+      invoke('pane:destroy', { workspaceId, paneId })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),

@@ -94,7 +94,8 @@ import type {
   GhReviewCommentThread,
   GhReviewComment,
   GhReviewCommentSide,
-  LocalReviewComment
+  LocalReviewComment,
+  Pane
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -373,6 +374,37 @@ export interface InvokeChannelMap {
   }
   'reviews:setResolved': { req: [{ id: string; resolved: boolean }]; res: LocalReviewComment }
   'reviews:delete': { req: [{ id: string }]; res: void }
+  // Workbench Panes tab (U12) — CRUD for the declared per-workspace terminal
+  // panes persisted in `panes` (src/main/db/schema.ts). See
+  // src/main/paneStore.ts. Total (never rejects on a missing row for
+  // list/create; update/delete on an unknown id — update throws, delete is a
+  // no-op, mirroring paneStore.ts's own contract).
+  'panes:list': { req: [{ workspaceId: string }]; res: Pane[] }
+  'panes:create': {
+    req: [
+      {
+        workspaceId: string
+        command: string
+        title?: string | null
+        position: number
+        sizeFraction?: number
+      }
+    ]
+    res: Pane
+  }
+  'panes:update': {
+    req: [
+      {
+        id: string
+        command?: string
+        title?: string | null
+        position?: number
+        sizeFraction?: number
+      }
+    ]
+    res: Pane
+  }
+  'panes:delete': { req: [{ id: string }]; res: void }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.
@@ -580,6 +612,32 @@ export interface InvokeChannelMap {
   }
   'workbench:hide': { req: [{ workspaceId: string; terminalId?: number }]; res: void }
   'workbench:destroy': { req: [{ workspaceId: string; terminalId?: number }]; res: void }
+  // Workbench Panes tab (U12) surface mount — a SIBLING of workbench:* above,
+  // not a variant of it: each declared pane gets its own dedicated native
+  // slot keyed `pane:<workspaceId>:<paneId>` (see paneSlotId in
+  // src/main/index.ts) so N panes stay simultaneously visible/interactive,
+  // unlike workbench:*'s single-visible-slot eviction model. `command` is
+  // the pane's user-declared command string (run via resources/orpheus-
+  // pane.sh, which drops to an interactive shell once it exits so the pane
+  // never dies — see that script's own header).
+  'pane:mount': {
+    req: [
+      {
+        workspaceId: string
+        paneId: string
+        rect: TerminalRect
+        scaleFactor: number
+        command: string
+      }
+    ]
+    res: TerminalMountResult
+  }
+  'pane:resize': {
+    req: [{ workspaceId: string; paneId: string; rect: TerminalRect; scaleFactor: number }]
+    res: void
+  }
+  'pane:hide': { req: [{ workspaceId: string; paneId: string }]; res: void }
+  'pane:destroy': { req: [{ workspaceId: string; paneId: string }]; res: void }
   'overlay:showDescriptor': { req: [{ descriptor: OverlayDescriptor }]; res: OverlayShowResult }
   'overlay:update': { req: [{ id: string; props: Record<string, unknown> }]; res: void }
   'overlay:hide': { req: [{ id: string }]; res: void }

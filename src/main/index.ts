@@ -127,6 +127,7 @@ import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
+import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
@@ -411,6 +412,9 @@ function performClose(id: string): WorkspaceRecord | undefined {
   // surfaces here, authoritatively, regardless of what's currently mounted
   // in the renderer (see workbenchSurfacesByWorkspace's header comment).
   destroyWorkbenchSurfacesForWorkspace(id)
+  // Same trigger (g) applies to Panes tab surfaces (see
+  // paneSurfacesByWorkspace's header comment).
+  destroyPaneSurfacesForWorkspace(id)
   teardownWorkspaceResources(id, ws?.cwd ?? null)
   return closeWorkspace(id, lastTitle)
 }
@@ -445,6 +449,9 @@ async function performArchive(
   // surfaces here, authoritatively, regardless of what's currently mounted
   // in the renderer (see workbenchSurfacesByWorkspace's header comment).
   destroyWorkbenchSurfacesForWorkspace(id)
+  // Same trigger (g) applies to Panes tab surfaces (see
+  // paneSurfacesByWorkspace's header comment).
+  destroyPaneSurfacesForWorkspace(id)
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
@@ -920,6 +927,9 @@ registerProjectsIpc({
     // removed project is provably dead, so its workbench surfaces must be
     // destroyed here too (see workbenchSurfacesByWorkspace's header comment).
     destroyWorkbenchSurfacesForWorkspace(workspaceId)
+    // Same trigger (g) applies to Panes tab surfaces (see
+    // paneSurfacesByWorkspace's header comment).
+    destroyPaneSurfacesForWorkspace(workspaceId)
   },
   teardownWorkspaceResources
 })
@@ -1538,6 +1548,132 @@ handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
   unregisterWorkbenchSurface(workspaceId, terminalId)
 })
 
+// ---------------------------------------------------------------------------
+// Workbench Panes tab IPC (U12)
+//
+// A SIBLING of the workbench:* terminal-strip machinery above, not a variant
+// of it. workbench:* keys every ad-hoc terminal `workbench:<workspaceId>
+// [:<terminalId>]` into ONE shared slot per claude workspace, so opening a
+// second terminal auto-evicts the first (the "one visible at a time" model
+// U8's tab strip wants). Panes need the opposite: N declared panes tiled and
+// SIMULTANEOUSLY visible/interactive within the Panes tab, so each pane gets
+// its OWN dedicated slot, keyed `pane:<workspaceId>:<paneId>` — no eviction
+// between sibling panes of the same workspace.
+//
+// Each pane also runs a user-declared COMMAND (persisted in `panes.command`,
+// src/main/paneStore.ts), not just an interactive shell. Rather than pass
+// the raw command string straight to the addon's `command` param (which
+// expects an absolute path to a script/binary to exec, not an arbitrary
+// shell command line), we point `command` at the generic
+// resources/orpheus-pane.sh wrapper and pass the user's command through
+// ORPHEUS_PANE_CMD — mirroring how orpheus-claude.sh/buildMountEnv thread
+// ORPHEUS_CLAUDE_FLAGS through env rather than argv. The wrapper runs the
+// command, then drops to an interactive shell once it exits (or immediately,
+// for an empty command — "just a shell") so the pane surface never dies.
+// ---------------------------------------------------------------------------
+
+function paneSlotId(workspaceId: string, paneId: string): string {
+  return `pane:${workspaceId}:${paneId}`
+}
+
+/** Resolves the orpheus-pane.sh wrapper's absolute path — same packaged-vs-
+ *  dev resolution buildMountEnv uses for orpheus-claude.sh. */
+function paneWrapperPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'orpheus-pane.sh')
+    : join(__dirname, '../../resources/orpheus-pane.sh')
+}
+
+// Pane surface registry — mirrors workbenchSurfacesByWorkspace's own header
+// comment: the renderer only ever HIDES a pane surface on ordinary
+// nav-away/unmount (surfaces are sticky, per CLAUDE.md), so this map is
+// main's own bookkeeping of live `pane:<workspaceId>:<paneId>` slots, keyed
+// workspaceId -> the set of live paneIds, letting workspace close/archive/
+// project-remove destroy ALL of a workspace's pane surfaces deterministically
+// regardless of render state. Populated on every successful pane:mount,
+// cleaned on every pane:destroy (both explicit and the bulk destroy below).
+const paneSurfacesByWorkspace = new Map<string, Set<string>>()
+
+function registerPaneSurface(workspaceId: string, paneId: string): void {
+  let ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids) {
+    ids = new Set()
+    paneSurfacesByWorkspace.set(workspaceId, ids)
+  }
+  ids.add(paneId)
+}
+
+function unregisterPaneSurface(workspaceId: string, paneId: string): void {
+  const ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids) return
+  ids.delete(paneId)
+  if (ids.size === 0) paneSurfacesByWorkspace.delete(workspaceId)
+}
+
+/** Destroys every known pane surface for `workspaceId` — the ONE
+ *  authoritative bulk-destroy path for workspace close/archive/project-
+ *  remove, mirroring destroyWorkbenchSurfacesForWorkspace. Idempotent: safe
+ *  to call even when the workspace never had any panes, or has already been
+ *  torn down. */
+function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
+  const ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids || ids.size === 0) return
+  const addon = loadTerminalAddon()
+  for (const paneId of ids) {
+    try {
+      addon.destroy(paneSlotId(workspaceId, paneId))
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  paneSurfacesByWorkspace.delete(workspaceId)
+}
+
+handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) => {
+  const addon = loadTerminalAddon()
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('pane:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
+
+  const ws = getWorkspace(workspaceId)
+  const cwd = ws?.cwd ?? process.env['HOME']
+
+  const slotId = paneSlotId(workspaceId, paneId)
+  const result = addon.mount(nativeHandle, {
+    workspaceId: slotId,
+    rect,
+    scaleFactor,
+    cwd,
+    command: paneWrapperPath(),
+    env: { ORPHEUS_PANE_CMD: command }
+  })
+  registerPaneSurface(workspaceId, paneId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_MOUNT,
+    workspaceId: slotId,
+    data: { created: result.created, pane: true }
+  })
+  return { workspaceId, created: result.created }
+})
+
+handle('pane:resize', (_e, { workspaceId, paneId, rect, scaleFactor }): void => {
+  const addon = loadTerminalAddon()
+  addon.resize(paneSlotId(workspaceId, paneId), rect, scaleFactor)
+})
+
+handle('pane:hide', (_e, { workspaceId, paneId }): void => {
+  const addon = loadTerminalAddon()
+  addon.hide(paneSlotId(workspaceId, paneId))
+})
+
+handle('pane:destroy', (_e, { workspaceId, paneId }): void => {
+  const addon = loadTerminalAddon()
+  addon.destroy(paneSlotId(workspaceId, paneId))
+  unregisterPaneSurface(workspaceId, paneId)
+})
+
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
   const addon = loadTerminalAddon()
   try {
@@ -1705,6 +1841,8 @@ registerActionsIpc()
 registerFooterActionsIpc()
 
 registerReviewsIpc()
+
+registerPanesIpc()
 
 registerKeepAwakeIpc()
 
@@ -1911,6 +2049,9 @@ if (!app.requestSingleInstanceLock()) {
                 // Trigger (g) — mirrors performClose/performArchive/projects:remove
                 // (see workbenchSurfacesByWorkspace's header comment).
                 destroyWorkbenchSurfacesForWorkspace(workspaceId)
+                // Same trigger (g) applies to Panes tab surfaces (see
+                // paneSurfacesByWorkspace's header comment).
+                destroyPaneSurfacesForWorkspace(workspaceId)
               },
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),

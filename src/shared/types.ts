@@ -961,6 +961,28 @@ export type LocalReviewComment = {
   updatedAt: number
 }
 
+// ---------------------------------------------------------------------------
+// Panes (Workbench Panes tab, U12) — a persistent terminal pane declared
+// within a claude workspace, tiled alongside its siblings. Persisted in
+// SQLite's `panes` table (src/main/db/schema.ts); see src/main/paneStore.ts
+// for the CRUD surface. Only metadata is persisted — reopening the workspace
+// re-runs `command` fresh in a new native surface, no output/scrollback is
+// carried over. `title` is nullable: null falls back to `command` (or
+// "Pane N") in the UI. `sizeFraction` is this pane's share of the tiled
+// axis; 0 means "unset" and the renderer computes an equal split.
+// ---------------------------------------------------------------------------
+
+export interface Pane {
+  id: string
+  workspaceId: string
+  command: string
+  title: string | null
+  position: number
+  sizeFraction: number
+  createdAt: number
+  updatedAt: number
+}
+
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
 
 export type SessionRecord = {

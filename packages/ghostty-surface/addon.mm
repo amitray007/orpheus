@@ -164,10 +164,20 @@ static std::map<std::string, GhosttySurfaceEntry> g_surfaces;
 // g_visibleBySlot["workbench"] = currently-visible workbench surface id (or "")
 // ---------------------------------------------------------------------------
 static const char* kWorkbenchSlotPrefix = "workbench:";
+static const char* kPaneSlotPrefix = "pane:";
 static const char* kClaudeSlot = "claude";
 static const char* kWorkbenchSlot = "workbench";
 
+// U12: panes get their OWN unique slot — the slot key IS the full
+// workspaceId (e.g. "pane:<workspaceId>:<paneId>"), not a shared bucket like
+// "workbench". That's the opposite tradeoff from Workbench's single shared
+// slot: N panes must all stay visible SIMULTANEOUSLY (tiled side-by-side), so
+// no two panes may ever be in the same eviction scope, or showing pane B
+// would evict pane A per setVisibleWorkspace's same-slot eviction rule.
 static std::string slotForWorkspaceId(const std::string& workspaceId) {
+    if (workspaceId.rfind(kPaneSlotPrefix, 0) == 0) {  // starts-with
+        return workspaceId;
+    }
     if (workspaceId.rfind(kWorkbenchSlotPrefix, 0) == 0) {  // starts-with
         return kWorkbenchSlot;
     }
