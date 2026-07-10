@@ -202,6 +202,11 @@ export type AppUiState = {
   lastViewKind: AppViewKind
   lastProjectId: string | null
   lastWorkspaceId: string | null
+  // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+  // lastProjectId/lastWorkspaceId exactly. Covered by AppUiStatePatch
+  // (Partial<Omit<AppUiState, 'updatedAt'>>) automatically.
+  lastPanelId: string | null
+  lastLayoutId: string | null
   windowX: number | null
   windowY: number | null
   windowWidth: number | null
@@ -1023,6 +1028,9 @@ export interface PanePanel {
   position: number
   createdAt: number
   updatedAt: number
+  /** Sidebar expand/collapse persistence (issue #1) — mirrors
+   *  ProjectRecord.expandedInSidebar exactly. */
+  expandedInSidebar: boolean
 }
 
 export type SplitDirection = 'v' | 'h'

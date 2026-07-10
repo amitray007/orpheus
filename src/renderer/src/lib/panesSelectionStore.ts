@@ -9,21 +9,25 @@
  * The sidebar (Sidebar.tsx's PanelsSection) is the writer: clicking a panel
  * row calls setActivePanel, clicking a layout row calls setActiveLayout.
  * PanesView.tsx is the primary reader (via usePanesSelection) and also
- * seeds a first-run default (first panel / first layout) once panels/layouts
- * load and nothing is selected yet.
+ * seeds a first-run default (first panel / first layout, or the persisted
+ * lastPanelId/lastLayoutId if they still resolve) once panels/layouts load
+ * and nothing is selected yet.
  *
- * Deliberately in-memory only for this unit — no IPC persistence, so the
- * selection does not survive an app restart. Persisting it (e.g. through
- * uiState) is deferred to a later unit.
+ * Persisted (issue #1) via app_ui_state's lastPanelId/lastLayoutId columns —
+ * mirrors how lastProjectId/lastWorkspaceId persist the Projects sidebar's
+ * active selection. Every write here optimistically updates local state AND
+ * fires updateUiState() so the selection survives an app restart.
  *
  * API:
  *   usePanesSelection()          — hook: subscribe to { activePanelId, activeLayoutId }
  *   setActivePanel(panelId)      — sets activePanelId; also clears activeLayoutId to
  *                                  null so a stale cross-panel layout id never leaks
- *   setActiveLayout(layoutId)    — sets activeLayoutId directly
+ *                                  (persists both lastPanelId and lastLayoutId: null)
+ *   setActiveLayout(layoutId)    — sets activeLayoutId directly (persists lastLayoutId)
  */
 
 import { useSyncExternalStore } from 'react'
+import { updateUiState } from '@/lib/uiStateStore'
 
 export interface PanesSelection {
   activePanelId: string | null
@@ -54,19 +58,24 @@ function subscribe(fn: () => void): () => void {
 
 /** Sets the active panel. Always resets activeLayoutId to null when the
  *  panel actually changes, so a caller must separately pick (and set) the
- *  new panel's first layout — see PanesView's seeding effect. */
+ *  new panel's first layout — see PanesView's seeding effect. Persists both
+ *  ids: lastLayoutId is cleared alongside lastPanelId so a stale
+ *  cross-panel layout id is never restored on next boot. */
 export function setActivePanel(panelId: string | null): void {
   if (state.activePanelId === panelId) return
   state = { activePanelId: panelId, activeLayoutId: null }
   notify()
+  updateUiState({ lastPanelId: panelId, lastLayoutId: null })
 }
 
 /** Sets the active layout directly (used for layout-row clicks and for
- *  auto-selecting a newly active panel's first layout). */
+ *  auto-selecting a newly active panel's first layout). Persists
+ *  lastLayoutId. */
 export function setActiveLayout(layoutId: string | null): void {
   if (state.activeLayoutId === layoutId) return
   state = { ...state, activeLayoutId: layoutId }
   notify()
+  updateUiState({ lastLayoutId: layoutId })
 }
 
 // ---------------------------------------------------------------------------

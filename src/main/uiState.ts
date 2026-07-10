@@ -29,6 +29,10 @@ type AppUiStateRow = {
   last_view_kind: string
   last_project_id: string | null
   last_workspace_id: string | null
+  // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+  // last_project_id/last_workspace_id exactly.
+  last_panel_id: string | null
+  last_layout_id: string | null
   window_x: number | null
   window_y: number | null
   window_width: number | null
@@ -136,6 +140,9 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
       : row.last_view_kind) as AppViewKind,
     lastProjectId: row.last_project_id,
     lastWorkspaceId: row.last_workspace_id,
+    // Panes v2 active-panel/active-layout persistence (issue #1)
+    lastPanelId: row.last_panel_id,
+    lastLayoutId: row.last_layout_id,
     windowX: row.window_x,
     windowY: row.window_y,
     windowWidth: row.window_width,
@@ -406,6 +413,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     lastViewKind: 'last_view_kind',
     lastProjectId: 'last_project_id',
     lastWorkspaceId: 'last_workspace_id',
+    // Panes v2 active-panel/active-layout persistence (issue #1)
+    lastPanelId: 'last_panel_id',
+    lastLayoutId: 'last_layout_id',
     windowX: 'window_x',
     windowY: 'window_y',
     windowWidth: 'window_width',

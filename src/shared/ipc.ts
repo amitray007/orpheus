@@ -394,6 +394,10 @@ export interface InvokeChannelMap {
     res: PanePanel
   }
   'panes:deletePanel': { req: [{ id: string }]; res: void }
+  // Sidebar expand/collapse persistence (issue #1) — mirrors
+  // projects:setExpandedInSidebar's shape exactly. See src/main/paneStore.ts's
+  // setPanelExpanded.
+  'panes:setPanelExpanded': { req: [{ id: string; expanded: boolean }]; res: void }
   'panes:listLayouts': { req: [{ panelId: string }]; res: PaneLayout[] }
   'panes:createLayout': {
     req: [{ panelId: string; name: string; dir: string; position?: number }]

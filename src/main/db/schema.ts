@@ -450,6 +450,13 @@ export const schema: SchemaDef = {
       },
       last_project_id: 'TEXT REFERENCES projects(id) ON DELETE SET NULL',
       last_workspace_id: 'TEXT REFERENCES workspaces(id) ON DELETE SET NULL',
+      // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+      // last_project_id/last_workspace_id exactly: nullable TEXT with the
+      // same ON DELETE SET NULL FK so a deleted panel/layout can never leave
+      // a dangling id here (auto-clears instead of restoring a ghost
+      // selection on next boot).
+      last_panel_id: 'TEXT REFERENCES pane_panels(id) ON DELETE SET NULL',
+      last_layout_id: 'TEXT REFERENCES pane_layouts(id) ON DELETE SET NULL',
       window_x: 'INTEGER',
       window_y: 'INTEGER',
       window_width: 'INTEGER',
@@ -819,7 +826,13 @@ export const schema: SchemaDef = {
       dir: 'TEXT',
       position: INTEGER_NOT_NULL,
       created_at: INTEGER_NOT_NULL,
-      updated_at: INTEGER_NOT_NULL
+      updated_at: INTEGER_NOT_NULL,
+      // Sidebar expand/collapse persistence (issue #1) — mirrors
+      // projects.expanded_in_sidebar exactly: an INTEGER 0/1 flag with a
+      // '0' default so every existing + newly-created panel row starts
+      // collapsed, reconciled onto pre-existing rows by the engine's
+      // add-column path (no backfill needed since the default covers it).
+      expanded_in_sidebar: { type: 'INTEGER', notNull: true, default: '0' }
     },
     indexes: {
       idx_pane_panels_position: ['position']

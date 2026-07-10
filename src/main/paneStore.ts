@@ -37,6 +37,7 @@ type PanePanelRow = {
   position: number
   created_at: number
   updated_at: number
+  expanded_in_sidebar: number
 }
 
 type PaneLayoutRow = {
@@ -71,7 +72,9 @@ function panelFromRow(row: PanePanelRow): PanePanel {
     dir: row.dir,
     position: row.position,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    // Mirrors projects.ts's `expandedInSidebar: row.expanded_in_sidebar === 1`.
+    expandedInSidebar: row.expanded_in_sidebar === 1
   }
 }
 
@@ -199,6 +202,17 @@ export function updatePanel(id: string, patch: UpdatePanelInput): PanePanel {
 export function deletePanel(id: string): void {
   const db = getDb()
   db.prepare('DELETE FROM pane_panels WHERE id = ?').run(id)
+}
+
+/** Persists sidebar expand/collapse state for a panel row. Mirrors
+ *  projects.ts's setProjectExpandedInSidebar exactly — a one-column UPDATE,
+ *  no read-back (the renderer already holds the optimistic local value). */
+export function setPanelExpanded(id: string, expanded: boolean): void {
+  const db = getDb()
+  db.prepare('UPDATE pane_panels SET expanded_in_sidebar = ? WHERE id = ?').run(
+    expanded ? 1 : 0,
+    id
+  )
 }
 
 // ---------------------------------------------------------------------------

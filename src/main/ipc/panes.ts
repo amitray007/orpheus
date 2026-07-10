@@ -31,6 +31,7 @@ import {
   createPanel,
   updatePanel,
   deletePanel,
+  setPanelExpanded,
   listLayouts,
   createLayout,
   updateLayout,
@@ -52,6 +53,9 @@ export function registerPanesIpc(): void {
   )
   handle('panes:deletePanel', (_e, { id }) => {
     deletePanel(id)
+  })
+  handle('panes:setPanelExpanded', (_e, { id, expanded }) => {
+    setPanelExpanded(id, expanded)
   })
 
   // Layouts
