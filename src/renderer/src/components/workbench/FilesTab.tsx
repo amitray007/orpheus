@@ -763,13 +763,34 @@ function TreePane({
     }).then((result) => result.buttonId === 'confirm')
   }, [])
 
+  // `<FileTree>` (@pierre/trees/dist/react/FileTree.js) is a plain function
+  // component — its props type (`FileTreeProps extends HTMLAttributes`) has
+  // no `ref`, so we ref the WRAPPER div around it instead and reach the one
+  // level down to the `<file-tree-container>` custom element it renders
+  // (scoped to this pane's own subtree — not a global `document.querySelector`).
+  // Backs `isRenameInputActive` below (the useFilesTreeMutations
+  // blur-without-typing reconciler — see that hook's doc comment): the
+  // rename `<input>` lives inside the container's shadow root (`themeToTreeStyles`/
+  // Tailwind can't reach in, same boundary), and `.shadowRoot.activeElement`
+  // is a direct, synchronous property read of whether that input currently
+  // holds focus — reliable where a bubbled `focusout` listener on the
+  // wrapper was CDP-verified NOT to fire (shadow-root focus events don't
+  // compose out here).
+  const treeWrapperRef = useRef<HTMLDivElement | null>(null)
+  const isRenameInputActive = useCallback((): boolean => {
+    const container = treeWrapperRef.current?.querySelector('file-tree-container')
+    const active = container?.shadowRoot?.activeElement
+    return active != null && active.tagName === 'INPUT'
+  }, [])
+
   const mutations = useFilesTreeMutations({
     workspaceId,
     model: model as unknown as TreeModel,
     getKnownPaths,
     refetch,
     onError: setError,
-    confirmDirDelete
+    confirmDirDelete,
+    isRenameInputActive
   })
 
   // Keep the renaming handlers ref pointed at the latest hook closures.
@@ -795,13 +816,14 @@ function TreePane({
   // target dir from, so they target the CURRENT tree selection instead: a
   // single selected directory creates inside it, a single selected file
   // creates in its parent dir, and no selection (or a multi-select) falls
-  // back to the tree root (see toolbarCreateTarget). `createAtRoot` is async
-  // (create → startRenaming); errors are already surfaced via `onError`
-  // inside the mutations hook, so this handler just needs to not leave a
-  // floating promise.
+  // back to the tree root (see toolbarCreateTarget). `createAtRoot` is
+  // synchronous (view-only placeholder + startRenaming — CREATE-ON-COMMIT,
+  // see useFilesTreeMutations.ts's module header); actual disk creation (and
+  // its error surfacing via `onError`) happens later, inside the mutations
+  // hook, once the user commits a real name.
   const handleToolbarCreate = useCallback(
     (isFolder: boolean): void => {
-      void mutations.createAtRoot(isFolder, toolbarCreateTarget(selection))
+      mutations.createAtRoot(isFolder, toolbarCreateTarget(selection))
     },
     [mutations, selection]
   )
@@ -836,7 +858,7 @@ function TreePane({
           {error}
         </button>
       )}
-      <div style={hostStyle} className="flex-1 min-h-0">
+      <div ref={treeWrapperRef} style={hostStyle} className="flex-1 min-h-0">
         <FileTree
           model={model}
           header={toolbar}
