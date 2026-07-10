@@ -229,6 +229,24 @@ export function listLayouts(panelId: string): PaneLayout[] {
   return rows.map(layoutFromRow)
 }
 
+/** Single-row lookup by id — mirrors listLayouts' row->record mapping but for
+ *  exactly one layout. Added for Fix #23: the `pane:mount` IPC handler
+ *  (src/main/index.ts) receives a `workspaceId` param that, for panes, is
+ *  actually the LAYOUT id (see that handler's comment) — it needs to resolve
+ *  the layout's own `dir` to find the correct cwd to launch the pane's setup
+ *  command in, and `getWorkspace(layoutId)` can't do that (a layout is not a
+ *  workspace row). Returns null (not throw) when no row matches, so callers
+ *  can fall back cleanly — same contract as a typical single-row "maybe"
+ *  lookup, unlike updateLayout's throw-on-missing (that path already assumes
+ *  the caller resolved a real id before mutating it). */
+export function getLayout(id: string): PaneLayout | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as
+    | PaneLayoutRow
+    | undefined
+  return row ? layoutFromRow(row) : null
+}
+
 export interface CreateLayoutInput {
   panelId: string
   name: string

@@ -68,6 +68,25 @@ function basename(dir: string): string {
   return parts[parts.length - 1] || dir
 }
 
+/** Issue #25 — return the next available "Layout N" name given an existing
+ *  list, mirroring dashboard.helpers.ts's nextWorkspaceName exactly (scan
+ *  used numbers from names matching /^Layout \d+$/, pick the smallest
+ *  positive integer not yet taken). Layouts previously defaulted to the
+ *  folder's basename, which read as a duplicate of the panel name one level
+ *  up (a project panel is already named after its folder) — "Layout N"
+ *  matches the app's other auto-naming ("Workspace N", "Pane N") instead. */
+function nextLayoutName(existing: PaneLayout[]): string {
+  const usedNumbers = new Set(
+    existing
+      .map((l) => /^Layout\s+(\d+)$/.exec(l.name)?.[1])
+      .filter((s): s is string => typeof s === 'string')
+      .map((s) => parseInt(s, 10))
+  )
+  let n = 1
+  while (usedNumbers.has(n)) n++
+  return `Layout ${n}`
+}
+
 /** Opens the folder picker, creates a project panel named after the chosen
  *  folder, and selects it. (No name prompt — see `basename` above for why.) */
 async function createPanelFlow(onDone: (newPanelId: string) => void): Promise<void> {
@@ -85,14 +104,19 @@ async function createPanelFlow(onDone: (newPanelId: string) => void): Promise<vo
   }
 }
 
-/** Creates a layout under `panel`, named after its folder, and reports the
- *  new layout id via `onDone`.
+/** Creates a layout under `panel`, named "Layout N" (issue #25 — see
+ *  nextLayoutName above), and reports the new layout id via `onDone`.
  *
  *  Project panels are folder-bound — reuse the panel's own dir so adding a
  *  layout is one click, no Finder dialog (issue #5). Only the General panel
- *  (dir === null) is cross-project, so its layouts still need a folder pick. */
+ *  (dir === null) is cross-project, so its layouts still need a folder pick.
+ *
+ *  `existingLayouts` is the panel's current layout list (passed in by the
+ *  caller from PanelsSection's layoutsByPanel state) — used only to compute
+ *  the next unused "Layout N" number, not persisted anywhere itself. */
 async function createLayoutFlow(
   panel: PanePanel,
+  existingLayouts: PaneLayout[],
   onDone: (newLayoutId: string) => void
 ): Promise<void> {
   let dir = panel.dir
@@ -103,7 +127,7 @@ async function createLayoutFlow(
   try {
     const created = await window.api.panes.createLayout({
       panelId: panel.id,
-      name: basename(dir),
+      name: nextLayoutName(existingLayouts),
       dir
     })
     onDone(created.id)
@@ -552,7 +576,8 @@ export function PanelsSection(): React.JSX.Element {
   // AFTER setActivePanel or the fresh selection gets clobbered back to null
   // right after being set. Ordering below is deliberate — do not reorder.
   function handleAddLayout(panel: PanePanel): void {
-    void createLayoutFlow(panel, (newLayoutId) => {
+    const existingLayouts = layoutsByPanel.get(panel.id) ?? []
+    void createLayoutFlow(panel, existingLayouts, (newLayoutId) => {
       loadLayouts(panel.id)
       setActivePanel(panel.id)
       setActiveLayout(newLayoutId)

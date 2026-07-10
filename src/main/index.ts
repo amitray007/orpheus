@@ -46,6 +46,7 @@ import {
   setWorkspaceCwd
 } from './workspaces'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
+import { getLayout } from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
@@ -1635,8 +1636,17 @@ handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) =>
   if (!win) throw new Error('pane:mount — no BrowserWindow for sender')
   const nativeHandle = win.getNativeWindowHandle()
 
-  const ws = getWorkspace(workspaceId)
-  const cwd = ws?.cwd ?? process.env['HOME']
+  // Fix #23 — for panes, the `workspaceId` param slot actually carries the
+  // LAYOUT id (PaneCell calls window.api.panes.mount(layoutId, paneId, ...);
+  // the param is named workspaceId only because pane:mount's shape mirrors
+  // the workspace terminal:mount handler). getWorkspace(workspaceId) would
+  // therefore always miss (a layout id never matches a workspace row),
+  // silently falling back to $HOME and running the pane's setup command in
+  // the wrong folder. Each layout is folder-bound (PaneLayout.dir) — that's
+  // the correct cwd, resolved via paneStore's getLayout. Keep the $HOME
+  // fallback for safety (e.g. a stale/deleted layout id).
+  const layout = getLayout(workspaceId)
+  const cwd = layout?.dir ?? process.env['HOME']
 
   const slotId = paneSlotId(workspaceId, paneId)
   const result = addon.mount(nativeHandle, {
