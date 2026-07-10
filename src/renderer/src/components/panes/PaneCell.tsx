@@ -188,47 +188,82 @@ function usePaneSurface(
       }
     }
 
+    // tryMount — the sub-floor check + `pane:mount` call + the createdRef/
+    // pendingClose/unmounted guards, factored out of the rAF callback below
+    // so BOTH the initial mount attempt AND a later ResizeObserver-driven
+    // "the container finally has a real size" retry can call the exact same
+    // path (Bug #2's fix — see the ResizeObserver wiring below for why a
+    // retry path is needed at all).
+    const tryMount = (rect: DOMRect): void => {
+      if (createdRef.current) return
+      if (rect.width < MIN_SURFACE_PX || rect.height < MIN_SURFACE_PX) return
+      const scaleFactor = window.devicePixelRatio ?? 1
+      window.api.panes
+        .mount(layoutId, paneId, toTerminalRect(rect), scaleFactor, command)
+        .then(() => {
+          createdRef.current = true
+          if (pendingCloseRef.current) {
+            pendingCloseRef.current = false
+            createdRef.current = false
+            window.api.panes
+              .destroy(layoutId, paneId)
+              .catch((e) => console.error('[PaneCell] deferred close destroy failed:', e))
+            return
+          }
+          if (unmountedRef.current) {
+            window.api.panes
+              .hide(layoutId, paneId)
+              .catch((e) => console.error('[PaneCell] post-unmount hide failed:', e))
+          }
+        })
+        .catch((e) => console.error('[PaneCell] mount failed:', e))
+    }
+
+    // ResizeObserver — attached UNCONDITIONALLY whenever this run is live
+    // (active && !animating), NOT gated on a successful mount. This is
+    // Bug #2's fix: the OLD code only called attachResizeListener() inside
+    // the mount .then(), so a first rAF that measured a sub-floor rect
+    // (e.g. a single-pane layout's container hasn't been laid out into its
+    // parent's real size yet) permanently skipped the mount AND never
+    // attached anything that could catch a later, valid layout pass — the
+    // pane stayed blank forever unless something UNRELATED (like adding a
+    // 2nd pane, which used to force a full remount) re-ran this effect with
+    // a by-then-valid rect. Attaching the observer up front means: if the
+    // deferred first mount hasn't happened yet (`!createdRef.current`) and
+    // the container now reports a valid rect, retry the mount right here;
+    // otherwise (already mounted) fall through to the normal resize path.
+    // The flat-render fix in SplitTree.tsx (every pane, including a lone
+    // first pane, now sits in a sized `position:absolute` wrapper) makes
+    // this rare in practice, but a pane created while its ancestor is
+    // mid-layout (or 0-sized for any other transient reason) must still
+    // self-heal instead of staying blank — this is that safety net.
     const attachResizeListener = (): void => {
       const el = containerRef.current
       if (!el || ro) return
       ro = new ResizeObserver(() => {
-        scheduleResize(el.getBoundingClientRect())
+        const rect = el.getBoundingClientRect()
+        if (!createdRef.current) {
+          tryMount(rect)
+          return
+        }
+        scheduleResize(rect)
       })
       ro.observe(el)
     }
 
     if (active && !animating) {
       didMount = true
+      attachResizeListener()
       // rAF so the container has laid out before we measure it (matches
-      // TerminalTab.tsx / WorkspaceView.tsx's mount-effect pattern).
+      // TerminalTab.tsx / WorkspaceView.tsx's mount-effect pattern). If this
+      // first measurement is still sub-floor, tryMount no-ops and the
+      // ResizeObserver attached above is what eventually retries — no
+      // separate retry loop needed here.
       mountRafId = requestAnimationFrame(() => {
         mountRafId = null
         const el = containerRef.current
         if (!el) return
-        const rect = el.getBoundingClientRect()
-        if (rect.width < MIN_SURFACE_PX || rect.height < MIN_SURFACE_PX) return
-        const scaleFactor = window.devicePixelRatio ?? 1
-        window.api.panes
-          .mount(layoutId, paneId, toTerminalRect(rect), scaleFactor, command)
-          .then(() => {
-            createdRef.current = true
-            if (pendingCloseRef.current) {
-              pendingCloseRef.current = false
-              createdRef.current = false
-              window.api.panes
-                .destroy(layoutId, paneId)
-                .catch((e) => console.error('[PaneCell] deferred close destroy failed:', e))
-              return
-            }
-            if (unmountedRef.current) {
-              window.api.panes
-                .hide(layoutId, paneId)
-                .catch((e) => console.error('[PaneCell] post-unmount hide failed:', e))
-              return
-            }
-            attachResizeListener()
-          })
-          .catch((e) => console.error('[PaneCell] mount failed:', e))
+        tryMount(el.getBoundingClientRect())
       })
     }
 

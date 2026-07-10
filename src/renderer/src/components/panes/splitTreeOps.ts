@@ -239,3 +239,80 @@ export function leafIds(tree: SplitTree | null): string[] {
   if (isLeaf(tree)) return [tree.paneId]
   return [...leafIds(tree.a), ...leafIds(tree.b)]
 }
+
+/** A leaf's position within the stage, expressed as PERCENTAGES of the
+ *  stage's own box (not pixels) — so the caller can lay it out with plain
+ *  `position:absolute; left/top/width/height: N%` and never re-run this
+ *  computation on a resize (percentages track a resizing container for
+ *  free; pixel rects would need a ResizeObserver on the STAGE too). */
+export interface LeafRect {
+  paneId: string
+  leftPct: number
+  topPct: number
+  widthPct: number
+  heightPct: number
+}
+
+/** The full-stage rect a tree's root starts from — 0/0/100/100. Exported so
+ *  callers (SplitTree.tsx) don't need to hand-write this literal. */
+export const FULL_STAGE_RECT: LeafRect = {
+  paneId: '',
+  leftPct: 0,
+  topPct: 0,
+  widthPct: 100,
+  heightPct: 100
+}
+
+/**
+ * computeLeafRects — flatten a SplitTree into a list of {paneId, rect}
+ * pairs, one per leaf, by walking the tree once and subdividing a starting
+ * rect (default: the full stage, 0/0/100%/100%) at each node according to
+ * its `dir` + `ratio`, exactly the way SplitNode's flexbox layout already
+ * subdivides visually:
+ *
+ *   - 'v' node (side-by-side): splits WIDTH — `a` gets the left
+ *     `ratio` share, `b` gets the right `(1 - ratio)` share; both keep the
+ *     parent's full height.
+ *   - 'h' node (stacked): splits HEIGHT — `a` gets the top `ratio` share,
+ *     `b` gets the bottom `(1 - ratio)` share; both keep the parent's full
+ *     width.
+ *
+ * This is the pure geometry backing the FLAT-RENDER fix (Bug #3): instead
+ * of recursively nesting a `<PaneCell>` under a `<SplitNode>` div per tree
+ * node (which changes a pane's element TYPE/position in the DOM tree every
+ * time the tree's shape changes, forcing React to unmount+remount it), the
+ * renderer calls this ONCE per tree render to get a flat list, then renders
+ * every pane as a sibling `<PaneCell>` positioned absolutely by its rect.
+ * Splitting/closing/swapping only ever changes ENTRIES in this flat list
+ * (add/remove one, or change existing entries' rect numbers) — the existing
+ * entries' React elements never change type or nesting depth, so React
+ * never unmounts them.
+ *
+ * A leaf's own rect is returned verbatim (mirrors the mockup's implicit
+ * "the whole node is the cell" for a single-pane layout). Returns `[]` for
+ * a `null` tree (empty layout).
+ */
+export function computeLeafRects(
+  tree: SplitTree | null,
+  rect0: LeafRect = FULL_STAGE_RECT
+): LeafRect[] {
+  if (tree === null) return []
+  if (isLeaf(tree)) return [{ ...rect0, paneId: tree.paneId }]
+
+  const { leftPct, topPct, widthPct, heightPct } = rect0
+  const aShare = clampRatio(tree.ratio)
+  const bShare = 1 - aShare
+
+  const [rectA, rectB] =
+    tree.dir === 'v'
+      ? [
+          { ...rect0, widthPct: widthPct * aShare },
+          { ...rect0, leftPct: leftPct + widthPct * aShare, widthPct: widthPct * bShare }
+        ]
+      : [
+          { ...rect0, heightPct: heightPct * aShare },
+          { ...rect0, topPct: topPct + heightPct * aShare, heightPct: heightPct * bShare }
+        ]
+
+  return [...computeLeafRects(tree.a, rectA), ...computeLeafRects(tree.b, rectB)]
+}
