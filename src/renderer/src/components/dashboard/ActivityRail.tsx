@@ -21,6 +21,13 @@
 import type React from 'react'
 import { ArrowFatLineUp, Gear, House, Kanban, SquaresFour } from '@phosphor-icons/react'
 
+// The rail's fixed width (px). Exported so the TopBar can offset its left
+// section by the SAME amount — the TopBar's left block must span rail + sidebar
+// so the workspace title slot lines up with the content column below (rail +
+// secondary sidebar + main). Keeping it here (single source) prevents the
+// TopBar offset from drifting from the rail's actual width.
+export const ACTIVITY_RAIL_WIDTH = 46
+
 interface ActivityRailProps {
   /** Which top-level surface is active. null while in Settings — the rail
    *  has no active icon in that case (Settings is a bottom button). */
@@ -84,8 +91,9 @@ export function ActivityRail({
 
   return (
     <div
+      style={{ width: ACTIVITY_RAIL_WIDTH }}
       className={[
-        'flex flex-col items-center h-full w-[46px] shrink-0 py-2 gap-1',
+        'flex flex-col items-center h-full shrink-0 py-2 gap-1',
         'bg-surface-raised border-r border-border-default'
       ].join(' ')}
     >
