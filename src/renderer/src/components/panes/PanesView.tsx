@@ -118,22 +118,37 @@ export function PanesView(): React.JSX.Element {
 
   useEffect(() => {
     if (activePanelId === null) return
-    if (activeLayoutId !== null && layouts.some((l) => l.id === activeLayoutId)) return
-    // Reaching here means either nothing is selected yet (activeLayoutId
-    // === null — the genuine first-restore case the lastLayoutId logic
-    // below handles), OR activeLayoutId IS set but just vanished from
-    // `layouts` — it was deleted (e.g. via the sidebar's delete flow) or no
-    // longer belongs to this panel. The deleted-layout case must NEVER fall
-    // into the lastLayoutId-restore branch below: canRestoreLayout is
-    // gated on activeLayoutId === null, so a stale non-null activeLayoutId
-    // always skips straight to the `layouts[0]?.id ?? null` fallback below
-    // — explicitly re-seeding to a sibling layout, or to no-selection if
-    // none remain, so a deleted layout can never linger as the active
-    // selection (PanelsSection's handleDeleteLayout already does this
-    // proactively too; this is the backstop for any other path that leaves
-    // a dangling id).
-    const canRestoreLayout =
-      activeLayoutId === null && uiState !== null && uiState.lastPanelId === activePanelId
+    // BUG #20 FIX — a non-null activeLayoutId is ALWAYS the user's (or the
+    // persisted lastLayoutId's) live selection, and this effect must never
+    // clobber it — even when it isn't (yet) found in `layouts` below.
+    //
+    // Why "not found in `layouts`" is NOT the same thing as "deleted": this
+    // view and the sidebar's PanelsSection run TWO SEPARATE layout fetches
+    // (see usePanesData.ts's + panesRefreshStore.ts's header comments).
+    // Clicking a layout row calls setActiveLayout(layout.id) directly and
+    // does NOT bump panesRefreshStore, so there's a real window where
+    // activeLayoutId has already flipped to e.g. QA-B but this hook's OWN
+    // `layouts` snapshot hasn't refetched yet and still only reflects
+    // QA-A — that's a stale-list race, not a deletion. The original code
+    // treated "non-null activeLayoutId absent from layouts" as "deleted →
+    // re-seed to layouts[0]", which re-selected QA-A right back over the
+    // user's QA-B click, making layout switching look broken (issue #20).
+    //
+    // The fix: only re-seed when activeLayoutId is null (nothing selected
+    // — first-run/restore, or a fresh panel via setActivePanel's reset).
+    // Once activeLayoutId is non-null, this effect always returns and
+    // leaves it alone, whether or not `layouts` has caught up yet:
+    //   - if it's a stale-list race, the list will refresh (activePanelId
+    //     change, refetch(), or a panesRefreshStore bump) and pick it up —
+    //     nothing reverts in the meantime.
+    //   - if the layout really was deleted, PanelsSection's
+    //     handleDeleteLayout is the sole owner of re-selecting a sibling or
+    //     clearing selection (it already does so proactively, reading the
+    //     live selection via getPanesSelection() and calling setActiveLayout
+    //     itself) — this effect does not need to be, and must not act as, a
+    //     backstop for that case.
+    if (activeLayoutId !== null) return
+    const canRestoreLayout = uiState !== null && uiState.lastPanelId === activePanelId
     const restoredLayout = canRestoreLayout
       ? layouts.find((l) => l.id === uiState.lastLayoutId)
       : undefined
