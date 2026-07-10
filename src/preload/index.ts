@@ -591,6 +591,8 @@ const api = {
       patch: { name?: string; dir?: string | null; position?: number }
     ): Promise<PanePanel> => invoke('panes:updatePanel', { id, ...patch }),
     deletePanel: (id: string): Promise<void> => invoke('panes:deletePanel', { id }),
+    setPanelExpanded: (id: string, expanded: boolean): Promise<void> =>
+      invoke('panes:setPanelExpanded', { id, expanded }),
     listLayouts: (panelId: string): Promise<PaneLayout[]> =>
       invoke('panes:listLayouts', { panelId }),
     createLayout: (args: {
