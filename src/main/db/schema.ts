@@ -11,6 +11,9 @@ import { enumCheck, enumClause } from './render'
 const WORKSPACE_STATUS = ['in_progress', 'awaiting_input', 'attention', 'idle', 'archived'] as const
 const SESSION_STATUS = ['in_progress', 'in_review', 'archived'] as const
 const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const
+// Panes v2 (U4, KTD2) — pane_panels.kind. Mirrors PanePanelKind in
+// src/shared/types.ts.
+const PANE_PANEL_KIND = ['general', 'project'] as const
 
 const PERMISSION_MODE = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
 const EFFORT = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -20,10 +23,15 @@ const EDITOR_MODE = ['normal', 'vim'] as const
 const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 
-const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace'] as const
+// 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
+// the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
+// (see AppViewKind in src/shared/types.ts).
+const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace', 'panes'] as const
 // Mirrors VALID_FILES_SORT_ORDERS / TreeSortOrder in
 // src/shared/uiStateDefaults.ts / TreeOptionsPopover.tsx.
 const FILES_SORT_ORDER = ['default', 'name'] as const
+// Mirrors VALID_DEFAULT_SURFACES in src/shared/uiStateDefaults.ts.
+const DEFAULT_SURFACE = ['dashboard', 'projects', 'panes'] as const
 const THEME = ['midnight', 'daylight', 'eclipse'] as const
 const ACCENT_COLOR = ['gold', 'blue', 'teal', 'orange', 'pink'] as const
 const UI_FONT_SCALE = ['small', 'default', 'large'] as const
@@ -562,6 +570,20 @@ export const schema: SchemaDef = {
       // src/shared/uiStateDefaults.ts). Opt-in since it mutates the working
       // tree. Default 0 (off).
       hunk_actions_enabled: bool('hunk_actions_enabled', '0'),
+      // Panes v2 top-level view visibility toggles — control whether the
+      // Sidebar's "Panes"/"Workspaces" NavItems render (mirrors
+      // UI_STATE_DEFAULTS.showPanesView/showWorkspacesView in
+      // src/shared/uiStateDefaults.ts). Panes defaults shown (1); Workspaces
+      // defaults hidden (0) since Panes is the new primary surface.
+      show_panes_view: bool('show_panes_view', '1'),
+      show_workspaces_view: bool('show_workspaces_view', '1'),
+      // Open-at-launch surface (rail vocabulary) — which top-level surface the app lands on at startup. Replaces the deprecated show_panes_view/show_workspaces_view toggles. Mirrors UI_STATE_DEFAULTS.defaultSurface.
+      default_surface: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'projects'",
+        check: enumCheck('default_surface', DEFAULT_SURFACE)
+      },
       // Workbench tree/code split pane width (v69) — draggable divider width,
       // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors
       // UI_STATE_DEFAULTS.workbenchTreeWidth / WORKBENCH_TREE_WIDTH_MIN..MAX
@@ -738,14 +760,23 @@ export const schema: SchemaDef = {
   },
 
   // ---------------------------------------------------------------------
-  // panes — Workbench Panes tab (U12). N persistent terminal panes tiled
-  // within a claude workspace's Panes tab, each running a user-declared
-  // COMMAND (not just a shell — see src/main/paneStore.ts). Reopening the
-  // workspace re-runs each pane's command fresh (the row is metadata only;
-  // no output/scrollback is persisted). `position` is the 0-based
-  // left-to-right tile order; `size_fraction` is this pane's share of the
-  // tiled axis, with 0 meaning "unset" (the renderer computes an equal
-  // split across all panes sized 0).
+  // panes — RETIRED (Panes v2, U4 — docs/plans/2026-07-10-001-feat-panes-v2-
+  // toplevel-layouts-plan.md, KTD2). Superseded by the pane_panels /
+  // pane_layouts / pane_terminals hierarchy below. This flat-row shape
+  // (one workspace-scoped pane per row, U12/1ccc4f5) is gone from the app —
+  // src/main/paneStore.ts and src/main/ipc/panes.ts now target the new
+  // tables entirely.
+  //
+  // KEPT DECLARED (not deleted) because the declarative engine has no
+  // whole-TABLE drop op: `planSync` (src/main/db/engine.ts) only diffs
+  // tables that are still keys of `schema` above — a table dropped from
+  // `schema` simply stops being reconciled, it is never DROPped. Removing
+  // this TableDef would leave any pre-existing `panes` table permanently
+  // orphaned (undeclared, unreconciled, silently retained) rather than
+  // actually retired, and CLAUDE.md's migration rule forbids hand-writing
+  // a destructive `DROP TABLE`. So the table stays declared-but-dead:
+  // structurally reconciled (harmless — no code reads/writes it anymore)
+  // until a future `dropTable`-capable engine pass can retire it for real.
   // ---------------------------------------------------------------------
   panes: {
     columns: {
@@ -762,6 +793,95 @@ export const schema: SchemaDef = {
     indexes: {
       idx_panes_workspace: ['workspace_id']
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_panels — Panes v2 (U4, KTD2/KTD8). Top of the new hierarchy: a
+  // sidebar-level grouping, rendered with the project-row treatment (see
+  // the plan's R4/KTD5). `kind` is 'general' (the single always-there,
+  // cross-project panel — seeded once, see src/main/paneStore.ts's
+  // ensureGeneralPanel) or 'project' (user-created, bound to a `dir`
+  // chosen via the folder picker). `dir` is nullable because the General
+  // panel has no single cwd of its own — each of its layouts carries its
+  // own `dir` instead. A project panel's `dir` is Panes-only: it is never
+  // written to the `projects` table (KTD8) — Panes folders and Orpheus's
+  // registered projects are deliberately independent.
+  // ---------------------------------------------------------------------
+  pane_panels: {
+    columns: {
+      id: TEXT_PK,
+      kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('kind', PANE_PANEL_KIND)
+      },
+      name: TEXT_NOT_NULL,
+      dir: 'TEXT',
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    indexes: {
+      idx_pane_panels_position: ['position']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_layouts — Panes v2 (U4, KTD2). A saved split-tree arrangement
+  // bound to a folder (`dir`, the layout's own cwd — independent of its
+  // parent panel's `dir`, which is why General-panel layouts each need
+  // their own). Rendered as a workspace-subrow under its panel (R5).
+  // `split_tree_json` is the ENTIRE binary split-tree arrangement + divider
+  // ratios, serialized — see the shared `SplitTree` type (src/shared/
+  // types.ts) for the exact shape: a leaf `{ paneId }` references a
+  // `pane_terminals.id`; a node `{ dir, a, b, ratio }` is a binary split.
+  // Stored as one JSON blob rather than a recursive table because the tree
+  // is pure UI geometry (KTD2) — cheap to serialize, no query ever needs to
+  // join into it. FK CASCADE: deleting a panel deletes its layouts.
+  // ---------------------------------------------------------------------
+  pane_layouts: {
+    columns: {
+      id: TEXT_PK,
+      panel_id: TEXT_NOT_NULL,
+      name: TEXT_NOT_NULL,
+      dir: TEXT_NOT_NULL,
+      split_tree_json: { type: 'TEXT', notNull: true, default: "'null'" },
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['panel_id'], ref: 'pane_panels(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_pane_layouts_panel: ['panel_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_terminals — Panes v2 (U4, KTD2). One row per terminal (a "pane" in
+  // the plan's UI vocabulary) — the leaf unit the native surface keys on:
+  // `pane:<layoutId>:<terminalId>` (KTD1 — the existing pane:* surface IPC
+  // is generic over its two string parts, so this is just a different
+  // choice of key components, not a native-side change). `command` is the
+  // setup rule (R7): a command that auto-runs once on every open then drops
+  // to a live shell; `''` means a plain shell with no setup step. FK
+  // CASCADE: deleting a layout deletes its terminals. `position` is
+  // metadata only (e.g. stable ordering for a11y/listing) — the actual
+  // on-screen ARRANGEMENT lives in the parent layout's `split_tree_json`,
+  // not here.
+  // ---------------------------------------------------------------------
+  pane_terminals: {
+    columns: {
+      id: TEXT_PK,
+      layout_id: TEXT_NOT_NULL,
+      command: TEXT_NOT_NULL,
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['layout_id'], ref: 'pane_layouts(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_pane_terminals_layout: ['layout_id']
+    }
   }
 }
 
@@ -769,6 +889,7 @@ export {
   WORKSPACE_STATUS,
   SESSION_STATUS,
   KEEP_AWAKE_MODE,
+  PANE_PANEL_KIND,
   PERMISSION_MODE,
   EFFORT,
   OUTPUT_STYLE,

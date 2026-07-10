@@ -12,6 +12,7 @@ import {
   UI_STATE_DEFAULTS,
   VALID_STATUS_POLL_INTERVALS_SEC,
   VALID_FILES_SORT_ORDERS,
+  VALID_DEFAULT_SURFACES,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
   WORKBENCH_TREE_WIDTH_MIN,
@@ -100,6 +101,11 @@ type AppUiStateRow = {
   token_hover_enabled: number
   // Per-hunk "Revert" on the working-tree diff
   hunk_actions_enabled: number
+  // Panes v2 top-level view visibility toggles
+  show_panes_view: number
+  show_workspaces_view: number
+  // Open-at-launch surface
+  default_surface: string
   // Workbench tree/code split pane width (v69)
   workbench_tree_width: number
   // Diagnostics capture toggles (v56)
@@ -199,6 +205,14 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     tokenHoverEnabled: (row.token_hover_enabled ?? 0) === 1,
     // Per-hunk "Revert" on the working-tree diff — default false (off)
     hunkActionsEnabled: (row.hunk_actions_enabled ?? 0) === 1,
+    // Panes v2 top-level view visibility toggles — showPanesView defaults
+    // true, showWorkspacesView defaults false (matches schema DEFAULTs)
+    showPanesView: (row.show_panes_view ?? 1) === 1,
+    showWorkspacesView: (row.show_workspaces_view ?? 1) === 1,
+    // Open-at-launch surface — default 'projects' (matches schema DEFAULT)
+    defaultSurface: (VALID_DEFAULT_SURFACES as readonly string[]).includes(row.default_surface)
+      ? (row.default_surface as AppUiState['defaultSurface'])
+      : 'projects',
     // Workbench tree/code split pane width (v69) — shared Files+Git divider width
     workbenchTreeWidth: clampedTreeWidth,
     // Diagnostics capture toggles (v56)
@@ -216,7 +230,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_VIEW_KINDS: AppViewKind[] = ['sessions', 'project', 'workspace']
+const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'workspace', 'panes']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
 const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
@@ -311,6 +325,21 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('hunkActionsEnabled' in patch && patch.hunkActionsEnabled !== undefined) {
     if (typeof patch.hunkActionsEnabled !== 'boolean') {
       throw new Error('uiState: hunkActionsEnabled must be a boolean')
+    }
+  }
+  if ('showPanesView' in patch && patch.showPanesView !== undefined) {
+    if (typeof patch.showPanesView !== 'boolean') {
+      throw new Error('uiState: showPanesView must be a boolean')
+    }
+  }
+  if ('showWorkspacesView' in patch && patch.showWorkspacesView !== undefined) {
+    if (typeof patch.showWorkspacesView !== 'boolean') {
+      throw new Error('uiState: showWorkspacesView must be a boolean')
+    }
+  }
+  if ('defaultSurface' in patch && patch.defaultSurface !== undefined) {
+    if (!VALID_DEFAULT_SURFACES.includes(patch.defaultSurface)) {
+      throw new Error(`uiState: defaultSurface must be one of ${VALID_DEFAULT_SURFACES.join(', ')}`)
     }
   }
   if ('workbenchTreeWidth' in patch && patch.workbenchTreeWidth !== undefined) {
@@ -448,6 +477,11 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     tokenHoverEnabled: 'token_hover_enabled',
     // Per-hunk "Revert" on the working-tree diff
     hunkActionsEnabled: 'hunk_actions_enabled',
+    // Panes v2 top-level view visibility toggles
+    showPanesView: 'show_panes_view',
+    showWorkspacesView: 'show_workspaces_view',
+    // Open-at-launch surface
+    defaultSurface: 'default_surface',
     // Workbench tree/code split pane width (v69)
     workbenchTreeWidth: 'workbench_tree_width',
     // Diagnostics capture toggles (v56)

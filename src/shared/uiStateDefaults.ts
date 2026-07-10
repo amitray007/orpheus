@@ -36,6 +36,20 @@ export const UI_STATE_DEFAULTS = {
   // mutates the working tree — see GitDiffOptionsPopover's "Hunk revert"
   // toggle and docs/learnings/hunk-accept-reject.md).
   hunkActionsEnabled: false,
+  // Panes v2 top-level view visibility toggles — mirrors app_ui_state's
+  // show_panes_view/show_workspaces_view SQL DEFAULTs in schema.ts. BOTH
+  // default shown so the sidebar always offers a way to switch between the
+  // Panes view and the Workspaces (claude projects) view; either can be
+  // hidden in Settings > Navigation.
+  // DEPRECATED — superseded by defaultSurface below. No longer read by the
+  // sidebar; kept (dead but harmless) so old DB rows/types stay valid.
+  showPanesView: true,
+  showWorkspacesView: true,
+  // Open-at-launch surface (rail vocabulary) — mirrors app_ui_state's
+  // default_surface SQL DEFAULT in schema.ts. Replaces the deprecated
+  // showPanesView/showWorkspacesView toggles above as the single "which
+  // surface does the app land on at startup" preference.
+  defaultSurface: 'projects' as const,
   // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
   // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
   // and GitTab's DiffTreePane (one draggable divider width for both).
@@ -51,6 +65,10 @@ export const WORKBENCH_TREE_WIDTH_MAX = 560
 // Valid values for app_ui_state.files_sort_order — mirrors TreeSortOrder in
 // TreeOptionsPopover.tsx and the SQL CHECK constraint in schema.ts.
 export const VALID_FILES_SORT_ORDERS = ['default', 'name'] as const
+
+// Valid values for app_ui_state.default_surface — mirrors the SQL CHECK
+// constraint in schema.ts. Which top-level surface the app opens on launch.
+export const VALID_DEFAULT_SURFACES = ['dashboard', 'projects', 'panes'] as const
 
 // Valid values for the status-poller interval (seconds). The UI Select in
 // OrpheusStatusSection.tsx must only offer values from this set, and the

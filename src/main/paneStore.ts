@@ -1,118 +1,344 @@
 // ---------------------------------------------------------------------------
 // src/main/paneStore.ts
 //
-// Workbench Panes tab (U12) — persistence for the N declared terminal panes
-// tiled within a claude workspace. A pane is metadata only: `{command,
-// title, position, sizeFraction}`. Reopening the workspace re-runs each
-// pane's command fresh in a new native surface (see the `pane:mount` IPC
-// handler in src/main/index.ts) — no output/scrollback is persisted here,
-// only the declaration needed to rebuild the tile layout.
+// Panes v2 — top-level Panels · Layouts · split Panes
+// (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4,
+// KTD2). REPLACES the flat-row Panes store (U12/1ccc4f5): persistence for
+// the three-level hierarchy — `pane_panels` -> `pane_layouts` ->
+// `pane_terminals` (src/main/db/schema.ts) — independent of claude
+// workspaces entirely.
+//
+//   Panel   (General | Project)   — a sidebar row.
+//     └─ Layout (unlimited)       — a saved split-tree arrangement bound to
+//                                   a folder.
+//          └─ Terminal (≤4/layout, ≤12/panel — enforced by the renderer's
+//                                   split-tree ops + caller checks, not here)
 //
 // CRUD mirrors src/main/reviewStore.ts's shape: plain better-sqlite3
-// prepared statements against getDb(), row <-> Pane mapping functions, no
-// ORM.
+// prepared statements against getDb(), row <-> record mapping functions, no
+// ORM. `split_tree_json` round-trips through JSON.parse/stringify at the
+// store boundary so callers work with the typed `SplitTree` shape, never
+// raw JSON text.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
-import type { Pane } from '../shared/types'
+import type { PanePanel, PanePanelKind, PaneLayout, PaneTerminal, SplitTree } from '../shared/types'
 
 // ---------------------------------------------------------------------------
-// Row shape from SQLite
+// Row shapes from SQLite
 // ---------------------------------------------------------------------------
 
-type PaneRow = {
+type PanePanelRow = {
   id: string
-  workspace_id: string
-  command: string
-  title: string | null
+  kind: string
+  name: string
+  dir: string | null
   position: number
-  size_fraction: number
   created_at: number
   updated_at: number
 }
 
-function fromRow(row: PaneRow): Pane {
+type PaneLayoutRow = {
+  id: string
+  panel_id: string
+  name: string
+  dir: string
+  split_tree_json: string
+  position: number
+  created_at: number
+  updated_at: number
+}
+
+type PaneTerminalRow = {
+  id: string
+  layout_id: string
+  command: string
+  position: number
+  created_at: number
+  updated_at: number
+}
+
+function coerceKind(raw: string): PanePanelKind {
+  return raw === 'project' ? 'project' : 'general'
+}
+
+function panelFromRow(row: PanePanelRow): PanePanel {
   return {
     id: row.id,
-    workspaceId: row.workspace_id,
-    command: row.command,
-    title: row.title,
+    kind: coerceKind(row.kind),
+    name: row.name,
+    dir: row.dir,
     position: row.position,
-    sizeFraction: row.size_fraction,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+/** `split_tree_json` is `'null'` for a freshly-created layout with no panes
+ *  yet — JSON.parse of that literal correctly yields `null`. Any malformed
+ *  JSON (should never happen — this store is the only writer) also falls
+ *  back to null rather than throwing, so a corrupt row can't crash the
+ *  whole panel/layout list. */
+function parseSplitTree(json: string): SplitTree | null {
+  try {
+    return JSON.parse(json) as SplitTree | null
+  } catch {
+    return null
+  }
+}
+
+function layoutFromRow(row: PaneLayoutRow): PaneLayout {
+  return {
+    id: row.id,
+    panelId: row.panel_id,
+    name: row.name,
+    dir: row.dir,
+    splitTree: parseSplitTree(row.split_tree_json),
+    position: row.position,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function terminalFromRow(row: PaneTerminalRow): PaneTerminal {
+  return {
+    id: row.id,
+    layoutId: row.layout_id,
+    command: row.command,
+    position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
 }
 
 // ---------------------------------------------------------------------------
-// Queries
+// Panels
 // ---------------------------------------------------------------------------
 
-export function listByWorkspace(workspaceId: string): Pane[] {
+/** Idempotent: seeds the single 'general' panel if one doesn't already
+ *  exist. The 'pane-general-panel-seed' data step (src/main/db/data-steps.ts)
+ *  already does this once at boot for every DB (fresh or upgraded) — this is
+ *  a defensive second call site (mirrors the plan's "a data-step OR an
+ *  idempotent ensure-on-first-list" guidance) so `listPanels()` never returns
+ *  an empty list even if the data step were ever skipped. */
+function ensureGeneralPanel(): void {
+  const db = getDb()
+  const existing = db.prepare("SELECT 1 FROM pane_panels WHERE kind = 'general'").get()
+  if (existing) return
+  const now = Date.now()
+  db.prepare(
+    `INSERT INTO pane_panels (id, kind, name, dir, position, created_at, updated_at)
+     VALUES (?, 'general', 'General', NULL, 0, ?, ?)`
+  ).run(randomUUID(), now, now)
+}
+
+export function listPanels(): PanePanel[] {
+  ensureGeneralPanel()
   const db = getDb()
   const rows = db
-    .prepare('SELECT * FROM panes WHERE workspace_id = ? ORDER BY position ASC, created_at ASC')
-    .all(workspaceId) as PaneRow[]
-  return rows.map(fromRow)
+    .prepare('SELECT * FROM pane_panels ORDER BY position ASC, created_at ASC')
+    .all() as PanePanelRow[]
+  return rows.map(panelFromRow)
 }
 
-// ---------------------------------------------------------------------------
-// Mutations
-// ---------------------------------------------------------------------------
-
-export interface AddPaneInput {
-  workspaceId: string
-  command: string
-  title?: string | null
-  position: number
-  sizeFraction?: number
+export interface CreatePanelInput {
+  kind: PanePanelKind
+  name: string
+  /** Panes-only folder path — never written to the `projects` table (KTD8). */
+  dir?: string | null
+  position?: number
 }
 
-export function add(input: AddPaneInput): Pane {
+export function createPanel(input: CreatePanelInput): PanePanel {
   const db = getDb()
   const id = randomUUID()
   const now = Date.now()
-  const title = input.title ?? null
-  const sizeFraction = input.sizeFraction ?? 0
+  const dir = input.dir ?? null
+  const position =
+    input.position ??
+    ((
+      db.prepare('SELECT MAX(position) AS maxPos FROM pane_panels').get() as {
+        maxPos: number | null
+      }
+    ).maxPos ?? -1) + 1
 
   db.prepare(
-    `
-    INSERT INTO panes
-      (id, workspace_id, command, title, position, size_fraction, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `
-  ).run(id, input.workspaceId, input.command, title, input.position, sizeFraction, now, now)
+    `INSERT INTO pane_panels (id, kind, name, dir, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, input.kind, input.name, dir, position, now, now)
 
-  return fromRow(db.prepare('SELECT * FROM panes WHERE id = ?').get(id) as PaneRow)
+  return panelFromRow(db.prepare('SELECT * FROM pane_panels WHERE id = ?').get(id) as PanePanelRow)
 }
 
-export interface UpdatePaneInput {
-  command?: string
-  title?: string | null
+export interface UpdatePanelInput {
+  name?: string
+  dir?: string | null
   position?: number
-  sizeFraction?: number
 }
 
-export function update(id: string, patch: UpdatePaneInput): Pane {
+export function updatePanel(id: string, patch: UpdatePanelInput): PanePanel {
   const db = getDb()
-  const existing = db.prepare('SELECT * FROM panes WHERE id = ?').get(id) as PaneRow | undefined
-  if (!existing) throw new Error(`Pane not found: ${id}`)
+  const existing = db.prepare('SELECT * FROM pane_panels WHERE id = ?').get(id) as
+    | PanePanelRow
+    | undefined
+  if (!existing) throw new Error(`Pane panel not found: ${id}`)
+
+  const now = Date.now()
+  const name = patch.name ?? existing.name
+  const dir = patch.dir !== undefined ? patch.dir : existing.dir
+  const position = patch.position ?? existing.position
+
+  db.prepare(
+    'UPDATE pane_panels SET name = ?, dir = ?, position = ?, updated_at = ? WHERE id = ?'
+  ).run(name, dir, position, now, id)
+
+  return panelFromRow(db.prepare('SELECT * FROM pane_panels WHERE id = ?').get(id) as PanePanelRow)
+}
+
+export function deletePanel(id: string): void {
+  const db = getDb()
+  db.prepare('DELETE FROM pane_panels WHERE id = ?').run(id)
+}
+
+// ---------------------------------------------------------------------------
+// Layouts
+// ---------------------------------------------------------------------------
+
+export function listLayouts(panelId: string): PaneLayout[] {
+  const db = getDb()
+  const rows = db
+    .prepare('SELECT * FROM pane_layouts WHERE panel_id = ? ORDER BY position ASC, created_at ASC')
+    .all(panelId) as PaneLayoutRow[]
+  return rows.map(layoutFromRow)
+}
+
+export interface CreateLayoutInput {
+  panelId: string
+  name: string
+  dir: string
+  position?: number
+}
+
+export function createLayout(input: CreateLayoutInput): PaneLayout {
+  const db = getDb()
+  const id = randomUUID()
+  const now = Date.now()
+  const position =
+    input.position ??
+    ((
+      db
+        .prepare('SELECT MAX(position) AS maxPos FROM pane_layouts WHERE panel_id = ?')
+        .get(input.panelId) as { maxPos: number | null }
+    ).maxPos ?? -1) + 1
+
+  db.prepare(
+    `INSERT INTO pane_layouts (id, panel_id, name, dir, split_tree_json, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'null', ?, ?, ?)`
+  ).run(id, input.panelId, input.name, input.dir, position, now, now)
+
+  return layoutFromRow(
+    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
+  )
+}
+
+export interface UpdateLayoutInput {
+  name?: string
+  dir?: string
+  splitTree?: SplitTree | null
+  position?: number
+}
+
+export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
+  const db = getDb()
+  const existing = db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as
+    | PaneLayoutRow
+    | undefined
+  if (!existing) throw new Error(`Pane layout not found: ${id}`)
+
+  const now = Date.now()
+  const name = patch.name ?? existing.name
+  const dir = patch.dir ?? existing.dir
+  const splitTreeJson =
+    patch.splitTree !== undefined ? JSON.stringify(patch.splitTree) : existing.split_tree_json
+  const position = patch.position ?? existing.position
+
+  db.prepare(
+    'UPDATE pane_layouts SET name = ?, dir = ?, split_tree_json = ?, position = ?, updated_at = ? WHERE id = ?'
+  ).run(name, dir, splitTreeJson, position, now, id)
+
+  return layoutFromRow(
+    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
+  )
+}
+
+export function deleteLayout(id: string): void {
+  const db = getDb()
+  db.prepare('DELETE FROM pane_layouts WHERE id = ?').run(id)
+}
+
+// ---------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------
+
+export function listTerminals(layoutId: string): PaneTerminal[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      'SELECT * FROM pane_terminals WHERE layout_id = ? ORDER BY position ASC, created_at ASC'
+    )
+    .all(layoutId) as PaneTerminalRow[]
+  return rows.map(terminalFromRow)
+}
+
+export interface CreateTerminalInput {
+  layoutId: string
+  /** The setup rule — '' means a plain shell. */
+  command: string
+  position: number
+}
+
+export function createTerminal(input: CreateTerminalInput): PaneTerminal {
+  const db = getDb()
+  const id = randomUUID()
+  const now = Date.now()
+
+  db.prepare(
+    `INSERT INTO pane_terminals (id, layout_id, command, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, input.layoutId, input.command, input.position, now, now)
+
+  return terminalFromRow(
+    db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
+  )
+}
+
+export interface UpdateTerminalInput {
+  command?: string
+  position?: number
+}
+
+export function updateTerminal(id: string, patch: UpdateTerminalInput): PaneTerminal {
+  const db = getDb()
+  const existing = db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as
+    | PaneTerminalRow
+    | undefined
+  if (!existing) throw new Error(`Pane terminal not found: ${id}`)
 
   const now = Date.now()
   const command = patch.command ?? existing.command
-  const title = patch.title !== undefined ? patch.title : existing.title
   const position = patch.position ?? existing.position
-  const sizeFraction = patch.sizeFraction ?? existing.size_fraction
 
   db.prepare(
-    'UPDATE panes SET command = ?, title = ?, position = ?, size_fraction = ?, updated_at = ? WHERE id = ?'
-  ).run(command, title, position, sizeFraction, now, id)
+    'UPDATE pane_terminals SET command = ?, position = ?, updated_at = ? WHERE id = ?'
+  ).run(command, position, now, id)
 
-  return fromRow(db.prepare('SELECT * FROM panes WHERE id = ?').get(id) as PaneRow)
+  return terminalFromRow(
+    db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
+  )
 }
 
-export function remove(id: string): void {
+export function deleteTerminal(id: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM panes WHERE id = ?').run(id)
+  db.prepare('DELETE FROM pane_terminals WHERE id = ?').run(id)
 }

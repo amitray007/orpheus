@@ -182,7 +182,7 @@ export type PinnedItem = {
 // App UI state
 // ---------------------------------------------------------------------------
 
-export type AppViewKind = 'sessions' | 'project' | 'workspace'
+export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'panes'
 
 export type Theme = 'midnight' | 'daylight' | 'eclipse'
 export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
@@ -302,6 +302,19 @@ export type AppUiState = {
   // Mutates the working tree directly, so opt-in like tokenHoverEnabled
   // above. Default false (off).
   hunkActionsEnabled: boolean
+  // Panes v2 top-level view visibility toggles — control whether the
+  // Sidebar's "Panes" and "Workspaces" top-level NavItems render at all
+  // (Settings > Navigation). Panes defaults visible (true); Workspaces
+  // defaults hidden (false) since Panes is the new primary surface.
+  // DEPRECATED — superseded by defaultSurface below; no longer read by the
+  // sidebar. Kept (dead but harmless) for backward-compat DB reads.
+  showPanesView: boolean
+  showWorkspacesView: boolean
+  // Open-at-launch surface (rail vocabulary) — which top-level surface the
+  // app lands on at startup (Settings > Navigation). Replaces the
+  // deprecated showPanesView/showWorkspacesView toggles above. Independent
+  // from AppViewKind/lastViewKind — do not conflate the two enums.
+  defaultSurface: 'dashboard' | 'projects' | 'panes'
   // Workbench changed-files/file TREE pane width (v69) — SHARED between the
   // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
   // before this; now a draggable divider persists one shared width so long
@@ -962,23 +975,79 @@ export type LocalReviewComment = {
 }
 
 // ---------------------------------------------------------------------------
-// Panes (Workbench Panes tab, U12) — a persistent terminal pane declared
-// within a claude workspace, tiled alongside its siblings. Persisted in
-// SQLite's `panes` table (src/main/db/schema.ts); see src/main/paneStore.ts
-// for the CRUD surface. Only metadata is persisted — reopening the workspace
-// re-runs `command` fresh in a new native surface, no output/scrollback is
-// carried over. `title` is nullable: null falls back to `command` (or
-// "Pane N") in the UI. `sizeFraction` is this pane's share of the tiled
-// axis; 0 means "unset" and the renderer computes an equal split.
+// Panes v2 — top-level Panels · Layouts · split Panes
+// (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4,
+// KTD2). Replaces the flat-row `Pane` type (U12/1ccc4f5) with a three-level
+// hierarchy persisted across `pane_panels` / `pane_layouts` / `pane_terminals`
+// (src/main/db/schema.ts); see src/main/paneStore.ts for the CRUD surface.
+// Independent of claude workspaces/sessions entirely — Panes is its own
+// top-level view (R1), not scoped to a claude workspace the way the old
+// flat-row panes were.
+//
+//   PanePanel   — a sidebar-level grouping. 'general' is the single,
+//                 always-there, cross-project panel (seeded once — see
+//                 paneStore.ts's ensureGeneralPanel / the
+//                 'pane-general-panel-seed' data step). 'project' panels are
+//                 user-created and bound to `dir`, a folder chosen via the
+//                 folder picker — that folder is Panes-only and is NEVER
+//                 written to Orpheus's `projects` table (KTD8).
+//   PaneLayout  — a saved split-tree arrangement bound to its OWN folder
+//                 (`dir`, independent of the parent panel's `dir`). `splitTree`
+//                 is the parsed form of the persisted `split_tree_json` blob
+//                 (null only for a layout with zero panes, e.g. right after
+//                 creation before the first pane is added).
+//   PaneTerminal — one terminal (a "pane" in the UI). `command` is the setup
+//                 rule (R7): a command that auto-runs once on every open,
+//                 then drops to a live shell; '' means a plain shell with no
+//                 setup step. The native surface keys on this row's `id`:
+//                 `pane:<layoutId>:<terminalId>` (KTD1 — the existing
+//                 pane:* surface IPC is unchanged, just given different key
+//                 parts).
+//   SplitTree   — the binary arrangement + divider ratios for one layout's
+//                 panes. A leaf `{ paneId }` references a PaneTerminal's id;
+//                 a node `{ dir, a, b, ratio }` is a binary split ('v' = new
+//                 pane to the right, 'h' = new pane below), with `ratio` the
+//                 first child's (`a`'s) share of the split axis (0 < ratio <
+//                 1). Pure UI geometry — stored as JSON on the layout rather
+//                 than as a recursive table (KTD2).
 // ---------------------------------------------------------------------------
 
-export interface Pane {
+export type PanePanelKind = 'general' | 'project'
+
+export interface PanePanel {
   id: string
-  workspaceId: string
-  command: string
-  title: string | null
+  kind: PanePanelKind
+  name: string
+  /** Null for the 'general' panel — each of its layouts carries its own dir. */
+  dir: string | null
   position: number
-  sizeFraction: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type SplitDirection = 'v' | 'h'
+
+export type SplitTree =
+  | { paneId: string }
+  | { dir: SplitDirection; a: SplitTree; b: SplitTree; ratio: number }
+
+export interface PaneLayout {
+  id: string
+  panelId: string
+  name: string
+  dir: string
+  splitTree: SplitTree | null
+  position: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PaneTerminal {
+  id: string
+  layoutId: string
+  /** The setup rule — auto-runs once per open, then drops to a live shell. '' = plain shell. */
+  command: string
+  position: number
   createdAt: number
   updatedAt: number
 }

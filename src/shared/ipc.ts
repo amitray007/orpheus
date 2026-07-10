@@ -95,7 +95,11 @@ import type {
   GhReviewComment,
   GhReviewCommentSide,
   LocalReviewComment,
-  Pane
+  PanePanel,
+  PanePanelKind,
+  PaneLayout,
+  PaneTerminal,
+  SplitTree
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -374,37 +378,53 @@ export interface InvokeChannelMap {
   }
   'reviews:setResolved': { req: [{ id: string; resolved: boolean }]; res: LocalReviewComment }
   'reviews:delete': { req: [{ id: string }]; res: void }
-  // Workbench Panes tab (U12) — CRUD for the declared per-workspace terminal
-  // panes persisted in `panes` (src/main/db/schema.ts). See
-  // src/main/paneStore.ts. Total (never rejects on a missing row for
-  // list/create; update/delete on an unknown id — update throws, delete is a
-  // no-op, mirroring paneStore.ts's own contract).
-  'panes:list': { req: [{ workspaceId: string }]; res: Pane[] }
-  'panes:create': {
-    req: [
-      {
-        workspaceId: string
-        command: string
-        title?: string | null
-        position: number
-        sizeFraction?: number
-      }
-    ]
-    res: Pane
+  // Panes v2 — top-level Panels · Layouts · split Panes
+  // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4).
+  // REPLACES the flat-row Panes CRUD (U12) with the panel -> layout ->
+  // terminal hierarchy. See src/main/paneStore.ts. Update/delete on an
+  // unknown id throws (mirroring paneStore.ts's own contract); list/create
+  // never reject.
+  'panes:listPanels': { req: []; res: PanePanel[] }
+  'panes:createPanel': {
+    req: [{ kind: PanePanelKind; name: string; dir?: string | null; position?: number }]
+    res: PanePanel
   }
-  'panes:update': {
+  'panes:updatePanel': {
+    req: [{ id: string; name?: string; dir?: string | null; position?: number }]
+    res: PanePanel
+  }
+  'panes:deletePanel': { req: [{ id: string }]; res: void }
+  'panes:listLayouts': { req: [{ panelId: string }]; res: PaneLayout[] }
+  'panes:createLayout': {
+    req: [{ panelId: string; name: string; dir: string; position?: number }]
+    res: PaneLayout
+  }
+  'panes:updateLayout': {
     req: [
       {
         id: string
-        command?: string
-        title?: string | null
+        name?: string
+        dir?: string
+        splitTree?: SplitTree | null
         position?: number
-        sizeFraction?: number
       }
     ]
-    res: Pane
+    res: PaneLayout
   }
-  'panes:delete': { req: [{ id: string }]; res: void }
+  'panes:deleteLayout': { req: [{ id: string }]; res: void }
+  'panes:listTerminals': { req: [{ layoutId: string }]; res: PaneTerminal[] }
+  'panes:createTerminal': {
+    req: [{ layoutId: string; command: string; position: number }]
+    res: PaneTerminal
+  }
+  'panes:updateTerminal': {
+    req: [{ id: string; command?: string; position?: number }]
+    res: PaneTerminal
+  }
+  'panes:deleteTerminal': { req: [{ id: string }]; res: void }
+  // Folder picker (KTD8) — Panes-only; the chosen path is never written to
+  // the `projects` table. See src/main/ipc/panes.ts.
+  'panes:pickDirectory': { req: []; res: string | null }
   // Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
   // patch strings, resolved from `workspaceId` like the files:* channels
   // below). See src/main/gitDiff.ts + docs/learnings/pierre-libraries.md §13.

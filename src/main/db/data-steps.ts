@@ -408,6 +408,30 @@ const dataSteps: DataStep[] = [
          VALUES (1, 'auto', 0, 120)`
       ).run()
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // 6. Panes v2 (U4) — seed the one always-there `General` panel
+  //    (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md,
+  //    R4/KTD2). Same fresh-install rationale + alwaysRun escape hatch as
+  //    keep-awake-seed above, but `pane_panels.id` is a random UUID (not a
+  //    fixed singleton PK), so a plain `INSERT OR IGNORE` can't dedupe
+  //    across repeated runs — guard with `WHERE NOT EXISTS` on kind =
+  //    'general' instead, so this step is idempotent even though every row
+  //    would otherwise get a fresh id.
+  // -------------------------------------------------------------------------
+  {
+    name: 'pane-general-panel-seed',
+    legacyThroughVersion: 0,
+    alwaysRun: true,
+    run: (db) => {
+      const now = Date.now()
+      db.prepare(
+        `INSERT INTO pane_panels (id, kind, name, dir, position, created_at, updated_at)
+         SELECT ?, 'general', 'General', NULL, 0, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM pane_panels WHERE kind = 'general')`
+      ).run(randomUUID(), now, now)
+    }
   }
 ]
 

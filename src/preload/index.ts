@@ -41,7 +41,11 @@ import type {
   GhReviewComment,
   GhReviewCommentSide,
   LocalReviewComment,
-  Pane,
+  PanePanel,
+  PanePanelKind,
+  PaneLayout,
+  PaneTerminal,
+  SplitTree,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
@@ -567,48 +571,77 @@ const api = {
       invoke('reviews:setResolved', { id, resolved }),
     delete: (id: string): Promise<void> => invoke('reviews:delete', { id })
   },
-  // Workbench Panes tab (U12). CRUD for the declared per-workspace terminal
-  // panes (src/main/paneStore.ts) plus the pane SURFACE ops — a dedicated
-  // native slot per pane (`pane:<workspaceId>:<paneId>`), unlike workbench.*
-  // above which shares ONE slot per claude workspace. See src/main/index.ts's
-  // "Workbench Panes tab IPC (U12)" section for the full rationale.
+  // Panes v2 — top-level Panels · Layouts · split Panes
+  // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4).
+  // CRUD for the panel/layout/terminal hierarchy (src/main/paneStore.ts) plus
+  // the pane SURFACE ops — a dedicated native slot per terminal
+  // (`pane:<layoutId>:<terminalId>`), unchanged from the flat-row Panes tab
+  // (KTD1) apart from what the two key parts now mean. See
+  // src/main/ipc/panes.ts.
   panes: {
-    list: (workspaceId: string): Promise<Pane[]> => invoke('panes:list', { workspaceId }),
-    create: (args: {
-      workspaceId: string
-      command: string
-      title?: string | null
-      position: number
-      sizeFraction?: number
-    }): Promise<Pane> => invoke('panes:create', args),
-    update: (
+    listPanels: (): Promise<PanePanel[]> => invoke('panes:listPanels'),
+    createPanel: (args: {
+      kind: PanePanelKind
+      name: string
+      dir?: string | null
+      position?: number
+    }): Promise<PanePanel> => invoke('panes:createPanel', args),
+    updatePanel: (
       id: string,
-      patch: {
-        command?: string
-        title?: string | null
-        position?: number
-        sizeFraction?: number
-      }
-    ): Promise<Pane> => invoke('panes:update', { id, ...patch }),
-    delete: (id: string): Promise<void> => invoke('panes:delete', { id }),
+      patch: { name?: string; dir?: string | null; position?: number }
+    ): Promise<PanePanel> => invoke('panes:updatePanel', { id, ...patch }),
+    deletePanel: (id: string): Promise<void> => invoke('panes:deletePanel', { id }),
+    listLayouts: (panelId: string): Promise<PaneLayout[]> =>
+      invoke('panes:listLayouts', { panelId }),
+    createLayout: (args: {
+      panelId: string
+      name: string
+      dir: string
+      position?: number
+    }): Promise<PaneLayout> => invoke('panes:createLayout', args),
+    updateLayout: (
+      id: string,
+      patch: { name?: string; dir?: string; splitTree?: SplitTree | null; position?: number }
+    ): Promise<PaneLayout> => invoke('panes:updateLayout', { id, ...patch }),
+    deleteLayout: (id: string): Promise<void> => invoke('panes:deleteLayout', { id }),
+    listTerminals: (layoutId: string): Promise<PaneTerminal[]> =>
+      invoke('panes:listTerminals', { layoutId }),
+    createTerminal: (args: {
+      layoutId: string
+      command: string
+      position: number
+    }): Promise<PaneTerminal> => invoke('panes:createTerminal', args),
+    updateTerminal: (
+      id: string,
+      patch: { command?: string; position?: number }
+    ): Promise<PaneTerminal> => invoke('panes:updateTerminal', { id, ...patch }),
+    deleteTerminal: (id: string): Promise<void> => invoke('panes:deleteTerminal', { id }),
+    pickDirectory: (): Promise<string | null> => invoke('panes:pickDirectory'),
     mount: (
-      workspaceId: string,
-      paneId: string,
+      layoutId: string,
+      terminalId: string,
       rect: TerminalRect,
       scaleFactor: number,
       command: string
     ): Promise<TerminalMountResult> =>
-      invoke('pane:mount', { workspaceId, paneId, rect, scaleFactor, command }),
+      invoke('pane:mount', {
+        workspaceId: layoutId,
+        paneId: terminalId,
+        rect,
+        scaleFactor,
+        command
+      }),
     resize: (
-      workspaceId: string,
-      paneId: string,
+      layoutId: string,
+      terminalId: string,
       rect: TerminalRect,
       scaleFactor: number
-    ): Promise<void> => invoke('pane:resize', { workspaceId, paneId, rect, scaleFactor }),
-    hide: (workspaceId: string, paneId: string): Promise<void> =>
-      invoke('pane:hide', { workspaceId, paneId }),
-    destroy: (workspaceId: string, paneId: string): Promise<void> =>
-      invoke('pane:destroy', { workspaceId, paneId })
+    ): Promise<void> =>
+      invoke('pane:resize', { workspaceId: layoutId, paneId: terminalId, rect, scaleFactor }),
+    hide: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:hide', { workspaceId: layoutId, paneId: terminalId }),
+    destroy: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:destroy', { workspaceId: layoutId, paneId: terminalId })
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),
