@@ -644,7 +644,12 @@ const api = {
     hide: (layoutId: string, terminalId: string): Promise<void> =>
       invoke('pane:hide', { workspaceId: layoutId, paneId: terminalId }),
     destroy: (layoutId: string, terminalId: string): Promise<void> =>
-      invoke('pane:destroy', { workspaceId: layoutId, paneId: terminalId })
+      invoke('pane:destroy', { workspaceId: layoutId, paneId: terminalId }),
+    // Issue #24 — sidebar running loader. Pushes the FULL current set of
+    // layout ids with >=1 live pane surface (background-aware: a hidden-
+    // but-not-destroyed layout stays in the set). See paneLiveLayoutsStore.ts.
+    onLiveLayoutsChanged: (cb: (layoutIds: string[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.panesLiveLayoutsChanged, (e) => cb(e.layoutIds))
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),

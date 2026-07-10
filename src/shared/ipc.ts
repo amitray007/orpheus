@@ -745,6 +745,15 @@ export interface RendererPushMap {
   'diag:stream': unknown[]
   'keepAwake:state': KeepAwakeState
   'overlay:event': OverlayEvent
+  // Panes v2 — issue #24 sidebar running loader. Pushed whenever main's
+  // paneSurfacesByWorkspace map (src/main/index.ts — keyed LAYOUT id -> set
+  // of live paneIds, despite the map's "workspace" name; see that map's own
+  // header comment) gains or loses its last live surface for some layout.
+  // Payload is the FULL current set of layout ids with >=1 live surface
+  // (not a delta) — cheap to recompute (a Map.keys() filter) and trivially
+  // idempotent for the renderer store to apply, so no ordering/dedup logic
+  // is needed on either side. See paneLiveLayoutsStore.ts.
+  'panes:liveLayoutsChanged': { layoutIds: string[] }
 }
 
 export type PushChannel = keyof RendererPushMap
@@ -784,7 +793,8 @@ export const PUSH_CHANNELS = {
   actionsSubscriptionUpdate: 'actions:subscription-update',
   diagStream: 'diag:stream',
   keepAwakeState: 'keepAwake:state',
-  overlayEvent: 'overlay:event'
+  overlayEvent: 'overlay:event',
+  panesLiveLayoutsChanged: 'panes:liveLayoutsChanged'
 } satisfies Record<string, PushChannel>
 
 // Exhaustiveness check: every PushChannel must appear as a value above (the

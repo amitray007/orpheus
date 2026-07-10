@@ -1602,6 +1602,7 @@ function registerPaneSurface(workspaceId: string, paneId: string): void {
     paneSurfacesByWorkspace.set(workspaceId, ids)
   }
   ids.add(paneId)
+  broadcastLiveLayouts()
 }
 
 function unregisterPaneSurface(workspaceId: string, paneId: string): void {
@@ -1609,6 +1610,24 @@ function unregisterPaneSurface(workspaceId: string, paneId: string): void {
   if (!ids) return
   ids.delete(paneId)
   if (ids.size === 0) paneSurfacesByWorkspace.delete(workspaceId)
+  broadcastLiveLayouts()
+}
+
+// Issue #24 — pushes the CURRENT set of layout ids with >=1 live pane
+// surface to the renderer, so the Panels sidebar's running loader reflects
+// real (and background/hidden) surface liveness instead of the old
+// active-tab-only placeholder. paneSurfacesByWorkspace's keys are layout
+// ids (see that map's own header comment for why the "Workspace" naming is
+// misleading here) — a layout with a non-empty pane-id set is "live"
+// whether or not it's the currently open layout, which is exactly the
+// background-running semantics issue #24 asks for. Called after every
+// mutation of the map (register/unregister/bulk-destroy) so the renderer's
+// paneLiveLayoutsStore.ts never drifts from main's own bookkeeping.
+function broadcastLiveLayouts(): void {
+  const layoutIds = [...paneSurfacesByWorkspace.keys()].filter(
+    (k) => (paneSurfacesByWorkspace.get(k)?.size ?? 0) > 0
+  )
+  getMainWindow()?.webContents.send(PUSH_CHANNELS.panesLiveLayoutsChanged, { layoutIds })
 }
 
 /** Destroys every known pane surface for `workspaceId` — the ONE
@@ -1628,6 +1647,7 @@ function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
     }
   }
   paneSurfacesByWorkspace.delete(workspaceId)
+  broadcastLiveLayouts()
 }
 
 handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) => {

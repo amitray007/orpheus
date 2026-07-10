@@ -55,6 +55,7 @@ import {
   setActiveLayout
 } from '@/lib/panesSelectionStore'
 import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
+import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
 
@@ -191,10 +192,13 @@ interface LayoutSubRowProps {
  *  (mirrors WorkspaceSubRow's ActivityIndicator) when the layout is
  *  "running", else the static Stack icon.
  *
- *  Placeholder signal (U8 will wire real per-pane process tracking): a
- *  layout counts as "running" here when it's the currently active/open
- *  layout AND has at least one pane. This is a visual mirror of the
- *  workspace loader, not a true liveness check — it lights up in-context.
+ *  Issue #24 — REAL liveness, sourced from paneLiveLayoutsStore.ts (backed
+ *  by main's paneSurfacesByWorkspace registry): "running" means the layout
+ *  has at least one pane with a live native surface, background-aware (a
+ *  layout switched away from keeps its hidden-not-destroyed panes counted,
+ *  so its spinner stays lit while you're looking at a different layout).
+ *  Not gated on `active` — a layout never opened this session simply never
+ *  appears in the live set, so it renders idle without any extra check.
  */
 function LayoutStatusIcon({
   active,
@@ -225,9 +229,10 @@ function LayoutSubRow({
   onCancelRename,
   onDelete
 }: LayoutSubRowProps): React.JSX.Element {
-  // See LayoutStatusIcon's comment — placeholder "is this layout running"
-  // proxy until U8 wires real per-pane process tracking. Active + has panes.
-  const isRunning = active && layout.splitTree !== null
+  // See LayoutStatusIcon's comment — real, background-aware liveness from
+  // paneLiveLayoutsStore.ts, not gated on `active` (the sidebar selection
+  // highlight, which stays a separate concern below).
+  const isRunning = useIsLayoutLive(layout.id)
 
   const [hovered, setHovered] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
