@@ -30,6 +30,18 @@
 // (optimistic), then persist via usePanesData's updateLayoutSplitTree. This
 // keeps the split-tree UI responsive without waiting on an IPC round-trip
 // per interaction.
+//
+// ISSUE #17 — REAL layout-wide Restart/Stop: the ⋯ menu used to be a
+// transient-message stub. It's now real, and operates on every pane in the
+// ACTIVE layout's tree (via splitTreeOps.leafIds, the flat list of every
+// leaf's paneId): Stop calls `window.api.panes.destroy` for each pane AND
+// marks each stopped in paneRunStateStore (so PaneCell's header/body
+// immediately reflects the stopped state — a destroy the store doesn't know
+// about would leave the ◼/▶ button and stopped-placeholder UI out of sync
+// with reality). Restart destroys + re-marks-running each pane, which
+// drives PaneCell's own usePaneSurface effect to mount a FRESH surface
+// (never a hide/show of a stale one — see PaneCell.tsx's file-header
+// comment for why that's what fixes issue #18's blank-on-reenable bug).
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -38,9 +50,10 @@ import type { SplitDirection, SplitTree as SplitTreeShape } from '@shared/types'
 import { showChipDropdown, chipDropdownId } from '@/lib/overlayClient'
 import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
 import { useUiState } from '@/lib/uiStateStore'
+import { setPaneRunning, restartPane } from '@/lib/paneRunStateStore'
 import { usePanesData } from './usePanesData'
 import { SplitTree } from './SplitTree'
-import { splitLeaf, closeLeaf, swapLeaves, setRatio, countLeaves } from './splitTreeOps'
+import { splitLeaf, closeLeaf, swapLeaves, setRatio, countLeaves, leafIds } from './splitTreeOps'
 import type { SplitPathStep } from './splitTreeOps'
 
 /** R6 cap: no more than 4 panes in a single layout. */
@@ -76,6 +89,7 @@ export function PanesView(): React.JSX.Element {
     terminals,
     createTerminal,
     updateTerminalCommand,
+    updateTerminalName,
     deleteTerminal,
     updateLayoutSplitTree
   } = usePanesData(activePanelId, activeLayoutId)
@@ -164,11 +178,38 @@ export function PanesView(): React.JSX.Element {
     [terminals]
   )
 
+  // getDisplayName (issue #21) — resolves a leaf's ready-to-render name:
+  // the persisted `name` when set, else "Pane N" where N is the pane's
+  // 1-based position among the ACTIVE layout's leaves in tree order
+  // (splitTreeOps.leafIds — the same depth-first order the flat-render
+  // model already uses everywhere else). Falls back to the terminal row's
+  // own `position` column only if the pane isn't found in `localTree` (a
+  // brief render where the tree hasn't caught up with `terminals` yet) so
+  // this never throws/returns undefined for a paneId that legitimately
+  // exists as a terminal row.
+  const getDisplayName = useCallback(
+    (paneId: string) => {
+      const terminal = terminals.find((t) => t.id === paneId)
+      if (terminal?.name) return terminal.name
+      const treeIndex = localTree ? leafIds(localTree).indexOf(paneId) : -1
+      const position = treeIndex >= 0 ? treeIndex : (terminal?.position ?? 0)
+      return `Pane ${position + 1}`
+    },
+    [terminals, localTree]
+  )
+
   const handleCommandChange = useCallback(
     (paneId: string, command: string) => {
       void updateTerminalCommand(paneId, command)
     },
     [updateTerminalCommand]
+  )
+
+  const handleNameChange = useCallback(
+    (paneId: string, name: string) => {
+      void updateTerminalName(paneId, name)
+    },
+    [updateTerminalName]
   )
 
   const panelPaneTotal = panelPaneCount(layouts)
@@ -184,7 +225,11 @@ export function PanesView(): React.JSX.Element {
 
   const handleAddFirstPane = useCallback(async () => {
     if (!activeLayoutId) return
-    const created = await createTerminal({ command: '', position: 0 })
+    // name: "Pane 1" — issue #21, new panes are named at creation so the
+    // display never has to fall back for a pane the user hasn't touched yet
+    // (the '' -> "Pane N" fallback in getDisplayName above still covers any
+    // OLDER row from before this column existed).
+    const created = await createTerminal({ command: '', name: 'Pane 1', position: 0 })
     if (!created) return
     setFocusedPaneId(created.id)
     persistTree({ paneId: created.id })
@@ -203,8 +248,16 @@ export function PanesView(): React.JSX.Element {
       }
       // Create the real DB row FIRST so the new leaf's paneId is a genuine
       // terminal id, not a fake client-side placeholder (the native surface
-      // in U7 keys directly on this id).
-      const created = await createTerminal({ command: '', position: countLeaves(localTree) })
+      // in U7 keys directly on this id). nextIndex is 1-based off the
+      // CURRENT leaf count, matching getDisplayName's own "Pane N" fallback
+      // numbering (issue #21) so a freshly split pane's default name lines
+      // up with where it'll actually land in the tree.
+      const nextIndex = countLeaves(localTree) + 1
+      const created = await createTerminal({
+        command: '',
+        name: `Pane ${nextIndex}`,
+        position: countLeaves(localTree)
+      })
       if (!created) return
       setFocusedPaneId(created.id)
       persistTree(splitLeaf(localTree, paneId, dir, created.id))
@@ -255,19 +308,43 @@ export function PanesView(): React.JSX.Element {
     if (firstPaneId) void handleSplit(firstPaneId, 'v')
   }, [localTree, focusedPaneId, terminals, handleAddFirstPane, handleSplit])
 
-  // Restart/Stop LAYOUT (bulk, all panes at once) — distinct from U7's
-  // per-pane ✎ edit-relaunch and ◼/▶ stop/start (both real as of U7). A
-  // layout-wide restart/stop needs the background-running + explicit-stop
-  // process model U8 introduces; stubbed here as a transient-message no-op
-  // so the affordance + menu shape are already in place for U8 to wire up.
-  // (Bug #6 fix only changes HOW this menu is presented, not what the
-  // stub handlers do.)
-  const handleRestartLayout = useCallback(() => {
-    showTransientMessage('restarted layout') // stub — real restart lands in U8
-  }, [showTransientMessage])
+  // Restart/Stop LAYOUT (bulk, all panes at once) — issue #17. Distinct from
+  // the per-pane ✎ edit-relaunch and ◼/▶ stop/start in PaneCell.tsx, but now
+  // built from the SAME primitives: `window.api.panes.destroy` (real process
+  // kill) and paneRunStateStore (the shared running-flag PaneCell's own
+  // usePaneSurface effect reads to decide mount vs. destroy). Iterates every
+  // paneId currently in the active layout's tree via splitTreeOps.leafIds —
+  // the flat, depth-first list of leaves, exactly matching what SplitTree.tsx
+  // renders, so "every pane in the layout" here means precisely the panes
+  // visibly in the stage right now.
   const handleStopLayout = useCallback(() => {
-    showTransientMessage('stopped layout') // stub — real stop lands in U8
-  }, [showTransientMessage])
+    if (!localTree || !activeLayoutId) return
+    const ids = leafIds(localTree)
+    for (const paneId of ids) {
+      // Mark stopped FIRST so PaneCell's own effect (which also reads this
+      // store) is the thing that actually calls pane:destroy on cleanup —
+      // this keeps ALL destroy calls flowing through usePaneSurface's own
+      // guarded path (createdRef/pendingCloseRef) instead of a second,
+      // parallel destroy call site here racing against it.
+      setPaneRunning(paneId, false)
+    }
+    showTransientMessage(`stopped layout (${ids.length} pane${ids.length === 1 ? '' : 's'})`)
+  }, [localTree, activeLayoutId, showTransientMessage])
+
+  const handleRestartLayout = useCallback(() => {
+    if (!localTree || !activeLayoutId) return
+    const ids = leafIds(localTree)
+    // restartPane forces a false->true transition even for an already-
+    // running pane (a plain "set true" would no-op and skip the destroy),
+    // so every pane genuinely gets a fresh `pane:destroy` + `pane:mount`
+    // round-trip — exactly the stop-then-start issue #17 asks for, and the
+    // same fresh-mount guarantee issue #18 relies on to avoid a blank
+    // repaint (see PaneCell.tsx's file-header comment).
+    for (const paneId of ids) {
+      restartPane(paneId)
+    }
+    showTransientMessage(`restarted layout (${ids.length} pane${ids.length === 1 ? '' : 's'})`)
+  }, [localTree, activeLayoutId, showTransientMessage])
 
   // The unique overlay id for this menu — stable across renders so repeated
   // opens/closes target the same child-window overlay slot (mirrors
@@ -339,11 +416,13 @@ export function PanesView(): React.JSX.Element {
             layoutId={activeLayout.id}
             active
             getCommand={getCommand}
+            getDisplayName={getDisplayName}
             focusedPaneId={focusedPaneId}
             onFocus={setFocusedPaneId}
             onSplit={(paneId, dir) => void handleSplit(paneId, dir)}
             onClose={handleClose}
             onCommandChange={handleCommandChange}
+            onNameChange={handleNameChange}
             onSwap={handleSwap}
             onRatioChange={handleRatioChange}
             draggingPaneId={draggingPaneId}

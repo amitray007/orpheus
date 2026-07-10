@@ -418,11 +418,11 @@ export interface InvokeChannelMap {
   'panes:deleteLayout': { req: [{ id: string }]; res: void }
   'panes:listTerminals': { req: [{ layoutId: string }]; res: PaneTerminal[] }
   'panes:createTerminal': {
-    req: [{ layoutId: string; command: string; position: number }]
+    req: [{ layoutId: string; command: string; name?: string; position: number }]
     res: PaneTerminal
   }
   'panes:updateTerminal': {
-    req: [{ id: string; command?: string; position?: number }]
+    req: [{ id: string; command?: string; name?: string; position?: number }]
     res: PaneTerminal
   }
   'panes:deleteTerminal': { req: [{ id: string }]; res: void }

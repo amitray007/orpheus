@@ -32,13 +32,45 @@
 //     a visible one.
 //   - HIDE (not destroy) on ordinary unmount (nav away / layout switch) —
 //     keeps the process + surface alive in main's registry
-//     (paneSurfacesByWorkspace). DESTROY only on explicit ✕ close, or a
-//     setup-rule edit relaunch (a command change is a new process).
+//     (paneSurfacesByWorkspace). DESTROY on explicit ✕ close, a setup-rule
+//     edit relaunch (a command change is a new process), OR the pane being
+//     STOPPED (issue #17/#18 — see `running` below).
+//
+// ISSUE #17/#18 — REAL STOP/START (read before touching the running logic):
+// `running` (sourced from paneRunStateStore.ts, shared with PanesView's
+// layout-wide Stop/Restart) used to be a purely LOCAL flag that only ever
+// fed into `active` (`active && running`), so stopping a pane just HID its
+// surface — the process kept running, and worse, restarting it could paint
+// blank because a hidden-then-reshown surface can race a stale/0-size rect.
+// Now `running` is threaded into usePaneSurface as its own signal: stopping
+// (running: true -> false) forces a real DESTROY (not hide) on cleanup, and
+// starting (false -> true) is therefore always a genuinely FRESH `pane:mount`
+// into a freshly-measured container — never a hide/show of a stale surface.
+// That fresh-mount guarantee, combined with the unconditional ResizeObserver
+// retry already in tryMount/attachResizeListener below (Bug #2's fix), is
+// what makes the restarted pane paint correctly instead of staying blank.
+//
+// The destroy-vs-hide decision needs to know, AT CLEANUP TIME, whether the
+// upcoming run's `command`/`running` differ from the run being torn down —
+// naively comparing "did command/running change since last render" INSIDE
+// the effect body computes the wrong transition (it answers "was outdated
+// by the time THIS run started", not "is about to be replaced when THIS run
+// ends"), because a cleanup closure captures whatever was computed when ITS
+// OWN effect instance was set up, and that cleanup fires BEFORE the next
+// run's body executes. The fix (mirrors how `activeRef`/`animatingRef`
+// already solve the identical problem for the resize path): commandRef and
+// runningRef are mutated on EVERY RENDER (not just effect runs), so by the
+// time a stale run's cleanup actually fires — which happens during the
+// commit that ALSO re-renders with the new prop values — the refs already
+// hold the upcoming values. Cleanup then compares its own closure snapshot
+// (taken at setup time) against the live ref to correctly detect "the thing
+// that's about to replace me differs from me", not the reverse.
 // ---------------------------------------------------------------------------
 
 import { useEffect, useRef, useState } from 'react'
 import { DotsSixVertical, Columns, Rows, Pencil, Stop, Play, X } from '@phosphor-icons/react'
 import { useInlineRename } from '@/lib/useInlineRename'
+import { usePaneRunning, setPaneRunning } from '@/lib/paneRunStateStore'
 
 // See TerminalTab.tsx's own MIN_SURFACE_PX doc comment for the full
 // scrollback-loss rationale — identical guard, same floor value.
@@ -54,6 +86,11 @@ export interface PaneCellProps {
   /** The pane's setup rule (src/shared/types.ts PaneTerminal.command); ''
    *  renders as "shell". */
   command: string
+  /** The pane's display name (issue #21) — '' means unnamed. PaneCell falls
+   *  back to `Pane ${position + 1}` when this is empty; the caller (via
+   *  SplitTree) is responsible for resolving `''` names, since only it
+   *  knows every leaf's stable 1-based position across the whole layout. */
+  displayName: string
   /** True when this cell's surface should be live: the Panes view is the
    *  active top-level view AND this pane's layout is the active layout.
    *  Toggling false hides the surface (mirrors TerminalTab's `active`). */
@@ -71,6 +108,9 @@ export interface PaneCellProps {
   onClose: (paneId: string) => void
   /** Persists an edited setup rule for this pane (PaneTerminal.command). */
   onCommandChange: (paneId: string, command: string) => void
+  /** Persists an edited display name for this pane (PaneTerminal.name) —
+   *  issue #21. Never relaunches the surface (unlike onCommandChange). */
+  onNameChange: (paneId: string, name: string) => void
   /** Drag-to-swap: the paneId currently being dragged (lifted up to
    *  SplitTree/PanesView so any two cells in the tree can participate),
    *  and the setter this cell's header calls on dragstart/dragend. */
@@ -103,16 +143,24 @@ interface PaneSurfaceHandle {
   pendingCloseRef: React.RefObject<boolean>
 }
 
-/** Owns the mount/resize/hide effect for one pane cell's native surface —
- *  extracted from PaneCell so the component body (header/body JSX) stays
- *  under the cognitive-complexity cap. Called exactly once per PaneCell
- *  instance; all the guard refs below live for this cell's whole lifetime
- *  and are private to that instance (returned, not shared module state). */
+/** Owns the mount/resize/hide/destroy effect for one pane cell's native
+ *  surface — extracted from PaneCell so the component body (header/body
+ *  JSX) stays under the cognitive-complexity cap. Called exactly once per
+ *  PaneCell instance; all the guard refs below live for this cell's whole
+ *  lifetime and are private to that instance (returned, not shared module
+ *  state).
+ *
+ *  `running` (issue #17/#18): when false, this hook neither mounts nor
+ *  keeps a surface alive — stopping DESTROYS it (a real process kill), and
+ *  starting again always goes through a full fresh `pane:mount`. See the
+ *  file header comment for why the destroy-vs-hide decision needs live refs
+ *  rather than a closure-captured "did this change" flag. */
 function usePaneSurface(
   containerRef: React.RefObject<HTMLDivElement | null>,
   layoutId: string,
   paneId: string,
   command: string,
+  running: boolean,
   active: boolean,
   animating: boolean
 ): PaneSurfaceHandle {
@@ -125,6 +173,22 @@ function usePaneSurface(
   const animatingRef = useRef(animating)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation to track latest animating prop for the stable resize listener
   animatingRef.current = animating
+
+  // commandRef/runningRef — ALSO mirrored on every render (not just inside
+  // the effect), so a stale run's cleanup can read what command/running are
+  // ABOUT TO BECOME (see the file-header comment: this is what fixes the
+  // off-by-one a naive closure-captured "changed" flag would have). The
+  // mount effect below still also needs the value AT THIS RUN's setup time
+  // to decide whether to mount at all — that comes from the plain
+  // `command`/`running` params (correct: an effect's own body always sees
+  // its own render's fresh props), only the CLEANUP decision needs the
+  // live-ref trick.
+  const commandRef = useRef(command)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation so a torn-down run's cleanup can see the command it's being replaced by
+  commandRef.current = command
+  const runningRef = useRef(running)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref mutation so a torn-down run's cleanup can see the running state it's being replaced by
+  runningRef.current = running
 
   // createdRef — has THIS pane's surface actually been mounted at least
   // once. Consulted so hide()/destroy() is only called for a slot the addon
@@ -140,31 +204,22 @@ function usePaneSurface(
   // leaking it. See TerminalTab.tsx's identical guard.
   const pendingCloseRef = useRef(false)
 
-  // Re-runs on every active/animating transition, AND whenever `command`
-  // changes — a setup-rule edit is a new process, so it destroys the old
-  // surface and mounts a fresh one with the new command (handled by this
-  // effect re-running: cleanup destroys via the `command`-change branch
-  // below, the new run mounts with the new command).
-  const prevCommandRef = useRef(command)
-
   useEffect(() => {
     let resizeRafId: number | null = null
     let pendingRect: { x: number; y: number; w: number; h: number } | null = null
     let pendingSf = 1
     let ro: ResizeObserver | null = null
     let mountRafId: number | null = null
-    // Whether this run issued a mount — only a run that mounted should hide
-    // (or destroy, on a command change) on cleanup. A run deferred because
-    // animating was true must not fire a spurious hide/destroy against a
+    // Whether this run issued a mount — only a run that mounted should
+    // hide/destroy on cleanup. A run deferred because animating was true or
+    // running was false must not fire a spurious hide/destroy against a
     // surface it never touched.
     let didMount = false
-    // Snapshot at effect-setup time: did the command change since the LAST
-    // run (vs. this being the pane's very first mount, or a plain
-    // active/animating toggle)? Read once here rather than inside cleanup
-    // so cleanup's decision reflects what triggered THIS run, not whatever
-    // `command` happens to be by the time cleanup fires.
-    const commandChanged = prevCommandRef.current !== command
-    prevCommandRef.current = command
+    // Snapshot of THIS run's own command/running, closed over for the
+    // mount call below (correct to use the plain params here — an effect
+    // body always wants its own render's values).
+    const thisRunCommand = command
+    const thisRunRunning = running
 
     const flushResize = (): void => {
       resizeRafId = null
@@ -194,13 +249,18 @@ function usePaneSurface(
     // so BOTH the initial mount attempt AND a later ResizeObserver-driven
     // "the container finally has a real size" retry can call the exact same
     // path (Bug #2's fix — see the ResizeObserver wiring below for why a
-    // retry path is needed at all).
+    // retry path is needed at all). Also the path a STOPPED->STARTED
+    // transition takes (issue #18): since running:false always destroys on
+    // cleanup (below) and resets createdRef to false, the next active run
+    // always arrives here with createdRef.current === false, so starting a
+    // stopped pane is guaranteed to be a genuine fresh mount, never a
+    // no-op against a surface that's merely hidden.
     const tryMount = (rect: DOMRect): void => {
       if (createdRef.current) return
       if (rect.width < MIN_SURFACE_PX || rect.height < MIN_SURFACE_PX) return
       const scaleFactor = window.devicePixelRatio ?? 1
       window.api.panes
-        .mount(layoutId, paneId, toTerminalRect(rect), scaleFactor, command)
+        .mount(layoutId, paneId, toTerminalRect(rect), scaleFactor, thisRunCommand)
         .then(() => {
           createdRef.current = true
           if (pendingCloseRef.current) {
@@ -221,23 +281,12 @@ function usePaneSurface(
     }
 
     // ResizeObserver — attached UNCONDITIONALLY whenever this run is live
-    // (active && !animating), NOT gated on a successful mount. This is
-    // Bug #2's fix: the OLD code only called attachResizeListener() inside
-    // the mount .then(), so a first rAF that measured a sub-floor rect
-    // (e.g. a single-pane layout's container hasn't been laid out into its
-    // parent's real size yet) permanently skipped the mount AND never
-    // attached anything that could catch a later, valid layout pass — the
-    // pane stayed blank forever unless something UNRELATED (like adding a
-    // 2nd pane, which used to force a full remount) re-ran this effect with
-    // a by-then-valid rect. Attaching the observer up front means: if the
-    // deferred first mount hasn't happened yet (`!createdRef.current`) and
-    // the container now reports a valid rect, retry the mount right here;
-    // otherwise (already mounted) fall through to the normal resize path.
-    // The flat-render fix in SplitTree.tsx (every pane, including a lone
-    // first pane, now sits in a sized `position:absolute` wrapper) makes
-    // this rare in practice, but a pane created while its ancestor is
-    // mid-layout (or 0-sized for any other transient reason) must still
-    // self-heal instead of staying blank — this is that safety net.
+    // (active && running && !animating), NOT gated on a successful mount.
+    // This is Bug #2's fix, and it's also what makes issue #18's restart
+    // path reliable: a freshly-started pane's container may not have
+    // finished laying out on the very first rAF measurement (0-size rect),
+    // and this observer is what retries the mount the moment a real size
+    // is reported, instead of leaving the pane permanently blank.
     const attachResizeListener = (): void => {
       const el = containerRef.current
       if (!el || ro) return
@@ -252,7 +301,7 @@ function usePaneSurface(
       ro.observe(el)
     }
 
-    if (active && !animating) {
+    if (active && running && !animating) {
       didMount = true
       attachResizeListener()
       // rAF so the container has laid out before we measure it (matches
@@ -274,32 +323,45 @@ function usePaneSurface(
       ro?.disconnect()
       pendingRect = null
       if (!didMount || !createdRef.current) return
-      if (commandChanged) {
-        // Setup-rule edit relaunch: the old process/surface is gone the
-        // instant the command changes, so destroy (not hide) it — the next
-        // run mounts a fresh surface with the new command.
+      // The DESTROY-vs-HIDE decision: compare what THIS run mounted with
+      // (thisRunCommand/thisRunRunning) against the LIVE refs, which by the
+      // time this cleanup actually executes already hold the values from
+      // the render that's replacing this one (see the file-header comment
+      // for why this must be live refs, not a closure-captured "changed"
+      // flag computed at setup time — that reads one transition late).
+      const commandAboutToChange = commandRef.current !== thisRunCommand
+      const stoppingNow = thisRunRunning && !runningRef.current
+      if (commandAboutToChange || stoppingNow) {
+        // Setup-rule edit relaunch, OR the user/layout-menu stopped this
+        // pane: the old process/surface must be genuinely killed, not just
+        // hidden — a hidden surface would (a) leak a live process for a
+        // stopped pane, and (b) block the next mount via the createdRef
+        // guard above, which is exactly the stale-hide/show path that used
+        // to cause the blank-on-restart bug (issue #18).
         createdRef.current = false
         window.api.panes
           .destroy(layoutId, paneId)
-          .catch((e) => console.error('[PaneCell] relaunch destroy failed:', e))
+          .catch((e) => console.error('[PaneCell] destroy failed:', e))
       } else {
         window.api.panes
           .hide(layoutId, paneId)
           .catch((e) => console.error('[PaneCell] hide failed:', e))
       }
     }
-    // Re-runs on every `active`, `animating`, OR `command` transition —
-    // this is intentionally the only effect that mounts/hides/resizes/
-    // destroys this pane's surface.
-  }, [active, animating, layoutId, paneId, command, containerRef])
+    // Re-runs on every `active`, `animating`, `running`, OR `command`
+    // transition — this is intentionally the only effect that mounts/hides/
+    // resizes/destroys this pane's surface.
+  }, [active, animating, running, layoutId, paneId, command, containerRef])
 
   // True teardown — a SEPARATE `[]`-keyed effect so its cleanup fires only
   // on this cell's own unmount (nav away / layout switch / pane removed
-  // from the tree), never on an active/animating/command toggle above.
-  // HIDE, never destroy — mirrors TerminalTab.tsx's own teardown effect:
-  // surfaces are destroyed ONLY by explicit ✕-close (handled in PaneCell's
-  // handleClose, which reaches into the createdRef/pendingCloseRef this
-  // hook returns) or workspace/project archival (main-side).
+  // from the tree), never on an active/animating/running/command toggle
+  // above. HIDE, never destroy — mirrors TerminalTab.tsx's own teardown
+  // effect: surfaces are destroyed ONLY by explicit ✕-close (handled in
+  // PaneCell's handleClose, which reaches into the createdRef/
+  // pendingCloseRef this hook returns), a setup-rule relaunch, an explicit
+  // stop (both handled by the effect above), or workspace/project archival
+  // (main-side).
   useEffect(() => {
     return () => {
       unmountedRef.current = true
@@ -321,6 +383,7 @@ export function PaneCell({
   layoutId,
   paneId,
   command,
+  displayName,
   active,
   animating,
   focused,
@@ -328,22 +391,29 @@ export function PaneCell({
   onSplit,
   onClose,
   onCommandChange,
+  onNameChange,
   draggingPaneId,
   onDragStart,
   onDragEnd,
   onSwap
 }: PaneCellProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [running, setRunning] = useState(true)
+  // running — sourced from the shared paneRunStateStore (issue #17), not
+  // local state: PanesView's Stop/Restart-layout menu items write to the
+  // SAME store this hook reads, so a layout-wide command and this cell's
+  // own ◼/▶ buttons drive the exact same mount/destroy path below.
+  const running = usePaneRunning(paneId)
   const [dropTarget, setDropTarget] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [editingCommand, setEditingCommand] = useState(false)
+  const [editingName, setEditingName] = useState(false)
 
   const { createdRef, pendingCloseRef } = usePaneSurface(
     containerRef,
     layoutId,
     paneId,
     command,
-    active && running,
+    running,
+    active,
     animating
   )
 
@@ -351,24 +421,39 @@ export function PaneCell({
   // protocol (Sidebar's own rename rows). '' is a valid committed value
   // here (plain shell), unlike a name field, so commit is driven manually
   // below rather than via the hook's own commit() (which no-ops on empty).
-  const editValue = useInlineRename(command, (trimmed) => onCommandChange(paneId, trimmed))
+  const commandEditValue = useInlineRename(command, (trimmed) => onCommandChange(paneId, trimmed))
 
-  const commitEdit = (): void => {
-    const next = editValue.value.trim()
-    setEditing(false)
+  const commitCommandEdit = (): void => {
+    const next = commandEditValue.value.trim()
+    setEditingCommand(false)
     if (next !== command) onCommandChange(paneId, next)
   }
-  const cancelEdit = (): void => {
-    editValue.cancel()
-    setEditing(false)
+  const cancelCommandEdit = (): void => {
+    commandEditValue.cancel()
+    setEditingCommand(false)
+  }
+
+  // Name edit input (issue #21) — same protocol, but '' IS a meaningful
+  // commit here too (clears back to the "Pane N" fallback), so this also
+  // drives commit manually rather than via the hook's own commit() (which
+  // no-ops on empty, same reasoning as the command editor above).
+  const nameEditValue = useInlineRename(displayName, (trimmed) => onNameChange(paneId, trimmed))
+
+  const commitNameEdit = (): void => {
+    const next = nameEditValue.value.trim()
+    setEditingName(false)
+    if (next !== displayName) onNameChange(paneId, next)
+  }
+  const cancelNameEdit = (): void => {
+    nameEditValue.cancel()
+    setEditingName(false)
   }
 
   const isDragging = draggingPaneId === paneId
-  const label = command || 'shell'
 
   const handleClose = (): void => {
     // Destroy this pane's surface immediately regardless of active state —
-    // this IS one of the two allowed destroy triggers (explicit ✕). If the
+    // this IS one of the allowed destroy triggers (explicit ✕). If the
     // mount is still in flight, mark it so the mount's own .then destroys
     // on resolution instead of attaching a surface for a pane the tree no
     // longer shows (closes the same race TerminalTab.tsx guards).
@@ -407,7 +492,7 @@ export function PaneCell({
         if (draggingPaneId) onSwap(draggingPaneId, paneId)
       }}
     >
-      {/* Header — grip, live dot, command label, hover-reveal controls. */}
+      {/* Header — grip, live dot, editable name, hover-reveal controls. */}
       <div
         draggable
         onDragStart={() => onDragStart(paneId)}
@@ -421,49 +506,83 @@ export function PaneCell({
             running ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-text-muted'
           ].join(' ')}
         />
-        {editing ? (
+        {editingName ? (
           <input
             autoFocus
-            value={editValue.value}
-            onChange={(e) => editValue.setValue(e.target.value)}
+            value={nameEditValue.value}
+            onChange={(e) => nameEditValue.setValue(e.target.value)}
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
-            onBlur={commitEdit}
+            onBlur={commitNameEdit}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') commitEdit()
-              if (e.key === 'Escape') cancelEdit()
+              if (e.key === 'Enter') commitNameEdit()
+              if (e.key === 'Escape') cancelNameEdit()
+            }}
+            placeholder={displayName}
+            className="min-w-0 flex-1 rounded border border-accent bg-surface-base px-1 font-mono text-[10.5px] text-text-primary outline-none"
+          />
+        ) : editingCommand ? (
+          // Setup-rule (command) edit — shares the name span's slot rather
+          // than adding a second header row (the header is a fixed 28px
+          // flush strip, matching the mockup exactly; there's no room for a
+          // second row). A distinct placeholder ("shell" vs. the pane's own
+          // name) and accent-bordered styling make it visually obvious this
+          // input edits the COMMAND, not the name, even though it briefly
+          // occupies the same slot the name normally lives in.
+          <input
+            autoFocus
+            value={commandEditValue.value}
+            onChange={(e) => commandEditValue.setValue(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onBlur={commitCommandEdit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitCommandEdit()
+              if (e.key === 'Escape') cancelCommandEdit()
             }}
             placeholder="shell"
+            title="Setup rule (command)"
             className="min-w-0 flex-1 rounded border border-accent bg-surface-base px-1 font-mono text-[10.5px] text-text-primary outline-none"
           />
         ) : (
+          // Double-click to rename (issue #21) — mirrors the Sidebar's own
+          // double-click-to-rename affordance for workspace/project rows,
+          // so Panes stays consistent with the rest of the app's rename UX
+          // rather than inventing a new gesture.
           <span
+            title="Double-click to rename"
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              nameEditValue.seed(displayName)
+              setEditingName(true)
+            }}
             className={[
               'min-w-0 flex-1 truncate font-mono text-[10.5px]',
               focused ? 'text-text-primary' : 'text-text-muted'
             ].join(' ')}
           >
-            {running ? '' : '◼ '}
-            {label}
+            {displayName}
           </span>
         )}
 
-        {/* Edit — sits immediately beside the name/label (or the edit input
-            above, when already editing), not in the far-right controls
+        {/* Edit — sits immediately beside the name/label (or whichever edit
+            input above is currently showing), not in the far-right controls
             cluster. Hover/focus-reveal like the other controls, with a small
             gap from the name so it never overlaps the truncated label.
-            Toggles the inline input above, which commits on blur/Enter and
-            cancels on Escape; committing a changed command relaunches the
-            surface (usePaneSurface's command-change branch destroys the old
-            process and mounts a fresh one). */}
+            Toggles the inline SETUP-RULE (command) input above, which
+            commits on blur/Enter and cancels on Escape; committing a
+            changed command relaunches the surface (usePaneSurface's
+            command-change branch destroys the old process and mounts a
+            fresh one). This edits the command, not the name — renaming is
+            the name span's own double-click affordance, above. */}
         <button
           type="button"
           title="Edit setup rule"
           className="ml-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition-opacity duration-150 hover:bg-surface-raised hover:text-accent cursor-pointer group-hover:opacity-100 group-focus-within:opacity-100"
           onClick={(e) => {
             e.stopPropagation()
-            editValue.seed(command)
-            setEditing(true)
+            commandEditValue.seed(command)
+            setEditingCommand(true)
           }}
         >
           <Pencil size={12} weight="regular" />
@@ -496,7 +615,10 @@ export function PaneCell({
         </div>
 
         {/* Stop/start + close — hover/focus-reveal, matching mockup .tctrls.
-            (Edit now lives beside the pane name, above.) */}
+            (Edit now lives beside the pane name, above.) Real stop/start
+            (issue #17): writes to the shared paneRunStateStore, which
+            usePaneSurface above turns into a genuine destroy/fresh-mount —
+            not a local-only hide/show toggle. */}
         <div className="flex opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
           {running ? (
             <button
@@ -505,7 +627,7 @@ export function PaneCell({
               className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-[#e07a7a] cursor-pointer"
               onClick={(e) => {
                 e.stopPropagation()
-                setRunning(false)
+                setPaneRunning(paneId, false)
               }}
             >
               <Stop size={12} weight="regular" />
@@ -517,7 +639,7 @@ export function PaneCell({
               className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-surface-raised hover:text-text-primary cursor-pointer"
               onClick={(e) => {
                 e.stopPropagation()
-                setRunning(true)
+                setPaneRunning(paneId, true)
               }}
             >
               <Play size={12} weight="regular" />
@@ -537,10 +659,21 @@ export function PaneCell({
         </div>
       </div>
 
-      {/* Body — the REAL native terminal surface host. Transparent + flush:
+      {/* Body — the REAL native terminal surface host when running, or a
+          plain stopped placeholder (issue #18's glyph cleanup: no more bare
+          "◼ " text prefix on the label — a stopped pane now gets an actual
+          body treatment consistent with the phosphor iconography used
+          everywhere else in this header). Transparent + flush when live:
           the opaque libghostty NSView paints through this div, same
           convention as workbench/TerminalTab.tsx's own host. */}
-      <div ref={containerRef} className="relative flex-1 min-h-0 min-w-0 overflow-hidden" />
+      <div ref={containerRef} className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
+        {running ? null : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-text-muted">
+            <Stop size={16} weight="fill" className="opacity-40" />
+            <span className="font-mono text-[10px] opacity-70">stopped</span>
+          </div>
+        )}
+      </div>
 
       {/* Setup-rule strip — only shown when a rule is actually set, mirrors
           mockup .setuprow. Omitted entirely for a plain shell pane; adding

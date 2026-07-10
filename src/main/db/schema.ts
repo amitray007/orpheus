@@ -881,12 +881,21 @@ export const schema: SchemaDef = {
   // metadata only (e.g. stable ordering for a11y/listing) — the actual
   // on-screen ARRANGEMENT lives in the parent layout's `split_tree_json`,
   // not here.
+  //
+  // `name` — issue #21, user-editable pane display name. Widening add
+  // (notNull, default ''): existing rows backfill to '' with no data
+  // migration needed, and the renderer falls back to "Pane N" (1-based
+  // position) whenever `name === ''`, so pre-existing panes render sensibly
+  // without ever needing a rename. Kept separate from `command` (the setup
+  // rule) — renaming a pane must NEVER relaunch its surface, unlike editing
+  // `command`.
   // ---------------------------------------------------------------------
   pane_terminals: {
     columns: {
       id: TEXT_PK,
       layout_id: TEXT_NOT_NULL,
       command: TEXT_NOT_NULL,
+      name: { type: 'TEXT', notNull: true, default: "''" },
       position: INTEGER_NOT_NULL,
       created_at: INTEGER_NOT_NULL,
       updated_at: INTEGER_NOT_NULL

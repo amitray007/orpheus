@@ -85,12 +85,20 @@ export interface SplitTreeProps {
    *  loaded PaneTerminal rows) — PaneCell only needs the string, not the
    *  whole terminal row. */
   getCommand: (paneId: string) => string
+  /** Looks up a leaf's already-resolved DISPLAY name by paneId (issue #21)
+   *  — PanesView resolves the "" -> "Pane N" fallback (it's the only place
+   *  that knows every leaf's stable 1-based position in the whole layout),
+   *  so this is always a ready-to-render string, never ''. */
+  getDisplayName: (paneId: string) => string
   focusedPaneId: string | null
   onFocus: (paneId: string) => void
   onSplit: (paneId: string, dir: 'v' | 'h') => void
   onClose: (paneId: string) => void
   /** Persists an edited setup rule for a leaf's pane (PaneTerminal.command). */
   onCommandChange: (paneId: string, command: string) => void
+  /** Persists an edited display name for a leaf's pane (PaneTerminal.name)
+   *  — issue #21. */
+  onNameChange: (paneId: string, name: string) => void
   onSwap: (draggedPaneId: string, targetPaneId: string) => void
   onRatioChange: (path: SplitPathStep[], ratio: number) => void
   draggingPaneId: string | null
@@ -263,11 +271,13 @@ function PaneLayer(props: {
   layoutId: string
   active: boolean
   getCommand: (paneId: string) => string
+  getDisplayName: (paneId: string) => string
   focusedPaneId: string | null
   onFocus: (paneId: string) => void
   onSplit: (paneId: string, dir: 'v' | 'h') => void
   onClose: (paneId: string) => void
   onCommandChange: (paneId: string, command: string) => void
+  onNameChange: (paneId: string, name: string) => void
   onSwap: (draggedPaneId: string, targetPaneId: string) => void
   draggingPaneId: string | null
   onDragStart: (paneId: string) => void
@@ -291,6 +301,7 @@ function PaneLayer(props: {
             layoutId={props.layoutId}
             paneId={r.paneId}
             command={props.getCommand(r.paneId)}
+            displayName={props.getDisplayName(r.paneId)}
             active={props.active}
             animating={false}
             focused={props.focusedPaneId === r.paneId}
@@ -298,6 +309,7 @@ function PaneLayer(props: {
             onSplit={props.onSplit}
             onClose={props.onClose}
             onCommandChange={props.onCommandChange}
+            onNameChange={props.onNameChange}
             draggingPaneId={props.draggingPaneId}
             onDragStart={props.onDragStart}
             onDragEnd={props.onDragEnd}
@@ -355,11 +367,13 @@ export function SplitTree(props: SplitTreeProps): React.JSX.Element {
         layoutId={props.layoutId}
         active={props.active}
         getCommand={props.getCommand}
+        getDisplayName={props.getDisplayName}
         focusedPaneId={props.focusedPaneId}
         onFocus={props.onFocus}
         onSplit={props.onSplit}
         onClose={props.onClose}
         onCommandChange={props.onCommandChange}
+        onNameChange={props.onNameChange}
         onSwap={props.onSwap}
         draggingPaneId={props.draggingPaneId}
         onDragStart={props.onDragStart}

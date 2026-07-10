@@ -72,11 +72,11 @@ export function registerPanesIpc(): void {
 
   // Terminals
   handle('panes:listTerminals', (_e, { layoutId }) => listTerminals(layoutId))
-  handle('panes:createTerminal', (_e, { layoutId, command, position }) =>
-    createTerminal({ layoutId, command, position })
+  handle('panes:createTerminal', (_e, { layoutId, command, name, position }) =>
+    createTerminal({ layoutId, command, name, position })
   )
-  handle('panes:updateTerminal', (_e, { id, command, position }) =>
-    updateTerminal(id, { command, position })
+  handle('panes:updateTerminal', (_e, { id, command, name, position }) =>
+    updateTerminal(id, { command, name, position })
   )
   handle('panes:deleteTerminal', (_e, { id }) => {
     deleteTerminal(id)

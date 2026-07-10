@@ -56,12 +56,22 @@ interface UsePanesDataResult {
   /** Creates a terminal row under the active layout and returns it (so
    *  PanesView can splice its real DB id into the split tree via
    *  splitTree.ts's splitLeaf, per KTD2/KTD6 — the native surface keys on
-   *  this row's id, so a client-side placeholder id would be wrong). */
-  createTerminal: (args: { command: string; position: number }) => Promise<PaneTerminal | null>
+   *  this row's id, so a client-side placeholder id would be wrong). `name`
+   *  is optional so existing call sites keep compiling; PanesView always
+   *  passes one (issue #21 — new panes default to "Pane N"). */
+  createTerminal: (args: {
+    command: string
+    name?: string
+    position: number
+  }) => Promise<PaneTerminal | null>
   /** Persists an edited setup rule for an existing pane (U7's ✎ edit — a
    *  changed command relaunches PaneCell's surface; see SplitTree.tsx's
    *  onCommandChange). */
   updateTerminalCommand: (terminalId: string, command: string) => Promise<void>
+  /** Persists an edited display name (issue #21) — unlike command, renaming
+   *  NEVER relaunches the pane's surface (PaneCell's mount effect isn't
+   *  keyed on `name`). */
+  updateTerminalName: (terminalId: string, name: string) => Promise<void>
   deleteTerminal: (terminalId: string) => Promise<void>
   /** Persists a new split tree for the active layout (optimistic local
    *  update is the caller's job — PanesView updates its own tree state
@@ -164,12 +174,17 @@ export function usePanesData(
   }, [activeLayoutId, reloadToken, refreshCounter])
 
   const createTerminal = useCallback(
-    async (args: { command: string; position: number }): Promise<PaneTerminal | null> => {
+    async (args: {
+      command: string
+      name?: string
+      position: number
+    }): Promise<PaneTerminal | null> => {
       if (!activeLayoutId) return null
       try {
         const created = await window.api.panes.createTerminal({
           layoutId: activeLayoutId,
           command: args.command,
+          name: args.name,
           position: args.position
         })
         setTerminals((prev) => [...prev, created])
@@ -187,6 +202,19 @@ export function usePanesData(
     async (terminalId: string, command: string): Promise<void> => {
       try {
         const updated = await window.api.panes.updateTerminal(terminalId, { command })
+        setTerminals((prev) => prev.map((t) => (t.id === terminalId ? updated : t)))
+        setError(null)
+      } catch (err: unknown) {
+        setError(toErrorMessage(err))
+      }
+    },
+    []
+  )
+
+  const updateTerminalName = useCallback(
+    async (terminalId: string, name: string): Promise<void> => {
+      try {
+        const updated = await window.api.panes.updateTerminal(terminalId, { name })
         setTerminals((prev) => prev.map((t) => (t.id === terminalId ? updated : t)))
         setError(null)
       } catch (err: unknown) {
@@ -228,6 +256,7 @@ export function usePanesData(
     refetch,
     createTerminal,
     updateTerminalCommand,
+    updateTerminalName,
     deleteTerminal,
     updateLayoutSplitTree
   }

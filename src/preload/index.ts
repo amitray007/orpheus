@@ -611,11 +611,12 @@ const api = {
     createTerminal: (args: {
       layoutId: string
       command: string
+      name?: string
       position: number
     }): Promise<PaneTerminal> => invoke('panes:createTerminal', args),
     updateTerminal: (
       id: string,
-      patch: { command?: string; position?: number }
+      patch: { command?: string; name?: string; position?: number }
     ): Promise<PaneTerminal> => invoke('panes:updateTerminal', { id, ...patch }),
     deleteTerminal: (id: string): Promise<void> => invoke('panes:deleteTerminal', { id }),
     pickDirectory: (): Promise<string | null> => invoke('panes:pickDirectory'),

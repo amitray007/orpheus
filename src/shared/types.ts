@@ -1004,7 +1004,9 @@ export type LocalReviewComment = {
 //   PaneTerminal — one terminal (a "pane" in the UI). `command` is the setup
 //                 rule (R7): a command that auto-runs once on every open,
 //                 then drops to a live shell; '' means a plain shell with no
-//                 setup step. The native surface keys on this row's `id`:
+//                 setup step. `name` (issue #21) is the user-editable
+//                 display name — '' falls back to "Pane N" by position. The
+//                 native surface keys on this row's `id`:
 //                 `pane:<layoutId>:<terminalId>` (KTD1 — the existing
 //                 pane:* surface IPC is unchanged, just given different key
 //                 parts).
@@ -1055,6 +1057,10 @@ export interface PaneTerminal {
   layoutId: string
   /** The setup rule — auto-runs once per open, then drops to a live shell. '' = plain shell. */
   command: string
+  /** User-editable display name (issue #21). '' means unnamed — the
+   *  renderer falls back to "Pane N" (1-based position) in that case. Never
+   *  affects the surface's launch (see `command`); renaming never relaunches. */
+  name: string
   position: number
   createdAt: number
   updatedAt: number

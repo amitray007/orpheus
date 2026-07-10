@@ -55,6 +55,7 @@ type PaneTerminalRow = {
   id: string
   layout_id: string
   command: string
+  name: string
   position: number
   created_at: number
   updated_at: number
@@ -109,6 +110,7 @@ function terminalFromRow(row: PaneTerminalRow): PaneTerminal {
     id: row.id,
     layoutId: row.layout_id,
     command: row.command,
+    name: row.name,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -309,6 +311,10 @@ export interface CreateTerminalInput {
   layoutId: string
   /** The setup rule — '' means a plain shell. */
   command: string
+  /** Display name (issue #21) — '' (the default when omitted) falls back to
+   *  "Pane N" by position in the renderer, so callers that don't care about
+   *  naming yet (e.g. any pre-existing call site) keep working unchanged. */
+  name?: string
   position: number
 }
 
@@ -316,11 +322,12 @@ export function createTerminal(input: CreateTerminalInput): PaneTerminal {
   const db = getDb()
   const id = randomUUID()
   const now = Date.now()
+  const name = input.name ?? ''
 
   db.prepare(
-    `INSERT INTO pane_terminals (id, layout_id, command, position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, input.layoutId, input.command, input.position, now, now)
+    `INSERT INTO pane_terminals (id, layout_id, command, name, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, input.layoutId, input.command, name, input.position, now, now)
 
   return terminalFromRow(
     db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
@@ -329,6 +336,9 @@ export function createTerminal(input: CreateTerminalInput): PaneTerminal {
 
 export interface UpdateTerminalInput {
   command?: string
+  /** Renaming (issue #21) — independent of `command`; setting this alone
+   *  must never touch the setup rule or relaunch the pane's surface. */
+  name?: string
   position?: number
 }
 
@@ -341,11 +351,12 @@ export function updateTerminal(id: string, patch: UpdateTerminalInput): PaneTerm
 
   const now = Date.now()
   const command = patch.command ?? existing.command
+  const name = patch.name ?? existing.name
   const position = patch.position ?? existing.position
 
   db.prepare(
-    'UPDATE pane_terminals SET command = ?, position = ?, updated_at = ? WHERE id = ?'
-  ).run(command, position, now, id)
+    'UPDATE pane_terminals SET command = ?, name = ?, position = ?, updated_at = ? WHERE id = ?'
+  ).run(command, name, position, now, id)
 
   return terminalFromRow(
     db.prepare('SELECT * FROM pane_terminals WHERE id = ?').get(id) as PaneTerminalRow
