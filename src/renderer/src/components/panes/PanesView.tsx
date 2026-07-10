@@ -343,8 +343,9 @@ export function PanesView(): React.JSX.Element {
       // parallel destroy call site here racing against it.
       setPaneRunning(paneId, false)
     }
-    showTransientMessage(`stopped layout (${ids.length} pane${ids.length === 1 ? '' : 's'})`)
-  }, [localTree, activeLayoutId, showTransientMessage])
+    // No transient toast — Stop is now a real action (the panes visibly stop),
+    // so a "stopped layout" message would be redundant noise.
+  }, [localTree, activeLayoutId])
 
   const handleRestartLayout = useCallback(() => {
     if (!localTree || !activeLayoutId) return
@@ -358,8 +359,8 @@ export function PanesView(): React.JSX.Element {
     for (const paneId of ids) {
       restartPane(paneId)
     }
-    showTransientMessage(`restarted layout (${ids.length} pane${ids.length === 1 ? '' : 's'})`)
-  }, [localTree, activeLayoutId, showTransientMessage])
+    // No transient toast — Restart is now a real action (panes visibly relaunch).
+  }, [localTree, activeLayoutId])
 
   // The unique overlay id for this menu — stable across renders so repeated
   // opens/closes target the same child-window overlay slot (mirrors
