@@ -293,7 +293,11 @@ export function PanesView(): React.JSX.Element {
       {
         items: [
           { value: 'restart', label: '↻ Restart layout' },
-          { value: 'stop', label: '◼ Stop layout' }
+          // Destructive: true — matches the custom ContextMenu.tsx's red
+          // treatment for destructive actions (e.g. sidebar "Delete"), now
+          // mirrored here via ChipDropdown's new destructive support so
+          // every Panes menu reads consistently (issue #22).
+          { value: 'stop', label: '◼ Stop layout', destructive: true }
         ]
       }
     )

@@ -222,21 +222,13 @@ function LayoutSubRow({
     if (!willCommit) onCancelRename()
   }
 
+  // Issue #22 — always show the custom ContextMenu (no OS-native fallback),
+  // so every Panes menu uses the same internal design regardless of sidebar
+  // width. The custom ContextMenu already clamps itself inside
+  // sidebarBoundsRef (see ContextMenu.tsx's useLayoutEffect), so a narrow
+  // sidebar just shifts the menu rather than needing a different renderer.
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
-    if (!rect || rect.width < 200) {
-      void window.api.contextMenu
-        .show([
-          { label: 'Rename', action: 'rename' },
-          { label: 'Delete', action: 'delete' }
-        ])
-        .then((action) => {
-          if (action === 'rename') onBeginRename()
-          else if (action === 'delete') onDelete()
-        })
-      return
-    }
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
@@ -364,21 +356,10 @@ function PanelRow({
     if (!willCommit) onCancelRename()
   }
 
+  // Issue #22 — always show the custom ContextMenu (no OS-native fallback);
+  // see the matching comment on LayoutSubRow's handleContextMenu above.
   function handleContextMenu(e: React.MouseEvent): void {
     e.preventDefault()
-    const rect = sidebarBoundsRef?.current?.getBoundingClientRect()
-    if (!rect || rect.width < 200) {
-      void window.api.contextMenu
-        .show([
-          { label: 'Rename', action: 'rename' },
-          ...(isGeneral ? [] : [{ label: 'Delete', action: 'delete' }])
-        ])
-        .then((action) => {
-          if (action === 'rename') onBeginRename()
-          else if (action === 'delete') onDelete()
-        })
-      return
-    }
     setMenu({ x: e.clientX, y: e.clientY })
   }
 

@@ -1531,8 +1531,16 @@ export type ChipPromptProps = {
 /** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipPromptResult = { values: Record<string, string> } | null
 
-/** One selectable item in a chip dropdown (e.g. a model option). */
-export type ChipDropdownItem = { value: string; label: string; sublabel?: string }
+/** One selectable item in a chip dropdown (e.g. a model option). `destructive`
+ *  is optional and additive — only PanesView's ⋯ layout-options menu sets it
+ *  (for "Stop layout"), so it defaults to falsy/undefined for every other
+ *  caller (e.g. the footer Model chip) and never changes their rendering. */
+export type ChipDropdownItem = {
+  value: string
+  label: string
+  sublabel?: string
+  destructive?: boolean
+}
 
 /** Interactive dropdown/list popover — opens upward from its anchor chip. */
 export type ChipDropdownProps = {

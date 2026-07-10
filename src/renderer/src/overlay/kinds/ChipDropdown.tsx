@@ -90,6 +90,27 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
       {items.map((item, idx) => {
         const isSelected = item.value === selectedValue
         const isHighlighted = idx === highlighted
+        // Destructive rows (e.g. PanesView's "Stop layout") mirror
+        // ContextMenu.tsx's red treatment: text-red-400 at rest, and the
+        // SAME hover/highlight tint (bg-red-500/10 text-red-300) this
+        // component already used for the neutral highlight state — so a
+        // destructive row never gets the neutral bg-surface-raised
+        // highlight. Non-destructive rows are completely untouched (still
+        // just text-accent when selected, text-text-primary otherwise), so
+        // the footer Model-chip caller — which never sets `destructive` —
+        // renders identically to before this change.
+        const rowColorClass = item.destructive
+          ? isHighlighted
+            ? 'text-red-300'
+            : 'text-red-400'
+          : isSelected
+            ? 'text-accent'
+            : 'text-text-primary'
+        const rowHighlightClass = isHighlighted
+          ? item.destructive
+            ? 'bg-red-500/10'
+            : 'bg-surface-raised'
+          : ''
         return (
           <button
             key={item.value}
@@ -98,8 +119,8 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
             onMouseEnter={() => setHighlighted(idx)}
             className={[
               'flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-xs text-left transition-colors cursor-pointer',
-              isSelected ? 'text-accent' : 'text-text-primary',
-              isHighlighted ? 'bg-surface-raised' : ''
+              rowColorClass,
+              rowHighlightClass
             ].join(' ')}
           >
             <span className="flex flex-col min-w-0">
@@ -108,7 +129,13 @@ export function ChipDropdown({ props, emit }: OverlayKindProps): React.JSX.Eleme
                 <span className="text-[10px] text-text-muted truncate">{item.sublabel}</span>
               )}
             </span>
-            {isSelected && <Check size={12} className="flex-shrink-0" />}
+            {/* Destructive rows never carry a selected-value concept (menus
+                like the ⋯ layout-options menu don't pass selectedValue at
+                all), so this check is unreachable for them in practice —
+                but gate on !item.destructive explicitly anyway so a future
+                caller can never accidentally show a checkmark next to a
+                "Stop"-style destructive action. */}
+            {isSelected && !item.destructive && <Check size={12} className="flex-shrink-0" />}
           </button>
         )
       })}
