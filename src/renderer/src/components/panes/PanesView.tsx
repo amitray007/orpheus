@@ -35,8 +35,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SquaresFour } from '@phosphor-icons/react'
 import type { SplitDirection, SplitTree as SplitTreeShape } from '@shared/types'
-import { Overlay } from '@/components/ui/Overlay'
+import { showChipDropdown, chipDropdownId } from '@/lib/overlayClient'
 import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
+import { useUiState } from '@/lib/uiStateStore'
 import { usePanesData } from './usePanesData'
 import { SplitTree } from './SplitTree'
 import { splitLeaf, closeLeaf, swapLeaves, setRatio, countLeaves } from './splitTreeOps'
@@ -67,6 +68,7 @@ function panelPaneCount(layouts: { splitTree: SplitTreeShape | null }[]): number
 
 export function PanesView(): React.JSX.Element {
   const { activePanelId, activeLayoutId } = usePanesSelection()
+  const uiState = useUiState()
   const {
     panels,
     layouts,
@@ -80,25 +82,43 @@ export function PanesView(): React.JSX.Element {
   const activePanel = panels.find((p) => p.id === activePanelId) ?? null
   const activeLayout = layouts.find((l) => l.id === activeLayoutId) ?? null
 
-  // First-run defaults: seed the store with the first panel once panels load
-  // and nothing is selected yet, then the first layout of whatever panel is
-  // active once ITS layouts load (also covers the case where the previously
-  // active layout no longer belongs to the newly active panel). Guarded so
-  // these only fire when something would actually change (setActivePanel/
+  // Restore-or-default: seed the store with the persisted lastPanelId
+  // (app_ui_state, issue #1) once panels load and nothing is selected yet,
+  // provided that id still resolves against a loaded panel — a panel
+  // deleted since the last session falls back to the first panel instead.
+  // Then the same restore-or-default logic for the layout once the active
+  // panel's layouts load (also covers the case where the previously active
+  // layout no longer belongs to the newly active panel). Guarded so these
+  // only fire when something would actually change (setActivePanel/
   // setActiveLayout are themselves no-ops on an unchanged id, but the guard
   // here also avoids picking a "first layout" while a panel switch is still
   // resolving its own default).
   useEffect(() => {
-    if (activePanelId === null && panels.length > 0) {
-      setActivePanel(panels[0].id)
-    }
-  }, [activePanelId, panels])
+    if (activePanelId !== null || panels.length === 0) return
+    if (uiState === null) return
+    const restored = uiState.lastPanelId
+    const restoredPanel = restored !== null ? panels.find((p) => p.id === restored) : undefined
+    setActivePanel(restoredPanel ? restoredPanel.id : panels[0].id)
+  }, [activePanelId, panels, uiState])
 
   useEffect(() => {
     if (activePanelId === null) return
     if (activeLayoutId !== null && layouts.some((l) => l.id === activeLayoutId)) return
-    setActiveLayout(layouts[0]?.id ?? null)
-  }, [activePanelId, activeLayoutId, layouts])
+    // Only prefer the persisted lastLayoutId on the very first restore for
+    // this panel — i.e. when activeLayoutId is still null (nothing chosen
+    // yet this session) AND the persisted layout belongs to the panel we
+    // just restored/selected (uiState.lastPanelId === activePanelId).
+    // Once the user has explicitly switched panels/layouts within this
+    // session, setActivePanel's own reset to null takes over and this falls
+    // straight through to the first-layout default, never re-restoring a
+    // stale cross-panel selection.
+    const canRestoreLayout =
+      activeLayoutId === null && uiState !== null && uiState.lastPanelId === activePanelId
+    const restoredLayout = canRestoreLayout
+      ? layouts.find((l) => l.id === uiState.lastLayoutId)
+      : undefined
+    setActiveLayout(restoredLayout ? restoredLayout.id : (layouts[0]?.id ?? null))
+  }, [activePanelId, activeLayoutId, layouts, uiState])
 
   // Local optimistic split-tree state, seeded from (and re-synced to) the
   // loaded layout. Mutations update this immediately; the persisted copy
@@ -112,9 +132,13 @@ export function PanesView(): React.JSX.Element {
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null)
   const [transientMessage, setTransientMessage] = useState<string | null>(null)
-  const [optionsOpen, setOptionsOpen] = useState(false)
+  // The ⋯ layout-options button ref is still needed to compute the anchor
+  // rect for the chip-dropdown overlay below; the button itself no longer
+  // owns any open/anchor state — the dropdown lives in a separate
+  // child-window overlay layer (see openOptionsMenu), not an inline
+  // <Overlay> DOM popover, because a DOM popover can never render above the
+  // native libghostty NSView (docs/learnings/overlay-child-window-macos.md).
   const optionsButtonRef = useRef<HTMLButtonElement>(null)
-  const [optionsAnchor, setOptionsAnchor] = useState<{ top: number; right: number } | null>(null)
 
   const transientTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const showTransientMessage = useCallback((message: string) => {
@@ -225,30 +249,57 @@ export function PanesView(): React.JSX.Element {
     if (firstPaneId) void handleSplit(firstPaneId, 'v')
   }, [localTree, focusedPaneId, terminals, handleAddFirstPane, handleSplit])
 
-  const toggleOptions = useCallback(() => {
-    if (!optionsOpen && optionsButtonRef.current) {
-      const rect = optionsButtonRef.current.getBoundingClientRect()
-      setOptionsAnchor({ top: rect.bottom + 6, right: window.innerWidth - rect.right })
-    }
-    setOptionsOpen((prev) => !prev)
-  }, [optionsOpen])
-
   // Restart/Stop LAYOUT (bulk, all panes at once) — distinct from U7's
   // per-pane ✎ edit-relaunch and ◼/▶ stop/start (both real as of U7). A
   // layout-wide restart/stop needs the background-running + explicit-stop
   // process model U8 introduces; stubbed here as a transient-message no-op
   // so the affordance + menu shape are already in place for U8 to wire up.
+  // (Bug #6 fix only changes HOW this menu is presented, not what the
+  // stub handlers do.)
   const handleRestartLayout = useCallback(() => {
-    setOptionsOpen(false)
     showTransientMessage('restarted layout') // stub — real restart lands in U8
   }, [showTransientMessage])
   const handleStopLayout = useCallback(() => {
-    setOptionsOpen(false)
     showTransientMessage('stopped layout') // stub — real stop lands in U8
   }, [showTransientMessage])
   const handlePopOut = useCallback(() => {
     showTransientMessage('own-window mode — a later phase')
   }, [showTransientMessage])
+
+  // The unique overlay id for this menu — stable across renders so repeated
+  // opens/closes target the same child-window overlay slot (mirrors
+  // DropdownChip's `chipDropdownId(...)` usage).
+  const optionsMenuId = chipDropdownId('panes-layout-options')
+
+  // Bug #6: the ⋯ menu used to render as an inline <Overlay portal fixed
+  // z-20> DOM popover, which can NEVER paint above the native libghostty
+  // NSView terminal (see docs/learnings/overlay-child-window-macos.md — the
+  // terminal's NSView is attached above the ONE shared web compositor layer,
+  // so no DOM z-index trick can beat it). Reusing the same child-window
+  // overlay used for hover cards / footer dropdowns (showChipDropdown) fixes
+  // this: it renders in a separate BrowserWindow that genuinely composites
+  // above the terminal. showChipDropdown never rejects (resolves null on
+  // cancel/outside-click/Escape), so this is a plain async handler with no
+  // floating promise to `void`.
+  const openOptionsMenu = useCallback(async (): Promise<void> => {
+    if (!optionsButtonRef.current) return
+    const rect = optionsButtonRef.current.getBoundingClientRect()
+    const result = await showChipDropdown(
+      optionsMenuId,
+      { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+      {
+        items: [
+          { value: 'restart', label: '↻ Restart layout' },
+          { value: 'stop', label: '◼ Stop layout' }
+        ]
+      }
+    )
+    if (result?.value === 'restart') {
+      handleRestartLayout()
+    } else if (result?.value === 'stop') {
+      handleStopLayout()
+    }
+  }, [optionsMenuId, handleRestartLayout, handleStopLayout])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface-base">
@@ -258,14 +309,9 @@ export function PanesView(): React.JSX.Element {
         layoutDir={activeLayout?.dir ?? null}
         panelPaneTotal={panelPaneTotal}
         hasActiveLayout={activeLayout !== null}
-        optionsOpen={optionsOpen}
-        optionsAnchor={optionsAnchor}
         optionsButtonRef={optionsButtonRef}
         onAddPane={handleAddPaneFromHeader}
-        onToggleOptions={toggleOptions}
-        onDismissOptions={() => setOptionsOpen(false)}
-        onRestartLayout={handleRestartLayout}
-        onStopLayout={handleStopLayout}
+        onOpenOptions={() => void openOptionsMenu()}
         onPopOut={handlePopOut}
         transientMessage={transientMessage}
       />
@@ -286,7 +332,6 @@ export function PanesView(): React.JSX.Element {
             tree={localTree}
             layoutId={activeLayout.id}
             active
-            path={[]}
             getCommand={getCommand}
             focusedPaneId={focusedPaneId}
             onFocus={setFocusedPaneId}
@@ -339,14 +384,9 @@ interface PanesHeaderProps {
   layoutDir: string | null
   panelPaneTotal: number
   hasActiveLayout: boolean
-  optionsOpen: boolean
-  optionsAnchor: { top: number; right: number } | null
   optionsButtonRef: React.RefObject<HTMLButtonElement | null>
   onAddPane: () => void
-  onToggleOptions: () => void
-  onDismissOptions: () => void
-  onRestartLayout: () => void
-  onStopLayout: () => void
+  onOpenOptions: () => void
   onPopOut: () => void
   transientMessage: string | null
 }
@@ -360,14 +400,9 @@ function PanesHeader({
   layoutDir,
   panelPaneTotal,
   hasActiveLayout,
-  optionsOpen,
-  optionsAnchor,
   optionsButtonRef,
   onAddPane,
-  onToggleOptions,
-  onDismissOptions,
-  onRestartLayout,
-  onStopLayout,
+  onOpenOptions,
   onPopOut,
   transientMessage
 }: PanesHeaderProps): React.JSX.Element {
@@ -399,42 +434,15 @@ function PanesHeader({
       ) : null}
 
       {hasActiveLayout ? (
-        <div className="relative">
-          <button
-            ref={optionsButtonRef}
-            type="button"
-            title="layout options"
-            onClick={onToggleOptions}
-            className="flex h-6 w-[26px] items-center justify-center rounded-md border border-transparent bg-transparent text-[14px] leading-none text-text-muted hover:bg-surface-overlay hover:text-text-primary cursor-pointer"
-          >
-            ⋯
-          </button>
-          <Overlay
-            open={optionsOpen}
-            interactive
-            portal
-            onDismiss={onDismissOptions}
-            className="fixed z-20 min-w-[158px] rounded-lg border border-border-default bg-surface-overlay p-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
-            style={
-              optionsAnchor ? { top: optionsAnchor.top, right: optionsAnchor.right } : undefined
-            }
-          >
-            <button
-              type="button"
-              onClick={onRestartLayout}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-raised hover:text-text-primary cursor-pointer"
-            >
-              ↻ Restart layout
-            </button>
-            <button
-              type="button"
-              onClick={onStopLayout}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-[#e07a7a] hover:bg-[rgba(224,122,122,0.12)] cursor-pointer"
-            >
-              ◼ Stop layout
-            </button>
-          </Overlay>
-        </div>
+        <button
+          ref={optionsButtonRef}
+          type="button"
+          title="layout options"
+          onClick={onOpenOptions}
+          className="flex h-6 w-[26px] items-center justify-center rounded-md border border-transparent bg-transparent text-[14px] leading-none text-text-muted hover:bg-surface-overlay hover:text-text-primary cursor-pointer"
+        >
+          ⋯
+        </button>
       ) : null}
 
       <div className="flex items-center gap-2">
