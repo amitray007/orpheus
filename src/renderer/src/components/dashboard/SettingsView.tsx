@@ -24,7 +24,8 @@ import {
   Stack,
   FirstAidKit,
   Coffee,
-  SquaresFour
+  SquaresFour,
+  Compass
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -82,6 +83,11 @@ const OrpheusTerminalSection = lazy(() =>
 const OrpheusWorkbenchSection = lazy(() =>
   import('./settings/OrpheusWorkbenchSection').then((m) => ({
     default: m.OrpheusWorkbenchSection
+  }))
+)
+const OrpheusNavigationSection = lazy(() =>
+  import('./settings/OrpheusNavigationSection').then((m) => ({
+    default: m.OrpheusNavigationSection
   }))
 )
 const OrpheusWindowSection = lazy(() =>
@@ -154,6 +160,7 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-workbench'
   | 'orpheus-window'
@@ -198,6 +205,12 @@ const GROUPS: SectionGroup[] = [
         label: 'Sidebar',
         icon: SidebarSimple,
         Component: OrpheusSidebarSection
+      },
+      {
+        id: 'orpheus-navigation',
+        label: 'Navigation',
+        icon: Compass,
+        Component: OrpheusNavigationSection
       },
       {
         id: 'orpheus-terminal',

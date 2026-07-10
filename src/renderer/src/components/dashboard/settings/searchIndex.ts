@@ -12,6 +12,7 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
@@ -1361,6 +1362,29 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Pixel width when the sidebar is expanded.',
     mapsTo: [],
     keywords: ['sidebar width', 'panel width', 'sidebar size', 'width px']
+  },
+
+  // ---------------------------------------------------------------------------
+  // Orpheus › Navigation
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-navigation',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Navigation',
+    settingId: 'open-at-launch',
+    label: 'Open at launch',
+    description: 'Choose which surface opens when you launch Orpheus.',
+    mapsTo: [],
+    keywords: [
+      'open at launch',
+      'default view',
+      'startup',
+      'landing',
+      'dashboard',
+      'projects',
+      'panes',
+      'nav'
+    ]
   },
 
   // ---------------------------------------------------------------------------

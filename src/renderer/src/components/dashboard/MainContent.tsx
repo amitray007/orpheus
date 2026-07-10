@@ -1,7 +1,9 @@
 import { lazy, Suspense, useState } from 'react'
+import { House } from '@phosphor-icons/react'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
+import { PanesView } from '../panes/PanesView'
 import { Eyebrow } from './settings/primitives'
 import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
@@ -40,6 +42,20 @@ function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
   )
 }
 
+// Placeholder only — intentionally minimal. The repo's CLAUDE.md forbids
+// reintroducing the OLD dashboard/home page; this "dashboard" surface is a
+// NEW concept whose real content is a separate future design pass. Do not
+// build real dashboard content here.
+function DashboardPlaceholder(): React.JSX.Element {
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+      <House size={32} weight="regular" className="text-text-muted" />
+      <p className="text-sm font-medium text-text-primary">Dashboard</p>
+      <p className="text-xs text-text-muted">Your overview lands here soon.</p>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // View union type
 // ---------------------------------------------------------------------------
@@ -49,6 +65,8 @@ export type View =
   | { kind: 'sessions' }
   | { kind: 'workspace'; workspaceId: string; projectId: string }
   | { kind: 'settings'; section?: SettingsSectionId }
+  | { kind: 'panes' }
+  | { kind: 'dashboard' }
 
 // ---------------------------------------------------------------------------
 // MainContent
@@ -143,6 +161,15 @@ export function MainContent({
         <SettingsView section={view.section} />
       </Suspense>
     )
+  }
+
+  // Placed early since Panes will own native surfaces.
+  if (view.kind === 'panes') {
+    return <PanesView />
+  }
+
+  if (view.kind === 'dashboard') {
+    return <DashboardPlaceholder />
   }
 
   if (view.kind === 'sessions') {

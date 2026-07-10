@@ -8,6 +8,7 @@
 
 import type { View } from './MainContent'
 import type { SidebarActiveView } from './Sidebar'
+import type { AppUiState } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // View helpers
@@ -18,6 +19,8 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
   if (view.kind === 'workspace') return 'workspace'
   if (view.kind === 'project') return 'project'
   if (view.kind === 'settings') return 'settings'
+  if (view.kind === 'panes') return 'panes'
+  if (view.kind === 'dashboard') return 'dashboard'
   return 'sessions'
 }
 
@@ -30,11 +33,54 @@ export function viewToSidebarActiveView(view: View): SidebarActiveView {
  */
 export function mainContainerClassName(viewKind: View['kind']): string {
   if (viewKind === 'workspace') return 'flex-1 overflow-hidden min-h-0'
+  // Panes will host native terminal surfaces later — flush/no-padding like workspace.
+  if (viewKind === 'panes') return 'flex-1 overflow-hidden min-h-0'
   if (viewKind === 'settings') return 'flex-1 overflow-hidden min-h-0 bg-surface-base'
   if (viewKind === 'sessions')
     // Workspaces kanban: tight padding so the board sits close to the app edges
     return 'flex-1 overflow-y-auto px-3 py-3 bg-surface-base'
+  if (viewKind === 'dashboard') return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
   return 'flex-1 overflow-y-auto px-6 py-5 bg-surface-base'
+}
+
+// ---------------------------------------------------------------------------
+// Activity rail / surface helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Map the current view to the top-level surface the ActivityRail highlights.
+ * Returns null while in Settings — the rail has no active icon in that case
+ * (Settings is a bottom button, not one of the three top surfaces).
+ */
+export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' | 'panes' | null {
+  if (viewKind === 'panes') return 'panes'
+  if (viewKind === 'dashboard') return 'dashboard'
+  if (viewKind === 'project' || viewKind === 'workspace' || viewKind === 'sessions')
+    return 'projects'
+  return null
+}
+
+/**
+ * Resolve which View to land on when restoring uiState at launch, given
+ * openAtLastView is true and no concrete workspace/project was last viewed
+ * (those cases are handled by the caller before falling through to this).
+ *
+ * Honors a concrete lastViewKind (sessions/dashboard/panes) directly; falls
+ * back to defaultSurface when lastViewKind doesn't map to a top-level view
+ * (e.g. it was never set, or persisted as 'settings'-adjacent 'sessions').
+ */
+export function resolveLandingView(
+  uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface'>
+): View {
+  if (uiState.lastViewKind === 'sessions' || (uiState.lastViewKind as string) === 'dashboard') {
+    return { kind: 'sessions' }
+  }
+  if (uiState.lastViewKind === 'panes') {
+    return { kind: 'panes' }
+  }
+  if (uiState.defaultSurface === 'dashboard') return { kind: 'dashboard' }
+  if (uiState.defaultSurface === 'panes') return { kind: 'panes' }
+  return { kind: 'sessions' }
 }
 
 // ---------------------------------------------------------------------------
