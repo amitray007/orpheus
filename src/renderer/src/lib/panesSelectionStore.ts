@@ -20,6 +20,14 @@
  *
  * API:
  *   usePanesSelection()          — hook: subscribe to { activePanelId, activeLayoutId }
+ *   getPanesSelection()          — non-hook getter: reads the CURRENT selection
+ *                                  synchronously, outside React's render cycle. Needed
+ *                                  by async mutation handlers (e.g. PanelsSection's
+ *                                  handleDeleteLayout) where a value captured from a
+ *                                  hook at render time can go stale inside an awaited
+ *                                  closure — read the live value at the moment it's
+ *                                  actually needed instead of trusting the render-time
+ *                                  snapshot.
  *   setActivePanel(panelId)      — sets activePanelId; also clears activeLayoutId to
  *                                  null so a stale cross-panel layout id never leaks
  *                                  (persists both lastPanelId and lastLayoutId: null)
@@ -50,6 +58,16 @@ function subscribe(fn: () => void): () => void {
   return () => {
     listeners.delete(fn)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Public read API (non-hook)
+// ---------------------------------------------------------------------------
+
+/** Reads the current selection synchronously, outside React. See the header
+ *  comment above for why this exists alongside the hook. */
+export function getPanesSelection(): PanesSelection {
+  return state
 }
 
 // ---------------------------------------------------------------------------

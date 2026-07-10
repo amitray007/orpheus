@@ -104,14 +104,19 @@ export function PanesView(): React.JSX.Element {
   useEffect(() => {
     if (activePanelId === null) return
     if (activeLayoutId !== null && layouts.some((l) => l.id === activeLayoutId)) return
-    // Only prefer the persisted lastLayoutId on the very first restore for
-    // this panel — i.e. when activeLayoutId is still null (nothing chosen
-    // yet this session) AND the persisted layout belongs to the panel we
-    // just restored/selected (uiState.lastPanelId === activePanelId).
-    // Once the user has explicitly switched panels/layouts within this
-    // session, setActivePanel's own reset to null takes over and this falls
-    // straight through to the first-layout default, never re-restoring a
-    // stale cross-panel selection.
+    // Reaching here means either nothing is selected yet (activeLayoutId
+    // === null — the genuine first-restore case the lastLayoutId logic
+    // below handles), OR activeLayoutId IS set but just vanished from
+    // `layouts` — it was deleted (e.g. via the sidebar's delete flow) or no
+    // longer belongs to this panel. The deleted-layout case must NEVER fall
+    // into the lastLayoutId-restore branch below: canRestoreLayout is
+    // gated on activeLayoutId === null, so a stale non-null activeLayoutId
+    // always skips straight to the `layouts[0]?.id ?? null` fallback below
+    // — explicitly re-seeding to a sibling layout, or to no-selection if
+    // none remain, so a deleted layout can never linger as the active
+    // selection (PanelsSection's handleDeleteLayout already does this
+    // proactively too; this is the backstop for any other path that leaves
+    // a dangling id).
     const canRestoreLayout =
       activeLayoutId === null && uiState !== null && uiState.lastPanelId === activePanelId
     const restoredLayout = canRestoreLayout

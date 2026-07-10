@@ -19,10 +19,22 @@
 // moved to PanesView, which reads panesSelectionStore and seeds it with the
 // first panel/layout on first load when nothing is selected yet (preserving
 // the old single-panel dev-environment default behavior).
+//
+// Cross-fetcher invalidation: PanelsSection.tsx (the sidebar tree) fetches
+// panels/layouts independently of this hook by design (see PanelsSection's
+// header comment) — but that means a sidebar mutation (delete/rename layout
+// or panel) never updates the `layouts`/`panels` state below on its own.
+// panesRefreshStore.ts's `usePanesRefresh()` is the fix: PanelsSection bumps
+// it after every mutation, and this hook folds the resulting counter into
+// each load effect's deps (alongside the existing `reloadToken`, which
+// remains this hook's own manual refetch() trigger) so a sidebar-driven
+// mutation forces a real refetch here too — closing the stale-list gap that
+// let a deleted layout get re-selected by PanesView's seeding effect.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useState } from 'react'
 import type { PanePanel, PaneLayout, PaneTerminal, SplitTree } from '@shared/types'
+import { usePanesRefresh } from '@/lib/panesRefreshStore'
 
 interface UsePanesDataResult {
   /** All panels (e.g. 'General' + any project panels), position-ordered. */
@@ -71,6 +83,10 @@ export function usePanesData(
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
+  // External invalidation signal from panesRefreshStore.ts — bumped by
+  // PanelsSection.tsx after sidebar mutations. See the file-header comment
+  // above for why this hook needs it alongside its own reloadToken.
+  const refreshCounter = usePanesRefresh()
 
   const refetch = useCallback(() => setReloadToken((t) => t + 1), [])
 
@@ -97,7 +113,7 @@ export function usePanesData(
     return () => {
       cancelled = true
     }
-  }, [reloadToken])
+  }, [reloadToken, refreshCounter])
 
   // Load the active panel's layouts whenever it changes.
   useEffect(() => {
@@ -121,7 +137,7 @@ export function usePanesData(
     return () => {
       cancelled = true
     }
-  }, [activePanelId, reloadToken])
+  }, [activePanelId, reloadToken, refreshCounter])
 
   // Load the active layout's terminals whenever it changes.
   useEffect(() => {
@@ -145,7 +161,7 @@ export function usePanesData(
     return () => {
       cancelled = true
     }
-  }, [activeLayoutId, reloadToken])
+  }, [activeLayoutId, reloadToken, refreshCounter])
 
   const createTerminal = useCallback(
     async (args: { command: string; position: number }): Promise<PaneTerminal | null> => {

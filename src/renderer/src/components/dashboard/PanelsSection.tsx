@@ -22,6 +22,13 @@
 // active layout's terminals), so a second, independent fetch here is
 // expected duplication, not a bug.
 //
+// Because the two fetchers are independent, a mutation made here (delete/
+// rename/create) does NOT automatically update usePanesData's state — every
+// mutation handler below therefore calls bumpPanesRefresh()
+// (panesRefreshStore.ts) right after its own local refetch, so PanesView's
+// data hook also refetches and never serves stale data (e.g. re-selecting a
+// layout this sidebar just deleted).
+//
 // Selection (which panel/layout is "active") is read from and written to
 // panesSelectionStore.ts (src/renderer/src/lib/panesSelectionStore.ts) —
 // clicking a panel row calls setActivePanel, clicking a layout row calls
@@ -41,7 +48,13 @@ import { useSidebarBounds } from './SidebarBoundsContext'
 import { useInlineRename } from '@/lib/useInlineRename'
 import { RenameInput } from './settings/primitives'
 import { showConfirmModalReact } from '@/lib/overlayClient'
-import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
+import {
+  usePanesSelection,
+  getPanesSelection,
+  setActivePanel,
+  setActiveLayout
+} from '@/lib/panesSelectionStore'
+import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
 
 const ADD_LAYOUT_LABEL = 'Add Layout'
 
@@ -548,6 +561,7 @@ export function PanelsSection(): React.JSX.Element {
       setActivePanel(newPanelId)
       setExpandedPanelIds((prev) => new Set(prev).add(newPanelId))
       persistExpanded(newPanelId, true)
+      bumpPanesRefresh()
     })
   }
 
@@ -563,13 +577,34 @@ export function PanelsSection(): React.JSX.Element {
       setActiveLayout(newLayoutId)
       setExpandedPanelIds((prev) => new Set(prev).add(panel.id))
       persistExpanded(panel.id, true)
+      bumpPanesRefresh()
     })
   }
 
-  // Issue #4 — delete a layout, confirm first (destructive, FK CASCADE takes
-  // its terminals with it). If the deleted layout was the active one, clear
-  // the selection so PanesView's seeding effect can pick a replacement (or
-  // show its empty state) rather than pointing at a now-missing id.
+  // Issue #4 (+ bug fix: deleting the active layout used to leave the main
+  // Panes view stuck showing the just-deleted layout) — delete a layout,
+  // confirm first (destructive, FK CASCADE takes its terminals with it).
+  //
+  // Two things make this robust against the bug this handler used to have:
+  //
+  // 1. Reads the CURRENT selection via getPanesSelection() rather than the
+  //    `activeLayoutId` destructured from usePanesSelection() at render
+  //    time. That render-time value is captured by this closure and can go
+  //    stale by the time the `await confirmDeleteLayout` below resolves
+  //    (the user could switch layouts while the confirm dialog is up) — so
+  //    checking the LIVE selection at the moment of deletion is the only
+  //    way to reliably know whether the just-deleted layout was active.
+  // 2. Re-lists the panel's layouts directly from the source of truth
+  //    (window.api.panes.listLayouts) rather than trusting the
+  //    in-memory layoutsByPanel list, which could itself be stale. If the
+  //    deleted layout was active, prefer selecting a SIBLING layout that
+  //    still exists in this panel (nicer UX than dropping to the empty
+  //    state) — else fall back to null.
+  //
+  // bumpPanesRefresh() at the end is the other half of the fix: it forces
+  // usePanesData (PanesView's data hook) to refetch too, so its `layouts`
+  // list also drops the deleted row and PanesView's seeding effect never
+  // sees a stale list that still contains it.
   function handleDeleteLayout(panel: PanePanel, layout: PaneLayout): void {
     void (async () => {
       const confirmed = await confirmDeleteLayout(layout)
@@ -577,7 +612,13 @@ export function PanelsSection(): React.JSX.Element {
       try {
         await window.api.panes.deleteLayout(layout.id)
         loadLayouts(panel.id)
-        if (activeLayoutId === layout.id) setActiveLayout(null)
+        const wasActive = getPanesSelection().activeLayoutId === layout.id
+        if (wasActive) {
+          const remaining = await window.api.panes.listLayouts(panel.id)
+          const sibling = remaining.find((l) => l.id !== layout.id)
+          setActiveLayout(sibling ? sibling.id : null)
+        }
+        bumpPanesRefresh()
       } catch (err) {
         console.error('[PanelsSection] deleteLayout failed', err, layout.id)
       }
@@ -601,6 +642,7 @@ export function PanelsSection(): React.JSX.Element {
           return next
         })
         if (activePanelId === panel.id) setActivePanel(null)
+        bumpPanesRefresh()
       } catch (err) {
         console.error('[PanelsSection] deletePanel failed', err, panel.id)
       }
@@ -610,7 +652,10 @@ export function PanelsSection(): React.JSX.Element {
   function handleRenameLayout(panel: PanePanel, layout: PaneLayout, newName: string): void {
     window.api.panes
       .updateLayout(layout.id, { name: newName })
-      .then(() => loadLayouts(panel.id))
+      .then(() => {
+        loadLayouts(panel.id)
+        bumpPanesRefresh()
+      })
       .catch((err) => console.error('[PanelsSection] updateLayout (rename) failed', err, layout.id))
     setRenamingLayoutId(null)
   }
@@ -618,7 +663,10 @@ export function PanelsSection(): React.JSX.Element {
   function handleRenamePanel(panel: PanePanel, newName: string): void {
     window.api.panes
       .updatePanel(panel.id, { name: newName })
-      .then(() => loadPanels())
+      .then(() => {
+        loadPanels()
+        bumpPanesRefresh()
+      })
       .catch((err) => console.error('[PanelsSection] updatePanel (rename) failed', err, panel.id))
     setRenamingPanelId(null)
   }
