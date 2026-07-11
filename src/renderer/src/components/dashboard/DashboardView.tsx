@@ -12,13 +12,15 @@
 // session records; only Tokens stays a placeholder (no cross-session token
 // rollup exists yet — see StatTile below, Phase 3).
 //
-// U4 (this unit, the LAST Phase-1 unit) wires the real Live-agents table +
-// the "Agents waiting"/"Finished runs" triage tiles to `useLiveAgents`
-// (workspaces + sessions + activity snapshot join — see that hook's header
-// comment). The middle two triage tiles (Open PRs / Open issues) stay
-// sample/placeholder — they need account-wide `gh` calls that don't exist
-// yet (Phase 2, U5). PrTable/IssuesTable below are UNCHANGED sample tables
-// for the same reason. See docs/plans/2026-07-11-003-dashboard-design.md.
+// U4 wired the real Live-agents table + the "Agents waiting"/"Finished runs"
+// triage tiles to `useLiveAgents` (workspaces + sessions + activity snapshot
+// join — see that hook's header comment).
+//
+// U5 (Phase 2, this unit) wires the middle two triage tiles (Open PRs / Open
+// issues) plus PrTable/IssuesTable to REAL account-wide GitHub data via
+// `useGithubData` (`gh search prs --author @me` / `gh search issues
+// --assignee @me`, new IPC in src/main/github.ts). See
+// docs/plans/2026-07-11-003-dashboard-design.md.
 // ---------------------------------------------------------------------------
 
 import { useState } from 'react'
@@ -35,6 +37,7 @@ import { PrTable } from './dashboard-home/PrTable'
 import { IssuesTable } from './dashboard-home/IssuesTable'
 import { usePulseData } from './dashboard-home/usePulseData'
 import { useLiveAgents } from './dashboard-home/useLiveAgents'
+import { useGithubData } from './dashboard-home/useGithubData'
 import { formatHour12 } from './dashboard-home/pulseData.helpers'
 
 export function DashboardView({
@@ -49,6 +52,7 @@ export function DashboardView({
   const [range, setRange] = useState<DashboardRange>('all')
   const pulse = usePulseData(range)
   const liveAgents = useLiveAgents()
+  const github = useGithubData()
 
   const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
   const activeDaysMeta =
@@ -107,20 +111,19 @@ export function DashboardView({
             actionLabel="jump"
             hot={liveAgents.waitingCount > 0}
           />
-          {/* Open PRs — Phase 2 (needs an account-wide `gh search prs` call
-              that doesn't exist yet, U5). Sample data, clearly commented; do
-              not wire until U5. */}
+          {/* REAL — account-wide open PR count (incl. drafts) + draft
+              sublabel from useGithubData (`gh search prs --author @me`, U5). */}
           <TriageTile
-            count={6}
+            count={github.openPrCount}
             dotClassName="bg-[color:var(--color-chart-3)]"
             label="open PRs"
-            sublabel="· 1 draft"
+            sublabel={github.draftPrCount > 0 ? `· ${github.draftPrCount} draft` : undefined}
             actionLabel="open"
           />
-          {/* Open issues — Phase 2 (whole `gh search issues` module is new,
-              U5). Sample data, clearly commented; do not wire until U5. */}
+          {/* REAL — account-wide assigned open-issue count from
+              useGithubData (`gh search issues --assignee @me`, U5). */}
           <TriageTile
-            count={4}
+            count={github.openIssueCount}
             dotClassName="bg-[color:var(--color-chart-2)]"
             label="open issues"
             actionLabel="view"

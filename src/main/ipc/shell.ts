@@ -7,6 +7,7 @@
 // passed in via deps.getAppUiState to avoid importing index.ts.
 // ---------------------------------------------------------------------------
 
+import { shell } from 'electron'
 import {
   revealInFinder,
   openInEditor,
@@ -17,7 +18,7 @@ import {
 } from '../shellHelpers'
 import type { AppUiState } from '../../shared/types'
 import { handle } from './handle'
-import { assertAbsolutePath } from './validate'
+import { assertAbsolutePath, isSafeExternalUrl } from './validate'
 
 export interface ShellIpcDeps {
   getAppUiState: () => AppUiState
@@ -41,4 +42,14 @@ export function registerShellIpc(deps: ShellIpcDeps): void {
   handle('shell:copyToClipboard', (_e, { text }: { text: string }) => copyToClipboard(text))
   handle('shell:listEditorApps', () => listEditorApps())
   handle('shell:listTerminalApps', () => listTerminalApps())
+
+  // Dashboard Phase 2 (U5) — PR/issue row-click opens the GitHub url in the
+  // OS default browser. Guarded by the SAME isSafeExternalUrl allowlist
+  // index.ts's setWindowOpenHandler already uses (see validate.ts) — a
+  // non-http(s) url is silently ignored rather than thrown, matching this
+  // module's other handlers' quiet-degrade convention for a bad/stale input.
+  handle('shell:openExternal', async (_e, { url }: { url: string }) => {
+    if (!isSafeExternalUrl(url)) return
+    await shell.openExternal(url)
+  })
 }

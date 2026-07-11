@@ -31,7 +31,9 @@ import {
   getPrReviewComments,
   postReviewComment,
   replyToReviewComment,
-  postGeneralComment
+  postGeneralComment,
+  getMyOpenPrs,
+  getMyIssues
 } from '../github'
 import { handle } from './handle'
 
@@ -176,4 +178,10 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   handle('github:postGeneralComment', (_e, { workspaceId, body }) =>
     postGeneralComment({ cwd: getWorkspaceCwd(workspaceId), body })
   )
+
+  // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd
+  // resolution needed (unlike every handler above). See github.ts::
+  // getMyOpenPrs/getMyIssues.
+  handle('github:myOpenPrs', () => getMyOpenPrs())
+  handle('github:myIssues', () => getMyIssues())
 }

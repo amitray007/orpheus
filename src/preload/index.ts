@@ -40,6 +40,8 @@ import type {
   GhReviewCommentThread,
   GhReviewComment,
   GhReviewCommentSide,
+  GhSearchPr,
+  GhSearchIssue,
   LocalReviewComment,
   PanePanel,
   PanePanelKind,
@@ -550,7 +552,12 @@ const api = {
       workspaceId: string,
       body: string
     ): Promise<{ ok: true } | { ok: false; error: string }> =>
-      invoke('github:postGeneralComment', { workspaceId, body })
+      invoke('github:postGeneralComment', { workspaceId, body }),
+    // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd arg
+    // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
+    // getMyIssues; total (never rejects), resolves to [] on any gh failure.
+    myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
+    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues')
   },
   // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
   // store. See src/main/reviewStore.ts's own header for the full rationale
@@ -657,7 +664,11 @@ const api = {
     openTerminal: (path: string): Promise<void> => invoke('shell:openTerminal', { path }),
     copyToClipboard: (text: string): Promise<void> => invoke('shell:copyToClipboard', { text }),
     listEditorApps: (): Promise<DetectedApp[]> => invoke('shell:listEditorApps'),
-    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps')
+    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps'),
+    // Dashboard Phase 2 (U5) — PR/issue row-click opens the url in the OS
+    // default browser. See src/main/ipc/shell.ts's handler for the
+    // isSafeExternalUrl guard applied main-side.
+    openExternal: (url: string): Promise<void> => invoke('shell:openExternal', { url })
   },
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> => invoke('mcp:listServers'),

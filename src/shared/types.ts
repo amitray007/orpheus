@@ -789,6 +789,40 @@ export type GhPullRequest = {
 }
 
 // ---------------------------------------------------------------------------
+// Account-wide GitHub search (Dashboard Phase 2, U5) — `gh search prs`/
+// `gh search issues` results, distinct from GhPullRequest above (which is
+// scoped to ONE cwd's current branch via `gh pr list --head <branch>`).
+// `gh search prs --json` does NOT expose `statusCheckRollup` (confirmed live
+// via `gh search prs --help`'s available-fields list — only
+// assignees/author/authorAssociation/body/closedAt/commentsCount/createdAt/
+// id/isDraft/isLocked/isPullRequest/labels/number/repository/state/title/
+// updatedAt/url), so `checks` here is resolved via a SEPARATE lazy
+// `gh pr view <n> --repo <repo> --json statusCheckRollup` fetch per PR (see
+// getMyOpenPrs in github.ts) — cheap in practice (real PR counts are small)
+// and total: any per-PR failure degrades that one row's checks to null
+// rather than failing the whole list.
+// ---------------------------------------------------------------------------
+
+export type GhSearchPr = {
+  number: number
+  title: string
+  url: string
+  repo: string // "owner/name", from repository.nameWithOwner
+  state: GhPullRequestState
+  checks: 'success' | 'failure' | 'pending' | null
+  updatedAt: string // ISO
+}
+
+export type GhSearchIssue = {
+  number: number
+  title: string
+  url: string
+  repo: string // "owner/name"
+  labels: GhLabel[]
+  updatedAt: string // ISO
+}
+
+// ---------------------------------------------------------------------------
 // GitHub PR detail (Workbench Git tab, Phase 3b) — richer `gh pr view` fetch
 // feeding the Details/Commits/Checks tabs (3c/3d/3e) and the general-comments
 // half of Phase 4. See docs/learnings/gh-pr-detail.md for the researched

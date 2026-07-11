@@ -94,6 +94,8 @@ import type {
   GhReviewCommentThread,
   GhReviewComment,
   GhReviewCommentSide,
+  GhSearchPr,
+  GhSearchIssue,
   LocalReviewComment,
   PanePanel,
   PanePanelKind,
@@ -356,6 +358,13 @@ export interface InvokeChannelMap {
     req: [{ workspaceId: string; body: string }]
     res: { ok: true } | { ok: false; error: string }
   }
+  // Dashboard Phase 2 (U5) — account-wide GitHub search, no cwd/workspace
+  // scoping (unlike every github:* channel above). See src/main/github.ts::
+  // getMyOpenPrs/getMyIssues for the full field-shape research + cache
+  // contract. Total (never rejects) — both resolve to [] on any gh failure
+  // mode; the Dashboard tables render their empty state in that case.
+  'github:myOpenPrs': { req: []; res: GhSearchPr[] }
+  'github:myIssues': { req: []; res: GhSearchIssue[] }
   // Workbench Git tab — Phase 4d. The LOCAL (Orpheus-owned) review-comment
   // store — see src/main/reviewStore.ts's own header for the full Epic G2
   // rationale (the 3-source comment model, the agent-readable DB/commandServer
@@ -677,6 +686,13 @@ export interface InvokeChannelMap {
   'shell:copyToClipboard': { req: [{ text: string }]; res: void }
   'shell:listEditorApps': { req: []; res: DetectedApp[] }
   'shell:listTerminalApps': { req: []; res: DetectedApp[] }
+  // Dashboard Phase 2 (U5) — row-click on a PR/issue opens its GitHub url in
+  // the OS default browser. Guarded main-side by the SAME isSafeExternalUrl
+  // allowlist src/main/index.ts already uses for window.open's
+  // setWindowOpenHandler (src/main/ipc/validate.ts) — never opens an
+  // arbitrary/unsafe scheme even though the urls here always originate from
+  // gh's own response, not user input.
+  'shell:openExternal': { req: [{ url: string }]; res: void }
   // … migrated domain-by-domain in follow-up commits.
 }
 

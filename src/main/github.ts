@@ -16,8 +16,11 @@ import type {
   GhMilestone,
   GhReviewComment,
   GhReviewCommentThread,
-  GhReviewCommentSide
+  GhReviewCommentSide,
+  GhSearchPr,
+  GhSearchIssue
 } from '../shared/types'
+import * as os from 'node:os'
 
 const execFile = promisify(childProcess.execFile)
 
@@ -236,6 +239,226 @@ function deriveChecks(
   if (anyFailure) return 'failure'
   if (anyPending) return 'pending'
   return 'success'
+}
+
+// ---------------------------------------------------------------------------
+// Account-wide GitHub search (Dashboard Phase 2, U5) — `gh search prs
+// --author @me` / `gh search issues --assignee @me`. Unlike every function
+// above (which resolves a PR/branch scoped to ONE cwd's git remote), search
+// is account-wide and needs no cwd/remote at all — `gh search` hits GitHub's
+// search API directly against the authed account. Callers pass os.homedir()
+// as `runGh`'s `cwd` purely because runGh's signature takes one (execFile
+// needs SOME cwd); it has no bearing on the query.
+//
+// FIELD-SHAPE FINDING (verified live against this machine's authed `gh`,
+// 2026-07-11): `gh search prs --json` rejects `statusCheckRollup` outright
+// ("Unknown JSON field") — the full accepted field list for `gh search prs`
+// is: assignees, author, authorAssociation, body, closedAt, commentsCount,
+// createdAt, id, isDraft, isLocked, isPullRequest, labels, number,
+// repository, state, title, updatedAt, url. There is NO checks/status field
+// on PR search at all. `gh search issues --json` DOES accept
+// number,title,url,repository,labels,updatedAt directly — labels arrive with
+// real name+color+description, no extra fetch needed for issues.
+//
+// So PR checks are resolved via a SEPARATE lazy per-PR
+// `gh pr view <n> --repo <owner/name> --json statusCheckRollup` call,
+// fan-out in parallel across the page's PRs (real open-PR counts are small —
+// this account had 3 at verification time), reusing deriveChecks. Any
+// per-PR checks failure degrades that one row to checks:null; it never fails
+// the whole list (same total-degradation contract as every other function
+// in this module).
+// ---------------------------------------------------------------------------
+
+const SEARCH_TIMEOUT_MS = 8000
+const SEARCH_MAX_BUFFER = 2 * 1024 * 1024
+
+// Single-key caches ('myOpenPrs' / 'myIssues') — there's exactly one "me" per
+// authed gh session, so no per-key composition is needed (unlike prCache's
+// cwd\0branch keying). 60s TTL: short enough that the Dashboard reflects a
+// just-opened PR/issue within a minute of a manual refresh, long enough that
+// re-rendering the Dashboard doesn't reshell out to `gh search` on every paint.
+const SEARCH_TTL_MS = 60 * 1000
+
+type SearchCacheEntry<T> = { value: T; fetchedAt: number }
+const myOpenPrsCache = new Map<string, SearchCacheEntry<GhSearchPr[]>>()
+const myIssuesCache = new Map<string, SearchCacheEntry<GhSearchIssue[]>>()
+let myOpenPrsInflight: Promise<GhSearchPr[]> | null = null
+let myIssuesInflight: Promise<GhSearchIssue[]> | null = null
+
+const MY_OPEN_PRS_KEY = 'myOpenPrs'
+const MY_ISSUES_KEY = 'myIssues'
+
+type RawSearchPr = {
+  number: number
+  title: string
+  url: string
+  repository?: { nameWithOwner?: string } | null
+  isDraft: boolean
+  state: string
+  updatedAt: string
+}
+
+type RawSearchIssue = {
+  number: number
+  title: string
+  url: string
+  repository?: { nameWithOwner?: string } | null
+  // Same shape as `gh pr view --json labels` (RawGhLabel, declared in the PR-
+  // detail section below) — `gh search issues --json labels` returns
+  // identical name/color/description fields, confirmed live, so this reuses
+  // that type + its parseLabels() rather than duplicating both.
+  labels?: RawGhLabel[] | null
+  updatedAt: string
+}
+
+/**
+ * Fetch checks for one search-result PR via a dedicated `gh pr view --json
+ * statusCheckRollup` call (search itself exposes no checks field — see
+ * module doc above). Total — never throws: any failure (gh error, bad JSON,
+ * PR closed between search and this call) degrades to null, matching the
+ * existing "none" 4th checks state the UI already renders for that case.
+ */
+async function fetchSearchPrChecks(repo: string, prNumber: number): Promise<GhSearchPr['checks']> {
+  try {
+    const stdout = await runGh(
+      os.homedir(),
+      ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'statusCheckRollup'],
+      { timeout: SEARCH_TIMEOUT_MS, maxBuffer: SEARCH_MAX_BUFFER }
+    )
+    const parsed = JSON.parse(stdout) as {
+      statusCheckRollup?: Array<{ conclusion?: string | null; status?: string | null }> | null
+    }
+    return deriveChecks(parsed.statusCheckRollup)
+  } catch {
+    return null
+  }
+}
+
+async function fetchMyOpenPrsFromGh(): Promise<GhSearchPr[]> {
+  try {
+    const stdout = await runGh(
+      os.homedir(),
+      [
+        'search',
+        'prs',
+        '--author',
+        '@me',
+        '--state',
+        'open',
+        '--json',
+        'number,title,url,repository,isDraft,state,updatedAt',
+        '--limit',
+        '30'
+      ],
+      { timeout: SEARCH_TIMEOUT_MS, maxBuffer: SEARCH_MAX_BUFFER }
+    )
+    const arr = JSON.parse(stdout) as RawSearchPr[]
+
+    // Fan out the per-PR checks fetch in parallel — bounded by `arr.length`
+    // (max 30 per the search --limit above), each independently total (see
+    // fetchSearchPrChecks), so one slow/failing PR never blocks the rest.
+    const checksList = await Promise.all(
+      arr.map((raw) => {
+        const repo = raw.repository?.nameWithOwner
+        return repo ? fetchSearchPrChecks(repo, raw.number) : Promise.resolve(null)
+      })
+    )
+
+    const prs: GhSearchPr[] = arr.map((raw, i) => ({
+      number: raw.number,
+      title: raw.title,
+      url: raw.url,
+      repo: raw.repository?.nameWithOwner ?? '',
+      state: deriveState(raw.state, raw.isDraft),
+      checks: checksList[i] ?? null,
+      updatedAt: raw.updatedAt
+    }))
+
+    prs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    return prs
+  } catch {
+    // gh missing / unauth / network — render nothing, same degrade contract
+    // as every other fetch in this module.
+    return []
+  }
+}
+
+/**
+ * Account-wide open PRs authored by the signed-in gh user (Dashboard "Open
+ * PRs" table + triage tile). TTL-cached + inflight-deduped like
+ * getPrForBranch, but single-key since there's one "me". Total — never
+ * throws: any failure (gh missing/unauth/network) resolves to [], and the
+ * caller renders the table's empty state.
+ */
+export async function getMyOpenPrs(): Promise<GhSearchPr[]> {
+  const now = Date.now()
+  const hit = myOpenPrsCache.get(MY_OPEN_PRS_KEY)
+  if (hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
+
+  if (myOpenPrsInflight) return myOpenPrsInflight
+
+  const promise = fetchMyOpenPrsFromGh().finally(() => {
+    myOpenPrsInflight = null
+  })
+  myOpenPrsInflight = promise
+  const value = await promise
+  putWithEviction(myOpenPrsCache, MY_OPEN_PRS_KEY, { value, fetchedAt: Date.now() }, SEARCH_TTL_MS)
+  return value
+}
+
+async function fetchMyIssuesFromGh(): Promise<GhSearchIssue[]> {
+  try {
+    const stdout = await runGh(
+      os.homedir(),
+      [
+        'search',
+        'issues',
+        '--assignee',
+        '@me',
+        '--state',
+        'open',
+        '--json',
+        'number,title,url,repository,labels,updatedAt',
+        '--limit',
+        '30'
+      ],
+      { timeout: SEARCH_TIMEOUT_MS, maxBuffer: SEARCH_MAX_BUFFER }
+    )
+    const arr = JSON.parse(stdout) as RawSearchIssue[]
+    const issues: GhSearchIssue[] = arr.map((raw) => ({
+      number: raw.number,
+      title: raw.title,
+      url: raw.url,
+      repo: raw.repository?.nameWithOwner ?? '',
+      labels: parseLabels(raw.labels),
+      updatedAt: raw.updatedAt
+    }))
+    issues.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    return issues
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Account-wide open issues assigned to the signed-in gh user (Dashboard
+ * "Issues assigned" table + triage tile). Same cache/inflight/degrade
+ * contract as getMyOpenPrs above. Total — never throws.
+ */
+export async function getMyIssues(): Promise<GhSearchIssue[]> {
+  const now = Date.now()
+  const hit = myIssuesCache.get(MY_ISSUES_KEY)
+  if (hit && now - hit.fetchedAt < SEARCH_TTL_MS) return hit.value
+
+  if (myIssuesInflight) return myIssuesInflight
+
+  const promise = fetchMyIssuesFromGh().finally(() => {
+    myIssuesInflight = null
+  })
+  myIssuesInflight = promise
+  const value = await promise
+  putWithEviction(myIssuesCache, MY_ISSUES_KEY, { value, fetchedAt: Date.now() }, SEARCH_TTL_MS)
+  return value
 }
 
 // ---------------------------------------------------------------------------
