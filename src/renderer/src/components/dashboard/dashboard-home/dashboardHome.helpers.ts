@@ -87,19 +87,37 @@ export function formatResetCountdown(
  * account) and would otherwise blow out the tightened layout's fixed-width
  * columns. Below 1000, returns the exact integer unchanged — small counts
  * are the common case and should read as plain numbers, not "0.1k". At
- * 1000+, scales to k/M and shows ONE decimal place only while the scaled
- * value is still single-digit (<10 of that unit, e.g. 1.3k/2.3k) — once
+ * 1000+, scales to k/M/B/T and shows ONE decimal place only while the scaled
+ * value is still single-digit (<10 of that unit, e.g. 1.3k/2.3k/23.2B) — once
  * it's double digits or more (>=10k, >=10M) the decimal is dropped since it
  * stops being meaningfully precise at a glance. A trailing ".0" (e.g. an
  * exact 1000 -> "1.0k") is stripped so round numbers read as "1k", not
- * "1.0k". Durations/timestamps are NOT run through this — only raw counts.
+ * "1.0k". The B/T tiers matter: token totals run to tens of billions
+ * (cache-read tokens repeat context every turn), which would otherwise
+ * render as an unreadable "23239M". Durations/timestamps are NOT run through
+ * this — only raw counts.
+ *
+ * Defensive: a non-finite input (NaN, +/-Infinity — e.g. a stat sourced
+ * from a stale cache payload that predates the field it's reading) renders
+ * as "—" rather than the literal string "NaN"/"Infinity" leaking into the
+ * UI. Every caller passes a real number in the steady state; this only
+ * guards the "cache/IPC data is momentarily a different shape" edge.
  */
 export function formatCompact(n: number): string {
+  if (!Number.isFinite(n)) return '—'
   const sign = n < 0 ? '-' : ''
   const abs = Math.abs(n)
   if (abs < 1000) return `${sign}${abs}`
 
-  const [divisor, suffix] = abs < 1_000_000 ? [1000, 'k'] : [1_000_000, 'M']
+  // Threshold ladder k -> M -> B -> T (largest matching tier wins). Anything
+  // >=1T stays on the T tier (a quadrillion-token stat isn't a real case).
+  const TIERS: ReadonlyArray<readonly [number, string]> = [
+    [1_000_000_000_000, 'T'],
+    [1_000_000_000, 'B'],
+    [1_000_000, 'M'],
+    [1000, 'k']
+  ]
+  const [divisor, suffix] = TIERS.find(([threshold]) => abs >= threshold) ?? [1000, 'k']
   const scaled = abs / divisor
   // Round to 1 decimal first, then decide whether that rounded value still
   // qualifies as "<10 of the unit" — avoids e.g. 9.96k rounding to "10.0k"

@@ -76,18 +76,29 @@ const EMPTY: Omit<PulseData, 'error'> = {
   allTimeTokens: 0
 }
 
+/** Coerces a field that SHOULD be a finite number to one, defaulting to 0.
+ *  Guards against a stale disk-cached summary written by an older build
+ *  that predates a field (e.g. tokensLast7Days/allTimeTokens didn't exist
+ *  before this pass) — `activityCached()` reads whatever JSON is currently
+ *  on disk, so a pre-upgrade payload can hand this hook `undefined` for a
+ *  newer field. Without this, `undefined` reaches formatCompact and used to
+ *  render as literal "NaN" text; better to fall back to 0 than show that. */
+function finiteOrZero(n: number | undefined): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0
+}
+
 function fromSummary(summary: ClaudeActivitySummary): Omit<PulseData, 'error'> {
   return {
     loading: false,
-    sessions: summary.sessionsLast7Days,
-    currentStreak: summary.currentStreak,
+    sessions: finiteOrZero(summary.sessionsLast7Days),
+    currentStreak: finiteOrZero(summary.currentStreak),
     peakHour: summary.peakHour,
-    activeDays: summary.activeDays,
-    weeklyActivity: summary.weeklyActivity,
-    allTimeSessions: summary.allTimeSessions,
-    allTimeMessages: summary.allTimeMessages,
-    tokensLast7Days: summary.tokensLast7Days,
-    allTimeTokens: summary.allTimeTokens
+    activeDays: finiteOrZero(summary.activeDays),
+    weeklyActivity: summary.weeklyActivity ?? [],
+    allTimeSessions: finiteOrZero(summary.allTimeSessions),
+    allTimeMessages: finiteOrZero(summary.allTimeMessages),
+    tokensLast7Days: finiteOrZero(summary.tokensLast7Days),
+    allTimeTokens: finiteOrZero(summary.allTimeTokens)
   }
 }
 
