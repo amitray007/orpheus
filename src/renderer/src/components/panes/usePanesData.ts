@@ -42,6 +42,22 @@ interface UsePanesDataResult {
   /** Layouts belonging to `activePanelId`, position-ordered. Empty until a
    *  panel is selected/loaded. */
   layouts: PaneLayout[]
+  /** The panelId whose layouts are CURRENTLY reflected in `layouts` — null
+   *  until the first `listLayouts` call for some panel resolves. Mirrors
+   *  `terminalsLayoutId` below (same lag-tracking pattern, one level up the
+   *  hierarchy): switching panels flips `activePanelId` synchronously, but
+   *  `layouts` only catches up once `listLayouts(activePanelId)` resolves
+   *  FOR that exact id. PanesView needs this EXACT signal (not just
+   *  `loading`) to fix the panel-switch stale-selection race (Bug A) — an
+   *  empty `layouts` array mid-fetch used to read identically to a
+   *  genuinely-empty panel, so rapidly switching panels could flash (or
+   *  stick on) "No layouts in this panel" for a panel that actually has
+   *  layouts, because the empty state was gated on `layouts.length === 0`
+   *  alone with no way to tell "not loaded yet" from "loaded and empty".
+   *  Cleared to null the instant `activePanelId` changes (including to
+   *  null) so a stale panel's `layoutsPanelId` can never be mistaken for
+   *  the new one's — see the load effect below. */
+  layoutsPanelId: string | null
   /** Terminals (panes) belonging to `activeLayoutId`, position-ordered. */
   terminals: PaneTerminal[]
   /** The layoutId whose terminals are CURRENTLY reflected in `terminals` —
@@ -98,6 +114,11 @@ export function usePanesData(
 ): UsePanesDataResult {
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layouts, setLayouts] = useState<PaneLayout[]>([])
+  // Tracks which panelId `layouts` actually belongs to — see the
+  // UsePanesDataResult field doc comment above (Bug A fix) for why PanesView
+  // needs this exact lag exposed to gate the "No layouts in this panel"
+  // empty state correctly.
+  const [layoutsPanelId, setLayoutsPanelId] = useState<string | null>(null)
   const [terminals, setTerminals] = useState<PaneTerminal[]>([])
   // Tracks which layoutId `terminals` actually belongs to — see the
   // UsePanesDataResult field doc comment above for why PanesView needs this
@@ -139,9 +160,29 @@ export function usePanesData(
   }, [reloadToken, refreshCounter])
 
   // Load the active panel's layouts whenever it changes.
+  //
+  // BUG A FIX (panel-switch stale-selection race, "No layouts in this
+  // panel" flashing for a panel that HAS layouts): `layoutsPanelId` is
+  // invalidated to null SYNCHRONOUSLY the instant `activePanelId` changes —
+  // same pattern as the terminals effect below invalidating
+  // `terminalsLayoutId` on `activeLayoutId` change. Without this, rapidly
+  // switching panels A -> B left `layouts` holding panel A's (possibly
+  // non-empty) list while `activePanelId` already pointed at B; PanesView's
+  // `!activeLayout` check (which derives from `layouts.find(...)`) had no
+  // way to tell "B's layouts haven't loaded yet, this list is stale A data"
+  // from "B genuinely has zero layouts" — both looked like `layouts` not
+  // containing the id it wanted. Only once `listLayouts(activePanelId)`
+  // resolves FOR that exact id does `layoutsPanelId` flip to match it, so
+  // `layoutsPanelId === activePanelId` is the unambiguous "layouts is
+  // caught up with the CURRENT panel" signal PanesView gates its empty
+  // state on.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously invalidates the "layouts is caught up" signal the instant activePanelId changes, so a stale panel's layouts can never be read as belonging to the new one
+    setLayoutsPanelId(null)
     if (!activePanelId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears derived state synchronously when no panel is selected (not an async-settle callback)
+      // clears derived state synchronously when no panel is selected (not an
+      // async-settle callback) — no separate eslint-disable needed; the
+      // directive above already covers this effect body.
       setLayouts([])
       return
     }
@@ -151,6 +192,7 @@ export function usePanesData(
       .then((loaded) => {
         if (cancelled) return
         setLayouts(loaded)
+        setLayoutsPanelId(activePanelId)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -283,6 +325,7 @@ export function usePanesData(
   return {
     panels,
     layouts,
+    layoutsPanelId,
     terminals,
     terminalsLayoutId,
     loading,

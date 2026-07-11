@@ -58,8 +58,11 @@ import type { SplitPathStep } from './splitTreeOps'
 
 /** R6 cap: no more than 4 panes in a single layout. */
 const CAP_LAYOUT = 4
-/** R12 cap: no more than 12 live pane surfaces per panel, summed across all
- *  of the panel's layouts. */
+/** R12 cap: no more than 12 total panes in a panel, summed across all of the
+ *  panel's layouts (persisted pane/terminal rows — NOT a count of currently-
+ *  mounted live native surfaces; a layout's panes count toward this cap
+ *  whether or not that layout is the one currently open). See
+ *  panelPaneCount's doc comment above for exactly how the sum is derived. */
 const CAP_PANEL = 12
 
 /** How long a transient inline status message (restart/stop-layout stubs,
@@ -69,15 +72,39 @@ const CAP_PANEL = 12
  *  established substitute. */
 const TRANSIENT_MESSAGE_MS = 1500
 
-/** Sums countLeaves across every layout in a panel — the panel-wide pane
- *  count the header's cap badge and the ≤12/panel cap both need. Panes
- *  living in layouts OTHER than the active one aren't loaded by
- *  usePanesData (it only fetches the active layout's terminals), so this is
- *  necessarily an approximation from split-tree shape alone: it counts
- *  leaves in each layout's persisted splitTree, which is accurate because
- *  the tree's leaf count always equals that layout's terminal count. */
-function panelPaneCount(layouts: { splitTree: SplitTreeShape | null }[]): number {
-  return layouts.reduce((sum, l) => sum + countLeaves(l.splitTree), 0)
+/** Sums countLeaves across every layout belonging to the ACTIVE panel — the
+ *  TOTAL pane count across all of this panel's layouts (this is the number
+ *  displayed by the header's "N/12 panes" badge and enforced by CAP_PANEL
+ *  below, per R12). NOT a count of "live surfaces" — a layout's leaves are
+ *  counted whether or not that layout is currently open/mounted, since the
+ *  cap is meant to bound total persisted panes per panel, not just the ones
+ *  with an active native surface right now. `layouts` here is already
+ *  scoped to the active panel by usePanesData(activePanelId, ...), so no
+ *  extra panel filtering is needed.
+ *
+ *  Leaf count is exact, not an approximation: a layout's `splitTree` leaf
+ *  count always equals that layout's persisted terminal-row count (each
+ *  leaf's paneId IS a terminal row's id — see splitLeaf/closeLeaf in
+ *  splitTreeOps.ts, which always keep the two in lockstep). The one place
+ *  this could drift is the ACTIVE layout immediately after a split/close:
+ *  `localTree` (PanesView's own optimistic state) updates synchronously,
+ *  but the corresponding `layouts` entry only catches up once
+ *  `updateLayoutSplitTree`'s IPC round-trip resolves — summing the stale
+ *  persisted `splitTree` for the active layout during that window would
+ *  under/over-count by exactly one pane. Fixed by preferring `localTree`'s
+ *  live leaf count for whichever layout is currently active, falling back
+ *  to each OTHER layout's persisted `splitTree` (there's no local/optimistic
+ *  state for a layout that isn't open) — this can never double-count since
+ *  each layout contributes exactly one term to the sum. */
+function panelPaneCount(
+  layouts: { id: string; splitTree: SplitTreeShape | null }[],
+  activeLayoutId: string | null,
+  localTree: SplitTreeShape | null
+): number {
+  return layouts.reduce((sum, l) => {
+    const tree = l.id === activeLayoutId ? localTree : l.splitTree
+    return sum + countLeaves(tree)
+  }, 0)
 }
 
 export function PanesView(): React.JSX.Element {
@@ -86,6 +113,7 @@ export function PanesView(): React.JSX.Element {
   const {
     panels,
     layouts,
+    layoutsPanelId,
     terminals,
     terminalsLayoutId,
     createTerminal,
@@ -97,6 +125,24 @@ export function PanesView(): React.JSX.Element {
 
   const activePanel = panels.find((p) => p.id === activePanelId) ?? null
   const activeLayout = layouts.find((l) => l.id === activeLayoutId) ?? null
+
+  // BUG A FIX — "No layouts in this panel" stale-selection race.
+  //
+  // `layoutsReady` mirrors `terminalsReady` below one level up the
+  // hierarchy: `layoutsPanelId` (usePanesData.ts) is set to `activePanelId`
+  // ONLY once `listLayouts(activePanelId)` has resolved FOR that exact id,
+  // and is invalidated to null the instant `activePanelId` changes. So
+  // `layoutsReady` is the unambiguous "layouts is caught up with the
+  // CURRENTLY active panel" signal — as opposed to `layouts.length === 0`
+  // alone, which reads identically whether panel B's layouts genuinely
+  // haven't loaded yet (still reflecting stale panel A data, or empty
+  // pre-first-fetch state) or panel B truly has zero layouts. Rapidly
+  // switching panels in the sidebar used to hit exactly that ambiguity: the
+  // empty state rendered (or stuck rendering) "No layouts in this panel"
+  // against a `layouts` list that hadn't caught up to the newly active
+  // panel yet. Gating both the empty-state render AND the seeding effect
+  // below on this flag closes the race.
+  const layoutsReady = layoutsPanelId === activePanelId
 
   // MOUNT-RACE FIX — the persisted-layout setup-command bug.
   //
@@ -162,6 +208,17 @@ export function PanesView(): React.JSX.Element {
 
   useEffect(() => {
     if (activePanelId === null) return
+    // BUG A FIX (continued from `layoutsReady`'s doc comment above): don't
+    // seed a default layout until `layouts` is confirmed to belong to the
+    // CURRENTLY active panel. Without this guard, switching panels A -> B
+    // fast could run this effect while `layouts` still held panel A's list
+    // (activeLayoutId is null immediately after setActivePanel(B) resets
+    // it) — `layouts[0]?.id` would then seed activeLayoutId to one of
+    // PANEL A's layout ids, which is wrong for panel B and is exactly the
+    // "sticky stale selection" half of the race (the seeded id doesn't
+    // belong to any of B's layouts, so `activeLayout` stays null and the
+    // empty state renders/sticks even once B's real layouts arrive).
+    if (!layoutsReady) return
     // BUG #20 FIX — a non-null activeLayoutId is ALWAYS the user's (or the
     // persisted lastLayoutId's) live selection, and this effect must never
     // clobber it — even when it isn't (yet) found in `layouts` below.
@@ -197,7 +254,7 @@ export function PanesView(): React.JSX.Element {
       ? layouts.find((l) => l.id === uiState.lastLayoutId)
       : undefined
     setActiveLayout(restoredLayout ? restoredLayout.id : (layouts[0]?.id ?? null))
-  }, [activePanelId, activeLayoutId, layouts, uiState])
+  }, [activePanelId, activeLayoutId, layouts, layoutsReady, uiState])
 
   // Local optimistic split-tree state, seeded from (and re-synced to) the
   // loaded layout. Mutations update this immediately; the persisted copy
@@ -271,7 +328,7 @@ export function PanesView(): React.JSX.Element {
     [updateTerminalName]
   )
 
-  const panelPaneTotal = panelPaneCount(layouts)
+  const panelPaneTotal = panelPaneCount(layouts, activeLayoutId, localTree)
 
   const persistTree = useCallback(
     (next: SplitTreeShape | null) => {
@@ -462,7 +519,21 @@ export function PanesView(): React.JSX.Element {
       <div className="flex-1 min-h-0 overflow-hidden p-0">
         {panels.length === 0 ? (
           <PanesEmptyState message="No panels yet." />
+        ) : !layoutsReady ? (
+          // BUG A FIX — while `layouts` hasn't caught up to `activePanelId`
+          // yet (see `layoutsReady`'s doc comment above), render a NEUTRAL
+          // loading state rather than either "No layouts in this panel"
+          // (wrong — we don't know that yet, and the panel may well have
+          // layouts) or the previous panel's stale tree (also wrong — it
+          // isn't the selected panel's content). This is the fix's core:
+          // "not loaded yet for the active panel" and "loaded and
+          // genuinely empty" must never render the same message.
+          <PanesEmptyState message="Loading layouts…" />
         ) : !activeLayout ? (
+          // Reached only once `layoutsReady` is true, i.e. `layouts` is
+          // confirmed to be the ACTIVE panel's real (possibly empty) list —
+          // so this message is now trustworthy: the panel genuinely has no
+          // layouts, not "hasn't loaded yet".
           <PanesEmptyState message="No layouts in this panel." />
         ) : !localTree ? (
           <PanesEmptyState
