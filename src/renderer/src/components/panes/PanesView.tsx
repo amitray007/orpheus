@@ -87,6 +87,7 @@ export function PanesView(): React.JSX.Element {
     panels,
     layouts,
     terminals,
+    terminalsLayoutId,
     createTerminal,
     updateTerminalCommand,
     updateTerminalName,
@@ -96,6 +97,49 @@ export function PanesView(): React.JSX.Element {
 
   const activePanel = panels.find((p) => p.id === activePanelId) ?? null
   const activeLayout = layouts.find((l) => l.id === activeLayoutId) ?? null
+
+  // MOUNT-RACE FIX — the persisted-layout setup-command bug.
+  //
+  // Root cause: usePanesData fetches `layouts` (which drives `localTree`,
+  // below) and `terminals` (which drives `getCommand`) via TWO SEPARATE
+  // async IPC round-trips that race each other. When a PERSISTED layout is
+  // opened (fresh app launch/reload restoring lastPanelId/lastLayoutId, or
+  // switching TO a layout whose terminals haven't been fetched before),
+  // `localTree` can resolve first, SplitTree renders its PaneCells, and
+  // each PaneCell's mount effect fires `pane:mount` with `getCommand(paneId)`
+  // reading from a `terminals` array that STILL belongs to the previous (or
+  // no) layout — i.e. `command=''`. That FIRST mount is the one that
+  // actually execs the shell wrapper; libghostty only honors `env`/command
+  // on a brand-new native surface (see packages/ghostty-surface/addon.mm's
+  // "already attached" re-attach path, which explicitly ignores env because
+  // the process is already running). So once that empty-command mount
+  // creates the surface, every later mount call — even after `terminals`
+  // catches up and PaneCell's effect re-runs with the REAL command — is a
+  // pure no-op resize against the already-created surface. Confirmed via a
+  // marker-file repro: `pane:mount`'s first call for a freshly-opened
+  // persisted layout consistently carried `command=''`, and the addon log
+  // showed every later call as "already attached (defensive resize)", never
+  // a destroy+recreate — the setup command silently never ran.
+  //
+  // A newly-created pane never hits this: `createTerminal` (below) returns
+  // the terminal row and optimistically appends it into `terminals`
+  // (usePanesData.ts's own setTerminals) BEFORE `persistTree` ever renders a
+  // PaneCell for it, so `getCommand` already has the right value on that
+  // pane's first (and only) mount.
+  //
+  // Fix: don't let SplitTree mount LIVE surfaces until `terminals` is known
+  // to belong to the layout currently selected — i.e. until usePanesData's
+  // own `terminalsLayoutId` (set only once `listTerminals(activeLayoutId)`
+  // has resolved FOR that id) matches `activeLayoutId`. Until then, render
+  // the tree with `active={false}` (SplitTree/PaneCell already treat
+  // `active=false` as "no live surface, no mount" — see PaneCell.tsx's
+  // `usePaneSurface`), so the FIRST time a surface actually mounts, it
+  // already carries the correct command. This is a narrow, one-render-late
+  // gate: `terminalsLayoutId` flips to `activeLayoutId` as soon as that
+  // fetch resolves (typically well before the tree finishes laying out and
+  // triggering PaneCell's own rAF-deferred mount), so it doesn't introduce
+  // a visible flash for the common case — it just closes the race window.
+  const terminalsReady = terminalsLayoutId === activeLayoutId
 
   // Restore-or-default: seed the store with the persisted lastPanelId
   // (app_ui_state, issue #1) once panels load and nothing is selected yet,
@@ -430,7 +474,11 @@ export function PanesView(): React.JSX.Element {
           <SplitTree
             tree={localTree}
             layoutId={activeLayout.id}
-            active
+            // See the `terminalsReady` doc comment above (mount-race fix):
+            // false here means SplitTree/PaneCell render the tree's chrome
+            // but mount NO live surfaces yet, so the first real mount (once
+            // this flips true) always has the correct per-pane command.
+            active={terminalsReady}
             getCommand={getCommand}
             getDisplayName={getDisplayName}
             focusedPaneId={focusedPaneId}

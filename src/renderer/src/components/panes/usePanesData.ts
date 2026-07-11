@@ -44,6 +44,15 @@ interface UsePanesDataResult {
   layouts: PaneLayout[]
   /** Terminals (panes) belonging to `activeLayoutId`, position-ordered. */
   terminals: PaneTerminal[]
+  /** The layoutId whose terminals are CURRENTLY reflected in `terminals` —
+   *  null until the first `listTerminals` call for some layout resolves.
+   *  This lags `activeLayoutId` by exactly one async round-trip: switching
+   *  layouts flips `activeLayoutId` synchronously, but `terminals` (and this
+   *  field) only catch up once `listTerminals(activeLayoutId)` resolves.
+   *  PanesView needs this EXACT lag exposed (not just `loading`) to fix the
+   *  mount-race documented in PaneCell.tsx/PanesView.tsx below — see
+   *  PanesView's `terminalsReady` for the consumer. */
+  terminalsLayoutId: string | null
   /** True while the initial panels load, or a panel/layout switch is
    *  refetching its children. Intentionally coarse — this unit doesn't need
    *  per-list loading granularity. */
@@ -90,6 +99,10 @@ export function usePanesData(
   const [panels, setPanels] = useState<PanePanel[]>([])
   const [layouts, setLayouts] = useState<PaneLayout[]>([])
   const [terminals, setTerminals] = useState<PaneTerminal[]>([])
+  // Tracks which layoutId `terminals` actually belongs to — see the
+  // UsePanesDataResult field doc comment above for why PanesView needs this
+  // exact lag (not just `loading`) to gate pane mounting correctly.
+  const [terminalsLayoutId, setTerminalsLayoutId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
@@ -150,9 +163,28 @@ export function usePanesData(
   }, [activePanelId, reloadToken, refreshCounter])
 
   // Load the active layout's terminals whenever it changes.
+  //
+  // MOUNT-RACE FIX (see PanesView.tsx's `terminalsReady` + PaneCell.tsx's
+  // file-header comment for the full story): `terminals` used to be the
+  // ONLY signal exposed here, and it's a plain array — a caller reading it
+  // right after `activeLayoutId` flips can't tell "this IS layout X's
+  // (possibly empty) terminal list" from "this is layout Y's stale list,
+  // layout X's fetch just hasn't resolved yet". PanesView used that stale/
+  // empty array to resolve each pane's `command` for the FIRST native
+  // mount, so a persisted layout opened with `command=''` (plain shell)
+  // every time — the setup command silently never ran. `terminalsLayoutId`
+  // closes that gap: it's set to `activeLayoutId` ONLY once THIS fetch
+  // resolves for THAT id, so `terminalsLayoutId === activeLayoutId` is an
+  // unambiguous "terminals is caught up" signal. Cleared to null the moment
+  // activeLayoutId changes (including to null) so a stale layout's
+  // terminalsLayoutId can never be mistaken for the new one's.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously invalidates the "terminals is caught up" signal the instant activeLayoutId changes, so a stale value never lingers into the next render
+    setTerminalsLayoutId(null)
     if (!activeLayoutId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears derived state synchronously when no layout is selected (not an async-settle callback)
+      // clears derived state synchronously when no layout is selected (not
+      // an async-settle callback) — no separate eslint-disable needed here;
+      // the directive above already covers this effect body.
       setTerminals([])
       return
     }
@@ -162,6 +194,7 @@ export function usePanesData(
       .then((loaded) => {
         if (cancelled) return
         setTerminals(loaded)
+        setTerminalsLayoutId(activeLayoutId)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -251,6 +284,7 @@ export function usePanesData(
     panels,
     layouts,
     terminals,
+    terminalsLayoutId,
     loading,
     error,
     refetch,
