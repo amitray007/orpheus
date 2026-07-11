@@ -63,6 +63,7 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ClaudeActivitySummary,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
@@ -291,6 +292,16 @@ export interface InvokeChannelMap {
   // only ever stores the success shape, so `value` is `ClaudeUsage`, never
   // `unavailable`. `null` when no cache row exists yet (cold start).
   'claude:usage:cached': { req: []; res: { value: ClaudeUsage; fetchedAt: number } | null }
+  // Dashboard "Your pulse" real activity — scanned directly off the on-disk
+  // ~/.claude/projects/**/*.jsonl transcript store (src/main/claudeActivity.ts),
+  // NOT the Orpheus `sessions` table, so it reflects ALL Claude usage, not
+  // just Orpheus-registered workspaces. Same D1/D2 cached-first + fresh
+  // pattern as claude:usage above. Total (never rejects).
+  'claude:activity': { req: []; res: ClaudeActivitySummary }
+  'claude:activity:cached': {
+    req: []
+    res: { value: ClaudeActivitySummary; fetchedAt: number } | null
+  }
   'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
   'claudeProjectSettings:update': {
     req: [{ projectId: string; patch: ClaudeProjectSettingsOverrides }]
@@ -787,6 +798,10 @@ export interface RendererPushMap {
   // unavailable ticks are NOT pushed — the renderer keeps showing last-good
   // cached data.
   'claude:usagePushed': ClaudeUsage
+  // Dashboard "Your pulse" background poller (see src/main/claudeActivityPoller.ts)
+  // — pushed on each successful scan tick so the renderer updates silently
+  // in place. Same "don't push on failure" contract as claude:usagePushed.
+  'claude:activityPushed': ClaudeActivitySummary
   'actions:subscription-update': { subscriptionId: string; value: unknown }
   'diag:stream': unknown[]
   'keepAwake:state': KeepAwakeState
@@ -837,6 +852,7 @@ export const PUSH_CHANNELS = {
   updatesCheckResult: 'updates:checkResult',
   statusChange: 'status:change',
   claudeUsagePushed: 'claude:usagePushed',
+  claudeActivityPushed: 'claude:activityPushed',
   actionsSubscriptionUpdate: 'actions:subscription-update',
   diagStream: 'diag:stream',
   keepAwakeState: 'keepAwake:state',

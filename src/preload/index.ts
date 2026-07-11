@@ -53,6 +53,7 @@ import type {
   ClaudeAuthTestResult,
   ClaudeUsageResult,
   ClaudeUsage,
+  ClaudeActivitySummary,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -404,7 +405,20 @@ const api = {
     // tick (see src/main/usagePoller.ts) so the renderer can update the
     // Usage card silently in place, no manual refresh needed.
     onUsagePushed: (cb: (usage: ClaudeUsage) => void): (() => void) =>
-      subscribe(PUSH_CHANNELS.claudeUsagePushed, cb)
+      subscribe(PUSH_CHANNELS.claudeUsagePushed, cb),
+    // Dashboard "Your pulse" real activity — see src/main/claudeActivity.ts
+    // for the scan/cache contract. Sourced from the on-disk transcript
+    // store, not the Orpheus `sessions` table.
+    activity: (): Promise<ClaudeActivitySummary> => invoke('claude:activity'),
+    // Cached-first companion (D2) — instant, disk-backed read, no scan.
+    // `null` when no cache row exists yet (cold start).
+    activityCached: (): Promise<{ value: ClaudeActivitySummary; fetchedAt: number } | null> =>
+      invoke('claude:activity:cached'),
+    // Background poller push (src/main/claudeActivityPoller.ts) — fires on
+    // each scan tick so the renderer can update the pulse numbers silently
+    // in place, no manual refresh needed.
+    onActivityPushed: (cb: (summary: ClaudeActivitySummary) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeActivityPushed, cb)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>

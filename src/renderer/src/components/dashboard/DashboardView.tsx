@@ -23,11 +23,12 @@
 // All data wiring is unchanged from U3/U4/U5 below — this unit is
 // presentation-only, no new fetches, no hook behavior changes.
 //
-// U3 wired the "Your pulse" numbers to REAL data derived from
-// `sessions:listAll` via `usePulseData` — sessions/streak/peak-hour/active-
-// days/heatmap/weeklyActivity all come from real session records; only
-// Tokens stays a placeholder (no cross-session token rollup exists yet —
-// see StatTile below, Phase 3).
+// U3 originally wired the "Your pulse" numbers to `sessions:listAll`
+// (Orpheus-registered workspaces only). V3 replaced that source with
+// `claude:activity` (src/main/claudeActivity.ts), which scans the REAL
+// on-disk transcript store — sessions/streak/peak-hour/active-days/
+// weeklyActivity/Tokens all come from real transcript files now, not just
+// the ones Orpheus happened to see.
 //
 // U4 wired the real Live-agents table + the "Agents waiting"/"Finished runs"
 // triage tiles to `useLiveAgents` (workspaces + sessions + activity snapshot
@@ -70,7 +71,7 @@ export function DashboardView({
   // picker — see DashboardTopBar). The heatmap still shows ~6 months (it's a
   // time view); weeklyActivity is always the trailing 7 days; the stat tiles
   // reflect the last 7 days.
-  const pulse = usePulseData('7d')
+  const pulse = usePulseData()
   const liveAgents = useLiveAgents()
   const github = useGithubData()
   const claudeUsage = useClaudeUsage()
@@ -88,13 +89,15 @@ export function DashboardView({
             value={formatCompact(pulse.sessions)}
             loading={pulse.loading}
           />
-          {/* Tokens: NOT derivable cheaply from sessions:listAll — per the
-              feasibility audit, per-session token counts live only in JSONL
-              transcripts and are never rolled up in the DB. Rather than fake
-              a number, render a graceful placeholder; real rollup is Phase 3
-              (either a JSONL parse pass over all sessions, or a new `tokens`
-              column populated during refreshSessionMetadata). */}
-          <StatTile label="Tokens" value="—" subLabel="soon" dim loading={pulse.loading} />
+          {/* Tokens: real total (input + output + cache read + cache
+              creation) summed across the last 7 days' transcripts by the
+              claudeActivity.ts scanner — computed in the same read pass as
+              the line/message count, so it's effectively free. */}
+          <StatTile
+            label="Tokens"
+            value={formatCompact(pulse.tokensLast7Days)}
+            loading={pulse.loading}
+          />
           <StatTile
             label="Current streak"
             value={String(pulse.currentStreak)}

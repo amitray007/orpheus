@@ -8,10 +8,11 @@
 // key label below (`.k`). The critique that drove this rebuild flagged the
 // old boxed tiles as "huge half-empty hero-metric cards"; the inline
 // treatment sits directly in DashboardTopBar's hero row instead of its own
-// card grid. `dim` renders the value in the muted `.v.dim` tone (used by the
-// Tokens placeholder, whose value is "—" until a real cross-session token
-// rollup exists — see DashboardView.tsx). `loading` shows a bare skeleton
-// bar (no card wrapper to skeleton) instead of flashing a stale/zero value.
+// card grid. `dim` renders the value in the muted `.v.dim` tone (for any
+// stat whose value is a placeholder rather than real data — no current
+// caller uses this, all four hero stats are wired to real data as of V3).
+// `loading` shows a bare skeleton bar (no card wrapper to skeleton) instead
+// of flashing a stale/zero value.
 // ---------------------------------------------------------------------------
 
 export function StatTile({
@@ -26,8 +27,8 @@ export function StatTile({
   value: string
   unit?: string
   subLabel?: string
-  /** Renders the value in the muted `.v.dim` tone — used for placeholder
-   *  values (e.g. Tokens' "—") that aren't real data yet. */
+  /** Renders the value in the muted `.v.dim` tone — for a stat whose value
+   *  is a placeholder rather than real data. */
   dim?: boolean
   loading?: boolean
 }): React.JSX.Element {

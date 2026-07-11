@@ -803,6 +803,50 @@ export type ClaudeUsageUnavailable = { unavailable: 'no-auth' | 'error' }
 export type ClaudeUsageResult = ClaudeUsage | ClaudeUsageUnavailable
 
 // ---------------------------------------------------------------------------
+// src/main/claudeActivity.ts — real Claude activity, scanned directly off
+// the on-disk transcript store (~/.claude/projects/**/*.jsonl), NOT the
+// Orpheus-registered `sessions` table (sessions:listAll only covers
+// workspaces created through Orpheus — ~40x undercounts total Claude usage).
+// One .jsonl file = one real Claude session; its mtime is the session's
+// "activity day", its line count is its message count. See claudeActivity.ts
+// for the full scan/cache contract.
+// ---------------------------------------------------------------------------
+
+/** Trailing 7 calendar days (Mon..Sun), used by the dashboard's Activity
+ *  card small-multiples chart. Shape/ordering matches the renderer's
+ *  original pulseData.helpers.WeeklyActivityDay (weekday 0=Mon..6=Sun) —
+ *  moved here so both the scanner and the renderer share one definition. */
+export type WeeklyActivityDay = {
+  weekday: number // 0=Mon..6=Sun
+  sessions: number
+  messages: number
+}
+
+export type ClaudeActivitySummary = {
+  weeklyActivity: WeeklyActivityDay[]
+  sessionsLast7Days: number
+  messagesLast7Days: number
+  allTimeSessions: number
+  allTimeMessages: number
+  /** Total tokens (input + output + cache read + cache creation, summed
+   *  across every assistant-turn `message.usage` line) for sessions active
+   *  in the last 7 days. */
+  tokensLast7Days: number
+  /** Same token sum as `tokensLast7Days`, across ALL history. */
+  allTimeTokens: number
+  /** Local hour-of-day (0-23) with the most session-file mtimes in the last
+   *  7 days. Null when there's no data in that window to compute a peak
+   *  from. */
+  peakHour: number | null
+  /** Consecutive-day streak of >=1 session, ending today or yesterday (same
+   *  "alive until a full day is skipped" semantics as the renderer's
+   *  original computeStreaks — see pulseData.helpers.ts). */
+  currentStreak: number
+  /** Distinct calendar days with >=1 session in the last 7 days. */
+  activeDays: number
+}
+
+// ---------------------------------------------------------------------------
 // Native context menu (v25)
 // ---------------------------------------------------------------------------
 

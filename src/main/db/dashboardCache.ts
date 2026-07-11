@@ -25,7 +25,8 @@ import { getDb } from './index'
 export const DASHBOARD_CACHE_KEYS = {
   githubPrs: 'github_prs',
   githubIssues: 'github_issues',
-  claudeUsage: 'claude_usage'
+  claudeUsage: 'claude_usage',
+  claudeActivity: 'claude_activity'
 } as const
 
 export type DashboardCacheKey = (typeof DASHBOARD_CACHE_KEYS)[keyof typeof DASHBOARD_CACHE_KEYS]

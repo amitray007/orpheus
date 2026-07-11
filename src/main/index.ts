@@ -70,6 +70,7 @@ import {
 import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
 import { startStatusPoller, stopStatusPoller } from './claudeStatus'
 import { startUsagePoller, stopUsagePoller } from './usagePoller'
+import { startClaudeActivityPoller, stopClaudeActivityPoller } from './claudeActivityPoller'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type { WorkspaceRecord } from '../shared/types'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
@@ -128,6 +129,7 @@ import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
 import { registerClaudeUsageIpc } from './ipc/claudeUsage'
+import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
 import { registerPanesIpc } from './ipc/panes'
@@ -990,6 +992,8 @@ registerClaudeHooksIpc()
 registerClaudeAuthIpc()
 
 registerClaudeUsageIpc()
+
+registerClaudeActivityIpc()
 
 registerOrpheusConfigIpc({ getProject })
 
@@ -2043,6 +2047,12 @@ if (!app.requestSingleInstanceLock()) {
       // usage to the renderer silently on each successful tick.
       startUsagePoller()
 
+      // Start the Dashboard "Your pulse" real-activity background poller —
+      // 5s initial delay, then every 3min. Scans ~/.claude/projects/**/*.jsonl
+      // (per-file mtime/size cached, so steady-state re-scans are cheap) and
+      // pushes fresh totals to the renderer silently on each tick.
+      startClaudeActivityPoller()
+
       // Defer notify server + hook reconcile until after the first frame — keeps
       // createWindow() hot so the UI appears faster on launch.
       setImmediate(() => {
@@ -2477,6 +2487,7 @@ if (!app.requestSingleInstanceLock()) {
     powerAwakeCleanup?.()
     stopStatusPoller()
     stopUsagePoller()
+    stopClaudeActivityPoller()
     stopAutoCheckLoop()
     stopAllGitWatches()
     stopFilesWatch()
