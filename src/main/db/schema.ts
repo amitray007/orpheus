@@ -909,6 +909,35 @@ export const schema: SchemaDef = {
     indexes: {
       idx_pane_terminals_layout: ['layout_id']
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // dashboard_cache — Dashboard D1 (persisted expensive-fetch cache). A
+  // generic key -> JSON payload cache so the Dashboard's expensive data
+  // sources (GitHub PRs/issues via `gh`, Claude usage/limits via the OAuth
+  // usage endpoint) survive an app restart. Today these sources ALSO carry
+  // their own short in-memory TTL cache (src/main/github.ts,
+  // src/main/claudeUsage.ts) for within-session dedup — that's unrelated and
+  // untouched by this table. This table exists purely so the very FIRST
+  // dashboard paint after a cold app launch can read yesterday's last-known-
+  // good result off disk instantly instead of blocking on a live network/gh
+  // fetch. `key` is one of the DASHBOARD_CACHE_KEYS constants (see
+  // src/main/db/dashboardCache.ts) — e.g. 'github_prs' | 'github_issues' |
+  // 'claude_usage'. `payload_json` is JSON.stringify of that source's typed
+  // result (GhSearchPr[] / GhSearchIssue[] / ClaudeUsage — never the
+  // `{unavailable}` failure shape, callers only persist real successes).
+  // `fetched_at` is the epoch-ms write time; a later stale-while-revalidate
+  // read path (D2, not built in this unit) will use it to decide whether to
+  // show the cached value while a fresh fetch runs in the background, or
+  // trigger a refetch outright. The engine auto-creates this table like any
+  // other — no migration needed for a brand-new table.
+  // ---------------------------------------------------------------------
+  dashboard_cache: {
+    columns: {
+      key: TEXT_PK,
+      payload_json: TEXT_NOT_NULL,
+      fetched_at: INTEGER_NOT_NULL
+    }
   }
 }
 

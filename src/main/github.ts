@@ -1,6 +1,7 @@
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
 import { getUserShellPath } from './shellHelpers'
+import { DASHBOARD_CACHE_KEYS, readDashboardCache, writeDashboardCache } from './db/dashboardCache'
 import type {
   GhPullRequest,
   GhPullRequestState,
@@ -403,7 +404,28 @@ export async function getMyOpenPrs(): Promise<GhSearchPr[]> {
   myOpenPrsInflight = promise
   const value = await promise
   putWithEviction(myOpenPrsCache, MY_OPEN_PRS_KEY, { value, fetchedAt: Date.now() }, SEARCH_TTL_MS)
+  // Persist to disk (Dashboard D1) so the next cold app launch can paint
+  // this table instantly from disk instead of waiting on a live `gh` call.
+  // fetchMyOpenPrsFromGh has no way to signal failure separately from a
+  // genuine zero-results list — both degrade to the same `[]` (see its own
+  // catch block). Since we can't tell "gh failed" apart from "you really
+  // have zero open PRs" here without changing that function's contract
+  // (out of scope for this unit), we only persist non-empty results. This
+  // means a real transition to zero open PRs won't overwrite a stale cache
+  // until the next non-empty fetch — an acceptable trade-off for D1, since
+  // the goal is never regressing a good cache to a failure-shaped empty
+  // one; D2's staleness/TTL read path is the place to revisit this if a
+  // true empty state needs to persist too.
+  if (value.length > 0) writeDashboardCache(DASHBOARD_CACHE_KEYS.githubPrs, value)
   return value
+}
+
+/** Instant, disk-backed read of the last-persisted `getMyOpenPrs()` result —
+ *  for the Dashboard's initial paint (D2 wires this into the actual
+ *  stale-while-revalidate read path; this unit only exposes the entry
+ *  point). Never throws; null means no cache has ever been written yet. */
+export function getCachedMyOpenPrs(): { value: GhSearchPr[]; fetchedAt: number } | null {
+  return readDashboardCache<GhSearchPr[]>(DASHBOARD_CACHE_KEYS.githubPrs)
 }
 
 async function fetchMyIssuesFromGh(): Promise<GhSearchIssue[]> {
@@ -458,7 +480,18 @@ export async function getMyIssues(): Promise<GhSearchIssue[]> {
   myIssuesInflight = promise
   const value = await promise
   putWithEviction(myIssuesCache, MY_ISSUES_KEY, { value, fetchedAt: Date.now() }, SEARCH_TTL_MS)
+  // Persist to disk (Dashboard D1) — same rationale as getMyOpenPrs above:
+  // fetchMyIssuesFromGh's catch-all `[]` conflates failure with a genuine
+  // zero-issues result, so only a non-empty fetch is treated as confidently
+  // "successful data worth persisting".
+  if (value.length > 0) writeDashboardCache(DASHBOARD_CACHE_KEYS.githubIssues, value)
   return value
+}
+
+/** Instant, disk-backed read of the last-persisted `getMyIssues()` result —
+ *  see getCachedMyOpenPrs's doc comment for the contract. */
+export function getCachedMyIssues(): { value: GhSearchIssue[]; fetchedAt: number } | null {
+  return readDashboardCache<GhSearchIssue[]>(DASHBOARD_CACHE_KEYS.githubIssues)
 }
 
 // ---------------------------------------------------------------------------

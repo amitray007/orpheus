@@ -37,6 +37,7 @@ import { promisify } from 'node:util'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import { DASHBOARD_CACHE_KEYS, readDashboardCache, writeDashboardCache } from './db/dashboardCache'
 import type { ClaudeUsage, ClaudeUsageLimit, ClaudeUsageResult } from '../shared/types'
 
 const execFile = promisify(childProcess.execFile)
@@ -294,5 +295,25 @@ export async function getClaudeUsage(): Promise<ClaudeUsageResult> {
 
   const value = await promise
   cachedResult = { value, fetchedAt: Date.now() }
+  // Persist to disk (Dashboard D1) — but only a REAL usage payload, never
+  // the `{ unavailable }` failure shape. Unlike github.ts's getMyOpenPrs/
+  // getMyIssues, ClaudeUsageResult's discriminated union makes success vs.
+  // failure unambiguous here, so we gate on the `unavailable` tag directly
+  // rather than an empty-vs-error heuristic. We deliberately do NOT persist
+  // `unavailable` results — doing so would let a transient auth/network
+  // blip overwrite good cached usage data with "nothing to show", which is
+  // strictly worse for the Dashboard's instant-paint goal than just serving
+  // the last good value until the next successful fetch.
+  if (!('unavailable' in value)) {
+    writeDashboardCache(DASHBOARD_CACHE_KEYS.claudeUsage, value)
+  }
   return value
+}
+
+/** Instant, disk-backed read of the last-persisted `getClaudeUsage()`
+ *  result. Never throws; null means no successful usage fetch has ever been
+ *  persisted yet (D2 wires this into the actual stale-while-revalidate read
+ *  path — this unit only exposes the entry point). */
+export function getCachedClaudeUsage(): { value: ClaudeUsage; fetchedAt: number } | null {
+  return readDashboardCache<ClaudeUsage>(DASHBOARD_CACHE_KEYS.claudeUsage)
 }
