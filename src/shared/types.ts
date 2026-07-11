@@ -273,6 +273,8 @@ export type AppUiState = {
   // Status polling preferences (v42)
   statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
   muteStatusNotifications: boolean
+  // Dashboard "Usage" card background poll interval (Dashboard D3)
+  usagePollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600; default 600
   // Workspace footer visibility (v45)
   showWorkspaceFooter: boolean
   // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);

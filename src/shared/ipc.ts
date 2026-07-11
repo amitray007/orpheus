@@ -775,6 +775,12 @@ export interface RendererPushMap {
   'updates:done': { success: boolean; code: number | null }
   'updates:checkResult': UpdateCheckResult
   'status:change': ClaudeStatusSnapshot
+  // Dashboard "Usage" card background poller (D3) — pushed on each successful
+  // poll tick (see src/main/usagePoller.ts) so the renderer can silently
+  // update in place without a manual refresh or a skeleton flash. Failed/
+  // unavailable ticks are NOT pushed — the renderer keeps showing last-good
+  // cached data.
+  'claude:usagePushed': ClaudeUsage
   'actions:subscription-update': { subscriptionId: string; value: unknown }
   'diag:stream': unknown[]
   'keepAwake:state': KeepAwakeState
@@ -824,6 +830,7 @@ export const PUSH_CHANNELS = {
   updatesDone: 'updates:done',
   updatesCheckResult: 'updates:checkResult',
   statusChange: 'status:change',
+  claudeUsagePushed: 'claude:usagePushed',
   actionsSubscriptionUpdate: 'actions:subscription-update',
   diagStream: 'diag:stream',
   keepAwakeState: 'keepAwake:state',

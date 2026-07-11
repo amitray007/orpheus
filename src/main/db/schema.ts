@@ -492,6 +492,9 @@ export const schema: SchemaDef = {
       // mirrors UI_STATE_DEFAULTS.statusPollIntervalSec in src/shared/uiStateDefaults.ts
       status_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '1800' },
       mute_status_notifications: bool('mute_status_notifications', '0'),
+      // Dashboard "Usage" card background poll interval (D3)
+      // mirrors UI_STATE_DEFAULTS.usagePollIntervalSec in src/shared/uiStateDefaults.ts
+      usage_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '600' },
       // Workspace footer visibility (v45)
       show_workspace_footer: bool('show_workspace_footer', '1'),
       // Diagnostics capture toggles (v56) — plain INTEGER, no CHECK in source

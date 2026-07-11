@@ -399,7 +399,12 @@ const api = {
     // network) for the initial cache-first paint. `null` when no cache row
     // exists yet (cold start).
     usageCached: (): Promise<{ value: ClaudeUsage; fetchedAt: number } | null> =>
-      invoke('claude:usage:cached')
+      invoke('claude:usage:cached'),
+    // Dashboard D3 — background poller push. Fires on each successful poll
+    // tick (see src/main/usagePoller.ts) so the renderer can update the
+    // Usage card silently in place, no manual refresh needed.
+    onUsagePushed: (cb: (usage: ClaudeUsage) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeUsagePushed, cb)
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>

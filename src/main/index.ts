@@ -69,6 +69,7 @@ import {
 } from './osNotifications'
 import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
 import { startStatusPoller, stopStatusPoller } from './claudeStatus'
+import { startUsagePoller, stopUsagePoller } from './usagePoller'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type { WorkspaceRecord } from '../shared/types'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
@@ -2037,6 +2038,11 @@ if (!app.requestSingleInstanceLock()) {
       // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
       startStatusPoller()
 
+      // Start the Dashboard "Usage" card background poller (D3) — 5s initial
+      // delay, then per user setting (usagePollIntervalSec). Pushes fresh
+      // usage to the renderer silently on each successful tick.
+      startUsagePoller()
+
       // Defer notify server + hook reconcile until after the first frame — keeps
       // createWindow() hot so the UI appears faster on launch.
       setImmediate(() => {
@@ -2470,6 +2476,7 @@ if (!app.requestSingleInstanceLock()) {
     sessionStateService?.stop()
     powerAwakeCleanup?.()
     stopStatusPoller()
+    stopUsagePoller()
     stopAutoCheckLoop()
     stopAllGitWatches()
     stopFilesWatch()

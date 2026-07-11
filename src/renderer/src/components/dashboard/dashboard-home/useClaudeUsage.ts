@@ -8,14 +8,17 @@
 // layout jump). `loading` is only ever true on a genuine first-ever load: no
 // cache row AND the fresh fetch hasn't landed yet.
 //
-// Deliberately NO polling loop: the main process already TTL-caches (~3min)
-// + inflight-dedupes the underlying network call (see src/main/claudeUsage.ts),
-// and this is an internal/undocumented Anthropic endpoint the user explicitly
-// does not want hammered. A manual `refresh()` re-fires only the live fetch
-// (skipping the cached read — the user wants fresh) and never resets
-// `result` to null first, so the card never blanks or flashes a skeleton on
-// refresh; the main-process cache absorbs any accidental double-click within
-// the TTL anyway.
+// No RENDERER-side polling loop: the main process owns the background
+// refresh cadence (Dashboard D3, src/main/usagePoller.ts) on the user's
+// configured usagePollIntervalSec, TTL-caching (~3min) + inflight-deduping
+// the underlying network call (see src/main/claudeUsage.ts) — this is an
+// internal/undocumented Anthropic endpoint the user explicitly does not want
+// hammered. This hook subscribes to the poller's pushes and applies them
+// silently (no blank, no skeleton). A manual `refresh()` re-fires only the
+// live fetch (skipping the cached read — the user wants fresh) and never
+// resets `result` to null first, so the card never blanks or flashes a
+// skeleton on refresh; the main-process cache absorbs any accidental
+// double-click within the TTL anyway.
 //
 // Shape mirrors useGithubData.ts's single-state-object + nonce-triggered
 // re-fetch pattern (initial `loading: true` baked into the state object
@@ -86,6 +89,16 @@ export function useClaudeUsage(): ClaudeUsageData {
       cancelled = true
     }
   }, [nonce])
+
+  // Background poller pushes (Dashboard D3) — silently adopt each fresh,
+  // successful result as it arrives, independent of the fetch effect above.
+  // Purely additive: never blanks/flashes, no interaction with `nonce`.
+  useEffect(() => {
+    const off = window.api.claude.onUsagePushed((usage) => {
+      setState({ loading: false, error: null, result: usage })
+    })
+    return off
+  }, [])
 
   return { ...state, refresh }
 }

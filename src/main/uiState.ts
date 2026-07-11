@@ -11,6 +11,7 @@ import type {
 import {
   UI_STATE_DEFAULTS,
   VALID_STATUS_POLL_INTERVALS_SEC,
+  VALID_USAGE_POLL_INTERVALS_SEC,
   VALID_FILES_SORT_ORDERS,
   VALID_DEFAULT_SURFACES,
   SIDEBAR_WIDTH_MIN,
@@ -91,6 +92,8 @@ type AppUiStateRow = {
   // Status polling preferences (v42)
   status_poll_interval_sec: number | null
   mute_status_notifications: number | null
+  // Dashboard "Usage" card background poll interval (D3)
+  usage_poll_interval_sec: number | null
   // Workspace footer visibility (v45)
   show_workspace_footer: number | null
   // Files-tab editor save mode (v62)
@@ -199,6 +202,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Status polling preferences (v42)
     statusPollIntervalSec: row.status_poll_interval_sec ?? UI_STATE_DEFAULTS.statusPollIntervalSec,
     muteStatusNotifications: (row.mute_status_notifications ?? 0) === 1,
+    // Dashboard "Usage" card background poll interval (D3)
+    usagePollIntervalSec: row.usage_poll_interval_sec ?? UI_STATE_DEFAULTS.usagePollIntervalSec,
     // Workspace footer visibility (v45) — default true
     showWorkspaceFooter: (row.show_workspace_footer ?? 1) === 1,
     // Files-tab editor save mode (v62) — default false (manual save)
@@ -259,6 +264,10 @@ const VALID_SOUND_PACKS: SoundPack[] = [
 // Select options surfaced in OrpheusStatusSection.tsx (5/10/15/30 min,
 // 1/2/3 hr) so the UI never offers a value the validator rejects.
 const VALID_STATUS_POLL_INTERVALS = VALID_STATUS_POLL_INTERVALS_SEC
+// Allowed values for the Claude usage background poller interval (D3). Must
+// stay in sync with the Select options surfaced in OrpheusStatusSection.tsx
+// (5/10/15/30 min, 1 hr) so the UI never offers a value the validator rejects.
+const VALID_USAGE_POLL_INTERVALS = VALID_USAGE_POLL_INTERVALS_SEC
 
 function validatePatch(patch: AppUiStatePatch): void {
   if ('lastViewKind' in patch) {
@@ -311,6 +320,16 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('muteStatusNotifications' in patch && patch.muteStatusNotifications !== undefined) {
     if (typeof patch.muteStatusNotifications !== 'boolean') {
       throw new Error('uiState: muteStatusNotifications must be a boolean')
+    }
+  }
+  if ('usagePollIntervalSec' in patch && patch.usagePollIntervalSec !== undefined) {
+    if (
+      typeof patch.usagePollIntervalSec !== 'number' ||
+      !VALID_USAGE_POLL_INTERVALS.includes(patch.usagePollIntervalSec)
+    ) {
+      throw new Error(
+        `uiState: usagePollIntervalSec must be one of ${VALID_USAGE_POLL_INTERVALS.join(', ')}`
+      )
     }
   }
   if ('showWorkspaceFooter' in patch && patch.showWorkspaceFooter !== undefined) {
@@ -477,6 +496,7 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Status polling preferences (v42)
     statusPollIntervalSec: 'status_poll_interval_sec',
     muteStatusNotifications: 'mute_status_notifications',
+    usagePollIntervalSec: 'usage_poll_interval_sec',
     // Workspace footer visibility (v45)
     showWorkspaceFooter: 'show_workspace_footer',
     // Files-tab editor save mode (v62)

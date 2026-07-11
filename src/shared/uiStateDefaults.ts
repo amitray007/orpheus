@@ -53,7 +53,14 @@ export const UI_STATE_DEFAULTS = {
   // Workbench tree/code split pane width (v69) — mirrors app_ui_state's
   // workbench_tree_width SQL DEFAULT in schema.ts. Shared by FilesTab's tree
   // and GitTab's DiffTreePane (one draggable divider width for both).
-  workbenchTreeWidth: 240
+  workbenchTreeWidth: 240,
+  // Dashboard "Usage" card background poll interval (Dashboard D3) — mirrors
+  // app_ui_state's usage_poll_interval_sec SQL DEFAULT in schema.ts. Default
+  // 10min; deliberately coarser floor/ceiling than statusPollIntervalSec
+  // above since this hits an internal, undocumented Anthropic endpoint the
+  // user doesn't want hammered (see src/main/claudeUsage.ts's rate-limit
+  // discipline).
+  usagePollIntervalSec: 600
 } as const
 
 // Draggable tree-pane width clamp bounds (px), shared by FilesTab and GitTab.
@@ -74,6 +81,13 @@ export const VALID_DEFAULT_SURFACES = ['dashboard', 'projects', 'panes'] as cons
 // OrpheusStatusSection.tsx must only offer values from this set, and the
 // main-process validators (uiState.ts, claudeStatus.ts) reject anything else.
 export const VALID_STATUS_POLL_INTERVALS_SEC: number[] = [300, 600, 900, 1800, 3600, 7200, 10800]
+
+// Valid values for the Claude usage background poller interval (seconds). The
+// UI Select in OrpheusStatusSection.tsx must only offer values from this set,
+// and the main-process validators (uiState.ts, usagePoller.ts) reject
+// anything else. No sub-5min option and a lower ceiling than the status
+// poller — this hits an internal endpoint we deliberately don't hammer.
+export const VALID_USAGE_POLL_INTERVALS_SEC: number[] = [300, 600, 900, 1800, 3600]
 
 // Sidebar-width clamp bounds (px). Mirrored by the SQL CHECK constraint on
 // app_ui_state.sidebar_width in schema.ts.
