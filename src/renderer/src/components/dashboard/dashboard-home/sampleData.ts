@@ -1,56 +1,12 @@
 // ---------------------------------------------------------------------------
-// sampleData — SAMPLE rows for the Dashboard shell's tables (Live agents,
-// Open PRs, Issues assigned). This unit validates page structure only; U4
-// wires the real TanStack live-agents table from the activity snapshot, and
-// U5 wires real `gh`-backed PR/issue tables. Nothing here is persisted or
-// fetched — nothing outside this file may import it as a data source.
+// sampleData — SAMPLE rows for the Dashboard shell's REMAINING sample tables
+// (Open PRs, Issues assigned). These are Phase 2 (`gh`-backed, U5) and stay
+// sample until then. The Live-agents sample rows that used to live here
+// (SAMPLE_AGENT_ROWS/SampleAgentRow/SampleAgentState) were REMOVED in U4 —
+// LiveAgentsTable.tsx now renders real rows from useLiveAgents.ts. Nothing
+// here is persisted or fetched — nothing outside this file may import it as
+// a data source.
 // ---------------------------------------------------------------------------
-
-export type SampleAgentState = 'working' | 'permission' | 'finished'
-
-export interface SampleAgentRow {
-  state: SampleAgentState
-  agent: string
-  project: string
-  doing: string
-  model: string
-  elapsed: string
-}
-
-export const SAMPLE_AGENT_ROWS: SampleAgentRow[] = [
-  {
-    state: 'permission',
-    agent: 'staging',
-    project: 'orpheus',
-    doing: 'run the db migration and verify counts',
-    model: 'Opus 4.8',
-    elapsed: '4m 02s'
-  },
-  {
-    state: 'working',
-    agent: 'env-scaffold',
-    project: 'orpheus-cli',
-    doing: 'add test:db to the env-var scaffold',
-    model: 'Sonnet 5',
-    elapsed: '11m 38s'
-  },
-  {
-    state: 'working',
-    agent: 'title-cb',
-    project: 'ghostty-surface',
-    doing: 'wire setTitleCallback through NAPI',
-    model: 'Opus 4.8',
-    elapsed: '2m 09s'
-  },
-  {
-    state: 'finished',
-    agent: 'cask bump',
-    project: 'homebrew-tap',
-    doing: 'bump the cask to v0.5.2',
-    model: 'Opus 4.8',
-    elapsed: '4m ago · 2m12s'
-  }
-]
 
 export type SampleCheckState = 'passing' | 'failing' | 'pending' | 'none'
 

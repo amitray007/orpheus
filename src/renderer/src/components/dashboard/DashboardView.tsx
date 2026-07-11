@@ -6,13 +6,19 @@
 // sends you to the right place; it does not re-home project/workspace
 // navigation, which stays owned by the Projects surface.
 //
-// U2 built STRUCTURE ONLY with sample data. U3 (this unit) wires the "Your
-// pulse" section to REAL numbers derived from `sessions:listAll` via
-// `usePulseData` — sessions/streak/peak-hour/active-days/heatmap/models all
-// come from real session records; only Tokens stays a placeholder (no
-// cross-session token rollup exists yet — see StatTile below, Phase 3).
-// U4 will wire the real live-agents table; U5 wires real PR/issue tables via
-// `gh`. See docs/plans/2026-07-11-003-dashboard-design.md.
+// U2 built STRUCTURE ONLY with sample data. U3 wired the "Your pulse"
+// section to REAL numbers derived from `sessions:listAll` via `usePulseData`
+// — sessions/streak/peak-hour/active-days/heatmap/models all come from real
+// session records; only Tokens stays a placeholder (no cross-session token
+// rollup exists yet — see StatTile below, Phase 3).
+//
+// U4 (this unit, the LAST Phase-1 unit) wires the real Live-agents table +
+// the "Agents waiting"/"Finished runs" triage tiles to `useLiveAgents`
+// (workspaces + sessions + activity snapshot join — see that hook's header
+// comment). The middle two triage tiles (Open PRs / Open issues) stay
+// sample/placeholder — they need account-wide `gh` calls that don't exist
+// yet (Phase 2, U5). PrTable/IssuesTable below are UNCHANGED sample tables
+// for the same reason. See docs/plans/2026-07-11-003-dashboard-design.md.
 // ---------------------------------------------------------------------------
 
 import { useState } from 'react'
@@ -28,11 +34,21 @@ import { LiveAgentsTable } from './dashboard-home/LiveAgentsTable'
 import { PrTable } from './dashboard-home/PrTable'
 import { IssuesTable } from './dashboard-home/IssuesTable'
 import { usePulseData } from './dashboard-home/usePulseData'
+import { useLiveAgents } from './dashboard-home/useLiveAgents'
 import { formatHour12 } from './dashboard-home/pulseData.helpers'
 
-export function DashboardView(): React.JSX.Element {
+export function DashboardView({
+  onSelectWorkspace
+}: {
+  /** Threaded from MainContent's onSelectWorkspace (ultimately
+   *  Dashboard.tsx's handleSelectWorkspace) so Live-agents rows can navigate
+   *  to their workspace. Optional so DashboardView still renders standalone
+   *  (e.g. in isolation/tests) without a navigation handler. */
+  onSelectWorkspace?: (workspaceId: string, projectId: string) => void
+}): React.JSX.Element {
   const [range, setRange] = useState<DashboardRange>('all')
   const pulse = usePulseData(range)
+  const liveAgents = useLiveAgents()
 
   const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
   const activeDaysMeta =
@@ -80,13 +96,20 @@ export function DashboardView(): React.JSX.Element {
       <section className="flex flex-col gap-2.5">
         <SectionHeader label="Needs you now" dotClassName="bg-accent" />
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+          {/* REAL — live count of workspaces with activity==='attention',
+              from the same useLiveAgents() join the table below renders
+              (see liveAgents.helpers.ts's buildLiveAgentRows). `hot` when
+              >0 since a waiting agent is the most actionable state. */}
           <TriageTile
-            count={2}
+            count={liveAgents.waitingCount}
             dotClassName="bg-accent"
             label="agents waiting"
             actionLabel="jump"
-            hot
+            hot={liveAgents.waitingCount > 0}
           />
+          {/* Open PRs — Phase 2 (needs an account-wide `gh search prs` call
+              that doesn't exist yet, U5). Sample data, clearly commented; do
+              not wire until U5. */}
           <TriageTile
             count={6}
             dotClassName="bg-[color:var(--color-chart-3)]"
@@ -94,14 +117,20 @@ export function DashboardView(): React.JSX.Element {
             sublabel="· 1 draft"
             actionLabel="open"
           />
+          {/* Open issues — Phase 2 (whole `gh search issues` module is new,
+              U5). Sample data, clearly commented; do not wire until U5. */}
           <TriageTile
             count={4}
             dotClassName="bg-[color:var(--color-chart-2)]"
             label="open issues"
             actionLabel="view"
           />
+          {/* REAL — live count of workspaces currently 'ready' (recently
+              finished), from the same join as above. This is the LIVE count
+              only; a historical "finished since you left" count needs new
+              transition tracking and is Phase 3 (see plan doc U6). */}
           <TriageTile
-            count={4}
+            count={liveAgents.finishedCount}
             dotClassName="bg-[color:var(--color-chart-3)]"
             label="finished runs"
             actionLabel="see"
@@ -110,7 +139,7 @@ export function DashboardView(): React.JSX.Element {
       </section>
 
       {/* ============ Live agents (full width) ============ */}
-      <LiveAgentsTable />
+      <LiveAgentsTable onSelectWorkspace={onSelectWorkspace} />
 
       {/* ============ Open PRs + Issues (side by side) ============ */}
       <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">

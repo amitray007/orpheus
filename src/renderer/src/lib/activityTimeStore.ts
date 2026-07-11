@@ -25,6 +25,16 @@ export function deleteActivityTime(workspaceId: string): void {
   store.remove(workspaceId)
 }
 
+/** Returns a stable snapshot reference of the current store state (no
+ *  subscription) — mirrors activityStore.ts's getActivitySnapshot(). Used by
+ *  useLiveAgents.ts to read "last activity at" per workspace without
+ *  subscribing to every individual key (the caller re-renders via
+ *  useActiveIdsKey on activityStore instead, then re-reads a fresh snapshot
+ *  from both stores together). */
+export function getActivityTimeSnapshot(): ReadonlyMap<string, number> {
+  return store.getSnapshot()
+}
+
 /**
  * Subscribe to a single workspace's live activity time (epoch ms or null).
  * Components calling this re-render ONLY when that specific key changes.
