@@ -6,12 +6,13 @@
 // sends you to the right place; it does not re-home project/workspace
 // navigation, which stays owned by the Projects surface.
 //
-// This unit builds STRUCTURE ONLY: page composition, the greeting + range
-// control, section scaffolding, and the responsive grid, matching the design
-// of record (dashboard-v2.html mockup). Sections are seeded with SAMPLE data
-// — U3 wires real pulse numbers (sessions/tokens/streak/peak-hour/heatmap/
-// models split) and U4 wires the real live-agents table; U5 wires real PR/
-// issue tables via `gh`. See docs/plans/2026-07-11-003-dashboard-design.md.
+// U2 built STRUCTURE ONLY with sample data. U3 (this unit) wires the "Your
+// pulse" section to REAL numbers derived from `sessions:listAll` via
+// `usePulseData` — sessions/streak/peak-hour/active-days/heatmap/models all
+// come from real session records; only Tokens stays a placeholder (no
+// cross-session token rollup exists yet — see StatTile below, Phase 3).
+// U4 will wire the real live-agents table; U5 wires real PR/issue tables via
+// `gh`. See docs/plans/2026-07-11-003-dashboard-design.md.
 // ---------------------------------------------------------------------------
 
 import { useState } from 'react'
@@ -21,23 +22,23 @@ import { SectionHeader } from './dashboard-home/SectionHeader'
 import { StatTile } from './dashboard-home/StatTile'
 import { TriageTile } from './dashboard-home/TriageTile'
 import { DashboardCard } from './dashboard-home/DashboardCard'
-import { ActivityHeatmapPlaceholder } from './dashboard-home/ActivityHeatmapPlaceholder'
+import { ActivityHeatmap } from './dashboard-home/ActivityHeatmap'
 import { ModelsDonut } from './dashboard-home/ModelsDonut'
 import { LiveAgentsTable } from './dashboard-home/LiveAgentsTable'
 import { PrTable } from './dashboard-home/PrTable'
 import { IssuesTable } from './dashboard-home/IssuesTable'
-
-// SAMPLE pulse stats — U3 replaces these with a `sessions:listAll`-backed
-// rollup (sessions/tokens/streak/peak-hour all derive from session records).
-const SAMPLE_PULSE_STATS = [
-  { label: 'Sessions', value: '418' },
-  { label: 'Tokens', value: '92.4', unit: 'M' },
-  { label: 'Current streak', value: '9', unit: 'd' },
-  { label: 'Peak hour', value: '10', unit: 'PM' }
-]
+import { usePulseData } from './dashboard-home/usePulseData'
+import { formatHour12 } from './dashboard-home/pulseData.helpers'
 
 export function DashboardView(): React.JSX.Element {
   const [range, setRange] = useState<DashboardRange>('all')
+  const pulse = usePulseData(range)
+
+  const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
+  const activeDaysMeta =
+    pulse.loading || pulse.heatmap.length === 0
+      ? 'last 6 months'
+      : `last 6 months · ${pulse.activeDays} active days`
 
   return (
     <div className="mx-auto flex max-w-[1180px] flex-col gap-[18px]">
@@ -48,17 +49,29 @@ export function DashboardView(): React.JSX.Element {
         <SectionHeader label="Your pulse" dotClassName="bg-[color:var(--color-chart-3)]" />
 
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          {SAMPLE_PULSE_STATS.map((stat) => (
-            <StatTile key={stat.label} label={stat.label} value={stat.value} unit={stat.unit} />
-          ))}
+          <StatTile label="Sessions" value={String(pulse.sessions)} loading={pulse.loading} />
+          {/* Tokens: NOT derivable cheaply from sessions:listAll — per the
+              feasibility audit, per-session token counts live only in JSONL
+              transcripts and are never rolled up in the DB. Rather than fake
+              a number, render a graceful placeholder; real rollup is Phase 3
+              (either a JSONL parse pass over all sessions, or a new `tokens`
+              column populated during refreshSessionMetadata). */}
+          <StatTile label="Tokens" value="—" subLabel="soon" loading={pulse.loading} />
+          <StatTile
+            label="Current streak"
+            value={String(pulse.currentStreak)}
+            unit={pulse.currentStreak > 0 ? 'd' : undefined}
+            loading={pulse.loading}
+          />
+          <StatTile label="Peak hour" value={peakHourLabel} loading={pulse.loading} />
         </div>
 
         <div className="grid grid-cols-1 gap-3.5 md:grid-cols-[1.6fr_1fr]">
-          <DashboardCard title="Activity" meta="last 6 months · 73 active days">
-            <ActivityHeatmapPlaceholder />
+          <DashboardCard title="Activity" meta={activeDaysMeta}>
+            <ActivityHeatmap cells={pulse.heatmap} loading={pulse.loading} />
           </DashboardCard>
-          <DashboardCard title="Models" meta="this month" contentClassName="flex-1">
-            <ModelsDonut />
+          <DashboardCard title="Models" meta="this range" contentClassName="flex-1">
+            <ModelsDonut models={pulse.models} loading={pulse.loading} />
           </DashboardCard>
         </div>
       </section>
