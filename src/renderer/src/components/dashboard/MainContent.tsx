@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from 'react'
-import { House, Kanban, ArrowLeft } from '@phosphor-icons/react'
-import { UiFoundationSample } from './UiFoundationSample'
+import { Kanban, ArrowLeft } from '@phosphor-icons/react'
+import { DashboardView } from './DashboardView'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
@@ -42,28 +42,6 @@ function PlaceholderSection({ title }: { title: string }): React.JSX.Element {
         Not found
       </div>
     </section>
-  )
-}
-
-// Placeholder only — intentionally minimal. The repo's CLAUDE.md forbids
-// reintroducing the OLD dashboard/home page; this "dashboard" surface is a
-// NEW concept whose real content is a separate future design pass. Do not
-// build real dashboard content here.
-//
-// TEMPORARY (U1 verification): renders <UiFoundationSample /> below the
-// placeholder copy to prove the shadcn/evilcharts UI foundation is themed to
-// Orpheus tokens in a real dev build. U2 (Dashboard shell) replaces this
-// whole placeholder — remove the sample import + render then.
-function DashboardPlaceholder(): React.JSX.Element {
-  return (
-    <div className="h-full flex flex-col overflow-auto">
-      <div className="flex flex-col items-center justify-center gap-2 text-center py-8 shrink-0">
-        <House size={32} weight="regular" className="text-text-muted" />
-        <p className="text-sm font-medium text-text-primary">Dashboard</p>
-        <p className="text-xs text-text-muted">Your overview lands here soon.</p>
-      </div>
-      <UiFoundationSample />
-    </div>
   )
 }
 
@@ -297,7 +275,10 @@ export function MainContent({
   }
 
   if (view.kind === 'dashboard') {
-    return <DashboardPlaceholder />
+    // This is a NEW overview surface, not the removed home page (see
+    // CLAUDE.md) — it aggregates status and sends you to the right place,
+    // it does not re-home project/workspace navigation.
+    return <DashboardView />
   }
 
   if (view.kind === 'sessions') {
