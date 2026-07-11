@@ -6,18 +6,35 @@
 // sends you to the right place; it does not re-home project/workspace
 // navigation, which stays owned by the Projects surface.
 //
-// U2 built STRUCTURE ONLY with sample data. U3 wired the "Your pulse"
-// section to REAL numbers derived from `sessions:listAll` via `usePulseData`
-// — sessions/streak/peak-hour/active-days/heatmap/models all come from real
-// session records; only Tokens stays a placeholder (no cross-session token
-// rollup exists yet — see StatTile below, Phase 3).
+// V1 REBUILD (visual-only, per dashboard-v3.html "tightened" mockup) — the
+// critique was "huge half-empty hero-metric cards, flat sameness, wasted
+// space". New structure, top to bottom:
+//   a. Hero row: greeting (DashboardTopBar) + an inline stats row (Sessions/
+//      Tokens/Streak/Peak hour via the now-borderless StatTile) side by
+//      side, NOT a 4-card grid.
+//   b. Pulse row: a 0.85fr/1.25fr grid — Usage (the ONE focal/primary panel,
+//      DashboardCard variant="primary") on the left, Activity (the new
+//      weekly small-multiples chart, ActivityChart) on the right, stacking
+//      to one column under 780px.
+//   c. "Needs you now" — a flex-wrap strip of compact TriageTile chips
+//      (replaces the old big-tile grid).
+//   d. Live agents (full width, unchanged position).
+//   e. Open PRs + Issues, side by side (unchanged position).
+// All data wiring is unchanged from U3/U4/U5 below — this unit is
+// presentation-only, no new fetches, no hook behavior changes.
+//
+// U3 wired the "Your pulse" numbers to REAL data derived from
+// `sessions:listAll` via `usePulseData` — sessions/streak/peak-hour/active-
+// days/heatmap/weeklyActivity all come from real session records; only
+// Tokens stays a placeholder (no cross-session token rollup exists yet —
+// see StatTile below, Phase 3).
 //
 // U4 wired the real Live-agents table + the "Agents waiting"/"Finished runs"
 // triage tiles to `useLiveAgents` (workspaces + sessions + activity snapshot
 // join — see that hook's header comment).
 //
-// U5 (Phase 2, this unit) wires the middle two triage tiles (Open PRs / Open
-// issues) plus PrTable/IssuesTable to REAL account-wide GitHub data via
+// U5 (Phase 2) wires the middle two triage tiles (Open PRs / Open issues)
+// plus PrTable/IssuesTable to REAL account-wide GitHub data via
 // `useGithubData` (`gh search prs --author @me` / `gh search issues
 // --assignee @me`, new IPC in src/main/github.ts). See
 // docs/plans/2026-07-11-003-dashboard-design.md.
@@ -28,7 +45,7 @@ import { SectionHeader } from './dashboard-home/SectionHeader'
 import { StatTile } from './dashboard-home/StatTile'
 import { TriageTile } from './dashboard-home/TriageTile'
 import { DashboardCard } from './dashboard-home/DashboardCard'
-import { ActivityHeatmap } from './dashboard-home/ActivityHeatmap'
+import { ActivityChart } from './dashboard-home/ActivityChart'
 import { UsageLimitsCard } from './dashboard-home/UsageLimitsCard'
 import { LiveAgentsTable } from './dashboard-home/LiveAgentsTable'
 import { PrTable } from './dashboard-home/PrTable'
@@ -38,6 +55,7 @@ import { useLiveAgents } from './dashboard-home/useLiveAgents'
 import { useGithubData } from './dashboard-home/useGithubData'
 import { useClaudeUsage } from './dashboard-home/useClaudeUsage'
 import { formatHour12 } from './dashboard-home/pulseData.helpers'
+import { formatCompact } from './dashboard-home/dashboardHome.helpers'
 
 export function DashboardView({
   onSelectWorkspace
@@ -50,35 +68,33 @@ export function DashboardView({
 }): React.JSX.Element {
   // The Dashboard is fixed to a rolling 7-day window (no user-facing range
   // picker — see DashboardTopBar). The heatmap still shows ~6 months (it's a
-  // time view); the tiles + models reflect the last 7 days.
+  // time view); weeklyActivity is always the trailing 7 days; the stat tiles
+  // reflect the last 7 days.
   const pulse = usePulseData('7d')
   const liveAgents = useLiveAgents()
   const github = useGithubData()
   const claudeUsage = useClaudeUsage()
 
   const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
-  const activeDaysMeta =
-    pulse.loading || pulse.heatmap.length === 0
-      ? 'last 6 months'
-      : `last 6 months · ${pulse.activeDays} active days`
 
   return (
-    <div className="mx-auto flex max-w-[1180px] flex-col gap-[18px]">
-      <DashboardTopBar />
-
-      {/* ============ Your pulse (analytics treat) ============ */}
-      <section className="flex flex-col gap-2.5">
-        <SectionHeader label="Your pulse" dotClassName="bg-[color:var(--color-chart-3)]" />
-
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          <StatTile label="Sessions" value={String(pulse.sessions)} loading={pulse.loading} />
+    <div className="mx-auto flex max-w-[1180px] flex-col gap-[22px]">
+      {/* ============ Hero: greeting + inline stats (no big stat cards) ============ */}
+      <div className="flex flex-wrap items-end justify-between gap-5">
+        <DashboardTopBar />
+        <div className="flex flex-wrap gap-6 gap-y-3">
+          <StatTile
+            label="Sessions"
+            value={formatCompact(pulse.sessions)}
+            loading={pulse.loading}
+          />
           {/* Tokens: NOT derivable cheaply from sessions:listAll — per the
               feasibility audit, per-session token counts live only in JSONL
               transcripts and are never rolled up in the DB. Rather than fake
               a number, render a graceful placeholder; real rollup is Phase 3
               (either a JSONL parse pass over all sessions, or a new `tokens`
               column populated during refreshSessionMetadata). */}
-          <StatTile label="Tokens" value="—" subLabel="soon" loading={pulse.loading} />
+          <StatTile label="Tokens" value="—" subLabel="soon" dim loading={pulse.loading} />
           <StatTile
             label="Current streak"
             value={String(pulse.currentStreak)}
@@ -87,21 +103,22 @@ export function DashboardView({
           />
           <StatTile label="Peak hour" value={peakHourLabel} loading={pulse.loading} />
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-[1.6fr_1fr]">
-          <DashboardCard title="Activity" meta={activeDaysMeta}>
-            <ActivityHeatmap cells={pulse.heatmap} loading={pulse.loading} />
-          </DashboardCard>
-          <DashboardCard title="Usage" meta="resets shown" contentClassName="flex-1">
-            <UsageLimitsCard result={claudeUsage.result} loading={claudeUsage.loading} />
-          </DashboardCard>
-        </div>
-      </section>
+      {/* ============ Pulse row: Usage (focal) + Activity ============ */}
+      <div className="grid grid-cols-1 gap-4 min-[780px]:grid-cols-[0.85fr_1.25fr]">
+        <DashboardCard title="Usage" meta="Claude · resets shown" variant="primary">
+          <UsageLimitsCard result={claudeUsage.result} loading={claudeUsage.loading} />
+        </DashboardCard>
+        <DashboardCard title="Activity" meta="this week · Mon–Sun">
+          <ActivityChart days={pulse.weeklyActivity} loading={pulse.loading} />
+        </DashboardCard>
+      </div>
 
-      {/* ============ Needs you now (triage) ============ */}
-      <section className="flex flex-col gap-2.5">
+      {/* ============ Needs you now (triage strip) ============ */}
+      <div className="flex flex-col gap-2.5">
         <SectionHeader label="Needs you now" dotClassName="bg-accent" />
-        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+        <div className="flex flex-wrap gap-2">
           {/* REAL — live count of workspaces with activity==='attention',
               from the same useLiveAgents() join the table below renders
               (see liveAgents.helpers.ts's buildLiveAgentRows). `hot` when
@@ -141,13 +158,13 @@ export function DashboardView({
             actionLabel="see"
           />
         </div>
-      </section>
+      </div>
 
       {/* ============ Live agents (full width) ============ */}
       <LiveAgentsTable onSelectWorkspace={onSelectWorkspace} />
 
       {/* ============ Open PRs + Issues (side by side) ============ */}
-      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 min-[780px]:grid-cols-2">
         <PrTable />
         <IssuesTable />
       </div>

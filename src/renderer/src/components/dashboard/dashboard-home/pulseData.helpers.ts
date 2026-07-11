@@ -138,11 +138,19 @@ export function computePeakHour(sessions: SessionRecord[]): number | null {
   return peakCount > 0 ? peakHour : null
 }
 
-/** Format an hour-of-day (0-23) as a 12h clock label, e.g. 22 -> "10 PM". */
+/** Format an hour-of-day (0-23) as a LOCALE-AWARE clock label, e.g. 22 -> "10
+ *  PM" for a 12h-locale user, "22" for a 24h-locale one. Per the mockup's
+ *  explicit note ("use toLocaleTimeString, not a hardcoded format") — this
+ *  used to hand-roll AM/PM, which silently assumed every user runs a 12h
+ *  clock; `toLocaleTimeString` instead follows the OS's actual 12h/24h
+ *  preference. The hour is dropped into a throwaway local Date (this
+ *  function only ever receives an hour-of-day integer, not a real date) and
+ *  formatted with `hour: 'numeric'` only — no minute — matching the
+ *  mockup's compact "11 PM" style. Kept under its original name to avoid a
+ *  churny rename across its one call site (DashboardView.tsx's
+ *  peakHourLabel). */
 export function formatHour12(hour: number): string {
-  const period = hour < 12 ? 'AM' : 'PM'
-  const h12 = hour % 12 === 0 ? 12 : hour % 12
-  return `${h12} ${period}`
+  return new Date(2000, 0, 1, hour).toLocaleTimeString([], { hour: 'numeric' })
 }
 
 // ---------------------------------------------------------------------------
@@ -246,3 +254,53 @@ export const WEEKDAY_NAMES = [
   'Fridays',
   'Saturdays'
 ]
+
+// ---------------------------------------------------------------------------
+// 6. Weekly activity — the Activity card's small-multiples chart data (V1
+//    rebuild, replacing the 6-month heatmap in that card — see
+//    ActivityChart.tsx). Exactly 7 entries covering the trailing 7 calendar
+//    days ending today (local timezone, via the same dayKey/startOfLocalDay
+//    helpers used above), ordered MONDAY-FIRST (weekday 0=Mon..6=Sun) to
+//    match the mockup's "M T W T F S S" axis — a deliberate departure from
+//    computeHeatmap's Sunday-first (dow via JS getDay()) convention, since
+//    this is a distinct chart with its own weekday ordering, not a reuse of
+//    the heatmap's grid.
+// ---------------------------------------------------------------------------
+export interface WeeklyActivityDay {
+  weekday: number // 0=Mon..6=Sun
+  sessions: number
+  messages: number
+}
+
+export function computeWeeklyActivity(
+  sessions: SessionRecord[],
+  now: number = Date.now()
+): WeeklyActivityDay[] {
+  const sessionsByDay = new Map<string, number>()
+  const messagesByDay = new Map<string, number>()
+  for (const s of sessions) {
+    const key = dayKey(s.createdAt)
+    sessionsByDay.set(key, (sessionsByDay.get(key) ?? 0) + 1)
+    messagesByDay.set(key, (messagesByDay.get(key) ?? 0) + (s.messageCount ?? 0))
+  }
+
+  const today = startOfLocalDay(new Date(now))
+  // JS getDay() is Sun=0..Sat=6; remap to Mon=0..Sun=6 so "today" walks
+  // backward to the correct Monday-anchored start of the trailing week.
+  const todayMonFirst = (today.getDay() + 6) % 7
+  const weekStart = new Date(today)
+  weekStart.setDate(weekStart.getDate() - todayMonFirst)
+
+  const days: WeeklyActivityDay[] = []
+  for (let weekday = 0; weekday < 7; weekday++) {
+    const cellDate = new Date(weekStart)
+    cellDate.setDate(cellDate.getDate() + weekday)
+    const key = dayKey(cellDate.getTime())
+    days.push({
+      weekday,
+      sessions: sessionsByDay.get(key) ?? 0,
+      messages: messagesByDay.get(key) ?? 0
+    })
+  }
+  return days
+}

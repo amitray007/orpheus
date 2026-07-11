@@ -15,14 +15,16 @@ export function greetingForHour(hour: number): string {
 }
 
 /**
- * Named variant of greetingForHour (D4) — appends ", {name}" when a non-empty
- * name is available (the user's GitHub display name/login, refreshed via
- * `gh api user`), else falls back to the bare greeting with no trailing
- * comma. `name` is expected to already be trimmed/resolved by the caller.
+ * Named variant of greetingForHour (D4) — appends ", {firstName}" when a name
+ * is available (the user's GitHub display name/login, refreshed via
+ * `gh api user`), else falls back to the bare greeting with no trailing comma.
+ * Only the FIRST name is shown (per user preference) — the full name stays
+ * persisted in the DB; this is display-only. Null/empty-safe.
  */
 export function greetingWithName(hour: number, name: string | null): string {
   const greeting = greetingForHour(hour)
-  return name && name.length > 0 ? `${greeting}, ${name}` : greeting
+  const first = name?.trim().split(/\s+/)[0]
+  return first ? `${greeting}, ${first}` : greeting
 }
 
 /**
@@ -76,4 +78,36 @@ export function formatResetCountdown(
   if (days > 0) return `${days}d ${hours}h`
   if (hours > 0) return `${hours}h ${mins}m`
   return `${mins}m`
+}
+
+/**
+ * Compact count formatter (V1 rebuild — the mockup's "1.3k · 92M · 100k"
+ * requirement) for the dashboard's stat/triage/table counts, which can grow
+ * unbounded (session totals, message totals, GitHub counts on a busy
+ * account) and would otherwise blow out the tightened layout's fixed-width
+ * columns. Below 1000, returns the exact integer unchanged — small counts
+ * are the common case and should read as plain numbers, not "0.1k". At
+ * 1000+, scales to k/M and shows ONE decimal place only while the scaled
+ * value is still single-digit (<10 of that unit, e.g. 1.3k/2.3k) — once
+ * it's double digits or more (>=10k, >=10M) the decimal is dropped since it
+ * stops being meaningfully precise at a glance. A trailing ".0" (e.g. an
+ * exact 1000 -> "1.0k") is stripped so round numbers read as "1k", not
+ * "1.0k". Durations/timestamps are NOT run through this — only raw counts.
+ */
+export function formatCompact(n: number): string {
+  const sign = n < 0 ? '-' : ''
+  const abs = Math.abs(n)
+  if (abs < 1000) return `${sign}${abs}`
+
+  const [divisor, suffix] = abs < 1_000_000 ? [1000, 'k'] : [1_000_000, 'M']
+  const scaled = abs / divisor
+  // Round to 1 decimal first, then decide whether that rounded value still
+  // qualifies as "<10 of the unit" — avoids e.g. 9.96k rounding to "10.0k"
+  // instead of the intended "10k".
+  const rounded1dp = Math.round(scaled * 10) / 10
+  const value = rounded1dp < 10 ? rounded1dp : Math.round(rounded1dp)
+  // Strip a trailing ".0" so exact/round values (1000 -> 1, 92000000 -> 92)
+  // read as "1k"/"92M" rather than "1.0k"/"92.0M".
+  const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1)
+  return `${sign}${formatted}${suffix}`
 }

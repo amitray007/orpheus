@@ -1,21 +1,28 @@
 // ---------------------------------------------------------------------------
 // IssuesTable — the "Issues assigned" card (Dashboard Phase 2, U5). Renders
 // REAL account-wide open issues from `useGithubData` (backed by `gh search
-// issues --assignee @me`), ordered by updatedAt desc. Replaces the
-// SAMPLE_ISSUE_ROWS shell render from U2.
+// issues --assignee @me`), ordered by updatedAt desc.
 //
-// TWO-LINE rows (per the design spec + this unit's brief):
-//   Line 1: #number · title · label chips, rendered with the ACTUAL GitHub
-//     label color (`GhLabel.color`, a hex string with no leading '#') — the
-//     ONE place in this table a real external color is allowed per the
-//     THEME RULE; everything else uses Orpheus tokens.
-//   Line 2: repo (mono muted) · "updated Xago" (formatCompactAge).
+// TWO-LINE rows, mockup's `.l2row` pattern:
+//   Line 1: title (truncates).
+//   Line 2: repo (mono muted, truncates, flex:0 1 auto) · ONE label chip,
+//     PINNED right (shrink-0) — the PRIMARY/first label only
+//     (`issue.labels[0]`), never the full label set: the mockup explicitly
+//     shows a single chip per row, and an issue with 5+ labels would
+//     otherwise blow the line-2 row out or force a second wrap. Rendered
+//     with the ACTUAL GitHub label color (`GhLabel.color`, hex with no
+//     leading '#') — the ONE place in this table a real external color is
+//     allowed per the THEME RULE; everything else uses Orpheus tokens.
 // Row click opens the issue's GitHub url via `window.api.shell.openExternal`.
+//
+// V1 REBUILD — overflow hardening: table-layout:fixed with explicit widths
+// on every column but Title, matching PrTable's hardening. Counts run
+// through formatCompact.
 // ---------------------------------------------------------------------------
 
 import { DashboardCard } from './DashboardCard'
 import { useGithubData } from './useGithubData'
-import { formatCompactAge } from './dashboardHome.helpers'
+import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
 
 function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
   return (
@@ -33,7 +40,7 @@ function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
 export function IssuesTable(): React.JSX.Element {
   const { loading, issues, openIssueCount, possiblyUnavailable } = useGithubData()
 
-  const meta = loading ? 'loading…' : `${openIssueCount} · by updated`
+  const meta = loading ? 'loading…' : `${formatCompact(openIssueCount)} · by updated`
 
   function openIssue(url: string): void {
     void window.api.shell.openExternal(url)
@@ -45,10 +52,15 @@ export function IssuesTable(): React.JSX.Element {
         <EmptyState hint={possiblyUnavailable} />
       ) : (
         <div className="-mx-1 overflow-x-auto">
-          <table className="w-full border-collapse text-xs">
+          <table className="w-full table-fixed border-collapse text-xs">
+            <colgroup>
+              <col className="w-[42px]" />
+              <col />
+              <col className="w-14" />
+            </colgroup>
             <thead>
               <tr>
-                <th className="w-[1%] border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
+                <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
                   #
                 </th>
                 <th className="border-b border-border-default px-2.5 pb-1.5 text-left font-mono text-[9.5px] tracking-wider text-text-muted uppercase">
@@ -60,48 +72,53 @@ export function IssuesTable(): React.JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {issues.map((issue) => (
-                <tr
-                  key={`${issue.repo}#${issue.number}`}
-                  onClick={() => openIssue(issue.url)}
-                  className="cursor-pointer align-top hover:bg-surface-overlay"
-                >
-                  <td className="border-b border-border-default px-2.5 py-2 align-top font-mono text-[10.5px] text-text-muted tabular-nums">
-                    #{issue.number}
-                  </td>
-                  <td className="max-w-0 border-b border-border-default px-2.5 py-2 align-top">
-                    <div className="flex items-center gap-1.5">
-                      <span className="min-w-0 truncate text-text-primary">{issue.title}</span>
-                      {issue.labels.map((lab) => (
-                        <span
-                          key={lab.name}
-                          className="inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap"
-                          style={{
-                            // The ONE place a real external (non-token) color
-                            // is allowed — GitHub's own label color, per the
-                            // THEME RULE. `--lc` is the raw hex; color-mix
-                            // derives the tinted bg/border from it so the
-                            // chip still reads correctly in light + dark
-                            // without a separate per-theme hex table.
-                            ['--lc' as string]: `#${lab.color}`,
-                            color: 'var(--lc)',
-                            background: 'color-mix(in srgb, var(--lc) 14%, transparent)',
-                            borderColor: 'color-mix(in srgb, var(--lc) 35%, transparent)'
-                          }}
-                        >
-                          {lab.name}
+              {issues.map((issue) => {
+                // Primary/first label only — never the full label set (see
+                // header comment). Undefined when an issue has no labels,
+                // which the line-2 row below tolerates (repo alone).
+                const primaryLabel = issue.labels[0]
+                return (
+                  <tr
+                    key={`${issue.repo}#${issue.number}`}
+                    onClick={() => openIssue(issue.url)}
+                    className="cursor-pointer align-top hover:bg-surface-overlay"
+                  >
+                    <td className="border-b border-border-default px-2.5 py-2 align-top font-mono text-[10.5px] text-text-muted tabular-nums">
+                      #{issue.number}
+                    </td>
+                    <td className="border-b border-border-default px-2.5 py-2 align-top">
+                      <div className="truncate text-text-primary">{issue.title}</div>
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-text-muted">
+                          {issue.repo}
                         </span>
-                      ))}
-                    </div>
-                    <div className="mt-0.5 truncate font-mono text-[10.5px] whitespace-nowrap text-text-muted">
-                      {issue.repo}
-                    </div>
-                  </td>
-                  <td className="border-b border-border-default px-2.5 py-2 text-right align-top font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">
-                    {formatCompactAge(issue.updatedAt)}
-                  </td>
-                </tr>
-              ))}
+                        {primaryLabel ? (
+                          <span
+                            className="inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap"
+                            style={{
+                              // The ONE place a real external (non-token) color
+                              // is allowed — GitHub's own label color, per the
+                              // THEME RULE. `--lc` is the raw hex; color-mix
+                              // derives the tinted bg/border from it so the
+                              // chip still reads correctly in light + dark
+                              // without a separate per-theme hex table.
+                              ['--lc' as string]: `#${primaryLabel.color}`,
+                              color: 'var(--lc)',
+                              background: 'color-mix(in srgb, var(--lc) 14%, transparent)',
+                              borderColor: 'color-mix(in srgb, var(--lc) 35%, transparent)'
+                            }}
+                          >
+                            {primaryLabel.name}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="border-b border-border-default px-2.5 py-2 text-right align-top font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">
+                      {formatCompactAge(issue.updatedAt)}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

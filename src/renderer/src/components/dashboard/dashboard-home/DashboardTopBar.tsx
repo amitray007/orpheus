@@ -1,12 +1,21 @@
 // ---------------------------------------------------------------------------
-// DashboardTopBar — the greeting at the top of the Dashboard page. Time-of-day
-// PLUS the user's GitHub name (D4) — "Good morning, {name}" — computed from
-// the current hour and the `githubUsername` persisted on app_ui_state. The
-// name paints instantly from the shared uiState store (no fetch-on-mount
-// flash) and is refreshed silently in the background on every app open via
-// `github:refreshUsername`. The Dashboard is fixed to a 7-day window (see
-// DashboardView) — that's deliberately NOT surfaced as a control in the UI,
-// so there's no range picker here anymore.
+// DashboardTopBar — V1 REBUILD: now renders ONLY the greeting (time-of-day +
+// GitHub name, D4 — "Good morning, {name}"), sized up to ~26px to match
+// dashboard-v3.html's `.hero .greet .hi` (27px). Bumped from the old 22px
+// since the greeting used to anchor its own row; now it sits alongside the
+// inline stats row inside DashboardView's `.hero` flex container, so it
+// needs the extra visual weight to stay the clear anchor of that row. The
+// inline stats themselves (Sessions/Tokens/Streak/Peak hour) moved OUT of
+// this component and into DashboardView directly — this file no longer owns
+// any layout beyond its own greeting text, so it doesn't need pulse data
+// threaded through it.
+//
+// Name resolution is unchanged: computed from the current hour and the
+// `githubUsername` persisted on app_ui_state, paints instantly from the
+// shared uiState store (no fetch-on-mount flash), and is refreshed silently
+// in the background on every app open via `github:refreshUsername`. The
+// Dashboard is fixed to a 7-day window (see DashboardView) — deliberately
+// NOT surfaced as a control here, so there's no range picker.
 // ---------------------------------------------------------------------------
 
 import { useEffect } from 'react'
@@ -37,8 +46,8 @@ export function DashboardTopBar(): React.JSX.Element {
   }, [])
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="text-[22px] font-semibold tracking-tight text-text-primary">{greeting}</div>
+    <div className="text-[26px] leading-tight font-semibold tracking-tight text-text-primary">
+      {greeting}
     </div>
   )
 }

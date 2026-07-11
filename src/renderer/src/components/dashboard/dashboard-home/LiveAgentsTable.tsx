@@ -1,8 +1,6 @@
 // ---------------------------------------------------------------------------
 // LiveAgentsTable — U4 (final Phase-1 unit). Real TanStack Table wired to
-// `useLiveAgents` (workspaces + sessions + activity snapshot join). Replaces
-// the SAMPLE_AGENT_ROWS render from U2/U3 (sampleData.ts is no longer
-// imported by this file).
+// `useLiveAgents` (workspaces + sessions + activity snapshot join).
 //
 // TanStack Table is HEADLESS — it owns column defs, row model, and (future)
 // sort state; the actual markup below is hand-rolled to match Orpheus's
@@ -21,6 +19,12 @@
 //     workspace that just started, before any user message is recorded)
 //     collapse to a single line so the table doesn't grow empty vertical
 //     space for no reason.
+//
+// V1 REBUILD — overflow hardening: table-layout:fixed with explicit widths
+// on State/Project/Model/Since (mirroring PrTable/IssuesTable's hardening),
+// leaving Agent as the one flexible column (its cell already used the
+// max-w-0 truncation trick, kept as-is). Empty state is now the mockup's
+// compact `.empty-inline` — one muted dot + one line, not a big padded void.
 // ---------------------------------------------------------------------------
 
 import {
@@ -38,6 +42,7 @@ import {
   type LiveAgentDisplayState,
   type LiveAgentRow
 } from './liveAgents.helpers'
+import { formatCompact } from './dashboardHome.helpers'
 
 // State badge colors — kept consistent with ActivityIndicator.tsx's own
 // palette for the SAME states (that component uses text-emerald-400 for
@@ -93,11 +98,9 @@ const HEADER_CLASS =
 
 function EmptyState(): React.JSX.Element {
   return (
-    <div className="flex flex-col items-center justify-center gap-1 py-10 text-center">
-      <div className="text-[12.5px] font-medium text-text-primary">No active agents</div>
-      <div className="text-[11px] text-text-muted">
-        Nothing working, waiting, or recently finished right now.
-      </div>
+    <div className="flex items-center gap-2.5 px-1 py-3.5 text-[12px] text-text-muted">
+      <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-text-muted/40" aria-hidden="true" />
+      Nothing working, waiting, or recently finished right now.
     </div>
   )
 }
@@ -128,7 +131,7 @@ export function LiveAgentsTable({
 
   const meta = loading
     ? 'loading…'
-    : `${running} running · ${finishedCount} finished · ${waitingCount} waiting`
+    : `${formatCompact(running)} running · ${formatCompact(finishedCount)} finished · ${formatCompact(waitingCount)} waiting`
 
   return (
     <DashboardCard title="Live agents" meta={meta}>
@@ -136,7 +139,14 @@ export function LiveAgentsTable({
         <EmptyState />
       ) : (
         <div className="-mx-1 overflow-x-auto">
-          <table className="w-full border-collapse text-xs">
+          <table className="w-full table-fixed border-collapse text-xs">
+            <colgroup>
+              <col className="w-[104px]" />
+              <col />
+              <col className="w-[110px]" />
+              <col className="w-[78px]" />
+              <col className="w-14" />
+            </colgroup>
             <thead>
               <tr>
                 <th className={HEADER_CLASS}>State</th>
@@ -185,10 +195,10 @@ export function LiveAgentsTable({
                         </div>
                       ) : null}
                     </td>
-                    <td className="border-b border-border-default px-2.5 py-2 font-mono text-[10.5px] whitespace-nowrap text-text-muted">
+                    <td className="truncate border-b border-border-default px-2.5 py-2 font-mono text-[10.5px] text-text-muted">
                       {agent.projectName}
                     </td>
-                    <td className="border-b border-border-default px-2.5 py-2 font-mono text-[10px] whitespace-nowrap text-text-muted">
+                    <td className="truncate border-b border-border-default px-2.5 py-2 font-mono text-[10px] text-text-muted">
                       {agent.model ?? '—'}
                     </td>
                     <td className="border-b border-border-default px-2.5 py-2 text-right font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">

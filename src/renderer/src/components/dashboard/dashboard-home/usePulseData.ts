@@ -19,9 +19,11 @@ import {
   computeHeatmap,
   computePeakHour,
   computeStreaks,
+  computeWeeklyActivity,
   filterByRange,
   sessionsCount,
-  type HeatmapCell
+  type HeatmapCell,
+  type WeeklyActivityDay
 } from './pulseData.helpers'
 
 export interface PulseData {
@@ -39,8 +41,14 @@ export interface PulseData {
   peakHour: number | null
   /** Distinct calendar days with >=1 session, in range. */
   activeDays: number
-  /** Fixed ~6-month heatmap, independent of `range` (see file header). */
+  /** Fixed ~6-month heatmap, independent of `range` (see file header). Kept
+   *  for any other consumer of the raw grid data — the Activity CARD itself
+   *  now renders `weeklyActivity` below, not this (V1 rebuild). */
   heatmap: HeatmapCell[]
+  /** Trailing 7 calendar days (Mon..Sun), independent of `range` for the
+   *  same reason the heatmap is — the Activity card's own fixed-window
+   *  small-multiples chart data (V1 rebuild), not a range-filtered stat. */
+  weeklyActivity: WeeklyActivityDay[]
 }
 
 export function usePulseData(range: DashboardRange): PulseData {
@@ -77,7 +85,8 @@ export function usePulseData(range: DashboardRange): PulseData {
         longestStreak: 0,
         peakHour: null,
         activeDays: 0,
-        heatmap: []
+        heatmap: [],
+        weeklyActivity: []
       }
     }
 
@@ -100,7 +109,10 @@ export function usePulseData(range: DashboardRange): PulseData {
       activeDays: activeDaysCount(ranged),
       // Heatmap always spans its own fixed 6-month window (see file header),
       // computed from full history so a "7d" range doesn't blank it out.
-      heatmap: computeHeatmap(allSessions)
+      heatmap: computeHeatmap(allSessions),
+      // Same reasoning — the Activity card's own fixed trailing-7-day window,
+      // computed from full history so it doesn't depend on `range`.
+      weeklyActivity: computeWeeklyActivity(allSessions)
     }
   }, [allSessions, range, error])
 }

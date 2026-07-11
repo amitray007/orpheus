@@ -1,7 +1,11 @@
 // ---------------------------------------------------------------------------
-// UsageLimitsCard — the "Usage" pulse card, REPLACING the Models donut.
-// Sourced from Claude Code's own undocumented usage/limits endpoint (see
-// src/main/claudeUsage.ts) via `useClaudeUsage`. Renders:
+// UsageLimitsCard — content for the "Usage" pulse panel, which V1's
+// DashboardView now wraps in `<DashboardCard variant="primary">` (the ONE
+// focal/emphasized panel in the pulse row per dashboard-v3.html's
+// `.panel.primary`) — this file only renders the meters, the accent-tinted
+// border/gradient shell lives in DashboardCard. Sourced from Claude Code's
+// own undocumented usage/limits endpoint (see src/main/claudeUsage.ts) via
+// `useClaudeUsage`. Renders:
 //   - Session (five_hour) meter — "Session · 5h", utilization% + reset
 //     countdown.
 //   - Weekly (seven_day) meter — "Weekly · 7d", same shape.
@@ -65,7 +69,7 @@ function Meter({ label, window }: { label: string; window: ClaudeUsageWindow }):
           ) : null}
         </span>
       </div>
-      <div className="h-[6px] w-full overflow-hidden rounded-full bg-surface-overlay">
+      <div className="h-[7px] w-full overflow-hidden rounded-full bg-surface-overlay">
         <div
           className={cn('h-full rounded-full transition-[width]', fillClass)}
           style={{ width: `${clamped}%` }}
@@ -147,7 +151,7 @@ export function UsageLimitsCard({
       <Meter label="Weekly · 7d" window={result.sevenDay} />
 
       {modelLimits.length > 0 ? (
-        <div className="flex flex-col gap-1.5 border-t border-border-default pt-2.5">
+        <div className="mt-1 flex flex-col gap-1.5 border-t border-border-default pt-3">
           {modelLimits.map((limit, i) => (
             // kind+group+modelName is unique per response; index guards the
             // (extremely unlikely) duplicate-scope case without crashing.
