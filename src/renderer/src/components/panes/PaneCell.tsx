@@ -449,6 +449,16 @@ export function PaneCell({
     setEditingName(false)
   }
 
+  // Header label (issue #1b) — the header shows the pane's setup-rule
+  // COMMAND when one is set (e.g. "npm run dev"), so a running pane reads
+  // as "what's actually running" rather than a generic "Pane N" name. A
+  // plain-shell pane (command === '') has nothing more informative to show
+  // than its name, so it keeps the existing displayName fallback. This is
+  // purely a DISPLAY substitution — double-click-to-rename below still
+  // seeds/edits `displayName`, never `headerLabel`, so renaming always
+  // targets the name field regardless of which text is currently visible.
+  const headerLabel = command.trim().length > 0 ? command : displayName
+
   const isDragging = draggingPaneId === paneId
 
   const handleClose = (): void => {
@@ -548,7 +558,11 @@ export function PaneCell({
           // Double-click to rename (issue #21) — mirrors the Sidebar's own
           // double-click-to-rename affordance for workspace/project rows,
           // so Panes stays consistent with the rest of the app's rename UX
-          // rather than inventing a new gesture.
+          // rather than inventing a new gesture. Displays `headerLabel`
+          // (issue #1b — command-when-set, else displayName), but the
+          // rename gesture always seeds/edits `displayName`: renaming a
+          // pane never touches its setup-rule command, only its name, even
+          // while the command is what's currently on screen.
           <span
             title="Double-click to rename"
             onDoubleClick={(e) => {
@@ -561,7 +575,7 @@ export function PaneCell({
               focused ? 'text-text-primary' : 'text-text-muted'
             ].join(' ')}
           >
-            {displayName}
+            {headerLabel}
           </span>
         )}
 
@@ -674,15 +688,6 @@ export function PaneCell({
           </div>
         )}
       </div>
-
-      {/* Setup-rule strip — only shown when a rule is actually set, mirrors
-          mockup .setuprow. Omitted entirely for a plain shell pane; adding
-          it unconditionally would just be dead chrome for the common case. */}
-      {command ? (
-        <div className="flex h-[23px] flex-shrink-0 items-center gap-1.5 border-t border-dashed border-border-default bg-surface-raised px-2 font-mono text-[9.5px] text-text-muted">
-          setup: <span className="text-accent">{command}</span> · then shell
-        </div>
-      ) : null}
     </div>
   )
 }
