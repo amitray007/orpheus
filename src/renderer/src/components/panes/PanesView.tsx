@@ -47,7 +47,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SquaresFour } from '@phosphor-icons/react'
 import type { SplitDirection, SplitTree as SplitTreeShape } from '@shared/types'
-import { showChipDropdown, chipDropdownId } from '@/lib/overlayClient'
+import { showChipDropdown, hideChipDropdown, chipDropdownId } from '@/lib/overlayClient'
 import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
 import { useUiState } from '@/lib/uiStateStore'
 import { setPaneRunning, restartPane } from '@/lib/paneRunStateStore'
@@ -424,6 +424,70 @@ export function PanesView(): React.JSX.Element {
     if (firstPaneId) void handleSplit(firstPaneId, 'v')
   }, [localTree, focusedPaneId, terminals, handleAddFirstPane, handleSplit])
 
+  // Keyboard shortcuts — Cmd+D (split right) / Cmd+Shift+D (split below) /
+  // Cmd+T (new pane), scoped to whenever PanesView is mounted (it's only
+  // ever mounted while the Panes top-level view IS the active one, per the
+  // file-header comment above, so no extra "is this view active" check is
+  // needed here beyond that mount/unmount lifecycle).
+  //
+  // Split-target resolution deliberately mirrors handleAddPaneFromHeader's
+  // own "focused pane, else first leaf, else add-first-pane" fallback chain
+  // so Cmd+D behaves exactly like clicking the header's ＋ Add pane button
+  // would for a 'v' split — just with an explicit direction for Cmd+D vs.
+  // Cmd+Shift+D, neither of which the header button distinguishes.
+  useEffect(() => {
+    function resolveSplitTarget(): string | undefined {
+      return focusedPaneId ?? terminals[0]?.id
+    }
+
+    function handleKeyDown(e: KeyboardEvent): void {
+      // Guard against firing while the user is typing — pane name/command
+      // inline-rename fields, the sidebar's own rename input, etc. all live
+      // in plain <input>/<textarea>/contenteditable elements; Cmd+D/Cmd+T
+      // there should behave like the OS/browser default (e.g. bookmark),
+      // not hijack the keystroke into a pane split/add.
+      const target = e.target
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+      }
+
+      // e.code is used (not e.key) so Shift's effect on the produced
+      // character (e.g. macOS's Cmd+Shift+D reporting e.key === 'D') never
+      // matters — KeyD/KeyT are the physical keys regardless of modifiers.
+      if (e.metaKey && e.code === 'KeyD') {
+        e.preventDefault()
+        // No layout/pane to split yet — mirror handleAddPaneFromHeader's
+        // empty-layout behavior (add the first pane) rather than no-op,
+        // so Cmd+D on a freshly-created empty layout still does something
+        // useful instead of silently swallowing the shortcut.
+        if (!localTree) {
+          void handleAddFirstPane()
+          return
+        }
+        const paneId = resolveSplitTarget()
+        if (!paneId) return
+        void handleSplit(paneId, e.shiftKey ? 'h' : 'v')
+        return
+      }
+
+      if (e.metaKey && !e.shiftKey && e.code === 'KeyT') {
+        e.preventDefault()
+        handleAddPaneFromHeader()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [
+    localTree,
+    focusedPaneId,
+    terminals,
+    handleAddFirstPane,
+    handleSplit,
+    handleAddPaneFromHeader
+  ])
+
   // Restart/Stop LAYOUT (bulk, all panes at once) — issue #17. Distinct from
   // the per-pane ✎ edit-relaunch and ◼/▶ stop/start in PaneCell.tsx, but now
   // built from the SAME primitives: `window.api.panes.destroy` (real process
@@ -468,6 +532,20 @@ export function PanesView(): React.JSX.Element {
   // DropdownChip's `chipDropdownId(...)` usage).
   const optionsMenuId = chipDropdownId('panes-layout-options')
 
+  // optionsOpenRef — re-entrancy guard for openOptionsMenu (issue #3: the ⋯
+  // menu "gets stuck"). Root cause was re-entrancy: clicking ⋯ again while a
+  // showChipDropdown(optionsMenuId, ...) call was still pending fired a
+  // SECOND show for the SAME overlay id, and/or raced the outside-click
+  // dismissal that should have settled the first call — either way could
+  // leave an orphaned overlay the button's own click handler no longer had
+  // a reference to (its `await` was still parked on the first promise).
+  // This ref tracks "is a dropdown for optionsMenuId currently open/
+  // pending" so a second ⋯ click can be routed to close-and-return instead
+  // of opening a second overlay. Not React state: this is a synchronous
+  // re-entrancy latch read/written inside a single event-handler tick, not
+  // something that should ever trigger a re-render.
+  const optionsOpenRef = useRef(false)
+
   // Bug #6: the ⋯ menu used to render as an inline <Overlay portal fixed
   // z-20> DOM popover, which can NEVER paint above the native libghostty
   // NSView terminal (see docs/learnings/overlay-child-window-macos.md — the
@@ -480,25 +558,50 @@ export function PanesView(): React.JSX.Element {
   // floating promise to `void`.
   const openOptionsMenu = useCallback(async (): Promise<void> => {
     if (!optionsButtonRef.current) return
-    const rect = optionsButtonRef.current.getBoundingClientRect()
-    const result = await showChipDropdown(
-      optionsMenuId,
-      { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
-      {
-        items: [
-          { value: 'restart', label: '↻ Restart layout' },
-          // Destructive: true — matches the custom ContextMenu.tsx's red
-          // treatment for destructive actions (e.g. sidebar "Delete"), now
-          // mirrored here via ChipDropdown's new destructive support so
-          // every Panes menu reads consistently (issue #22).
-          { value: 'stop', label: '◼ Stop layout', destructive: true }
-        ]
+
+    // Re-entrancy: a second ⋯ click while the menu is still open/pending
+    // TOGGLES it closed (the nicer UX — matches how a native menu-button
+    // behaves) rather than stacking a second showChipDropdown call for the
+    // same overlay id. hideChipDropdown force-settles the FIRST call's
+    // still-pending promise as null (see overlayClient's
+    // chipDropdownForceCancel), so that original `await` below resolves
+    // cleanly instead of hanging — no orphaned overlay, no stuck button.
+    if (optionsOpenRef.current) {
+      hideChipDropdown(optionsMenuId)
+      return
+    }
+    optionsOpenRef.current = true
+
+    try {
+      const rect = optionsButtonRef.current.getBoundingClientRect()
+      const result = await showChipDropdown(
+        optionsMenuId,
+        { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+        {
+          items: [
+            { value: 'restart', label: '↻ Restart layout' },
+            // Destructive: true — matches the custom ContextMenu.tsx's red
+            // treatment for destructive actions (e.g. sidebar "Delete"), now
+            // mirrored here via ChipDropdown's new destructive support so
+            // every Panes menu reads consistently (issue #22).
+            { value: 'stop', label: '◼ Stop layout', destructive: true }
+          ]
+        }
+      )
+      if (result?.value === 'restart') {
+        handleRestartLayout()
+      } else if (result?.value === 'stop') {
+        handleStopLayout()
       }
-    )
-    if (result?.value === 'restart') {
-      handleRestartLayout()
-    } else if (result?.value === 'stop') {
-      handleStopLayout()
+    } finally {
+      // Always reset the latch once the promise settles — including the
+      // failure path where showChipDropdown's own overlay:show IPC call
+      // rejects (it already absorbs that into a `null` resolve internally,
+      // but this finally is the belt-and-suspenders guarantee that NO path
+      // out of this function, including one we haven't anticipated, can
+      // leave the ref permanently stuck true and the ⋯ button permanently
+      // unresponsive to future opens).
+      optionsOpenRef.current = false
     }
   }, [optionsMenuId, handleRestartLayout, handleStopLayout])
 

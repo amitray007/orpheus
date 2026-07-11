@@ -447,6 +447,39 @@ export function TerminalTab({
     setActiveTerminalId(id)
   }, [])
 
+  // Cmd+T → new terminal tab, mirroring TerminalStrip's own ＋ button
+  // (onSpawn === spawnTerminal above). Scoped via the `active` prop, which
+  // this component's own doc comment already defines as exactly "the
+  // Terminal tab is the active Workbench tab AND the Workbench is open or
+  // expanded" — i.e. this listener is only "live" (does something on
+  // Cmd+T) precisely when the Terminal tab strip is the thing on screen,
+  // so it can never fire from another Workbench tab (Git/Files/Panes) or
+  // while the Workbench is dormant/closed. The Panes view's OWN Cmd+T
+  // handler (PanesView.tsx) is scoped the same way one level up (mounted
+  // only while the Panes top-level view is active) — the two views are
+  // never both mounted at once, so there's no double-fire risk between
+  // them even though both listen on `window`.
+  useEffect(() => {
+    if (!active) return
+
+    function handleKeyDown(e: KeyboardEvent): void {
+      if (!(e.metaKey && !e.shiftKey && e.code === 'KeyT')) return
+      // Same input/textarea/contenteditable guard as PanesView's shortcut
+      // handler — a terminal label rename field is the one text input that
+      // can be focused while this tab is active.
+      const target = e.target
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+      }
+      e.preventDefault()
+      spawnTerminal()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [active, spawnTerminal])
+
   const closeTerminal = useCallback(
     (id: number): void => {
       // Destroy this terminal's surface immediately, regardless of whether
