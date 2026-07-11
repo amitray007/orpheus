@@ -23,9 +23,7 @@
 // docs/plans/2026-07-11-003-dashboard-design.md.
 // ---------------------------------------------------------------------------
 
-import { useState } from 'react'
 import { DashboardTopBar } from './dashboard-home/DashboardTopBar'
-import type { DashboardRange } from './dashboard-home/dashboardHome.helpers'
 import { SectionHeader } from './dashboard-home/SectionHeader'
 import { StatTile } from './dashboard-home/StatTile'
 import { TriageTile } from './dashboard-home/TriageTile'
@@ -49,8 +47,10 @@ export function DashboardView({
    *  (e.g. in isolation/tests) without a navigation handler. */
   onSelectWorkspace?: (workspaceId: string, projectId: string) => void
 }): React.JSX.Element {
-  const [range, setRange] = useState<DashboardRange>('all')
-  const pulse = usePulseData(range)
+  // The Dashboard is fixed to a rolling 7-day window (no user-facing range
+  // picker — see DashboardTopBar). The heatmap still shows ~6 months (it's a
+  // time view); the tiles + models reflect the last 7 days.
+  const pulse = usePulseData('7d')
   const liveAgents = useLiveAgents()
   const github = useGithubData()
 
@@ -62,7 +62,7 @@ export function DashboardView({
 
   return (
     <div className="mx-auto flex max-w-[1180px] flex-col gap-[18px]">
-      <DashboardTopBar range={range} onRangeChange={setRange} />
+      <DashboardTopBar />
 
       {/* ============ Your pulse (analytics treat) ============ */}
       <section className="flex flex-col gap-2.5">
@@ -90,7 +90,7 @@ export function DashboardView({
           <DashboardCard title="Activity" meta={activeDaysMeta}>
             <ActivityHeatmap cells={pulse.heatmap} loading={pulse.loading} />
           </DashboardCard>
-          <DashboardCard title="Models" meta="this range" contentClassName="flex-1">
+          <DashboardCard title="Models" meta="last 7 days" contentClassName="flex-1">
             <ModelsDonut models={pulse.models} loading={pulse.loading} />
           </DashboardCard>
         </div>
