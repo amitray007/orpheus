@@ -68,6 +68,13 @@
   --color-gh-closed: #cf222e;
   --color-gh-draft: #6e7781;
 
+  /* Severity-warning palette — fixed across themes, same convention as the
+     GH-state colors above. Used by the Dashboard Usage card's meters/rows
+     for a "warning"/"elevated" severity between normal (accent) and
+     critical (--color-gh-closed). Sourced from Primer's attention/amber
+     scale so it reads as a conventional amber regardless of theme. */
+  --color-severity-warning: #9a6700;
+
   --font-sans:
     'Geist Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;

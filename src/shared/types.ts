@@ -756,6 +756,47 @@ export type ClaudeAuthTestResult =
   | { ok: false; reason: string; status?: number }
 
 // ---------------------------------------------------------------------------
+// Claude usage/limits (Dashboard "Usage" card) — models the fields we
+// actually RENDER from the undocumented `GET
+// https://api.anthropic.com/api/oauth/usage` response. The real payload has
+// more fields (spend, extra_usage details, etc.) than we surface; only what
+// the card needs is typed here. snake_case -> camelCase mapping happens in
+// src/main/claudeUsage.ts's parse step, never in the renderer. See that
+// file's header comment for the full fetch/cache/degrade contract.
+// ---------------------------------------------------------------------------
+
+/** One rolling usage window (five_hour "Session" or seven_day "Weekly"). */
+export type ClaudeUsageWindow = {
+  utilization: number | null // 0-100
+  resetsAt: string | null // ISO timestamp
+}
+
+/** One entry from the `limits[]` array — session/weekly totals plus any
+ *  model-scoped sub-limits (e.g. a weekly cap specific to one model). */
+export type ClaudeUsageLimit = {
+  kind: string
+  group: string
+  percent: number
+  severity: string // 'normal' | 'warning' | 'critical' | ... (undocumented, tolerate any string)
+  resetsAt: string | null
+  modelName: string | null // scope?.model?.display_name, null when not model-scoped
+  isActive: boolean
+}
+
+export type ClaudeUsage = {
+  fiveHour: ClaudeUsageWindow // "Session · 5h"
+  sevenDay: ClaudeUsageWindow // "Weekly · 7d"
+  limits: ClaudeUsageLimit[]
+  extraUsageEnabled: boolean
+}
+
+/** Degraded states the main process returns instead of throwing — see
+ *  claudeUsage.ts's getClaudeUsage doc comment for when each fires. */
+export type ClaudeUsageUnavailable = { unavailable: 'no-auth' | 'error' }
+
+export type ClaudeUsageResult = ClaudeUsage | ClaudeUsageUnavailable
+
+// ---------------------------------------------------------------------------
 // Native context menu (v25)
 // ---------------------------------------------------------------------------
 

@@ -126,6 +126,7 @@ import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
+import { registerClaudeUsageIpc } from './ipc/claudeUsage'
 import { registerFooterActionsIpc } from './ipc/footerActions'
 import { registerReviewsIpc } from './ipc/reviews'
 import { registerPanesIpc } from './ipc/panes'
@@ -986,6 +987,8 @@ registerClaudeAgentsIpc()
 registerClaudeHooksIpc()
 
 registerClaudeAuthIpc()
+
+registerClaudeUsageIpc()
 
 registerOrpheusConfigIpc({ getProject })
 

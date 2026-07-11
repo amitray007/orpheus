@@ -61,6 +61,7 @@ import type {
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
+  ClaudeUsageResult,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
@@ -278,6 +279,12 @@ export interface InvokeChannelMap {
   'claudeAuth:get': { req: []; res: ClaudeAuthState }
   'claudeAuth:update': { req: [ClaudeAuthPatch]; res: ClaudeAuthState }
   'claudeAuth:testConnection': { req: []; res: ClaudeAuthTestResult }
+  // Dashboard "Usage" card — Claude's own undocumented usage/limits endpoint
+  // (session 5h + weekly 7d utilization, per-model scoped limits). Main-
+  // process TTL-cached (~3min) + inflight-deduped (src/main/claudeUsage.ts)
+  // so repeated dashboard opens/re-renders never hammer the endpoint. Total
+  // (never rejects) — degrades to `{ unavailable: 'no-auth' | 'error' }`.
+  'claude:usage': { req: []; res: ClaudeUsageResult }
   'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
   'claudeProjectSettings:update': {
     req: [{ projectId: string; patch: ClaudeProjectSettingsOverrides }]

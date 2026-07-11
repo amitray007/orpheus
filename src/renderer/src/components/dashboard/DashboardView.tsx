@@ -29,13 +29,14 @@ import { StatTile } from './dashboard-home/StatTile'
 import { TriageTile } from './dashboard-home/TriageTile'
 import { DashboardCard } from './dashboard-home/DashboardCard'
 import { ActivityHeatmap } from './dashboard-home/ActivityHeatmap'
-import { ModelsDonut } from './dashboard-home/ModelsDonut'
+import { UsageLimitsCard } from './dashboard-home/UsageLimitsCard'
 import { LiveAgentsTable } from './dashboard-home/LiveAgentsTable'
 import { PrTable } from './dashboard-home/PrTable'
 import { IssuesTable } from './dashboard-home/IssuesTable'
 import { usePulseData } from './dashboard-home/usePulseData'
 import { useLiveAgents } from './dashboard-home/useLiveAgents'
 import { useGithubData } from './dashboard-home/useGithubData'
+import { useClaudeUsage } from './dashboard-home/useClaudeUsage'
 import { formatHour12 } from './dashboard-home/pulseData.helpers'
 
 export function DashboardView({
@@ -53,6 +54,7 @@ export function DashboardView({
   const pulse = usePulseData('7d')
   const liveAgents = useLiveAgents()
   const github = useGithubData()
+  const claudeUsage = useClaudeUsage()
 
   const peakHourLabel = pulse.peakHour === null ? '—' : formatHour12(pulse.peakHour)
   const activeDaysMeta =
@@ -90,8 +92,8 @@ export function DashboardView({
           <DashboardCard title="Activity" meta={activeDaysMeta}>
             <ActivityHeatmap cells={pulse.heatmap} loading={pulse.loading} />
           </DashboardCard>
-          <DashboardCard title="Models" meta="last 7 days" contentClassName="flex-1">
-            <ModelsDonut models={pulse.models} loading={pulse.loading} />
+          <DashboardCard title="Usage" meta="resets shown" contentClassName="flex-1">
+            <UsageLimitsCard result={claudeUsage.result} loading={claudeUsage.loading} />
           </DashboardCard>
         </div>
       </section>

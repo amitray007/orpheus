@@ -36,3 +36,33 @@ export function formatCompactAge(isoTimestamp: string, nowMs: number = Date.now(
   const diffWeek = Math.floor(diffDay / 7)
   return `${diffWeek}w`
 }
+
+/**
+ * Compact FUTURE countdown ("resets in Xh Ym") for the Usage card's
+ * five_hour/seven_day/limit `resetsAt` fields — the forward-looking
+ * counterpart to formatCompactAge above (which is always past-facing). Shows
+ * the two most significant units (e.g. "4h 12m", "2d 3h") and collapses to
+ * "<1m" once the window is imminent; a past/invalid timestamp reads as
+ * "resetting…" rather than a negative duration.
+ */
+export function formatResetCountdown(
+  isoTimestamp: string | null,
+  nowMs: number = Date.now()
+): string {
+  if (!isoTimestamp) return '—'
+  const then = new Date(isoTimestamp).getTime()
+  if (Number.isNaN(then)) return '—'
+  const diffMs = then - nowMs
+  if (diffMs <= 0) return 'resetting…'
+
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return '<1m'
+
+  const days = Math.floor(diffMin / (60 * 24))
+  const hours = Math.floor((diffMin % (60 * 24)) / 60)
+  const mins = diffMin % 60
+
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${mins}m`
+  return `${mins}m`
+}

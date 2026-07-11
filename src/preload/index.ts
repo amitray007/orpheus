@@ -51,6 +51,7 @@ import type {
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
+  ClaudeUsageResult,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -386,6 +387,13 @@ const api = {
     update: (patch: ClaudeAuthPatch): Promise<ClaudeAuthState> =>
       invoke('claudeAuth:update', patch),
     testConnection: (): Promise<ClaudeAuthTestResult> => invoke('claudeAuth:testConnection')
+  },
+  claude: {
+    // Dashboard "Usage" card — see src/main/claudeUsage.ts for the fetch/
+    // cache/degrade contract. Main-process TTL-cached (~3min) + inflight-
+    // deduped, so this is safe to call on every dashboard mount without
+    // hammering the endpoint.
+    usage: (): Promise<ClaudeUsageResult> => invoke('claude:usage')
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>

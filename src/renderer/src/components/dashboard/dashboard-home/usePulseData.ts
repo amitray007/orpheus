@@ -17,13 +17,11 @@ import type { DashboardRange } from './dashboardHome.helpers'
 import {
   activeDaysCount,
   computeHeatmap,
-  computeModelBreakdown,
   computePeakHour,
   computeStreaks,
   filterByRange,
   sessionsCount,
-  type HeatmapCell,
-  type ModelSliceData
+  type HeatmapCell
 } from './pulseData.helpers'
 
 export interface PulseData {
@@ -43,8 +41,6 @@ export interface PulseData {
   activeDays: number
   /** Fixed ~6-month heatmap, independent of `range` (see file header). */
   heatmap: HeatmapCell[]
-  /** Top-3-plus-Other model breakdown, in range. */
-  models: ModelSliceData[]
 }
 
 export function usePulseData(range: DashboardRange): PulseData {
@@ -81,8 +77,7 @@ export function usePulseData(range: DashboardRange): PulseData {
         longestStreak: 0,
         peakHour: null,
         activeDays: 0,
-        heatmap: [],
-        models: []
+        heatmap: []
       }
     }
 
@@ -105,8 +100,7 @@ export function usePulseData(range: DashboardRange): PulseData {
       activeDays: activeDaysCount(ranged),
       // Heatmap always spans its own fixed 6-month window (see file header),
       // computed from full history so a "7d" range doesn't blank it out.
-      heatmap: computeHeatmap(allSessions),
-      models: computeModelBreakdown(ranged)
+      heatmap: computeHeatmap(allSessions)
     }
   }, [allSessions, range, error])
 }
