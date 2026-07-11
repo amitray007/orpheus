@@ -65,21 +65,21 @@ export function deriveSurface(viewKind: View['kind']): 'dashboard' | 'projects' 
  * openAtLastView is true and no concrete workspace/project was last viewed
  * (those cases are handled by the caller before falling through to this).
  *
- * Honors a concrete lastViewKind (sessions/dashboard/panes) directly; falls
- * back to defaultSurface when lastViewKind doesn't map to a top-level view
- * (e.g. it was never set, or persisted as 'settings'-adjacent 'sessions').
+ * defaultSurface is the explicit "open at launch" user setting and wins the
+ * top-level landing decision — it must be checked FIRST. lastViewKind is
+ * only a fallback for when defaultSurface doesn't resolve to a recognized
+ * surface (e.g. it was never set).
  */
 export function resolveLandingView(
   uiState: Pick<AppUiState, 'lastViewKind' | 'defaultSurface'>
 ): View {
-  if (uiState.lastViewKind === 'sessions' || (uiState.lastViewKind as string) === 'dashboard') {
-    return { kind: 'sessions' }
-  }
-  if (uiState.lastViewKind === 'panes') {
-    return { kind: 'panes' }
-  }
+  // The explicit "open at launch" setting wins for the top-level landing view.
   if (uiState.defaultSurface === 'dashboard') return { kind: 'dashboard' }
   if (uiState.defaultSurface === 'panes') return { kind: 'panes' }
+  // Otherwise fall back to the saved top-level view kind.
+  if (uiState.lastViewKind === 'panes') return { kind: 'panes' }
+  // 'dashboard' as a lastViewKind is now a real surface again (legacy DBs coerce
+  // it to 'sessions' on read in uiState.ts); default everything else to Workspaces.
   return { kind: 'sessions' }
 }
 

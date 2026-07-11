@@ -68,8 +68,16 @@ build never touches your real production install.
 osascript -e 'tell application "Orpheus Dev" to quit' 2>/dev/null; sleep 1
 pkill -x "Orpheus Dev" 2>/dev/null; true
 bun run build:unpack         # → build:dev: build:native → ORPHEUS_MODE=development build → electron-builder-dev.yml --dir → install Orpheus Dev.app
-open "/Applications/Orpheus Dev.app"
+open -g "/Applications/Orpheus Dev.app"   # -g = background: do NOT steal the user's focus
 ```
+
+**Never foreground the dev app when building/testing — always `open -g`.** The
+user is often working in another window; the agents rebuild + relaunch
+`Orpheus Dev.app` many times per session, and a relaunch that pops the window
+into their face is a real annoyance. Use `open -g` (background) every time you
+relaunch during a build/test loop. Likewise, all background data work (dashboard
+refreshes, pollers) updates silently in place — it must never flash a skeleton
+on refresh or otherwise pull the user's attention.
 
 - **Never run the production build locally.** `build:unpack` is an alias for `build:dev` and installs `Orpheus Dev.app`. The prod path (`build:mac` / `install:mac-prod`) is guarded — `install-mac.mjs` refuses to overwrite `/Applications/Orpheus.app` unless `ORPHEUS_ALLOW_PROD_INSTALL=1` is set explicitly. The agent never sets that flag; production ships only via `release.yml` + Homebrew.
 - **Do not run `bun run dev`.** Icon, bundle, signing all diverge from shipped — wastes time on dev-only artifacts. Use the dev _build_ (`build:unpack`/`build:dev`), not `electron-vite dev`.
