@@ -60,7 +60,11 @@ export const UI_STATE_DEFAULTS = {
   // above since this hits an internal, undocumented Anthropic endpoint the
   // user doesn't want hammered (see src/main/claudeUsage.ts's rate-limit
   // discipline).
-  usagePollIntervalSec: 600
+  usagePollIntervalSec: 600,
+  // GitHub username greeting (D4) — mirrors app_ui_state's github_username
+  // SQL default (none/NULL) in schema.ts. Null until the first successful
+  // `gh api user` refresh.
+  githubUsername: null
 } as const
 
 // Draggable tree-pane width clamp bounds (px), shared by FilesTab and GitTab.

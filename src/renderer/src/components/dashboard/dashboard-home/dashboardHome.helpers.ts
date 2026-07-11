@@ -15,6 +15,17 @@ export function greetingForHour(hour: number): string {
 }
 
 /**
+ * Named variant of greetingForHour (D4) — appends ", {name}" when a non-empty
+ * name is available (the user's GitHub display name/login, refreshed via
+ * `gh api user`), else falls back to the bare greeting with no trailing
+ * comma. `name` is expected to already be trimmed/resolved by the caller.
+ */
+export function greetingWithName(hour: number, name: string | null): string {
+  const greeting = greetingForHour(hour)
+  return name && name.length > 0 ? `${greeting}, ${name}` : greeting
+}
+
+/**
  * Compact relative-time label ("2m"/"3h"/"5d") for an ISO timestamp — used by
  * PrTable's "pushed" column and IssuesTable's "updated" column (both sourced
  * from `updatedAt`, gh's own last-activity timestamp). Deliberately terser

@@ -124,6 +124,8 @@ type AppUiStateRow = {
   diag_anomaly: number | null
   // Trace capture (v61)
   diag_trace: number | null
+  // GitHub username greeting (D4)
+  github_username: string | null
   updated_at: number
 }
 
@@ -238,6 +240,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     diagAnomaly: row.diag_anomaly === 1,
     // Trace capture (v61) — off by default
     diagTrace: row.diag_trace === 1,
+    // GitHub username greeting (D4) — nullable, no default
+    githubUsername: row.github_username ?? null,
     updatedAt: row.updated_at
   }
 }
@@ -383,6 +387,11 @@ function validatePatch(patch: AppUiStatePatch): void {
       )
     }
   }
+  if ('githubUsername' in patch && patch.githubUsername !== undefined) {
+    if (patch.githubUsername !== null && typeof patch.githubUsername !== 'string') {
+      throw new Error('uiState: githubUsername must be a string or null')
+    }
+  }
   validateFilesViewPatch(patch)
 }
 
@@ -526,7 +535,9 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     diagPerf: 'diag_perf',
     diagAnomaly: 'diag_anomaly',
     // Trace capture (v61)
-    diagTrace: 'diag_trace'
+    diagTrace: 'diag_trace',
+    // GitHub username greeting (D4)
+    githubUsername: 'github_username'
   }
 
   const setClauses: string[] = []

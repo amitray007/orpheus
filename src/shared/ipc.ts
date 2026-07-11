@@ -383,6 +383,12 @@ export interface InvokeChannelMap {
   // `null` when no cache row exists yet (cold start).
   'github:myOpenPrs:cached': { req: []; res: { value: GhSearchPr[]; fetchedAt: number } | null }
   'github:myIssues:cached': { req: []; res: { value: GhSearchIssue[]; fetchedAt: number } | null }
+  // Dashboard D4 — refresh the signed-in gh user's display name on each app
+  // open. Resolves via `gh api user`, persists the result to app_ui_state's
+  // github_username column, and returns the resolved display name (name ||
+  // login). Total (never rejects): on any gh failure, returns null and
+  // leaves the previously-stored value untouched (keep last-good).
+  'github:refreshUsername': { req: []; res: string | null }
   // Workbench Git tab — Phase 4d. The LOCAL (Orpheus-owned) review-comment
   // store — see src/main/reviewStore.ts's own header for the full Epic G2
   // rationale (the 3-source comment model, the agent-readable DB/commandServer

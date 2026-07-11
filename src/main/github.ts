@@ -243,6 +243,36 @@ function deriveChecks(
 }
 
 // ---------------------------------------------------------------------------
+// Signed-in user identity (Dashboard D4) — `gh api user`, backing the
+// dashboard's named greeting ("Good morning, {name}"). Deliberately no
+// cache/TTL here (unlike every fetch above): the caller (github:refreshUsername)
+// only ever fires this once per app open, so a cache would just add
+// complexity for no benefit.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the signed-in `gh` user's login + display name via `gh api user`.
+ * Total — never throws: gh missing/unauth/network/malformed-JSON all resolve
+ * to null, mirroring getMyOpenPrs/getMyIssues's degrade contract. `name` may
+ * be null/empty (not every GitHub account sets a display name); the caller
+ * decides how to fall back to `login`.
+ */
+export async function getGithubUsername(): Promise<{ login: string; name: string | null } | null> {
+  try {
+    const stdout = await runGh(os.homedir(), ['api', 'user'], {
+      timeout: DEFAULT_GH_TIMEOUT_MS,
+      maxBuffer: DEFAULT_GH_MAX_BUFFER
+    })
+    const parsed = JSON.parse(stdout) as { login?: string; name?: string | null }
+    if (!parsed.login) return null
+    return { login: parsed.login, name: parsed.name && parsed.name.length > 0 ? parsed.name : null }
+  } catch {
+    // gh missing / unauth / network / malformed JSON — no username available.
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Account-wide GitHub search (Dashboard Phase 2, U5) — `gh search prs
 // --author @me` / `gh search issues --assignee @me`. Unlike every function
 // above (which resolves a PR/branch scoped to ONE cwd's git remote), search

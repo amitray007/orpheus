@@ -583,7 +583,11 @@ const api = {
     myOpenPrsCached: (): Promise<{ value: GhSearchPr[]; fetchedAt: number } | null> =>
       invoke('github:myOpenPrs:cached'),
     myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
-      invoke('github:myIssues:cached')
+      invoke('github:myIssues:cached'),
+    // Dashboard D4 — refresh the signed-in gh user's display name on each
+    // app open (silent, fire-and-forget). Resolves to the resolved display
+    // name (name || login), or null on any gh failure.
+    refreshUsername: (): Promise<string | null> => invoke('github:refreshUsername')
   },
   // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
   // store. See src/main/reviewStore.ts's own header for the full rationale

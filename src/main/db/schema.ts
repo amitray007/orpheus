@@ -610,6 +610,10 @@ export const schema: SchemaDef = {
         default: '240',
         check: 'CHECK (workbench_tree_width BETWEEN 160 AND 560)'
       },
+      // GitHub username greeting (D4) — the user's display name (or login
+      // fallback) from `gh api user`, refreshed on each app open. Nullable:
+      // no default, since a user with gh missing/unauth never has one.
+      github_username: { type: 'TEXT', notNull: false },
       updated_at: INTEGER_NOT_NULL
     },
     // workbench_enabled (Workbench feature flag) was removed once the

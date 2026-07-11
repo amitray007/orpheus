@@ -331,6 +331,10 @@ export type AppUiState = {
   // filenames don't truncate). Clamped 160–560px, default 240 (mirrors the
   // sidebarWidth clamp-at-read pattern in src/main/uiState.ts).
   workbenchTreeWidth: number
+  // GitHub username greeting (D4) — the user's display name (or login
+  // fallback), refreshed on each app open via `gh api user`. Null when gh
+  // is missing/unauth or has never been resolved.
+  githubUsername: string | null
   updatedAt: number
 }
 
