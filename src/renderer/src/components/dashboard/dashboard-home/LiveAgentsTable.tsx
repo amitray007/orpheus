@@ -9,22 +9,28 @@
 // column model can't express per-cell.
 //
 // Row layout — HYBRID one/two-line (not blanket two-line):
-//   Line 1 (always): state badge · agent name · project (muted mono) ·
-//     model (muted mono) · since (right-aligned, tabular-nums).
-//   Line 2 (only when `doing` is non-null): the full task text, muted mono,
-//     truncated with ellipsis. This is the long-content case two lines
-//     solve for — a permission prompt or task description can be a full
-//     sentence, and truncating it into line 1 alongside 4 other columns
-//     left almost nothing readable. Rows with no doing text (e.g. a
-//     workspace that just started, before any user message is recorded)
-//     collapse to a single line so the table doesn't grow empty vertical
-//     space for no reason.
+//   Line 1 (always): state badge · TASK TITLE (the agent's real current
+//     task — session.lastUserMessagePreview/title/workspace.lastTitle,
+//     resolved by resolveTaskTitle — NOT the generic workspace name) ·
+//     project (muted mono) · model (muted mono, prettified) · since
+//     (right-aligned, tabular-nums).
+//   Line 2 (only when `doing` is non-null): "Claude Code" as the agent-kind
+//     subline, muted mono. This is the long-content case two lines solve
+//     for — line 1 already carries the meaningful task text, so line 2 is
+//     just a quiet kind label. Rows with no doing text (e.g. a workspace
+//     that just started, before any user message is recorded) collapse to
+//     a single line so the table doesn't grow empty vertical space.
 //
 // V1 REBUILD — overflow hardening: table-layout:fixed with explicit widths
 // on State/Project/Model/Since (mirroring PrTable/IssuesTable's hardening),
-// leaving Agent as the one flexible column (its cell already used the
-// max-w-0 truncation trick, kept as-is). Empty state is now the mockup's
-// compact `.empty-inline` — one muted dot + one line, not a big padded void.
+// leaving the Task Title column as the one flexible column (its cell
+// already used the max-w-0 truncation trick, kept as-is). Empty state is
+// the mockup's compact `.empty-inline` — one muted dot + one line, not a
+// big padded void.
+//
+// V4 — column widths rebalanced (Project/Since were clipping): Project
+// widened to fit typical project slugs, Model trimmed now the label is
+// short ("Opus 4.8"), Since widened so "just now"/"39s ago" never clip.
 // ---------------------------------------------------------------------------
 
 import {
@@ -95,9 +101,9 @@ const columnHelper = createColumnHelper<LiveAgentRow>()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TanStack's ColumnDef<Row, Value> is per-column-value-typed; a heterogeneous array of columns (string/number/enum accessors) needs the `any` value param, same pattern TanStack's own docs use for a mixed column array.
 const COLUMNS: ColumnDef<LiveAgentRow, any>[] = [
   columnHelper.accessor('state', { header: 'State' }),
-  columnHelper.accessor('agentName', { header: 'Agent' }),
+  columnHelper.accessor('taskTitle', { header: 'Task' }),
   columnHelper.accessor('projectName', { header: 'Project' }),
-  columnHelper.accessor('model', { header: 'Model' }),
+  columnHelper.accessor('modelLabel', { header: 'Model' }),
   columnHelper.accessor('sinceMs', { header: 'Since' })
 ]
 
@@ -166,14 +172,14 @@ export function LiveAgentsTable({
             <colgroup>
               <col className="w-[104px]" />
               <col />
-              <col className="w-[110px]" />
-              <col className="w-[78px]" />
-              <col className="w-14" />
+              <col className="w-[132px]" />
+              <col className="w-[90px]" />
+              <col className="w-[72px]" />
             </colgroup>
             <thead>
               <tr>
                 <th className={HEADER_CLASS}>State</th>
-                <th className={HEADER_CLASS}>Agent</th>
+                <th className={HEADER_CLASS}>Task</th>
                 <th className={HEADER_CLASS}>Project</th>
                 <th className={HEADER_CLASS}>Model</th>
                 <th className={cn(HEADER_CLASS, 'text-right')}>Since</th>
@@ -208,21 +214,21 @@ export function LiveAgentsTable({
                     <td className="border-b border-border-default px-2.5 py-2">
                       <AgentStateBadge state={agent.state} />
                     </td>
-                    <td className="max-w-0 border-b border-border-default px-2.5 py-2">
-                      <div className="truncate font-medium whitespace-nowrap text-text-primary">
-                        {agent.agentName}
+                    <td className="max-w-0 min-w-0 border-b border-border-default px-2.5 py-2">
+                      <div className="min-w-0 truncate font-medium whitespace-nowrap text-text-primary">
+                        {agent.taskTitle}
                       </div>
                       {hasDoing ? (
                         <div className="mt-0.5 truncate font-mono text-[10.5px] text-text-muted">
-                          {agent.doing}
+                          Claude Code
                         </div>
                       ) : null}
                     </td>
-                    <td className="truncate border-b border-border-default px-2.5 py-2 font-mono text-[10.5px] text-text-muted">
+                    <td className="min-w-0 truncate border-b border-border-default px-2.5 py-2 font-mono text-[10.5px] text-text-muted">
                       {agent.projectName}
                     </td>
-                    <td className="truncate border-b border-border-default px-2.5 py-2 font-mono text-[10px] text-text-muted">
-                      {agent.model ?? '—'}
+                    <td className="min-w-0 truncate border-b border-border-default px-2.5 py-2 font-mono text-[10px] text-text-muted">
+                      {agent.modelLabel}
                     </td>
                     <td className="border-b border-border-default px-2.5 py-2 text-right font-mono text-[10.5px] whitespace-nowrap text-text-muted tabular-nums">
                       {formatSinceLabel(agent.sinceMs)}

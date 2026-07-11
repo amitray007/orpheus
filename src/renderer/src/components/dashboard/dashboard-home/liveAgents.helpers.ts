@@ -60,19 +60,69 @@ const STATE_SORT_RANK: Record<LiveAgentDisplayState, number> = {
 export interface LiveAgentRow {
   workspaceId: string
   projectId: string
-  /** Workspace display name (resolved, e.g. auto-named branch slug). */
+  /** Workspace display name (resolved, e.g. auto-named branch slug) — kept
+   *  as the line-2 fallback identity, no longer the primary line-1 label
+   *  (see taskTitle). */
   agentName: string
   projectName: string
   state: LiveAgentDisplayState
   /** Current task text — SessionRecord.lastUserMessagePreview when a joined
    *  session exists, else workspace.lastTitle, else null (renders 1-line). */
   doing: string | null
+  /** The agent's real current task, resolved for line-1 display (see
+   *  resolveTaskTitle). Always non-empty — falls back to the workspace name
+   *  so a brand-new workspace with no session yet still shows something. */
+  taskTitle: string
   model: string | null
+  /** Human-prettified model label for display (e.g. "Opus 4.8"), or "—"
+   *  when no model is known yet (see prettifyModelLabel). */
+  modelLabel: string
   /** Epoch ms of most-recent known activity for this workspace, used both
    *  for the "since" label and as the sort tiebreaker within a state. Falls
    *  back to workspace.lastOpenedAt/createdAt when no live timestamp exists
    *  yet (e.g. app just launched, no activityTimeStore entry recorded). */
   sinceMs: number
+}
+
+/**
+ * Resolve the display title for line 1 of a Live-agents row — the agent's
+ * REAL current task, not the generic workspace name. Precedence:
+ *   1. session.lastUserMessagePreview (the user's latest prompt — usually
+ *      the truest "what it's doing now")
+ *   2. session.title (a generated session title)
+ *   3. workspace.lastTitle (workspace-level last title)
+ *   4. workspace.name (final fallback — always present, so a brand-new
+ *      workspace with no session yet still shows something).
+ */
+export function resolveTaskTitle(
+  session: SessionRecord | undefined,
+  workspace: WorkspaceRecord
+): string {
+  return (
+    session?.lastUserMessagePreview?.trim() ||
+    session?.title?.trim() ||
+    workspace.lastTitle?.trim() ||
+    workspace.name
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Model label prettifying — parses the raw model id (e.g. "claude-opus-4-8",
+// "claude-haiku-4-5-20251001") into a short human label ("Opus 4.8",
+// "Haiku 4.5") rather than a hardcoded id->label map, so future model ids
+// (new families/versions) render sensibly without a code change. Shape:
+// "claude-<family>-<major>-<minor>[-<trailing date>]".
+// ---------------------------------------------------------------------------
+
+const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d+)?$/
+
+export function prettifyModelLabel(model: string | null): string {
+  if (!model) return '—'
+  const match = MODEL_ID_PATTERN.exec(model)
+  if (!match) return model
+  const [, family, major, minor] = match
+  const familyLabel = family.charAt(0).toUpperCase() + family.slice(1)
+  return `${familyLabel} ${major}.${minor}`
 }
 
 /**
@@ -112,7 +162,9 @@ export function buildLiveAgentRows(
       projectName: projectNameById.get(ws.projectId) ?? ws.projectId,
       state,
       doing,
+      taskTitle: resolveTaskTitle(session, ws),
       model,
+      modelLabel: prettifyModelLabel(model),
       sinceMs
     })
   }

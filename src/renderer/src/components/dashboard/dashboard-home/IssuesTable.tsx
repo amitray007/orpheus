@@ -15,12 +15,17 @@
 //     allowed per the THEME RULE; everything else uses Orpheus tokens.
 // Row click opens the issue's GitHub url via `window.api.shell.openExternal`.
 //
+// V4 — a subtle GithubLogo sits before the "Issues assigned" card title
+// (DashboardCard's `title` widened to ReactNode to allow it); a tasteful
+// inline mark, not loud.
+//
 // V1 REBUILD — overflow hardening: table-layout:fixed with explicit widths
 // on every column but Title, matching PrTable's hardening. Counts run
 // through formatCompact.
 // ---------------------------------------------------------------------------
 
 import { useState } from 'react'
+import { GithubLogo } from '@phosphor-icons/react'
 import { DashboardCard } from './DashboardCard'
 import { TablePager } from './TablePager'
 import { TableRowsSkeleton } from './DashboardSkeletons'
@@ -63,16 +68,23 @@ export function IssuesTable(): React.JSX.Element {
     void window.api.shell.openExternal(url)
   }
 
+  const title = (
+    <span className="inline-flex items-center gap-1.5">
+      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
+      Issues assigned
+    </span>
+  )
+
   if (loading && issues.length === 0) {
     return (
-      <DashboardCard title="Issues assigned" meta={meta}>
+      <DashboardCard title={title} meta={meta}>
         <TableRowsSkeleton rows={5} />
       </DashboardCard>
     )
   }
 
   return (
-    <DashboardCard title="Issues assigned" meta={meta}>
+    <DashboardCard title={title} meta={meta}>
       {issues.length === 0 ? (
         <EmptyState hint={possiblyUnavailable} />
       ) : (

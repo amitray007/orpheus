@@ -13,6 +13,9 @@
 //     `state === 'draft'`.
 // Row click opens the PR's GitHub url via `window.api.shell.openExternal`.
 //
+// V4 — a subtle GithubLogo sits before the "Open PRs" card title (DashboardCard's
+// `title` widened to ReactNode to allow it); a tasteful inline mark, not loud.
+//
 // V1 REBUILD — overflow hardening: the outer <table> is table-layout:fixed
 // with explicit widths on every column except Title (the one column that's
 // allowed to flex), matching dashboard-v3.html's .col-num/.col-time —
@@ -22,6 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState } from 'react'
+import { GithubLogo } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import type { GhSearchPr } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
@@ -107,16 +111,23 @@ export function PrTable(): React.JSX.Element {
     void window.api.shell.openExternal(url)
   }
 
+  const title = (
+    <span className="inline-flex items-center gap-1.5">
+      <GithubLogo size={14} weight="fill" className="text-text-muted" aria-hidden="true" />
+      Open PRs
+    </span>
+  )
+
   if (loading && prs.length === 0) {
     return (
-      <DashboardCard title="Open PRs" meta={meta}>
+      <DashboardCard title={title} meta={meta}>
         <TableRowsSkeleton rows={5} />
       </DashboardCard>
     )
   }
 
   return (
-    <DashboardCard title="Open PRs" meta={meta}>
+    <DashboardCard title={title} meta={meta}>
       {prs.length === 0 ? (
         <EmptyState hint={possiblyUnavailable} />
       ) : (

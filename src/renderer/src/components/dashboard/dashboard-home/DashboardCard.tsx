@@ -30,7 +30,10 @@ export function DashboardCard({
   contentClassName,
   children
 }: {
-  title: string
+  /** ReactNode (not just string) so a card can pair its title with an inline
+   *  icon (e.g. GithubLogo on Open PRs / Issues assigned) — see PrTable /
+   *  IssuesTable. Plain string usages keep working unchanged. */
+  title: React.ReactNode
   meta?: string
   /** 'primary' = the focal/emphasized panel in a row (accent-tinted border +
    *  gradient); 'default' = the normal flat panel. */
