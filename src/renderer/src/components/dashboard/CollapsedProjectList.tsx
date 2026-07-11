@@ -116,7 +116,11 @@ const ProjectTile = memo(function ProjectTile({
       onMouseLeave={handleMouseLeave}
       title={p.name}
       aria-label={p.name}
-      className={[tileClass, isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay'].join(' ')}
+      className={[
+        tileClass,
+        isActive ? 'bg-accent/15' : 'hover:bg-surface-overlay',
+        'cursor-pointer'
+      ].join(' ')}
     >
       <span className="relative inline-flex items-center flex-shrink-0">
         <Identicon
@@ -166,7 +170,7 @@ export const CollapsedProjectList = memo(function CollapsedProjectList({
           'mb-1',
           addingProject
             ? 'text-text-muted opacity-50 cursor-wait'
-            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+            : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
         ].join(' ')}
         onClick={onAddProject}
       >

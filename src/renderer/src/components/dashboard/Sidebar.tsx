@@ -276,7 +276,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           className={[
             'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
             'h-8 justify-center',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md'
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
+            'cursor-pointer'
           ].join(' ')}
           aria-label={workspace.name}
         >
@@ -357,7 +358,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               e.stopPropagation()
               onArchive()
             }}
-            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             aria-label="Archive workspace"
           >
             <Archive size={13} />
@@ -436,7 +437,7 @@ const PinnedRow = memo(function PinnedRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -697,7 +698,7 @@ const ProjectRow = memo(function ProjectRow({
         <button
           type="button"
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
           title={project.path}
           aria-label={project.name}
         >
@@ -749,7 +750,7 @@ const ProjectRow = memo(function ProjectRow({
               >
                 <button
                   type="button"
-                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
                   title="New workspace"
                   aria-label="New workspace"
                 >
@@ -765,7 +766,7 @@ const ProjectRow = memo(function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
               aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
@@ -795,7 +796,7 @@ const ProjectRow = memo(function ProjectRow({
         >
           <button
             type="button"
-            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             aria-label="Add workspace"
           >
             <Plus size={12} />
@@ -856,7 +857,7 @@ const ProjectRow = memo(function ProjectRow({
                 e.stopPropagation()
                 setRevealExtra((x) => x + 5)
               }}
-              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             >
               <CaretDown size={12} />
               <span>Show more</span>
@@ -1426,7 +1427,7 @@ export function Sidebar({
         'p-1 rounded transition-colors duration-150',
         addingProject
           ? 'text-text-muted opacity-50 cursor-wait'
-          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
       ].join(' ')}
       onClick={onAddProject}
     >
