@@ -52,6 +52,7 @@ import type {
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
   ClaudeUsageResult,
+  ClaudeUsage,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -393,7 +394,12 @@ const api = {
     // cache/degrade contract. Main-process TTL-cached (~3min) + inflight-
     // deduped, so this is safe to call on every dashboard mount without
     // hammering the endpoint.
-    usage: (): Promise<ClaudeUsageResult> => invoke('claude:usage')
+    usage: (): Promise<ClaudeUsageResult> => invoke('claude:usage'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed read (no
+    // network) for the initial cache-first paint. `null` when no cache row
+    // exists yet (cold start).
+    usageCached: (): Promise<{ value: ClaudeUsage; fetchedAt: number } | null> =>
+      invoke('claude:usage:cached')
   },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
@@ -565,7 +571,14 @@ const api = {
     // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
     // getMyIssues; total (never rejects), resolves to [] on any gh failure.
     myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
-    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues')
+    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads
+    // (no network) for the initial cache-first paint. `null` when no cache
+    // row exists yet (cold start).
+    myOpenPrsCached: (): Promise<{ value: GhSearchPr[]; fetchedAt: number } | null> =>
+      invoke('github:myOpenPrs:cached'),
+    myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
+      invoke('github:myIssues:cached')
   },
   // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
   // store. See src/main/reviewStore.ts's own header for the full rationale

@@ -62,6 +62,7 @@ import type {
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
   ClaudeUsageResult,
+  ClaudeUsage,
   ClaudeProjectSettings,
   ClaudeProjectSettingsOverrides,
   ClaudeWorkspaceSettingsOverrides,
@@ -285,6 +286,11 @@ export interface InvokeChannelMap {
   // so repeated dashboard opens/re-renders never hammer the endpoint. Total
   // (never rejects) — degrades to `{ unavailable: 'no-auth' | 'error' }`.
   'claude:usage': { req: []; res: ClaudeUsageResult }
+  // Instant, disk-backed companion to claude:usage above — reads the last-
+  // persisted successful fetch (Dashboard D2 stale-while-revalidate). Cache
+  // only ever stores the success shape, so `value` is `ClaudeUsage`, never
+  // `unavailable`. `null` when no cache row exists yet (cold start).
+  'claude:usage:cached': { req: []; res: { value: ClaudeUsage; fetchedAt: number } | null }
   'claudeProjectSettings:get': { req: [{ projectId: string }]; res: ClaudeProjectSettings }
   'claudeProjectSettings:update': {
     req: [{ projectId: string; patch: ClaudeProjectSettingsOverrides }]
@@ -372,6 +378,11 @@ export interface InvokeChannelMap {
   // mode; the Dashboard tables render their empty state in that case.
   'github:myOpenPrs': { req: []; res: GhSearchPr[] }
   'github:myIssues': { req: []; res: GhSearchIssue[] }
+  // Instant, disk-backed companions to the two channels above — read the
+  // last-persisted successful fetch (Dashboard D2 stale-while-revalidate).
+  // `null` when no cache row exists yet (cold start).
+  'github:myOpenPrs:cached': { req: []; res: { value: GhSearchPr[]; fetchedAt: number } | null }
+  'github:myIssues:cached': { req: []; res: { value: GhSearchIssue[]; fetchedAt: number } | null }
   // Workbench Git tab — Phase 4d. The LOCAL (Orpheus-owned) review-comment
   // store — see src/main/reviewStore.ts's own header for the full Epic G2
   // rationale (the 3-source comment model, the agent-readable DB/commandServer

@@ -33,7 +33,9 @@ import {
   replyToReviewComment,
   postGeneralComment,
   getMyOpenPrs,
-  getMyIssues
+  getMyIssues,
+  getCachedMyOpenPrs,
+  getCachedMyIssues
 } from '../github'
 import { handle } from './handle'
 
@@ -184,4 +186,8 @@ export function registerGitIpc(deps: GitIpcDeps): void {
   // getMyOpenPrs/getMyIssues.
   handle('github:myOpenPrs', () => getMyOpenPrs())
   handle('github:myIssues', () => getMyIssues())
+  // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads that
+  // never touch the network. See github.ts::getCachedMyOpenPrs/Issues.
+  handle('github:myOpenPrs:cached', () => getCachedMyOpenPrs())
+  handle('github:myIssues:cached', () => getCachedMyIssues())
 }

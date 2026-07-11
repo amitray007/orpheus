@@ -7,9 +7,12 @@
 // handler is a one-liner.
 // ---------------------------------------------------------------------------
 
-import { getClaudeUsage } from '../claudeUsage'
+import { getClaudeUsage, getCachedClaudeUsage } from '../claudeUsage'
 import { handle } from './handle'
 
 export function registerClaudeUsageIpc(): void {
   handle('claude:usage', () => getClaudeUsage())
+  // Dashboard D2 (stale-while-revalidate) — instant, disk-backed read that
+  // never touches the network. See claudeUsage.ts::getCachedClaudeUsage.
+  handle('claude:usage:cached', () => getCachedClaudeUsage())
 }

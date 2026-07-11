@@ -1,14 +1,21 @@
 // ---------------------------------------------------------------------------
-// useClaudeUsage — fetches `window.api.claude.usage()` ONCE on mount for the
-// "Usage" pulse card. Deliberately NO polling loop: the main process already
-// TTL-caches (~3min) + inflight-dedupes the underlying network call (see
-// src/main/claudeUsage.ts), but the renderer side stays a single fetch-on-
-// mount by design — this is an internal/undocumented Anthropic endpoint and
-// the user explicitly does not want it hammered. If a future revision wants
-// auto-refresh, use a LONG interval (3+ min, matching the cache TTL) and
-// clear it on unmount; until then, a manual `refresh()` is exposed for a
-// future refresh button, gated by the same "don't spam" instinct (the main-
-// process cache absorbs any accidental double-click within the TTL anyway).
+// useClaudeUsage — fetches `window.api.claude.usage()` for the "Usage" pulse
+// card, stale-while-revalidate (Dashboard D2). On mount, a disk-backed
+// cached read (`usageCached()`) and the live network fetch both kick off in
+// parallel. Whichever resolves first paints the screen — if a cache row
+// exists, the UI paints INSTANTLY with `loading: false` and no skeleton; the
+// live fetch then lands and silently overwrites `result` (no flash, no
+// layout jump). `loading` is only ever true on a genuine first-ever load: no
+// cache row AND the fresh fetch hasn't landed yet.
+//
+// Deliberately NO polling loop: the main process already TTL-caches (~3min)
+// + inflight-dedupes the underlying network call (see src/main/claudeUsage.ts),
+// and this is an internal/undocumented Anthropic endpoint the user explicitly
+// does not want hammered. A manual `refresh()` re-fires only the live fetch
+// (skipping the cached read — the user wants fresh) and never resets
+// `result` to null first, so the card never blanks or flashes a skeleton on
+// refresh; the main-process cache absorbs any accidental double-click within
+// the TTL anyway.
 //
 // Shape mirrors useGithubData.ts's single-state-object + nonce-triggered
 // re-fetch pattern (initial `loading: true` baked into the state object
@@ -42,9 +49,24 @@ export function useClaudeUsage(): ClaudeUsageData {
 
   useEffect(() => {
     let cancelled = false
+    const isRefresh = nonce > 0
 
-    async function load(): Promise<void> {
-      setState((prev) => ({ ...prev, loading: true }))
+    // On manual refresh, skip the cached read (the user explicitly wants
+    // fresh data) and never blank the current result — only the live fetch
+    // below runs, swapping state in silently when it lands.
+    if (!isRefresh) {
+      void (async (): Promise<void> => {
+        try {
+          const cached = await window.api.claude.usageCached()
+          if (cancelled || !cached) return
+          setState({ loading: false, error: null, result: cached.value })
+        } catch {
+          // Cached read is best-effort — the live fetch below is authoritative.
+        }
+      })()
+    }
+
+    async function loadFresh(): Promise<void> {
       try {
         const res = await window.api.claude.usage()
         if (cancelled) return
@@ -59,7 +81,7 @@ export function useClaudeUsage(): ClaudeUsageData {
       }
     }
 
-    void load()
+    void loadFresh()
     return () => {
       cancelled = true
     }
