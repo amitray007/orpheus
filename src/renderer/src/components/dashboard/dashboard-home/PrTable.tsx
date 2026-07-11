@@ -21,11 +21,18 @@
 // the meta line.
 // ---------------------------------------------------------------------------
 
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { GhSearchPr } from '@shared/types'
 import { DashboardCard } from './DashboardCard'
+import { TablePager } from './TablePager'
+import { TableRowsSkeleton } from './DashboardSkeletons'
 import { useGithubData } from './useGithubData'
 import { formatCompact, formatCompactAge } from './dashboardHome.helpers'
+
+// PRs paginate 10/page (exact size from the design spec) — keeps the card a
+// fixed height instead of dumping every open PR into one tall table.
+const PR_PAGE_SIZE = 10
 
 type ChecksState = GhSearchPr['checks'] // 'success' | 'failure' | 'pending' | null
 
@@ -81,6 +88,16 @@ function EmptyState({ hint }: { hint: boolean }): React.JSX.Element {
 
 export function PrTable(): React.JSX.Element {
   const { loading, prs, openPrCount, draftPrCount, possiblyUnavailable } = useGithubData()
+  const [requestedPage, setPage] = useState(0)
+
+  const pageCount = Math.max(1, Math.ceil(prs.length / PR_PAGE_SIZE))
+  // Background refreshes can shrink the row count under the current page
+  // (e.g. a PR merged elsewhere) — clamp during render rather than storing
+  // out-of-range state and correcting it in an effect (avoids the extra
+  // cascading render an effect-driven setState would cause).
+  const page = Math.min(requestedPage, pageCount - 1)
+
+  const pagedPrs = prs.slice(page * PR_PAGE_SIZE, page * PR_PAGE_SIZE + PR_PAGE_SIZE)
 
   const meta = loading
     ? 'loading…'
@@ -90,12 +107,20 @@ export function PrTable(): React.JSX.Element {
     void window.api.shell.openExternal(url)
   }
 
+  if (loading && prs.length === 0) {
+    return (
+      <DashboardCard title="Open PRs" meta={meta}>
+        <TableRowsSkeleton rows={5} />
+      </DashboardCard>
+    )
+  }
+
   return (
     <DashboardCard title="Open PRs" meta={meta}>
-      {!loading && prs.length === 0 ? (
+      {prs.length === 0 ? (
         <EmptyState hint={possiblyUnavailable} />
       ) : (
-        <div className="-mx-1 overflow-x-auto">
+        <div className="-mx-1 flex flex-1 flex-col overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-xs">
             <colgroup>
               <col className="w-[42px]" />
@@ -116,7 +141,7 @@ export function PrTable(): React.JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {prs.map((pr) => (
+              {pagedPrs.map((pr) => (
                 <tr
                   key={`${pr.repo}#${pr.number}`}
                   onClick={() => openPr(pr.url)}
@@ -152,6 +177,14 @@ export function PrTable(): React.JSX.Element {
               ))}
             </tbody>
           </table>
+          {pageCount > 1 ? (
+            <TablePager
+              page={page + 1}
+              pageCount={pageCount}
+              onPrev={() => setPage((p) => Math.max(0, p - 1))}
+              onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+            />
+          ) : null}
         </div>
       )}
     </DashboardCard>

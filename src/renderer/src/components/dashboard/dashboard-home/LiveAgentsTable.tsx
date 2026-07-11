@@ -30,11 +30,14 @@
 import {
   createColumnHelper,
   getCoreRowModel,
+  getPaginationRowModel,
   useReactTable,
   type ColumnDef
 } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
 import { DashboardCard } from './DashboardCard'
+import { TablePager } from './TablePager'
+import { TableRowsSkeleton } from './DashboardSkeletons'
 import { useLiveAgents } from './useLiveAgents'
 import {
   formatSinceLabel,
@@ -43,6 +46,11 @@ import {
   type LiveAgentRow
 } from './liveAgents.helpers'
 import { formatCompact } from './dashboardHome.helpers'
+
+// Live agents paginate 5/page (exact size from the design spec) — TanStack's
+// own pagination row model owns the page state here rather than a local
+// useState, since the table is already wired through useReactTable.
+const AGENT_PAGE_SIZE = 5
 
 // State badge colors — kept consistent with ActivityIndicator.tsx's own
 // palette for the SAME states (that component uses text-emerald-400 for
@@ -121,24 +129,39 @@ export function LiveAgentsTable({
     data: rows,
     columns: COLUMNS,
     getCoreRowModel: getCoreRowModel(),
-    getRowId: (row) => row.workspaceId
+    getPaginationRowModel: getPaginationRowModel(),
+    getRowId: (row) => row.workspaceId,
+    initialState: { pagination: { pageSize: AGENT_PAGE_SIZE } }
   })
 
   // TanStack manages its own row-model memoization internally, so an extra
   // useMemo here was both redundant and tripped exhaustive-deps (the `rows`
   // dep is already reflected through `table`). Read it directly.
   const tableRows = table.getRowModel().rows
+  // Background refreshes that shrink the row count under the current page
+  // are handled by TanStack itself (getPaginationRowModel re-clamps
+  // pageIndex against the new row count on every data update).
+  const pageCount = table.getPageCount()
+  const pageIndex = table.getState().pagination.pageIndex
 
   const meta = loading
     ? 'loading…'
     : `${formatCompact(running)} running · ${formatCompact(finishedCount)} finished · ${formatCompact(waitingCount)} waiting`
 
+  if (loading && rows.length === 0) {
+    return (
+      <DashboardCard title="Live agents" meta={meta}>
+        <TableRowsSkeleton rows={AGENT_PAGE_SIZE} cols={3} />
+      </DashboardCard>
+    )
+  }
+
   return (
     <DashboardCard title="Live agents" meta={meta}>
-      {!loading && rows.length === 0 ? (
+      {rows.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="-mx-1 overflow-x-auto">
+        <div className="-mx-1 flex flex-1 flex-col overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-xs">
             <colgroup>
               <col className="w-[104px]" />
@@ -209,6 +232,14 @@ export function LiveAgentsTable({
               })}
             </tbody>
           </table>
+          {pageCount > 1 ? (
+            <TablePager
+              page={pageIndex + 1}
+              pageCount={pageCount}
+              onPrev={() => table.previousPage()}
+              onNext={() => table.nextPage()}
+            />
+          ) : null}
         </div>
       )}
     </DashboardCard>
