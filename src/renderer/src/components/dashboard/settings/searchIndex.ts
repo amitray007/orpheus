@@ -1386,6 +1386,16 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'nav'
     ]
   },
+  {
+    sectionId: 'orpheus-navigation',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Navigation',
+    settingId: 'show-workspaces-board',
+    label: 'Show Workspaces board',
+    description: 'Show the optional Workspaces board (kanban) on the Projects surface.',
+    mapsTo: [],
+    keywords: ['workspaces board', 'kanban', 'projects board', 'board view']
+  },
 
   // ---------------------------------------------------------------------------
   // Orpheus › Terminal

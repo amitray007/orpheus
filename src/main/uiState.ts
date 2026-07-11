@@ -47,6 +47,8 @@ type AppUiStateRow = {
   workspace_count_inline: number
   sidebar_width: number
   default_project_expanded: number
+  // Projects surface — optional Workspaces board (kanban) visibility (U3).
+  show_workspaces_board: number
   // Launch + hotkey (v18)
   launch_at_login: number
   global_hotkey: string
@@ -157,6 +159,8 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     workspaceCountInline: (row.workspace_count_inline ?? 1) === 1,
     sidebarWidth: clampedWidth,
     defaultProjectExpanded: (row.default_project_expanded ?? 0) === 1,
+    // Projects surface — optional Workspaces board (kanban) visibility (U3).
+    showWorkspacesBoard: (row.show_workspaces_board ?? 0) === 1,
     // Launch + hotkey (v18)
     launchAtLogin: (row.launch_at_login ?? 0) === 1,
     globalHotkey: row.global_hotkey ?? '',
@@ -430,6 +434,8 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     workspaceCountInline: 'workspace_count_inline',
     sidebarWidth: 'sidebar_width',
     defaultProjectExpanded: 'default_project_expanded',
+    // Projects surface — optional Workspaces board (kanban) visibility (U3).
+    showWorkspacesBoard: 'show_workspaces_board',
     // Launch + hotkey (v18)
     launchAtLogin: 'launch_at_login',
     globalHotkey: 'global_hotkey',

@@ -1,6 +1,6 @@
 import type React from 'react'
 import type { AppUiStatePatch } from '@shared/types'
-import { SettingRow, SegmentedControl, SectionTitle } from './primitives'
+import { SettingRow, SegmentedControl, Toggle, SectionTitle } from './primitives'
 import { SettingsSectionSkeleton } from '../../Skeleton'
 import { useUiState, updateUiState } from '../../../lib/uiStateStore'
 
@@ -55,6 +55,20 @@ export function OrpheusNavigationSection(): React.JSX.Element {
               ]}
               value={uiState.defaultSurface ?? 'projects'}
               onChange={(v) => patch({ defaultSurface: v })}
+            />
+          </SettingRow>
+          {/* Projects surface — optional Workspaces board (kanban), off by
+              default. When on, a small "Workspaces" board button appears at
+              the top of the Projects surface to switch into the retained
+              WorkspacesView kanban (see MainContent's sessions branch). */}
+          <SettingRow
+            label="Show Workspaces board"
+            description="Show the optional Workspaces board (kanban) on the Projects surface."
+          >
+            <Toggle
+              value={uiState.showWorkspacesBoard ?? false}
+              onChange={(v) => patch({ showWorkspacesBoard: v })}
+              ariaLabel="Show Workspaces board"
             />
           </SettingRow>
         </div>

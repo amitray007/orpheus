@@ -1,13 +1,15 @@
 import { lazy, Suspense, useState } from 'react'
-import { House } from '@phosphor-icons/react'
+import { House, Kanban, ArrowLeft } from '@phosphor-icons/react'
 import { ProjectView } from './ProjectView'
 import { WorkspacesView } from './WorkspacesView'
 import { WorkspaceView } from './WorkspaceView'
+import { ProjectsHome } from './ProjectsHome'
 import { PanesView } from '../panes/PanesView'
 import { Eyebrow } from './settings/primitives'
 import type { SectionId as SettingsSectionId } from './SettingsView'
 import { getActivitySnapshot } from '@/lib/activityStore'
 import { getPrSnapshot } from '@/lib/prStore'
+import { useUiState } from '@/lib/uiStateStore'
 import { SessionListSkeleton } from '../Skeleton'
 import type { ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
 
@@ -54,6 +56,113 @@ function DashboardPlaceholder(): React.JSX.Element {
       <p className="text-xs text-text-muted">Your overview lands here soon.</p>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// ProjectsSurfaceHeaderBar — thin header bar shown above the Projects
+// surface's `sessions` view ONLY when the optional Workspaces board (kanban)
+// is enabled (AppUiState.showWorkspacesBoard). It flips between two small
+// buttons depending on which side of the board toggle we're currently
+// viewing:
+//   - not viewing the board: a right-aligned "Workspaces" button (board
+//     icon) that reveals the kanban.
+//   - viewing the board: a left-aligned "Back" button that returns to the
+//     calm ProjectsHome empty state.
+// Kept deliberately tiny (h-9) and styled to match other small toolbar
+// buttons in the app (see PanesView's toolbar buttons).
+// ---------------------------------------------------------------------------
+
+function ProjectsSurfaceHeaderBar({
+  viewingBoard,
+  onToggleBoard
+}: {
+  viewingBoard: boolean
+  onToggleBoard: () => void
+}): React.JSX.Element {
+  return (
+    <div className="flex h-9 flex-shrink-0 items-center border-b border-border-default bg-surface-raised px-3">
+      {viewingBoard ? (
+        <button
+          type="button"
+          onClick={onToggleBoard}
+          className="flex h-6 items-center gap-1.5 rounded-md border border-border-default bg-surface-raised px-2.5 text-[11.5px] font-medium text-text-primary hover:border-accent hover:bg-surface-overlay cursor-pointer"
+        >
+          <ArrowLeft size={13} weight="bold" />
+          Back
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onToggleBoard}
+          className="ml-auto flex h-6 items-center gap-1.5 rounded-md border border-border-default bg-surface-raised px-2.5 text-[11.5px] font-medium text-text-primary hover:border-accent hover:bg-surface-overlay cursor-pointer"
+        >
+          <Kanban size={13} weight="bold" />
+          Workspaces
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ProjectsSurfaceSessionsView — the `sessions`-kind view body for the
+// Projects surface. Renders the calm ProjectsHome empty state by default;
+// the retained WorkspacesView kanban is reachable only when
+// showWorkspacesBoard is enabled (Settings > Navigation), via the small
+// "Workspaces" board button in the header bar above. This is a plain
+// presentational switch — extracted out of MainContent's big view-kind
+// if-chain to keep MainContent's cognitive complexity under the lint cap.
+// ---------------------------------------------------------------------------
+
+function ProjectsSurfaceSessionsView({
+  showBoard,
+  viewingBoard,
+  setViewingBoard,
+  onNavigateToWorkspace,
+  projects,
+  workspaces,
+  sessions
+}: {
+  showBoard: boolean
+  viewingBoard: boolean
+  setViewingBoard: (v: boolean) => void
+  onNavigateToWorkspace: (workspaceId: string, projectId: string) => void
+  projects: ProjectRecord[]
+  workspaces: WorkspaceRecord[]
+  sessions: SessionRecord[]
+}): React.JSX.Element {
+  if (showBoard && viewingBoard) {
+    return (
+      <div className="h-full flex flex-col min-h-0">
+        <ProjectsSurfaceHeaderBar viewingBoard onToggleBoard={() => setViewingBoard(false)} />
+        <div className="flex-1 min-h-0">
+          <WorkspacesView
+            onNavigateToWorkspace={onNavigateToWorkspace}
+            projects={projects}
+            workspaces={workspaces}
+            sessions={sessions}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (showBoard) {
+    return (
+      <div className="h-full flex flex-col min-h-0">
+        <ProjectsSurfaceHeaderBar
+          viewingBoard={false}
+          onToggleBoard={() => setViewingBoard(true)}
+        />
+        <div className="flex-1 min-h-0">
+          <ProjectsHome />
+        </div>
+      </div>
+    )
+  }
+
+  // Board disabled entirely: no header bar, no way to reach the kanban.
+  return <ProjectsHome />
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +223,16 @@ export function MainContent({
   allSessions,
   fetchGithubAvatars = true
 }: MainContentProps): React.JSX.Element {
+  // Projects surface — optional Workspaces board (kanban), U3. showBoard is
+  // the persisted setting (Settings > Navigation); viewingBoard is local,
+  // in-session UI state for which side of the toggle the sessions view is
+  // currently showing (only meaningful while showBoard is true). Navigating
+  // away and back always resets to the empty state, matching the "board is
+  // an opt-in side trip, not a new landing page" intent from the plan.
+  const uiState = useUiState()
+  const showWorkspacesBoard = uiState?.showWorkspacesBoard ?? false
+  const [viewingBoard, setViewingBoard] = useState(false)
+
   // Combined state: LRU list of kept workspace IDs + a snapshot of each record.
   // Stored together so a single setState keeps them atomic.
   const [keptState, setKeptState] = useState<{
@@ -174,9 +293,15 @@ export function MainContent({
 
   if (view.kind === 'sessions') {
     // Route key stays 'sessions' for back-compat with uiState serialisation;
-    // the visible label and component are now "Workspaces".
+    // this is the Projects surface's resting view. By default it renders the
+    // calm ProjectsHome empty state; the retained WorkspacesView kanban is
+    // only reachable via the "Workspaces" board button when
+    // showWorkspacesBoard is enabled (Settings > Navigation) — see U3.
     return (
-      <WorkspacesView
+      <ProjectsSurfaceSessionsView
+        showBoard={showWorkspacesBoard}
+        viewingBoard={viewingBoard}
+        setViewingBoard={setViewingBoard}
         onNavigateToWorkspace={onSelectWorkspace}
         projects={projects ?? []}
         workspaces={allWorkspaces ?? []}

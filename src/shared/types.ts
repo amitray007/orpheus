@@ -221,6 +221,9 @@ export type AppUiState = {
   workspaceCountInline: boolean
   sidebarWidth: number
   defaultProjectExpanded: boolean
+  // Projects surface — optional Workspaces board (kanban) visibility (U3).
+  // Default false; mirrors defaultProjectExpanded exactly.
+  showWorkspacesBoard: boolean
   // Launch + hotkey (v18)
   launchAtLogin: boolean
   globalHotkey: string

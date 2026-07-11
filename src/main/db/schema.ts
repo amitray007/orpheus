@@ -477,6 +477,11 @@ export const schema: SchemaDef = {
         check: 'CHECK (sidebar_width BETWEEN 200 AND 480)'
       },
       default_project_expanded: bool('default_project_expanded', '0'),
+      // Projects surface — optional Workspaces board (kanban) visibility (U3).
+      // Default OFF: the Projects surface lands on the calm ProjectsHome empty
+      // state; this flips on a small "Workspaces" board button that reveals the
+      // retained WorkspacesView kanban. Mirrors default_project_expanded exactly.
+      show_workspaces_board: bool('show_workspaces_board', '0'),
       // Launch + hotkey (v18)
       launch_at_login: bool('launch_at_login', '0'),
       global_hotkey: { type: 'TEXT', notNull: true, default: "''" },
