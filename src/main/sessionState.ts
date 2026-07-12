@@ -19,13 +19,15 @@ import { getUserShellPath } from './shellHelpers'
 import { logDiagMain } from './diagnostics'
 import { DIAG_EVENTS } from '../shared/diagEvents'
 import { UI_STATE_DEFAULTS } from '../shared/uiStateDefaults'
+import { _mapFileStatus } from './sessionStatusMap'
+export { _mapFileStatus } from './sessionStatusMap'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions')
-const KNOWN_GOOD_VERSIONS = new Set(['2.1.190', '2.1.198'])
+const KNOWN_GOOD_VERSIONS = new Set(['2.1.190', '2.1.198', '2.1.207'])
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +39,7 @@ interface SessionFile {
   cwd: string
   version: string
   kind: string
-  status?: 'busy' | 'idle' | 'waiting'
+  status?: 'busy' | 'idle' | 'waiting' | 'shell'
   waitingFor?: string
   statusUpdatedAt: number
 }
@@ -46,7 +48,7 @@ export interface LiveSession {
   sessionId: string
   pid: number
   /** null = starting (status field absent in the file) */
-  status: 'busy' | 'idle' | 'waiting' | null
+  status: 'busy' | 'idle' | 'waiting' | 'shell' | null
   waitingFor?: string
   version: string
   cwd: string
@@ -118,7 +120,7 @@ let sessionReadyHandler: ((workspaceId: string) => void) | null = null
  */
 export function getWorkspaceFileStatusSync(
   workspaceId: string
-): 'busy' | 'idle' | 'waiting' | 'unknown' {
+): 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown' {
   let sessionId: string | null = null
   try {
     const row = getDb()
@@ -140,7 +142,7 @@ export function getWorkspaceFileStatusSync(
     const raw = fs.readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw) as { status?: string }
     const s = parsed.status
-    if (s === 'busy' || s === 'idle' || s === 'waiting') return s
+    if (s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell') return s
     return 'unknown'
   } catch {
     return 'unknown'
@@ -148,7 +150,7 @@ export function getWorkspaceFileStatusSync(
 }
 
 export function getWorkspaceFileInfo(workspaceId: string): {
-  status: 'busy' | 'idle' | 'waiting' | 'unknown'
+  status: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
   waitingFor?: string
   elapsedMs?: number
 } {
@@ -168,13 +170,13 @@ export function getWorkspaceFileInfo(workspaceId: string): {
   if (!isAlive(session.pid)) return { status: 'unknown' }
 
   const filePath = path.join(SESSIONS_DIR, `${session.pid}.json`)
-  let fileStatus: 'busy' | 'idle' | 'waiting' | 'unknown' = 'unknown'
+  let fileStatus: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown' = 'unknown'
   let waitingFor: string | undefined
   try {
     const raw = fs.readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw) as { status?: string; waitingFor?: string }
     const s = parsed.status
-    if (s === 'busy' || s === 'idle' || s === 'waiting') fileStatus = s
+    if (s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell') fileStatus = s
     if (parsed.waitingFor) waitingFor = parsed.waitingFor
   } catch {
     return { status: 'unknown' }
@@ -182,7 +184,7 @@ export function getWorkspaceFileInfo(workspaceId: string): {
 
   const elapsed = busySince.get(workspaceId)
   const result: {
-    status: 'busy' | 'idle' | 'waiting' | 'unknown'
+    status: 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
     waitingFor?: string
     elapsedMs?: number
   } = { status: fileStatus }
@@ -288,7 +290,7 @@ export function setSessionReadyHandler(fn: (workspaceId: string) => void): void 
  */
 export function isWorkspaceSessionReady(workspaceId: string): boolean {
   const s = getWorkspaceFileStatusSync(workspaceId)
-  return s === 'busy' || s === 'idle' || s === 'waiting'
+  return s === 'busy' || s === 'idle' || s === 'waiting' || s === 'shell'
 }
 
 // ---------------------------------------------------------------------------
@@ -551,8 +553,10 @@ async function reconcile(): Promise<void> {
       rawStatus = session.status as string
     }
 
-    if (rawStatus === 'busy') {
-      // Drive in_progress on the first busy transition; skip if already recorded busy
+    if (rawStatus === 'busy' || rawStatus === 'shell') {
+      // Drive in_progress on the first busy/shell transition; skip if already recorded busy.
+      // Normalize the sentinel to the literal 'busy' (not rawStatus) so a
+      // busy→shell→busy sequence doesn't re-fire in_progress or reset busySince.
       if (lastRawActed.get(ws.id) !== 'busy') {
         setStatusFromFile(ws.id, 'in_progress')
         lastRawActed.set(ws.id, 'busy')
@@ -581,7 +585,12 @@ async function reconcile(): Promise<void> {
     // Session-ready signal: fire once per session lifecycle when the file
     // first reports a concrete status (busy | idle | waiting). This allows
     // the loading overlay to dismiss without relying on the SessionStart hook.
-    if (rawStatus === 'busy' || rawStatus === 'idle' || rawStatus === 'waiting') {
+    if (
+      rawStatus === 'busy' ||
+      rawStatus === 'idle' ||
+      rawStatus === 'waiting' ||
+      rawStatus === 'shell'
+    ) {
       if (!readySignaled.has(ws.id)) {
         readySignaled.add(ws.id)
         try {
@@ -633,22 +642,6 @@ async function reconcile(): Promise<void> {
       data: { liveCount: liveSessionMap.size }
     })
   }
-}
-
-// ---------------------------------------------------------------------------
-// Status mapping
-// ---------------------------------------------------------------------------
-
-function _mapFileStatus(session: LiveSession): WorkspaceStatus {
-  const { status, waitingFor } = session
-  if (status === 'busy') return 'in_progress'
-  if (status === 'waiting') {
-    if (waitingFor === 'permission prompt') return 'attention'
-    return 'awaiting_input'
-  }
-  if (status === 'idle') return 'idle'
-  // null handled by caller; unknown values → safe default
-  return 'in_progress'
 }
 
 // ---------------------------------------------------------------------------

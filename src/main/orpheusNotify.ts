@@ -77,8 +77,9 @@ export function invalidateWatchdogCache(): void {
 }
 
 let autoCloseHandler: ((workspaceId: string) => void) | null = null
-let fileStatusProvider: ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown') | null =
-  null
+let fileStatusProvider:
+  | ((workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown')
+  | null = null
 
 const idleWatchdogs = new Map<string, NodeJS.Timeout>()
 const autoCloseWatchdogs = new Map<string, NodeJS.Timeout>()
@@ -187,7 +188,7 @@ function dispatch(workspaceId: string, status: WorkspaceStatus): void {
   // dispatch must still pass through.
   if (status === 'awaiting_input' || status === 'idle') {
     const fileStatus = fileStatusProvider?.(workspaceId)
-    if (fileStatus === 'busy' || fileStatus === 'waiting') return
+    if (fileStatus === 'busy' || fileStatus === 'waiting' || fileStatus === 'shell') return
   }
   const prev = activityMap.get(workspaceId)
   if (prev === status) return
@@ -314,7 +315,7 @@ export function setAutoCloseHandler(fn: (workspaceId: string) => void): void {
 }
 
 export function setFileStatusProvider(
-  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'unknown'
+  fn: (workspaceId: string) => 'busy' | 'idle' | 'waiting' | 'shell' | 'unknown'
 ): void {
   fileStatusProvider = fn
 }
