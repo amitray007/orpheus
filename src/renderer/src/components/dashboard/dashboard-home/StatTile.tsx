@@ -8,7 +8,10 @@
 // key label below (`.k`). The critique that drove this rebuild flagged the
 // old boxed tiles as "huge half-empty hero-metric cards"; the inline
 // treatment sits directly in DashboardTopBar's hero row instead of its own
-// card grid. `dim` renders the value in the muted `.v.dim` tone (for any
+// card grid. The value + unit + key label are CENTER-aligned within each
+// stat block (items-center + text-center) so the number reads centered over
+// its label rather than left-hugging it. `dim` renders the value in the
+// muted `.v.dim` tone (for any
 // stat whose value is a placeholder rather than real data — no current
 // caller uses this, all four hero stats are wired to real data as of V3).
 // `loading` shows a bare skeleton bar (no card wrapper to skeleton) instead
@@ -33,7 +36,7 @@ export function StatTile({
   loading?: boolean
 }): React.JSX.Element {
   return (
-    <div className="flex flex-col gap-px whitespace-nowrap">
+    <div className="flex flex-col items-center gap-px text-center whitespace-nowrap">
       {loading ? (
         <div className="h-[21px] w-12 animate-pulse rounded bg-surface-overlay" />
       ) : (
