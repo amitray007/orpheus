@@ -12,6 +12,7 @@ export default defineConfig(
     ignores: [
       '**/node_modules',
       '**/dist',
+      '**/dist-dev',
       '**/out',
       '.claude/**',
       'docs/**',

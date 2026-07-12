@@ -1,0 +1,536 @@
+/* ---------------------------------------------------------------------------
+ * src/renderer/src/components/workbench/git/DetailsTab.css
+ *
+ * Scoped styles for the Git tab's Details sub-tab (Phase 3d) — everything
+ * here is nested under `.details-scroll` (DetailsTab's own root class) so it
+ * can't leak into GitTab.tsx/CommitsTab.tsx/ChecksTab.tsx's own chrome.
+ * Adapted from the approved mockup (docs/brainstorms/git-tab-mockup/styles.css
+ * "Details tab" section) onto Orpheus's actual dark-theme custom properties
+ * (src/renderer/src/assets/main.css) rather than the mockup's own copied
+ * token snapshot — same variable NAMES, real values, so this tracks the
+ * live theme (including light-theme overrides) instead of a frozen copy.
+ * ------------------------------------------------------------------------ */
+
+.details-scroll {
+  overflow-y: auto;
+  padding: 14px 16px;
+  /* Reflow keys off the PANE's own width, not the viewport — the Git tab
+     lives inside a resizable Workbench pane that can be much narrower than
+     the window, so a container query is required here (a media query would
+     never fire at the widths that actually matter). */
+  container-type: inline-size;
+  container-name: details-pane;
+}
+
+.details-empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 11.5px;
+}
+
+.details-columns {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.details-main {
+  flex: 1;
+  min-width: 0;
+}
+.details-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+@container details-pane (max-width: 640px) {
+  .details-columns {
+    flex-direction: column;
+  }
+  .details-sidebar {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .details-sidebar__section {
+    flex: 1 1 200px;
+  }
+}
+/* Belt-and-suspenders fallback for engines without container-query support
+   (matches the mockup's own fallback) — keys off the viewport instead, which
+   is wrong in principle for a pane-scoped layout but harmless in practice
+   since it only ever narrows the layout further, never widens it. */
+@media (max-width: 640px) {
+  .details-columns {
+    flex-direction: column;
+  }
+  .details-sidebar {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .details-sidebar__section {
+    flex: 1 1 200px;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Avatar — shared by the <Avatar> component (avatarColor.tsx): a real
+ * GitHub avatar <img> when one was captured, else an initials-circle <span>
+ * fallback (also used for a broken/blocked image, or a data source that
+ * never carries an avatar — e.g. assignees). Sizing/shape rules here apply
+ * to both element types; the color/font/line-height rules only matter for
+ * the initials-circle fallback (harmless no-ops on an <img>).
+ * ---------------------------------------------------------------------- */
+
+.details-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #0b0b0c;
+  font-weight: 700;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* -------------------------------------------------------------------------
+ * Description card: header strip (avatar + byline) + markdown body below
+ * ---------------------------------------------------------------------- */
+
+.details-desc-card {
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-surface-raised);
+  margin-bottom: 16px;
+}
+.details-desc-card__strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--color-surface-overlay);
+  border-bottom: 1px solid var(--color-border-default);
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+.details-desc-card__byline b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.details-desc-card__body {
+  padding: 12px 14px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.details-desc-card__body p {
+  margin: 0 0 10px;
+}
+.details-desc-card__body p:last-child {
+  margin-bottom: 0;
+}
+.details-desc-card__body h1,
+.details-desc-card__body h2,
+.details-desc-card__body h3,
+.details-desc-card__body h4 {
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.details-desc-card__body ul,
+.details-desc-card__body ol {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+.details-desc-card__body li {
+  margin-bottom: 3px;
+}
+.details-desc-card__body code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-default);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.details-desc-card__body pre {
+  background: var(--color-surface-base);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 0 0 10px;
+}
+.details-desc-card__body pre code {
+  border: none;
+  background: none;
+  padding: 0;
+}
+.details-desc-card__body a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+.details-desc-card__body a:hover {
+  text-decoration: underline;
+}
+.details-desc-card__body blockquote {
+  margin: 0 0 10px;
+  padding: 4px 10px;
+  border-left: 3px solid var(--color-border-hover);
+  color: var(--color-text-muted);
+}
+
+/* -------------------------------------------------------------------------
+ * Timeline: connecting rail down the left edge (events + comment entries)
+ * ---------------------------------------------------------------------- */
+
+.details-timeline {
+  position: relative;
+  padding-left: 22px;
+  margin-bottom: 14px;
+}
+.details-timeline::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--color-border-default);
+}
+
+.timeline-event {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 0;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+.timeline-event__icon {
+  position: absolute;
+  left: -22px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--color-text-muted);
+}
+.timeline-event__icon--approve {
+  color: var(--color-gh-open);
+}
+.timeline-event__icon--close {
+  color: var(--color-gh-closed);
+}
+.timeline-event__text {
+  flex: 1;
+  min-width: 0;
+}
+.timeline-event__text b {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.timeline-event__time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+
+.timeline-entry {
+  position: relative;
+  padding: 6px 0;
+}
+.timeline-entry__dot {
+  position: absolute;
+  left: -19px;
+  top: 15px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  border: 2px solid var(--color-surface-base);
+}
+.timeline-entry__card .comment-card {
+  font-size: 11.5px;
+}
+
+/* -------------------------------------------------------------------------
+ * Comment card + source tag (shared by the description card's timeline
+ * entries and the composer)
+ * ---------------------------------------------------------------------- */
+
+.comment-card {
+  display: flex;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-raised);
+}
+.comment-body {
+  flex: 1;
+  min-width: 0;
+}
+.comment-author {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.comment-time {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+  margin-left: 6px;
+  font-weight: 400;
+}
+.comment-review-state {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+.comment-text {
+  margin-top: 4px;
+}
+.comment-text.details-desc-card__body {
+  padding: 0;
+}
+
+.source-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.source-tag--github {
+  background: rgba(110, 119, 129, 0.16);
+  color: var(--color-text-secondary);
+}
+
+/* -------------------------------------------------------------------------
+ * Display-only composer (Phase 4 wires posting)
+ * ---------------------------------------------------------------------- */
+
+.comment-composer {
+  margin-top: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  padding: 8px;
+}
+.comment-composer textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  background: var(--color-surface-base);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.comment-composer textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.comment-composer textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.composer-footer {
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.composer-hint {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+
+/* -------------------------------------------------------------------------
+ * Generic button classes (mirrors the mockup's .btn/.btn-primary — this tab
+ * only needs the primary variant, for the disabled composer submit + merge
+ * button)
+ * ---------------------------------------------------------------------- */
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-on);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.composer-submit {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* -------------------------------------------------------------------------
+ * Right sidebar: stacked sections with uppercase heading
+ * ---------------------------------------------------------------------- */
+
+.details-sidebar__section {
+  border-top: 1px solid var(--color-border-default);
+  padding-top: 12px;
+}
+.details-sidebar__section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.details-sidebar__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+
+.sidebar-person-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.sidebar-person-row:last-child {
+  margin-bottom: 0;
+}
+
+.reviewer-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.reviewer-avatar.pending {
+  opacity: 0.5;
+  border: 1.5px dashed var(--color-border-hover);
+}
+.reviewer-name {
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.label-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #0b0b0c;
+}
+
+.milestone-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.milestone-name {
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+.milestone-count {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+
+.merge-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mergeable-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  width: fit-content;
+}
+.mergeable-pill--ok {
+  background: rgba(26, 127, 55, 0.16);
+  color: var(--color-gh-open);
+}
+.mergeable-pill--conflict {
+  background: rgba(207, 34, 46, 0.16);
+  color: var(--color-gh-closed);
+}
+.merge-box__checks {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.merge-box__checks--pass {
+  color: var(--color-gh-open);
+}
+.merge-box__checks--fail {
+  color: var(--color-gh-closed);
+}
+.merge-box__btn {
+  width: 100%;
+}

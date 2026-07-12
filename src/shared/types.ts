@@ -182,7 +182,7 @@ export type PinnedItem = {
 // App UI state
 // ---------------------------------------------------------------------------
 
-export type AppViewKind = 'sessions' | 'project' | 'workspace'
+export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'panes'
 
 export type Theme = 'midnight' | 'daylight' | 'eclipse'
 export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
@@ -202,6 +202,11 @@ export type AppUiState = {
   lastViewKind: AppViewKind
   lastProjectId: string | null
   lastWorkspaceId: string | null
+  // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+  // lastProjectId/lastWorkspaceId exactly. Covered by AppUiStatePatch
+  // (Partial<Omit<AppUiState, 'updatedAt'>>) automatically.
+  lastPanelId: string | null
+  lastLayoutId: string | null
   windowX: number | null
   windowY: number | null
   windowWidth: number | null
@@ -216,6 +221,9 @@ export type AppUiState = {
   workspaceCountInline: boolean
   sidebarWidth: number
   defaultProjectExpanded: boolean
+  // Projects surface — optional Workspaces board (kanban) visibility (U3).
+  // Default false; mirrors defaultProjectExpanded exactly.
+  showWorkspacesBoard: boolean
   // Launch + hotkey (v18)
   launchAtLogin: boolean
   globalHotkey: string
@@ -265,8 +273,68 @@ export type AppUiState = {
   // Status polling preferences (v42)
   statusPollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600 | 7200 | 10800; default 1800
   muteStatusNotifications: boolean
+  // Dashboard "Usage" card background poll interval (Dashboard D3)
+  usagePollIntervalSec: number // 300 | 600 | 900 | 1800 | 3600; default 600
   // Workspace footer visibility (v45)
   showWorkspaceFooter: boolean
+  // Files-tab editor save mode (v62) — false = manual (Cmd/Ctrl+S only);
+  // true = debounced auto-save on idle. Default false (manual).
+  filesAutoSave: boolean
+  // Files-tab tree VIEW preferences (v67) — app-wide, not per-workspace: these
+  // are the ⚙ TreeOptionsPopover toggles, moved here (from the in-memory
+  // filesTabStore) so they survive an app restart. `selectedFile`/`mode`/
+  // `treeOpen`/`expandedPaths` remain per-workspace SESSION state in
+  // filesTabStore — only the view-preference knobs live here.
+  /** Reveal denylisted (noisy machine dir/file) rows. Default false (off). */
+  filesShowHidden: boolean
+  /** Dim gitignored rows to ~62% opacity. Default true (on). */
+  filesDimGitignored: boolean
+  /** Word-wrap long lines in both the viewer and the editor. Default true (on). */
+  filesWrapLines: boolean
+  /** Tree row ordering: Pierre's built-in dirs-first/alpha vs pure alphabetical. Default 'default'. */
+  filesSortOrder: 'default' | 'name'
+  /** Collapse single-child directory chains into one flattened row. Default true (on) — see Fix 3. */
+  filesFlattenEmptyDirs: boolean
+  // Workbench Git-tab diff VIEW preferences (v68) — app-wide, mirrors the
+  // files_* pattern above: the Git tab's ⚙ options popover's "Wrap lines"
+  // toggle, persisted so it survives an app restart.
+  /** Word-wrap long lines in the diff viewer (PatchDiff's `overflow: 'wrap'`). Default true (on). */
+  gitDiffWrapLines: boolean
+  // Token-hover popover (Pierre Batch 3) — hovering a syntax token shows a
+  // floating card with token text + line:col + copy. Fires in BOTH the Files
+  // tab's editor/viewer (FilesTab.tsx) and the Git tab's diff (GitTab.tsx).
+  // Intrusive while just reading, so it's opt-in. Default false (off).
+  tokenHoverEnabled: boolean
+  // Per-hunk "Revert" on the working-tree diff (Pierre content-transform
+  // adoption) — a hunk-hover affordance in the Git tab's diff pane that
+  // reverts ONE hunk back to its HEAD content by writing the resolved file
+  // text via files:writeFile (see docs/learnings/hunk-accept-reject.md).
+  // Mutates the working tree directly, so opt-in like tokenHoverEnabled
+  // above. Default false (off).
+  hunkActionsEnabled: boolean
+  // Panes v2 top-level view visibility toggles — control whether the
+  // Sidebar's "Panes" and "Workspaces" top-level NavItems render at all
+  // (Settings > Navigation). Panes defaults visible (true); Workspaces
+  // defaults hidden (false) since Panes is the new primary surface.
+  // DEPRECATED — superseded by defaultSurface below; no longer read by the
+  // sidebar. Kept (dead but harmless) for backward-compat DB reads.
+  showPanesView: boolean
+  showWorkspacesView: boolean
+  // Open-at-launch surface (rail vocabulary) — which top-level surface the
+  // app lands on at startup (Settings > Navigation). Replaces the
+  // deprecated showPanesView/showWorkspacesView toggles above. Independent
+  // from AppViewKind/lastViewKind — do not conflate the two enums.
+  defaultSurface: 'dashboard' | 'projects' | 'panes'
+  // Workbench changed-files/file TREE pane width (v69) — SHARED between the
+  // Files tab and the Git tab's changed-files tree (both used a fixed `w-60`
+  // before this; now a draggable divider persists one shared width so long
+  // filenames don't truncate). Clamped 160–560px, default 240 (mirrors the
+  // sidebarWidth clamp-at-read pattern in src/main/uiState.ts).
+  workbenchTreeWidth: number
+  // GitHub username greeting (D4) — the user's display name (or login
+  // fallback), refreshed on each app open via `gh api user`. Null when gh
+  // is missing/unauth or has never been resolved.
+  githubUsername: string | null
   updatedAt: number
 }
 
@@ -694,6 +762,91 @@ export type ClaudeAuthTestResult =
   | { ok: false; reason: string; status?: number }
 
 // ---------------------------------------------------------------------------
+// Claude usage/limits (Dashboard "Usage" card) — models the fields we
+// actually RENDER from the undocumented `GET
+// https://api.anthropic.com/api/oauth/usage` response. The real payload has
+// more fields (spend, extra_usage details, etc.) than we surface; only what
+// the card needs is typed here. snake_case -> camelCase mapping happens in
+// src/main/claudeUsage.ts's parse step, never in the renderer. See that
+// file's header comment for the full fetch/cache/degrade contract.
+// ---------------------------------------------------------------------------
+
+/** One rolling usage window (five_hour "Session" or seven_day "Weekly"). */
+export type ClaudeUsageWindow = {
+  utilization: number | null // 0-100
+  resetsAt: string | null // ISO timestamp
+}
+
+/** One entry from the `limits[]` array — session/weekly totals plus any
+ *  model-scoped sub-limits (e.g. a weekly cap specific to one model). */
+export type ClaudeUsageLimit = {
+  kind: string
+  group: string
+  percent: number
+  severity: string // 'normal' | 'warning' | 'critical' | ... (undocumented, tolerate any string)
+  resetsAt: string | null
+  modelName: string | null // scope?.model?.display_name, null when not model-scoped
+  isActive: boolean
+}
+
+export type ClaudeUsage = {
+  fiveHour: ClaudeUsageWindow // "Session · 5h"
+  sevenDay: ClaudeUsageWindow // "Weekly · 7d"
+  limits: ClaudeUsageLimit[]
+  extraUsageEnabled: boolean
+}
+
+/** Degraded states the main process returns instead of throwing — see
+ *  claudeUsage.ts's getClaudeUsage doc comment for when each fires. */
+export type ClaudeUsageUnavailable = { unavailable: 'no-auth' | 'error' }
+
+export type ClaudeUsageResult = ClaudeUsage | ClaudeUsageUnavailable
+
+// ---------------------------------------------------------------------------
+// src/main/claudeActivity.ts — real Claude activity, scanned directly off
+// the on-disk transcript store (~/.claude/projects/**/*.jsonl), NOT the
+// Orpheus-registered `sessions` table (sessions:listAll only covers
+// workspaces created through Orpheus — ~40x undercounts total Claude usage).
+// One .jsonl file = one real Claude session; its mtime is the session's
+// "activity day", its line count is its message count. See claudeActivity.ts
+// for the full scan/cache contract.
+// ---------------------------------------------------------------------------
+
+/** Trailing 7 calendar days (Mon..Sun), used by the dashboard's Activity
+ *  card small-multiples chart. Shape/ordering matches the renderer's
+ *  original pulseData.helpers.WeeklyActivityDay (weekday 0=Mon..6=Sun) —
+ *  moved here so both the scanner and the renderer share one definition. */
+export type WeeklyActivityDay = {
+  weekday: number // 0=Mon..6=Sun
+  sessions: number
+  messages: number
+}
+
+export type ClaudeActivitySummary = {
+  weeklyActivity: WeeklyActivityDay[]
+  sessionsLast7Days: number
+  messagesLast7Days: number
+  allTimeSessions: number
+  allTimeMessages: number
+  /** Total tokens (input + output + cache read + cache creation, summed
+   *  across every assistant-turn `message.usage` line) for sessions active
+   *  in the last 7 days. */
+  tokensLast7Days: number
+  /** Same token sum as `tokensLast7Days`, across ALL history. */
+  allTimeTokens: number
+  /** Local hour-of-day (0-23) with the most session-file mtimes in the last
+   *  7 days. Null when there's no data in that window to compute a peak
+   *  from. */
+  peakHour: number | null
+  /** Consecutive-day streak of >=1 session, ending today or yesterday (same
+   *  "alive until a full day is skipped" semantics as the renderer's
+   *  original computeStreaks — see pulseData.helpers.ts). */
+  currentStreak: number
+  /** Distinct calendar days with >=1 session in the last 7 days. */
+  activeDays: number
+}
+
+// ---------------------------------------------------------------------------
 // Native context menu (v25)
 // ---------------------------------------------------------------------------
 
@@ -724,6 +877,321 @@ export type GhPullRequest = {
   author: string | null
   reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
   checks: 'success' | 'failure' | 'pending' | null
+}
+
+// ---------------------------------------------------------------------------
+// Account-wide GitHub search (Dashboard Phase 2, U5) — `gh search prs`/
+// `gh search issues` results, distinct from GhPullRequest above (which is
+// scoped to ONE cwd's current branch via `gh pr list --head <branch>`).
+// `gh search prs --json` does NOT expose `statusCheckRollup` (confirmed live
+// via `gh search prs --help`'s available-fields list — only
+// assignees/author/authorAssociation/body/closedAt/commentsCount/createdAt/
+// id/isDraft/isLocked/isPullRequest/labels/number/repository/state/title/
+// updatedAt/url), so `checks` here is resolved via a SEPARATE lazy
+// `gh pr view <n> --repo <repo> --json statusCheckRollup` fetch per PR (see
+// getMyOpenPrs in github.ts) — cheap in practice (real PR counts are small)
+// and total: any per-PR failure degrades that one row's checks to null
+// rather than failing the whole list.
+// ---------------------------------------------------------------------------
+
+export type GhSearchPr = {
+  number: number
+  title: string
+  url: string
+  repo: string // "owner/name", from repository.nameWithOwner
+  state: GhPullRequestState
+  checks: 'success' | 'failure' | 'pending' | null
+  updatedAt: string // ISO
+}
+
+export type GhSearchIssue = {
+  number: number
+  title: string
+  url: string
+  repo: string // "owner/name"
+  labels: GhLabel[]
+  updatedAt: string // ISO
+}
+
+// ---------------------------------------------------------------------------
+// GitHub PR detail (Workbench Git tab, Phase 3b) — richer `gh pr view` fetch
+// feeding the Details/Commits/Checks tabs (3c/3d/3e) and the general-comments
+// half of Phase 4. See docs/learnings/gh-pr-detail.md for the researched
+// field mapping this type mirrors. `GhPullRequest` above stays the thin
+// row/chip shape; this is fetched only when a user opens the PR detail panel.
+// ---------------------------------------------------------------------------
+
+export type GhLabel = {
+  name: string
+  color: string // hex, no leading '#'
+  description: string | null
+}
+
+export type GhReviewState = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING'
+
+export type GhReview = {
+  id: string
+  author: string // login
+  // Always null today: `gh pr view --json reviews` only exposes
+  // `author.login`, not an avatar field (verified live against PR #117 —
+  // GraphQL's fixed field list under `--json` has no avatarUrl passthrough
+  // for the reviews array). Kept nullable so <Avatar> can fall back to
+  // initials without a special case, and so a future GraphQL-based fetch can
+  // populate it without a type change.
+  avatarUrl: string | null
+  state: GhReviewState
+  submittedAt: string | null // ISO
+  body: string
+}
+
+export type GhReviewRequest = {
+  login: string // requested reviewer (user or team)
+  isTeam: boolean
+  // Same caveat as GhReview.avatarUrl — `gh pr view --json reviewRequests`
+  // has no avatar field either; always null today.
+  avatarUrl: string | null
+}
+
+export type GhCommit = {
+  oid: string
+  messageHeadline: string
+  messageBody: string
+  authoredDate: string
+  committedDate: string
+  authorLogin: string | null // authors[0]?.login
+  authorName: string
+  url: string // derived client-side: `${repoUrl}/commit/${oid}`
+}
+
+// Un-reduced per-check status, distinct from GhPullRequest['checks'] (which
+// stays the existing 3-state aggregate for the row/chip). Normalizes both
+// `statusCheckRollup` shapes (`CheckRun` and legacy `StatusContext`) into one.
+export type GhCheckState = 'success' | 'failure' | 'pending' | 'neutral'
+
+export type GhCheck = {
+  name: string
+  workflowName: string | null
+  state: GhCheckState
+  url: string | null
+  startedAt: string | null
+  completedAt: string | null
+}
+
+export type GhGeneralComment = {
+  id: string
+  author: string
+  // Same caveat as GhReview.avatarUrl above — `gh pr view --json comments`
+  // exposes only `author.login`, no avatar field; always null today.
+  avatarUrl: string | null
+  authorAssociation: string
+  body: string
+  createdAt: string
+  url: string
+  isMinimized: boolean
+}
+
+export type GhMilestone = {
+  title: string
+  url: string
+  dueOn: string | null
+}
+
+// ---------------------------------------------------------------------------
+// GitHub PR review comments (Workbench Git tab, Phase 4a) — line-anchored
+// review comments, threaded, feeding inline annotations on the PR diff. A
+// SEPARATE `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` call
+// from `prDetail` above (not folded in) — see docs/learnings/pr-comments.md
+// for the full research this mirrors: field shapes, the `in_reply_to_id ??
+// id` threading rule (verified live: 0 reply-to-reply chains across 41
+// comments on PR #105), and the Pierre DiffLineAnnotation mapping.
+// ---------------------------------------------------------------------------
+
+export type GhReviewCommentSide = 'LEFT' | 'RIGHT'
+
+export type GhReviewComment = {
+  id: number
+  inReplyToId: number | null
+  path: string
+  line: number | null // current diff line; null once the anchor is outdated
+  originalLine: number | null // stable anchor recorded at creation, never null
+  side: GhReviewCommentSide
+  subjectType: 'line' | 'file'
+  body: string
+  authorLogin: string
+  // Unlike GhReview/GhReviewRequest/GhGeneralComment above, this DOES carry a
+  // real avatar: `gh api repos/{owner}/{repo}/pulls/{n}/comments` returns each
+  // comment's full `user` object (REST, not the `gh pr view --json` GraphQL
+  // field list), including `user.avatar_url` — verified live against PR #117
+  // (coderabbitai[bot] resolved to a real avatars.githubusercontent.com URL).
+  avatarUrl: string | null
+  createdAt: string
+  htmlUrl: string
+}
+
+export type GhReviewCommentThread = {
+  id: number // the thread root comment's id (in_reply_to_id ?? id grouping key)
+  path: string
+  line: number | null // root comment's line ?? originalLine (see grouping in github.ts)
+  side: GhReviewCommentSide
+  subjectType: 'line' | 'file'
+  outdated: boolean // true when the root comment's `line` is null
+  comments: GhReviewComment[] // root + replies, sorted by createdAt
+}
+
+export type GhPullRequestDetail = {
+  // meta
+  number: number
+  title: string
+  body: string // markdown, PR description
+  state: GhPullRequestState
+  url: string
+  baseRefName: string
+  headRefName: string
+  author: string | null
+  createdAt: string
+  updatedAt: string
+  mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN'
+  mergeStateStatus: string // CLEAN|DIRTY|BLOCKED|BEHIND|DRAFT|HAS_HOOKS|UNKNOWN|UNSTABLE
+  additions: number
+  deletions: number
+  changedFiles: number
+
+  // people/metadata
+  labels: GhLabel[]
+  assignees: string[] // logins
+  reviewRequests: GhReviewRequest[]
+  reviews: GhReview[] // per-reviewer state, from gh pr view's own reviews field
+  reviewDecision: GhPullRequest['reviewDecision'] // aggregate, reuses existing normalizer
+  milestone: GhMilestone | null
+
+  // content
+  commits: GhCommit[]
+  checks: GhCheck[] // un-reduced per-check list (Checks tab)
+  comments: {
+    general: GhGeneralComment[] // gh pr view --json comments
+    // Line-anchored review comments are a SEPARATE `gh api
+    // .../pulls/{n}/comments` call (Phase 4a's github:prReviewComments /
+    // GhReviewCommentThread) — not part of this payload at all.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Local review comments (Workbench Git tab, Phase 4d) — the Orpheus-owned
+// comment store (Epic G2), living alongside GitHub's own review comments in
+// the SAME inline diff display. Completes the 3-source comment model:
+// github-from-others / my-github (both GhReviewCommentThread, tagged
+// 'GitHub') / LOCAL (this type, tagged 'Local'). Persisted in SQLite's
+// `review_comments` table (src/main/db/schema.ts) — see src/main/reviewStore.ts
+// for the CRUD surface. `prNumber` is nullable: a local comment can exist on
+// a workspace with no PR at all (it anchors to workspace + path/line, not to
+// a GitHub PR). `line`/`side` are nullable for a file-level (not
+// line-anchored) comment, mirroring GhReviewCommentThread's own
+// `subjectType: 'file'` case above. `startLine` is nullable/present only for
+// a true multi-line range comment (Pierre Batch 3's select-to-comment
+// gesture) — null means the comment is single-line and `line` alone anchors
+// it, exactly as before; when present, the comment spans startLine..line.
+// ---------------------------------------------------------------------------
+
+export type LocalReviewComment = {
+  id: string
+  workspaceId: string
+  prNumber: number | null
+  path: string
+  line: number | null
+  startLine: number | null
+  side: GhReviewCommentSide | null
+  body: string
+  author: string // e.g. 'you' — local comments have no real GitHub identity
+  resolved: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+// ---------------------------------------------------------------------------
+// Panes v2 — top-level Panels · Layouts · split Panes
+// (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4,
+// KTD2). Replaces the flat-row `Pane` type (U12/1ccc4f5) with a three-level
+// hierarchy persisted across `pane_panels` / `pane_layouts` / `pane_terminals`
+// (src/main/db/schema.ts); see src/main/paneStore.ts for the CRUD surface.
+// Independent of claude workspaces/sessions entirely — Panes is its own
+// top-level view (R1), not scoped to a claude workspace the way the old
+// flat-row panes were.
+//
+//   PanePanel   — a sidebar-level grouping. 'general' is the single,
+//                 always-there, cross-project panel (seeded once — see
+//                 paneStore.ts's ensureGeneralPanel / the
+//                 'pane-general-panel-seed' data step). 'project' panels are
+//                 user-created and bound to `dir`, a folder chosen via the
+//                 folder picker — that folder is Panes-only and is NEVER
+//                 written to Orpheus's `projects` table (KTD8).
+//   PaneLayout  — a saved split-tree arrangement bound to its OWN folder
+//                 (`dir`, independent of the parent panel's `dir`). `splitTree`
+//                 is the parsed form of the persisted `split_tree_json` blob
+//                 (null only for a layout with zero panes, e.g. right after
+//                 creation before the first pane is added).
+//   PaneTerminal — one terminal (a "pane" in the UI). `command` is the setup
+//                 rule (R7): a command that auto-runs once on every open,
+//                 then drops to a live shell; '' means a plain shell with no
+//                 setup step. `name` (issue #21) is the user-editable
+//                 display name — '' falls back to "Pane N" by position. The
+//                 native surface keys on this row's `id`:
+//                 `pane:<layoutId>:<terminalId>` (KTD1 — the existing
+//                 pane:* surface IPC is unchanged, just given different key
+//                 parts).
+//   SplitTree   — the binary arrangement + divider ratios for one layout's
+//                 panes. A leaf `{ paneId }` references a PaneTerminal's id;
+//                 a node `{ dir, a, b, ratio }` is a binary split ('v' = new
+//                 pane to the right, 'h' = new pane below), with `ratio` the
+//                 first child's (`a`'s) share of the split axis (0 < ratio <
+//                 1). Pure UI geometry — stored as JSON on the layout rather
+//                 than as a recursive table (KTD2).
+// ---------------------------------------------------------------------------
+
+export type PanePanelKind = 'general' | 'project'
+
+export interface PanePanel {
+  id: string
+  kind: PanePanelKind
+  name: string
+  /** Null for the 'general' panel — each of its layouts carries its own dir. */
+  dir: string | null
+  position: number
+  createdAt: number
+  updatedAt: number
+  /** Sidebar expand/collapse persistence (issue #1) — mirrors
+   *  ProjectRecord.expandedInSidebar exactly. */
+  expandedInSidebar: boolean
+}
+
+export type SplitDirection = 'v' | 'h'
+
+export type SplitTree =
+  | { paneId: string }
+  | { dir: SplitDirection; a: SplitTree; b: SplitTree; ratio: number }
+
+export interface PaneLayout {
+  id: string
+  panelId: string
+  name: string
+  dir: string
+  splitTree: SplitTree | null
+  position: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PaneTerminal {
+  id: string
+  layoutId: string
+  /** The setup rule — auto-runs once per open, then drops to a live shell. '' = plain shell. */
+  command: string
+  /** User-editable display name (issue #21). '' means unnamed — the
+   *  renderer falls back to "Pane N" (1-based position) in that case. Never
+   *  affects the surface's launch (see `command`); renaming never relaunches. */
+  name: string
+  position: number
+  createdAt: number
+  updatedAt: number
 }
 
 export type SessionStatus = 'in_progress' | 'in_review' | 'archived'
@@ -1113,6 +1581,9 @@ export type DetailsCardProps = {
   costLoading?: boolean
   git?: OverlayCardGit
   cwd?: string
+  /** Workbench flag-on path (U3): settings changed since launch — mirrors the
+   *  "Restart to apply" chip formerly shown only in the WorkspaceDrawer. */
+  isDirty?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,8 +1665,16 @@ export type ChipPromptProps = {
 /** Resolves on Apply/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipPromptResult = { values: Record<string, string> } | null
 
-/** One selectable item in a chip dropdown (e.g. a model option). */
-export type ChipDropdownItem = { value: string; label: string; sublabel?: string }
+/** One selectable item in a chip dropdown (e.g. a model option). `destructive`
+ *  is optional and additive — only PanesView's ⋯ layout-options menu sets it
+ *  (for "Stop layout"), so it defaults to falsy/undefined for every other
+ *  caller (e.g. the footer Model chip) and never changes their rendering. */
+export type ChipDropdownItem = {
+  value: string
+  label: string
+  sublabel?: string
+  destructive?: boolean
+}
 
 /** Interactive dropdown/list popover — opens upward from its anchor chip. */
 export type ChipDropdownProps = {
@@ -1207,3 +1686,250 @@ export type ChipDropdownProps = {
 
 /** Resolves on row click/Enter; caller resolves `null` on Cancel/Escape/outside-click/IPC failure. */
 export type ChipDropdownResult = { kind: 'select'; value: string } | null
+
+// ---------------------------------------------------------------------------
+// Workbench Files tab — file tree + viewer data sources (Stage A backend).
+//
+// These feed @pierre/trees (flat `paths: string[]` + per-path git-status
+// decorations) and the file viewer. See docs/learnings/pierre-libraries.md
+// §7 for why the tree consumes a FLAT path list and a GitStatusEntry[].
+// ---------------------------------------------------------------------------
+
+/**
+ * Visibility tier for a single tree entry (see docs/learnings/pierre-libraries.md §11).
+ *
+ *  - `'normal'`     — tracked / non-ignored path; full opacity, no annotation.
+ *  - `'gitignored'` — matched by the `.gitignore` chain but NOT denylisted
+ *                     (e.g. `.env`, `.claude/settings.local.json`); shown,
+ *                     dimmed when "Dim gitignored" is on.
+ *  - `'denylisted'` — a hardcoded noisy machine dir/file (`node_modules`,
+ *                     `.git`, `vendor`, `out`/`dist`/`build`/`target`,
+ *                     `.DS_Store`, `*.log`, caches); hidden unless "Show hidden
+ *                     files" is on. The denylist is applied regardless of
+ *                     whether the project's own `.gitignore` mentions it.
+ */
+export type FileTier = 'normal' | 'gitignored' | 'denylisted'
+
+/**
+ * A single flat directory-walk entry, tagged with its visibility tier.
+ * `path` is a repo-relative POSIX path — directories carry a trailing slash
+ * (e.g. `'src/'`), files do not (e.g. `'src/index.ts'`).
+ */
+export type FileEntry = {
+  path: string
+  tier: FileTier
+}
+
+/**
+ * Flat, tier-tagged directory listing of a workspace's cwd.
+ *
+ * Every path is returned tagged with its `tier` (rather than gitignored paths
+ * being dropped at walk time) so the renderer can filter/dim client-side with
+ * NO re-fetch when the tree-options toggles flip — see §11. Directories carry a
+ * trailing slash and files do not, matching the mixed dir+file input
+ * @pierre/trees' README examples pass. `truncated` is true when the walk hit
+ * the depth/entry cap and the listing is partial.
+ */
+export type FilesListing = {
+  entries: FileEntry[]
+  truncated: boolean
+}
+
+/**
+ * Per-path git status decoration for the file tree, mapped to @pierre/trees'
+ * `GitStatusEntry` enum. `path` is repo-relative POSIX (joins to the same
+ * paths `files:listDir` returns).
+ */
+export type GitFileStatusKind =
+  | 'added'
+  | 'deleted'
+  | 'ignored'
+  | 'modified'
+  | 'renamed'
+  | 'untracked'
+
+export type GitStatusEntry = {
+  path: string
+  status: GitFileStatusKind
+}
+
+// ---------------------------------------------------------------------------
+// Workbench Git tab — Phase 1 working-tree diff (per-file unified-diff
+// patches, consumed by @pierre/diffs' <PatchDiff patch={...}>). See
+// docs/learnings/pierre-libraries.md §13.4/§13.9: PatchDiff takes a raw patch
+// string, so the git:diff IPC ships one already-split patch per file rather
+// than pre-parsed FileDiffMetadata.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-file working-tree diff status. Distinct from `GitFileStatusKind` (the
+ * Files-tab tree decoration enum) only in that there's no `'ignored'` state
+ * here — every entry in a `git:diff` result is a real changed file.
+ */
+export type GitDiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked'
+
+/**
+ * A single file's working-tree diff: the repo-relative path, its change
+ * status, a ready-to-render unified-diff patch string (`diff --git ...`
+ * through the last hunk line for this file only), and +/- line counts parsed
+ * from the same patch. `oldPath` is set only for renames (the pre-rename
+ * path) so the renderer can show "old → new" if desired.
+ *
+ * `binary` (Fix 4) is true when the patch chunk is a `git diff` binary marker
+ * (`Binary files a/x b/x differ` or a `GIT binary patch` block) rather than
+ * real `+`/`-` hunks — additions/deletions are then meaningless (always 0)
+ * and the renderer shows "Binary" instead of a line-count, routing image
+ * extensions to an <img> preview (via files:readImage) and everything else to
+ * a "no preview" placeholder rather than rendering the (blank) patch.
+ *
+ * `oversized` (crash fix #1 — see gitDiff.ts's OVERSIZED_LINE_THRESHOLD/
+ * OVERSIZED_BYTE_THRESHOLD) is true when the patch chunk exceeds a per-file
+ * line/byte cap. `additions`/`deletions`/`status`/`binary` are always computed
+ * from the FULL chunk regardless of this flag, so counts and comment
+ * line-anchoring stay correct — `oversized` only tells the renderer's
+ * DiffContentPane to hide the patch behind a "Large diff hidden — show
+ * anyway" placeholder instead of feeding it straight into <PatchDiff>. As of
+ * Pierre adoption batch 2a, <PatchDiff> renders inside a <Virtualizer> (only
+ * ~visible rows hit shadow-DOM), so this cap was raised substantially rather
+ * than removed — it now exists mainly to protect against the still-
+ * synchronous whole-patch Shiki tokenize pass on an astronomically large
+ * single file, not DOM size.
+ */
+export type GitDiffFile = {
+  path: string
+  status: GitDiffFileStatus
+  patch: string
+  additions: number
+  deletions: number
+  oldPath?: string
+  binary: boolean
+  oversized?: boolean
+  /** PERF FIX (LAG-LAYER #7) — a cyrb53 content hash over path+status+patch,
+   *  computed ONCE in main (src/main/gitDiff.ts's fileFromChunk) so the
+   *  renderer's diffSignature (GitTab.tsx) can combine per-file hashes
+   *  instead of re-concatenating every file's full patch TEXT into one giant
+   *  string on every settled git:diff/prDiff. See gitDiff.ts's own doc
+   *  comment for why this isn't a 32-bit hash or `patch.length`. */
+  sig: string
+}
+
+/**
+ * Result of `git:diff` — the working tree vs `HEAD` (tracked changes) plus
+ * untracked files (each rendered as an all-additions patch against
+ * `/dev/null`). Empty `files` for a non-repo, a clean tree, or any git
+ * failure — the handler never throws (see src/main/gitDiff.ts).
+ *
+ * `repo` (Phase 2 — Workbench Git tab edge states) discriminates the two
+ * cases that otherwise both resolve to an empty `files[]`: `repo: false`
+ * means `cwd` isn't inside a git working tree at all (the renderer shows the
+ * "Not a git repository" + Git-init empty state); `repo: true` with an empty
+ * `files[]` means it IS a repo and the working tree is simply clean (the
+ * renderer shows the "No changes" empty state). `files.length > 0` always
+ * implies `repo: true`.
+ */
+export type GitDiffResult = {
+  repo: boolean
+  files: GitDiffFile[]
+}
+
+/**
+ * PERF FIX (main-side diff no-op detection) — an ADDITIVE sentinel returned
+ * by `git:diff` ONLY (never `git:prDiff` — see src/main/ipc/git.ts's handler)
+ * when the freshly-computed working-tree diff is byte-for-byte identical to
+ * the last one emitted for the SAME workspaceId (src/main/gitDiff.ts caches
+ * the last-emitted signature per workspaceId). Lets main skip re-serializing/
+ * structured-cloning the full `files[]` (multi-MB patch text on a large diff)
+ * across IPC on a live-refresh settle that changed nothing, instead of only
+ * skipping the renderer's OWN setState (the pre-existing diffSignature guard
+ * in GitTab.tsx, kept as the renderer-side backstop).
+ *
+ * This is a UNION on `git:diff`'s return type, not a change to `GitDiffResult`
+ * itself — `git:prDiff` and every other consumer of `GitDiffResult` are
+ * unaffected. The renderer MUST check `unchanged` before touching `.files`
+ * (see GitTab.tsx's `isUnchangedDiffResult`, used by `fetchDiff`) — the cache
+ * is keyed by workspaceId, so a workspace switch is always a cache MISS and
+ * never returns this sentinel for the first fetch after a switch (see
+ * gitDiff.ts's `getWorkingTreeDiff`'s own doc comment on the cache key).
+ */
+export type GitDiffUnchangedResult = {
+  repo: true
+  unchanged: true
+}
+
+/**
+ * Text contents of a single file for the viewer.
+ *
+ * `binary` is true when null bytes were detected — `contents` is then empty
+ * and the renderer shows a placeholder rather than garbage. `truncated` is
+ * true when the file exceeded the size cap and `contents` holds only the
+ * leading portion that was read.
+ */
+export type FileContents = {
+  /** File contents as UTF-8 text (empty when `binary`). */
+  contents: string
+  /** Basename of the file (e.g. `index.ts`). */
+  name: string
+  /** Byte size of the file on disk. */
+  size: number
+  /** True when the file exceeded the size cap; `contents` is partial. */
+  truncated: boolean
+  /** True when null bytes were detected; `contents` is empty. */
+  binary: boolean
+  /**
+   * Crash fix #2 — cheap newline count over the read `contents` (bounded
+   * `indexOf` scan in files.ts, not a full `.split('\n')` allocation), so the
+   * renderer can gate full-file Shiki highlighting on line count without
+   * re-scanning a multi-MB string client-side. 0 for `binary`/empty files.
+   */
+  lineCount: number
+  /**
+   * Crash fix #2 — length of the longest line seen during that SAME bounded
+   * scan (capped — see files.ts's MAX_LINE_LENGTH_SCAN), so a minified
+   * single-line blob (low `lineCount`, huge single line) is also caught. 0
+   * for `binary`/empty files.
+   */
+  maxLineLength: number
+}
+
+/**
+ * Result of `files:writeFile` (Files-tab editor save). `ok` is true when the
+ * UTF-8 write to the resolved-inside path succeeded; on failure `error` carries
+ * a short reason (`traversal` = the path escaped the workspace cwd, `denied` =
+ * fs write failed, `no-workspace` = workspace cwd could not be resolved). The
+ * handler never throws — every failure is a typed result the renderer can
+ * surface without an unhandled rejection.
+ */
+export type WriteFileResult =
+  | { ok: true }
+  | { ok: false; error: 'traversal' | 'denied' | 'no-workspace' }
+
+/**
+ * Result of the Files-tab tree mutation IPCs (`files:createFile`,
+ * `files:createDir`, `files:rename`, `files:delete` — Phase 4). One shared
+ * shape across all four so the renderer can surface a single error union:
+ *   - `exists`      — the target path (or rename destination) already exists
+ *   - `traversal`   — a path escaped the workspace cwd (`../`, absolute, root)
+ *   - `denied`      — an underlying fs/trash operation failed
+ *   - `missing`     — the source path (rename `from`, delete target) is gone
+ *   - `no-workspace`— the workspace cwd could not be resolved from its id
+ * Every mutating handler is total — it returns one of these results rather than
+ * throwing across the IPC boundary.
+ */
+export type FilesMutationResult =
+  | { ok: true }
+  | { ok: false; error: 'exists' | 'traversal' | 'denied' | 'missing' | 'no-workspace' }
+
+/**
+ * Result of `files:readImage` (Files-tab image viewer). On success, `dataUrl`
+ * is a base64 `data:<mime>;base64,...` URL of the whole file (small enough to
+ * hand straight to an `<img src>`) and `size` is the on-disk byte size. On
+ * failure, `error` carries a short reason: `too-large` (over the read cap),
+ * `missing` (no workspace cwd, a traversal escape, or the path doesn't
+ * resolve to an existing file), or `denied` (the file exists and is within
+ * cap but the fs read itself failed, e.g. a permissions error). The handler
+ * never throws across the IPC boundary — see `readFileContents`'s sibling
+ * `readImageContents` in src/main/ipc/files.ts.
+ */
+export type FileImage =
+  | { ok: true; dataUrl: string; size: number }
+  | { ok: false; error: 'too-large' | 'denied' | 'missing' }

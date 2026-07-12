@@ -68,6 +68,13 @@
   --color-gh-closed: #cf222e;
   --color-gh-draft: #6e7781;
 
+  /* Severity-warning palette — fixed across themes, same convention as the
+     GH-state colors above. Used by the Dashboard Usage card's meters/rows
+     for a "warning"/"elevated" severity between normal (accent) and
+     critical (--color-gh-closed). Sourced from Primer's attention/amber
+     scale so it reads as a conventional amber regardless of theme. */
+  --color-severity-warning: #9a6700;
+
   --font-sans:
     'Geist Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -86,6 +93,103 @@
   --text-lg--line-height: 1.3;
   --text-xl: 1.571rem; /* 22px  — heading */
   --text-xl--line-height: 1.2;
+
+  /* -------------------------------------------------------------------------
+   * shadcn/ui theme-variable mapping (Tailwind v4 @theme layer)
+   * ---------------------------------------------------------------------
+   * shadcn/ui + evilcharts components are authored against a fixed set of
+   * CSS custom properties (--background, --primary, --border, etc — the
+   * shadcn "new-york" style + Tailwind v4 cssVariables:true convention).
+   * Rather than adopt shadcn's own default slate/blue palette, every one of
+   * those variables is aliased here to an EXISTING Orpheus runtime token
+   * (defined below under :root / [data-theme='...']). Because the alias is a
+   * var() reference (not a literal), it re-resolves automatically whenever
+   * the [data-theme] attribute swaps the underlying Orpheus tokens — so
+   * light/dark/eclipse theming and the [data-accent] picker apply to shadcn
+   * components for free, with zero shadcn-specific theme code.
+   *
+   * Do NOT hardcode colors here — every value below must be `var(--color-*)`
+   * so it stays wired to Orpheus's existing token system.
+   * ------------------------------------------------------------------- */
+
+  /* Page/app background + default text */
+  --color-background: var(--color-surface-base);
+  --color-foreground: var(--color-text-primary);
+
+  /* Card / Popover surfaces — shadcn's <Card>, <DropdownMenu>, <Popover> etc.
+     Card sits one elevation above the page (surface-raised); popovers/menus
+     float above cards (surface-overlay). */
+  --color-card: var(--color-surface-raised);
+  --color-card-foreground: var(--color-text-primary);
+  --color-popover: var(--color-surface-overlay);
+  --color-popover-foreground: var(--color-text-primary);
+
+  /* Primary — shadcn's main call-to-action color (buttons, active tab
+     indicator, focus rings). Orpheus's accent (gold by default, user-
+     selectable via [data-accent]) IS the app's primary action color. */
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-accent-on);
+
+  /* Secondary — a quieter surface for less prominent actions (e.g. Badge
+     secondary variant, secondary Button). Orpheus has no dedicated
+     "secondary" token, so this borrows the overlay surface + primary text,
+     giving a subtle raised-chip look consistent with existing UI. */
+  --color-secondary: var(--color-surface-overlay);
+  --color-secondary-foreground: var(--color-text-primary);
+
+  /* Muted — de-emphasized backgrounds/text (disabled states, placeholder
+     copy, TabsList track). */
+  --color-muted: var(--color-surface-overlay);
+  --color-muted-foreground: var(--color-text-muted);
+
+  /* Accent — shadcn overloads "accent" to mean hover/active highlight
+     surfaces (e.g. DropdownMenuItem:hover), which is a DIFFERENT concept
+     from Orpheus's --color-accent (brand/primary color, mapped to
+     --color-primary above). Map shadcn's --accent to the overlay surface so
+     hover states read as "raised", not brand-colored. */
+  --color-accent: var(--color-surface-overlay);
+  --color-accent-foreground: var(--color-text-primary);
+
+  /* Destructive — no red token exists in Orpheus today; use the fixed GitHub
+     "closed" red already defined below so destructive actions stay visually
+     consistent with the existing gh-closed chip color across themes. */
+  --color-destructive: var(--color-gh-closed);
+  --color-destructive-foreground: #ffffff;
+
+  /* Borders / inputs / focus rings */
+  --color-border: var(--color-border-default);
+  --color-input: var(--color-border-default);
+  --color-ring: var(--color-accent);
+
+  /* Chart palette (shadcn <ChartContainer> / evilcharts) — accent-led with
+     desaturated neutrals so a themed donut/pie reads as "Orpheus", not a
+     generic multi-hue chart. chart-1 is the hero series (accent gold). */
+  --color-chart-1: var(--color-accent);
+  --color-chart-2: var(--color-accent-hover);
+  --color-chart-3: var(--color-text-secondary);
+  --color-chart-4: var(--color-border-hover);
+  --color-chart-5: var(--color-text-muted);
+
+  /* Sidebar tokens — shadcn ships a parallel set for its <Sidebar>
+     primitive. Orpheus has its own hand-rolled Sidebar, but these are
+     mapped for completeness in case any shadcn component references them. */
+  --color-sidebar: var(--color-surface-raised);
+  --color-sidebar-foreground: var(--color-text-primary);
+  --color-sidebar-primary: var(--color-accent);
+  --color-sidebar-primary-foreground: var(--color-accent-on);
+  --color-sidebar-accent: var(--color-surface-overlay);
+  --color-sidebar-accent-foreground: var(--color-text-primary);
+  --color-sidebar-border: var(--color-border-default);
+  --color-sidebar-ring: var(--color-accent);
+
+  /* Corner radius — shadcn components use --radius (+ Tailwind v4 derives
+     sm/md/lg/xl from it via calc()). 0.625rem (10px) matches the rounded-xl
+     card look already used across Orpheus surfaces. */
+  --radius: 0.625rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 /* ---------------------------------------------------------------------------

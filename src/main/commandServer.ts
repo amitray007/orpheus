@@ -20,6 +20,10 @@ import { getProject } from './projects'
 import type { WorkspaceRecord, ClaudePermissionMode, ClaudeEffort } from '../shared/types'
 import { onWorkspaceStatusChange } from './orpheusNotify'
 import { getWorkspaceFileInfo, getWorkspaceFileStatusSync, forceReconcile } from './sessionState'
+import {
+  listByWorkspace as listLocalReviewComments,
+  setResolved as setLocalReviewCommentResolved
+} from './reviewStore'
 
 // ---------------------------------------------------------------------------
 // Deps injected from index.ts (these live as locals there, so we receive them
@@ -505,6 +509,46 @@ function makeDispatchTable(deps: CommandServerDeps): Record<string, DispatchFn> 
         projectName: project?.name ?? null,
         cwd: ws.cwd
       }
+    },
+
+    // Workbench Git tab, Phase 4d — THE agent-readable hook for the LOCAL
+    // review-comment store (Epic G2). Surfaces the SAME data reviewStore.ts's
+    // reviews:list IPC returns to the renderer, over the existing `orpheus`
+    // CLI/HTTP command channel — so an agent can read local review comments
+    // without needing direct SQLite access (though that always works too,
+    // since the store is just the `review_comments` table — see
+    // reviewStore.ts's own header). Read-only by design for this phase; a
+    // future `reviews.add`/`reviews.resolve` write action would slot in here
+    // alongside this one using the same reviewStore.ts functions.
+    // Args:
+    //   workspaceId — falls back to context.workspaceId (the same
+    //                 caller-identity convention whoami.resolve above uses),
+    //                 so a workspace-scoped agent doesn't need to pass it.
+    'reviews.list': (args, context) => {
+      const workspaceId =
+        context?.workspaceId ?? (typeof args?.workspaceId === 'string' ? args.workspaceId : null)
+      if (!workspaceId) throw new Error('workspaceId is required (no context workspace either)')
+      return listLocalReviewComments(workspaceId)
+    },
+
+    // Resolve-back — the write-side counterpart to reviews.list, mirrored
+    // shape/auth/error handling exactly (same workspaceId convention as
+    // reviews.list/whoami.resolve, same reviewStore.ts function the
+    // reviews:setResolved IPC handler uses). This closes the CLI/command-server
+    // parity gap flagged in reviewStore.ts's own header comment and in
+    // docs/learnings/agent-review-loop.md — an agent can now flip a local
+    // review comment's resolved flag from outside the renderer, completing
+    // the read -> act (ws send) -> resolve loop.
+    // Args:
+    //   id         (required) — the review comment id to update
+    //   resolved   (required, boolean) — the new resolved value
+    // Comment ids are globally unique (randomUUID), so — unlike reviews.list —
+    // there is no workspaceId to resolve/scope by here; mirrors the
+    // reviews:setResolved IPC handler, which also takes only { id, resolved }.
+    'reviews.setResolved': (args) => {
+      if (typeof args.id !== 'string' || args.id === '') throw new Error('args.id is required')
+      if (typeof args.resolved !== 'boolean') throw new Error('args.resolved is required (boolean)')
+      return setLocalReviewCommentResolved(args.id, args.resolved)
     }
   }
 }

@@ -33,6 +33,8 @@ extraResources:
       - '**/*'
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  - from: resources/orpheus-pane.sh
+    to: orpheus-pane.sh
   - from: resources/bin/orpheus-notify
     to: bin/orpheus-notify
   # Orpheus CLI shim — runs the bundled CLI via Electron-as-Node.

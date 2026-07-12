@@ -1,0 +1,68 @@
+/* ---------------------------------------------------------------------------
+ * src/renderer/src/components/workbench/git/TokenHoverPopover.css
+ *
+ * Scoped styles for the token-hover popover (Pierre adoption Batch 3) —
+ * everything nested under `.tok-hover-*` so it can't collide with
+ * CommentComposer.css's `.gcc-*` classes or ReviewCommentThread.css's
+ * `.rc-*` classes. Same dark-surface/border-radius/font language as
+ * CommentComposer.css, just fixed-positioned instead of inline.
+ * ------------------------------------------------------------------------ */
+
+.tok-hover-popover {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font-family: var(--font-sans);
+  pointer-events: auto;
+}
+
+.tok-hover-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+}
+
+.tok-hover-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tok-hover-pos {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.tok-hover-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 0;
+  transition:
+    background-color 0.1s,
+    color 0.1s;
+}
+.tok-hover-copy:hover {
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+}

@@ -11,6 +11,9 @@ import { enumCheck, enumClause } from './render'
 const WORKSPACE_STATUS = ['in_progress', 'awaiting_input', 'attention', 'idle', 'archived'] as const
 const SESSION_STATUS = ['in_progress', 'in_review', 'archived'] as const
 const KEEP_AWAKE_MODE = ['off', 'auto', 'on'] as const
+// Panes v2 (U4, KTD2) — pane_panels.kind. Mirrors PanePanelKind in
+// src/shared/types.ts.
+const PANE_PANEL_KIND = ['general', 'project'] as const
 
 const PERMISSION_MODE = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
 const EFFORT = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -20,7 +23,15 @@ const EDITOR_MODE = ['normal', 'vim'] as const
 const CLOUD_PROVIDER = ['anthropic', 'bedrock', 'vertex', 'foundry'] as const
 const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 
-const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace'] as const
+// 'panes' added (KTD2 nav-rail work) so lastViewKind='panes' doesn't violate
+// the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
+// (see AppViewKind in src/shared/types.ts).
+const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace', 'panes'] as const
+// Mirrors VALID_FILES_SORT_ORDERS / TreeSortOrder in
+// src/shared/uiStateDefaults.ts / TreeOptionsPopover.tsx.
+const FILES_SORT_ORDER = ['default', 'name'] as const
+// Mirrors VALID_DEFAULT_SURFACES in src/shared/uiStateDefaults.ts.
+const DEFAULT_SURFACE = ['dashboard', 'projects', 'panes'] as const
 const THEME = ['midnight', 'daylight', 'eclipse'] as const
 const ACCENT_COLOR = ['gold', 'blue', 'teal', 'orange', 'pink'] as const
 const UI_FONT_SCALE = ['small', 'default', 'large'] as const
@@ -439,6 +450,13 @@ export const schema: SchemaDef = {
       },
       last_project_id: 'TEXT REFERENCES projects(id) ON DELETE SET NULL',
       last_workspace_id: 'TEXT REFERENCES workspaces(id) ON DELETE SET NULL',
+      // Panes v2 active-panel/active-layout persistence (issue #1) — mirrors
+      // last_project_id/last_workspace_id exactly: nullable TEXT with the
+      // same ON DELETE SET NULL FK so a deleted panel/layout can never leave
+      // a dangling id here (auto-clears instead of restoring a ghost
+      // selection on next boot).
+      last_panel_id: 'TEXT REFERENCES pane_panels(id) ON DELETE SET NULL',
+      last_layout_id: 'TEXT REFERENCES pane_layouts(id) ON DELETE SET NULL',
       window_x: 'INTEGER',
       window_y: 'INTEGER',
       window_width: 'INTEGER',
@@ -459,6 +477,11 @@ export const schema: SchemaDef = {
         check: 'CHECK (sidebar_width BETWEEN 200 AND 480)'
       },
       default_project_expanded: bool('default_project_expanded', '0'),
+      // Projects surface — optional Workspaces board (kanban) visibility (U3).
+      // Default OFF: the Projects surface lands on the calm ProjectsHome empty
+      // state; this flips on a small "Workspaces" board button that reveals the
+      // retained WorkspacesView kanban. Mirrors default_project_expanded exactly.
+      show_workspaces_board: bool('show_workspaces_board', '0'),
       // Launch + hotkey (v18)
       launch_at_login: bool('launch_at_login', '0'),
       global_hotkey: { type: 'TEXT', notNull: true, default: "''" },
@@ -469,6 +492,9 @@ export const schema: SchemaDef = {
       // mirrors UI_STATE_DEFAULTS.statusPollIntervalSec in src/shared/uiStateDefaults.ts
       status_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '1800' },
       mute_status_notifications: bool('mute_status_notifications', '0'),
+      // Dashboard "Usage" card background poll interval (D3)
+      // mirrors UI_STATE_DEFAULTS.usagePollIntervalSec in src/shared/uiStateDefaults.ts
+      usage_poll_interval_sec: { type: 'INTEGER', notNull: true, default: '600' },
       // Workspace footer visibility (v45)
       show_workspace_footer: bool('show_workspace_footer', '1'),
       // Diagnostics capture toggles (v56) — plain INTEGER, no CHECK in source
@@ -484,6 +510,8 @@ export const schema: SchemaDef = {
       notify_suppress_when_focused: { type: 'BOOLEAN', notNull: true, default: '0' },
       // Hooks integration (v60) — default 0 (off); opt-in to socket server + settings.json hooks
       hooks_integration_enabled: { type: 'INTEGER', notNull: true, default: '0' },
+      // Files-tab editor save mode (v62) — default 0 (manual save via Cmd/Ctrl+S).
+      files_auto_save: bool('files_auto_save', '0'),
       // ALTER-only columns folded into desired state (drift vs the fresh-install
       // constant per _db-surface.md's "Columns added ONLY via later ALTER" list)
       notify_attention: { type: 'BOOLEAN', notNull: true, default: '1' },
@@ -521,8 +549,79 @@ export const schema: SchemaDef = {
       auto_check_updates: bool('auto_check_updates', '1'),
       // mirrors UI_STATE_DEFAULTS.staleAfterMinutes in src/shared/uiStateDefaults.ts
       stale_after_minutes: { type: 'INTEGER', notNull: true, default: '60' },
+      // Files-tab tree VIEW preferences (v67) — moved out of the in-memory
+      // per-workspace filesTabStore so they're app-wide + survive restart
+      // (mirrors UI_STATE_DEFAULTS.filesShowHidden/… in
+      // src/shared/uiStateDefaults.ts). files_flatten_empty_dirs is a SHARED
+      // Files+Git setting (Git tab's ⚙ "Flatten empty folders" toggle reads/
+      // writes this same column — see GitDiffOptionsPopover.tsx) and now
+      // defaults to 0/OFF — each folder is its own expandable row rather than
+      // collapsing single-child dir chains into an unreadable breadcrumb.
+      files_show_hidden: bool('files_show_hidden', '0'),
+      files_dim_gitignored: bool('files_dim_gitignored', '1'),
+      files_wrap_lines: bool('files_wrap_lines', '1'),
+      files_sort_order: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'default'",
+        check: enumCheck('files_sort_order', FILES_SORT_ORDER)
+      },
+      files_flatten_empty_dirs: bool('files_flatten_empty_dirs', '0'),
+      // Workbench Git-tab diff VIEW preferences (v68) — app-wide, same
+      // pattern as the files_* columns above: the Git tab's ⚙ options
+      // popover's "Wrap lines" toggle (mirrors UI_STATE_DEFAULTS.gitDiffWrapLines
+      // in src/shared/uiStateDefaults.ts). Default 1 (wrap on).
+      git_diff_wrap_lines: bool('git_diff_wrap_lines', '1'),
+      // Token-hover popover (Pierre Batch 3) — hovering a syntax token shows a
+      // floating card w/ token text + line:col + copy, in BOTH the Files tab's
+      // editor/viewer and the Git tab's diff. Was always-on and intrusive
+      // while just reading, so it's now opt-in via the ⚙ options popovers
+      // (mirrors UI_STATE_DEFAULTS.tokenHoverEnabled in
+      // src/shared/uiStateDefaults.ts). Default 0 (off).
+      token_hover_enabled: bool('token_hover_enabled', '0'),
+      // Per-hunk "Revert" on the working-tree diff — a hunk-hover affordance
+      // in the Git tab's diff pane that reverts one hunk to its HEAD content
+      // via files:writeFile (mirrors UI_STATE_DEFAULTS.hunkActionsEnabled in
+      // src/shared/uiStateDefaults.ts). Opt-in since it mutates the working
+      // tree. Default 0 (off).
+      hunk_actions_enabled: bool('hunk_actions_enabled', '0'),
+      // Panes v2 top-level view visibility toggles — control whether the
+      // Sidebar's "Panes"/"Workspaces" NavItems render (mirrors
+      // UI_STATE_DEFAULTS.showPanesView/showWorkspacesView in
+      // src/shared/uiStateDefaults.ts). Panes defaults shown (1); Workspaces
+      // defaults hidden (0) since Panes is the new primary surface.
+      show_panes_view: bool('show_panes_view', '1'),
+      show_workspaces_view: bool('show_workspaces_view', '1'),
+      // Open-at-launch surface (rail vocabulary) — which top-level surface the app lands on at startup. Replaces the deprecated show_panes_view/show_workspaces_view toggles. Mirrors UI_STATE_DEFAULTS.defaultSurface.
+      default_surface: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'projects'",
+        check: enumCheck('default_surface', DEFAULT_SURFACE)
+      },
+      // Workbench tree/code split pane width (v69) — draggable divider width,
+      // SHARED between FilesTab's tree and GitTab's DiffTreePane (mirrors
+      // UI_STATE_DEFAULTS.workbenchTreeWidth / WORKBENCH_TREE_WIDTH_MIN..MAX
+      // in src/shared/uiStateDefaults.ts — same clamp-at-read pattern as
+      // sidebar_width above).
+      workbench_tree_width: {
+        type: 'INTEGER',
+        notNull: true,
+        default: '240',
+        check: 'CHECK (workbench_tree_width BETWEEN 160 AND 560)'
+      },
+      // GitHub username greeting (D4) — the user's display name (or login
+      // fallback) from `gh api user`, refreshed on each app open. Nullable:
+      // no default, since a user with gh missing/unauth never has one.
+      github_username: { type: 'TEXT', notNull: false },
       updated_at: INTEGER_NOT_NULL
-    }
+    },
+    // workbench_enabled (Workbench feature flag) was removed once the
+    // Workbench became always-on. Listed here (rather than just omitted from
+    // `columns` above) so the declarative engine actually drops it via
+    // ALTER TABLE ... DROP COLUMN on existing DBs — omitting a column from
+    // `columns` alone leaves it as a tolerated stray live column forever.
+    dropColumns: ['workbench_enabled']
   },
 
   // ---------------------------------------------------------------------
@@ -639,6 +738,213 @@ export const schema: SchemaDef = {
       // case a future rebuild encounters an unknown value.
       mode: enumCoerce('mode', KEEP_AWAKE_MODE, 'auto')
     }
+  },
+
+  // ---------------------------------------------------------------------
+  // review_comments — Workbench Git tab, Phase 4d. The LOCAL (Orpheus-owned)
+  // review-comment store, completing the 3-source comment model alongside
+  // GitHub's own review comments (github-from-others / my-github / LOCAL —
+  // see src/main/reviewStore.ts's own header). A local comment can exist
+  // with no PR at all (`pr_number` nullable) — it's anchored to a workspace +
+  // file/line, not to a GitHub PR. `line`/`side` are nullable to allow a
+  // file-level (not line-anchored) comment, mirroring GhReviewCommentThread's
+  // own `subjectType: 'file'` case (shared/types.ts).
+  // ---------------------------------------------------------------------
+  review_comments: {
+    columns: {
+      id: TEXT_PK,
+      workspace_id: TEXT_NOT_NULL,
+      pr_number: 'INTEGER',
+      path: TEXT_NOT_NULL,
+      // Nullable: most local comments are single-line, so start_line stays
+      // null and `line` remains the sole anchor exactly as before. When a
+      // comment covers a range (Pierre Batch 3's multi-line select-to-
+      // comment), start_line holds the range's START and `line` continues to
+      // hold the END line (the anchor, matching GitHub's own start_line/line
+      // split convention).
+      start_line: 'INTEGER',
+      line: 'INTEGER',
+      side: 'TEXT',
+      body: TEXT_NOT_NULL,
+      author: TEXT_NOT_NULL,
+      resolved: { type: 'INTEGER', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_review_comments_workspace_path: ['workspace_id', 'path'],
+      idx_review_comments_workspace: ['workspace_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // panes — RETIRED (Panes v2, U4 — docs/plans/2026-07-10-001-feat-panes-v2-
+  // toplevel-layouts-plan.md, KTD2). Superseded by the pane_panels /
+  // pane_layouts / pane_terminals hierarchy below. This flat-row shape
+  // (one workspace-scoped pane per row, U12/1ccc4f5) is gone from the app —
+  // src/main/paneStore.ts and src/main/ipc/panes.ts now target the new
+  // tables entirely.
+  //
+  // KEPT DECLARED (not deleted) because the declarative engine has no
+  // whole-TABLE drop op: `planSync` (src/main/db/engine.ts) only diffs
+  // tables that are still keys of `schema` above — a table dropped from
+  // `schema` simply stops being reconciled, it is never DROPped. Removing
+  // this TableDef would leave any pre-existing `panes` table permanently
+  // orphaned (undeclared, unreconciled, silently retained) rather than
+  // actually retired, and CLAUDE.md's migration rule forbids hand-writing
+  // a destructive `DROP TABLE`. So the table stays declared-but-dead:
+  // structurally reconciled (harmless — no code reads/writes it anymore)
+  // until a future `dropTable`-capable engine pass can retire it for real.
+  // ---------------------------------------------------------------------
+  panes: {
+    columns: {
+      id: TEXT_PK,
+      workspace_id: TEXT_NOT_NULL,
+      command: TEXT_NOT_NULL,
+      title: 'TEXT',
+      position: INTEGER_NOT_NULL,
+      size_fraction: { type: 'REAL', notNull: true, default: '0' },
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['workspace_id'], ref: 'workspaces(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_panes_workspace: ['workspace_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_panels — Panes v2 (U4, KTD2/KTD8). Top of the new hierarchy: a
+  // sidebar-level grouping, rendered with the project-row treatment (see
+  // the plan's R4/KTD5). `kind` is 'general' (the single always-there,
+  // cross-project panel — seeded once, see src/main/paneStore.ts's
+  // ensureGeneralPanel) or 'project' (user-created, bound to a `dir`
+  // chosen via the folder picker). `dir` is nullable because the General
+  // panel has no single cwd of its own — each of its layouts carries its
+  // own `dir` instead. A project panel's `dir` is Panes-only: it is never
+  // written to the `projects` table (KTD8) — Panes folders and Orpheus's
+  // registered projects are deliberately independent.
+  // ---------------------------------------------------------------------
+  pane_panels: {
+    columns: {
+      id: TEXT_PK,
+      kind: {
+        type: 'TEXT',
+        notNull: true,
+        check: enumCheck('kind', PANE_PANEL_KIND)
+      },
+      name: TEXT_NOT_NULL,
+      dir: 'TEXT',
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL,
+      // Sidebar expand/collapse persistence (issue #1) — mirrors
+      // projects.expanded_in_sidebar exactly: an INTEGER 0/1 flag with a
+      // '0' default so every existing + newly-created panel row starts
+      // collapsed, reconciled onto pre-existing rows by the engine's
+      // add-column path (no backfill needed since the default covers it).
+      expanded_in_sidebar: { type: 'INTEGER', notNull: true, default: '0' }
+    },
+    indexes: {
+      idx_pane_panels_position: ['position']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_layouts — Panes v2 (U4, KTD2). A saved split-tree arrangement
+  // bound to a folder (`dir`, the layout's own cwd — independent of its
+  // parent panel's `dir`, which is why General-panel layouts each need
+  // their own). Rendered as a workspace-subrow under its panel (R5).
+  // `split_tree_json` is the ENTIRE binary split-tree arrangement + divider
+  // ratios, serialized — see the shared `SplitTree` type (src/shared/
+  // types.ts) for the exact shape: a leaf `{ paneId }` references a
+  // `pane_terminals.id`; a node `{ dir, a, b, ratio }` is a binary split.
+  // Stored as one JSON blob rather than a recursive table because the tree
+  // is pure UI geometry (KTD2) — cheap to serialize, no query ever needs to
+  // join into it. FK CASCADE: deleting a panel deletes its layouts.
+  // ---------------------------------------------------------------------
+  pane_layouts: {
+    columns: {
+      id: TEXT_PK,
+      panel_id: TEXT_NOT_NULL,
+      name: TEXT_NOT_NULL,
+      dir: TEXT_NOT_NULL,
+      split_tree_json: { type: 'TEXT', notNull: true, default: "'null'" },
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['panel_id'], ref: 'pane_panels(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_pane_layouts_panel: ['panel_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // pane_terminals — Panes v2 (U4, KTD2). One row per terminal (a "pane" in
+  // the plan's UI vocabulary) — the leaf unit the native surface keys on:
+  // `pane:<layoutId>:<terminalId>` (KTD1 — the existing pane:* surface IPC
+  // is generic over its two string parts, so this is just a different
+  // choice of key components, not a native-side change). `command` is the
+  // setup rule (R7): a command that auto-runs once on every open then drops
+  // to a live shell; `''` means a plain shell with no setup step. FK
+  // CASCADE: deleting a layout deletes its terminals. `position` is
+  // metadata only (e.g. stable ordering for a11y/listing) — the actual
+  // on-screen ARRANGEMENT lives in the parent layout's `split_tree_json`,
+  // not here.
+  //
+  // `name` — issue #21, user-editable pane display name. Widening add
+  // (notNull, default ''): existing rows backfill to '' with no data
+  // migration needed, and the renderer falls back to "Pane N" (1-based
+  // position) whenever `name === ''`, so pre-existing panes render sensibly
+  // without ever needing a rename. Kept separate from `command` (the setup
+  // rule) — renaming a pane must NEVER relaunch its surface, unlike editing
+  // `command`.
+  // ---------------------------------------------------------------------
+  pane_terminals: {
+    columns: {
+      id: TEXT_PK,
+      layout_id: TEXT_NOT_NULL,
+      command: TEXT_NOT_NULL,
+      name: { type: 'TEXT', notNull: true, default: "''" },
+      position: INTEGER_NOT_NULL,
+      created_at: INTEGER_NOT_NULL,
+      updated_at: INTEGER_NOT_NULL
+    },
+    foreignKeys: [{ columns: ['layout_id'], ref: 'pane_layouts(id)', onDelete: 'CASCADE' }],
+    indexes: {
+      idx_pane_terminals_layout: ['layout_id']
+    }
+  },
+
+  // ---------------------------------------------------------------------
+  // dashboard_cache — Dashboard D1 (persisted expensive-fetch cache). A
+  // generic key -> JSON payload cache so the Dashboard's expensive data
+  // sources (GitHub PRs/issues via `gh`, Claude usage/limits via the OAuth
+  // usage endpoint) survive an app restart. Today these sources ALSO carry
+  // their own short in-memory TTL cache (src/main/github.ts,
+  // src/main/claudeUsage.ts) for within-session dedup — that's unrelated and
+  // untouched by this table. This table exists purely so the very FIRST
+  // dashboard paint after a cold app launch can read yesterday's last-known-
+  // good result off disk instantly instead of blocking on a live network/gh
+  // fetch. `key` is one of the DASHBOARD_CACHE_KEYS constants (see
+  // src/main/db/dashboardCache.ts) — e.g. 'github_prs' | 'github_issues' |
+  // 'claude_usage'. `payload_json` is JSON.stringify of that source's typed
+  // result (GhSearchPr[] / GhSearchIssue[] / ClaudeUsage — never the
+  // `{unavailable}` failure shape, callers only persist real successes).
+  // `fetched_at` is the epoch-ms write time; a later stale-while-revalidate
+  // read path (D2, not built in this unit) will use it to decide whether to
+  // show the cached value while a fresh fetch runs in the background, or
+  // trigger a refetch outright. The engine auto-creates this table like any
+  // other — no migration needed for a brand-new table.
+  // ---------------------------------------------------------------------
+  dashboard_cache: {
+    columns: {
+      key: TEXT_PK,
+      payload_json: TEXT_NOT_NULL,
+      fetched_at: INTEGER_NOT_NULL
+    }
   }
 }
 
@@ -646,6 +952,7 @@ export {
   WORKSPACE_STATUS,
   SESSION_STATUS,
   KEEP_AWAKE_MODE,
+  PANE_PANEL_KIND,
   PERMISSION_MODE,
   EFFORT,
   OUTPUT_STYLE,

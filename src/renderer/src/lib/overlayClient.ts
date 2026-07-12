@@ -110,6 +110,8 @@ function anchorRectFromEl(el: Element): { x: number; y: number; w: number; h: nu
 interface CardHandlers {
   onPointerEnter?: () => void
   onPointerLeave?: () => void
+  /** detailsCard-only: "Restart to apply" clicked in the dirty-state row (U3). */
+  onRestart?: () => void
 }
 
 const handlersById = new Map<string, CardHandlers>()
@@ -219,6 +221,9 @@ function ensureRouter(): void {
       case 'mouseleave':
         handlers.onPointerLeave?.()
         break
+      case 'restart':
+        handlers.onRestart?.()
+        break
       case 'exited':
         handlersById.delete(e.overlayId)
         break
@@ -237,18 +242,20 @@ function ensureRouter(): void {
  */
 export function onCardPointer(
   id: string,
-  handlers: { onEnter?: () => void; onLeave?: () => void }
+  handlers: { onEnter?: () => void; onLeave?: () => void; onRestart?: () => void }
 ): () => void {
   ensureRouter()
   const existing = handlersById.get(id) ?? {}
   existing.onPointerEnter = handlers.onEnter
   existing.onPointerLeave = handlers.onLeave
+  existing.onRestart = handlers.onRestart
   handlersById.set(id, existing)
   return () => {
     const current = handlersById.get(id)
     if (!current) return
     if (current.onPointerEnter === handlers.onEnter) current.onPointerEnter = undefined
     if (current.onPointerLeave === handlers.onLeave) current.onPointerLeave = undefined
+    if (current.onRestart === handlers.onRestart) current.onRestart = undefined
   }
 }
 

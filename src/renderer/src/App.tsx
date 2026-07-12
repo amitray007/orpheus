@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { ClaudeMissingModal } from './components/ClaudeMissingModal'
+import { DiffWorkerPoolProvider } from './components/workbench/DiffWorkerPoolProvider'
 import type { DoctorResult } from '@shared/types'
 
 // Optimistic initial state: assume claude is installed so the Dashboard
@@ -57,7 +58,12 @@ interface AppShellProps {
 function AppShell({ doctor, runDoctor, showMissingModal }: AppShellProps): React.JSX.Element {
   return (
     <main className="app h-full">
-      <Dashboard claudeInstalled={doctor.claudeInstalled} />
+      {/* App-wide singleton — see DiffWorkerPoolProvider.tsx. Wraps every
+          workspace so all Git/Files tabs across the whole app share ONE
+          @pierre/diffs worker pool instead of spinning one up per workspace. */}
+      <DiffWorkerPoolProvider>
+        <Dashboard claudeInstalled={doctor.claudeInstalled} />
+      </DiffWorkerPoolProvider>
       {showMissingModal && <ClaudeMissingModal onRecheck={runDoctor} />}
     </main>
   )

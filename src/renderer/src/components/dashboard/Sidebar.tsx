@@ -2,16 +2,13 @@ import type React from 'react'
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import {
   Circle,
-  Kanban,
   Plus,
   CaretDown,
   CaretRight,
   Stack,
   Archive,
-  Gear,
   GitFork,
-  PushPin,
-  ArrowFatLineUp
+  PushPin
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
@@ -43,7 +40,7 @@ import {
 } from '@/lib/overlayClient'
 import type { HoverCardProps } from '@shared/types'
 import { formatRelativeTime, EMPTY_TITLE_MAP, EMPTY_MTIME_MAP } from './sidebar.helpers'
-import { NavItem, SectionHeader } from './SidebarNavItems'
+import { SectionHeader } from './SidebarNavItems'
 import { CollapsedProjectList } from './CollapsedProjectList'
 import { NewWorkspaceMenu } from './NewWorkspaceMenu'
 import { nextWorkspaceName } from './dashboard.helpers'
@@ -279,7 +276,8 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           className={[
             'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
             'h-8 justify-center',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md'
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
+            'cursor-pointer'
           ].join(' ')}
           aria-label={workspace.name}
         >
@@ -360,7 +358,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
               e.stopPropagation()
               onArchive()
             }}
-            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             aria-label="Archive workspace"
           >
             <Archive size={13} />
@@ -439,7 +437,7 @@ const PinnedRow = memo(function PinnedRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+        className="flex items-center gap-2.5 pl-4 pr-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
         title={workspace.cwd}
         aria-label={workspace.name}
       >
@@ -700,7 +698,7 @@ const ProjectRow = memo(function ProjectRow({
         <button
           type="button"
           onClick={onSelect}
-          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md"
+          className="flex items-center gap-2 px-2 py-2 flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md cursor-pointer"
           title={project.path}
           aria-label={project.name}
         >
@@ -752,7 +750,7 @@ const ProjectRow = memo(function ProjectRow({
               >
                 <button
                   type="button"
-                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
                   title="New workspace"
                   aria-label="New workspace"
                 >
@@ -768,7 +766,7 @@ const ProjectRow = memo(function ProjectRow({
                 e.stopPropagation()
                 onToggleExpand()
               }}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-overlay transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
               title={expanded ? 'Collapse' : 'Expand workspaces'}
               aria-label={expanded ? 'Collapse workspaces' : 'Expand workspaces'}
             >
@@ -798,7 +796,7 @@ const ProjectRow = memo(function ProjectRow({
         >
           <button
             type="button"
-            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             aria-label="Add workspace"
           >
             <Plus size={12} />
@@ -859,7 +857,7 @@ const ProjectRow = memo(function ProjectRow({
                 e.stopPropagation()
                 setRevealExtra((x) => x + 5)
               }}
-              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              className="w-full h-8 flex items-center gap-2 pl-8 pr-2 text-left text-xs text-text-muted border-l-2 border-transparent hover:text-text-primary hover:bg-surface-overlay rounded-r-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer"
             >
               <CaretDown size={12} />
               <span>Show more</span>
@@ -885,10 +883,237 @@ function DropIndicator({ position }: { position: 'top' | 'bottom' }): React.JSX.
 }
 
 // ---------------------------------------------------------------------------
+// Projects section — extracted from Sidebar() so the swap-in for the Panes
+// "Panels" tree (see the render body below) doesn't push Sidebar()'s own
+// cognitive complexity over the sonarjs cap. Pure prop pass-through; no
+// behavior change from the block that used to be inlined here.
+// ---------------------------------------------------------------------------
+
+interface ProjectsSectionProps {
+  collapsed: boolean
+  projects: ProjectRecord[]
+  projectsLoading: boolean
+  selectedProjectId: string | null
+  selectedWorkspaceId: string | null
+  activeView: SidebarActiveView
+  currentViewKind: string
+  expandedProjectIds: Set<string>
+  workspacesByProject: Record<string, WorkspaceRecord[]>
+  workspaceCountInline: boolean
+  fetchGithubAvatars: boolean
+  addProjectButton: React.ReactNode
+  addingProject: boolean
+  sessionTitlesByProject: Map<string, Map<string, string>>
+  sessionUserPreviewsByProject: Map<string, Map<string, string>>
+  sessionMtimesByProject: Map<string, Map<string, number>>
+  staleAfterMinutes: number
+  nowMs: number
+  isProjectActive: (projectId: string) => boolean
+  onSelectProject: (id: string) => void
+  onAddProject: () => void
+  onToggleProjectExpand: (id: string) => void
+  onSelectWorkspace: (workspaceId: string, projectId: string) => void
+  renamingProjectId: string | null
+  onBeginRename: (id: string) => void
+  onFinishRename: (id: string, newName: string) => void
+  onCancelRename: () => void
+  onRequestRemoveProject: (project: ProjectRecord) => void
+  onAddWorkspace: (projectId: string) => void | Promise<void>
+  renamingWorkspaceId: string | null
+  onBeginRenameWorkspace: (id: string) => void
+  onFinishRenameWorkspace: (workspaceId: string, projectId: string, newName: string) => void
+  onCancelRenameWorkspace: () => void
+  onArchiveWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onCloseWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
+  onTogglePinProject: (projectId: string) => void | Promise<void>
+  dragId: string | null
+  dropTargetId: string | null
+  dropPos: 'before' | 'after'
+  onProjectDragStart: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDragOver: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDrop: (e: React.DragEvent<HTMLDivElement>, id: string) => void
+  onProjectDragEnd: () => void
+  wsDragId: string | null
+  wsDropTargetId: string | null
+  wsDropPos: 'before' | 'after'
+  onWorkspaceDragStart: (
+    e: React.DragEvent<HTMLDivElement>,
+    wsId: string,
+    projectId: string
+  ) => void
+  onWorkspaceDragOver: (e: React.DragEvent<HTMLDivElement>, wsId: string, projectId: string) => void
+  onWorkspaceDrop: (
+    e: React.DragEvent<HTMLDivElement>,
+    targetId: string,
+    projectId: string,
+    workspaces: WorkspaceRecord[]
+  ) => void
+  onWorkspaceDragEnd: () => void
+}
+
+function ProjectsSection({
+  collapsed,
+  projects,
+  projectsLoading,
+  selectedProjectId,
+  selectedWorkspaceId,
+  activeView,
+  currentViewKind,
+  expandedProjectIds,
+  workspacesByProject,
+  workspaceCountInline,
+  fetchGithubAvatars,
+  addProjectButton,
+  addingProject,
+  sessionTitlesByProject,
+  sessionUserPreviewsByProject,
+  sessionMtimesByProject,
+  staleAfterMinutes,
+  nowMs,
+  isProjectActive,
+  onSelectProject,
+  onAddProject,
+  onToggleProjectExpand,
+  onSelectWorkspace,
+  renamingProjectId,
+  onBeginRename,
+  onFinishRename,
+  onCancelRename,
+  onRequestRemoveProject,
+  onAddWorkspace,
+  renamingWorkspaceId,
+  onBeginRenameWorkspace,
+  onFinishRenameWorkspace,
+  onCancelRenameWorkspace,
+  onArchiveWorkspace,
+  onCloseWorkspace,
+  onTogglePinWorkspace,
+  onTogglePinProject,
+  dragId,
+  dropTargetId,
+  dropPos,
+  onProjectDragStart,
+  onProjectDragOver,
+  onProjectDrop,
+  onProjectDragEnd,
+  wsDragId,
+  wsDropTargetId,
+  wsDropPos,
+  onWorkspaceDragStart,
+  onWorkspaceDragOver,
+  onWorkspaceDrop,
+  onWorkspaceDragEnd
+}: ProjectsSectionProps): React.JSX.Element {
+  return (
+    <div className="mt-4 flex flex-col gap-0.5 flex-1 min-h-0">
+      {!collapsed ? (
+        <>
+          <SectionHeader label="Projects" action={addProjectButton} />
+          {projectsLoading ? (
+            <ProjectListSkeleton />
+          ) : projects.length === 0 ? (
+            <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
+          ) : (
+            <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
+              {projects.map((p) => {
+                const expanded = expandedProjectIds.has(p.id)
+                const workspaces = (workspacesByProject[p.id] ?? []).filter(
+                  (w) => w.archivedAt === null
+                )
+                const showLineAbove = dropTargetId === p.id && dropPos === 'before'
+                const showLineBelow = dropTargetId === p.id && dropPos === 'after'
+                const isDragging = dragId === p.id
+                return (
+                  <div
+                    key={p.id}
+                    draggable={renamingProjectId !== p.id}
+                    onDragStart={(e) => onProjectDragStart(e, p.id)}
+                    onDragOver={(e) => onProjectDragOver(e, p.id)}
+                    onDrop={(e) => onProjectDrop(e, p.id)}
+                    onDragEnd={onProjectDragEnd}
+                    className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
+                  >
+                    {showLineAbove && <DropIndicator position="top" />}
+                    <ProjectRow
+                      project={p}
+                      active={activeView === 'project' && selectedProjectId === p.id}
+                      expanded={expanded}
+                      workspaces={workspaces}
+                      workspaceCount={workspaces.length}
+                      workspaceCountInline={workspaceCountInline}
+                      fetchGithubAvatars={fetchGithubAvatars}
+                      selectedWorkspaceId={selectedWorkspaceId}
+                      sessionTitleBySessionId={sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP}
+                      sessionUserPreviewBySessionId={
+                        sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
+                      }
+                      sessionMtimeBySessionId={sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP}
+                      staleAfterMinutes={staleAfterMinutes}
+                      nowMs={nowMs}
+                      onSelect={() => onSelectProject(p.id)}
+                      onToggleExpand={() => onToggleProjectExpand(p.id)}
+                      onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
+                      currentViewKind={currentViewKind}
+                      currentWorkspaceId={selectedWorkspaceId}
+                      renaming={renamingProjectId === p.id}
+                      onBeginRename={() => onBeginRename(p.id)}
+                      onFinishRename={(name) => onFinishRename(p.id, name)}
+                      onCancelRename={onCancelRename}
+                      onRequestRemove={() => onRequestRemoveProject(p)}
+                      onAddWorkspace={() => onAddWorkspace(p.id)}
+                      renamingWorkspaceId={renamingWorkspaceId}
+                      onBeginRenameWorkspace={onBeginRenameWorkspace}
+                      onFinishRenameWorkspace={(wsId, name) =>
+                        onFinishRenameWorkspace(wsId, p.id, name)
+                      }
+                      onCancelRenameWorkspace={onCancelRenameWorkspace}
+                      onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
+                      onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
+                      onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
+                      onTogglePinProject={() => onTogglePinProject(p.id)}
+                      wsDragId={wsDragId}
+                      wsDropTargetId={wsDropTargetId}
+                      wsDropPos={wsDropPos}
+                      onWorkspaceDragStart={onWorkspaceDragStart}
+                      onWorkspaceDragOver={onWorkspaceDragOver}
+                      onWorkspaceDrop={onWorkspaceDrop}
+                      onWorkspaceDragEnd={onWorkspaceDragEnd}
+                    />
+                    {showLineBelow && <DropIndicator position="bottom" />}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        <CollapsedProjectList
+          projects={projects}
+          projectsLoading={projectsLoading}
+          fetchGithubAvatars={fetchGithubAvatars}
+          isProjectActive={isProjectActive}
+          addingProject={addingProject}
+          onSelectProject={onSelectProject}
+          onAddProject={onAddProject}
+          workspacesByProject={workspacesByProject}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export type SidebarActiveView = 'sessions' | 'project' | 'workspace' | 'settings'
+export type SidebarActiveView =
+  | 'sessions'
+  | 'project'
+  | 'workspace'
+  | 'settings'
+  | 'panes'
+  | 'dashboard'
 
 interface SidebarProps {
   collapsed: boolean
@@ -907,11 +1132,6 @@ interface SidebarProps {
   fetchGithubAvatars: boolean
   pinnedItems: PinnedItem[]
   onSelectProject: (id: string) => void
-  onSelectNav: (view: 'sessions') => void
-  onSelectSettings: () => void
-  onOpenUpdates: () => void
-  updateAvailable: boolean
-  updateLatest: string | null
   onAddProject: () => void
   addingProject?: boolean
   onToggleProjectExpand: (id: string) => void
@@ -947,11 +1167,6 @@ export function Sidebar({
   sidebarWidth,
   fetchGithubAvatars,
   onSelectProject,
-  onSelectNav,
-  onSelectSettings,
-  onOpenUpdates,
-  updateAvailable,
-  updateLatest,
   onAddProject,
   addingProject = false,
   onToggleProjectExpand,
@@ -1212,17 +1427,13 @@ export function Sidebar({
         'p-1 rounded transition-colors duration-150',
         addingProject
           ? 'text-text-muted opacity-50 cursor-wait'
-          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay'
+          : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
       ].join(' ')}
       onClick={onAddProject}
     >
       <Plus size={14} weight="bold" />
     </button>
   )
-
-  const updateTitle = updateLatest
-    ? `Update available — v${updateLatest.startsWith('v') ? updateLatest.slice(1) : updateLatest}`
-    : 'Update available'
 
   return (
     <SidebarBoundsContext.Provider value={sidebarRef}>
@@ -1236,17 +1447,6 @@ export function Sidebar({
         ].join(' ')}
         style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
       >
-        {/* Top nav */}
-        {/* Route key 'sessions' is preserved for back-compat with uiState serialisation; visible label is Workspaces */}
-        <NavItem
-          Icon={Kanban}
-          label="Workspaces"
-          active={activeView === 'sessions'}
-          collapsed={collapsed}
-          flushTop
-          onClick={() => onSelectNav('sessions')}
-        />
-
         {/* Pinned section — only rendered when at least one workspace is pinned */}
         {!collapsed && pinnedItems.length > 0 && (
           <div className="mt-4 flex flex-col gap-0.5">
@@ -1266,164 +1466,62 @@ export function Sidebar({
           </div>
         )}
 
-        {/* Projects section */}
-        <div className="mt-4 flex flex-col gap-0.5 flex-1 min-h-0">
-          {!collapsed ? (
-            <>
-              <SectionHeader label="Projects" action={addProjectButton} />
-              {projectsLoading ? (
-                <ProjectListSkeleton />
-              ) : projects.length === 0 ? (
-                <p className="text-xs text-text-muted px-3 mt-1">No projects yet</p>
-              ) : (
-                <div className="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 no-scrollbar">
-                  {projects.map((p) => {
-                    const expanded = expandedProjectIds.has(p.id)
-                    const workspaces = (workspacesByProject[p.id] ?? []).filter(
-                      (w) => w.archivedAt === null
-                    )
-                    const showLineAbove = dropTargetId === p.id && dropPos === 'before'
-                    const showLineBelow = dropTargetId === p.id && dropPos === 'after'
-                    const isDragging = dragId === p.id
-                    return (
-                      <div
-                        key={p.id}
-                        draggable={renamingProjectId !== p.id}
-                        onDragStart={(e) => onProjectDragStart(e, p.id)}
-                        onDragOver={(e) => onProjectDragOver(e, p.id)}
-                        onDrop={(e) => onProjectDrop(e, p.id)}
-                        onDragEnd={onProjectDragEnd}
-                        className={['relative', isDragging ? 'opacity-40' : ''].join(' ')}
-                      >
-                        {showLineAbove && <DropIndicator position="top" />}
-                        <ProjectRow
-                          project={p}
-                          active={activeView === 'project' && selectedProjectId === p.id}
-                          expanded={expanded}
-                          workspaces={workspaces}
-                          workspaceCount={workspaces.length}
-                          workspaceCountInline={workspaceCountInline}
-                          fetchGithubAvatars={fetchGithubAvatars}
-                          selectedWorkspaceId={selectedWorkspaceId}
-                          sessionTitleBySessionId={
-                            sessionTitlesByProject.get(p.id) ?? EMPTY_TITLE_MAP
-                          }
-                          sessionUserPreviewBySessionId={
-                            sessionUserPreviewsByProject.get(p.id) ?? EMPTY_TITLE_MAP
-                          }
-                          sessionMtimeBySessionId={
-                            sessionMtimesByProject.get(p.id) ?? EMPTY_MTIME_MAP
-                          }
-                          staleAfterMinutes={staleAfterMinutes}
-                          nowMs={nowMs}
-                          onSelect={() => onSelectProject(p.id)}
-                          onToggleExpand={() => onToggleProjectExpand(p.id)}
-                          onSelectWorkspace={(wsId) => onSelectWorkspace(wsId, p.id)}
-                          currentViewKind={currentViewKind}
-                          currentWorkspaceId={selectedWorkspaceId}
-                          renaming={renamingProjectId === p.id}
-                          onBeginRename={() => handleBeginRename(p.id)}
-                          onFinishRename={(name) => handleFinishRename(p.id, name)}
-                          onCancelRename={handleCancelRename}
-                          onRequestRemove={() => onRequestRemoveProject(p)}
-                          onAddWorkspace={() => onAddWorkspace(p.id)}
-                          renamingWorkspaceId={renamingWorkspaceId}
-                          onBeginRenameWorkspace={handleBeginRenameWorkspace}
-                          onFinishRenameWorkspace={(wsId, name) =>
-                            handleFinishRenameWorkspace(wsId, p.id, name)
-                          }
-                          onCancelRenameWorkspace={handleCancelRenameWorkspace}
-                          onArchiveWorkspace={(wsId) => onArchiveWorkspace(wsId, p.id)}
-                          onCloseWorkspace={(wsId) => onCloseWorkspace(wsId, p.id)}
-                          onTogglePinWorkspace={(wsId) => onTogglePinWorkspace(wsId, p.id)}
-                          onTogglePinProject={() => onTogglePinProject(p.id)}
-                          wsDragId={wsDragId}
-                          wsDropTargetId={wsDropTargetId}
-                          wsDropPos={wsDropPos}
-                          onWorkspaceDragStart={onWorkspaceDragStart}
-                          onWorkspaceDragOver={onWorkspaceDragOver}
-                          onWorkspaceDrop={onWorkspaceDrop}
-                          onWorkspaceDragEnd={onWorkspaceDragEnd}
-                        />
-                        {showLineBelow && <DropIndicator position="bottom" />}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </>
-          ) : (
-            <CollapsedProjectList
-              projects={projects}
-              projectsLoading={projectsLoading}
-              fetchGithubAvatars={fetchGithubAvatars}
-              isProjectActive={isProjectActive}
-              addingProject={addingProject}
-              onSelectProject={onSelectProject}
-              onAddProject={onAddProject}
-              workspacesByProject={workspacesByProject}
-            />
-          )}
-        </div>
-
-        {/* Bottom: Settings (+ update indicator when a newer build is available) */}
-        {!updateAvailable ? (
-          <NavItem
-            Icon={Gear}
-            label="Settings"
-            active={activeView === 'settings'}
-            collapsed={collapsed}
-            onClick={onSelectSettings}
-          />
-        ) : collapsed ? (
-          <div className="flex flex-col gap-1">
-            <NavItem
-              Icon={Gear}
-              label="Settings"
-              active={activeView === 'settings'}
-              collapsed={collapsed}
-              onClick={onSelectSettings}
-            />
-            <button
-              type="button"
-              className={[
-                'w-full flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
-                'text-accent bg-transparent hover:bg-accent/15',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-              ].join(' ')}
-              onClick={onOpenUpdates}
-              title={updateTitle}
-              aria-label="Update available — open Updates settings"
-            >
-              <ArrowFatLineUp size={20} weight="bold" />
-            </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-6 gap-1">
-            <div className="col-span-5">
-              <NavItem
-                Icon={Gear}
-                label="Settings"
-                active={activeView === 'settings'}
-                collapsed={collapsed}
-                onClick={onSelectSettings}
-              />
-            </div>
-            <button
-              type="button"
-              className={[
-                'col-span-1 flex items-center justify-center px-2 py-2 rounded-md transition-colors duration-150',
-                'text-accent bg-transparent hover:bg-accent/15',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-              ].join(' ')}
-              onClick={onOpenUpdates}
-              title={updateTitle}
-              aria-label="Update available — open Updates settings"
-            >
-              <ArrowFatLineUp size={20} weight="bold" />
-            </button>
-          </div>
-        )}
+        {/* Sidebar is now Projects-only — the top-level surface switch lives
+            in ActivityRail, and Panes' own tree (PanelsSection) is rendered
+            by Dashboard.tsx's shell instead of swapping in here. */}
+        <ProjectsSection
+          collapsed={collapsed}
+          projects={projects}
+          projectsLoading={projectsLoading}
+          selectedProjectId={selectedProjectId}
+          selectedWorkspaceId={selectedWorkspaceId}
+          activeView={activeView}
+          currentViewKind={currentViewKind}
+          expandedProjectIds={expandedProjectIds}
+          workspacesByProject={workspacesByProject}
+          workspaceCountInline={workspaceCountInline}
+          fetchGithubAvatars={fetchGithubAvatars}
+          addProjectButton={addProjectButton}
+          addingProject={addingProject}
+          sessionTitlesByProject={sessionTitlesByProject}
+          sessionUserPreviewsByProject={sessionUserPreviewsByProject}
+          sessionMtimesByProject={sessionMtimesByProject}
+          staleAfterMinutes={staleAfterMinutes}
+          nowMs={nowMs}
+          isProjectActive={isProjectActive}
+          onSelectProject={onSelectProject}
+          onAddProject={onAddProject}
+          onToggleProjectExpand={onToggleProjectExpand}
+          onSelectWorkspace={onSelectWorkspace}
+          renamingProjectId={renamingProjectId}
+          onBeginRename={handleBeginRename}
+          onFinishRename={handleFinishRename}
+          onCancelRename={handleCancelRename}
+          onRequestRemoveProject={onRequestRemoveProject}
+          onAddWorkspace={onAddWorkspace}
+          renamingWorkspaceId={renamingWorkspaceId}
+          onBeginRenameWorkspace={handleBeginRenameWorkspace}
+          onFinishRenameWorkspace={handleFinishRenameWorkspace}
+          onCancelRenameWorkspace={handleCancelRenameWorkspace}
+          onArchiveWorkspace={onArchiveWorkspace}
+          onCloseWorkspace={onCloseWorkspace}
+          onTogglePinWorkspace={onTogglePinWorkspace}
+          onTogglePinProject={onTogglePinProject}
+          dragId={dragId}
+          dropTargetId={dropTargetId}
+          dropPos={dropPos}
+          onProjectDragStart={onProjectDragStart}
+          onProjectDragOver={onProjectDragOver}
+          onProjectDrop={onProjectDrop}
+          onProjectDragEnd={onProjectDragEnd}
+          wsDragId={wsDragId}
+          wsDropTargetId={wsDropTargetId}
+          wsDropPos={wsDropPos}
+          onWorkspaceDragStart={onWorkspaceDragStart}
+          onWorkspaceDragOver={onWorkspaceDragOver}
+          onWorkspaceDrop={onWorkspaceDrop}
+          onWorkspaceDragEnd={onWorkspaceDragEnd}
+        />
       </aside>
     </SidebarBoundsContext.Provider>
   )

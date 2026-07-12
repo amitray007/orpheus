@@ -97,6 +97,98 @@ export async function getGitStatus(cwd: string): Promise<GitStatus | null> {
   return { insertions, deletions, hasChanges, branch, newFiles, modifiedFiles, deletedFiles }
 }
 
+/**
+ * `git init` for the Workbench Git tab's "Not a git repository" empty state
+ * (Phase 2). Total — never throws: returns a discriminated result so the
+ * renderer can show inline success/failure feedback instead of an unhandled
+ * rejection. The caller (src/main/ipc/git.ts) is responsible for refetching
+ * `git:diff` afterward — this function only runs `git init`, it doesn't
+ * re-derive diff state itself.
+ */
+export async function gitInit(cwd: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!cwd) return { ok: false, error: 'No workspace directory' }
+  try {
+    await execFile('git', ['-C', cwd, 'init'], { timeout: 5000 })
+    return { ok: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message }
+  }
+}
+
+/**
+ * The nine `git status --porcelain=v1` XY codes that mean "unmerged" (a
+ * genuine merge conflict, not just a staged/unstaged edit) — one entry per
+ * side-combination git can report: both added (AA), both modified (UU), one
+ * side deleted (DU/UD), one side added-the-other-didn't (AU/UA), one side
+ * deleted-the-other-didn't (DD is both-deleted, a real conflict too). Kept as
+ * a Set (not a regex) so the membership check below is a single O(1) lookup
+ * per porcelain line, and so this list is easy to audit against `git help
+ * status`'s own "Unmerged" table (which enumerates exactly these nine).
+ */
+const UNMERGED_XY_CODES = new Set(['UU', 'AA', 'DD', 'AU', 'UA', 'DU', 'UD'])
+
+/**
+ * READ-ONLY conflict detection (Pierre adoption batch 4, safe slice) — runs
+ * `git status --porcelain=v1` and returns the repo-relative paths of every
+ * currently-unmerged (conflicted) file, using the same XY-code table `git
+ * status`'s own "Unmerged paths" section is built from. This performs no
+ * writes of any kind (no `git add`/`checkout --ours`/`merge --continue`) —
+ * it's purely a read used to gate the Git tab's conflict-viewer branch (see
+ * GitTab.tsx's `conflictedPaths`).
+ *
+ * Total — never throws: any failure (not a repo, git missing, timeout)
+ * resolves to `[]`, matching getGitStatus's own swallow-everything contract
+ * so a conflict-detection hiccup never blocks the rest of the Git tab from
+ * rendering.
+ */
+export async function getConflictedPaths(cwd: string): Promise<string[]> {
+  if (!cwd) return []
+  try {
+    const { stdout } = await execFile(
+      'git',
+      ['-C', cwd, '-c', 'core.quotePath=false', 'status', '--porcelain=v1'],
+      { timeout: 2000 }
+    )
+    const paths: string[] = []
+    for (const line of stdout.split('\n')) {
+      if (line.length < 3) continue
+      const xy = line.slice(0, 2)
+      if (!UNMERGED_XY_CODES.has(xy)) continue
+      // Porcelain v1 unmerged lines are `XY <path>` with no rename arrow (a
+      // conflicted entry is never ALSO a rename) — slice(3) drops "XY ".
+      paths.push(line.slice(3).trim())
+    }
+    return paths
+  } catch {
+    return []
+  }
+}
+
+/**
+ * READ-ONLY — the file's content at `HEAD` (`git show HEAD:<path>`), for the
+ * per-hunk "Revert" feature's `processFile(patch, { oldFile, newFile })` call
+ * (see docs/learnings/hunk-accept-reject.md). No git mutation of any kind.
+ *
+ * Returns `null` when the path has no HEAD version — untracked/new files
+ * (git errors on an unknown path), a non-repo, or any other git failure.
+ * The caller treats `null` the same way (oldFile.contents = '') since a
+ * new-file diff's "old" side is genuinely empty either way. Total — never
+ * throws, matching getConflictedPaths' own swallow-everything contract.
+ */
+export async function getFileAtHead(cwd: string, path: string): Promise<string | null> {
+  if (!cwd || !path) return null
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'show', `HEAD:${path}`], {
+      timeout: 3000,
+      maxBuffer: 1024 * 1024 * 20
+    })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
 export type GitBranchInfo = {
   name: string
   isCurrent: boolean
@@ -277,12 +369,37 @@ export function listCommits(
 
 import { getPrForBranch } from './github'
 
+type GitWatchClient = {
+  cwd: string
+  webContents: WebContents
+  lastBranch: string | null
+  // Signature of the last GitStatus actually PUSHED to this client — lets
+  // refreshGitForDir skip a redundant gitStatusChanged send when a watcher
+  // firing produced no real change (see the loop-breaker comment below).
+  lastStatusSig: string | null
+}
+
 type GitWatchEntry = {
   watchers: fs.FSWatcher[]
   refCount: number
-  // workspaceId → { cwd, webContents, lastBranch }
-  clients: Map<string, { cwd: string; webContents: WebContents; lastBranch: string | null }>
+  // workspaceId → client record
+  clients: Map<string, GitWatchClient>
   debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+/** Cheap, stable signature of the fields the renderer actually renders/reacts
+ *  to — used only to detect "nothing actually changed" (see below), not as a
+ *  content hash of the repo. */
+function statusSignature(status: GitStatus): string {
+  return [
+    status.insertions,
+    status.deletions,
+    status.hasChanges,
+    status.branch ?? '',
+    status.newFiles,
+    status.modifiedFiles,
+    status.deletedFiles
+  ].join('|')
 }
 
 const gitWatchers = new Map<string, GitWatchEntry>()
@@ -296,49 +413,80 @@ async function refreshGitForDir(dir: string): Promise<void> {
   if (!entry) return
   if (entry.clients.size === 0) return
 
-  // Re-run git status for each client workspace; detect branch changes and
-  // refresh PRs if the branch flipped. Each client is independent (keyed by
-  // its own workspaceId/webContents), so fan these out in parallel instead
-  // of serializing one git subprocess round-trip per client.
-  // also addresses PERF-5
+  // PERF FIX #11: `git status` is a property of the watched DIRECTORY, not of
+  // any individual client — every client sharing this `entry` watches the
+  // same `dir`, so their status is always identical. The previous
+  // implementation called `getGitStatus(cwd)` once PER CLIENT, all in
+  // parallel, on every watcher tick — N clients sharing one directory (e.g.
+  // two workspaces open on the same repo/worktree) meant N identical `git
+  // rev-parse`/`git diff --shortstat`/`git status --porcelain` subprocess
+  // trios firing simultaneously for a single real change. Hoisting the call
+  // to run ONCE per tick (keyed on `dir`, the same resolved path
+  // `gitWatchers` itself is keyed on) and fanning the one result out below
+  // collapses that to exactly one subprocess trio per tick regardless of
+  // client count. `getGitStatus` already swallows its own internal failures
+  // and resolves to `null` rather than throwing — the try/catch here is kept
+  // purely as an extra safety net so a future change to that contract can't
+  // reintroduce an unhandled rejection into this watcher tick.
+  let status: GitStatus | null = null
+  try {
+    status = await getGitStatus(dir)
+  } catch {
+    // git may be unavailable or the directory may have been removed — skip
+  }
+
+  // Per-client fan-out of the single shared status: each client still does
+  // its OWN signature-skip check (a client only gets a push when the status
+  // actually changed since the last push made TO THAT CLIENT — a newly
+  // mounted client's lastStatusSig may differ from an existing client's even
+  // though the underlying repo status is identical) and its OWN branch-based
+  // PR resolution (`client.cwd` is used for `getPrForBranch` — PR resolution
+  // stays per-client since it composes with that client's own cwd/branch
+  // bookkeeping, not the shared directory-level status).
+  //
+  // LOOP-BREAKER (see docs/learnings — Workbench Git tab flicker): `git
+  // status`/`git diff` opportunistically refresh + rewrite `.git/index`'s
+  // stat-cache as a side effect of running them (real git behavior, not an
+  // Orpheus bug) — on some repos that stat-cache never "settles", so EVERY
+  // status read re-touches `.git/index`, which re-fires THIS watcher,
+  // forever, even though nothing the user did actually changed. Pushing
+  // `gitStatusChanged` unconditionally on every watcher tick therefore drove
+  // an unbounded renderer refetch loop (measured: continuous pushes at rest,
+  // never converging). Comparing against the last signature ACTUALLY pushed
+  // to this client and skipping a no-op push breaks that amplification at
+  // the source — a real change still pushes (and its downstream watcher
+  // re-tick, if any, is itself a no-op next time and stops there).
   const clientList = Array.from(entry.clients.entries())
-  await Promise.all(
-    clientList.map(async ([workspaceId, client]) => {
-      const { cwd, webContents, lastBranch } = client
-      if (webContents.isDestroyed()) return
+  const sig = status !== null ? statusSignature(status) : null
+  for (const [workspaceId, client] of clientList) {
+    const { cwd, webContents, lastBranch } = client
+    if (webContents.isDestroyed()) continue
 
-      let status: GitStatus | null = null
-      try {
-        status = await getGitStatus(cwd)
-      } catch {
-        // git may be unavailable or cwd may have been deleted — skip
-      }
+    if (status !== null && sig !== null && sig !== client.lastStatusSig) {
+      client.lastStatusSig = sig
+      webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+    }
 
-      if (!webContents.isDestroyed() && status !== null) {
-        webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+    // If branch changed, also refresh the PR
+    const newBranch = status?.branch ?? null
+    if (newBranch !== lastBranch) {
+      client.lastBranch = newBranch
+      if (newBranch) {
+        getPrForBranch(cwd, newBranch)
+          .then((pr) => {
+            if (!webContents.isDestroyed()) {
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+            }
+          })
+          .catch(() => {
+            /* gh unavailable — ignore */
+          })
+      } else if (!webContents.isDestroyed()) {
+        // Detached HEAD or no branch — clear the PR chip
+        webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
       }
-
-      // If branch changed, also refresh the PR
-      const newBranch = status?.branch ?? null
-      if (newBranch !== lastBranch) {
-        client.lastBranch = newBranch
-        if (newBranch) {
-          getPrForBranch(cwd, newBranch)
-            .then((pr) => {
-              if (!webContents.isDestroyed()) {
-                webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
-              }
-            })
-            .catch(() => {
-              /* gh unavailable — ignore */
-            })
-        } else if (!webContents.isDestroyed()) {
-          // Detached HEAD or no branch — clear the PR chip
-          webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
-        }
-      }
-    })
-  )
+    }
+  }
 }
 
 function scheduleRefresh(dir: string): void {
@@ -384,7 +532,13 @@ function watchGitFiles(dir: string, gitDir: string): fs.FSWatcher[] {
  * An initial push fires shortly after watch starts so the renderer
  * gets current status without the 30s polling round-trip.
  *
- * Safe to call multiple times for the same cwd — ref-counted.
+ * Safe to call multiple times for the same cwd — ref-counted. A re-mount for
+ * an already-registered workspaceId (a hide→show terminal cycle) re-emits
+ * BOTH the status push AND (on a branch change) the PR push — see the
+ * re-mount-guard branch below; this self-heals a workspace whose Git tab
+ * mounted after `startGitWatch`'s one-shot initial PR push already fired
+ * (the Workbench Git tab is only mounted while its own sub-tab is active, so
+ * that's the common case, not an edge case).
  *
  * The git rev-parse to locate the .git dir is now async so terminal:mount
  * returns immediately without blocking on the git subprocess. The watcher
@@ -423,12 +577,46 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       // double-counting on hide→mount cycles and the resulting watcher leak.
       if (entry.clients.has(workspaceId)) {
         const existing = entry.clients.get(workspaceId)!
-        entry.clients.set(workspaceId, { cwd, webContents, lastBranch: existing.lastBranch })
+        const client: GitWatchClient = {
+          cwd,
+          webContents,
+          lastBranch: existing.lastBranch,
+          lastStatusSig: existing.lastStatusSig
+        }
+        entry.clients.set(workspaceId, client)
         getGitStatus(cwd)
           .then((status) => {
-            if (!webContents.isDestroyed() && status !== null) {
-              webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+            if (webContents.isDestroyed() || status === null) return
+            client.lastStatusSig = statusSignature(status)
+            webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
+
+            // Self-heal fix: also re-run the PR resolution + re-push
+            // githubPrChanged on every re-mount (hide→show terminal cycle),
+            // not just the very first watch registration below. Before this
+            // fix, a re-mount only re-emitted gitStatusChanged — GitTab's
+            // `pr` state had no other way to recover a missed initial push
+            // (see the module header's "GitTab fetch-on-mount fallback" note
+            // for the renderer-side half of this fix). Signature-gated the
+            // same way refreshGitForDir's branch-change path already is (via
+            // `client.lastBranch`) so a redundant re-mount with an unchanged
+            // branch still only sends one push per actual change, not a
+            // flicker-inducing unconditional resend.
+            const branch = status.branch
+            if (branch === existing.lastBranch) return
+            client.lastBranch = branch
+            if (!branch) {
+              webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr: null })
+              return
             }
+            getPrForBranch(cwd, branch)
+              .then((pr) => {
+                if (!webContents.isDestroyed()) {
+                  webContents.send(PUSH_CHANNELS.githubPrChanged, { workspaceId, pr })
+                }
+              })
+              .catch(() => {
+                /* gh unavailable */
+              })
           })
           .catch(() => {
             /* git unavailable — skip */
@@ -437,13 +625,16 @@ export function startGitWatch(workspaceId: string, cwd: string, webContents: Web
       }
 
       entry.refCount++
-      entry.clients.set(workspaceId, { cwd, webContents, lastBranch: null })
+      const client: GitWatchClient = { cwd, webContents, lastBranch: null, lastStatusSig: null }
+      entry.clients.set(workspaceId, client)
 
       // Emit an initial status push so the renderer gets current state without
       // waiting for the next file-change event.
       getGitStatus(cwd)
         .then((status) => {
           if (!webContents.isDestroyed() && status !== null) {
+            const initialClient = entry?.clients.get(workspaceId)
+            if (initialClient) initialClient.lastStatusSig = statusSignature(status)
             webContents.send(PUSH_CHANNELS.gitStatusChanged, { workspaceId, status })
             const branch = status.branch
             if (branch) {

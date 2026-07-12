@@ -12,6 +12,7 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-navigation'
   | 'orpheus-terminal'
   | 'orpheus-window'
   | 'orpheus-notifications'
@@ -1364,6 +1365,39 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
 
   // ---------------------------------------------------------------------------
+  // Orpheus › Navigation
+  // ---------------------------------------------------------------------------
+  {
+    sectionId: 'orpheus-navigation',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Navigation',
+    settingId: 'open-at-launch',
+    label: 'Open at launch',
+    description: 'Choose which surface opens when you launch Orpheus.',
+    mapsTo: [],
+    keywords: [
+      'open at launch',
+      'default view',
+      'startup',
+      'landing',
+      'dashboard',
+      'projects',
+      'panes',
+      'nav'
+    ]
+  },
+  {
+    sectionId: 'orpheus-navigation',
+    sectionGroup: 'Orpheus',
+    sectionLabel: 'Navigation',
+    settingId: 'show-workspaces-board',
+    label: 'Show Workspaces board',
+    description: 'Show the optional Workspaces board (kanban) on the Projects surface.',
+    mapsTo: [],
+    keywords: ['workspaces board', 'kanban', 'projects board', 'board view']
+  },
+
+  // ---------------------------------------------------------------------------
   // Orpheus › Terminal
   // ---------------------------------------------------------------------------
   {
@@ -1837,7 +1871,6 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     mapsTo: [],
     keywords: ['reload', 'renderer reload', 'hard reload', 'refresh renderer', 'dev reload']
   },
-
   // ---------------------------------------------------------------------------
   // Orpheus › About Orpheus (section-level)
   // ---------------------------------------------------------------------------

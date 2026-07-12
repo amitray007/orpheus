@@ -23,7 +23,9 @@ import {
   Terminal,
   Stack,
   FirstAidKit,
-  Coffee
+  Coffee,
+  SquaresFour,
+  Compass
 } from '@phosphor-icons/react'
 import { SETTINGS_SEARCH_INDEX } from './settings/searchIndex'
 import { searchSettings } from './settings/searchMatcher'
@@ -77,6 +79,16 @@ const OrpheusSidebarSection = lazy(() =>
 )
 const OrpheusTerminalSection = lazy(() =>
   import('./settings/OrpheusTerminalSection').then((m) => ({ default: m.OrpheusTerminalSection }))
+)
+const OrpheusWorkbenchSection = lazy(() =>
+  import('./settings/OrpheusWorkbenchSection').then((m) => ({
+    default: m.OrpheusWorkbenchSection
+  }))
+)
+const OrpheusNavigationSection = lazy(() =>
+  import('./settings/OrpheusNavigationSection').then((m) => ({
+    default: m.OrpheusNavigationSection
+  }))
 )
 const OrpheusWindowSection = lazy(() =>
   import('./settings/OrpheusWindowSection').then((m) => ({ default: m.OrpheusWindowSection }))
@@ -148,7 +160,9 @@ export type SectionId =
   | 'claude-about'
   | 'orpheus-appearance'
   | 'orpheus-sidebar'
+  | 'orpheus-navigation'
   | 'orpheus-terminal'
+  | 'orpheus-workbench'
   | 'orpheus-window'
   | 'orpheus-notifications'
   | 'orpheus-workspaces'
@@ -193,10 +207,22 @@ const GROUPS: SectionGroup[] = [
         Component: OrpheusSidebarSection
       },
       {
+        id: 'orpheus-navigation',
+        label: 'Navigation',
+        icon: Compass,
+        Component: OrpheusNavigationSection
+      },
+      {
         id: 'orpheus-terminal',
         label: 'Terminal',
         icon: Terminal,
         Component: OrpheusTerminalSection
+      },
+      {
+        id: 'orpheus-workbench',
+        label: 'Workbench',
+        icon: SquaresFour,
+        Component: OrpheusWorkbenchSection
       },
       { id: 'orpheus-window', label: 'Window', icon: AppWindow, Component: OrpheusWindowSection },
       {

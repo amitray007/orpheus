@@ -27,10 +27,33 @@ import type {
   GitStatus,
   GitBranchInfo,
   GitCommit,
+  FilesListing,
+  GitStatusEntry,
+  FileContents,
+  FileImage,
+  WriteFileResult,
+  FilesMutationResult,
+  GitDiffResult,
+  GitDiffUnchangedResult,
   GhPullRequest,
+  GhPullRequestDetail,
+  GhReviewCommentThread,
+  GhReviewComment,
+  GhReviewCommentSide,
+  GhSearchPr,
+  GhSearchIssue,
+  LocalReviewComment,
+  PanePanel,
+  PanePanelKind,
+  PaneLayout,
+  PaneTerminal,
+  SplitTree,
   ClaudeAuthState,
   ClaudeAuthPatch,
   ClaudeAuthTestResult,
+  ClaudeUsageResult,
+  ClaudeUsage,
+  ClaudeActivitySummary,
   DiscoveredMcpServer,
   McpServerDraft,
   ClaudeSlashCommand,
@@ -150,6 +173,40 @@ const api = {
         occluded: boolean
       }) => void
     ): (() => void) => subscribe(PUSH_CHANNELS.terminalLiveness, cb)
+  },
+  // Workbench Terminal-tab surface(s) — plain-$SHELL libghostty surfaces
+  // scoped to a claude workspace, keyed `workbench:<workspaceId>` (single
+  // shell, U6b) or `workbench:<workspaceId>:<terminalId>` (a strip of ad-hoc
+  // terminals, U8) in the native addon. `workspaceId` here is always the
+  // owning claude workspace's id (the main process derives the slot key
+  // internally); `terminalId` is the renderer's monotonic per-terminal id,
+  // omitted for a single-shell caller.
+  workbench: {
+    mount: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      terminalId?: number
+    ): Promise<{ workspaceId: string; created: boolean }> =>
+      invoke('workbench:mount', { workspaceId, rect, scaleFactor, terminalId }),
+    resize: (
+      workspaceId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      terminalId?: number
+    ): Promise<void> => invoke('workbench:resize', { workspaceId, rect, scaleFactor, terminalId }),
+    hide: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:hide', { workspaceId, terminalId }),
+    destroy: (workspaceId: string, terminalId?: number): Promise<void> =>
+      invoke('workbench:destroy', { workspaceId, terminalId }),
+    // Fires whenever a program running inside a Workbench ad-hoc terminal
+    // sets its OSC title (e.g. running `claude` inside one) — mirrors
+    // workspaces.onTitleChanged but scoped per-terminal via {workspaceId,
+    // terminalId} instead of just the claude workspace id, since a single
+    // claude workspace can own many ad-hoc terminals at once.
+    onTerminalTitleChanged: (
+      cb: (e: { workspaceId: string; terminalId: number; title: string | null }) => void
+    ): (() => void) => subscribe(PUSH_CHANNELS.workbenchTerminalTitleChanged, cb)
   },
   config: {
     openFolder: (): Promise<string | null> => invoke('config:openFolder')
@@ -333,6 +390,36 @@ const api = {
       invoke('claudeAuth:update', patch),
     testConnection: (): Promise<ClaudeAuthTestResult> => invoke('claudeAuth:testConnection')
   },
+  claude: {
+    // Dashboard "Usage" card — see src/main/claudeUsage.ts for the fetch/
+    // cache/degrade contract. Main-process TTL-cached (~3min) + inflight-
+    // deduped, so this is safe to call on every dashboard mount without
+    // hammering the endpoint.
+    usage: (): Promise<ClaudeUsageResult> => invoke('claude:usage'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed read (no
+    // network) for the initial cache-first paint. `null` when no cache row
+    // exists yet (cold start).
+    usageCached: (): Promise<{ value: ClaudeUsage; fetchedAt: number } | null> =>
+      invoke('claude:usage:cached'),
+    // Dashboard D3 — background poller push. Fires on each successful poll
+    // tick (see src/main/usagePoller.ts) so the renderer can update the
+    // Usage card silently in place, no manual refresh needed.
+    onUsagePushed: (cb: (usage: ClaudeUsage) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeUsagePushed, cb),
+    // Dashboard "Your pulse" real activity — see src/main/claudeActivity.ts
+    // for the scan/cache contract. Sourced from the on-disk transcript
+    // store, not the Orpheus `sessions` table.
+    activity: (): Promise<ClaudeActivitySummary> => invoke('claude:activity'),
+    // Cached-first companion (D2) — instant, disk-backed read, no scan.
+    // `null` when no cache row exists yet (cold start).
+    activityCached: (): Promise<{ value: ClaudeActivitySummary; fetchedAt: number } | null> =>
+      invoke('claude:activity:cached'),
+    // Background poller push (src/main/claudeActivityPoller.ts) — fires on
+    // each scan tick so the renderer can update the pulse numbers silently
+    // in place, no manual refresh needed.
+    onActivityPushed: (cb: (summary: ClaudeActivitySummary) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.claudeActivityPushed, cb)
+  },
   claudeProjectSettings: {
     get: (projectId: string): Promise<ClaudeProjectSettings> =>
       invoke('claudeProjectSettings:get', { projectId }),
@@ -385,14 +472,235 @@ const api = {
       opts?: { branch?: string; sinceMs?: number; untilMs?: number; grep?: string }
     ): Promise<number> => invoke('git:count', { cwd, ...opts }),
     onStatusChanged: (cb: (e: { workspaceId: string; status: GitStatus }) => void): (() => void) =>
-      subscribe(PUSH_CHANNELS.gitStatusChanged, cb)
+      subscribe(PUSH_CHANNELS.gitStatusChanged, cb),
+    // Workbench Git tab (Phase 1) — per-file working-tree diff patches.
+    // Resolves the workspace's cwd internally, like files:*. See
+    // src/main/gitDiff.ts. PERF FIX (main-side diff no-op detection): the
+    // resolved type is a UNION with GitDiffUnchangedResult — see that type's
+    // own doc comment; GitTab.tsx's fetchDiff narrows it before use.
+    // BUG FIX (stuck-loading) — optional `forceFresh` bypasses main's
+    // signature-cache lookup for this one call (see git:diff's own doc
+    // comment in src/shared/ipc.ts); GitTab.tsx passes this on the first
+    // fetch after a state reset (mount, mode switch).
+    diff: (
+      workspaceId: string,
+      forceFresh?: boolean
+    ): Promise<GitDiffResult | GitDiffUnchangedResult> =>
+      invoke('git:diff', { workspaceId, forceFresh }),
+    // Workbench Git tab (Phase 4-pre) — the [Working tree | PR diff]
+    // toggle's PR-diff data source. Resolves the workspace's cwd internally,
+    // like diff above. See src/main/gitDiff.ts::getPrDiff.
+    prDiff: (workspaceId: string): Promise<GitDiffResult> => invoke('git:prDiff', { workspaceId }),
+    // Workbench Git tab (Phase 2) — "Not a git repository" empty state's
+    // Git-init button. Resolves the workspace's cwd internally, like diff
+    // above. Total (never rejects) — see src/main/git.ts's gitInit.
+    init: (workspaceId: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('git:init', { workspaceId }),
+    // Workbench Git tab (Phase 3c) — Commits sub-tab's no-PR fallback.
+    // Resolves the workspace's cwd internally, like diff/init above.
+    logForWorkspace: (workspaceId: string, limit?: number): Promise<GitCommit[]> =>
+      invoke('git:logForWorkspace', { workspaceId, limit }),
+    // Pierre adoption batch 4 (safe/read-only slice) — conflict DETECTION
+    // only (no resolve/write-back). Resolves the workspace's cwd internally,
+    // like diff/init above. See src/main/git.ts::getConflictedPaths.
+    conflicts: (workspaceId: string): Promise<string[]> => invoke('git:conflicts', { workspaceId }),
+    // Per-hunk "Revert" feature (setting-gated) — the file's content at HEAD,
+    // for processFile's oldFile side. Resolves the workspace's cwd
+    // internally, like diff/init above. See src/main/git.ts::getFileAtHead.
+    showHead: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('git:showHead', { workspaceId, path })
+  },
+  // Workbench Files tab data sources (Stage A). All resolve the workspace's cwd
+  // from `workspaceId` in the main process; see src/main/ipc/files.ts.
+  files: {
+    listDir: (workspaceId: string): Promise<FilesListing> =>
+      invoke('files:listDir', { workspaceId }),
+    gitStatus: (workspaceId: string): Promise<GitStatusEntry[]> =>
+      invoke('files:gitStatus', { workspaceId }),
+    readFile: (workspaceId: string, path: string): Promise<FileContents> =>
+      invoke('files:readFile', { workspaceId, path }),
+    readImage: (workspaceId: string, path: string): Promise<FileImage> =>
+      invoke('files:readImage', { workspaceId, path }),
+    writeFile: (workspaceId: string, path: string, contents: string): Promise<WriteFileResult> =>
+      invoke('files:writeFile', { workspaceId, path, contents }),
+    // Tree mutations (Phase 4). Each returns a typed FilesMutationResult.
+    createFile: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createFile', { workspaceId, path }),
+    createDir: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:createDir', { workspaceId, path }),
+    rename: (workspaceId: string, from: string, to: string): Promise<FilesMutationResult> =>
+      invoke('files:rename', { workspaceId, from, to }),
+    delete: (workspaceId: string, path: string): Promise<FilesMutationResult> =>
+      invoke('files:delete', { workspaceId, path }),
+    absolutePath: (workspaceId: string, path: string): Promise<string | null> =>
+      invoke('files:absolutePath', { workspaceId, path }),
+    // Working-tree watcher (main/filesWatcher.ts) — live tree refresh while
+    // the Files tab is open. AT MOST ONE watcher is active app-wide; starting
+    // a new workspace's watch stops any previous one.
+    watchStart: (workspaceId: string): Promise<void> => invoke('files:watchStart', { workspaceId }),
+    watchStop: (workspaceId: string): Promise<void> => invoke('files:watchStop', { workspaceId }),
+    onFilesChanged: (cb: (e: { workspaceId: string }) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.filesChanged, cb)
   },
   github: {
     prForBranch: (cwd: string, branch: string): Promise<GhPullRequest | null> =>
       invoke('github:prForBranch', { cwd, branch }),
     onPrChanged: (
       cb: (e: { workspaceId: string; pr: GhPullRequest | null }) => void
-    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb)
+    ): (() => void) => subscribe(PUSH_CHANNELS.githubPrChanged, cb),
+    // Fetch-on-mount fallback for GitTab's `pr` state — see src/shared/
+    // ipc.ts's own comment on this channel for why onPrChanged's one-shot
+    // push alone isn't enough.
+    prForWorkspace: (workspaceId: string): Promise<GhPullRequest | null> =>
+      invoke('github:prForWorkspace', { workspaceId }),
+    // Phase 3b — rich PR detail (Details/Commits/Checks tabs, Phase 4
+    // general comments). Manual-refresh only; no push channel (see
+    // docs/learnings/gh-pr-detail.md — avoid reintroducing the Git tab's
+    // continuous-refetch flicker).
+    prDetail: (workspaceId: string): Promise<GhPullRequestDetail | null> =>
+      invoke('github:prDetail', { workspaceId }),
+    // Phase 4a — line-anchored PR review comments (inline diff annotations).
+    // Manual-refresh only, same cadence convention as prDetail above.
+    prReviewComments: (workspaceId: string): Promise<GhReviewCommentThread[] | null> =>
+      invoke('github:prReviewComments', { workspaceId }),
+    // Phase 4c — write operations (the first GitHub writes this app makes).
+    // Each is total (never rejects) — see src/main/github.ts's "PR write
+    // operations" section for the full safety rationale.
+    postReviewComment: (args: {
+      workspaceId: string
+      path: string
+      line: number
+      side: GhReviewCommentSide
+      body: string
+      commitId?: string
+    }): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:postReviewComment', args),
+    replyToReviewComment: (
+      workspaceId: string,
+      commentId: number,
+      body: string
+    ): Promise<{ ok: true; value: GhReviewComment } | { ok: false; error: string }> =>
+      invoke('github:replyToReviewComment', { workspaceId, commentId, body }),
+    postGeneralComment: (
+      workspaceId: string,
+      body: string
+    ): Promise<{ ok: true } | { ok: false; error: string }> =>
+      invoke('github:postGeneralComment', { workspaceId, body }),
+    // Dashboard Phase 2 (U5) — account-wide search, no workspaceId/cwd arg
+    // (unlike every method above). See src/main/github.ts::getMyOpenPrs/
+    // getMyIssues; total (never rejects), resolves to [] on any gh failure.
+    myOpenPrs: (): Promise<GhSearchPr[]> => invoke('github:myOpenPrs'),
+    myIssues: (): Promise<GhSearchIssue[]> => invoke('github:myIssues'),
+    // Dashboard D2 (stale-while-revalidate) — instant, disk-backed reads
+    // (no network) for the initial cache-first paint. `null` when no cache
+    // row exists yet (cold start).
+    myOpenPrsCached: (): Promise<{ value: GhSearchPr[]; fetchedAt: number } | null> =>
+      invoke('github:myOpenPrs:cached'),
+    myIssuesCached: (): Promise<{ value: GhSearchIssue[]; fetchedAt: number } | null> =>
+      invoke('github:myIssues:cached'),
+    // Dashboard D4 — refresh the signed-in gh user's display name on each
+    // app open (silent, fire-and-forget). Resolves to the resolved display
+    // name (name || login), or null on any gh failure.
+    refreshUsername: (): Promise<string | null> => invoke('github:refreshUsername')
+  },
+  // Workbench Git tab (Phase 4d) — the LOCAL (Orpheus-owned) review-comment
+  // store. See src/main/reviewStore.ts's own header for the full rationale
+  // (3-source comment model, agent-readable DB/commandServer hook).
+  reviews: {
+    list: (workspaceId: string): Promise<LocalReviewComment[]> =>
+      invoke('reviews:list', { workspaceId }),
+    add: (args: {
+      workspaceId: string
+      prNumber?: number | null
+      path: string
+      line?: number | null
+      startLine?: number | null
+      side?: GhReviewCommentSide | null
+      body: string
+    }): Promise<LocalReviewComment> => invoke('reviews:add', args),
+    setResolved: (id: string, resolved: boolean): Promise<LocalReviewComment> =>
+      invoke('reviews:setResolved', { id, resolved }),
+    delete: (id: string): Promise<void> => invoke('reviews:delete', { id })
+  },
+  // Panes v2 — top-level Panels · Layouts · split Panes
+  // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U4).
+  // CRUD for the panel/layout/terminal hierarchy (src/main/paneStore.ts) plus
+  // the pane SURFACE ops — a dedicated native slot per terminal
+  // (`pane:<layoutId>:<terminalId>`), unchanged from the flat-row Panes tab
+  // (KTD1) apart from what the two key parts now mean. See
+  // src/main/ipc/panes.ts.
+  panes: {
+    listPanels: (): Promise<PanePanel[]> => invoke('panes:listPanels'),
+    createPanel: (args: {
+      kind: PanePanelKind
+      name: string
+      dir?: string | null
+      position?: number
+    }): Promise<PanePanel> => invoke('panes:createPanel', args),
+    updatePanel: (
+      id: string,
+      patch: { name?: string; dir?: string | null; position?: number }
+    ): Promise<PanePanel> => invoke('panes:updatePanel', { id, ...patch }),
+    deletePanel: (id: string): Promise<void> => invoke('panes:deletePanel', { id }),
+    setPanelExpanded: (id: string, expanded: boolean): Promise<void> =>
+      invoke('panes:setPanelExpanded', { id, expanded }),
+    listLayouts: (panelId: string): Promise<PaneLayout[]> =>
+      invoke('panes:listLayouts', { panelId }),
+    createLayout: (args: {
+      panelId: string
+      name: string
+      dir: string
+      position?: number
+    }): Promise<PaneLayout> => invoke('panes:createLayout', args),
+    updateLayout: (
+      id: string,
+      patch: { name?: string; dir?: string; splitTree?: SplitTree | null; position?: number }
+    ): Promise<PaneLayout> => invoke('panes:updateLayout', { id, ...patch }),
+    deleteLayout: (id: string): Promise<void> => invoke('panes:deleteLayout', { id }),
+    listTerminals: (layoutId: string): Promise<PaneTerminal[]> =>
+      invoke('panes:listTerminals', { layoutId }),
+    createTerminal: (args: {
+      layoutId: string
+      command: string
+      name?: string
+      position: number
+    }): Promise<PaneTerminal> => invoke('panes:createTerminal', args),
+    updateTerminal: (
+      id: string,
+      patch: { command?: string; name?: string; position?: number }
+    ): Promise<PaneTerminal> => invoke('panes:updateTerminal', { id, ...patch }),
+    deleteTerminal: (id: string): Promise<void> => invoke('panes:deleteTerminal', { id }),
+    pickDirectory: (): Promise<string | null> => invoke('panes:pickDirectory'),
+    mount: (
+      layoutId: string,
+      terminalId: string,
+      rect: TerminalRect,
+      scaleFactor: number,
+      command: string
+    ): Promise<TerminalMountResult> =>
+      invoke('pane:mount', {
+        workspaceId: layoutId,
+        paneId: terminalId,
+        rect,
+        scaleFactor,
+        command
+      }),
+    resize: (
+      layoutId: string,
+      terminalId: string,
+      rect: TerminalRect,
+      scaleFactor: number
+    ): Promise<void> =>
+      invoke('pane:resize', { workspaceId: layoutId, paneId: terminalId, rect, scaleFactor }),
+    hide: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:hide', { workspaceId: layoutId, paneId: terminalId }),
+    destroy: (layoutId: string, terminalId: string): Promise<void> =>
+      invoke('pane:destroy', { workspaceId: layoutId, paneId: terminalId }),
+    // Issue #24 — sidebar running loader. Pushes the FULL current set of
+    // layout ids with >=1 live pane surface (background-aware: a hidden-
+    // but-not-destroyed layout stays in the set). See paneLiveLayoutsStore.ts.
+    onLiveLayoutsChanged: (cb: (layoutIds: string[]) => void): (() => void) =>
+      subscribe(PUSH_CHANNELS.panesLiveLayoutsChanged, (e) => cb(e.layoutIds))
   },
   shell: {
     revealInFinder: (path: string): Promise<void> => invoke('shell:revealInFinder', { path }),
@@ -400,7 +708,11 @@ const api = {
     openTerminal: (path: string): Promise<void> => invoke('shell:openTerminal', { path }),
     copyToClipboard: (text: string): Promise<void> => invoke('shell:copyToClipboard', { text }),
     listEditorApps: (): Promise<DetectedApp[]> => invoke('shell:listEditorApps'),
-    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps')
+    listTerminalApps: (): Promise<DetectedApp[]> => invoke('shell:listTerminalApps'),
+    // Dashboard Phase 2 (U5) — PR/issue row-click opens the url in the OS
+    // default browser. See src/main/ipc/shell.ts's handler for the
+    // isSafeExternalUrl guard applied main-side.
+    openExternal: (url: string): Promise<void> => invoke('shell:openExternal', { url })
   },
   mcp: {
     listServers: (): Promise<DiscoveredMcpServer[]> => invoke('mcp:listServers'),
@@ -465,6 +777,12 @@ const api = {
   },
   notifications: {
     test: (): Promise<void> => invoke('notifications:test')
+  },
+  // Git tab avatars (Avatar.tsx) — fetch-once, disk-cached GitHub avatar as a
+  // data URI. Total — resolves `null` on any fetch/network/fs failure so the
+  // renderer can fall back to the direct sized CDN url, then initials.
+  avatar: {
+    get: (url: string): Promise<string | null> => invoke('avatar:get', { url })
   },
   updates: {
     check: (): Promise<UpdateCheckResult> => invoke('updates:check'),

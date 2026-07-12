@@ -32,6 +32,7 @@ import * as path from 'node:path'
 import type { DoctorResult } from '../shared/types'
 import { TRAFFIC_LIGHT_INSET } from '../shared/windowChrome'
 import { startGitWatch, stopGitWatch, stopAllGitWatches } from './git'
+import { stopFilesWatch } from './filesWatcher'
 import { getDb } from './db'
 import { getProject } from './projects'
 import { reconcileWorktree } from './worktrees'
@@ -45,6 +46,7 @@ import {
   setWorkspaceCwd
 } from './workspaces'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
+import { getLayout } from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
@@ -67,6 +69,8 @@ import {
 } from './osNotifications'
 import { startAutoCheckLoop, stopAutoCheckLoop } from './updates'
 import { startStatusPoller, stopStatusPoller } from './claudeStatus'
+import { startUsagePoller, stopUsagePoller } from './usagePoller'
+import { startClaudeActivityPoller, stopClaudeActivityPoller } from './claudeActivityPoller'
 import { getUserShellPath, getCachedShellPath } from './shellHelpers'
 import type { WorkspaceRecord } from '../shared/types'
 import { loadOrpheusSurface, buildMountEnv } from './orpheusSurfaceAdapter'
@@ -116,6 +120,7 @@ import {
 import { handle } from './ipc/handle'
 import { isSafeExternalUrl } from './ipc/validate'
 import { registerGitIpc } from './ipc/git'
+import { registerFilesIpc } from './ipc/files'
 import { registerShellIpc } from './ipc/shell'
 import { registerSystemIpc } from './ipc/system'
 import { registerUpdatesIpc } from './ipc/updates'
@@ -123,7 +128,11 @@ import { registerMcpIpc } from './ipc/mcp'
 import { registerClaudeAgentsIpc } from './ipc/claudeAgents'
 import { registerClaudeHooksIpc } from './ipc/claudeHooks'
 import { registerClaudeAuthIpc } from './ipc/claudeAuth'
+import { registerClaudeUsageIpc } from './ipc/claudeUsage'
+import { registerClaudeActivityIpc } from './ipc/claudeActivity'
 import { registerFooterActionsIpc } from './ipc/footerActions'
+import { registerReviewsIpc } from './ipc/reviews'
+import { registerPanesIpc } from './ipc/panes'
 import { registerKeepAwakeIpc } from './ipc/keepAwake'
 import { registerGhosttySettingsIpc } from './ipc/ghosttySettings'
 import { registerClaudeSettingsIpc } from './ipc/claudeSettings'
@@ -282,15 +291,36 @@ function ensureLoadingOverlayWiring(addon: GhosttySurfaceAddon): void {
 function ensureTitleCallback(addon: GhosttySurfaceAddon): void {
   if (titleCallbackRegistered) return
   titleCallbackRegistered = true
-  addon.setTitleCallback((workspaceId: string, title: string) => {
+  addon.setTitleCallback((surfaceKey: string, title: string) => {
     // Claude Code prefixes titles with a cycling spinner glyph (✱ ✶ ✻ ✺ ✦ …)
     // and a space. Strip leading non-letter/non-digit characters so the
     // sidebar shows clean text and so our own loader UI can layer in front.
     // Stripping also collapses the spinner animation to one stable string
     // ("✱ Loading" → "✶ Loading" → … all become "Loading"), which the
     // dedupe below uses to avoid hammering the DB on every frame.
-
     const cleaned = (title ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || null
+
+    // The addon's title callback fires for ANY surface — it's keyed by the
+    // opaque native surface id, not scoped to claude workspaces. Workbench
+    // ad-hoc terminals are mounted as `workbench:<workspaceId>:<terminalId>`
+    // (see workbenchSlotId above); route those to their own dedicated push
+    // channel instead of falling through to the claude-workspace title
+    // logic below (getTitle/setTitle/deleteTitle/setWorkspaceLastTitle are
+    // all keyed by plain claude workspaceId and must never see a workbench
+    // slot key). No dedupe here — the workbench side owns its own
+    // last-label comparison in the renderer, and per-terminal title churn is
+    // low-volume compared to claude's own spinner-driven updates.
+    const workbenchParts = parseWorkbenchSlotId(surfaceKey)
+    if (workbenchParts) {
+      getMainWindow()?.webContents.send(PUSH_CHANNELS.workbenchTerminalTitleChanged, {
+        workspaceId: workbenchParts.workspaceId,
+        terminalId: workbenchParts.terminalId,
+        title: cleaned
+      })
+      return
+    }
+
+    const workspaceId = surfaceKey
 
     // Skip if nothing changed — guards the per-frame spinner churn.
     if (getTitle(workspaceId) === (cleaned ?? undefined)) return
@@ -362,6 +392,10 @@ function teardownWorkspaceResources(workspaceId: string, cwd: string | null): vo
   invalidateClaudeWorkspaceSettingsCache(workspaceId)
   teardownWorkspaceState(workspaceId)
   if (cwd) stopGitWatch(workspaceId, cwd)
+  // Reap the Files tab's working-tree watcher too, if this workspace happened
+  // to be the one watch instance active (no-op otherwise — stopFilesWatch is
+  // a targeted, workspaceId-matched stop, see filesWatcher.ts).
+  stopFilesWatch(workspaceId)
 }
 
 function performClose(id: string): WorkspaceRecord | undefined {
@@ -378,6 +412,14 @@ function performClose(id: string): WorkspaceRecord | undefined {
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  // Trigger (g): workspace close is one of the only two allowed workbench
+  // terminal destroy points — destroy ALL of this workspace's workbench
+  // surfaces here, authoritatively, regardless of what's currently mounted
+  // in the renderer (see workbenchSurfacesByWorkspace's header comment).
+  destroyWorkbenchSurfacesForWorkspace(id)
+  // Same trigger (g) applies to Panes tab surfaces (see
+  // paneSurfacesByWorkspace's header comment).
+  destroyPaneSurfacesForWorkspace(id)
   teardownWorkspaceResources(id, ws?.cwd ?? null)
   return closeWorkspace(id, lastTitle)
 }
@@ -407,6 +449,14 @@ async function performArchive(
       // Surface not mounted or already destroyed — ignore.
     }
   }
+  // Trigger (g): workspace archive is one of the only two allowed workbench
+  // terminal destroy points — destroy ALL of this workspace's workbench
+  // surfaces here, authoritatively, regardless of what's currently mounted
+  // in the renderer (see workbenchSurfacesByWorkspace's header comment).
+  destroyWorkbenchSurfacesForWorkspace(id)
+  // Same trigger (g) applies to Panes tab surfaces (see
+  // paneSurfacesByWorkspace's header comment).
+  destroyPaneSurfacesForWorkspace(id)
   // Evict all per-workspace in-memory state via the unified teardown so
   // archived workspaces don't leak into any runtime cache.
   teardownWorkspaceResources(id, ws?.cwd ?? null)
@@ -644,7 +694,10 @@ function createWindow(): void {
   registerWebContentsCleanup(mainWindow.webContents)
   // Tear down all git watchers when the renderer goes away so we don't hold
   // destroyed WebContents references until will-quit.
-  mainWindow.webContents.on('destroyed', () => stopAllGitWatches())
+  mainWindow.webContents.on('destroyed', () => {
+    stopAllGitWatches()
+    stopFilesWatch()
+  })
 
   // Restore fullscreen state before the window is shown
   if (savedState.windowFullscreen) {
@@ -875,6 +928,13 @@ registerProjectsIpc({
         // Surface not mounted or already destroyed — ignore.
       }
     }
+    // Trigger (g) also covers project removal — every workspace under the
+    // removed project is provably dead, so its workbench surfaces must be
+    // destroyed here too (see workbenchSurfacesByWorkspace's header comment).
+    destroyWorkbenchSurfacesForWorkspace(workspaceId)
+    // Same trigger (g) applies to Panes tab surfaces (see
+    // paneSurfacesByWorkspace's header comment).
+    destroyPaneSurfacesForWorkspace(workspaceId)
   },
   teardownWorkspaceResources
 })
@@ -931,6 +991,10 @@ registerClaudeHooksIpc()
 
 registerClaudeAuthIpc()
 
+registerClaudeUsageIpc()
+
+registerClaudeActivityIpc()
+
 registerOrpheusConfigIpc({ getProject })
 
 // ---------------------------------------------------------------------------
@@ -982,7 +1046,9 @@ handle('doctor:check', async (): Promise<DoctorResult> => {
   }
 })
 
-registerGitIpc()
+registerGitIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
+
+registerFilesIpc({ getWorkspaceCwd: (workspaceId) => getWorkspace(workspaceId)?.cwd ?? null })
 
 registerShellIpc({ getAppUiState })
 
@@ -1325,6 +1391,327 @@ handle('terminal:getSurfacePhase', (_e, { workspaceId }) => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// Workbench Terminal-tab IPC — U6b (P2), generalized to a strip in U8 (P3)
+//
+// Mounts plain interactive login shells ($SHELL, not orpheus-claude.sh) per
+// claude workspace, surfaced inside the Workbench's Terminal tab. This is
+// the minimal U7 (generalized launch composer): no claudeSettings layering,
+// no worktree reconcile, no activity pipeline — just a real shell at the
+// workspace's cwd. It reuses the native addon's slot model proven in U6a:
+// keying the surface `workbench:<claudeWorkspaceId>[:<terminalId>]` routes
+// it to the single Workbench slot, so it coexists with claude's
+// `workspaceId`-keyed surface without evicting it, AND any two ad-hoc
+// terminals under the same claude workspace auto-evict one another within
+// that slot (see docs/learnings/native-multisurface-investigation.md §1) —
+// exactly the "one visible at a time" behavior U8's tab strip needs, for
+// free, with no addon changes.
+//
+// `terminalId` is the renderer's own monotonic per-terminal counter (U8);
+// omitted, the slot key collapses back to U6b's single-shell form so old
+// call sites are unaffected. `workspaceId` passed to getWorkspace() below is
+// always the plain claude workspace id — never the derived slot key — so
+// the cwd lookup is unaffected by how many terminals the caller has open.
+// ---------------------------------------------------------------------------
+
+function workbenchSlotId(claudeWorkspaceId: string, terminalId?: number): string {
+  return terminalId === undefined
+    ? `workbench:${claudeWorkspaceId}`
+    : `workbench:${claudeWorkspaceId}:${terminalId}`
+}
+
+/** Inverse of `workbenchSlotId`'s two-arg (per-terminal) form — parses a
+ *  native surface key of the shape `workbench:<claudeWorkspaceId>:<terminalId>`
+ *  back into its parts. Returns null for anything else, including the
+ *  single-shell `workbench:<claudeWorkspaceId>` form (no terminalId to
+ *  recover) and any non-workbench key (plain claude `workspaceId`s never
+ *  contain a `:`, but this guards the parse either way). Used by the title
+ *  callback below to route workbench-keyed title events to their own push
+ *  channel instead of the claude-workspace-scoped `workspace:titleChanged`. */
+function parseWorkbenchSlotId(
+  surfaceKey: string
+): { workspaceId: string; terminalId: number } | null {
+  if (!surfaceKey.startsWith('workbench:')) return null
+  const rest = surfaceKey.slice('workbench:'.length)
+  const lastColon = rest.lastIndexOf(':')
+  if (lastColon === -1) return null
+  const terminalId = Number(rest.slice(lastColon + 1))
+  if (!Number.isInteger(terminalId)) return null
+  return { workspaceId: rest.slice(0, lastColon), terminalId }
+}
+
+// ---------------------------------------------------------------------------
+// Workbench surface registry (U9) — the authoritative record of which
+// workbench terminal surfaces exist per claude workspace.
+//
+// WHY: the renderer's TerminalTab now only ever HIDES surfaces on its own
+// unmount (nav-away, LRU eviction, remount) — never destroys — so hidden
+// surfaces persist addon-side indefinitely, exactly mirroring claude's own
+// terminal. The only two triggers allowed to actually destroy a workbench
+// surface are (f) a terminal's own ✕-close (renderer-initiated, already
+// explicit) and (g) the owning workspace being closed/archived/removed. But
+// by the time (g) fires, the renderer that knew which terminal ids existed
+// may be long unmounted (or was never the active view), so main cannot rely
+// on the renderer to tell it what to destroy. This map is main's own
+// bookkeeping of live `workbench:<workspaceId>:<terminalId>` slots so
+// close/archive/project-remove can deterministically destroy ALL of a
+// workspace's workbench surfaces regardless of render state.
+//
+// Populated on every successful workbench:mount, cleaned on every
+// workbench:destroy (both explicit ✕-close and the bulk destroy below).
+// ---------------------------------------------------------------------------
+
+const workbenchSurfacesByWorkspace = new Map<string, Set<number>>()
+
+function registerWorkbenchSurface(workspaceId: string, terminalId?: number): void {
+  if (terminalId === undefined) return // legacy single-shell form — not terminal-id-addressable
+  let ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids) {
+    ids = new Set()
+    workbenchSurfacesByWorkspace.set(workspaceId, ids)
+  }
+  ids.add(terminalId)
+}
+
+function unregisterWorkbenchSurface(workspaceId: string, terminalId?: number): void {
+  if (terminalId === undefined) return
+  const ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids) return
+  ids.delete(terminalId)
+  if (ids.size === 0) workbenchSurfacesByWorkspace.delete(workspaceId)
+}
+
+/** Destroys every known workbench terminal surface for `workspaceId` — the
+ *  ONE authoritative bulk-destroy path for trigger (g) (workspace
+ *  close/archive/project-remove). Idempotent: safe to call even when the
+ *  workspace never had any workbench terminals, or has already been torn
+ *  down (registry entries are removed as they're destroyed). Never called
+ *  from anywhere else — nav/LRU/remount must never reach this. */
+function destroyWorkbenchSurfacesForWorkspace(workspaceId: string): void {
+  const ids = workbenchSurfacesByWorkspace.get(workspaceId)
+  if (!ids || ids.size === 0) return
+  const addon = loadTerminalAddon()
+  for (const terminalId of ids) {
+    try {
+      addon.destroy(workbenchSlotId(workspaceId, terminalId))
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  workbenchSurfacesByWorkspace.delete(workspaceId)
+}
+
+handle('workbench:mount', (e, { workspaceId, rect, scaleFactor, terminalId }) => {
+  const addon = loadTerminalAddon()
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('workbench:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
+
+  const ws = getWorkspace(workspaceId)
+  const cwd = ws?.cwd ?? process.env['HOME']
+
+  // Plain interactive login shell — NOT orpheus-claude.sh (that unconditionally
+  // execs `claude`; the Workbench Terminal tab must not spawn a second claude
+  // session). Falls back to /bin/zsh (always present on macOS) when $SHELL is
+  // unset in the main process environment.
+  const shell = process.env['SHELL'] || '/bin/zsh'
+
+  const slotId = workbenchSlotId(workspaceId, terminalId)
+  const result = addon.mount(nativeHandle, {
+    workspaceId: slotId,
+    rect,
+    scaleFactor,
+    cwd,
+    command: shell,
+    env: {}
+  })
+  registerWorkbenchSurface(workspaceId, terminalId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_MOUNT,
+    workspaceId: slotId,
+    data: { created: result.created, workbench: true }
+  })
+  // Return the CALLER's workspaceId (the owning claude workspace), not the
+  // derived slotId — the slot key is an internal addon-routing detail.
+  // Callers that need to address the surface directly go through
+  // workbenchSlotId(...) themselves (or, more commonly, through the other
+  // workbench:* handlers here, which already derive it internally).
+  return { workspaceId, created: result.created }
+})
+
+handle('workbench:resize', (_e, { workspaceId, rect, scaleFactor, terminalId }): void => {
+  const addon = loadTerminalAddon()
+  addon.resize(workbenchSlotId(workspaceId, terminalId), rect, scaleFactor)
+})
+
+handle('workbench:hide', (_e, { workspaceId, terminalId }): void => {
+  const addon = loadTerminalAddon()
+  addon.hide(workbenchSlotId(workspaceId, terminalId))
+})
+
+handle('workbench:destroy', (_e, { workspaceId, terminalId }): void => {
+  const addon = loadTerminalAddon()
+  addon.destroy(workbenchSlotId(workspaceId, terminalId))
+  unregisterWorkbenchSurface(workspaceId, terminalId)
+})
+
+// ---------------------------------------------------------------------------
+// Workbench Panes tab IPC (U12)
+//
+// A SIBLING of the workbench:* terminal-strip machinery above, not a variant
+// of it. workbench:* keys every ad-hoc terminal `workbench:<workspaceId>
+// [:<terminalId>]` into ONE shared slot per claude workspace, so opening a
+// second terminal auto-evicts the first (the "one visible at a time" model
+// U8's tab strip wants). Panes need the opposite: N declared panes tiled and
+// SIMULTANEOUSLY visible/interactive within the Panes tab, so each pane gets
+// its OWN dedicated slot, keyed `pane:<workspaceId>:<paneId>` — no eviction
+// between sibling panes of the same workspace.
+//
+// Each pane also runs a user-declared COMMAND (persisted in `panes.command`,
+// src/main/paneStore.ts), not just an interactive shell. Rather than pass
+// the raw command string straight to the addon's `command` param (which
+// expects an absolute path to a script/binary to exec, not an arbitrary
+// shell command line), we point `command` at the generic
+// resources/orpheus-pane.sh wrapper and pass the user's command through
+// ORPHEUS_PANE_CMD — mirroring how orpheus-claude.sh/buildMountEnv thread
+// ORPHEUS_CLAUDE_FLAGS through env rather than argv. The wrapper runs the
+// command, then drops to an interactive shell once it exits (or immediately,
+// for an empty command — "just a shell") so the pane surface never dies.
+// ---------------------------------------------------------------------------
+
+function paneSlotId(workspaceId: string, paneId: string): string {
+  return `pane:${workspaceId}:${paneId}`
+}
+
+/** Resolves the orpheus-pane.sh wrapper's absolute path — same packaged-vs-
+ *  dev resolution buildMountEnv uses for orpheus-claude.sh. */
+function paneWrapperPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'orpheus-pane.sh')
+    : join(__dirname, '../../resources/orpheus-pane.sh')
+}
+
+// Pane surface registry — mirrors workbenchSurfacesByWorkspace's own header
+// comment: the renderer only ever HIDES a pane surface on ordinary
+// nav-away/unmount (surfaces are sticky, per CLAUDE.md), so this map is
+// main's own bookkeeping of live `pane:<workspaceId>:<paneId>` slots, keyed
+// workspaceId -> the set of live paneIds, letting workspace close/archive/
+// project-remove destroy ALL of a workspace's pane surfaces deterministically
+// regardless of render state. Populated on every successful pane:mount,
+// cleaned on every pane:destroy (both explicit and the bulk destroy below).
+const paneSurfacesByWorkspace = new Map<string, Set<string>>()
+
+function registerPaneSurface(workspaceId: string, paneId: string): void {
+  let ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids) {
+    ids = new Set()
+    paneSurfacesByWorkspace.set(workspaceId, ids)
+  }
+  ids.add(paneId)
+  broadcastLiveLayouts()
+}
+
+function unregisterPaneSurface(workspaceId: string, paneId: string): void {
+  const ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids) return
+  ids.delete(paneId)
+  if (ids.size === 0) paneSurfacesByWorkspace.delete(workspaceId)
+  broadcastLiveLayouts()
+}
+
+// Issue #24 — pushes the CURRENT set of layout ids with >=1 live pane
+// surface to the renderer, so the Panels sidebar's running loader reflects
+// real (and background/hidden) surface liveness instead of the old
+// active-tab-only placeholder. paneSurfacesByWorkspace's keys are layout
+// ids (see that map's own header comment for why the "Workspace" naming is
+// misleading here) — a layout with a non-empty pane-id set is "live"
+// whether or not it's the currently open layout, which is exactly the
+// background-running semantics issue #24 asks for. Called after every
+// mutation of the map (register/unregister/bulk-destroy) so the renderer's
+// paneLiveLayoutsStore.ts never drifts from main's own bookkeeping.
+function broadcastLiveLayouts(): void {
+  const layoutIds = [...paneSurfacesByWorkspace.keys()].filter(
+    (k) => (paneSurfacesByWorkspace.get(k)?.size ?? 0) > 0
+  )
+  getMainWindow()?.webContents.send(PUSH_CHANNELS.panesLiveLayoutsChanged, { layoutIds })
+}
+
+/** Destroys every known pane surface for `workspaceId` — the ONE
+ *  authoritative bulk-destroy path for workspace close/archive/project-
+ *  remove, mirroring destroyWorkbenchSurfacesForWorkspace. Idempotent: safe
+ *  to call even when the workspace never had any panes, or has already been
+ *  torn down. */
+function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
+  const ids = paneSurfacesByWorkspace.get(workspaceId)
+  if (!ids || ids.size === 0) return
+  const addon = loadTerminalAddon()
+  for (const paneId of ids) {
+    try {
+      addon.destroy(paneSlotId(workspaceId, paneId))
+    } catch {
+      // Surface not mounted or already destroyed — ignore.
+    }
+  }
+  paneSurfacesByWorkspace.delete(workspaceId)
+  broadcastLiveLayouts()
+}
+
+handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) => {
+  const addon = loadTerminalAddon()
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('pane:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
+
+  // Fix #23 — for panes, the `workspaceId` param slot actually carries the
+  // LAYOUT id (PaneCell calls window.api.panes.mount(layoutId, paneId, ...);
+  // the param is named workspaceId only because pane:mount's shape mirrors
+  // the workspace terminal:mount handler). getWorkspace(workspaceId) would
+  // therefore always miss (a layout id never matches a workspace row),
+  // silently falling back to $HOME and running the pane's setup command in
+  // the wrong folder. Each layout is folder-bound (PaneLayout.dir) — that's
+  // the correct cwd, resolved via paneStore's getLayout. Keep the $HOME
+  // fallback for safety (e.g. a stale/deleted layout id).
+  const layout = getLayout(workspaceId)
+  const cwd = layout?.dir ?? process.env['HOME']
+
+  const slotId = paneSlotId(workspaceId, paneId)
+  const result = addon.mount(nativeHandle, {
+    workspaceId: slotId,
+    rect,
+    scaleFactor,
+    cwd,
+    command: paneWrapperPath(),
+    env: { ORPHEUS_PANE_CMD: command }
+  })
+  registerPaneSurface(workspaceId, paneId)
+  logDiagMain({
+    category: 'lifecycle',
+    level: 'info',
+    event: DIAG_EVENTS.TERMINAL_MOUNT,
+    workspaceId: slotId,
+    data: { created: result.created, pane: true }
+  })
+  return { workspaceId, created: result.created }
+})
+
+handle('pane:resize', (_e, { workspaceId, paneId, rect, scaleFactor }): void => {
+  const addon = loadTerminalAddon()
+  addon.resize(paneSlotId(workspaceId, paneId), rect, scaleFactor)
+})
+
+handle('pane:hide', (_e, { workspaceId, paneId }): void => {
+  const addon = loadTerminalAddon()
+  addon.hide(paneSlotId(workspaceId, paneId))
+})
+
+handle('pane:destroy', (_e, { workspaceId, paneId }): void => {
+  const addon = loadTerminalAddon()
+  addon.destroy(paneSlotId(workspaceId, paneId))
+  unregisterPaneSurface(workspaceId, paneId)
+})
+
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
   const addon = loadTerminalAddon()
   try {
@@ -1491,6 +1878,10 @@ registerActionsIpc()
 
 registerFooterActionsIpc()
 
+registerReviewsIpc()
+
+registerPanesIpc()
+
 registerKeepAwakeIpc()
 
 // ---------------------------------------------------------------------------
@@ -1651,6 +2042,17 @@ if (!app.requestSingleInstanceLock()) {
       // Uses blur/focus backoff so polls slow down when Orpheus is in the background.
       startStatusPoller()
 
+      // Start the Dashboard "Usage" card background poller (D3) — 5s initial
+      // delay, then per user setting (usagePollIntervalSec). Pushes fresh
+      // usage to the renderer silently on each successful tick.
+      startUsagePoller()
+
+      // Start the Dashboard "Your pulse" real-activity background poller —
+      // 5s initial delay, then every 3min. Scans ~/.claude/projects/**/*.jsonl
+      // (per-file mtime/size cached, so steady-state re-scans are cheap) and
+      // pushes fresh totals to the renderer silently on each tick.
+      startClaudeActivityPoller()
+
       // Defer notify server + hook reconcile until after the first frame — keeps
       // createWindow() hot so the UI appears faster on launch.
       setImmediate(() => {
@@ -1693,6 +2095,12 @@ if (!app.requestSingleInstanceLock()) {
                     // Surface not mounted or already destroyed — ignore.
                   }
                 }
+                // Trigger (g) — mirrors performClose/performArchive/projects:remove
+                // (see workbenchSurfacesByWorkspace's header comment).
+                destroyWorkbenchSurfacesForWorkspace(workspaceId)
+                // Same trigger (g) applies to Panes tab surfaces (see
+                // paneSurfacesByWorkspace's header comment).
+                destroyPaneSurfacesForWorkspace(workspaceId)
               },
               teardownWorkspaceResources,
               performClose: (workspaceId) => performClose(workspaceId),
@@ -2078,8 +2486,11 @@ if (!app.requestSingleInstanceLock()) {
     sessionStateService?.stop()
     powerAwakeCleanup?.()
     stopStatusPoller()
+    stopUsagePoller()
+    stopClaudeActivityPoller()
     stopAutoCheckLoop()
     stopAllGitWatches()
+    stopFilesWatch()
     stopDiagnostics()
   })
 

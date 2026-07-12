@@ -28,9 +28,7 @@ const SSH_RE = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i
 // HTTPS: https://github.com/owner/repo or .git
 const HTTPS_RE = /^https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/i
 
-export function extractGithubInfo(
-  repoPath: string
-): Promise<{ owner: string; repo: string } | null> {
+function extractGithubInfo(repoPath: string): Promise<{ owner: string; repo: string } | null> {
   return new Promise((resolve) => {
     exec('git config --get remote.origin.url', { cwd: repoPath, timeout: 3000 }, (err, stdout) => {
       if (err || !stdout) {
@@ -57,7 +55,7 @@ export function extractGithubInfo(
 // Avatar URL fetch
 // ---------------------------------------------------------------------------
 
-export async function fetchAvatarUrl(owner: string): Promise<string | null> {
+async function fetchAvatarUrl(owner: string): Promise<string | null> {
   try {
     const res = await fetch(`https://github.com/${encodeURIComponent(owner)}.png?size=120`, {
       method: 'GET',

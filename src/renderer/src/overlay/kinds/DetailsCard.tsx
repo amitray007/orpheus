@@ -87,14 +87,31 @@ function LabelRow({
   )
 }
 
-export function DetailsCard({ props }: OverlayKindProps): React.JSX.Element {
+export function DetailsCard({ props, emit }: OverlayKindProps): React.JSX.Element {
   const data = props as unknown as DetailsCardProps
-  const { pr, model, contextText, contextLoading, cost, costLoading, git, cwd } = data
+  const { pr, model, contextText, contextLoading, cost, costLoading, git, cwd, isDirty } = data
 
   const hasRepoSection = !!git || (cwd && cwd.length > 0)
 
   return (
     <div className="w-max max-w-[252px] rounded-lg border border-border-default bg-surface-raised shadow-lg font-[family-name:var(--font-sans)] overflow-hidden">
+      {isDirty && (
+        <div className="mx-2.5 mt-2.5 rounded-md border border-amber-400/30 bg-amber-400/[0.04] px-2.5 py-2 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+          <span className="text-xs text-amber-200/90 flex-shrink-0">Settings changed</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              emit('restart')
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="ml-auto text-xs font-medium text-amber-300 hover:text-amber-100 underline underline-offset-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40 rounded"
+          >
+            Restart to apply
+          </button>
+        </div>
+      )}
       {pr && (
         <>
           <SectionHeader>Pull Request</SectionHeader>

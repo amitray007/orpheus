@@ -626,13 +626,23 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
       null
     )
   // runDataSteps sweeps ALL unapplied non-preRebuild steps, including the
-  // alwaysRun 'keep-awake-seed' step, which needs its table to exist first
-  // (same requirement as the dsdb3 fixture above).
+  // alwaysRun 'keep-awake-seed' and 'pane-general-panel-seed' steps, which
+  // need their tables to exist first (same requirement as the dsdb3 fixture
+  // above).
   dsdb4.exec(`CREATE TABLE keep_awake_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
     display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
     timer_minutes INTEGER NOT NULL DEFAULT 120
+  )`)
+  dsdb4.exec(`CREATE TABLE pane_panels (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('general', 'project')),
+    name TEXT NOT NULL,
+    dir TEXT,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   )`)
   runDataSteps(dsdb4, { preRebuild: false })
   runDataSteps(dsdb4, { preRebuild: true })
@@ -664,14 +674,22 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     'footer-effort-select-seed must be recorded in the ledger after running'
   )
 
-  // Exercise the alwaysRun step on the fresh DB: it needs keep_awake_settings
-  // to exist first (schema.ts owns structure; this data step only seeds the
-  // default row).
+  // Exercise the alwaysRun steps on the fresh DB: they need their tables to
+  // exist first (schema.ts owns structure; these data steps only seed rows).
   dsdb3.exec(`CREATE TABLE keep_awake_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('off', 'auto', 'on')),
     display_on INTEGER NOT NULL DEFAULT 0 CHECK (display_on IN (0, 1)),
     timer_minutes INTEGER NOT NULL DEFAULT 120
+  )`)
+  dsdb3.exec(`CREATE TABLE pane_panels (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('general', 'project')),
+    name TEXT NOT NULL,
+    dir TEXT,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   )`)
   runDataSteps(dsdb3, { preRebuild: false })
   runDataSteps(dsdb3, { preRebuild: true })
@@ -687,6 +705,25 @@ const { dataSteps, ensureLedger, seedLedgerFromLegacy, runDataSteps } =
     dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='keep-awake-seed'").get(),
     'keep-awake-seed must be recorded in the ledger after running'
   )
+
+  // Panes v2 (U4) — the General panel must be seeded exactly once, and a
+  // second sweep must not insert a duplicate (WHERE NOT EXISTS guard, since
+  // pane_panels.id is a random UUID rather than a fixed singleton PK).
+  const generalPanelRow = dsdb3
+    .prepare("SELECT kind, name, dir FROM pane_panels WHERE kind = 'general'")
+    .get() as { kind: string; name: string; dir: string | null } | undefined
+  assert.deepEqual(generalPanelRow, { kind: 'general', name: 'General', dir: null })
+  assert.ok(
+    dsdb3.prepare("SELECT 1 FROM applied_data_steps WHERE name='pane-general-panel-seed'").get(),
+    'pane-general-panel-seed must be recorded in the ledger after running'
+  )
+  runDataSteps(dsdb3, { preRebuild: false })
+  const generalPanelCount = (
+    dsdb3.prepare("SELECT COUNT(*) c FROM pane_panels WHERE kind = 'general'").get() as {
+      c: number
+    }
+  ).c
+  assert.equal(generalPanelCount, 1, 're-running data steps must not duplicate the General panel')
 
   // Running again must be a no-op (ledger prevents re-run / duplicate INSERT
   // OR IGNORE would be harmless anyway, but confirm the ledger gate works).

@@ -48,6 +48,11 @@ extraResources:
   # after claude exits so the terminal stays alive for further use.
   - from: resources/orpheus-claude.sh
     to: orpheus-claude.sh
+  # Workbench Panes tab (U12) wrapper: runs a pane's declared command in a
+  # login zsh, then exec's interactive zsh after it exits — same
+  # stay-alive rationale as orpheus-claude.sh above.
+  - from: resources/orpheus-pane.sh
+    to: orpheus-pane.sh
   # Hook notification shim — invoked by Claude Code hooks to post activity events
   # to Orpheus's Unix-domain socket. Lives at Contents/Resources/bin/orpheus-notify.
   - from: resources/bin/orpheus-notify

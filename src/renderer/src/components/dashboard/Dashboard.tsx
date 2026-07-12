@@ -5,6 +5,8 @@ import { DIAG_EVENTS } from '@shared/diagEvents'
 import { Sidebar as SidebarBase } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MainContent as MainContentBase, type View } from './MainContent'
+import { ActivityRail } from './ActivityRail'
+import { PanelsSection } from './PanelsSection'
 import { showConfirmModalReact } from '@/lib/overlayClient'
 import { setActivityBatch, deleteActivity, getActivitySnapshot } from '@/lib/activityStore'
 import { setAuthoritativeActiveWorkspace, getActiveRemount } from '@/lib/freezeWatchdog'
@@ -12,6 +14,9 @@ import { bumpActivityTime, deleteActivityTime } from '@/lib/activityTimeStore'
 import { setTitle, deleteTitle } from '@/lib/titleStore'
 import { setGitStatus, deleteGitStatus } from '@/lib/gitStore'
 import { setPr, deletePr } from '@/lib/prStore'
+import { removeWorkbenchEntry } from '@/lib/workbenchStore'
+import { removeWorkbenchTerminalsEntry } from '@/lib/workbenchTerminalsStore'
+import { removeFilesTabEntry } from '@/lib/filesTabStore'
 import { useUpdateAvailable } from '@/lib/useUpdateAvailable'
 import { useUiState, updateUiState } from '@/lib/uiStateStore'
 import { mapWithConcurrency } from '@/lib/concurrency'
@@ -23,7 +28,9 @@ import {
   mainContainerClassName,
   nextWorkspaceName,
   reorderById,
-  reorderWithTail
+  reorderWithTail,
+  deriveSurface,
+  resolveLandingView
 } from './dashboard.helpers'
 import type {
   PinnedItem,
@@ -72,7 +79,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([])
 
   // View routing
-  const [view, setView] = useState<View>({ kind: 'sessions' })
+  const [view, setView] = useState<View>({ kind: 'panes' })
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
@@ -340,6 +347,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -605,12 +615,80 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     [fetchWorkspacesForProject]
   )
 
-  const handleSelectNav = useCallback((nav: 'sessions'): void => {
-    setView({ kind: nav })
+  // Restore the last Projects-surface location: workspace > project > empty
+  // state. This is the SAME branch order as the restart-restore hydration
+  // effect below (workspace > project > sessions/landing) — factored out here
+  // so both the app-launch restore and the Projects-rail click delegate to one
+  // path instead of drifting. handleSelectWorkspace/handleSelectProject each
+  // persist their own lastViewKind/lastProjectId/lastWorkspaceId internally
+  // (see their bodies above), so this callback must NOT null those ids when
+  // delegating to them — only the genuinely-empty fallthrough nulls the ids,
+  // because that's the one case where there really is nothing to restore.
+  const restoreLastProjectsLocation = useCallback((): void => {
+    // uiState is null only until the initial fetch resolves; the Projects
+    // rail click can't fire before mount completes that fetch in practice,
+    // but guard anyway and fall through to the empty state rather than throw.
+    if (
+      uiState &&
+      uiState.lastViewKind === 'workspace' &&
+      uiState.lastWorkspaceId &&
+      uiState.lastProjectId
+    ) {
+      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      if (proj) {
+        handleSelectWorkspace(uiState.lastWorkspaceId, uiState.lastProjectId)
+        return
+      }
+    }
+    if (uiState && uiState.lastViewKind === 'project' && uiState.lastProjectId) {
+      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      if (proj) {
+        handleSelectProject(uiState.lastProjectId)
+        return
+      }
+    }
+    // No resolvable last location — land on the empty state (ProjectsHome,
+    // rendered by the 'sessions' view kind) and persist a genuinely-empty
+    // selection.
+    setView({ kind: 'sessions' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    updateUiState({ lastViewKind: nav, lastProjectId: null, lastWorkspaceId: null })
-  }, [])
+    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+  }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
+
+  // Switches the top-level SURFACE (dashboard | projects | panes) — wired
+  // from ActivityRail. Supersedes the old handleSelectNav/handleSelectPanes
+  // pair now that the surface switch lives in the rail instead of Sidebar's
+  // top nav.
+  const handleSelectSurface = useCallback(
+    (surface: 'dashboard' | 'projects' | 'panes'): void => {
+      if (surface === 'dashboard') {
+        setView({ kind: 'dashboard' })
+        setSelectedProjectId(null)
+        setSelectedWorkspaceId(null)
+        // NOTE: uiState read-coercion maps stored 'dashboard'→'sessions' on read (U1
+        // preserved this for legacy DB rows) — that's fine here: the rail derives the
+        // active surface from the LIVE `view` state (not from persisted lastViewKind),
+        // so the dashboard surface still displays correctly during this session even
+        // though a relaunch would coerce the persisted value back to sessions/Workspaces
+        // (governed instead by defaultSurface, which IS 'dashboard'-aware).
+        updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
+        return
+      }
+      if (surface === 'projects') {
+        // Restore wherever the user last was within Projects (workspace/project/
+        // empty state) instead of hardcoding the empty state and wiping the
+        // persisted last-location — see restoreLastProjectsLocation above.
+        restoreLastProjectsLocation()
+        return
+      }
+      setView({ kind: 'panes' })
+      setSelectedProjectId(null)
+      setSelectedWorkspaceId(null)
+      updateUiState({ lastViewKind: 'panes', lastProjectId: null, lastWorkspaceId: null })
+    },
+    [restoreLastProjectsLocation]
+  )
 
   // ---------------------------------------------------------------------------
   // Effects that use the above callbacks — must come after
@@ -833,7 +911,17 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     // Honor openAtLastView toggle — when false, ignore the saved view and start at dashboard
     if (!uiState.openAtLastView) return
 
-    // Restore view: workspace > project > sessions > dashboard
+    // Restore view: workspace > project > sessions > panes
+    //
+    // This mirrors restoreLastProjectsLocation's workspace>project branch
+    // order exactly (kept as ONE path conceptually — see that callback above,
+    // used by the Projects-rail click), but is NOT delegated to it here: this
+    // effect's fallthrough must consider defaultSurface (dashboard/panes) via
+    // resolveLandingView, whereas restoreLastProjectsLocation's fallthrough is
+    // always the Projects empty state (correct for a rail click, wrong for
+    // app-launch restore when the user's default surface isn't Projects). Any
+    // change to the workspace/project resolution rule must be made in BOTH
+    // places.
     if (uiState.lastViewKind === 'workspace' && uiState.lastWorkspaceId && uiState.lastProjectId) {
       const proj = projects.find((p) => p.id === uiState.lastProjectId)
       if (proj) {
@@ -848,12 +936,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         return
       }
     }
-    if (uiState.lastViewKind === 'sessions' || (uiState.lastViewKind as string) === 'dashboard') {
-      setView({ kind: 'sessions' })
-      return
-    }
-    // default — Workspaces is the fallback landing
-    setView({ kind: 'sessions' })
+    // No concrete workspace/project to restore — land on the saved top-level
+    // view if there is one, else fall back to the configured default surface.
+    // See resolveLandingView (dashboard.helpers.ts) for the branch logic.
+    setView(resolveLandingView(uiState))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiState, projectsLoading, projects])
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -1087,6 +1173,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -1126,6 +1215,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       deleteTitle(workspaceId)
       deleteGitStatus(workspaceId)
       deletePr(workspaceId)
+      removeWorkbenchEntry(workspaceId)
+      removeWorkbenchTerminalsEntry(workspaceId)
+      removeFilesTabEntry(workspaceId)
       hasFetchedRef.current!.delete(workspaceId)
       clearFooterActionsCache(workspaceId)
       clearLiveChipCache(workspaceId)
@@ -1247,6 +1339,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         deleteTitle(ws.id)
         deleteGitStatus(ws.id)
         deletePr(ws.id)
+        removeWorkbenchEntry(ws.id)
+        removeWorkbenchTerminalsEntry(ws.id)
+        removeFilesTabEntry(ws.id)
         hasFetchedRef.current!.delete(ws.id)
         clearFooterActionsCache(ws.id)
         clearLiveChipCache(ws.id)
@@ -1413,51 +1508,80 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
 
   const activeView = viewToSidebarActiveView(view)
 
+  // Which top-level surface ActivityRail highlights, and which secondary
+  // sidebar column (if any) renders to its right. null while in Settings —
+  // Sidebar (Projects) is still shown behind Settings so the tree stays
+  // visible/navigable while the settings panel is open.
+  const surface = deriveSurface(view.kind)
+  const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
+  let secondaryColumn: React.JSX.Element | null = null
+  if (surface === 'panes') {
+    if (!sidebarCollapsed) {
+      secondaryColumn = (
+        <aside
+          className="bg-surface-raised border-r border-border-default shrink-0 h-full transition-[width] duration-150 ease-out overflow-hidden"
+          style={{ width: resolvedSidebarWidth + 'px' }}
+        >
+          <PanelsSection />
+        </aside>
+      )
+    }
+  } else if (surface !== 'dashboard') {
+    secondaryColumn = (
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        projects={projects}
+        projectsLoading={projectsLoading}
+        selectedProjectId={selectedProjectId}
+        selectedWorkspaceId={selectedWorkspaceId}
+        activeView={activeView}
+        currentViewKind={view.kind}
+        expandedProjectIds={expandedProjectIds}
+        workspacesByProject={workspacesByProject}
+        workspaceCountInline={uiState?.workspaceCountInline ?? true}
+        sidebarWidth={resolvedSidebarWidth}
+        fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
+        pinnedItems={pinnedItems}
+        onSelectProject={handleSelectProject}
+        onAddProject={handleAddProject}
+        addingProject={addingProject}
+        onToggleProjectExpand={handleToggleProjectExpand}
+        onSelectWorkspace={handleSelectWorkspace}
+        onRenameProject={handleRenameProject}
+        onRequestRemoveProject={handleRequestRemoveProject}
+        onAddWorkspace={handleAddWorkspace}
+        onRenameWorkspace={handleRenameWorkspace}
+        onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
+        onCloseWorkspace={handleCloseWorkspace}
+        onTogglePinWorkspace={handleToggleWorkspacePin}
+        onTogglePinProject={handleToggleProjectPin}
+        onReorderProjects={handleReorderProjects}
+        onReorderWorkspaces={handleReorderWorkspaces}
+        onRefreshPins={refreshPins}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-screen">
       <TopBar
         onToggleCollapsed={handleToggleSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
+        sidebarWidth={resolvedSidebarWidth}
       />
 
       <div className="flex flex-1 min-h-0">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          projects={projects}
-          projectsLoading={projectsLoading}
-          selectedProjectId={selectedProjectId}
-          selectedWorkspaceId={selectedWorkspaceId}
-          activeView={activeView}
-          currentViewKind={view.kind}
-          expandedProjectIds={expandedProjectIds}
-          workspacesByProject={workspacesByProject}
-          workspaceCountInline={uiState?.workspaceCountInline ?? true}
-          sidebarWidth={uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth}
-          fetchGithubAvatars={uiState?.fetchGithubAvatars ?? true}
-          pinnedItems={pinnedItems}
-          onSelectProject={handleSelectProject}
-          onSelectNav={handleSelectNav}
-          onSelectSettings={handleSelectSettings}
-          onOpenUpdates={handleOpenUpdates}
+        <ActivityRail
+          activeSurface={surface}
+          settingsActive={view.kind === 'settings'}
           updateAvailable={updateAvailable}
           updateLatest={updateLatest}
-          onAddProject={handleAddProject}
-          addingProject={addingProject}
-          onToggleProjectExpand={handleToggleProjectExpand}
-          onSelectWorkspace={handleSelectWorkspace}
-          onRenameProject={handleRenameProject}
-          onRequestRemoveProject={handleRequestRemoveProject}
-          onAddWorkspace={handleAddWorkspace}
-          onRenameWorkspace={handleRenameWorkspace}
-          onArchiveWorkspace={handleArchiveWorkspaceFromSidebar}
-          onCloseWorkspace={handleCloseWorkspace}
-          onTogglePinWorkspace={handleToggleWorkspacePin}
-          onTogglePinProject={handleToggleProjectPin}
-          onReorderProjects={handleReorderProjects}
-          onReorderWorkspaces={handleReorderWorkspaces}
-          onRefreshPins={refreshPins}
+          onSelectSurface={handleSelectSurface}
+          onSelectSettings={handleSelectSettings}
+          onOpenUpdates={handleOpenUpdates}
         />
+
+        {secondaryColumn}
 
         <main
           className={

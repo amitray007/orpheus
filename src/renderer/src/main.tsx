@@ -8,21 +8,21 @@ import { DiagConsole } from '@/components/diag/DiagConsole'
 import { installRendererErrorCapture } from '@/lib/diag'
 import { initOverlayDevTest } from '@/lib/overlayDevTest'
 
-const isDiagConsole = new URLSearchParams(location.search).get('view') === 'diag-console'
+const viewParam = new URLSearchParams(location.search).get('view')
+const isDiagConsole = viewParam === 'diag-console'
 
 if (!isDiagConsole) {
   installRendererErrorCapture()
   initOverlayDevTest()
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    {isDiagConsole ? (
-      <DiagConsole />
-    ) : (
-      <AppErrorBoundary>
-        <App />
-      </AppErrorBoundary>
-    )}
-  </StrictMode>
-)
+function renderView(): React.JSX.Element {
+  if (isDiagConsole) return <DiagConsole />
+  return (
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
+  )
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode>{renderView()}</StrictMode>)
