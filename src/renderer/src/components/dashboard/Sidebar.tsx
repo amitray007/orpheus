@@ -903,6 +903,9 @@ interface ProjectsSectionProps {
   fetchGithubAvatars: boolean
   addProjectButton: React.ReactNode
   addingProject: boolean
+  /** Pinned workspaces, rendered as the first rows below the "Projects" heading. */
+  pinnedItems: PinnedItem[]
+  onRefreshPins: () => void
   sessionTitlesByProject: Map<string, Map<string, string>>
   sessionUserPreviewsByProject: Map<string, Map<string, string>>
   sessionMtimesByProject: Map<string, Map<string, number>>
@@ -966,6 +969,8 @@ function ProjectsSection({
   fetchGithubAvatars,
   addProjectButton,
   addingProject,
+  pinnedItems,
+  onRefreshPins,
   sessionTitlesByProject,
   sessionUserPreviewsByProject,
   sessionMtimesByProject,
@@ -1010,6 +1015,22 @@ function ProjectsSection({
       {!collapsed ? (
         <>
           <SectionHeader label="Projects" action={addProjectButton} />
+          {pinnedItems.length > 0 && (
+            <div className="flex flex-col gap-0.5 mb-1">
+              {pinnedItems.map((item) => (
+                <PinnedRow
+                  key={item.workspace.id}
+                  item={item}
+                  active={selectedWorkspaceId === item.workspace.id}
+                  onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
+                  onUnpin={async () => {
+                    await window.api.workspaces.setPinned(item.workspace.id, false)
+                    onRefreshPins()
+                  }}
+                />
+              ))}
+            </div>
+          )}
           {projectsLoading ? (
             <ProjectListSkeleton />
           ) : projects.length === 0 ? (
@@ -1470,30 +1491,17 @@ export function Sidebar({
         ].join(' ')}
         style={collapsed ? undefined : { width: sidebarWidth + 'px' }}
       >
-        {/* Pinned section — only rendered when at least one workspace is pinned */}
-        {!collapsed && pinnedItems.length > 0 && (
-          <div className="mt-4 flex flex-col gap-0.5">
-            <SectionHeader label="Pinned" />
-            {pinnedItems.map((item) => (
-              <PinnedRow
-                key={item.workspace.id}
-                item={item}
-                active={selectedWorkspaceId === item.workspace.id}
-                onSelect={() => onSelectWorkspace(item.workspace.id, item.workspace.projectId)}
-                onUnpin={async () => {
-                  await window.api.workspaces.setPinned(item.workspace.id, false)
-                  onRefreshPins()
-                }}
-              />
-            ))}
-          </div>
-        )}
-
         {/* Sidebar is now Projects-only — the top-level surface switch lives
             in ActivityRail, and Panes' own tree (PanelsSection) is rendered
-            by Dashboard.tsx's shell instead of swapping in here. */}
+            by Dashboard.tsx's shell instead of swapping in here. Pinned
+            workspaces render as the first rows inside ProjectsSection, right
+            below the "Projects" heading, so the heading itself always lands
+            at the same fixed top offset as Panes' heading — pinning never
+            shifts the layout. */}
         <ProjectsSection
           collapsed={collapsed}
+          pinnedItems={pinnedItems}
+          onRefreshPins={onRefreshPins}
           projects={projects}
           projectsLoading={projectsLoading}
           selectedProjectId={selectedProjectId}
