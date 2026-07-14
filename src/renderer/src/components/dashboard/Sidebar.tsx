@@ -252,7 +252,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
       <div
         ref={rowRef}
         className={[
-          'relative flex rounded-r-md transition-colors duration-150 group',
+          'relative flex rounded-r-md transition-colors duration-150 group h-8',
           isVeryOld && !isClosed ? 'opacity-60' : '',
           isClosed ? 'opacity-50' : '',
           // 2px left bar on active rows for unambiguous selection.
@@ -275,8 +275,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
           type="button"
           onClick={onSelect}
           className={[
-            'flex flex-col pl-8 pr-9 flex-1 text-left min-w-0',
-            'h-8 justify-center',
+            'flex items-center pl-8 pr-9 flex-1 text-left min-w-0 h-8',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded-r-md',
             'cursor-pointer'
           ].join(' ')}
