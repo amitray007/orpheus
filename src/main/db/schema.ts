@@ -891,7 +891,15 @@ export const schema: SchemaDef = {
       split_tree_json: { type: 'TEXT', notNull: true, default: "'null'" },
       position: INTEGER_NOT_NULL,
       created_at: INTEGER_NOT_NULL,
-      updated_at: INTEGER_NOT_NULL
+      updated_at: INTEGER_NOT_NULL,
+      // Fix 4 — per-layout auto-start flag (mirrors pane_panels.
+      // expanded_in_sidebar exactly): an INTEGER 0/1 flag with a '0'
+      // default so every existing + newly-created layout row starts with
+      // auto-start off, reconciled onto pre-existing rows by the engine's
+      // add-column path (no backfill needed since the default covers it).
+      // When set, all of this layout's panes are background-mounted at
+      // app launch, regardless of which surface is visible.
+      auto_start: bool('auto_start', '0')
     },
     foreignKeys: [{ columns: ['panel_id'], ref: 'pane_panels(id)', onDelete: 'CASCADE' }],
     indexes: {

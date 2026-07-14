@@ -1196,6 +1196,9 @@ export interface PaneLayout {
   position: number
   createdAt: number
   updatedAt: number
+  /** Fix 4 — when true, all of this layout's panes are background-mounted
+   *  at app launch, regardless of which surface is visible in the UI. */
+  autoStart: boolean
 }
 
 export interface PaneTerminal {

@@ -49,6 +49,7 @@ type PaneLayoutRow = {
   position: number
   created_at: number
   updated_at: number
+  auto_start: number
 }
 
 type PaneTerminalRow = {
@@ -101,7 +102,9 @@ function layoutFromRow(row: PaneLayoutRow): PaneLayout {
     splitTree: parseSplitTree(row.split_tree_json),
     position: row.position,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    // Fix 4 — mirrors panelFromRow's expandedInSidebar mapping.
+    autoStart: row.auto_start === 1
   }
 }
 
@@ -309,6 +312,29 @@ export function updateLayout(id: string, patch: UpdateLayoutInput): PaneLayout {
 export function deleteLayout(id: string): void {
   const db = getDb()
   db.prepare('DELETE FROM pane_layouts WHERE id = ?').run(id)
+}
+
+/** Persists the per-layout auto-start-on-launch flag. Mirrors
+ *  setPanelExpanded's shape (dedicated setter rather than folding into
+ *  UpdateLayoutInput, since autoStart is an independent toggle, not part of
+ *  the name/dir/splitTree/position patch), but re-selects the row afterward
+ *  (like updateLayout does) so the IPC handler can return the updated
+ *  PaneLayout as a one-line passthrough. */
+export function setLayoutAutoStart(id: string, autoStart: boolean): PaneLayout {
+  const db = getDb()
+  db.prepare('UPDATE pane_layouts SET auto_start = ? WHERE id = ?').run(autoStart ? 1 : 0, id)
+  return layoutFromRow(
+    db.prepare('SELECT * FROM pane_layouts WHERE id = ?').get(id) as PaneLayoutRow
+  )
+}
+
+/** All layouts flagged for background auto-start at app launch (Fix 4). */
+export function listAutoStartLayouts(): PaneLayout[] {
+  const db = getDb()
+  const rows = db
+    .prepare('SELECT * FROM pane_layouts WHERE auto_start = 1')
+    .all() as PaneLayoutRow[]
+  return rows.map(layoutFromRow)
 }
 
 // ---------------------------------------------------------------------------
