@@ -1503,6 +1503,18 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
     })
   }, [])
 
+  const handleReorderProjectsByActivity = useCallback((): void => {
+    window.api.projects
+      .reorderByActivity()
+      .then((orderedIds) => {
+        setProjects((arr) => reorderById(arr, orderedIds))
+      })
+      .catch((err) => {
+        console.error('[dashboard] reorder by activity failed; refetching', err)
+        window.api.projects.list().then(setProjects).catch(console.error)
+      })
+  }, [])
+
   const handleReorderWorkspaces = useCallback(
     (projectId: string, orderedIds: string[]): void => {
       // Optimistic: reorder the local workspacesByProject[projectId] immediately.
@@ -1592,6 +1604,7 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         onTogglePinWorkspace={handleToggleWorkspacePin}
         onTogglePinProject={handleToggleProjectPin}
         onReorderProjects={handleReorderProjects}
+        onReorderProjectsByActivity={handleReorderProjectsByActivity}
         onReorderWorkspaces={handleReorderWorkspaces}
         onRefreshPins={refreshPins}
       />

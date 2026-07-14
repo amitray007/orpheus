@@ -8,7 +8,8 @@ import {
   Stack,
   Archive,
   GitFork,
-  PushPin
+  PushPin,
+  ArrowsDownUp
 } from '@phosphor-icons/react'
 import { WorktreeBadge } from './WorktreeBadge'
 import type { PinnedItem, ProjectRecord, SessionRecord, WorkspaceRecord } from '@shared/types'
@@ -1149,6 +1150,7 @@ interface SidebarProps {
   onTogglePinWorkspace: (workspaceId: string, projectId: string) => void | Promise<void>
   onTogglePinProject: (projectId: string) => void | Promise<void>
   onReorderProjects: (orderedIds: string[]) => void
+  onReorderProjectsByActivity: () => void
   onReorderWorkspaces: (projectId: string, orderedIds: string[]) => void
   onRefreshPins: () => void
 }
@@ -1180,6 +1182,7 @@ export function Sidebar({
   onTogglePinWorkspace,
   onTogglePinProject,
   onReorderProjects,
+  onReorderProjectsByActivity,
   onReorderWorkspaces,
   pinnedItems,
   onRefreshPins
@@ -1418,6 +1421,18 @@ export function Sidebar({
     [activeView, selectedProjectId]
   )
 
+  const sortProjectsButton = (
+    <button
+      type="button"
+      aria-label="Sort projects: active first"
+      title="Sort projects: active first"
+      className="w-8 h-8 flex items-center justify-center rounded-md transition-colors duration-150 text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer"
+      onClick={onReorderProjectsByActivity}
+    >
+      <ArrowsDownUp size={14} weight="bold" />
+    </button>
+  )
+
   const addProjectButton = (
     <button
       type="button"
@@ -1435,6 +1450,13 @@ export function Sidebar({
     >
       <Plus size={14} weight="bold" />
     </button>
+  )
+
+  const projectsHeaderActions = (
+    <div className="flex items-center gap-0.5">
+      {sortProjectsButton}
+      {addProjectButton}
+    </div>
   )
 
   return (
@@ -1483,7 +1505,7 @@ export function Sidebar({
           workspacesByProject={workspacesByProject}
           workspaceCountInline={workspaceCountInline}
           fetchGithubAvatars={fetchGithubAvatars}
-          addProjectButton={addProjectButton}
+          addProjectButton={projectsHeaderActions}
           addingProject={addingProject}
           sessionTitlesByProject={sessionTitlesByProject}
           sessionUserPreviewsByProject={sessionUserPreviewsByProject}

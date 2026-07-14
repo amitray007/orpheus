@@ -160,6 +160,7 @@ export interface InvokeChannelMap {
     res: void
   }
   'projects:reorder': { req: [{ orderedIds: string[] }]; res: void }
+  'projects:reorderByActivity': { req: []; res: string[] }
   'projects:setPinned': { req: [{ id: string; pinned: boolean }]; res: ProjectRecord }
   'projects:refreshGithub': { req: [string]; res: void }
   'workspaces:listForProject': {

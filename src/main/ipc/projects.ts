@@ -22,6 +22,7 @@ import {
   renameProject,
   setProjectExpandedInSidebar,
   reorderProjects,
+  reorderProjectsByActivity,
   setProjectPinned
 } from '../projects'
 import { withRepoLock, removeWorktree, isWorktreeDirty } from '../worktrees'
@@ -124,6 +125,8 @@ export function registerProjectsIpc(deps: ProjectsIpcDeps): void {
   )
 
   handle('projects:reorder', (_e, { orderedIds }) => reorderProjects(orderedIds))
+
+  handle('projects:reorderByActivity', () => reorderProjectsByActivity())
 
   handle('projects:setPinned', (_e, { id, pinned }) => setProjectPinned(id, pinned))
 

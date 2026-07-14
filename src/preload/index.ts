@@ -234,6 +234,7 @@ const api = {
     setExpandedInSidebar: (id: string, expanded: boolean): Promise<void> =>
       invoke('projects:setExpandedInSidebar', { id, expanded }),
     reorder: (orderedIds: string[]): Promise<void> => invoke('projects:reorder', { orderedIds }),
+    reorderByActivity: (): Promise<string[]> => invoke('projects:reorderByActivity'),
     setPinned: (id: string, pinned: boolean): Promise<ProjectRecord> =>
       invoke('projects:setPinned', { id, pinned }),
     refreshGithub: (projectId: string): Promise<void> =>
