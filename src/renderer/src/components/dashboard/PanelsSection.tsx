@@ -318,7 +318,9 @@ function LayoutSubRow({
             { value: 'rename', label: 'Rename' },
             { value: 'delete', label: 'Delete', destructive: true }
           ]
-        }
+        },
+        undefined,
+        'bottom'
       )
       switch (result?.value) {
         case 'start-stop':
@@ -477,7 +479,9 @@ function PanelRow({
             { value: 'rename', label: 'Rename' },
             ...(isGeneral ? [] : [{ value: 'delete', label: 'Delete', destructive: true }])
           ]
-        }
+        },
+        undefined,
+        'bottom'
       )
       switch (result?.value) {
         case 'rename':

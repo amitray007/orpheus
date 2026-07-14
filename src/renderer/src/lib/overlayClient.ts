@@ -626,7 +626,8 @@ export function showChipDropdown(
   id: string,
   anchorRect: { x: number; y: number; w: number; h: number },
   props: ChipDropdownProps,
-  ownerWorkspaceId?: string
+  ownerWorkspaceId?: string,
+  preferredSide: 'top' | 'bottom' | 'left' | 'right' = 'top'
 ): Promise<ChipDropdownResult> {
   ensureRouter()
 
@@ -650,7 +651,7 @@ export function showChipDropdown(
     const descriptor: OverlayDescriptor = {
       id,
       kind: 'chipDropdown',
-      placement: { mode: 'anchored', anchorRect, preferredSide: 'top' },
+      placement: { mode: 'anchored', anchorRect, preferredSide },
       props: props as unknown as Record<string, unknown>,
       acceptsClicks: true,
       takesFocus: true,
