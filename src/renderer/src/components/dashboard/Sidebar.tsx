@@ -347,7 +347,7 @@ const WorkspaceSubRow = memo(function WorkspaceSubRow({
 
         {/* Trailing slot: time and archive share the same absolute position at the right edge */}
         {!renaming && relativeTime && !hovered && (
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 pr-1 pointer-events-none">
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center h-8 w-8 pointer-events-none">
             <span className="text-[11px] text-text-muted tabular-nums">{relativeTime}</span>
           </span>
         )}
@@ -1424,7 +1424,9 @@ export function Sidebar({
       aria-label="Add project"
       disabled={addingProject}
       className={[
-        'p-1 rounded transition-colors duration-150',
+        // -mr-2 cancels SectionHeader's px-3 so this lands in the same
+        // 4px right gutter the workspace-row chevron button uses.
+        'w-8 h-8 -mr-2 flex items-center justify-center rounded-md transition-colors duration-150',
         addingProject
           ? 'text-text-muted opacity-50 cursor-wait'
           : 'text-text-muted hover:text-text-primary hover:bg-surface-overlay cursor-pointer'
