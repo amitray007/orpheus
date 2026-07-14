@@ -505,18 +505,24 @@ export function chipTooltipId(actionId: string): string {
  * Non-interactive — never emits events; the call site hides it directly
  * (hideOverlayCard) on its own timer/mouseleave, same as the chassis-free
  * `ChipTooltip` component's setTimeout-driven hide.
+ *
+ * `preferredSide` defaults to 'top' (the footer ActionChip/DropdownChip
+ * origin usage, opening upward off a bottom-anchored chip). Callers anchored
+ * elsewhere — e.g. the far-left ActivityRail, which only has room to open
+ * rightward like showProjectCard/showHoverCard above — can override it.
  */
 export function showChipTooltip(
   id: string,
   anchorRect: { x: number; y: number; w: number; h: number },
   props: ChipTooltipProps,
-  ownerWorkspaceId?: string
+  ownerWorkspaceId?: string,
+  preferredSide: 'top' | 'bottom' | 'left' | 'right' = 'top'
 ): void {
   ensureRouter()
   const descriptor: OverlayDescriptor = {
     id,
     kind: 'chipTooltip',
-    placement: { mode: 'anchored', anchorRect, preferredSide: 'top' },
+    placement: { mode: 'anchored', anchorRect, preferredSide },
     props: props as unknown as Record<string, unknown>,
     acceptsClicks: false,
     takesFocus: false,

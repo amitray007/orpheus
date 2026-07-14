@@ -19,7 +19,10 @@
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
+import { useEffect, useRef } from 'react'
 import { ArrowFatLineUp, Gear, House, Kanban, SquaresFour } from '@phosphor-icons/react'
+import { useOverlayHoverCard } from '@/lib/useOverlayHoverCard'
+import { showChipTooltip, hideOverlayCard, chipTooltipId } from '@/lib/overlayClient'
 
 // The rail's fixed width (px). Exported so the TopBar can offset its left
 // section by the SAME amount — the TopBar's left block must span rail + sidebar
@@ -43,18 +46,87 @@ interface ActivityRailProps {
 interface RailButtonProps {
   Icon: React.ComponentType<{ size?: number; weight?: 'regular' | 'fill'; className?: string }>
   label: string
+  /** Tooltip title, if it should read differently from `label` (which also
+   *  drives aria-label/aria-current semantics). E.g. the "dashboard" surface
+   *  is user-facing "Home" even though the surface id/aria-label stays
+   *  "Dashboard". Defaults to `label`. */
+  tooltipLabel?: string
+  /** Short one-line description shown alongside the title in the hover
+   *  tooltip (e.g. "Overview & recent activity"). Optional so callers with a
+   *  self-explanatory label (Settings) can omit it. */
+  description?: string
   active: boolean
   onClick: () => void
 }
 
-function RailButton({ Icon, label, active, onClick }: RailButtonProps): React.JSX.Element {
+// Rail buttons sit at the far-left edge of the window (see ACTIVITY_RAIL_WIDTH
+// above) — like Sidebar's collapsed project tiles (showProjectCard) and the
+// workspace hover card (showHoverCard), the OVERLAY tooltip is anchored with
+// preferredSide 'right' since there's no room to open left/top without going
+// off-screen. Reuses the footer ActionChip's chipTooltip overlay kind rather
+// than the native `title` attribute, which the terminal NSView can occlude.
+//
+// The ref + mouse handlers are kept inline in each component (rather than
+// factored into a shared custom hook returning them) to mirror Sidebar.tsx's
+// WorkspaceSubRow hover-card wiring exactly — routing a ref through a hook's
+// return value trips the react-hooks/refs compiler rule ("cannot access refs
+// during render") because it can no longer prove the ref read only happens
+// inside the event-handler closure.
+function RailButton({
+  Icon,
+  label,
+  tooltipLabel,
+  description,
+  active,
+  onClick
+}: RailButtonProps): React.JSX.Element {
+  const title = tooltipLabel ?? label
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const tooltipId = chipTooltipId(`rail:${label}`)
+  const hoverCard = useOverlayHoverCard({ openDelay: 250, closeDelay: 80 })
+
+  function hideTooltip(): void {
+    hideOverlayCard(tooltipId)
+  }
+
+  function handleMouseEnter(): void {
+    hoverCard.handleMouseEnter(() => {
+      if (!btnRef.current) return
+      const r = btnRef.current.getBoundingClientRect()
+      const text = description ? `${title} — ${description}` : title
+      showChipTooltip(
+        tooltipId,
+        { x: r.left, y: r.top, w: r.width, h: r.height },
+        { text },
+        undefined,
+        'right'
+      )
+    })
+  }
+
+  function handleMouseLeave(): void {
+    hoverCard.handleMouseLeave(hideTooltip)
+  }
+
+  // Unmount safety: cancel any pending timer and make sure the tooltip
+  // doesn't outlive the button (mirrors WorkspaceSubRow's cleanup effect).
+  useEffect(() => {
+    return () => {
+      hoverCard.clearTimer()
+      hideTooltip()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <button
+      ref={btnRef}
       type="button"
       onClick={onClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       aria-label={label}
       aria-current={active ? 'page' : undefined}
-      title={label}
       className={[
         'w-9 h-9 flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40',
@@ -76,6 +148,72 @@ function RailButton({ Icon, label, active, onClick }: RailButtonProps): React.JS
   )
 }
 
+interface UpdateButtonProps {
+  updateLatest: string | null
+  onOpenUpdates: () => void
+}
+
+// Standalone (not RailButton) because it has its own always-accent-colored
+// styling (never toggles active/inactive) — but shows the same overlay
+// tooltip the same way, inline for the same react-hooks/refs reason as above.
+function UpdateButton({ updateLatest, onOpenUpdates }: UpdateButtonProps): React.JSX.Element {
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const tooltipId = chipTooltipId('rail:update')
+  const hoverCard = useOverlayHoverCard({ openDelay: 250, closeDelay: 80 })
+  const description = updateLatest
+    ? `v${updateLatest.startsWith('v') ? updateLatest.slice(1) : updateLatest} is ready to install`
+    : undefined
+
+  function hideTooltip(): void {
+    hideOverlayCard(tooltipId)
+  }
+
+  function handleMouseEnter(): void {
+    hoverCard.handleMouseEnter(() => {
+      if (!btnRef.current) return
+      const r = btnRef.current.getBoundingClientRect()
+      const text = description ? `Update available — ${description}` : 'Update available'
+      showChipTooltip(
+        tooltipId,
+        { x: r.left, y: r.top, w: r.width, h: r.height },
+        { text },
+        undefined,
+        'right'
+      )
+    })
+  }
+
+  function handleMouseLeave(): void {
+    hoverCard.handleMouseLeave(hideTooltip)
+  }
+
+  useEffect(() => {
+    return () => {
+      hoverCard.clearTimer()
+      hideTooltip()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <button
+      ref={btnRef}
+      type="button"
+      className={[
+        'w-9 h-9 flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer',
+        'text-accent bg-transparent hover:bg-accent/15',
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
+      ].join(' ')}
+      onClick={onOpenUpdates}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      aria-label="Update available — open Updates settings"
+    >
+      <ArrowFatLineUp size={20} weight="bold" />
+    </button>
+  )
+}
+
 export function ActivityRail({
   activeSurface,
   settingsActive,
@@ -85,10 +223,6 @@ export function ActivityRail({
   onSelectSettings,
   onOpenUpdates
 }: ActivityRailProps): React.JSX.Element {
-  const updateTitle = updateLatest
-    ? `Update available — v${updateLatest.startsWith('v') ? updateLatest.slice(1) : updateLatest}`
-    : 'Update available'
-
   return (
     <div
       style={{ width: ACTIVITY_RAIL_WIDTH }}
@@ -100,18 +234,22 @@ export function ActivityRail({
       <RailButton
         Icon={House}
         label="Dashboard"
+        tooltipLabel="Home"
+        description="Overview & recent activity"
         active={activeSurface === 'dashboard'}
         onClick={() => onSelectSurface('dashboard')}
       />
       <RailButton
         Icon={Kanban}
         label="Projects"
+        description="Your projects & workspaces"
         active={activeSurface === 'projects'}
         onClick={() => onSelectSurface('projects')}
       />
       <RailButton
         Icon={SquaresFour}
         label="Panes"
+        description="Multi-pane terminal layouts"
         active={activeSurface === 'panes'}
         onClick={() => onSelectSurface('panes')}
       />
@@ -120,19 +258,7 @@ export function ActivityRail({
 
       <RailButton Icon={Gear} label="Settings" active={settingsActive} onClick={onSelectSettings} />
       {updateAvailable && (
-        <button
-          type="button"
-          className={[
-            'w-9 h-9 flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer',
-            'text-accent bg-transparent hover:bg-accent/15',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40'
-          ].join(' ')}
-          onClick={onOpenUpdates}
-          title={updateTitle}
-          aria-label="Update available — open Updates settings"
-        >
-          <ArrowFatLineUp size={20} weight="bold" />
-        </button>
+        <UpdateButton updateLatest={updateLatest} onOpenUpdates={onOpenUpdates} />
       )}
     </div>
   )
