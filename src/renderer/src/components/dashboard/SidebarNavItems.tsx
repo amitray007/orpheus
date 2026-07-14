@@ -60,7 +60,7 @@ export const SectionHeader = memo(function SectionHeader({
   action
 }: SectionHeaderProps): React.JSX.Element {
   return (
-    <div className="flex items-center justify-between px-3 mb-1">
+    <div className="flex items-center justify-between px-3 mb-1 h-8">
       <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
       {action}
     </div>
