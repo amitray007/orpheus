@@ -51,10 +51,6 @@ interface RailButtonProps {
    *  is user-facing "Home" even though the surface id/aria-label stays
    *  "Dashboard". Defaults to `label`. */
   tooltipLabel?: string
-  /** Short one-line description shown alongside the title in the hover
-   *  tooltip (e.g. "Overview & recent activity"). Optional so callers with a
-   *  self-explanatory label (Settings) can omit it. */
-  description?: string
   active: boolean
   onClick: () => void
 }
@@ -76,7 +72,6 @@ function RailButton({
   Icon,
   label,
   tooltipLabel,
-  description,
   active,
   onClick
 }: RailButtonProps): React.JSX.Element {
@@ -93,7 +88,7 @@ function RailButton({
     hoverCard.handleMouseEnter(() => {
       if (!btnRef.current) return
       const r = btnRef.current.getBoundingClientRect()
-      const text = description ? `${title} — ${description}` : title
+      const text = title
       showChipTooltip(
         tooltipId,
         { x: r.left, y: r.top, w: r.width, h: r.height },
@@ -235,21 +230,18 @@ export function ActivityRail({
         Icon={House}
         label="Dashboard"
         tooltipLabel="Home"
-        description="Overview & recent activity"
         active={activeSurface === 'dashboard'}
         onClick={() => onSelectSurface('dashboard')}
       />
       <RailButton
         Icon={Kanban}
         label="Projects"
-        description="Your projects & workspaces"
         active={activeSurface === 'projects'}
         onClick={() => onSelectSurface('projects')}
       />
       <RailButton
         Icon={SquaresFour}
         label="Panes"
-        description="Multi-pane terminal layouts"
         active={activeSurface === 'panes'}
         onClick={() => onSelectSurface('panes')}
       />
