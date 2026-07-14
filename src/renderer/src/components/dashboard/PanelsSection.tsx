@@ -36,18 +36,20 @@
 // ---------------------------------------------------------------------------
 
 import type React from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CaretDown, CaretRight, Plus, Stack, Trash } from '@phosphor-icons/react'
 import type { PaneLayout, PanePanel } from '@shared/types'
 import { Identicon } from '../Identicon'
-import { ContextMenu } from '../ContextMenu'
-import type { ContextMenuItem } from '../ContextMenu'
 import { ActivityIndicator } from './ActivityIndicator'
 import { SectionHeader } from './SidebarNavItems'
-import { useSidebarBounds } from './SidebarBoundsContext'
 import { useInlineRename } from '@/lib/useInlineRename'
 import { RenameInput } from './settings/primitives'
-import { showConfirmModalReact } from '@/lib/overlayClient'
+import {
+  showConfirmModalReact,
+  showChipDropdown,
+  hideChipDropdown,
+  chipDropdownId
+} from '@/lib/overlayClient'
 import {
   usePanesSelection,
   getPanesSelection,
@@ -237,8 +239,7 @@ function LayoutSubRow({
   const isRunning = useIsLayoutLive(layout.id)
 
   const [hovered, setHovered] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const sidebarBoundsRef = useSidebarBounds()
+  const rowRef = useRef<HTMLDivElement>(null)
   const rename = useInlineRename(layout.name, (trimmed) => onFinishRename(trimmed))
 
   useEffect(() => {
@@ -253,56 +254,96 @@ function LayoutSubRow({
     if (!willCommit) onCancelRename()
   }
 
-  // Issue #22 — always show the custom ContextMenu (no OS-native fallback),
-  // so every Panes menu uses the same internal design regardless of sidebar
-  // width. The custom ContextMenu already clamps itself inside
-  // sidebarBoundsRef (see ContextMenu.tsx's useLayoutEffect), so a narrow
-  // sidebar just shifts the menu rather than needing a different renderer.
-  function handleContextMenu(e: React.MouseEvent): void {
-    e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
-  }
-
   // Fix 4 — Start/Stop mounts or destroys every pane in this layout's split
   // tree in the background, independent of auto-start-on-launch. Auto-start
   // toggle flips whether this layout background-mounts automatically on the
   // NEXT app launch. isRunning is the same real, background-aware liveness
   // signal LayoutStatusIcon uses above.
-  const menuItems: ContextMenuItem[] = [
-    {
-      label: isRunning ? 'Stop layout' : 'Start layout',
-      onClick: () => {
-        if (isRunning) {
-          window.api.panes
-            .stopLayout(layout.id)
-            .catch((err) => console.error('[PanelsSection] stopLayout failed', err, layout.id))
-        } else {
-          window.api.panes
-            .startLayoutBackground(layout.id)
-            .catch((err) =>
-              console.error('[PanelsSection] startLayoutBackground failed', err, layout.id)
-            )
+  function handleStartStop(): void {
+    if (isRunning) {
+      window.api.panes
+        .stopLayout(layout.id)
+        .catch((err) => console.error('[PanelsSection] stopLayout failed', err, layout.id))
+    } else {
+      window.api.panes
+        .startLayoutBackground(layout.id)
+        .catch((err) =>
+          console.error('[PanelsSection] startLayoutBackground failed', err, layout.id)
+        )
+    }
+  }
+
+  function handleToggleAutoStart(): void {
+    window.api.panes
+      .setLayoutAutoStart(layout.id, !layout.autoStart)
+      .then(() => onAutoStartChanged())
+      .catch((err) => console.error('[PanelsSection] setLayoutAutoStart failed', err, layout.id))
+  }
+
+  // Bug — the sidebar's Layout/Panel right-click menu used to be a
+  // same-window <ContextMenu> DOM popover (position:fixed z-50), which can
+  // NEVER paint above the native libghostty terminal NSView (see
+  // docs/learnings/overlay-child-window-macos.md and PanesView.tsx's
+  // openOptionsMenu, which fixed the identical issue for the ⋯ layout-
+  // options menu). Migrated to the same child-window overlay
+  // (showChipDropdown) that PanesView uses — it renders in a separate
+  // BrowserWindow that genuinely composites above the terminal.
+  const menuId = chipDropdownId(`panels-layout:${layout.id}`)
+  const menuOpenRef = useRef(false)
+
+  async function openContextMenu(e: React.MouseEvent): Promise<void> {
+    e.preventDefault()
+    if (!rowRef.current) return
+
+    // Re-entrancy: a second right-click while the menu is still open/pending
+    // TOGGLES it closed, mirroring PanesView's openOptionsMenu.
+    if (menuOpenRef.current) {
+      hideChipDropdown(menuId)
+      return
+    }
+    menuOpenRef.current = true
+
+    try {
+      const rect = rowRef.current.getBoundingClientRect()
+      const result = await showChipDropdown(
+        menuId,
+        { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+        {
+          items: [
+            { value: 'start-stop', label: isRunning ? 'Stop layout' : 'Start layout' },
+            {
+              value: 'auto-start',
+              label: layout.autoStart ? 'Auto-start on launch ✓' : 'Auto-start on launch'
+            },
+            { value: 'rename', label: 'Rename' },
+            { value: 'delete', label: 'Delete', destructive: true }
+          ]
         }
+      )
+      switch (result?.value) {
+        case 'start-stop':
+          handleStartStop()
+          break
+        case 'auto-start':
+          handleToggleAutoStart()
+          break
+        case 'rename':
+          onBeginRename()
+          break
+        case 'delete':
+          onDelete()
+          break
+        default:
+          break
       }
-    },
-    {
-      label: layout.autoStart ? 'Auto-start on launch ✓' : 'Auto-start on launch',
-      onClick: () => {
-        window.api.panes
-          .setLayoutAutoStart(layout.id, !layout.autoStart)
-          .then(() => onAutoStartChanged())
-          .catch((err) =>
-            console.error('[PanelsSection] setLayoutAutoStart failed', err, layout.id)
-          )
-      }
-    },
-    { label: '', divider: true, onClick: () => {} },
-    { label: 'Rename', onClick: onBeginRename },
-    { label: 'Delete', onClick: onDelete, destructive: true }
-  ]
+    } finally {
+      menuOpenRef.current = false
+    }
+  }
 
   return (
     <div
+      ref={rowRef}
       className={[
         'relative flex rounded-r-md transition-colors duration-150 group h-8',
         active
@@ -311,7 +352,7 @@ function LayoutSubRow({
       ].join(' ')}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onContextMenu={handleContextMenu}
+      onContextMenu={(e) => void openContextMenu(e)}
     >
       <button
         type="button"
@@ -354,15 +395,6 @@ function LayoutSubRow({
           <Trash size={13} />
         </button>
       )}
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={menuItems}
-          onClose={() => setMenu(null)}
-          boundsRef={sidebarBoundsRef ?? undefined}
-        />
-      )}
     </div>
   )
 }
@@ -403,8 +435,7 @@ function PanelRow({
   onCancelRename,
   onDelete
 }: PanelRowProps): React.JSX.Element {
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const sidebarBoundsRef = useSidebarBounds()
+  const rowRef = useRef<HTMLDivElement>(null)
   const rename = useInlineRename(panel.name, (trimmed) => onFinishRename(trimmed))
   const isGeneral = panel.kind === 'general'
 
@@ -420,27 +451,59 @@ function PanelRow({
     if (!willCommit) onCancelRename()
   }
 
-  // Issue #22 — always show the custom ContextMenu (no OS-native fallback);
-  // see the matching comment on LayoutSubRow's handleContextMenu above.
-  function handleContextMenu(e: React.MouseEvent): void {
-    e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
-  }
+  // Bug — migrated from a same-window <ContextMenu> DOM popover to the
+  // child-window overlay (showChipDropdown); see the matching comment on
+  // LayoutSubRow's openContextMenu above.
+  const menuId = chipDropdownId(`panels-panel:${panel.id}`)
+  const menuOpenRef = useRef(false)
 
-  const menuItems: ContextMenuItem[] = [
-    { label: 'Rename', onClick: onBeginRename },
-    ...(isGeneral ? [] : [{ label: 'Delete', onClick: onDelete, destructive: true }])
-  ]
+  async function openContextMenu(e: React.MouseEvent): Promise<void> {
+    e.preventDefault()
+    if (!rowRef.current) return
+
+    if (menuOpenRef.current) {
+      hideChipDropdown(menuId)
+      return
+    }
+    menuOpenRef.current = true
+
+    try {
+      const rect = rowRef.current.getBoundingClientRect()
+      const result = await showChipDropdown(
+        menuId,
+        { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+        {
+          items: [
+            { value: 'rename', label: 'Rename' },
+            ...(isGeneral ? [] : [{ value: 'delete', label: 'Delete', destructive: true }])
+          ]
+        }
+      )
+      switch (result?.value) {
+        case 'rename':
+          onBeginRename()
+          break
+        case 'delete':
+          onDelete()
+          break
+        default:
+          break
+      }
+    } finally {
+      menuOpenRef.current = false
+    }
+  }
 
   return (
     <div
+      ref={rowRef}
       className={[
         'relative flex items-center rounded-r-md transition-colors duration-150 group',
         active
           ? 'bg-accent/15 text-text-primary border-l-2 border-accent'
           : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay border-l-2 border-transparent'
       ].join(' ')}
-      onContextMenu={handleContextMenu}
+      onContextMenu={(e) => void openContextMenu(e)}
     >
       <button
         type="button"
@@ -500,15 +563,6 @@ function PanelRow({
             {expanded ? <CaretDown size={14} /> : <CaretRight size={14} />}
           </button>
         </div>
-      )}
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={menuItems}
-          onClose={() => setMenu(null)}
-          boundsRef={sidebarBoundsRef ?? undefined}
-        />
       )}
     </div>
   )
