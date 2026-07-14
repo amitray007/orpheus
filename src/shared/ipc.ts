@@ -443,6 +443,9 @@ export interface InvokeChannelMap {
   // projects:setExpandedInSidebar's shape exactly. See src/main/paneStore.ts's
   // setPanelExpanded.
   'panes:setPanelExpanded': { req: [{ id: string; expanded: boolean }]; res: void }
+  // Fix 4 — per-layout auto-start toggle (mirrors panes:setPanelExpanded's
+  // shape). See src/main/paneStore.ts's setLayoutAutoStart.
+  'panes:setLayoutAutoStart': { req: [{ id: string; autoStart: boolean }]; res: PaneLayout }
   'panes:listLayouts': { req: [{ panelId: string }]; res: PaneLayout[] }
   'panes:createLayout': {
     req: [{ panelId: string; name: string; dir: string; position?: number }]
@@ -461,6 +464,12 @@ export interface InvokeChannelMap {
     res: PaneLayout
   }
   'panes:deleteLayout': { req: [{ id: string }]; res: void }
+  // Fix 4 — on-demand per-layout background Start/Stop from the sidebar
+  // context menu, independent of auto-start-on-launch. Start mounts+hides
+  // every pane in the layout's split tree (same path boot auto-start uses);
+  // Stop destroys every live pane surface for the layout.
+  'panes:startLayoutBackground': { req: [{ id: string }]; res: void }
+  'panes:stopLayout': { req: [{ id: string }]; res: void }
   'panes:listTerminals': { req: [{ layoutId: string }]; res: PaneTerminal[] }
   'panes:createTerminal': {
     req: [{ layoutId: string; command: string; name?: string; position: number }]

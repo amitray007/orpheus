@@ -46,7 +46,7 @@ import {
   setWorkspaceCwd
 } from './workspaces'
 import { invalidateClaudeWorkspaceSettingsCache } from './claudeWorkspaceSettings'
-import { getLayout } from './paneStore'
+import { getLayout, listAutoStartLayouts, listTerminals } from './paneStore'
 import { getAppUiState, updateAppUiState } from './uiState'
 import { onActivityBatch } from './activitySink'
 import {
@@ -78,6 +78,7 @@ import type { GhosttySurfaceAddon } from '../../packages/ghostty-surface/index'
 import * as terminalActions from './actions/terminal'
 import { writeGhosttyConfigFile, updateGhosttyUserConfig } from './ghosttyConfig'
 import type { TerminalSendKeyDescriptor } from '../shared/types'
+import type { SplitTree, PaneLayout, TerminalRect } from '../shared/types'
 import { bootActions, setTerminalAddonRef, registerWebContentsCleanup } from './actions/index'
 import { evictAccumulator } from './actions/session'
 import { seedDefaultFooterActions } from './footerActions'
@@ -1658,25 +1659,34 @@ function destroyPaneSurfacesForWorkspace(workspaceId: string): void {
   broadcastLiveLayouts()
 }
 
-handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) => {
+// Fix #23 — for panes, the `workspaceId` param slot actually carries the
+// LAYOUT id (PaneCell calls window.api.panes.mount(layoutId, paneId, ...);
+// the param is named workspaceId only because pane:mount's shape mirrors
+// the workspace terminal:mount handler). getWorkspace(workspaceId) would
+// therefore always miss (a layout id never matches a workspace row),
+// silently falling back to $HOME and running the pane's setup command in
+// the wrong folder. Each layout is folder-bound (PaneLayout.dir) — that's
+// the correct cwd, resolved via paneStore's getLayout. Keep the $HOME
+// fallback for safety (e.g. a stale/deleted layout id).
+//
+// Factored out of the pane:mount IPC handler (Fix 4) so background
+// auto-start (boot) and the on-demand Start-layout path can mount a pane
+// exactly the same way an interactive PaneCell mount does, without needing
+// an IPC sender/event. `nativeHandle` is passed in rather than resolved
+// here since callers differ in how they obtain the BrowserWindow (IPC
+// sender vs. getMainWindow()).
+function mountPaneBackground(
+  nativeHandle: Buffer,
+  layoutId: string,
+  paneId: string,
+  rect: TerminalRect,
+  scaleFactor: number,
+  command: string
+): { created: boolean } {
   const addon = loadTerminalAddon()
-  const win = BrowserWindow.fromWebContents(e.sender)
-  if (!win) throw new Error('pane:mount — no BrowserWindow for sender')
-  const nativeHandle = win.getNativeWindowHandle()
-
-  // Fix #23 — for panes, the `workspaceId` param slot actually carries the
-  // LAYOUT id (PaneCell calls window.api.panes.mount(layoutId, paneId, ...);
-  // the param is named workspaceId only because pane:mount's shape mirrors
-  // the workspace terminal:mount handler). getWorkspace(workspaceId) would
-  // therefore always miss (a layout id never matches a workspace row),
-  // silently falling back to $HOME and running the pane's setup command in
-  // the wrong folder. Each layout is folder-bound (PaneLayout.dir) — that's
-  // the correct cwd, resolved via paneStore's getLayout. Keep the $HOME
-  // fallback for safety (e.g. a stale/deleted layout id).
-  const layout = getLayout(workspaceId)
+  const layout = getLayout(layoutId)
   const cwd = layout?.dir ?? process.env['HOME']
-
-  const slotId = paneSlotId(workspaceId, paneId)
+  const slotId = paneSlotId(layoutId, paneId)
   const result = addon.mount(nativeHandle, {
     workspaceId: slotId,
     rect,
@@ -1685,7 +1695,7 @@ handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) =>
     command: paneWrapperPath(),
     env: { ORPHEUS_PANE_CMD: command }
   })
-  registerPaneSurface(workspaceId, paneId)
+  registerPaneSurface(layoutId, paneId)
   logDiagMain({
     category: 'lifecycle',
     level: 'info',
@@ -1693,6 +1703,105 @@ handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) =>
     workspaceId: slotId,
     data: { created: result.created, pane: true }
   })
+  return { created: result.created }
+}
+
+/** Local leaf-id walk over SplitTree — deliberately NOT importing
+ *  splitTreeOps.ts's leafIds (renderer code); main must never import from
+ *  src/renderer, so this is the same ~4-line recursive walk duplicated here. */
+function collectLeafPaneIds(tree: SplitTree): string[] {
+  if ('paneId' in tree) return [tree.paneId]
+  return [...collectLeafPaneIds(tree.a), ...collectLeafPaneIds(tree.b)]
+}
+
+/** Walks a layout's split tree, mounts every leaf pane in the background
+ *  (mount then immediately hide, mirroring Dashboard.tsx's
+ *  backgroundMountWorkspace shape), and skips cleanly (no throw) when the
+ *  layout has no tree, no panes, or a leaf paneId with no matching
+ *  pane_terminals row. Shared by boot auto-start and the on-demand
+ *  panes:startLayoutBackground IPC path so "auto-start at launch" and
+ *  "Start layout from the sidebar" are identical in behavior. Synchronous
+ *  (mountPaneBackground/addon.hide are both sync) — callers invoke it
+ *  alongside genuinely async neighbors (getMainWindow/IPC), but there is no
+ *  await inside it. */
+function mountLayoutBackground(nativeHandle: Buffer, layout: PaneLayout): void {
+  if (!layout.splitTree) return
+  const leafPaneIds = collectLeafPaneIds(layout.splitTree)
+  if (leafPaneIds.length === 0) return
+
+  const terminals = listTerminals(layout.id)
+  const commandByPaneId = new Map(terminals.map((t) => [t.id, t.command]))
+
+  // Synthetic default rect — panes get real bounds once the layout is
+  // actually shown; a hidden surface's rect doesn't need to be accurate.
+  const rect: TerminalRect = { x: 0, y: 0, w: 800, h: 600 }
+  const scaleFactor = 1
+
+  for (const paneId of leafPaneIds) {
+    const command = commandByPaneId.get(paneId)
+    if (command === undefined) continue // stale leaf id with no terminal row — skip
+    try {
+      mountPaneBackground(nativeHandle, layout.id, paneId, rect, scaleFactor, command)
+      try {
+        loadTerminalAddon().hide(paneSlotId(layout.id, paneId))
+      } catch (err) {
+        console.error(
+          `[panes] background hide failed for pane ${paneId} in layout ${layout.id}:`,
+          err
+        )
+      }
+    } catch (err) {
+      console.error(
+        `[panes] background mount failed for pane ${paneId} in layout ${layout.id}:`,
+        err
+      )
+    }
+  }
+}
+
+/** Fix 4 — background-mounts every pane of every auto-start-flagged layout
+ *  at app boot, regardless of which surface is visible. Mirrors the shape of
+ *  Dashboard.tsx's backgroundMountWorkspace (mount with a synthetic rect,
+ *  then immediately hide) but driven from MAIN so it runs unconditionally at
+ *  launch instead of depending on any renderer view being mounted (PanesView
+ *  is only mounted when the user navigates to the Panes surface — see
+ *  MainContent.tsx's view.kind early return). Best-effort: a bad layout
+ *  (null splitTree, no panes, addon throw) is logged and skipped, never
+ *  thrown — a broken auto-start layout must not crash boot. Synchronous, same
+ *  reasoning as mountLayoutBackground — kept a plain function, not async. */
+function autoStartFlaggedLayouts(): void {
+  const win = getMainWindow()
+  if (!win) return
+  let nativeHandle: Buffer
+  try {
+    nativeHandle = win.getNativeWindowHandle()
+  } catch (err) {
+    console.error('[panes] auto-start: no native window handle:', err)
+    return
+  }
+
+  let layouts: PaneLayout[]
+  try {
+    layouts = listAutoStartLayouts()
+  } catch (err) {
+    console.error('[panes] auto-start: failed to list auto-start layouts:', err)
+    return
+  }
+
+  for (const layout of layouts) {
+    try {
+      mountLayoutBackground(nativeHandle, layout)
+    } catch (err) {
+      console.error(`[panes] auto-start: failed for layout ${layout.id}:`, err)
+    }
+  }
+}
+
+handle('pane:mount', (e, { workspaceId, paneId, rect, scaleFactor, command }) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) throw new Error('pane:mount — no BrowserWindow for sender')
+  const nativeHandle = win.getNativeWindowHandle()
+  const result = mountPaneBackground(nativeHandle, workspaceId, paneId, rect, scaleFactor, command)
   return { workspaceId, created: result.created }
 })
 
@@ -1710,6 +1819,23 @@ handle('pane:destroy', (_e, { workspaceId, paneId }): void => {
   const addon = loadTerminalAddon()
   addon.destroy(paneSlotId(workspaceId, paneId))
   unregisterPaneSurface(workspaceId, paneId)
+})
+
+// Fix 4 — on-demand per-layout background Start/Stop, driven from the
+// sidebar layout context menu. Shares mountLayoutBackground with boot
+// auto-start so both paths mount identically; Stop reuses the one
+// authoritative bulk-destroy path (destroyPaneSurfacesForWorkspace).
+handle('panes:startLayoutBackground', (_e, { id }): void => {
+  const win = getMainWindow()
+  if (!win) return
+  const layout = getLayout(id)
+  if (!layout) return
+  const nativeHandle = win.getNativeWindowHandle()
+  mountLayoutBackground(nativeHandle, layout)
+})
+
+handle('panes:stopLayout', (_e, { id }): void => {
+  destroyPaneSurfacesForWorkspace(id)
 })
 
 handle('terminal:resize', (_e, { workspaceId, rect, scaleFactor }): void => {
@@ -2456,6 +2582,14 @@ if (!app.requestSingleInstanceLock()) {
           powerAwakeCleanup = startPowerAwake(getMainWindow)
         } catch (err) {
           console.error('[powerAwake] failed to start:', err)
+        }
+
+        // Fix 4 — background-mount every auto-start-flagged pane layout now that
+        // the window + native handle exist. Never block or throw during boot.
+        try {
+          autoStartFlaggedLayouts()
+        } catch (err) {
+          console.error('[panes] auto-start: unexpected failure:', err)
         }
       })
 

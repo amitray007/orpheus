@@ -645,6 +645,8 @@ const api = {
     deletePanel: (id: string): Promise<void> => invoke('panes:deletePanel', { id }),
     setPanelExpanded: (id: string, expanded: boolean): Promise<void> =>
       invoke('panes:setPanelExpanded', { id, expanded }),
+    setLayoutAutoStart: (id: string, autoStart: boolean): Promise<PaneLayout> =>
+      invoke('panes:setLayoutAutoStart', { id, autoStart }),
     listLayouts: (panelId: string): Promise<PaneLayout[]> =>
       invoke('panes:listLayouts', { panelId }),
     createLayout: (args: {
@@ -658,6 +660,9 @@ const api = {
       patch: { name?: string; dir?: string; splitTree?: SplitTree | null; position?: number }
     ): Promise<PaneLayout> => invoke('panes:updateLayout', { id, ...patch }),
     deleteLayout: (id: string): Promise<void> => invoke('panes:deleteLayout', { id }),
+    startLayoutBackground: (id: string): Promise<void> =>
+      invoke('panes:startLayoutBackground', { id }),
+    stopLayout: (id: string): Promise<void> => invoke('panes:stopLayout', { id }),
     listTerminals: (layoutId: string): Promise<PaneTerminal[]> =>
       invoke('panes:listTerminals', { layoutId }),
     createTerminal: (args: {

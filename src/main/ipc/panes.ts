@@ -36,6 +36,7 @@ import {
   createLayout,
   updateLayout,
   deleteLayout,
+  setLayoutAutoStart,
   listTerminals,
   createTerminal,
   updateTerminal,
@@ -69,6 +70,7 @@ export function registerPanesIpc(): void {
   handle('panes:deleteLayout', (_e, { id }) => {
     deleteLayout(id)
   })
+  handle('panes:setLayoutAutoStart', (_e, { id, autoStart }) => setLayoutAutoStart(id, autoStart))
 
   // Terminals
   handle('panes:listTerminals', (_e, { layoutId }) => listTerminals(layoutId))
