@@ -1564,16 +1564,24 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
   const resolvedSidebarWidth = uiState?.sidebarWidth ?? UI_STATE_DEFAULTS.sidebarWidth
   let secondaryColumn: React.JSX.Element | null = null
   if (surface === 'panes') {
-    if (!sidebarCollapsed) {
-      secondaryColumn = (
-        <aside
-          className="bg-surface-raised border-r border-border-default shrink-0 h-full transition-[width] duration-150 ease-out overflow-hidden"
-          style={{ width: resolvedSidebarWidth + 'px' }}
-        >
-          <PanelsSection />
-        </aside>
-      )
-    }
+    // Structural parity with the Projects <Sidebar> aside (Sidebar.tsx
+    // ~1463-1472) is deliberate: both asides must share the exact same
+    // non-width classes and collapsed mechanism (mounted at w-14 rather
+    // than unmounted) so switching Projects<->Panes never shifts the
+    // layout — see the "Sidebar shifts when switching surfaces" fix.
+    secondaryColumn = (
+      <aside
+        className={[
+          sidebarCollapsed ? 'w-14' : '',
+          'transition-[width] duration-150 ease-out',
+          'bg-surface-raised border-r border-border-default',
+          'flex flex-col overflow-hidden shrink-0 h-full'
+        ].join(' ')}
+        style={sidebarCollapsed ? undefined : { width: resolvedSidebarWidth + 'px' }}
+      >
+        <PanelsSection collapsed={sidebarCollapsed} />
+      </aside>
+    )
   } else if (surface !== 'dashboard') {
     secondaryColumn = (
       <Sidebar
