@@ -186,6 +186,7 @@ interface LayoutSubRowProps {
   onFinishRename: (newName: string) => void
   onCancelRename: () => void
   onDelete: () => void
+  onAutoStartChanged: () => void
 }
 
 /** The layout row's leading status-icon slot: an animated braille spinner
@@ -227,7 +228,8 @@ function LayoutSubRow({
   onBeginRename,
   onFinishRename,
   onCancelRename,
-  onDelete
+  onDelete,
+  onAutoStartChanged
 }: LayoutSubRowProps): React.JSX.Element {
   // See LayoutStatusIcon's comment — real, background-aware liveness from
   // paneLiveLayoutsStore.ts, not gated on `active` (the sidebar selection
@@ -261,7 +263,40 @@ function LayoutSubRow({
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
+  // Fix 4 — Start/Stop mounts or destroys every pane in this layout's split
+  // tree in the background, independent of auto-start-on-launch. Auto-start
+  // toggle flips whether this layout background-mounts automatically on the
+  // NEXT app launch. isRunning is the same real, background-aware liveness
+  // signal LayoutStatusIcon uses above.
   const menuItems: ContextMenuItem[] = [
+    {
+      label: isRunning ? 'Stop layout' : 'Start layout',
+      onClick: () => {
+        if (isRunning) {
+          window.api.panes
+            .stopLayout(layout.id)
+            .catch((err) => console.error('[PanelsSection] stopLayout failed', err, layout.id))
+        } else {
+          window.api.panes
+            .startLayoutBackground(layout.id)
+            .catch((err) =>
+              console.error('[PanelsSection] startLayoutBackground failed', err, layout.id)
+            )
+        }
+      }
+    },
+    {
+      label: layout.autoStart ? 'Auto-start on launch ✓' : 'Auto-start on launch',
+      onClick: () => {
+        window.api.panes
+          .setLayoutAutoStart(layout.id, !layout.autoStart)
+          .then(() => onAutoStartChanged())
+          .catch((err) =>
+            console.error('[PanelsSection] setLayoutAutoStart failed', err, layout.id)
+          )
+      }
+    },
+    { label: '', divider: true, onClick: () => {} },
     { label: 'Rename', onClick: onBeginRename },
     { label: 'Delete', onClick: onDelete, destructive: true }
   ]
@@ -682,6 +717,15 @@ export function PanelsSection(): React.JSX.Element {
     setRenamingPanelId(null)
   }
 
+  // Fix 4 — refetch this panel's layouts (picking up the new autoStart flag)
+  // after LayoutSubRow's context-menu toggle resolves, mirroring how every
+  // other mutation handler above refreshes both local state and PanesView's
+  // data hook.
+  function handleAutoStartChanged(panel: PanePanel): void {
+    loadLayouts(panel.id)
+    bumpPanesRefresh()
+  }
+
   const addPanelButton = (
     <button
       type="button"
@@ -735,6 +779,7 @@ export function PanelsSection(): React.JSX.Element {
                         onFinishRename={(name) => handleRenameLayout(panel, layout, name)}
                         onCancelRename={() => setRenamingLayoutId(null)}
                         onDelete={() => handleDeleteLayout(panel, layout)}
+                        onAutoStartChanged={() => handleAutoStartChanged(panel)}
                       />
                     ))}
                     <button
