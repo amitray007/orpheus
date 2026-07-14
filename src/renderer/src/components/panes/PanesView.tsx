@@ -4,9 +4,12 @@
 // Panes v2 — top-level Panels · Layouts · split Panes
 // (docs/plans/2026-07-10-001-feat-panes-v2-toplevel-layouts-plan.md, U5, R6,
 // R9, KTD6). The top-level Panes view shell: a header (panel/layout crumb,
-// pane-count cap badge, ＋ Add pane, ⋯ options dropdown) over a
-// flush split-tree "stage", matching the mockup's `.main`/`.vhead`/`.stage`
-// layout (scratchpad/panes-final2.html) exactly.
+// pane-count cap badge, Auto-start toggle, Start/Stop, Restart, ＋ Add pane)
+// over a flush split-tree "stage", matching the mockup's
+// `.main`/`.vhead`/`.stage` layout (scratchpad/panes-final2.html) in spirit
+// (Issue E promoted the layout controls that used to live behind a ⋯
+// overflow menu directly into the bar — see the PanesHeader doc comment
+// below for the current control order).
 //
 // U7: SplitTree's leaves now mount REAL libghostty surfaces (PaneCell.tsx),
 // so `active` is always true here — this view is only ever rendered while
@@ -31,14 +34,22 @@
 // keeps the split-tree UI responsive without waiting on an IPC round-trip
 // per interaction.
 //
-// ISSUE #17 — REAL layout-wide Restart/Stop: the ⋯ menu used to be a
-// transient-message stub. It's now real, and operates on every pane in the
-// ACTIVE layout's tree (via splitTreeOps.leafIds, the flat list of every
-// leaf's paneId): Stop calls `window.api.panes.destroy` for each pane AND
-// marks each stopped in paneRunStateStore (so PaneCell's header/body
-// immediately reflects the stopped state — a destroy the store doesn't know
-// about would leave the ◼/▶ button and stopped-placeholder UI out of sync
-// with reality). Restart destroys + re-marks-running each pane, which
+// ISSUE #17 — REAL layout-wide Restart/Stop, now in the top bar directly
+// (Issue E moved these off the old ⋯ menu, which is gone — see PanesHeader).
+// Two DISTINCT code paths share the "Stop"/"Restart" words, and it matters
+// which one a caller uses:
+//   - handleRestartLayout (the bar's Restart button) is STORE-ONLY: it
+//     operates on every pane in the ACTIVE layout's tree (via
+//     splitTreeOps.leafIds) through paneRunStateStore (setPaneRunning/
+//     restartPane), which only affects panes while the layout tree is
+//     mounted in the stage — it does NOT touch main's background surface
+//     registry or `useIsLayoutLive`.
+//   - The bar's Start/Stop button (handleTopBarStartStop) instead goes
+//     through `window.api.panes.startLayoutBackground`/`stopLayout` (real
+//     IPC, mirroring the sidebar's PanelsSection.tsx handleStartStop), so it
+//     correctly reflects and drives the same background liveness signal the
+//     sidebar shows.
+// Restart destroys + re-marks-running each pane via paneRunStateStore, which
 // drives PaneCell's own usePaneSurface effect to mount a FRESH surface
 // (never a hide/show of a stale one — see PaneCell.tsx's file-header
 // comment for why that's what fixes issue #18's blank-on-reenable bug).
@@ -47,10 +58,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SquaresFour } from '@phosphor-icons/react'
 import type { SplitDirection, SplitTree as SplitTreeShape } from '@shared/types'
-import { showChipDropdown, hideChipDropdown, chipDropdownId } from '@/lib/overlayClient'
 import { usePanesSelection, setActivePanel, setActiveLayout } from '@/lib/panesSelectionStore'
 import { useUiState } from '@/lib/uiStateStore'
-import { setPaneRunning, restartPane } from '@/lib/paneRunStateStore'
+import { restartPane } from '@/lib/paneRunStateStore'
+import { useIsLayoutLive } from '@/lib/paneLiveLayoutsStore'
+import { bumpPanesRefresh } from '@/lib/panesRefreshStore'
+import { Toggle } from '../dashboard/settings/primitives'
 import { usePanesData } from './usePanesData'
 import { SplitTree } from './SplitTree'
 import { splitLeaf, closeLeaf, swapLeaves, setRatio, countLeaves, leafIds } from './splitTreeOps'
@@ -125,6 +138,11 @@ export function PanesView(): React.JSX.Element {
 
   const activePanel = panels.find((p) => p.id === activePanelId) ?? null
   const activeLayout = layouts.find((l) => l.id === activeLayoutId) ?? null
+  // Real, background-aware liveness for the top bar's Start/Stop control —
+  // same source PanelsSection's sidebar row reads (paneLiveLayoutsStore.ts),
+  // NOT the store-only handleRestartLayout below (which only affects the
+  // currently-mounted stage tree, not main's background surface registry).
+  const activeLayoutLive = useIsLayoutLive(activeLayoutId ?? '')
 
   // BUG A FIX — "No layouts in this panel" stale-selection race.
   //
@@ -268,13 +286,6 @@ export function PanesView(): React.JSX.Element {
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null)
   const [transientMessage, setTransientMessage] = useState<string | null>(null)
-  // The ⋯ layout-options button ref is still needed to compute the anchor
-  // rect for the chip-dropdown overlay below; the button itself no longer
-  // owns any open/anchor state — the dropdown lives in a separate
-  // child-window overlay layer (see openOptionsMenu), not an inline
-  // <Overlay> DOM popover, because a DOM popover can never render above the
-  // native libghostty NSView (docs/learnings/overlay-child-window-macos.md).
-  const optionsButtonRef = useRef<HTMLButtonElement>(null)
 
   const transientTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const showTransientMessage = useCallback((message: string) => {
@@ -488,30 +499,19 @@ export function PanesView(): React.JSX.Element {
     handleAddPaneFromHeader
   ])
 
-  // Restart/Stop LAYOUT (bulk, all panes at once) — issue #17. Distinct from
-  // the per-pane ✎ edit-relaunch and ◼/▶ stop/start in PaneCell.tsx, but now
-  // built from the SAME primitives: `window.api.panes.destroy` (real process
-  // kill) and paneRunStateStore (the shared running-flag PaneCell's own
-  // usePaneSurface effect reads to decide mount vs. destroy). Iterates every
-  // paneId currently in the active layout's tree via splitTreeOps.leafIds —
-  // the flat, depth-first list of leaves, exactly matching what SplitTree.tsx
-  // renders, so "every pane in the layout" here means precisely the panes
-  // visibly in the stage right now.
-  const handleStopLayout = useCallback(() => {
-    if (!localTree || !activeLayoutId) return
-    const ids = leafIds(localTree)
-    for (const paneId of ids) {
-      // Mark stopped FIRST so PaneCell's own effect (which also reads this
-      // store) is the thing that actually calls pane:destroy on cleanup —
-      // this keeps ALL destroy calls flowing through usePaneSurface's own
-      // guarded path (createdRef/pendingCloseRef) instead of a second,
-      // parallel destroy call site here racing against it.
-      setPaneRunning(paneId, false)
-    }
-    // No transient toast — Stop is now a real action (the panes visibly stop),
-    // so a "stopped layout" message would be redundant noise.
-  }, [localTree, activeLayoutId])
-
+  // Restart LAYOUT (bulk, all panes at once) — issue #17. Distinct from the
+  // per-pane ✎ edit-relaunch and ◼/▶ stop/start in PaneCell.tsx, but built
+  // from the SAME primitive: paneRunStateStore (the shared running-flag
+  // PaneCell's own usePaneSurface effect reads to decide mount vs. destroy).
+  // Iterates every paneId currently in the active layout's tree via
+  // splitTreeOps.leafIds — the flat, depth-first list of leaves, exactly
+  // matching what SplitTree.tsx renders, so "every pane in the layout" here
+  // means precisely the panes visibly in the stage right now.
+  //
+  // The bar's Stop button (Issue E) does NOT reuse a store-only counterpart
+  // of this function — it goes through the real IPC path instead (see
+  // handleTopBarStartStop below), so that "Stop" actually reflects in
+  // useIsLayoutLive/the sidebar, not just the locally-mounted stage tree.
   const handleRestartLayout = useCallback(() => {
     if (!localTree || !activeLayoutId) return
     const ids = leafIds(localTree)
@@ -527,83 +527,41 @@ export function PanesView(): React.JSX.Element {
     // No transient toast — Restart is now a real action (panes visibly relaunch).
   }, [localTree, activeLayoutId])
 
-  // The unique overlay id for this menu — stable across renders so repeated
-  // opens/closes target the same child-window overlay slot (mirrors
-  // DropdownChip's `chipDropdownId(...)` usage).
-  const optionsMenuId = chipDropdownId('panes-layout-options')
-
-  // optionsOpenRef — re-entrancy guard for openOptionsMenu (issue #3: the ⋯
-  // menu "gets stuck"). Root cause was re-entrancy: clicking ⋯ again while a
-  // showChipDropdown(optionsMenuId, ...) call was still pending fired a
-  // SECOND show for the SAME overlay id, and/or raced the outside-click
-  // dismissal that should have settled the first call — either way could
-  // leave an orphaned overlay the button's own click handler no longer had
-  // a reference to (its `await` was still parked on the first promise).
-  // This ref tracks "is a dropdown for optionsMenuId currently open/
-  // pending" so a second ⋯ click can be routed to close-and-return instead
-  // of opening a second overlay. Not React state: this is a synchronous
-  // re-entrancy latch read/written inside a single event-handler tick, not
-  // something that should ever trigger a re-render.
-  const optionsOpenRef = useRef(false)
-
-  // Bug #6: the ⋯ menu used to render as an inline <Overlay portal fixed
-  // z-20> DOM popover, which can NEVER paint above the native libghostty
-  // NSView terminal (see docs/learnings/overlay-child-window-macos.md — the
-  // terminal's NSView is attached above the ONE shared web compositor layer,
-  // so no DOM z-index trick can beat it). Reusing the same child-window
-  // overlay used for hover cards / footer dropdowns (showChipDropdown) fixes
-  // this: it renders in a separate BrowserWindow that genuinely composites
-  // above the terminal. showChipDropdown never rejects (resolves null on
-  // cancel/outside-click/Escape), so this is a plain async handler with no
-  // floating promise to `void`.
-  const openOptionsMenu = useCallback(async (): Promise<void> => {
-    if (!optionsButtonRef.current) return
-
-    // Re-entrancy: a second ⋯ click while the menu is still open/pending
-    // TOGGLES it closed (the nicer UX — matches how a native menu-button
-    // behaves) rather than stacking a second showChipDropdown call for the
-    // same overlay id. hideChipDropdown force-settles the FIRST call's
-    // still-pending promise as null (see overlayClient's
-    // chipDropdownForceCancel), so that original `await` below resolves
-    // cleanly instead of hanging — no orphaned overlay, no stuck button.
-    if (optionsOpenRef.current) {
-      hideChipDropdown(optionsMenuId)
-      return
+  // Top-bar Start/Stop (Issue E) — unlike handleStopLayout/handleRestartLayout
+  // above (store-only, only affect the currently-mounted stage tree), this
+  // drives REAL background liveness through the same IPC path the sidebar's
+  // handleStartStop uses (PanelsSection.tsx), so the top-bar button and
+  // useIsLayoutLive stay in sync with each other and with the sidebar.
+  const handleTopBarStartStop = useCallback(() => {
+    if (!activeLayoutId) return
+    if (activeLayoutLive) {
+      void window.api.panes
+        .stopLayout(activeLayoutId)
+        .catch((err) => console.error('[PanesView] stopLayout failed', err, activeLayoutId))
+    } else {
+      void window.api.panes
+        .startLayoutBackground(activeLayoutId)
+        .catch((err) =>
+          console.error('[PanesView] startLayoutBackground failed', err, activeLayoutId)
+        )
     }
-    optionsOpenRef.current = true
+  }, [activeLayoutId, activeLayoutLive])
 
-    try {
-      const rect = optionsButtonRef.current.getBoundingClientRect()
-      const result = await showChipDropdown(
-        optionsMenuId,
-        { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
-        {
-          items: [
-            { value: 'restart', label: '↻ Restart layout' },
-            // Destructive: true — matches the custom ContextMenu.tsx's red
-            // treatment for destructive actions (e.g. sidebar "Delete"), now
-            // mirrored here via ChipDropdown's new destructive support so
-            // every Panes menu reads consistently (issue #22).
-            { value: 'stop', label: '◼ Stop layout', destructive: true }
-          ]
-        }
-      )
-      if (result?.value === 'restart') {
-        handleRestartLayout()
-      } else if (result?.value === 'stop') {
-        handleStopLayout()
-      }
-    } finally {
-      // Always reset the latch once the promise settles — including the
-      // failure path where showChipDropdown's own overlay:show IPC call
-      // rejects (it already absorbs that into a `null` resolve internally,
-      // but this finally is the belt-and-suspenders guarantee that NO path
-      // out of this function, including one we haven't anticipated, can
-      // leave the ref permanently stuck true and the ⋯ button permanently
-      // unresponsive to future opens).
-      optionsOpenRef.current = false
-    }
-  }, [optionsMenuId, handleRestartLayout, handleStopLayout])
+  // Top-bar Auto-start toggle — persists via IPC, then bumps
+  // panesRefreshStore so usePanesData's own layouts fetch (which is what
+  // `activeLayout.autoStart` is derived from) refetches and reflects the
+  // new value. Mirrors PanelsSection's handleToggleAutoStart +
+  // handleAutoStartChanged pair exactly (see PanelsSection.tsx).
+  const handleToggleAutoStart = useCallback(
+    (next: boolean) => {
+      if (!activeLayoutId) return
+      void window.api.panes
+        .setLayoutAutoStart(activeLayoutId, next)
+        .then(() => bumpPanesRefresh())
+        .catch((err) => console.error('[PanesView] setLayoutAutoStart failed', err, activeLayoutId))
+    },
+    [activeLayoutId]
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface-base">
@@ -613,9 +571,12 @@ export function PanesView(): React.JSX.Element {
         layoutDir={activeLayout?.dir ?? null}
         panelPaneTotal={panelPaneTotal}
         hasActiveLayout={activeLayout !== null}
-        optionsButtonRef={optionsButtonRef}
+        autoStart={activeLayout?.autoStart ?? false}
+        isRunning={activeLayoutLive}
         onAddPane={handleAddPaneFromHeader}
-        onOpenOptions={() => void openOptionsMenu()}
+        onToggleAutoStart={handleToggleAutoStart}
+        onStartStop={handleTopBarStartStop}
+        onRestart={handleRestartLayout}
         transientMessage={transientMessage}
       />
 
@@ -707,67 +668,112 @@ interface PanesHeaderProps {
   layoutDir: string | null
   panelPaneTotal: number
   hasActiveLayout: boolean
-  optionsButtonRef: React.RefObject<HTMLButtonElement | null>
+  autoStart: boolean
+  isRunning: boolean
   onAddPane: () => void
-  onOpenOptions: () => void
+  onToggleAutoStart: (v: boolean) => void
+  onStartStop: () => void
+  onRestart: () => void
   transientMessage: string | null
 }
 
-/** The view header — crumb, cap badge, and the three top-bar actions (R9).
- *  Extracted from PanesView's body to keep that component's render function
- *  under the cognitive-complexity cap. */
+/** Shared classes for the bar's labeled toolbar buttons (Start/Stop,
+ *  Restart, ＋ Add pane) — copied from the pre-existing ＋ Add pane style so
+ *  every button in the cluster reads as one consistent toolbar. */
+const HEADER_BUTTON_CLASS =
+  'flex h-6 items-center gap-1.5 rounded-md border border-border-default bg-surface-raised px-2.5 text-[11.5px] font-medium text-text-primary hover:border-accent hover:bg-surface-overlay cursor-pointer'
+
+/** The view header — crumb, cap badge, and the layout toolbar (Issue E:
+ *  auto-start toggle, start/stop, restart, add pane). Extracted from
+ *  PanesView's body to keep that component's render function under the
+ *  sonarjs cognitive-complexity cap.
+ *
+ *  Right-cluster order (left to right): N/12 panes badge · a divider ·
+ *  Auto-start label+toggle · Start/Stop · Restart · ＋ Add pane. The ⋯
+ *  overflow menu that used to hold Restart/Stop is gone — with both
+ *  promoted into the bar it had nothing left in it, so it was removed
+ *  rather than kept as dead chrome (issue E).
+ *
+ *  Crowding: the left crumb gets `min-w-0 truncate` so a long `layoutDir`
+ *  monospace path shrinks/truncates instead of pushing the toolbar off the
+ *  right edge or wrapping the h-11 single-row bar. */
 function PanesHeader({
   panelName,
   layoutName,
   layoutDir,
   panelPaneTotal,
   hasActiveLayout,
-  optionsButtonRef,
+  autoStart,
+  isRunning,
   onAddPane,
-  onOpenOptions,
+  onToggleAutoStart,
+  onStartStop,
+  onRestart,
   transientMessage
 }: PanesHeaderProps): React.JSX.Element {
   const warn = panelPaneTotal >= 10
   return (
     <div className="flex h-11 flex-shrink-0 items-center gap-2.5 border-b border-border-default bg-surface-raised px-3.5">
-      <span className="flex items-center gap-2 text-[13px] font-semibold text-text-primary">
-        {panelName ?? '—'}
-        <span className="font-normal text-text-muted">/</span>
-        {layoutName ?? '—'}
+      <span className="flex min-w-0 items-center gap-2 truncate text-[13px] font-semibold text-text-primary">
+        <span className="truncate">{panelName ?? '—'}</span>
+        <span className="flex-shrink-0 font-normal text-text-muted">/</span>
+        <span className="truncate">{layoutName ?? '—'}</span>
         {layoutDir ? (
-          <span className="font-mono text-[11px] font-normal text-text-muted">{layoutDir}</span>
+          <span className="truncate font-mono text-[11px] font-normal text-text-muted">
+            {layoutDir}
+          </span>
         ) : null}
       </span>
 
-      <span className="ml-auto font-mono text-[10.5px] text-text-muted">
+      <span className="ml-auto flex-shrink-0 font-mono text-[10.5px] text-text-muted">
         <b className={warn ? 'text-accent' : 'text-text-secondary'}>{panelPaneTotal}</b>/{CAP_PANEL}{' '}
         panes
       </span>
 
       {hasActiveLayout ? (
-        <button
-          type="button"
-          onClick={onAddPane}
-          className="flex h-6 items-center gap-1.5 rounded-md border border-border-default bg-surface-raised px-2.5 text-[11.5px] font-medium text-text-primary hover:border-accent hover:bg-surface-overlay cursor-pointer"
-        >
-          ＋ Add pane
-        </button>
-      ) : null}
+        <>
+          <span className="h-4 w-px flex-shrink-0 bg-border-default" aria-hidden="true" />
 
-      {hasActiveLayout ? (
-        <button
-          ref={optionsButtonRef}
-          type="button"
-          title="layout options"
-          onClick={onOpenOptions}
-          className="flex h-6 w-[26px] items-center justify-center rounded-md border border-transparent bg-transparent text-[14px] leading-none text-text-muted hover:bg-surface-overlay hover:text-text-primary cursor-pointer"
-        >
-          ⋯
-        </button>
+          <span className="flex flex-shrink-0 items-center gap-1.5">
+            <span className="text-[11px] text-text-muted">Auto-start</span>
+            <Toggle
+              value={autoStart}
+              onChange={onToggleAutoStart}
+              ariaLabel="Auto-start layout on launch"
+            />
+          </span>
+
+          <button
+            type="button"
+            onClick={onStartStop}
+            title={isRunning ? 'Stop layout' : 'Start layout'}
+            className={[
+              HEADER_BUTTON_CLASS,
+              isRunning ? 'hover:border-red-500/50 hover:text-red-400' : ''
+            ].join(' ')}
+          >
+            {isRunning ? '◼ Stop' : '▷ Start'}
+          </button>
+
+          <button
+            type="button"
+            onClick={onRestart}
+            title="Restart layout"
+            className={HEADER_BUTTON_CLASS}
+          >
+            ↻ Restart
+          </button>
+
+          <button type="button" onClick={onAddPane} className={HEADER_BUTTON_CLASS}>
+            ＋ Add pane
+          </button>
+        </>
       ) : null}
 
       {transientMessage ? (
-        <span className="font-mono text-[11px] text-text-muted">{transientMessage}</span>
+        <span className="flex-shrink-0 font-mono text-[11px] text-text-muted">
+          {transientMessage}
+        </span>
       ) : null}
     </div>
   )
