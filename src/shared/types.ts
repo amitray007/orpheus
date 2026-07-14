@@ -184,6 +184,11 @@ export type PinnedItem = {
 
 export type AppViewKind = 'dashboard' | 'sessions' | 'project' | 'workspace' | 'panes'
 
+// Projects-surface-scoped view kind — narrower than AppViewKind because the
+// Projects surface can never be 'dashboard' or 'panes' (see
+// projectsLastViewKind on AppUiState below).
+export type ProjectsLastViewKind = 'sessions' | 'project' | 'workspace'
+
 export type Theme = 'midnight' | 'daylight' | 'eclipse'
 export type AccentColor = 'gold' | 'blue' | 'teal' | 'orange' | 'pink'
 export type UiFontScale = 'small' | 'default' | 'large'
@@ -207,6 +212,19 @@ export type AppUiState = {
   // (Partial<Omit<AppUiState, 'updatedAt'>>) automatically.
   lastPanelId: string | null
   lastLayoutId: string | null
+  // Projects-surface-scoped location memory — written ONLY by Projects
+  // navigation handlers (handleSelectWorkspace/handleSelectProject/
+  // restoreLastProjectsLocation in Dashboard.tsx). Switching to Home/Panes/
+  // Settings nulls the shared lastViewKind/lastProjectId/lastWorkspaceId
+  // fields above (see handleSelectSurface's dashboard/panes branches and
+  // handleSelectSettings/handleOpenUpdates), so Projects needs its own
+  // memory that survives those surface switches — otherwise navigating away
+  // and back to Projects incorrectly showed the empty state instead of
+  // restoring the last workspace/project. Covered by AppUiStatePatch
+  // (Partial<Omit<AppUiState, 'updatedAt'>>) automatically.
+  projectsLastViewKind: ProjectsLastViewKind
+  projectsLastProjectId: string | null
+  projectsLastWorkspaceId: string | null
   windowX: number | null
   windowY: number | null
   windowWidth: number | null

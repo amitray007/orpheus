@@ -452,7 +452,10 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         updateUiState({
           lastViewKind: 'workspace',
           lastProjectId: projectId,
-          lastWorkspaceId: workspaceId
+          lastWorkspaceId: workspaceId,
+          projectsLastViewKind: 'workspace',
+          projectsLastProjectId: projectId,
+          projectsLastWorkspaceId: workspaceId
         })
         await window.api.workspaces
           .open(workspaceId)
@@ -610,50 +613,78 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         fetchWorkspacesForProject(id)
       }
       window.api.projects.open(id).catch(console.error)
-      updateUiState({ lastViewKind: 'project', lastProjectId: id, lastWorkspaceId: null })
+      updateUiState({
+        lastViewKind: 'project',
+        lastProjectId: id,
+        lastWorkspaceId: null,
+        projectsLastViewKind: 'project',
+        projectsLastProjectId: id,
+        projectsLastWorkspaceId: null
+      })
     },
     [fetchWorkspacesForProject]
   )
 
   // Restore the last Projects-surface location: workspace > project > empty
-  // state. This is the SAME branch order as the restart-restore hydration
-  // effect below (workspace > project > sessions/landing) — factored out here
-  // so both the app-launch restore and the Projects-rail click delegate to one
-  // path instead of drifting. handleSelectWorkspace/handleSelectProject each
-  // persist their own lastViewKind/lastProjectId/lastWorkspaceId internally
-  // (see their bodies above), so this callback must NOT null those ids when
-  // delegating to them — only the genuinely-empty fallthrough nulls the ids,
-  // because that's the one case where there really is nothing to restore.
+  // state. Reads the DEDICATED projectsLastViewKind/projectsLastProjectId/
+  // projectsLastWorkspaceId fields — NOT lastViewKind/lastProjectId/
+  // lastWorkspaceId — because handleSelectSurface's dashboard/panes branches
+  // (and handleSelectSettings/handleOpenUpdates) intentionally NULL/overwrite
+  // those shared fields for their own top-level-surface bookkeeping whenever
+  // the user navigates to Home/Panes/Settings. The projectsLast* fields are
+  // written ONLY by Projects navigation (handleSelectWorkspace/
+  // handleSelectProject below and the empty-state fallthrough here), so they
+  // survive those surface switches and correctly restore Projects state on
+  // return instead of incorrectly falling back to the empty state.
+  //
+  // This is the SAME branch order as the restart-restore hydration effect
+  // below (workspace > project > sessions/landing) — factored out here so
+  // both the app-launch restore and the Projects-rail click delegate to one
+  // path instead of drifting (that effect still uses lastViewKind/
+  // lastProjectId/lastWorkspaceId for full-app-restart restore, which is
+  // correct there — see its own comment). handleSelectWorkspace/
+  // handleSelectProject each persist their own lastViewKind/lastProjectId/
+  // lastWorkspaceId AND projectsLast* fields internally (see their bodies
+  // above), so this callback must NOT null those ids when delegating to
+  // them — only the genuinely-empty fallthrough nulls the ids, because
+  // that's the one case where there really is nothing to restore.
   const restoreLastProjectsLocation = useCallback((): void => {
     // uiState is null only until the initial fetch resolves; the Projects
     // rail click can't fire before mount completes that fetch in practice,
     // but guard anyway and fall through to the empty state rather than throw.
     if (
       uiState &&
-      uiState.lastViewKind === 'workspace' &&
-      uiState.lastWorkspaceId &&
-      uiState.lastProjectId
+      uiState.projectsLastViewKind === 'workspace' &&
+      uiState.projectsLastWorkspaceId &&
+      uiState.projectsLastProjectId
     ) {
-      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+      const proj = projects.find((p) => p.id === uiState.projectsLastProjectId)
       if (proj) {
-        handleSelectWorkspace(uiState.lastWorkspaceId, uiState.lastProjectId)
+        handleSelectWorkspace(uiState.projectsLastWorkspaceId, uiState.projectsLastProjectId)
         return
       }
     }
-    if (uiState && uiState.lastViewKind === 'project' && uiState.lastProjectId) {
-      const proj = projects.find((p) => p.id === uiState.lastProjectId)
+    if (uiState && uiState.projectsLastViewKind === 'project' && uiState.projectsLastProjectId) {
+      const proj = projects.find((p) => p.id === uiState.projectsLastProjectId)
       if (proj) {
-        handleSelectProject(uiState.lastProjectId)
+        handleSelectProject(uiState.projectsLastProjectId)
         return
       }
     }
     // No resolvable last location — land on the empty state (ProjectsHome,
     // rendered by the 'sessions' view kind) and persist a genuinely-empty
-    // selection.
+    // selection on both the shared and Projects-scoped fields.
     setView({ kind: 'sessions' })
     setSelectedProjectId(null)
     setSelectedWorkspaceId(null)
-    updateUiState({ lastViewKind: 'sessions', lastProjectId: null, lastWorkspaceId: null })
+    updateUiState({
+      lastViewKind: 'sessions',
+      lastProjectId: null,
+      lastWorkspaceId: null,
+      projectsLastViewKind: 'sessions',
+      projectsLastProjectId: null,
+      projectsLastWorkspaceId: null
+    })
   }, [uiState, projects, handleSelectWorkspace, handleSelectProject])
 
   // Switches the top-level SURFACE (dashboard | projects | panes) — wired
@@ -672,6 +703,9 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
         // so the dashboard surface still displays correctly during this session even
         // though a relaunch would coerce the persisted value back to sessions/Workspaces
         // (governed instead by defaultSurface, which IS 'dashboard'-aware).
+        // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
+        // projectsLastWorkspaceId here — those are Projects-scoped memory that
+        // must survive this surface switch (see restoreLastProjectsLocation).
         updateUiState({ lastViewKind: 'dashboard', lastProjectId: null, lastWorkspaceId: null })
         return
       }
@@ -685,6 +719,8 @@ export function Dashboard(_: DashboardProps): React.JSX.Element {
       setView({ kind: 'panes' })
       setSelectedProjectId(null)
       setSelectedWorkspaceId(null)
+      // Deliberately NOT clearing projectsLastViewKind/projectsLastProjectId/
+      // projectsLastWorkspaceId here — see the dashboard branch's comment above.
       updateUiState({ lastViewKind: 'panes', lastProjectId: null, lastWorkspaceId: null })
     },
     [restoreLastProjectsLocation]

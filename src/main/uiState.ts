@@ -3,6 +3,7 @@ import type {
   AppUiState,
   AppUiStatePatch,
   AppViewKind,
+  ProjectsLastViewKind,
   Theme,
   AccentColor,
   UiFontScale,
@@ -34,6 +35,10 @@ type AppUiStateRow = {
   // last_project_id/last_workspace_id exactly.
   last_panel_id: string | null
   last_layout_id: string | null
+  // Projects-surface-scoped location memory — see AppUiState.projectsLastViewKind.
+  projects_last_view_kind: string
+  projects_last_project_id: string | null
+  projects_last_workspace_id: string | null
   window_x: number | null
   window_y: number | null
   window_width: number | null
@@ -150,6 +155,16 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
     // Panes v2 active-panel/active-layout persistence (issue #1)
     lastPanelId: row.last_panel_id,
     lastLayoutId: row.last_layout_id,
+    // Projects-surface-scoped location memory — defensive coercion mirrors
+    // how lastViewKind coerces legacy 'dashboard' → 'sessions' on read;
+    // default to 'sessions' if the stored value is somehow invalid.
+    projectsLastViewKind: (['sessions', 'project', 'workspace'] as const).includes(
+      row.projects_last_view_kind as 'sessions' | 'project' | 'workspace'
+    )
+      ? (row.projects_last_view_kind as ProjectsLastViewKind)
+      : 'sessions',
+    projectsLastProjectId: row.projects_last_project_id,
+    projectsLastWorkspaceId: row.projects_last_workspace_id,
     windowX: row.window_x,
     windowY: row.window_y,
     windowWidth: row.window_width,
@@ -251,6 +266,7 @@ function rowToRecord(row: AppUiStateRow): AppUiState {
 // ---------------------------------------------------------------------------
 
 const VALID_VIEW_KINDS: AppViewKind[] = ['dashboard', 'sessions', 'project', 'workspace', 'panes']
+const VALID_PROJECTS_LAST_VIEW_KINDS: ProjectsLastViewKind[] = ['sessions', 'project', 'workspace']
 const VALID_THEMES: Theme[] = ['midnight', 'daylight', 'eclipse']
 const VALID_ACCENT_COLORS: AccentColor[] = ['gold', 'blue', 'teal', 'orange', 'pink']
 const VALID_FONT_SCALES: UiFontScale[] = ['small', 'default', 'large']
@@ -287,6 +303,28 @@ function validatePatch(patch: AppUiStatePatch): void {
   if ('lastWorkspaceId' in patch) {
     if (patch.lastWorkspaceId !== null && typeof patch.lastWorkspaceId !== 'string') {
       throw new Error('uiState: lastWorkspaceId must be a string or null')
+    }
+  }
+  if ('projectsLastViewKind' in patch) {
+    if (
+      !VALID_PROJECTS_LAST_VIEW_KINDS.includes(patch.projectsLastViewKind as ProjectsLastViewKind)
+    ) {
+      throw new Error(
+        `uiState: projectsLastViewKind must be one of ${VALID_PROJECTS_LAST_VIEW_KINDS.join(', ')}`
+      )
+    }
+  }
+  if ('projectsLastProjectId' in patch) {
+    if (patch.projectsLastProjectId !== null && typeof patch.projectsLastProjectId !== 'string') {
+      throw new Error('uiState: projectsLastProjectId must be a string or null')
+    }
+  }
+  if ('projectsLastWorkspaceId' in patch) {
+    if (
+      patch.projectsLastWorkspaceId !== null &&
+      typeof patch.projectsLastWorkspaceId !== 'string'
+    ) {
+      throw new Error('uiState: projectsLastWorkspaceId must be a string or null')
     }
   }
   if ('theme' in patch && patch.theme !== undefined) {
@@ -448,6 +486,10 @@ export function updateAppUiState(patch: AppUiStatePatch): AppUiState {
     // Panes v2 active-panel/active-layout persistence (issue #1)
     lastPanelId: 'last_panel_id',
     lastLayoutId: 'last_layout_id',
+    // Projects-surface-scoped location memory
+    projectsLastViewKind: 'projects_last_view_kind',
+    projectsLastProjectId: 'projects_last_project_id',
+    projectsLastWorkspaceId: 'projects_last_workspace_id',
     windowX: 'window_x',
     windowY: 'window_y',
     windowWidth: 'window_width',

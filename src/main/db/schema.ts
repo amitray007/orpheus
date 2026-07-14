@@ -27,6 +27,10 @@ const LOG_LEVEL = ['debug', 'info', 'warn', 'error'] as const
 // the CHECK; 'dashboard' is kept for legacy rows and a future rail surface
 // (see AppViewKind in src/shared/types.ts).
 const LAST_VIEW_KIND = ['dashboard', 'sessions', 'project', 'workspace', 'panes'] as const
+// Projects-surface-scoped location memory (see projects_last_view_kind
+// column below) — narrower than LAST_VIEW_KIND since Projects can never be
+// 'dashboard' or 'panes'.
+const PROJECTS_LAST_VIEW_KIND = ['sessions', 'project', 'workspace'] as const
 // Mirrors VALID_FILES_SORT_ORDERS / TreeSortOrder in
 // src/shared/uiStateDefaults.ts / TreeOptionsPopover.tsx.
 const FILES_SORT_ORDER = ['default', 'name'] as const
@@ -457,6 +461,20 @@ export const schema: SchemaDef = {
       // selection on next boot).
       last_panel_id: 'TEXT REFERENCES pane_panels(id) ON DELETE SET NULL',
       last_layout_id: 'TEXT REFERENCES pane_layouts(id) ON DELETE SET NULL',
+      // Projects-surface-scoped location memory — mirrors last_project_id/
+      // last_workspace_id exactly, but is NEVER cleared by switching to
+      // other top-level surfaces (dashboard/panes/settings). That's the fix
+      // for the bug where returning to Projects after visiting Home/Panes
+      // incorrectly showed the empty state instead of restoring the last
+      // workspace/project.
+      projects_last_view_kind: {
+        type: 'TEXT',
+        notNull: true,
+        default: "'sessions'",
+        check: enumCheck('projects_last_view_kind', PROJECTS_LAST_VIEW_KIND)
+      },
+      projects_last_project_id: 'TEXT REFERENCES projects(id) ON DELETE SET NULL',
+      projects_last_workspace_id: 'TEXT REFERENCES workspaces(id) ON DELETE SET NULL',
       window_x: 'INTEGER',
       window_y: 'INTEGER',
       window_width: 'INTEGER',
@@ -961,6 +979,7 @@ export {
   CLOUD_PROVIDER,
   LOG_LEVEL,
   LAST_VIEW_KIND,
+  PROJECTS_LAST_VIEW_KIND,
   THEME,
   ACCENT_COLOR,
   UI_FONT_SCALE,
